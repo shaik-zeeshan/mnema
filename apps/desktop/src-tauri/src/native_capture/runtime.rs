@@ -358,7 +358,7 @@ pub(super) fn validate_start_request(
         });
     }
 
-    if request.capture_system_audio && !request.capture_screen && support.platform == "macos" {
+    if request.capture_system_audio && !request.capture_screen && support.system_audio_requires_screen {
         return Err(CaptureErrorResponse {
             code: "system_audio_requires_screen".to_string(),
             message: "System audio-only capture is not supported; enable screen capture as well"

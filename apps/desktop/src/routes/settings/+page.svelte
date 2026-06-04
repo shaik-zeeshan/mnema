@@ -769,8 +769,8 @@
   // Per-source capability gating. Prefer the backend-reported support over a raw
   // platform check (see docs/adr/0022). While the lookup is still pending/failed
   // (captureSupport === null) fall back to the platform so supported sources are
-  // not transiently hidden — macOS supports both audio sources, Windows supports
-  // microphone only.
+  // not transiently hidden — macOS supports both audio sources, and Windows
+  // supports microphone plus independent system audio.
   const microphoneSourceSupported = $derived(
     captureSupport !== null
       ? captureSupport.supportedSources.microphone
@@ -779,6 +779,11 @@
   const systemAudioSourceSupported = $derived(
     captureSupport !== null
       ? captureSupport.supportedSources.systemAudio
+      : (isMacOS || isWindows)
+  );
+  const systemAudioRequiresScreen = $derived(
+    captureSupport !== null
+      ? captureSupport.systemAudioRequiresScreen
       : isMacOS
   );
 
@@ -2140,7 +2145,7 @@
     if (domain === "capture_sources") {
       return (
         (!draftCaptureScreen && !draftCaptureMicrophone && !draftCaptureSystemAudio)
-        || (draftCaptureSystemAudio && !draftCaptureScreen)
+        || (systemAudioRequiresScreen && draftCaptureSystemAudio && !draftCaptureScreen)
       );
     }
     if (domain === "video") {
@@ -2360,10 +2365,10 @@
 
   // ─── Recording settings validation ───────────────────────────────────────
 
-  // Invariant: system audio requires screen capture.
-  // Reactively coerce the draft: if screen is turned off, force system audio off too.
+  // Some backends require screen capture as the carrier for system audio.
+  // Keep the old macOS-safe behavior until support loads, then trust the capability.
   $effect(() => {
-    if (!draftCaptureScreen && draftCaptureSystemAudio) {
+    if (systemAudioRequiresScreen && !draftCaptureScreen && draftCaptureSystemAudio) {
       draftCaptureSystemAudio = false;
     }
   });
@@ -2452,7 +2457,7 @@
     if (!anySource) {
       errors.push("At least one capture source (Screen, Microphone, or System Audio) must be enabled.");
     }
-    if (draftCaptureSystemAudio && !draftCaptureScreen) {
+    if (systemAudioRequiresScreen && draftCaptureSystemAudio && !draftCaptureScreen) {
       errors.push("System Audio capture requires Screen capture to be enabled.");
     }
     if (resolutionSupportPendingForNonOriginal) {
@@ -3529,20 +3534,18 @@
         {#if systemAudioSourceSupported}
           <Switch
             bind:checked={draftCaptureSystemAudio}
-            disabled={!draftCaptureScreen}
+            disabled={systemAudioRequiresScreen && !draftCaptureScreen}
             label="System Audio"
-            description={isMacOS
-              ? "Capture Mac system audio (macOS 15+)"
-              : "Capture system audio (macOS 15+ only)"}
+            description="Capture system audio when supported"
           />
-          {#if !draftCaptureScreen}
+          {#if systemAudioRequiresScreen && !draftCaptureScreen}
             <p class="capture-source-hint">System Audio is unavailable — enable Screen first.</p>
           {/if}
         {/if}
       </div>
-      {#if isWindows}
+      {#if isWindows && !systemAudioSourceSupported}
         <p class="group-hint">
-          System-audio capture is macOS-only. Windows records screen video and microphone audio.
+          System-audio capture is unavailable because Windows did not report a supported default render endpoint.
         </p>
       {/if}
     </div>

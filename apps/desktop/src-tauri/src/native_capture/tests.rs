@@ -53,7 +53,7 @@ use super::segments::{
 };
 use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
-    validate_recording_settings_with_resolution_support,
+    validate_recording_settings_with_capture_support,
 };
 use super::{
     audio_transcription_unavailable_notification, capture_support_response_from_observed_platform,
@@ -1103,6 +1103,7 @@ fn validate_start_request_rejects_system_audio_when_not_supported() {
         platform: "macos".to_string(),
         native_capture_supported: true,
         supports_non_original_resolution: true,
+        system_audio_requires_screen: true,
         supported_sources: CaptureSources {
             screen: true,
             microphone: true,
@@ -1125,6 +1126,7 @@ fn validate_start_request_rejects_screen_when_only_system_audio_is_supported() {
         platform: "windows".to_string(),
         native_capture_supported: true,
         supports_non_original_resolution: false,
+        system_audio_requires_screen: false,
         supported_sources: CaptureSources {
             screen: false,
             microphone: false,
@@ -1138,7 +1140,7 @@ fn validate_start_request_rejects_screen_when_only_system_audio_is_supported() {
 }
 
 #[test]
-fn validate_start_request_keeps_macos_system_audio_tied_to_screen() {
+fn validate_start_request_rejects_system_audio_without_screen_when_capability_requires_screen() {
     let request = StartNativeCaptureRequest {
         capture_screen: false,
         capture_microphone: false,
@@ -1148,6 +1150,7 @@ fn validate_start_request_keeps_macos_system_audio_tied_to_screen() {
         platform: "macos".to_string(),
         native_capture_supported: true,
         supports_non_original_resolution: true,
+        system_audio_requires_screen: true,
         supported_sources: CaptureSources {
             screen: true,
             microphone: true,
@@ -1156,12 +1159,12 @@ fn validate_start_request_keeps_macos_system_audio_tied_to_screen() {
     };
 
     let error = validate_start_request(&request, &support)
-        .expect_err("macOS system audio-only capture should remain rejected");
+        .expect_err("capability-tied system audio-only capture should be rejected");
     assert_eq!(error.code, "system_audio_requires_screen");
 }
 
 #[test]
-fn validate_start_request_allows_windows_system_audio_without_screen_when_supported() {
+fn validate_start_request_allows_system_audio_without_screen_when_capability_allows_independent_audio() {
     let request = StartNativeCaptureRequest {
         capture_screen: false,
         capture_microphone: false,
@@ -1171,6 +1174,7 @@ fn validate_start_request_allows_windows_system_audio_without_screen_when_suppor
         platform: "windows".to_string(),
         native_capture_supported: true,
         supports_non_original_resolution: true,
+        system_audio_requires_screen: false,
         supported_sources: CaptureSources {
             screen: false,
             microphone: true,
@@ -1179,7 +1183,7 @@ fn validate_start_request_allows_windows_system_audio_without_screen_when_suppor
     };
 
     let sources = validate_start_request(&request, &support)
-        .expect("Windows loopback system audio-only capture should be valid");
+        .expect("independent system audio-only capture should be valid");
     assert_eq!(
         sources,
         CaptureSources {
@@ -1205,7 +1209,7 @@ fn windows_capture_support_uses_independent_system_audio_probe() {
     );
 
     assert!(response.native_capture_supported);
-
+    assert!(!response.system_audio_requires_screen);
     assert_eq!(
         response.supported_sources,
         CaptureSources {
@@ -1230,6 +1234,7 @@ fn macos_capture_support_keeps_system_audio_from_screen_support() {
         true,
     );
 
+    assert!(response.system_audio_requires_screen);
     assert_eq!(
         response.supported_sources,
         CaptureSources {
@@ -1317,13 +1322,17 @@ fn validate_recording_settings_rejects_all_sources_disabled() {
 }
 
 #[test]
-fn validate_recording_settings_rejects_system_audio_without_screen() {
-    let error = validate_recording_settings(UpdateRecordingSettingsRequest {
-        capture_screen: false,
-        capture_microphone: true,
-        capture_system_audio: true,
-        ..update_recording_settings_request_fixture()
-    })
+fn validate_recording_settings_rejects_system_audio_without_screen_when_capability_requires_screen() {
+    let error = validate_recording_settings_with_capture_support(
+        UpdateRecordingSettingsRequest {
+            capture_screen: false,
+            capture_microphone: true,
+            capture_system_audio: true,
+            ..update_recording_settings_request_fixture()
+        },
+        true,
+        true,
+    )
     .expect_err("system audio without screen must be rejected");
 
     assert_eq!(error.code, "invalid_recording_settings");
@@ -1334,8 +1343,26 @@ fn validate_recording_settings_rejects_system_audio_without_screen() {
 }
 
 #[test]
+fn validate_recording_settings_allows_system_audio_without_screen_when_capability_allows_independent_audio() {
+    let settings = validate_recording_settings_with_capture_support(
+        UpdateRecordingSettingsRequest {
+            capture_screen: false,
+            capture_microphone: true,
+            capture_system_audio: true,
+            ..update_recording_settings_request_fixture()
+        },
+        true,
+        false,
+    )
+    .expect("independent system audio should validate without screen");
+
+    assert!(!settings.capture_screen);
+    assert!(settings.capture_system_audio);
+}
+
+#[test]
 fn validate_recording_settings_allows_storing_resolution_when_screen_disabled() {
-    let settings = validate_recording_settings_with_resolution_support(
+    let settings = validate_recording_settings_with_capture_support(
         UpdateRecordingSettingsRequest {
             capture_screen: false,
             capture_microphone: true,
@@ -1346,6 +1373,7 @@ fn validate_recording_settings_allows_storing_resolution_when_screen_disabled() 
             },
             ..update_recording_settings_request_fixture()
         },
+        true,
         true,
     )
     .expect("resolution settings should still be storable");
@@ -1362,7 +1390,7 @@ fn validate_recording_settings_allows_storing_resolution_when_screen_disabled() 
 #[test]
 fn validate_recording_settings_allows_non_original_resolution_when_screen_disabled_on_fallback_backend(
 ) {
-    let settings = validate_recording_settings_with_resolution_support(
+    let settings = validate_recording_settings_with_capture_support(
         UpdateRecordingSettingsRequest {
             capture_screen: false,
             capture_microphone: true,
@@ -1373,6 +1401,7 @@ fn validate_recording_settings_allows_non_original_resolution_when_screen_disabl
             ..update_recording_settings_request_fixture()
         },
         false,
+        true,
     )
     .expect("resolution should be allowed when screen capture is disabled");
 
@@ -1387,7 +1416,7 @@ fn validate_recording_settings_allows_non_original_resolution_when_screen_disabl
 #[test]
 fn validate_recording_settings_rejects_non_original_resolution_when_screen_enabled_on_fallback_backend(
 ) {
-    let error = validate_recording_settings_with_resolution_support(
+    let error = validate_recording_settings_with_capture_support(
         UpdateRecordingSettingsRequest {
             capture_screen: true,
             capture_microphone: false,
@@ -1398,6 +1427,7 @@ fn validate_recording_settings_rejects_non_original_resolution_when_screen_enabl
             ..update_recording_settings_request_fixture()
         },
         false,
+        true,
     )
     .expect_err("fallback backend must reject non-original resolution when screen is enabled");
 

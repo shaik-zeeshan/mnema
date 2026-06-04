@@ -124,6 +124,7 @@ Research notes:
 - [~] Implement Windows system-audio capture.
   - WASAPI loopback captures the default render endpoint as an independent source when the default render endpoint support probe succeeds.
   - System audio is modeled as an independent source on Windows (ADR 0022); backend source validation allows system-audio-only sessions instead of requiring screen capture.
+  - `get_capture_support.systemAudioRequiresScreen` is false on Windows and true on macOS; settings, onboarding, and the native tray use that capability so Windows users can keep/select system audio when screen is unchecked.
 - [~] Implement Windows capture session IDs and source-session bookkeeping. Screen and microphone `SourceSessions` metadata are populated; Windows system audio uses `sysaudio_session`-prefixed source ids when loopback capture is active.
 - [~] Implement segment rotation without dropping OCR/frame-index invariants. Screen, microphone, and independent system audio rotate on the shared 5-minute boundary; an audio-only session rotates without a screen planner/session.
 - [ ] Implement user pause/resume and inactivity pause/resume for each requested source family.

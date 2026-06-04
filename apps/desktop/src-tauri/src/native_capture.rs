@@ -1400,6 +1400,7 @@ struct CaptureSupportSnapshot {
     platform: String,
     native_capture_supported: bool,
     supports_non_original_resolution: bool,
+    system_audio_requires_screen: bool,
     supported_sources: CaptureSources,
 }
 
@@ -1686,6 +1687,7 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
         platform: response.platform.clone(),
         native_capture_supported: response.native_capture_supported,
         supports_non_original_resolution: response.supports_non_original_resolution,
+        system_audio_requires_screen: response.system_audio_requires_screen,
         supported_sources: response.supported_sources.clone(),
     };
     let mut last_snapshot = capture_support_log_snapshot_state()
@@ -1699,10 +1701,11 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
     *last_snapshot = Some(snapshot.clone());
 
     debug_log::log(format!(
-        "observed native capture support (platform='{}', native_supported={}, non_original_resolution={}, supported_sources={})",
+        "observed native capture support (platform='{}', native_supported={}, non_original_resolution={}, system_audio_requires_screen={}, supported_sources={})",
         snapshot.platform,
         snapshot.native_capture_supported,
         snapshot.supports_non_original_resolution,
+        snapshot.system_audio_requires_screen,
         format_capture_source_flags(&snapshot.supported_sources)
     ));
 }
@@ -2120,6 +2123,13 @@ fn start_native_capture_inner(
         session: started_session,
     })
 }
+fn system_audio_requires_screen_for_platform(platform: &str) -> bool {
+    match platform {
+        "windows" => false,
+        "macos" => true,
+        _ => true,
+    }
+}
 
 fn capture_support_response_from_observed_platform(
     screen_support: capture_screen::ScreenCaptureSupport,
@@ -2137,11 +2147,14 @@ fn capture_support_response_from_observed_platform(
     };
 
     CaptureSupportResponse {
-        platform: screen_support.platform,
+        platform: screen_support.platform.clone(),
         native_capture_supported: screen_support.native_capture_supported
             || microphone_supported
             || system_audio_supported,
         supports_non_original_resolution: screen_support.non_original_resolution,
+        system_audio_requires_screen: system_audio_requires_screen_for_platform(
+            &screen_support.platform,
+        ),
         supported_sources: CaptureSources {
             screen: screen_support.screen,
             microphone: microphone_supported,

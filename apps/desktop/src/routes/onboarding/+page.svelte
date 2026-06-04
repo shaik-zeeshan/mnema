@@ -119,7 +119,7 @@
   // Per-source capability gating (see docs/adr/0022): prefer the backend-reported
   // support, falling back to the platform while the lookup is pending so supported
   // sources are not transiently hidden. macOS supports both audio sources; Windows
-  // supports microphone only.
+  // supports microphone plus independent system audio.
   const microphoneSourceSupported = $derived(
     captureSupport !== null
       ? captureSupport.supportedSources.microphone
@@ -128,6 +128,11 @@
   const systemAudioSourceSupported = $derived(
     captureSupport !== null
       ? captureSupport.supportedSources.systemAudio
+      : (isMacOS || isWindows)
+  );
+  const systemAudioRequiresScreen = $derived(
+    captureSupport !== null
+      ? captureSupport.systemAudioRequiresScreen
       : isMacOS
   );
   let loading = $state(true);
@@ -293,7 +298,9 @@
     };
   });
   $effect(() => {
-    if (!draftCaptureScreen && draftCaptureSystemAudio) draftCaptureSystemAudio = false;
+    if (systemAudioRequiresScreen && !draftCaptureScreen && draftCaptureSystemAudio) {
+      draftCaptureSystemAudio = false;
+    }
   });
   $effect(() => {
     const parsed = parsePositiveInteger(customWidthRaw);
@@ -425,7 +432,9 @@
       ...base,
       captureScreen: draftCaptureScreen,
       captureMicrophone: draftCaptureMicrophone,
-      captureSystemAudio: draftCaptureScreen && draftCaptureSystemAudio,
+      captureSystemAudio: systemAudioRequiresScreen
+        ? draftCaptureScreen && draftCaptureSystemAudio
+        : draftCaptureSystemAudio,
       screenFrameRate: draftFrameRate,
       screenResolution: draftResolutionMode === "custom"
         ? { mode: "custom", width: draftCustomWidth!, height: draftCustomHeight! }
@@ -666,7 +675,9 @@
           request: {
             captureScreen: draftCaptureScreen,
             captureMicrophone: draftCaptureMicrophone,
-            captureSystemAudio: draftCaptureScreen && draftCaptureSystemAudio,
+            captureSystemAudio: systemAudioRequiresScreen
+              ? draftCaptureScreen && draftCaptureSystemAudio
+              : draftCaptureSystemAudio,
           },
         });
       }
@@ -1124,7 +1135,7 @@
                   <div class="finale__chips">
                     <span class="chip chip--lg" data-on={draftCaptureScreen}>Screen</span>
                     <span class="chip chip--lg" data-on={draftCaptureMicrophone}>Mic</span>
-                    <span class="chip chip--lg" data-on={draftCaptureSystemAudio && draftCaptureScreen}>Sys audio</span>
+                    <span class="chip chip--lg" data-on={draftCaptureSystemAudio && (!systemAudioRequiresScreen || draftCaptureScreen)}>Sys audio</span>
                     <span class="chip chip--lg" data-on={draftOcrEnabled}>OCR</span>
                     <span class="chip chip--lg" data-on={draftTranscriptionEnabled}>Transcript</span>
                   </div>
@@ -1240,13 +1251,13 @@
                       <div class="settings-divider"></div>
                       <Switch
                         bind:checked={draftCaptureSystemAudio}
-                        disabled={!draftCaptureScreen}
+                        disabled={systemAudioRequiresScreen && !draftCaptureScreen}
                         label="System audio"
-                        description="Capture Mac system audio when supported"
+                        description="Capture system audio when supported"
                       />
                     {/if}
                   </div>
-                  {#if systemAudioSourceSupported && !draftCaptureScreen}
+                  {#if systemAudioSourceSupported && systemAudioRequiresScreen && !draftCaptureScreen}
                     <p class="hint hint--warn">System audio requires screen capture.</p>
                   {/if}
 

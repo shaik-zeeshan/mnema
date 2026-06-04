@@ -506,22 +506,30 @@ fn is_original_screen_resolution(value: &ScreenResolution) -> bool {
     )
 }
 
-fn supports_non_original_screen_resolution() -> bool {
-    capture_screen::support_for_current_platform().non_original_resolution
+fn current_capture_support_capabilities() -> (bool, bool) {
+    let screen_support = capture_screen::support_for_current_platform();
+    (
+        screen_support.non_original_resolution,
+        super::system_audio_requires_screen_for_platform(&screen_support.platform),
+    )
 }
 
 pub(crate) fn validate_recording_settings(
     request: UpdateRecordingSettingsRequest,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    validate_recording_settings_with_resolution_support(
+    let (non_original_resolution_supported, system_audio_requires_screen) =
+        current_capture_support_capabilities();
+    validate_recording_settings_with_capture_support(
         request,
-        supports_non_original_screen_resolution(),
+        non_original_resolution_supported,
+        system_audio_requires_screen,
     )
 }
 
-pub(crate) fn validate_recording_settings_with_resolution_support(
+pub(crate) fn validate_recording_settings_with_capture_support(
     request: UpdateRecordingSettingsRequest,
     non_original_resolution_supported: bool,
+    system_audio_requires_screen: bool,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
     if !request.capture_screen && !request.capture_microphone && !request.capture_system_audio {
         return Err(CaptureErrorResponse {
@@ -530,7 +538,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
-    if request.capture_system_audio && !request.capture_screen {
+    if system_audio_requires_screen && request.capture_system_audio && !request.capture_screen {
         return Err(CaptureErrorResponse {
             code: "invalid_recording_settings".to_string(),
             message: "System audio capture requires screen capture".to_string(),
@@ -648,19 +656,26 @@ pub(crate) fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> Pat
 }
 
 fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
-    load_recording_settings_from_path_with_resolution_support(path, true)
+    let (non_original_resolution_supported, system_audio_requires_screen) =
+        current_capture_support_capabilities();
+    load_recording_settings_from_path_with_capture_support(
+        path,
+        non_original_resolution_supported,
+        system_audio_requires_screen,
+    )
 }
 
-fn load_recording_settings_from_path_with_resolution_support(
+fn load_recording_settings_from_path_with_capture_support(
     path: &Path,
     non_original_resolution_supported: bool,
+    system_audio_requires_screen: bool,
 ) -> Option<RecordingSettings> {
     let raw = std::fs::read_to_string(path).ok()?;
 
     let raw = migrate_legacy_recording_settings_json(&raw);
 
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
-    validate_recording_settings_with_resolution_support(
+    validate_recording_settings_with_capture_support(
         UpdateRecordingSettingsRequest {
             capture_screen: parsed.capture_screen,
             capture_microphone: parsed.capture_microphone,
@@ -693,6 +708,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             inactivity_activity_mode: parsed.inactivity_activity_mode,
         },
         non_original_resolution_supported,
+        system_audio_requires_screen,
     )
     .ok()
 }
@@ -1325,15 +1341,24 @@ mod tests {
         );
     }
 
-    fn apply_domain_patch_for_test(
+    fn apply_domain_patch_for_test_with_capture_support(
         mut settings: RecordingSettings,
         patch: RecordingSettingsDomainPatch,
+        system_audio_requires_screen: bool,
     ) -> Result<RecordingSettings, CaptureErrorResponse> {
         apply_domain_patch_to_settings(&mut settings, patch)?;
-        validate_recording_settings_with_resolution_support(
+        validate_recording_settings_with_capture_support(
             recording_settings_request_from_settings(settings),
             true,
+            system_audio_requires_screen,
         )
+    }
+
+    fn apply_domain_patch_for_test(
+        settings: RecordingSettings,
+        patch: RecordingSettingsDomainPatch,
+    ) -> Result<RecordingSettings, CaptureErrorResponse> {
+        apply_domain_patch_for_test_with_capture_support(settings, patch, true)
     }
 
     #[test]
@@ -1375,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_sources_domain_rejects_system_audio_without_screen() {
+    fn capture_sources_domain_rejects_system_audio_without_screen_when_capability_requires_screen() {
         let error = apply_domain_patch_for_test(
             default_recording_settings(),
             RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
@@ -1391,6 +1416,23 @@ mod tests {
             error.message,
             "System audio capture requires screen capture"
         );
+    }
+
+    #[test]
+    fn capture_sources_domain_allows_system_audio_without_screen_when_capability_allows_independent_audio() {
+        let updated = apply_domain_patch_for_test_with_capture_support(
+            default_recording_settings(),
+            RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
+                capture_screen: Some(false),
+                capture_microphone: Some(true),
+                capture_system_audio: Some(true),
+            }),
+            false,
+        )
+        .expect("independent system audio should validate without screen");
+
+        assert!(!updated.capture_screen);
+        assert!(updated.capture_system_audio);
     }
 
     #[test]
@@ -1530,7 +1572,7 @@ mod tests {
 
     #[test]
     fn validate_recording_settings_normalizes_microphone_vad_adapter_from_shared_detector() {
-        let settings = validate_recording_settings_with_resolution_support(
+        let settings = validate_recording_settings_with_capture_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
                 capture_microphone: true,
@@ -1565,6 +1607,7 @@ mod tests {
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             true,
+            true,
         )
         .expect("settings should validate");
 
@@ -1588,7 +1631,7 @@ mod tests {
             capture_types::OcrTesseractPageSegmentationMode::SparseText;
         ocr.tesseract_preprocess_mode = capture_types::OcrTesseractPreprocessMode::Thresholded;
 
-        let settings = validate_recording_settings_with_resolution_support(
+        let settings = validate_recording_settings_with_capture_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
                 capture_microphone: false,
@@ -1620,6 +1663,7 @@ mod tests {
                 microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
+            true,
             true,
         )
         .expect("settings should validate");
@@ -1660,7 +1704,7 @@ mod tests {
         ocr_settings.model_id = Some(ocr::DEFAULT_PADDLE_OCR_MODEL_ID.to_string());
         ocr_settings.language = Some(ocr::DEFAULT_PADDLE_OCR_LANGUAGE.to_string());
 
-        let settings = validate_recording_settings_with_resolution_support(
+        let settings = validate_recording_settings_with_capture_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
                 capture_microphone: false,
@@ -1693,6 +1737,7 @@ mod tests {
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             true,
+            true,
         )
         .expect("legacy PaddleOCR settings should normalize");
 
@@ -1706,7 +1751,7 @@ mod tests {
         transcription.model_id = Some("parakeet-tdt-0.6b-v3-onnx".to_string());
         transcription.language = " en ".to_string();
 
-        let settings = validate_recording_settings_with_resolution_support(
+        let settings = validate_recording_settings_with_capture_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
                 capture_microphone: true,
@@ -1738,6 +1783,7 @@ mod tests {
                 microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
+            true,
             true,
         )
         .expect("settings should validate");

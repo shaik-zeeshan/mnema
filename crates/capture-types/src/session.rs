@@ -24,6 +24,7 @@ pub struct CaptureSupportResponse {
     pub platform: String,
     pub native_capture_supported: bool,
     pub supports_non_original_resolution: bool,
+    pub system_audio_requires_screen: bool,
     pub supported_sources: CaptureSources,
 }
 
