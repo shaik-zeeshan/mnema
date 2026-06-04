@@ -333,18 +333,32 @@ pub(super) fn validate_start_request(
     if !support.native_capture_supported {
         return Err(CaptureErrorResponse {
             code: "unsupported_platform".to_string(),
-            message: "Native capture is currently supported only on macOS".to_string(),
+            message: "Native capture is not supported on this platform".to_string(),
+        });
+    }
+
+    if request.capture_screen && !support.supported_sources.screen {
+        return Err(CaptureErrorResponse {
+            code: "screen_unsupported".to_string(),
+            message: "Screen capture is not supported on this platform".to_string(),
+        });
+    }
+
+    if request.capture_microphone && !support.supported_sources.microphone {
+        return Err(CaptureErrorResponse {
+            code: "microphone_unsupported".to_string(),
+            message: "Microphone capture is not supported on this platform".to_string(),
         });
     }
 
     if request.capture_system_audio && !support.supported_sources.system_audio {
         return Err(CaptureErrorResponse {
             code: "system_audio_unsupported".to_string(),
-            message: "System audio capture requires macOS 15.0 or newer".to_string(),
+            message: "System audio capture is not supported on this platform".to_string(),
         });
     }
 
-    if request.capture_system_audio && !request.capture_screen {
+    if request.capture_system_audio && !request.capture_screen && support.platform == "macos" {
         return Err(CaptureErrorResponse {
             code: "system_audio_requires_screen".to_string(),
             message: "System audio-only capture is not supported; enable screen capture as well"
@@ -874,6 +888,21 @@ mod tests {
         assert_eq!(
             source_session_suffix("native-session-ceb00964-9039-4e1c-a770-c2c1a1251e83"),
             "ceb00964_9039_4e1c_a770_c2c1a1251e83"
+        );
+    }
+
+    #[test]
+    fn prefixed_capture_id_preserves_multi_word_source_prefix() {
+        let id = super::prefixed_capture_id("sysaudio_session")
+            .expect("capture id generation should succeed");
+
+        assert!(
+            id.starts_with("sysaudio_session_"),
+            "unexpected source id prefix: {id}"
+        );
+        assert!(
+            !id.starts_with("sysaudio_session_native-session-"),
+            "raw native session prefix should be stripped: {id}"
         );
     }
 

@@ -3059,11 +3059,13 @@ pub fn ensure_microphone_permission() -> bool {
     false
 }
 
-/// Windows WASAPI microphone capture backend.
+/// Windows WASAPI audio capture backend.
 #[cfg(target_os = "windows")]
 mod windows_microphone;
 
 #[cfg(target_os = "windows")]
 pub use windows_microphone::{
-    start_wasapi_microphone_capture_session_for_file, WasapiMicrophoneCaptureSession,
+    start_wasapi_microphone_capture_session_for_file,
+    start_wasapi_system_audio_capture_session_for_file, system_audio_loopback_capture_supported,
+    WasapiMicrophoneCaptureSession, WasapiSystemAudioCaptureSession,
 };

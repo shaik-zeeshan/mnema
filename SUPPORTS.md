@@ -17,9 +17,9 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Tauri desktop shell | [x] | [~] | [~] | Shell is mostly cross-platform, but window chrome/dock behavior has macOS-specific paths. |
 | Native screen capture | [x] | [~] | [ ] | macOS uses ScreenCaptureKit / AVFoundation fallback. Windows uses WGC for primary-monitor screen capture. |
 | Native microphone capture | [x] | [~] | [ ] | macOS uses AVFoundation. Windows captures selected/default WASAPI endpoints, tracks device/default changes, encodes AAC `.m4a` via Media Foundation (capture-and-store; no audio processing yet), and gracefully surfaces a blocked microphone with a `ms-settings:privacy-microphone` deep link. |
-| Native system-audio capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. On Windows system audio is an independent source (ADR 0022) but is a later slice. |
-| Capture segment lifecycle | [x] | [~] | [ ] | Lifecycle is generic in shape; Windows now drives screen and microphone segment rotation off the shared `CaptureClock`/`SegmentSchedule`. |
-| Media writers/finalization | [x] | [~] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. Windows uses Media Foundation for H.264 `.mp4` screen output and AAC `.m4a` microphone output, with an MF Source Reader positive-duration `.m4a` validator. |
+| Native system-audio capture | [x] | [~] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. Windows uses independent WASAPI loopback when a default render endpoint is available. |
+| Capture segment lifecycle | [x] | [~] | [ ] | Lifecycle is generic in shape; Windows now drives screen, microphone, and independent system-audio segment rotation off the shared `CaptureClock`/`SegmentSchedule`. |
+| Media writers/finalization | [x] | [~] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. Windows uses Media Foundation for H.264 `.mp4` screen output and AAC `.m4a` microphone/system-audio output, with an MF Source Reader positive-duration `.m4a` validator. |
 | Screen frame export / frame index | [x] | [~] | [ ] | Windows writes ~1 fps JPEG frame artifacts; frame-index sidecars remain missing. |
 | Exact frame preview from video | [x] | [ ] | [ ] | macOS uses AVAssetImageGenerator. |
 | Scrub preview generation | [x] | [ ] | [ ] | macOS-only today. |
@@ -121,11 +121,11 @@ Research notes:
   - Best-effort permission UX is implemented: a blocked microphone (Windows privacy denial surfacing as `E_ACCESSDENIED` at WASAPI `IAudioClient` activation) is mapped to the recoverable `microphone_access_denied` error at capture start, which raises an app notification deep-linking to `ms-settings:privacy-microphone`. The `microphone` permission reports as `Unknown` (best-effort) since per-app privacy cannot be queried synchronously.
   - The microphone capture callback now emits a VAD PCM feed and peak-since-last-poll Audio Activity Samples (debug-visible raw samples via the `get_idle_debug` surface); this emission is not yet wired into pause/resume decisions (consumers arrive in a later inactivity slice).
   - Still outstanding: inactivity pause/resume, audio decode/processing, and on-device disconnect/reconnect smoke-test coverage.
-- [ ] Implement Windows system-audio capture.
-  - Candidate API: WASAPI loopback.
-  - System audio is modeled as an independent source on Windows (ADR 0022); the capture seam (`active_system_audio_session`) exists, but the WASAPI loopback backend is a later slice.
-- [~] Implement Windows capture session IDs and source-session bookkeeping. Screen and microphone `SourceSessions` metadata are populated (`mic_session`-prefixed ids); system audio is pending.
-- [~] Implement segment rotation without dropping OCR/frame-index invariants. Screen and microphone rotate on the shared 5-minute boundary; an audio-only session rotates without a screen planner/session.
+- [~] Implement Windows system-audio capture.
+  - WASAPI loopback captures the default render endpoint as an independent source when the default render endpoint support probe succeeds.
+  - System audio is modeled as an independent source on Windows (ADR 0022); backend source validation allows system-audio-only sessions instead of requiring screen capture.
+- [~] Implement Windows capture session IDs and source-session bookkeeping. Screen and microphone `SourceSessions` metadata are populated; Windows system audio uses `sysaudio_session`-prefixed source ids when loopback capture is active.
+- [~] Implement segment rotation without dropping OCR/frame-index invariants. Screen, microphone, and independent system audio rotate on the shared 5-minute boundary; an audio-only session rotates without a screen planner/session.
 - [ ] Implement user pause/resume and inactivity pause/resume for each requested source family.
 - [~] Implement capture liveness/error propagation equivalent to ScreenCaptureKit delegate stop errors. Windows now surfaces `GraphicsCaptureItem.Closed` primary-monitor disconnects as failed sessions, and microphone endpoint disconnects flow through the microphone device-policy notifier/reconnect path; broader source recovery is still outstanding.
 - [~] Implement sleep/wake/session-lock recovery. Windows monitor sleep / DPMS-off pauses and resumes WGC frames implicitly, but broader OS sleep/session-lock recovery policy is still outstanding.
@@ -141,7 +141,7 @@ Research notes:
 - [ ] Implement frame-index sidecar generation from finalized video timing.
 - [ ] Implement exact frame preview extraction from video.
 - [ ] Implement scrub preview batch generation.
-- [~] Implement audio trim/convert/finalization for microphone and system-audio outputs. Windows microphone `.m4a` is finalized and validated via the MF Source Reader positive-duration probe; trim/convert and system-audio remain outstanding.
+- [~] Implement audio trim/convert/finalization for microphone and system-audio outputs. Windows microphone and system-audio `.m4a` outputs are finalized and validated via the MF Source Reader positive-duration probe; trim/convert remains outstanding.
 - [ ] Implement video-only screen output finalization when audio is muxed or recorded together.
 
 ### Processing
@@ -159,7 +159,7 @@ Research notes:
 
 - [x] Implement microphone permission/status UX and settings deep link, e.g. `ms-settings:privacy-microphone`. Best-effort: capture-start access denial (`E_ACCESSDENIED`) maps to the recoverable `microphone_access_denied` error and an app notification that deep-links to `ms-settings:privacy-microphone`; `microphone` permission reports as `Unknown`. No full permission state machine (per decision #6).
 - [ ] Define Windows screen-capture permission/support semantics.
-- [ ] Define Windows system-audio permission/support semantics.
+- [~] Define Windows system-audio permission/support semantics. Best-effort support is based on a non-prompting default render endpoint probe; per-app loopback privacy/denial still surfaces at capture start if Windows rejects activation.
 - [ ] Implement system idle detection, likely `GetLastInputInfo`.
 - [ ] Implement active app/window metadata.
   - Candidate APIs: foreground window handle, process ID, process executable path, window title.

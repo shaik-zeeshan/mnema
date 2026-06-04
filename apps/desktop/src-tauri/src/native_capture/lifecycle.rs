@@ -4,9 +4,10 @@ use super::output::append_committed_segment_output_files;
 use super::output::finalize_capture_outputs;
 #[cfg(target_os = "macos")]
 use super::output::cleanup_unusable_segment_artifacts;
-use super::output::{set_current_microphone_output_file, set_current_screen_output_file};
-#[cfg(target_os = "macos")]
-use super::output::set_current_system_audio_output_file;
+use super::output::{
+    set_current_microphone_output_file, set_current_screen_output_file,
+    set_current_system_audio_output_file,
+};
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -1034,12 +1035,14 @@ impl RecordingLifecycle {
             return TickOutcome::StopLoop;
         }
         let microphone_planner = microphone_planner_for_runtime(&self.runtime).cloned();
+        let system_audio_planner = system_audio_planner_for_runtime(&self.runtime).cloned();
 
         let next_index =
             super::segments::next_emitted_segment_index(self.runtime.current_segment_index);
 
         let recording_file = self.runtime.recording_file.clone();
         let microphone_recording_file = self.runtime.microphone_recording_file.clone();
+        let system_audio_recording_file = self.runtime.system_audio_recording_file.clone();
         let requested_sources = self.runtime.requested_sources.clone();
         let mut previous_segment_output_files = self.runtime.current_segment_output_files.clone();
 
@@ -1051,6 +1054,7 @@ impl RecordingLifecycle {
         let mut next_segment_outputs = empty_output_files();
         let mut next_recording_file = self.runtime.recording_file.clone();
         let mut next_microphone_recording_file = self.runtime.microphone_recording_file.clone();
+        let mut next_system_audio_recording_file = self.runtime.system_audio_recording_file.clone();
         let mut screen_segment_dir: Option<std::path::PathBuf> = None;
 
         // --- Screen rotation (only when screen is an active source) ---
@@ -1145,6 +1149,56 @@ impl RecordingLifecycle {
             }
         }
 
+        // --- System audio rotation (independent WASAPI render-loopback source) ---
+        if active_sources.system_audio {
+            let Some(planner) = system_audio_planner.as_ref() else {
+                mark_runtime_session_failed(&mut self.runtime);
+                return TickOutcome::StopLoop;
+            };
+            let system_audio_output_path = planner.system_audio_file(next_index);
+            if let Some(audio_dir) = system_audio_output_path.parent() {
+                if let Err(error) = std::fs::create_dir_all(audio_dir) {
+                    super::debug_log::log(format!(
+                        "failed to prepare Windows system-audio directory while rotating: {error}"
+                    ));
+                    if let Some(dir) = screen_segment_dir.as_deref() {
+                        cleanup_failed_segment_dirs(dir, None, None);
+                    }
+                    stop_active_sessions_after_failure(&mut self.runtime);
+                    mark_runtime_session_failed(&mut self.runtime);
+                    return TickOutcome::StopLoop;
+                }
+            }
+            let system_audio_output_file = system_audio_output_path.to_string_lossy().to_string();
+            if let Some(session) = self.runtime.active_system_audio_session.as_mut() {
+                match session.rotate_output_file_returning_finalization(&system_audio_output_file) {
+                    Ok(finalization) => {
+                        super::segments::apply_windows_system_audio_output_finalization(
+                            previous_segment_output_files.as_mut(),
+                            &finalization,
+                        );
+                    }
+                    Err(error) => {
+                        super::debug_log::log(format!(
+                            "failed to rotate Windows system-audio capture: [{}] {}",
+                            error.code, error.message
+                        ));
+                        if let Some(dir) = screen_segment_dir.as_deref() {
+                            cleanup_failed_segment_dirs(dir, None, None);
+                        }
+                        stop_active_sessions_after_failure(&mut self.runtime);
+                        mark_runtime_session_failed(&mut self.runtime);
+                        return TickOutcome::StopLoop;
+                    }
+                }
+                set_current_system_audio_output_file(
+                    &mut next_segment_outputs,
+                    system_audio_output_file.clone(),
+                );
+                next_system_audio_recording_file = Some(system_audio_output_file);
+            }
+        }
+
         if let Some(tx) = self.runtime.frame_artifact_tx.as_ref() {
             super::segments::flush_frame_artifacts(tx);
         }
@@ -1154,7 +1208,7 @@ impl RecordingLifecycle {
             previous_segment_output_files.as_mut(),
             recording_file.as_deref(),
             microphone_recording_file.as_deref(),
-            None,
+            system_audio_recording_file.as_deref(),
             requested_sources.as_ref(),
         ) {
             super::debug_log::log(format!(
@@ -1183,7 +1237,7 @@ impl RecordingLifecycle {
         self.runtime.current_segment_sources = Some(active_sources);
         self.runtime.recording_file = next_recording_file;
         self.runtime.microphone_recording_file = next_microphone_recording_file;
-
+        self.runtime.system_audio_recording_file = next_system_audio_recording_file;
         if let Err(error) = reanchor_active_segment_timing(&mut self.runtime, "rotating segments") {
             super::debug_log::log(format!(
                 "failed to re-anchor Windows capture segment timing while rotating: [{}] {}",

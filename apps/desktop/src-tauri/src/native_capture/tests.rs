@@ -56,8 +56,9 @@ use super::settings::{
     validate_recording_settings_with_resolution_support,
 };
 use super::{
-    audio_transcription_unavailable_notification, ocr_unavailable_notification,
-    recording_requires_speech_detector, should_warn_audio_transcription_unavailable_at_start,
+    audio_transcription_unavailable_notification, capture_support_response_from_observed_platform,
+    ocr_unavailable_notification, recording_requires_speech_detector,
+    should_warn_audio_transcription_unavailable_at_start,
     should_warn_audio_transcription_unavailable_at_startup, should_warn_ocr_unavailable_at_start,
     should_warn_ocr_unavailable_at_startup, AppNotification, AppNotificationAction,
     AppNotificationsRuntime,
@@ -72,8 +73,9 @@ use capture_types::{
     default_preview_cache_ttl_seconds, default_privacy_settings, default_retention_policy,
     default_speaker_analysis_settings, default_video_bitrate, AppearanceSetting,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
-    InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
+    CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CaptureSources,
+    CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
+    MicrophoneDisconnectPolicy,
     MicrophonePreference, MicrophonePreferenceMode, OcrProvider, RecordingSettings,
     ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
     StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
@@ -1110,6 +1112,132 @@ fn validate_start_request_rejects_system_audio_when_not_supported() {
 
     let error = validate_start_request(&request, &support).expect_err("must reject system audio");
     assert_eq!(error.code, "system_audio_unsupported");
+}
+
+#[test]
+fn validate_start_request_rejects_screen_when_only_system_audio_is_supported() {
+    let request = StartNativeCaptureRequest {
+        capture_screen: true,
+        capture_microphone: false,
+        capture_system_audio: true,
+    };
+    let support = CaptureSupportResponse {
+        platform: "windows".to_string(),
+        native_capture_supported: true,
+        supports_non_original_resolution: false,
+        supported_sources: CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        },
+    };
+
+    let error = validate_start_request(&request, &support)
+        .expect_err("unsupported Windows screen source should still be rejected");
+    assert_eq!(error.code, "screen_unsupported");
+}
+
+#[test]
+fn validate_start_request_keeps_macos_system_audio_tied_to_screen() {
+    let request = StartNativeCaptureRequest {
+        capture_screen: false,
+        capture_microphone: false,
+        capture_system_audio: true,
+    };
+    let support = CaptureSupportResponse {
+        platform: "macos".to_string(),
+        native_capture_supported: true,
+        supports_non_original_resolution: true,
+        supported_sources: CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        },
+    };
+
+    let error = validate_start_request(&request, &support)
+        .expect_err("macOS system audio-only capture should remain rejected");
+    assert_eq!(error.code, "system_audio_requires_screen");
+}
+
+#[test]
+fn validate_start_request_allows_windows_system_audio_without_screen_when_supported() {
+    let request = StartNativeCaptureRequest {
+        capture_screen: false,
+        capture_microphone: false,
+        capture_system_audio: true,
+    };
+    let support = CaptureSupportResponse {
+        platform: "windows".to_string(),
+        native_capture_supported: true,
+        supports_non_original_resolution: true,
+        supported_sources: CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: true,
+        },
+    };
+
+    let sources = validate_start_request(&request, &support)
+        .expect("Windows loopback system audio-only capture should be valid");
+    assert_eq!(
+        sources,
+        CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }
+    );
+}
+
+#[test]
+fn windows_capture_support_uses_independent_system_audio_probe() {
+    let response = capture_support_response_from_observed_platform(
+        capture_screen::ScreenCaptureSupport {
+            platform: "windows".to_string(),
+            native_capture_supported: false,
+            screen: false,
+            non_original_resolution: true,
+            system_audio: false,
+        },
+        CapturePermissionState::Unsupported,
+        true,
+    );
+
+    assert!(response.native_capture_supported);
+
+    assert_eq!(
+        response.supported_sources,
+        CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }
+    );
+}
+
+#[test]
+fn macos_capture_support_keeps_system_audio_from_screen_support() {
+    let response = capture_support_response_from_observed_platform(
+        capture_screen::ScreenCaptureSupport {
+            platform: "macos".to_string(),
+            native_capture_supported: true,
+            screen: true,
+            non_original_resolution: true,
+            system_audio: false,
+        },
+        CapturePermissionState::Granted,
+        true,
+    );
+
+    assert_eq!(
+        response.supported_sources,
+        CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        }
+    );
 }
 
 #[test]

@@ -1616,15 +1616,16 @@ pub(super) fn persist_committed_audio_segments(
     }
 }
 
-/// Map a Windows microphone finalization onto the committed output bookkeeping.
+/// Map a Windows audio finalization onto committed output bookkeeping.
 ///
-/// Windows writes the final `.m4a` directly (source == output, no VAD trim), so
-/// this only confirms the closed segment's file or — when the segment captured
-/// no audio — drops it from bookkeeping so an empty `.m4a` is never committed.
+/// Windows writes the final `.m4a` directly (source == output), so this only
+/// confirms the closed segment's file or — when the segment captured no audio —
+/// drops it from bookkeeping so an empty `.m4a` is never committed.
 #[cfg(target_os = "windows")]
-pub(super) fn apply_windows_microphone_output_finalization(
+fn apply_windows_audio_output_finalization(
     output_files: Option<&mut CaptureOutputFiles>,
     finalization: &microphone_capture::MicrophoneOutputFinalization,
+    is_system_audio: bool,
 ) {
     let Some(output_files) = output_files else {
         return;
@@ -1632,23 +1633,56 @@ pub(super) fn apply_windows_microphone_output_finalization(
 
     match finalization.output_file.as_deref() {
         Some(output_file) => {
-            if output_files
-                .microphone_files
-                .iter()
-                .any(|file| file == output_file)
-            {
-                output_files.microphone_file = Some(output_file.to_string());
+            let (current_file, files) = if is_system_audio {
+                (
+                    &mut output_files.system_audio_file,
+                    &mut output_files.system_audio_files,
+                )
+            } else {
+                (
+                    &mut output_files.microphone_file,
+                    &mut output_files.microphone_files,
+                )
+            };
+            if files.iter().any(|file| file == output_file) {
+                *current_file = Some(output_file.to_string());
+            } else if is_system_audio {
+                set_current_system_audio_output_file(output_files, output_file.to_string());
             } else {
                 set_current_microphone_output_file(output_files, output_file.to_string());
             }
         }
         None => {
             if let Some(source_file) = finalization.source_file.as_deref() {
-                output_files.microphone_files.retain(|file| file != source_file);
+                if is_system_audio {
+                    output_files.system_audio_files.retain(|file| file != source_file);
+                } else {
+                    output_files.microphone_files.retain(|file| file != source_file);
+                }
             }
-            output_files.microphone_file = output_files.microphone_files.last().cloned();
+            if is_system_audio {
+                output_files.system_audio_file = output_files.system_audio_files.last().cloned();
+            } else {
+                output_files.microphone_file = output_files.microphone_files.last().cloned();
+            }
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn apply_windows_microphone_output_finalization(
+    output_files: Option<&mut CaptureOutputFiles>,
+    finalization: &microphone_capture::MicrophoneOutputFinalization,
+) {
+    apply_windows_audio_output_finalization(output_files, finalization, false);
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn apply_windows_system_audio_output_finalization(
+    output_files: Option<&mut CaptureOutputFiles>,
+    finalization: &microphone_capture::MicrophoneOutputFinalization,
+) {
+    apply_windows_audio_output_finalization(output_files, finalization, true);
 }
 
 /// Windows audio-segment persistence.
@@ -4207,12 +4241,14 @@ pub(super) fn start_capture_runtime(
     sources: CaptureSources,
     microphone_device_id_for_capture: Option<String>,
 ) -> Result<(), CaptureErrorResponse> {
-    if settings.capture_screen || settings.capture_system_audio {
+    let requires_screen_permission = settings.capture_screen
+        || (cfg!(target_os = "macos") && settings.capture_system_audio);
+    if requires_screen_permission {
         let screen_ok = capture_screen::ensure_screen_permission();
         if !screen_ok {
             return Err(CaptureErrorResponse {
                 code: "screen_permission_denied".to_string(),
-                message: if settings.capture_system_audio {
+                message: if cfg!(target_os = "macos") && settings.capture_system_audio {
                     "Screen capture permission is required for system audio capture"
                 } else {
                     "Screen capture permission is required"
@@ -4404,14 +4440,6 @@ pub(super) fn start_capture_runtime(
 
         #[cfg(target_os = "windows")]
         {
-            // System audio remains a later Windows slice (ADR 0022); reject it
-            // defensively even though the capability gate already hides it.
-            if sources.system_audio {
-                return Err(CaptureErrorResponse {
-                    code: "system_audio_unsupported".to_string(),
-                    message: "Windows system-audio capture is not yet supported".to_string(),
-                });
-            }
 
             let started = now_unix_ms();
             let recordings_root =
@@ -4516,6 +4544,39 @@ pub(super) fn start_capture_runtime(
                 microphone_session_id = Some(mic_id);
             }
 
+            // --- System audio source (optional; WASAPI default render loopback) ---
+            let mut system_audio_session_id: Option<String> = None;
+            let mut system_audio_planner: Option<SegmentPlanner> = None;
+            let mut system_audio_recording_file: Option<String> = None;
+            let mut active_system_audio_session: Option<
+                Box<dyn microphone_capture::AudioCaptureSession>,
+            > = None;
+
+            if sources.system_audio {
+                let system_audio_id = prefixed_capture_id("sysaudio_session")?;
+                let planner = SegmentPlanner::new(
+                    recordings_root.to_string_lossy().to_string(),
+                    system_audio_id.clone(),
+                );
+                let first_system_audio_output_path = planner.system_audio_file(segment_index);
+                if let Some(audio_dir) = first_system_audio_output_path.parent() {
+                    std::fs::create_dir_all(audio_dir).map_err(|error| CaptureErrorResponse {
+                        code: "io_error".to_string(),
+                        message: format!("Failed to create capture audio directory: {error}"),
+                    })?;
+                }
+                let output_file = first_system_audio_output_path.to_string_lossy().to_string();
+                let session =
+                    microphone_capture::start_wasapi_system_audio_capture_session_for_file(
+                        &output_file,
+                    )?;
+                set_current_system_audio_output_file(&mut segment_outputs, output_file.clone());
+                system_audio_recording_file = Some(output_file);
+                active_system_audio_session = Some(Box::new(session));
+                system_audio_planner = Some(planner);
+                system_audio_session_id = Some(system_audio_id);
+            }
+
             let source_sessions = SourceSessions {
                 screen: screen_session_id.map(|session_id| SourceSessionMeta {
                     session_id,
@@ -4525,7 +4586,10 @@ pub(super) fn start_capture_runtime(
                     session_id,
                     started_at_unix_ms: started,
                 }),
-                system_audio: None,
+                system_audio: system_audio_session_id.map(|session_id| SourceSessionMeta {
+                    session_id,
+                    started_at_unix_ms: started,
+                }),
             };
             let segment_loop_control = spawn_segment_loop(app_handle.clone());
 
@@ -4545,14 +4609,14 @@ pub(super) fn start_capture_runtime(
             runtime.segment_schedule = Some(segment_schedule);
             runtime.segment_planner = segment_planner;
             runtime.microphone_planner = microphone_planner;
-            runtime.system_audio_planner = None;
+            runtime.system_audio_planner = system_audio_planner;
             runtime.frame_artifact_tx = frame_artifact_tx;
             runtime.recording_file = recording_file;
             runtime.microphone_recording_file = microphone_recording_file;
-            runtime.system_audio_recording_file = None;
+            runtime.system_audio_recording_file = system_audio_recording_file;
             runtime.active_screen_session = active_screen_session;
             runtime.active_microphone_session = active_microphone_session;
-            runtime.active_system_audio_session = None;
+            runtime.active_system_audio_session = active_system_audio_session;
             apply_runtime_signal(runtime, RuntimeSignal::SourcesReady)?;
             Ok(())
         }
@@ -4703,6 +4767,7 @@ pub(super) fn stop_capture_runtime(
         let mut current_segment_output_files = runtime.current_segment_output_files.clone();
         let recording_file = runtime.recording_file.clone();
         let microphone_recording_file = runtime.microphone_recording_file.clone();
+        let system_audio_recording_file = runtime.system_audio_recording_file.clone();
         let requested_sources = runtime.requested_sources.clone();
 
         // Finalize the in-flight microphone segment so its `.m4a` is openable
@@ -4722,6 +4787,21 @@ pub(super) fn stop_capture_runtime(
             }
         }
         runtime.active_microphone_session = None;
+
+        if let Some(session) = runtime.active_system_audio_session.as_mut() {
+            match session.stop_returning_finalization() {
+                Ok(finalization) => apply_windows_system_audio_output_finalization(
+                    current_segment_output_files.as_mut(),
+                    &finalization,
+                ),
+                Err(error) => {
+                    super::debug_log::log(format!(
+                        "failed to finalize Windows system-audio capture on stop: [{}] {}",
+                        error.code, error.message
+                    ));
+                }
+            }
+        }
         runtime.active_system_audio_session = None;
 
         capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
@@ -4739,7 +4819,7 @@ pub(super) fn stop_capture_runtime(
             current_segment_output_files.as_mut(),
             recording_file.as_deref(),
             microphone_recording_file.as_deref(),
-            None,
+            system_audio_recording_file.as_deref(),
             requested_sources.as_ref(),
         ) {
             super::debug_log::log(format!(

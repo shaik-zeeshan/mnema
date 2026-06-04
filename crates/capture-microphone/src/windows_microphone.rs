@@ -1,11 +1,12 @@
-//! Windows WASAPI microphone-capture backend.
+//! Windows WASAPI audio-capture backend.
 //!
-//! Captures the **default capture endpoint** (shared mode) with WASAPI, converts
-//! the mix-format PCM to interleaved 16-bit little-endian PCM, and encodes it to
-//! AAC inside a playable `.m4a` via the Media Foundation sink writer in
-//! `capture-writers` (`WindowsAacM4aSinkWriter`). This is the Windows half of the
-//! cross-platform microphone path; it mirrors the macOS AVFoundation backend's
-//! externally-visible contract ([`crate::AudioCaptureSession`] +
+//! Captures either the **default capture endpoint** (microphone, shared mode) or
+//! the **default render endpoint** as WASAPI loopback (system audio, shared
+//! mode), converts the mix-format PCM to interleaved 16-bit little-endian PCM,
+//! and encodes it to AAC inside a playable `.m4a` via the Media Foundation sink
+//! writer in `capture-writers` (`WindowsAacM4aSinkWriter`). This is the Windows
+//! half of the cross-platform audio path; it mirrors the macOS AVFoundation
+//! backend's externally-visible contract ([`crate::AudioCaptureSession`] +
 //! [`crate::MicrophoneOutputFinalization`]).
 //!
 //! ## Threading model
@@ -80,6 +81,21 @@ pub fn microphone_capture_supported() -> bool {
             // exits, so the MTA never leaks back to the caller.
             let _ = initialize_mta();
             get_default_device(&Direction::Capture).is_ok()
+        })
+        .join()
+        .unwrap_or(false)
+    })
+}
+
+/// True iff a default WASAPI render endpoint exists for system-audio loopback.
+pub fn system_audio_loopback_capture_supported() -> bool {
+    // Same COM-apartment constraint as `microphone_capture_supported`: never
+    // initialize MTA on the caller/UI thread.
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        std::thread::spawn(|| {
+            let _ = initialize_mta();
+            get_default_device(&Direction::Render).is_ok()
         })
         .join()
         .unwrap_or(false)
@@ -180,17 +196,24 @@ pub struct WasapiMicrophoneCaptureSession {
     sender: Sender<Message>,
     join_handle: Option<JoinHandle<()>>,
     shared: Arc<SharedState>,
+    source_label: &'static str,
     stopped: bool,
 }
 
 impl std::fmt::Debug for WasapiMicrophoneCaptureSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WasapiMicrophoneCaptureSession")
+            .field("source", &self.source_label)
             .field("live", &self.shared.live.load(Ordering::Relaxed))
             .field("stopped", &self.stopped)
             .finish_non_exhaustive()
     }
 }
+
+/// System-audio loopback sessions use the same control handle and capture
+/// thread as microphone sessions; only endpoint resolution and activity side
+/// effects differ.
+pub type WasapiSystemAudioCaptureSession = WasapiMicrophoneCaptureSession;
 
 impl WasapiMicrophoneCaptureSession {
     fn send_rotate(
@@ -291,46 +314,125 @@ impl Drop for WasapiMicrophoneCaptureSession {
 // Session factory
 // ---------------------------------------------------------------------------
 
-/// Start a WASAPI microphone capture session writing the first segment to
-/// `output_file`. If `device_id` is `Some`, capture that active WASAPI endpoint
-/// by exact endpoint id; otherwise capture the current default endpoint.
-pub fn start_wasapi_microphone_capture_session_for_file(
-    output_file: &str,
-    device_id: Option<&str>,
-) -> Result<WasapiMicrophoneCaptureSession, CaptureErrorResponse> {
-    // Reset cross-platform activity/VAD state at the top of a fresh session,
-    // mirroring the macOS `start_avfoundation_microphone_capture_session_with_output_file`.
-    crate::reset_last_microphone_activity_unix_ms();
-    crate::reset_microphone_vad_pcm_feed();
-    crate::reset_microphone_vad_tail_activity();
+#[derive(Debug)]
+enum AudioCaptureSource {
+    Microphone { device_id: Option<String> },
+    SystemAudioLoopback,
+}
 
-    let output_path = PathBuf::from(output_file);
+impl AudioCaptureSource {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Microphone { .. } => "microphone",
+            Self::SystemAudioLoopback => "system audio",
+        }
+    }
+
+    fn output_label(&self) -> &'static str {
+        match self {
+            Self::Microphone { .. } => "microphone",
+            Self::SystemAudioLoopback => "system audio",
+        }
+    }
+
+    fn thread_name(&self) -> &'static str {
+        match self {
+            Self::Microphone { .. } => "windows-microphone",
+            Self::SystemAudioLoopback => "windows-system-audio-loopback",
+        }
+    }
+
+    fn records_microphone_activity(&self) -> bool {
+        matches!(self, Self::Microphone { .. })
+    }
+
+    fn endpoint_direction(&self) -> Direction {
+        match self {
+            Self::Microphone { .. } => Direction::Capture,
+            Self::SystemAudioLoopback => Direction::Render,
+        }
+    }
+
+    fn client_direction(&self) -> Direction {
+        match self {
+            Self::Microphone { .. } | Self::SystemAudioLoopback => Direction::Capture,
+        }
+    }
+}
+
+fn create_output_parent_dir(
+    output_path: &Path,
+    source_label: &str,
+) -> Result<(), CaptureErrorResponse> {
     if let Some(parent) = output_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| CaptureErrorResponse {
                 code: "io_error".to_string(),
                 message: format!(
-                    "Failed to create microphone capture directory {}: {e}",
+                    "Failed to create {source_label} capture directory {}: {e}",
                     parent.display()
                 ),
             })?;
         }
     }
+    Ok(())
+}
+
+/// Start a WASAPI microphone capture session writing the first segment to
+/// `output_file`. If `device_id` is `Some`, capture that active WASAPI endpoint
+/// by exact endpoint id; otherwise capture the current default capture endpoint.
+pub fn start_wasapi_microphone_capture_session_for_file(
+    output_file: &str,
+    device_id: Option<&str>,
+) -> Result<WasapiMicrophoneCaptureSession, CaptureErrorResponse> {
+    start_wasapi_audio_capture_session_for_file(
+        output_file,
+        AudioCaptureSource::Microphone {
+            device_id: device_id.map(str::to_owned),
+        },
+    )
+}
+
+/// Start a WASAPI system-audio loopback capture session from the default render
+/// endpoint. This is endpoint loopback, not process loopback: no process include
+/// or exclude filter is applied.
+pub fn start_wasapi_system_audio_capture_session_for_file(
+    output_file: &str,
+) -> Result<WasapiSystemAudioCaptureSession, CaptureErrorResponse> {
+    start_wasapi_audio_capture_session_for_file(output_file, AudioCaptureSource::SystemAudioLoopback)
+}
+
+fn start_wasapi_audio_capture_session_for_file(
+    output_file: &str,
+    source: AudioCaptureSource,
+) -> Result<WasapiMicrophoneCaptureSession, CaptureErrorResponse> {
+    if source.records_microphone_activity() {
+        // Reset cross-platform activity/VAD state at the top of a fresh
+        // microphone session, mirroring the macOS
+        // `start_avfoundation_microphone_capture_session_with_output_file`.
+        crate::reset_last_microphone_activity_unix_ms();
+        crate::reset_microphone_vad_pcm_feed();
+        crate::reset_microphone_vad_tail_activity();
+    }
+
+    let output_path = PathBuf::from(output_file);
+    create_output_parent_dir(&output_path, source.output_label())?;
 
     let shared = Arc::new(SharedState::default());
     let (sender, receiver) = mpsc::channel::<Message>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), CaptureErrorResponse>>();
-    let device_id = device_id.map(str::to_owned);
+    let thread_name = source.thread_name();
+    let source_label = source.label();
 
     let thread_shared = Arc::clone(&shared);
     let join_handle = std::thread::Builder::new()
-        .name("windows-microphone".to_string())
+        .name(thread_name.to_string())
         .spawn(move || {
-            capture_thread_main(output_path, device_id, receiver, thread_shared, ready_tx);
+            capture_thread_main(output_path, source, receiver, thread_shared, ready_tx);
         })
         .map_err(|e| CaptureErrorResponse {
             code: "capture_thread_spawn_failed".to_string(),
-            message: format!("Failed to spawn Windows microphone capture thread: {e}"),
+            message: format!("Failed to spawn Windows {source_label} capture thread: {e}"),
         })?;
 
     // Block until the capture thread finishes device + writer setup.
@@ -352,6 +454,7 @@ pub fn start_wasapi_microphone_capture_session_for_file(
         sender,
         join_handle: Some(join_handle),
         shared,
+        source_label,
         stopped: false,
     })
 }
@@ -362,7 +465,7 @@ pub fn start_wasapi_microphone_capture_session_for_file(
 
 fn capture_thread_main(
     first_output_path: PathBuf,
-    device_id: Option<String>,
+    source: AudioCaptureSource,
     receiver: Receiver<Message>,
     shared: Arc<SharedState>,
     ready_tx: Sender<Result<(), CaptureErrorResponse>>,
@@ -386,7 +489,7 @@ fn capture_thread_main(
         return;
     }
 
-    match CaptureEngine::new(&first_output_path, device_id.as_deref()) {
+    match CaptureEngine::new(&first_output_path, source) {
         Ok(mut engine) => {
             let _ = ready_tx.send(Ok(()));
             run_capture_loop(&mut engine, receiver, &shared);
@@ -466,6 +569,8 @@ struct CaptureEngine {
     source_bytes_per_frame: usize,
     /// Reusable raw-capture scratch buffer.
     raw: VecDeque<u8>,
+    /// Whether captured packets should update microphone activity/VAD state.
+    records_microphone_activity: bool,
 
     /// Active segment writer; `None` once stopped.
     writer: Option<WindowsAacM4aSinkWriter>,
@@ -478,8 +583,10 @@ struct CaptureEngine {
 }
 
 impl CaptureEngine {
-    fn new(output_path: &Path, device_id: Option<&str>) -> Result<Self, CaptureErrorResponse> {
-        let device = resolve_capture_device(device_id)?;
+    fn new(output_path: &Path, source: AudioCaptureSource) -> Result<Self, CaptureErrorResponse> {
+        let records_microphone_activity = source.records_microphone_activity();
+        let client_direction = source.client_direction();
+        let device = resolve_audio_capture_device(&source)?;
         let mut audio_client = device
             .get_iaudioclient()
             .map_err(|e| wasapi_error("get_iaudioclient failed", &e))?;
@@ -498,7 +605,7 @@ impl CaptureEngine {
         audio_client
             .initialize_client(
                 &mix_format,
-                &Direction::Capture,
+                &client_direction,
                 &StreamMode::PollingShared {
                     autoconvert: false,
                     buffer_duration_hns: SHARED_BUFFER_DURATION_HNS,
@@ -524,6 +631,7 @@ impl CaptureEngine {
             source_is_float,
             source_bytes_per_frame: WaveFormat::get_blockalign(&mix_format) as usize,
             raw: VecDeque::new(),
+            records_microphone_activity,
             writer: Some(writer),
             current_path: output_path.to_path_buf(),
             frames_in_segment: 0,
@@ -558,10 +666,10 @@ impl CaptureEngine {
     }
 
     /// Convert a raw WASAPI packet (source mix format) to interleaved 16-bit LE
-    /// PCM at the output channel count and append it to the active segment, while
-    /// also emitting the debug-visible Audio Activity Sample (peak-since-last-poll)
-    /// and feeding the mono VAD PCM — exactly mirroring the macOS sample-buffer
-    /// callback (`maybe_track_microphone_activity` + `maybe_feed_microphone_vad_pcm`).
+    /// PCM at the output channel count and append it to the active segment.
+    /// Microphone sessions additionally emit the debug-visible Audio Activity
+    /// Sample and feed mono VAD PCM; system-audio loopback deliberately does not
+    /// mutate microphone activity state.
     fn append_raw_frames(
         &mut self,
         raw: &[u8],
@@ -583,22 +691,26 @@ impl CaptureEngine {
             self.output_channels as usize,
             self.source_is_float,
             silent,
+            self.records_microphone_activity,
         );
 
         if pcm.is_empty() {
             return Ok(());
         }
 
-        // Emit the raw debug samples for every non-empty packet (including a
-        // silent one — that is a real activity sample of level 0 and feeds
-        // silence into the VAD, matching macOS which records every buffer).
-        crate::note_microphone_activity_level(peak);
-        crate::feed_microphone_vad_pcm(
-            crate::MicrophoneVadSourceFormat::linear_pcm_mono(self.sample_rate_hz),
-            crate::now_microphone_activity_unix_ms(),
-            media_start_secs,
-            &mono,
-        );
+        if self.records_microphone_activity {
+            // Emit the raw debug samples for every non-empty microphone packet
+            // (including a silent one — that is a real activity sample of level
+            // 0 and feeds silence into the VAD, matching macOS which records
+            // every buffer).
+            crate::note_microphone_activity_level(peak);
+            crate::feed_microphone_vad_pcm(
+                crate::MicrophoneVadSourceFormat::linear_pcm_mono(self.sample_rate_hz),
+                crate::now_microphone_activity_unix_ms(),
+                media_start_secs,
+                &mono,
+            );
+        }
 
         let output_channels = self.output_channels as usize;
         let frame_count = (pcm.len() / (output_channels * 2)) as u64;
@@ -905,14 +1017,43 @@ unsafe fn pcwstr_to_string(value: &PCWSTR) -> Option<String> {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-fn resolve_capture_device(device_id: Option<&str>) -> Result<wasapi::Device, CaptureErrorResponse> {
+fn resolve_audio_capture_device(
+    source: &AudioCaptureSource,
+) -> Result<wasapi::Device, CaptureErrorResponse> {
+    match source {
+        AudioCaptureSource::Microphone { device_id } => resolve_audio_endpoint_device(
+            source.endpoint_direction(),
+            device_id.as_deref(),
+            "selected_microphone_unavailable",
+            "Selected Windows microphone endpoint is not active",
+        ),
+        AudioCaptureSource::SystemAudioLoopback => {
+            resolve_audio_endpoint_device(source.endpoint_direction(), None, "", "")
+        }
+    }
+}
+
+fn resolve_audio_endpoint_device(
+    endpoint_direction: Direction,
+    device_id: Option<&str>,
+    selected_unavailable_code: &str,
+    selected_unavailable_message: &str,
+) -> Result<wasapi::Device, CaptureErrorResponse> {
     let Some(device_id) = device_id else {
-        return get_default_device(&Direction::Capture)
-            .map_err(|e| wasapi_error("get_default_device(Capture) failed", &e));
+        return get_default_device(&endpoint_direction).map_err(|e| {
+            wasapi_error(
+                &format!("get_default_device({endpoint_direction}) failed"),
+                &e,
+            )
+        });
     };
 
-    let collection = DeviceCollection::new(&Direction::Capture)
-        .map_err(|e| wasapi_error("EnumAudioEndpoints(Capture, ACTIVE) failed", &e))?;
+    let collection = DeviceCollection::new(&endpoint_direction).map_err(|e| {
+        wasapi_error(
+            &format!("EnumAudioEndpoints({endpoint_direction}, ACTIVE) failed"),
+            &e,
+        )
+    })?;
     let count = collection
         .get_nbr_devices()
         .map_err(|e| wasapi_error("IMMDeviceCollection::GetCount failed", &e))?;
@@ -930,8 +1071,8 @@ fn resolve_capture_device(device_id: Option<&str>) -> Result<wasapi::Device, Cap
     }
 
     Err(CaptureErrorResponse {
-        code: "selected_microphone_unavailable".to_string(),
-        message: format!("Selected Windows microphone endpoint is not active: {device_id}"),
+        code: selected_unavailable_code.to_string(),
+        message: format!("{selected_unavailable_message}: {device_id}"),
     })
 }
 
@@ -950,6 +1091,7 @@ fn decode_packet_to_pcm_and_mono(
     output_channels: usize,
     source_is_float: bool,
     silent: bool,
+    include_mono_peak: bool,
 ) -> (Vec<u8>, Vec<f32>, f32) {
     if source_bytes_per_frame == 0 {
         return (Vec::new(), Vec::new(), 0.0);
@@ -963,16 +1105,21 @@ fn decode_packet_to_pcm_and_mono(
 
     if silent {
         // Honor the silent flag without trusting the (possibly stale) buffer.
-        return (
-            vec![0u8; frame_count * output_channels * 2],
-            vec![0.0f32; frame_count],
-            0.0,
-        );
+        let mono = if include_mono_peak {
+            vec![0.0f32; frame_count]
+        } else {
+            Vec::new()
+        };
+        return (vec![0u8; frame_count * output_channels * 2], mono, 0.0);
     }
 
     let bytes_per_sample = if source_is_float { 4 } else { 2 };
     let mut pcm = Vec::with_capacity(frame_count * output_channels * 2);
-    let mut mono = Vec::with_capacity(frame_count);
+    let mut mono = if include_mono_peak {
+        Vec::with_capacity(frame_count)
+    } else {
+        Vec::new()
+    };
     let mut peak = 0.0f32;
 
     for frame in 0..frame_count {
@@ -998,27 +1145,29 @@ fn decode_packet_to_pcm_and_mono(
             pcm.extend_from_slice(&value.to_le_bytes());
         }
 
-        // Mono downmix: average over ALL source channels of this frame, in f32.
-        let mut sum = 0.0f32;
-        for src_ch in 0..source_channels {
-            let sample_off = frame_base + src_ch * bytes_per_sample;
-            let sample = if source_is_float {
-                let bytes = [
-                    raw[sample_off],
-                    raw[sample_off + 1],
-                    raw[sample_off + 2],
-                    raw[sample_off + 3],
-                ];
-                f32::from_le_bytes(bytes)
-            } else {
-                let bytes = [raw[sample_off], raw[sample_off + 1]];
-                i16::from_le_bytes(bytes) as f32 / 32768.0
-            };
-            sum += sample;
+        if include_mono_peak {
+            // Mono downmix: average over ALL source channels of this frame, in f32.
+            let mut sum = 0.0f32;
+            for src_ch in 0..source_channels {
+                let sample_off = frame_base + src_ch * bytes_per_sample;
+                let sample = if source_is_float {
+                    let bytes = [
+                        raw[sample_off],
+                        raw[sample_off + 1],
+                        raw[sample_off + 2],
+                        raw[sample_off + 3],
+                    ];
+                    f32::from_le_bytes(bytes)
+                } else {
+                    let bytes = [raw[sample_off], raw[sample_off + 1]];
+                    i16::from_le_bytes(bytes) as f32 / 32768.0
+                };
+                sum += sample;
+            }
+            let value = (sum / source_channels as f32).clamp(-1.0, 1.0);
+            peak = peak.max(value.abs());
+            mono.push(value);
         }
-        let value = (sum / source_channels as f32).clamp(-1.0, 1.0);
-        peak = peak.max(value.abs());
-        mono.push(value);
     }
 
     (pcm, mono, peak)
@@ -1115,6 +1264,22 @@ mod tests {
         assert!(response.message.starts_with("ctx: "));
     }
 
+    #[test]
+    fn microphone_source_uses_capture_endpoint_and_activity() {
+        let source = AudioCaptureSource::Microphone { device_id: None };
+        assert_eq!(source.endpoint_direction(), Direction::Capture);
+        assert_eq!(source.client_direction(), Direction::Capture);
+        assert!(source.records_microphone_activity());
+    }
+
+    #[test]
+    fn system_audio_source_uses_render_endpoint_loopback_without_microphone_activity() {
+        let source = AudioCaptureSource::SystemAudioLoopback;
+        assert_eq!(source.endpoint_direction(), Direction::Render);
+        assert_eq!(source.client_direction(), Direction::Capture);
+        assert!(!source.records_microphone_activity());
+    }
+
     /// Decode `pcm` back into i16 samples for round-trip assertions.
     fn pcm_to_i16(pcm: &[u8]) -> Vec<i16> {
         pcm.chunks_exact(2)
@@ -1130,7 +1295,7 @@ mod tests {
         raw.extend_from_slice(&(-16384i16).to_le_bytes());
         let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(
             &raw, /* bytes_per_frame */ 4, /* src ch */ 2, /* out ch */ 2,
-            /* float */ false, /* silent */ false,
+            /* float */ false, /* silent */ false, /* include mono/peak */ true,
         );
         assert_eq!(pcm_to_i16(&pcm), vec![16384, -16384]);
         assert_eq!(mono.len(), 1);
@@ -1145,7 +1310,7 @@ mod tests {
         raw.extend_from_slice(&16384i16.to_le_bytes());
         raw.extend_from_slice(&16384i16.to_le_bytes());
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false);
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, true);
         assert_eq!(pcm_to_i16(&pcm), vec![16384, 16384]);
         assert_eq!(mono.len(), 1);
         assert!((mono[0] - 0.5).abs() < 1e-6, "mono {} != 0.5", mono[0]);
@@ -1159,7 +1324,7 @@ mod tests {
         raw.extend_from_slice(&0.75f32.to_le_bytes());
         raw.extend_from_slice(&(-0.5f32).to_le_bytes());
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 1, 1, true, false);
+            decode_packet_to_pcm_and_mono(&raw, 4, 1, 1, true, false, true);
         // mono equals the source samples for a single channel.
         assert_eq!(mono.len(), 2);
         assert!((mono[0] - 0.75).abs() < 1e-6, "mono0 {}", mono[0]);
@@ -1177,7 +1342,7 @@ mod tests {
         // Pass junk raw of the right length (2 frames * 4 bytes); must be ignored.
         let raw = vec![0xABu8; 8];
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, true);
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, true, true);
         // 2 frames * 2 output channels * 2 bytes = 8 zero bytes.
         assert_eq!(pcm, vec![0u8; 8]);
         assert_eq!(mono, vec![0.0f32, 0.0f32]);
@@ -1190,7 +1355,7 @@ mod tests {
         let mut raw = Vec::new();
         raw.extend_from_slice(&8192i16.to_le_bytes());
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 2, 1, 2, false, false);
+            decode_packet_to_pcm_and_mono(&raw, 2, 1, 2, false, false, true);
         // Both output channels carry the single source sample.
         assert_eq!(pcm_to_i16(&pcm), vec![8192, 8192]);
         assert_eq!(mono.len(), 1);
@@ -1198,15 +1363,27 @@ mod tests {
         assert!((peak - 0.25).abs() < 1e-6, "peak {peak} != 0.25");
     }
 
+
+    #[test]
+    fn decode_can_skip_mono_peak_for_system_audio() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&16384i16.to_le_bytes());
+        raw.extend_from_slice(&16384i16.to_le_bytes());
+        let (pcm, mono, peak) =
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, false);
+        assert_eq!(pcm_to_i16(&pcm), vec![16384, 16384]);
+        assert!(mono.is_empty());
+        assert_eq!(peak, 0.0);
+    }
     #[test]
     fn decode_empty_inputs_return_empties() {
         // Zero bytes-per-frame guard.
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&[0u8; 4], 0, 2, 2, false, false);
+            decode_packet_to_pcm_and_mono(&[0u8; 4], 0, 2, 2, false, false, true);
         assert!(pcm.is_empty() && mono.is_empty() && peak == 0.0);
         // Fewer bytes than one frame -> frame_count == 0.
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&[0u8; 2], 4, 2, 2, false, false);
+            decode_packet_to_pcm_and_mono(&[0u8; 2], 4, 2, 2, false, false, true);
         assert!(pcm.is_empty() && mono.is_empty() && peak == 0.0);
     }
 }

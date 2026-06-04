@@ -2121,24 +2121,52 @@ fn start_native_capture_inner(
     })
 }
 
-#[tauri::command]
-pub fn get_capture_support() -> CaptureSupportResponse {
-    let screen_support = capture_screen::support_for_current_platform();
+fn capture_support_response_from_observed_platform(
+    screen_support: capture_screen::ScreenCaptureSupport,
+    microphone_permission_state: CapturePermissionState,
+    windows_system_audio_supported: bool,
+) -> CaptureSupportResponse {
     let microphone_supported = !matches!(
-        microphone_capture::microphone_permission_state(),
+        microphone_permission_state,
         CapturePermissionState::Unsupported
     );
+    let system_audio_supported = if screen_support.platform == "windows" {
+        windows_system_audio_supported
+    } else {
+        screen_support.system_audio
+    };
 
-    let response = CaptureSupportResponse {
+    CaptureSupportResponse {
         platform: screen_support.platform,
-        native_capture_supported: screen_support.native_capture_supported,
+        native_capture_supported: screen_support.native_capture_supported
+            || microphone_supported
+            || system_audio_supported,
         supports_non_original_resolution: screen_support.non_original_resolution,
         supported_sources: CaptureSources {
             screen: screen_support.screen,
             microphone: microphone_supported,
-            system_audio: screen_support.system_audio,
+            system_audio: system_audio_supported,
         },
-    };
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_system_audio_supported_without_prompt() -> bool {
+    microphone_capture::system_audio_loopback_capture_supported()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_audio_supported_without_prompt() -> bool {
+    false
+}
+
+#[tauri::command]
+pub fn get_capture_support() -> CaptureSupportResponse {
+    let response = capture_support_response_from_observed_platform(
+        capture_screen::support_for_current_platform(),
+        microphone_capture::microphone_permission_state(),
+        windows_system_audio_supported_without_prompt(),
+    );
 
     log_capture_support_if_changed(&response);
     response
