@@ -119,7 +119,8 @@ Research notes:
 - [~] Implement Windows microphone capture behind `crates/capture-microphone`.
   - Active WASAPI capture endpoint enumeration, selected/default endpoint capture, default-device tracking, `IMMNotificationClient` device-change notifications, and `FallbackToDefault` / `WaitForSameDevice` reconnect policy are implemented.
   - Best-effort permission UX is implemented: a blocked microphone (Windows privacy denial surfacing as `E_ACCESSDENIED` at WASAPI `IAudioClient` activation) is mapped to the recoverable `microphone_access_denied` error at capture start, which raises an app notification deep-linking to `ms-settings:privacy-microphone`. The `microphone` permission reports as `Unknown` (best-effort) since per-app privacy cannot be queried synchronously.
-  - Still outstanding: VAD PCM feed, inactivity pause/resume, audio decode/processing, and on-device disconnect/reconnect smoke-test coverage.
+  - The microphone capture callback now emits a VAD PCM feed and peak-since-last-poll Audio Activity Samples (debug-visible raw samples via the `get_idle_debug` surface); this emission is not yet wired into pause/resume decisions (consumers arrive in a later inactivity slice).
+  - Still outstanding: inactivity pause/resume, audio decode/processing, and on-device disconnect/reconnect smoke-test coverage.
 - [ ] Implement Windows system-audio capture.
   - Candidate API: WASAPI loopback.
   - System audio is modeled as an independent source on Windows (ADR 0022); the capture seam (`active_system_audio_session`) exists, but the WASAPI loopback backend is a later slice.

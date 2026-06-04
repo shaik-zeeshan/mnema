@@ -19,28 +19,32 @@ use capture_writers::{
 use cidre::{av, dispatch};
 #[cfg(target_os = "macos")]
 use cidre::{ns, objc};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::sync::{Mutex, OnceLock};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::time::Instant;
 #[cfg(target_os = "macos")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "macos")]
 static MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -70,7 +74,8 @@ pub enum MicrophoneInactivityTailTrimActivityMode {
 
 pub const MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ: u32 = 16_000;
 pub const MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT: usize = 320;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 const MAX_MICROPHONE_VAD_PCM_FRAMES: usize = 96;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,7 +143,7 @@ pub trait AudioCaptureSession: Send + std::fmt::Debug {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Default)]
 struct MicrophoneVadPcmFeedState {
     source_format: Option<MicrophoneVadSourceFormat>,
@@ -147,7 +152,7 @@ struct MicrophoneVadPcmFeedState {
     output_frames: VecDeque<MicrophoneVadPcmFrame>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct MicrophoneVadSourceFormat {
     sample_rate_hz: u32,
@@ -158,13 +163,14 @@ struct MicrophoneVadSourceFormat {
     format_flags: u32,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn microphone_activity_monotonic_epoch() -> &'static Instant {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     EPOCH.get_or_init(Instant::now)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn now_microphone_activity_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -172,7 +178,7 @@ fn now_microphone_activity_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn now_microphone_activity_monotonic_ms() -> u64 {
     microphone_activity_monotonic_epoch()
         .elapsed()
@@ -180,12 +186,13 @@ fn now_microphone_activity_monotonic_ms() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn now_microphone_activity_marker_ms() -> u64 {
     now_microphone_activity_monotonic_ms().saturating_add(1)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn store_microphone_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
     let level = level.clamp(0.0, 1.0);
     LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.store(level.to_bits(), Ordering::Relaxed);
@@ -194,7 +201,8 @@ fn store_microphone_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64
     record_microphone_activity_window_peak(level);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn record_microphone_activity_window_peak(level: f32) {
     LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -226,13 +234,48 @@ fn maybe_track_microphone_activity(sample_buf: &cidre::cm::SampleBuf) {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn microphone_vad_pcm_feed() -> &'static Mutex<MicrophoneVadPcmFeedState> {
     static FEED: OnceLock<Mutex<MicrophoneVadPcmFeedState>> = OnceLock::new();
     FEED.get_or_init(|| Mutex::new(MicrophoneVadPcmFeedState::default()))
 }
 
-#[cfg(target_os = "macos")]
+/// Record one peak-since-last-poll Audio Activity Sample from the Windows
+/// capture callback. Mirrors the macOS `maybe_track_microphone_activity` store
+/// path, minus the cidre sample-buffer extraction.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub(crate) fn note_microphone_activity_level(level: f32) {
+    store_microphone_activity(
+        level,
+        now_microphone_activity_marker_ms(),
+        now_microphone_activity_unix_ms(),
+    );
+}
+
+/// Push already-downmixed mono PCM into the VAD PCM feed from the Windows
+/// capture callback. Locks the shared feed exactly like the macOS path.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub(crate) fn feed_microphone_vad_pcm(
+    source_format: MicrophoneVadSourceFormat,
+    captured_at_unix_ms: u64,
+    media_start_secs: Option<f64>,
+    samples: &[f32],
+) {
+    let mut feed = microphone_vad_pcm_feed()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    feed_microphone_vad_pcm_samples_with_source_format(
+        &mut feed,
+        source_format,
+        captured_at_unix_ms,
+        media_start_secs,
+        samples,
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn reset_microphone_vad_pcm_feed() {
     let mut feed = microphone_vad_pcm_feed()
         .lock()
@@ -240,7 +283,7 @@ pub fn reset_microphone_vad_pcm_feed() {
     *feed = MicrophoneVadPcmFeedState::default();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn reset_microphone_vad_pcm_feed() {}
 
 #[cfg(target_os = "macos")]
@@ -331,7 +374,7 @@ fn take_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryState {
     current
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn take_microphone_vad_pcm_frames(max_frames: usize) -> Vec<MicrophoneVadPcmFrame> {
     let mut feed = microphone_vad_pcm_feed()
         .lock()
@@ -340,12 +383,12 @@ pub fn take_microphone_vad_pcm_frames(max_frames: usize) -> Vec<MicrophoneVadPcm
     feed.output_frames.drain(..frame_count).collect()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn take_microphone_vad_pcm_frames(_max_frames: usize) -> Vec<MicrophoneVadPcmFrame> {
     Vec::new()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn microphone_vad_pcm_frame_count() -> usize {
     let feed = microphone_vad_pcm_feed()
         .lock()
@@ -353,7 +396,7 @@ pub fn microphone_vad_pcm_frame_count() -> usize {
     feed.output_frames.len()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_vad_pcm_frame_count() -> usize {
     0
 }
@@ -398,7 +441,7 @@ fn sample_buf_start_secs(sample_buf: &cidre::cm::SampleBuf) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn reset_last_microphone_activity_unix_ms() {
     LAST_MICROPHONE_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
     LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
@@ -407,62 +450,62 @@ pub fn reset_last_microphone_activity_unix_ms() {
     LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn reset_last_microphone_activity_unix_ms() {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn last_microphone_activity_unix_ms() -> Option<u64> {
     let ts = LAST_MICROPHONE_ACTIVITY_UNIX_MS.load(Ordering::Relaxed);
     (ts > 0).then_some(ts)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn last_microphone_activity_unix_ms() -> Option<u64> {
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn microphone_activity_idle_ms() -> Option<u64> {
     let ts = LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
     (ts > 0).then_some(now_microphone_activity_marker_ms().saturating_sub(ts))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_activity_idle_ms() -> Option<u64> {
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn microphone_activity_level() -> Option<f32> {
     last_microphone_activity_unix_ms()
         .map(|_| f32::from_bits(LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.load(Ordering::Relaxed)))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
     let sample_count = LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.swap(0, Ordering::Relaxed);
     let level_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.swap(0, Ordering::Relaxed);
     (sample_count > 0).then_some(f32::from_bits(level_bits))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
     let sample_count = LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.load(Ordering::Relaxed);
     let level_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
     (sample_count > 0).then_some(f32::from_bits(level_bits))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_activity_level() -> Option<f32> {
     None
 }
@@ -1217,12 +1260,32 @@ fn feed_microphone_vad_pcm_samples(
     if samples.is_empty() {
         return;
     }
-
     let Some(source_format) = MicrophoneVadSourceFormat::from_sample_format(sample_format) else {
         state.pending_source_samples.clear();
         state.source_format = None;
         return;
     };
+    feed_microphone_vad_pcm_samples_with_source_format(
+        state,
+        source_format,
+        captured_at_unix_ms,
+        media_start_secs,
+        samples,
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn feed_microphone_vad_pcm_samples_with_source_format(
+    state: &mut MicrophoneVadPcmFeedState,
+    source_format: MicrophoneVadSourceFormat,
+    captured_at_unix_ms: u64,
+    media_start_secs: Option<f64>,
+    samples: &[f32],
+) {
+    if samples.is_empty() {
+        return;
+    }
 
     if state.source_format != Some(source_format) {
         state.pending_source_samples.clear();
@@ -1289,7 +1352,26 @@ impl MicrophoneVadSourceFormat {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "windows")]
+impl MicrophoneVadSourceFormat {
+    /// Build a source-format key for already-downmixed mono PCM at `sample_rate_hz`.
+    /// Only `sample_rate_hz` drives the resample/feed logic; the remaining fields
+    /// exist for change-detection equality and are fixed for a WASAPI session.
+    #[allow(dead_code)]
+    pub(crate) fn linear_pcm_mono(sample_rate_hz: u32) -> Self {
+        Self {
+            sample_rate_hz,
+            channels_per_frame: 1,
+            bits_per_channel: 16,
+            bytes_per_frame: 2,
+            format_id: 0,
+            format_flags: 0,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn rounded_positive_sample_rate(sample_rate_hz: f64) -> Option<u32> {
     if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 || sample_rate_hz > f64::from(u32::MAX)
     {
@@ -1299,13 +1381,15 @@ fn rounded_positive_sample_rate(sample_rate_hz: f64) -> Option<u32> {
     Some(sample_rate_hz.round() as u32)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn vad_input_frame_count_for_output_frame(source_sample_rate_hz: u32) -> usize {
     let numerator = source_sample_rate_hz as usize * MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT;
     numerator.div_ceil(MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ as usize)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn resample_microphone_vad_frame(samples: &[f32], source_sample_rate_hz: u32) -> Vec<f32> {
     if source_sample_rate_hz == MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ {
         return samples
@@ -1334,7 +1418,8 @@ fn resample_microphone_vad_frame(samples: &[f32], source_sample_rate_hz: u32) ->
     output
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn normalized_microphone_vad_sample_to_i16(sample: f32) -> i16 {
     let sample = sample.clamp(-1.0, 1.0);
     if sample >= 0.0 {
