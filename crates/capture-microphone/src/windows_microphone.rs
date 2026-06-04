@@ -350,6 +350,10 @@ impl AudioCaptureSource {
         matches!(self, Self::Microphone { .. })
     }
 
+    fn records_system_audio_activity(&self) -> bool {
+        matches!(self, Self::SystemAudioLoopback)
+    }
+
     fn endpoint_direction(&self) -> Direction {
         match self {
             Self::Microphone { .. } => Direction::Capture,
@@ -420,6 +424,8 @@ fn start_wasapi_audio_capture_session_for_file(
         crate::reset_last_microphone_activity_unix_ms();
         crate::reset_microphone_vad_pcm_feed();
         crate::reset_microphone_vad_tail_activity();
+    } else if source.records_system_audio_activity() {
+        crate::reset_last_system_audio_activity_unix_ms();
     }
 
     let output_path = PathBuf::from(output_file);
@@ -590,6 +596,8 @@ struct CaptureEngine {
     raw: VecDeque<u8>,
     /// Whether captured packets should update microphone activity/VAD state.
     records_microphone_activity: bool,
+    /// Whether captured packets should update system-audio activity state.
+    records_system_audio_activity: bool,
     source: AudioCaptureSource,
     current_render_endpoint_id: Option<String>,
     _default_render_notifier: Option<SystemAudioDefaultDeviceChangeRegistration>,
@@ -685,6 +693,7 @@ impl CaptureEngine {
         notification_sender: Sender<Message>,
     ) -> Result<Self, CaptureErrorResponse> {
         let records_microphone_activity = source.records_microphone_activity();
+        let records_system_audio_activity = source.records_system_audio_activity();
         let stream = Self::open_capture_stream(&source)?;
         let writer = WindowsAacM4aSinkWriter::create(
             output_path,
@@ -709,6 +718,7 @@ impl CaptureEngine {
             source_bytes_per_frame: stream.source_bytes_per_frame,
             raw: VecDeque::new(),
             records_microphone_activity,
+            records_system_audio_activity,
             source,
             current_render_endpoint_id: stream.endpoint_id,
             _default_render_notifier: default_render_notifier,
@@ -805,8 +815,8 @@ impl CaptureEngine {
     /// Convert a raw WASAPI packet (source mix format) to interleaved 16-bit LE
     /// PCM at the output channel count and append it to the active segment.
     /// Microphone sessions additionally emit the debug-visible Audio Activity
-    /// Sample and feed mono VAD PCM; system-audio loopback deliberately does not
-    /// mutate microphone activity state.
+    /// Sample and feed mono VAD PCM; system-audio loopback emits only the
+    /// independent system-audio Audio Activity Sample.
     fn append_raw_frames(&mut self, raw: &[u8], silent: bool) -> Result<(), CaptureErrorResponse> {
         // Segment-relative start time of THIS packet, captured before we advance
         // `frames_in_segment`, so the VAD frame's media timeline matches the
@@ -825,6 +835,7 @@ impl CaptureEngine {
             self.source_is_float,
             silent,
             self.records_microphone_activity,
+            self.records_microphone_activity || self.records_system_audio_activity,
         );
 
         if pcm.is_empty() {
@@ -843,6 +854,10 @@ impl CaptureEngine {
                 media_start_secs,
                 &mono,
             );
+        } else if self.records_system_audio_activity {
+            // Loopback packets are system-audio activity samples only. They must
+            // not mutate microphone state and must not feed microphone VAD.
+            crate::note_system_audio_activity_level(peak);
         }
 
         let output_channels = self.output_channels as usize;
@@ -1358,13 +1373,15 @@ fn resolve_audio_endpoint_device(
 }
 
 /// Decode one raw WASAPI packet (source mix format) into:
-/// - interleaved 16-bit LE PCM at `output_channels` (for the AAC writer), and
-/// - a mono f32 downmix (averaged across the SOURCE channels) plus its peak
-///   absolute level in 0.0..=1.0 (for Audio Activity Samples + the VAD feed).
+/// - interleaved 16-bit LE PCM at `output_channels` (for the AAC writer),
+/// - optionally a mono f32 downmix (averaged across the SOURCE channels) for the
+///   microphone VAD feed, and
+/// - optionally the peak absolute mono level in 0.0..=1.0 for Audio Activity
+///   Samples.
 ///
 /// Mirrors the macOS downmix-to-mono used for activity/VAD. A `silent` packet
-/// yields zeroed PCM, an all-zero mono buffer, and peak 0.0 without trusting the
-/// (possibly stale) buffer contents.
+/// yields zeroed PCM, an optional all-zero mono buffer, and peak 0.0 without
+/// trusting the (possibly stale) buffer contents.
 fn decode_packet_to_pcm_and_mono(
     raw: &[u8],
     source_bytes_per_frame: usize,
@@ -1372,7 +1389,8 @@ fn decode_packet_to_pcm_and_mono(
     output_channels: usize,
     source_is_float: bool,
     silent: bool,
-    include_mono_peak: bool,
+    include_mono: bool,
+    include_peak: bool,
 ) -> (Vec<u8>, Vec<f32>, f32) {
     if source_bytes_per_frame == 0 {
         return (Vec::new(), Vec::new(), 0.0);
@@ -1386,7 +1404,7 @@ fn decode_packet_to_pcm_and_mono(
 
     if silent {
         // Honor the silent flag without trusting the (possibly stale) buffer.
-        let mono = if include_mono_peak {
+        let mono = if include_mono {
             vec![0.0f32; frame_count]
         } else {
             Vec::new()
@@ -1396,7 +1414,7 @@ fn decode_packet_to_pcm_and_mono(
 
     let bytes_per_sample = if source_is_float { 4 } else { 2 };
     let mut pcm = Vec::with_capacity(frame_count * output_channels * 2);
-    let mut mono = if include_mono_peak {
+    let mut mono = if include_mono {
         Vec::with_capacity(frame_count)
     } else {
         Vec::new()
@@ -1426,7 +1444,7 @@ fn decode_packet_to_pcm_and_mono(
             pcm.extend_from_slice(&value.to_le_bytes());
         }
 
-        if include_mono_peak {
+        if include_mono || include_peak {
             // Mono downmix: average over ALL source channels of this frame, in f32.
             let mut sum = 0.0f32;
             for src_ch in 0..source_channels {
@@ -1447,7 +1465,9 @@ fn decode_packet_to_pcm_and_mono(
             }
             let value = (sum / source_channels as f32).clamp(-1.0, 1.0);
             peak = peak.max(value.abs());
-            mono.push(value);
+            if include_mono {
+                mono.push(value);
+            }
         }
     }
 
@@ -1605,14 +1625,16 @@ mod tests {
         assert_eq!(source.endpoint_direction(), Direction::Capture);
         assert_eq!(source.client_direction(), Direction::Capture);
         assert!(source.records_microphone_activity());
+        assert!(!source.records_system_audio_activity());
     }
 
     #[test]
-    fn system_audio_source_uses_render_endpoint_loopback_without_microphone_activity() {
+    fn system_audio_source_uses_render_endpoint_loopback_with_system_audio_activity_only() {
         let source = AudioCaptureSource::SystemAudioLoopback;
         assert_eq!(source.endpoint_direction(), Direction::Render);
         assert_eq!(source.client_direction(), Direction::Capture);
         assert!(!source.records_microphone_activity());
+        assert!(source.records_system_audio_activity());
     }
 
     /// Decode `pcm` back into i16 samples for round-trip assertions.
@@ -1630,7 +1652,8 @@ mod tests {
         raw.extend_from_slice(&(-16384i16).to_le_bytes());
         let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(
             &raw, /* bytes_per_frame */ 4, /* src ch */ 2, /* out ch */ 2,
-            /* float */ false, /* silent */ false, /* include mono/peak */ true,
+            /* float */ false, /* silent */ false, /* include mono */ true,
+            /* include peak */ true,
         );
         assert_eq!(pcm_to_i16(&pcm), vec![16384, -16384]);
         assert_eq!(mono.len(), 1);
@@ -1644,7 +1667,8 @@ mod tests {
         let mut raw = Vec::new();
         raw.extend_from_slice(&16384i16.to_le_bytes());
         raw.extend_from_slice(&16384i16.to_le_bytes());
-        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, true);
+        let (pcm, mono, peak) =
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, true, true);
         assert_eq!(pcm_to_i16(&pcm), vec![16384, 16384]);
         assert_eq!(mono.len(), 1);
         assert!((mono[0] - 0.5).abs() < 1e-6, "mono {} != 0.5", mono[0]);
@@ -1657,7 +1681,8 @@ mod tests {
         let mut raw = Vec::new();
         raw.extend_from_slice(&0.75f32.to_le_bytes());
         raw.extend_from_slice(&(-0.5f32).to_le_bytes());
-        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 4, 1, 1, true, false, true);
+        let (pcm, mono, peak) =
+            decode_packet_to_pcm_and_mono(&raw, 4, 1, 1, true, false, true, true);
         // mono equals the source samples for a single channel.
         assert_eq!(mono.len(), 2);
         assert!((mono[0] - 0.75).abs() < 1e-6, "mono0 {}", mono[0]);
@@ -1674,7 +1699,8 @@ mod tests {
     fn decode_silent_returns_zeroed_without_reading_raw() {
         // Pass junk raw of the right length (2 frames * 4 bytes); must be ignored.
         let raw = vec![0xABu8; 8];
-        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, true, true);
+        let (pcm, mono, peak) =
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, true, true, true);
         // 2 frames * 2 output channels * 2 bytes = 8 zero bytes.
         assert_eq!(pcm, vec![0u8; 8]);
         assert_eq!(mono, vec![0.0f32, 0.0f32]);
@@ -1686,7 +1712,8 @@ mod tests {
         // 1 source channel but 2 output channels: both output channels map to ch 0.
         let mut raw = Vec::new();
         raw.extend_from_slice(&8192i16.to_le_bytes());
-        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 2, 1, 2, false, false, true);
+        let (pcm, mono, peak) =
+            decode_packet_to_pcm_and_mono(&raw, 2, 1, 2, false, false, true, true);
         // Both output channels carry the single source sample.
         assert_eq!(pcm_to_i16(&pcm), vec![8192, 8192]);
         assert_eq!(mono.len(), 1);
@@ -1695,24 +1722,26 @@ mod tests {
     }
 
     #[test]
-    fn decode_can_skip_mono_peak_for_system_audio() {
+    fn decode_can_skip_mono_while_preserving_peak_for_system_audio() {
         let mut raw = Vec::new();
         raw.extend_from_slice(&16384i16.to_le_bytes());
         raw.extend_from_slice(&16384i16.to_le_bytes());
-        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, false);
+        let (pcm, mono, peak) =
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, false, true);
         assert_eq!(pcm_to_i16(&pcm), vec![16384, 16384]);
         assert!(mono.is_empty());
-        assert_eq!(peak, 0.0);
+        assert!((peak - 0.5).abs() < 1e-6, "peak {peak} != 0.5");
     }
+
     #[test]
     fn decode_empty_inputs_return_empties() {
         // Zero bytes-per-frame guard.
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&[0u8; 4], 0, 2, 2, false, false, true);
+            decode_packet_to_pcm_and_mono(&[0u8; 4], 0, 2, 2, false, false, true, true);
         assert!(pcm.is_empty() && mono.is_empty() && peak == 0.0);
         // Fewer bytes than one frame -> frame_count == 0.
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&[0u8; 2], 4, 2, 2, false, false, true);
+            decode_packet_to_pcm_and_mono(&[0u8; 2], 4, 2, 2, false, false, true, true);
         assert!(pcm.is_empty() && mono.is_empty() && peak == 0.0);
     }
 }

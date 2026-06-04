@@ -29,6 +29,7 @@ mod windows_capture;
 #[cfg(target_os = "windows")]
 pub use windows_capture::ActiveCaptureSession;
 
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
@@ -36,13 +37,17 @@ use std::ffi::CString;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::AtomicU32;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::sync::OnceLock;
 use std::time::Duration;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::time::Instant;
@@ -464,9 +469,9 @@ fn log_capture_error(context: &str, error: &CaptureErrorResponse) {
 
 #[cfg(target_os = "macos")]
 static SCREEN_PERMISSION_REQUESTED: AtomicBool = AtomicBool::new(false);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_SCREEN_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_SCREEN_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static LAST_SCREEN_ACTIVITY_FINGERPRINT: AtomicU64 = AtomicU64::new(0);
@@ -481,7 +486,7 @@ static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32:
 #[cfg(target_os = "macos")]
 static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 // Coalesce noisy per-frame screen samples without approaching the minimum
 // supported inactivity timeout (1s), which would risk false inactivity pauses
 // for low-FPS or jittery sessions.
@@ -563,7 +568,7 @@ unsafe extern "C" {
     fn CGDataProviderCopyData(provider: CGDataProviderRef) -> CFDataRef;
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -571,13 +576,13 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn screen_activity_monotonic_epoch() -> &'static Instant {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     EPOCH.get_or_init(Instant::now)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn now_monotonic_ms() -> u64 {
     screen_activity_monotonic_epoch()
         .elapsed()
@@ -585,7 +590,7 @@ fn now_monotonic_ms() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn now_monotonic_marker_ms() -> u64 {
     // Reserve 0 as the "no sample observed" sentinel in the atomic state.
     now_monotonic_ms().saturating_add(1)
@@ -633,7 +638,7 @@ fn maybe_mark_system_audio_activity_for_sample(sample_buf: &cidre::cm::SampleBuf
     store_system_audio_activity(level, now_monotonic_marker_ms(), now_unix_ms());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn should_mark_screen_activity(last_activity_monotonic_ms: u64, now_monotonic_ms: u64) -> bool {
     last_activity_monotonic_ms == 0
         || now_monotonic_ms.saturating_sub(last_activity_monotonic_ms)
@@ -983,7 +988,7 @@ fn should_mark_screen_activity_for_fingerprint(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn mark_screen_activity(now_monotonic_ms: u64, now_unix_ms: u64) -> bool {
     let mut last_activity_monotonic_ms = LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
 
@@ -1005,6 +1010,11 @@ fn mark_screen_activity(now_monotonic_ms: u64, now_unix_ms: u64) -> bool {
             Err(current) => last_activity_monotonic_ms = current,
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn mark_screen_activity_now() -> bool {
+    mark_screen_activity(now_monotonic_marker_ms(), now_unix_ms())
 }
 
 #[cfg(target_os = "macos")]
@@ -1258,19 +1268,22 @@ pub fn screen_display_available() -> bool {
     true
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn reset_last_screen_activity_unix_ms() {
     LAST_SCREEN_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
     LAST_SCREEN_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
-    LAST_SCREEN_ACTIVITY_FINGERPRINT.store(0, Ordering::Relaxed);
-    LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
-    LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
-    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(0, Ordering::Relaxed);
-    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.store(0, Ordering::Relaxed);
-    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
+    #[cfg(target_os = "macos")]
+    {
+        LAST_SCREEN_ACTIVITY_FINGERPRINT.store(0, Ordering::Relaxed);
+        LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
+        LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
+        LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(0, Ordering::Relaxed);
+        LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.store(0, Ordering::Relaxed);
+        LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn reset_last_screen_activity_unix_ms() {}
 
 #[cfg(target_os = "macos")]
@@ -4563,13 +4576,13 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn last_screen_activity_unix_ms() -> Option<u64> {
     let ts = LAST_SCREEN_ACTIVITY_UNIX_MS.load(Ordering::Relaxed);
     (ts > 0).then_some(ts)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn screen_activity_idle_ms() -> Option<u64> {
     let ts = LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
     (ts > 0).then_some(now_monotonic_marker_ms().saturating_sub(ts))
@@ -4630,12 +4643,12 @@ pub fn record_system_audio_activity_for_tests(
 ) {
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn last_screen_activity_unix_ms() -> Option<u64> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn screen_activity_idle_ms() -> Option<u64> {
     None
 }

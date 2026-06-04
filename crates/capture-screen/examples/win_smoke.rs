@@ -15,9 +15,9 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use capture_screen::{
-    start_capture_session_with_options, ScreenCaptureSession, ScreenCaptureSessionOptions,
-    ScreenCaptureSources, ScreenFrameArtifact, ScreenFrameExportConfig,
-    DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL,
+    last_screen_activity_unix_ms, screen_activity_idle_ms, start_capture_session_with_options,
+    ScreenCaptureSession, ScreenCaptureSessionOptions, ScreenCaptureSources, ScreenFrameArtifact,
+    ScreenFrameExportConfig, DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL,
 };
 use capture_types::{ScreenResolution, ScreenResolutionPreset};
 use image::GenericImageView;
@@ -163,13 +163,27 @@ fn main() {
         }
     }
 
+    let screen_activity_unix_ms = last_screen_activity_unix_ms().unwrap_or_else(|| {
+        eprintln!("[win_smoke] no screen activity sample was observed");
+        std::process::exit(10);
+    });
+    let screen_activity_idle_ms = screen_activity_idle_ms().unwrap_or_else(|| {
+        eprintln!("[win_smoke] screen activity sample did not include idle duration");
+        std::process::exit(10);
+    });
+
+    println!(
+        "[win_smoke] screen activity sample observed: last_unix_ms={} idle_ms={}",
+        screen_activity_unix_ms, screen_activity_idle_ms
+    );
+
     println!("[win_smoke] OK: wrote {} bytes -> {}", bytes, out.display());
     println!(
         "[win_smoke] recording_file reported by session: {}",
         started.recording_file
     );
     println!(
-        "[win_smoke] RESULT label={} resolution={} bitrate={} bps={:?} video={}x{} frame={}x{} bytes={} file={}",
+        "[win_smoke] RESULT label={} resolution={} bitrate={} bps={:?} video={}x{} frame={}x{} bytes={} screen_activity_unix_ms={} screen_activity_idle_ms={} file={}",
         config.label,
         config.resolution_label,
         config.bitrate_label,
@@ -179,6 +193,8 @@ fn main() {
         artifact_dimensions.0,
         artifact_dimensions.1,
         bytes,
+        screen_activity_unix_ms,
+        screen_activity_idle_ms,
         out.display()
     );
 }

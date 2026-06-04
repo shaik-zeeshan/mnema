@@ -17,8 +17,9 @@ fn main() {
     use std::time::{Duration, Instant};
 
     use capture_microphone::{
-        start_wasapi_system_audio_capture_session_for_file,
-        system_audio_loopback_capture_supported, AudioCaptureSession,
+        last_system_audio_activity_unix_ms, peek_system_audio_activity_window_peak_level,
+        start_wasapi_system_audio_capture_session_for_file, system_audio_activity_idle_ms,
+        system_audio_activity_level, system_audio_loopback_capture_supported, AudioCaptureSession,
     };
     use capture_writers::windows_audio_file_has_positive_duration;
 
@@ -38,6 +39,24 @@ fn main() {
             "  [{label}] exists={exists} size={size}B mf_positive_duration={openable}\n         path={path}"
         );
         exists && size > 0 && openable
+    }
+
+    fn report_system_audio_activity_sample() -> bool {
+        let last_unix_ms = last_system_audio_activity_unix_ms();
+        let level = system_audio_activity_level();
+        let idle_ms = system_audio_activity_idle_ms();
+        let window_peak_level = peek_system_audio_activity_window_peak_level();
+
+        println!("\nvalidating issue #59 debug-input system-audio activity sample:");
+        println!("  last_system_audio_activity_unix_ms={last_unix_ms:?}");
+        println!("  system_audio_activity_level={level:?}");
+        println!("  system_audio_activity_idle_ms={idle_ms:?}");
+        println!("  peek_system_audio_activity_window_peak_level={window_peak_level:?}");
+
+        last_unix_ms.is_some()
+            && level.is_some()
+            && idle_ms.is_some()
+            && window_peak_level.is_some()
     }
 
     println!("== Windows system audio loopback -> .m4a smoke test ==");
@@ -102,7 +121,13 @@ fn main() {
     let ok2 = report("segment 1", &seg2_s);
 
     if ok1 && ok2 {
-        println!("\nPASS: both rotated system-audio segments are openable .m4a files with positive duration.");
+        let activity_sample_observed = report_system_audio_activity_sample();
+        if !activity_sample_observed {
+            eprintln!("\nFAIL: no complete issue #59 system-audio activity sample was observed. Ensure desktop audio is playing while the smoke test runs.");
+            std::process::exit(6);
+        }
+
+        println!("\nPASS: both rotated system-audio segments are openable .m4a files with positive duration, and the system-audio activity sample was observed.");
     } else {
         eprintln!("\nFAIL: at least one segment was missing/empty/unopenable. Ensure desktop audio is playing while the smoke test runs.");
         std::process::exit(1);

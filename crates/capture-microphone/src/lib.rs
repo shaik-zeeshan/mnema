@@ -46,6 +46,16 @@ static LAST_MICROPHONE_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
 static LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "macos")]
 static MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
@@ -221,6 +231,35 @@ fn record_microphone_activity_window_peak(level: f32) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn store_system_audio_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
+    let level = level.clamp(0.0, 1.0);
+    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(level.to_bits(), Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(now_monotonic_ms, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(now_unix_ms, Ordering::Relaxed);
+    record_system_audio_activity_window_peak(level);
+}
+
+#[cfg(target_os = "windows")]
+fn record_system_audio_activity_window_peak(level: f32) {
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let level_bits = level.to_bits();
+    let mut observed_bits =
+        LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    while f32::from_bits(observed_bits) < level {
+        match LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.compare_exchange_weak(
+            observed_bits,
+            level_bits,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next_bits) => observed_bits = next_bits,
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn maybe_track_microphone_activity(sample_buf: &cidre::cm::SampleBuf) {
     let Some(level) = derive_audio_activity_level_from_sample_buf(sample_buf) else {
@@ -247,6 +286,19 @@ fn microphone_vad_pcm_feed() -> &'static Mutex<MicrophoneVadPcmFeedState> {
 #[allow(dead_code)]
 pub(crate) fn note_microphone_activity_level(level: f32) {
     store_microphone_activity(
+        level,
+        now_microphone_activity_marker_ms(),
+        now_microphone_activity_unix_ms(),
+    );
+}
+
+/// Record one peak-since-last-poll Audio Activity Sample from the Windows
+/// system-audio loopback capture callback. This updates only system-audio state;
+/// microphone activity and microphone VAD remain untouched.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub(crate) fn note_system_audio_activity_level(level: f32) {
+    store_system_audio_activity(
         level,
         now_microphone_activity_marker_ms(),
         now_microphone_activity_unix_ms(),
@@ -495,6 +547,75 @@ pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
     (sample_count > 0).then_some(f32::from_bits(level_bits))
 }
 
+#[cfg(target_os = "windows")]
+pub fn reset_last_system_audio_activity_unix_ms() {
+    LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn reset_last_system_audio_activity_unix_ms() {}
+
+#[cfg(target_os = "windows")]
+pub fn last_system_audio_activity_unix_ms() -> Option<u64> {
+    let ts = LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.load(Ordering::Relaxed);
+    (ts > 0).then_some(ts)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn last_system_audio_activity_unix_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn system_audio_activity_idle_ms() -> Option<u64> {
+    let ts = LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
+    (ts > 0).then_some(now_microphone_activity_marker_ms().saturating_sub(ts))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn system_audio_activity_idle_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn system_audio_activity_level() -> Option<f32> {
+    last_system_audio_activity_unix_ms()
+        .map(|_| f32::from_bits(LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.load(Ordering::Relaxed)))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn system_audio_activity_level() -> Option<f32> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.swap(0, Ordering::Relaxed);
+    let level_bits = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.swap(0, Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(target_os = "windows")]
+pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.load(Ordering::Relaxed);
+    let level_bits = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
     None
@@ -508,6 +629,99 @@ pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_activity_level() -> Option<f32> {
     None
+}
+
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::{
+        last_microphone_activity_unix_ms, last_system_audio_activity_unix_ms,
+        microphone_activity_level, peek_microphone_activity_window_peak_level,
+        peek_system_audio_activity_window_peak_level, reset_last_microphone_activity_unix_ms,
+        reset_last_system_audio_activity_unix_ms, store_microphone_activity,
+        store_system_audio_activity, system_audio_activity_idle_ms, system_audio_activity_level,
+        take_system_audio_activity_window_peak_level,
+    };
+
+    fn activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        GUARD
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn system_audio_activity_reset_clears_last_level_idle_and_peak() {
+        let _guard = activity_state_test_guard();
+        reset_last_system_audio_activity_unix_ms();
+
+        let activity_marker_ms = 1;
+        store_system_audio_activity(0.5, activity_marker_ms, 1_700_000);
+
+        assert_eq!(last_system_audio_activity_unix_ms(), Some(1_700_000));
+        assert_eq!(system_audio_activity_level(), Some(0.5));
+        assert!(system_audio_activity_idle_ms().is_some());
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.5));
+
+        reset_last_system_audio_activity_unix_ms();
+
+        assert_eq!(last_system_audio_activity_unix_ms(), None);
+        assert_eq!(system_audio_activity_level(), None);
+        assert_eq!(system_audio_activity_idle_ms(), None);
+        assert_eq!(peek_system_audio_activity_window_peak_level(), None);
+        assert_eq!(take_system_audio_activity_window_peak_level(), None);
+    }
+
+    #[test]
+    fn system_audio_activity_peak_peek_does_not_consume_and_take_consumes() {
+        let _guard = activity_state_test_guard();
+        reset_last_system_audio_activity_unix_ms();
+
+        let activity_marker_ms = super::now_microphone_activity_marker_ms();
+        store_system_audio_activity(0.2, activity_marker_ms, 1);
+        store_system_audio_activity(0.7, activity_marker_ms, 2);
+        store_system_audio_activity(0.4, activity_marker_ms, 3);
+
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.7));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.7));
+        assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.7));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), None);
+        assert_eq!(take_system_audio_activity_window_peak_level(), None);
+
+        store_system_audio_activity(0.3, activity_marker_ms, 4);
+        assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.3));
+        assert_eq!(take_system_audio_activity_window_peak_level(), None);
+    }
+
+    #[test]
+    fn system_audio_activity_state_is_independent_from_microphone_activity() {
+        let _guard = activity_state_test_guard();
+        reset_last_microphone_activity_unix_ms();
+        reset_last_system_audio_activity_unix_ms();
+
+        let activity_marker_ms = super::now_microphone_activity_marker_ms();
+        store_microphone_activity(0.25, activity_marker_ms, 11);
+        store_system_audio_activity(0.75, activity_marker_ms, 22);
+
+        assert_eq!(last_microphone_activity_unix_ms(), Some(11));
+        assert_eq!(microphone_activity_level(), Some(0.25));
+        assert_eq!(peek_microphone_activity_window_peak_level(), Some(0.25));
+        assert_eq!(last_system_audio_activity_unix_ms(), Some(22));
+        assert_eq!(system_audio_activity_level(), Some(0.75));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.75));
+
+        reset_last_system_audio_activity_unix_ms();
+
+        assert_eq!(last_system_audio_activity_unix_ms(), None);
+        assert_eq!(system_audio_activity_level(), None);
+        assert_eq!(peek_system_audio_activity_window_peak_level(), None);
+        assert_eq!(last_microphone_activity_unix_ms(), Some(11));
+        assert_eq!(microphone_activity_level(), Some(0.25));
+        assert_eq!(peek_microphone_activity_window_peak_level(), Some(0.25));
+
+        reset_last_microphone_activity_unix_ms();
+    }
 }
 
 #[cfg(target_os = "macos")]

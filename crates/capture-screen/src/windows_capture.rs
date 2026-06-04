@@ -69,11 +69,11 @@ use crate::frame_schedule::{
     lookahead_sample_duration_ticks, should_drop_frame, SegmentTimeline,
 };
 use crate::{
-    captured_frame_equivalence_from_interleaved_bytes, resolve_stream_resolution,
-    screen_frame_artifact_path, CapturedFrameEquivalenceOutcome, PrivacyFilterApplyOutcome,
-    RotatedCaptureOutputs, ScreenCaptureSession, ScreenCaptureSessionOptions, ScreenCaptureSources,
-    ScreenFrameArtifact, ScreenFrameArtifactHandler, ScreenFrameExportConfig,
-    StartedCaptureSession,
+    captured_frame_equivalence_from_interleaved_bytes, captured_frame_equivalence_proofs_match,
+    resolve_stream_resolution, screen_frame_artifact_path, CapturedFrameEquivalence,
+    CapturedFrameEquivalenceOutcome, PrivacyFilterApplyOutcome, RotatedCaptureOutputs,
+    ScreenCaptureSession, ScreenCaptureSessionOptions, ScreenCaptureSources, ScreenFrameArtifact,
+    ScreenFrameArtifactHandler, ScreenFrameExportConfig, StartedCaptureSession,
 };
 use capture_types::CaptureErrorResponse;
 
@@ -82,6 +82,7 @@ const TICKS_PER_SECOND: i64 = 10_000_000;
 
 const FRAME_EXPORT_JPEG_QUALITY: u8 = 85;
 const FRAME_POOL_BUFFER_COUNT: i32 = 2;
+const SCREEN_ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// WinRT type name whose `IsBorderRequired` property gates Win11 22000+ support.
 const GRAPHICS_CAPTURE_SESSION_TYPE: &str = "Windows.Graphics.Capture.GraphicsCaptureSession";
@@ -520,6 +521,7 @@ struct CaptureEngine {
     writer: Option<SinkWriter>,
     staging: Option<ID3D11Texture2D>,
     frame_export: Option<WindowsFrameExportRuntime>,
+    screen_activity: WindowsScreenActivityRuntime,
     source_width: u32,
     source_height: u32,
     width: u32,
@@ -560,6 +562,26 @@ struct WindowsFrameExportRuntime {
     staging: Option<ID3D11Texture2D>,
     rgb: Vec<u8>,
     rgba_for_equivalence: Vec<u8>,
+}
+
+struct WindowsScreenActivityRuntime {
+    minimum_interval: Duration,
+    last_sampled_at: Option<Instant>,
+    staging: Option<ID3D11Texture2D>,
+    rgba_for_equivalence: Vec<u8>,
+    last_equivalence: Option<CapturedFrameEquivalence>,
+}
+
+impl WindowsScreenActivityRuntime {
+    fn new(width: u32, height: u32) -> Self {
+        Self {
+            minimum_interval: SCREEN_ACTIVITY_SAMPLE_INTERVAL,
+            last_sampled_at: None,
+            staging: None,
+            rgba_for_equivalence: vec![0u8; (width as usize) * (height as usize) * 4],
+            last_equivalence: None,
+        }
+    }
 }
 
 impl WindowsFrameExportRuntime {
@@ -719,6 +741,7 @@ impl CaptureEngine {
                     width,
                     height,
                 )?,
+                screen_activity: WindowsScreenActivityRuntime::new(width, height),
                 source_width,
                 source_height,
                 width,
@@ -771,13 +794,18 @@ impl CaptureEngine {
                 runtime.minimum_interval,
             )
         });
+        let should_sample_screen_activity = crate::should_export_screen_frame(
+            self.screen_activity.last_sampled_at,
+            now,
+            self.screen_activity.minimum_interval,
+        );
         let should_encode_frame = !should_drop_frame(
             self.last_kept_ticks,
             relative_ticks,
             self.min_interval_ticks,
         );
 
-        if !should_encode_frame && !should_export_frame {
+        if !should_encode_frame && !should_export_frame && !should_sample_screen_activity {
             return Ok(());
         }
 
@@ -795,10 +823,29 @@ impl CaptureEngine {
             self.last_kept_ticks = Some(relative_ticks);
         }
 
-        if should_export_frame {
-            if let Err(error) = self.export_frame_artifact(&texture, now_unix_ms()) {
+        let exported_equivalence = if should_export_frame {
+            match self.export_frame_artifact(&texture, now_unix_ms()) {
+                Ok(equivalence) => Some(equivalence),
+                Err(error) => {
+                    capture_runtime::debug_log!(
+                        "[capture-screen] failed to export Windows screen frame artifact: [{}] {}",
+                        error.code,
+                        error.message
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if should_sample_screen_activity {
+            if let Some(equivalence) = exported_equivalence.as_ref() {
+                self.mark_screen_activity_for_equivalence(equivalence);
+                self.screen_activity.last_sampled_at = Some(now);
+            } else if let Err(error) = self.sample_screen_activity(&texture, now) {
                 capture_runtime::debug_log!(
-                    "[capture-screen] failed to export Windows screen frame artifact: [{}] {}",
+                    "[capture-screen] failed to sample Windows screen activity: [{}] {}",
                     error.code,
                     error.message
                 );
@@ -860,6 +907,7 @@ impl CaptureEngine {
             self.height as usize,
         );
         self.staging = None;
+        self.screen_activity.staging = None;
         if let Some(frame_export) = self.frame_export.as_mut() {
             frame_export.staging = None;
         }
@@ -933,9 +981,11 @@ impl CaptureEngine {
         &mut self,
         texture: &ID3D11Texture2D,
         captured_at_unix_ms: u64,
-    ) -> Result<(), CaptureErrorResponse> {
+    ) -> Result<CapturedFrameEquivalenceOutcome, CaptureErrorResponse> {
         let Some(runtime) = self.frame_export.as_mut() else {
-            return Ok(());
+            return Ok(CapturedFrameEquivalenceOutcome::quarantined(
+                "Windows frame export runtime is not configured",
+            ));
         };
         runtime.last_exported_at = Some(Instant::now());
 
@@ -944,54 +994,20 @@ impl CaptureEngine {
         let file_path =
             screen_frame_artifact_path(&runtime.artifact_dir, frame_index, captured_at_unix_ms);
 
-        ensure_frame_export_staging(&self.device, texture, runtime)?;
-        let staging = runtime
-            .staging
-            .as_ref()
-            .expect("frame export staging texture initialized above")
-            .clone();
-
-        let captured_frame_equivalence = unsafe {
-            self.context.CopyResource(&staging, texture);
-
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context
-                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                .map_err(|e| win_error("ID3D11DeviceContext.Map(frame export) failed", &e))?;
-
-            let src_stride = mapped.RowPitch as usize;
-            let source_width = self.source_width as usize;
-            let source_height = self.source_height as usize;
-            let width = self.width as usize;
-            let height = self.height as usize;
-            bgra_to_rgb_and_rgba_scaled(
-                mapped.pData as *const u8,
-                src_stride,
-                source_width,
-                source_height,
-                width,
-                height,
-                &self.scale_map,
-                &mut runtime.rgb,
-                &mut runtime.rgba_for_equivalence,
-            );
-            let equivalence = captured_frame_equivalence_from_interleaved_bytes(
-                &runtime.rgba_for_equivalence,
-                width * 4,
-                width,
-                height,
-                [0, 1, 2, 3],
-            )
-            .map(CapturedFrameEquivalenceOutcome::ready)
-            .unwrap_or_else(|| {
-                CapturedFrameEquivalenceOutcome::quarantined(
-                    "failed to derive captured frame equivalence from downscaled Windows frame",
-                )
-            });
-
-            self.context.Unmap(&staging, 0);
-            equivalence
-        };
+        let captured_frame_equivalence = read_scaled_frame_equivalence(
+            &self.device,
+            &self.context,
+            texture,
+            &mut runtime.staging,
+            self.source_width as usize,
+            self.source_height as usize,
+            self.width as usize,
+            self.height as usize,
+            &self.scale_map,
+            Some(&mut runtime.rgb),
+            &mut runtime.rgba_for_equivalence,
+            "frame export",
+        )?;
 
         save_rgb_as_jpeg(&file_path, self.width, self.height, &runtime.rgb)?;
         (runtime.on_frame_exported)(ScreenFrameArtifact {
@@ -999,10 +1015,78 @@ impl CaptureEngine {
             captured_at_unix_ms,
             width: Some(self.width),
             height: Some(self.height),
-            captured_frame_equivalence,
+            captured_frame_equivalence: captured_frame_equivalence.clone(),
         });
+        Ok(captured_frame_equivalence)
+    }
 
+    fn sample_screen_activity(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        sampled_at: Instant,
+    ) -> Result<(), CaptureErrorResponse> {
+        self.screen_activity.last_sampled_at = Some(sampled_at);
+        let captured_frame_equivalence = read_scaled_frame_equivalence(
+            &self.device,
+            &self.context,
+            texture,
+            &mut self.screen_activity.staging,
+            self.source_width as usize,
+            self.source_height as usize,
+            self.width as usize,
+            self.height as usize,
+            &self.scale_map,
+            None,
+            &mut self.screen_activity.rgba_for_equivalence,
+            "screen activity",
+        )?;
+        self.mark_screen_activity_for_equivalence(&captured_frame_equivalence);
         Ok(())
+    }
+
+    fn mark_screen_activity_for_equivalence(
+        &mut self,
+        captured_frame_equivalence: &CapturedFrameEquivalenceOutcome,
+    ) {
+        let CapturedFrameEquivalenceOutcome::Ready(current) = captured_frame_equivalence else {
+            return;
+        };
+
+        let previous_equivalence = self.screen_activity.last_equivalence.as_ref();
+        let first_ready_sample = previous_equivalence.is_none();
+        let changed = match previous_equivalence {
+            None => true,
+            Some(previous) => {
+                previous.version != current.version
+                    || !captured_frame_equivalence_proofs_match(
+                        current.version,
+                        &previous.proof,
+                        &current.proof,
+                    )
+            }
+        };
+        self.screen_activity.last_equivalence = Some(current.clone());
+
+        if changed && crate::mark_screen_activity_now() {
+            if first_ready_sample {
+                capture_runtime::debug_log!(
+                    "[capture-screen] Windows screen activity baseline established; equivalence_hint={}",
+                    current.hint
+                );
+            } else {
+                capture_runtime::debug_log!(
+                    "[capture-screen] Windows screen activity changed; equivalence_hint={}",
+                    current.hint
+                );
+            }
+        }
+
+        if !changed {
+            capture_runtime::debug_log!(
+                "[capture-screen] Windows screen activity unchanged; equivalence_hint={}",
+                current.hint
+            );
+        }
     }
 
     /// Lazily create the CPU-readable staging texture.
@@ -1171,20 +1255,71 @@ fn create_staging_texture(
     })
 }
 
-fn ensure_frame_export_staging(
+#[allow(clippy::too_many_arguments)]
+fn read_scaled_frame_equivalence(
     device: &ID3D11Device,
-    source: &ID3D11Texture2D,
-    runtime: &mut WindowsFrameExportRuntime,
-) -> Result<(), CaptureErrorResponse> {
-    if runtime.staging.is_some() {
-        return Ok(());
+    context: &ID3D11DeviceContext,
+    texture: &ID3D11Texture2D,
+    staging: &mut Option<ID3D11Texture2D>,
+    source_width: usize,
+    source_height: usize,
+    width: usize,
+    height: usize,
+    scale_map: &ScaleMap,
+    rgb: Option<&mut [u8]>,
+    rgba_for_equivalence: &mut [u8],
+    readback_context: &str,
+) -> Result<CapturedFrameEquivalenceOutcome, CaptureErrorResponse> {
+    if staging.is_none() {
+        *staging = Some(create_staging_texture(
+            device,
+            texture,
+            &format!("CreateTexture2D({readback_context} staging)"),
+        )?);
     }
-    runtime.staging = Some(create_staging_texture(
-        device,
-        source,
-        "CreateTexture2D(frame export staging)",
-    )?);
-    Ok(())
+    let staging_texture = staging
+        .as_ref()
+        .expect("readback staging texture initialized above")
+        .clone();
+
+    let equivalence = unsafe {
+        context.CopyResource(&staging_texture, texture);
+
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        context
+            .Map(&staging_texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            .map_err(|e| win_error(&format!("ID3D11DeviceContext.Map({readback_context}) failed"), &e))?;
+
+        bgra_to_rgb_and_rgba_scaled(
+            mapped.pData as *const u8,
+            mapped.RowPitch as usize,
+            source_width,
+            source_height,
+            width,
+            height,
+            scale_map,
+            rgb,
+            rgba_for_equivalence,
+        );
+        let equivalence = captured_frame_equivalence_from_interleaved_bytes(
+            rgba_for_equivalence,
+            width * 4,
+            width,
+            height,
+            [0, 1, 2, 3],
+        )
+        .map(CapturedFrameEquivalenceOutcome::ready)
+        .unwrap_or_else(|| {
+            CapturedFrameEquivalenceOutcome::quarantined(
+                "failed to derive captured frame equivalence from downscaled Windows frame",
+            )
+        });
+
+        context.Unmap(&staging_texture, 0);
+        equivalence
+    };
+
+    Ok(equivalence)
 }
 
 fn create_d3d_device() -> Result<(ID3D11Device, ID3D11DeviceContext), CaptureErrorResponse> {
@@ -1483,10 +1618,12 @@ fn bgra_to_rgb_and_rgba_scaled(
     dst_width: usize,
     dst_height: usize,
     scale_map: &ScaleMap,
-    rgb: &mut [u8],
+    mut rgb: Option<&mut [u8]>,
     rgba: &mut [u8],
 ) {
-    debug_assert!(rgb.len() >= dst_width * dst_height * 3);
+    debug_assert!(rgb
+        .as_ref()
+        .map_or(true, |rgb| rgb.len() >= dst_width * dst_height * 3));
     debug_assert!(rgba.len() >= dst_width * dst_height * 4);
     debug_assert_eq!(scale_map.x.len(), dst_width);
     debug_assert_eq!(scale_map.y.len(), dst_height);
@@ -1494,16 +1631,20 @@ fn bgra_to_rgb_and_rgba_scaled(
     for y in 0..dst_height {
         let src_y = scale_map.y[y].min(src_height.saturating_sub(1));
         let row = unsafe { std::slice::from_raw_parts(src.add(src_y * src_stride), src_width * 4) };
-        let rgb_out = &mut rgb[y * dst_width * 3..y * dst_width * 3 + dst_width * 3];
+        let mut rgb_out = rgb
+            .as_deref_mut()
+            .map(|rgb| &mut rgb[y * dst_width * 3..y * dst_width * 3 + dst_width * 3]);
         let rgba_out = &mut rgba[y * dst_width * 4..y * dst_width * 4 + dst_width * 4];
         for x in 0..dst_width {
             let src_x = scale_map.x[x].min(src_width.saturating_sub(1));
             let b = row[src_x * 4];
             let g = row[src_x * 4 + 1];
             let r = row[src_x * 4 + 2];
-            rgb_out[x * 3] = r;
-            rgb_out[x * 3 + 1] = g;
-            rgb_out[x * 3 + 2] = b;
+            if let Some(rgb_out) = rgb_out.as_deref_mut() {
+                rgb_out[x * 3] = r;
+                rgb_out[x * 3 + 1] = g;
+                rgb_out[x * 3 + 2] = b;
+            }
             rgba_out[x * 4] = r;
             rgba_out[x * 4 + 1] = g;
             rgba_out[x * 4 + 2] = b;
@@ -1666,11 +1807,35 @@ mod tests {
             2,
             2,
             &scale_map,
-            &mut rgb,
+            Some(&mut rgb),
             &mut rgba,
         );
 
         assert_eq!(rgb, vec![101, 51, 1, 103, 53, 3, 105, 55, 5, 107, 57, 7,]);
+        assert_eq!(
+            rgba,
+            vec![101, 51, 1, 255, 103, 53, 3, 255, 105, 55, 5, 255, 107, 57, 7, 255,]
+        );
+    }
+
+    #[test]
+    fn bgra_to_rgb_and_rgba_scaled_can_skip_rgb_output() {
+        let source = test_bgra_frame(4, 2);
+        let scale_map = ScaleMap::new(4, 2, 2, 2);
+        let mut rgba = vec![0u8; 2 * 2 * 4];
+
+        bgra_to_rgb_and_rgba_scaled(
+            source.as_ptr(),
+            4 * 4,
+            4,
+            2,
+            2,
+            2,
+            &scale_map,
+            None,
+            &mut rgba,
+        );
+
         assert_eq!(
             rgba,
             vec![101, 51, 1, 255, 103, 53, 3, 255, 105, 55, 5, 255, 107, 57, 7, 255,]

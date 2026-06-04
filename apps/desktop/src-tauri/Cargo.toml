@@ -65,6 +65,7 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(windows)'.dependencies]
 ocr = { path = "../../../crates/ocr", features = ["tesseract-embedded"] }
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [target.'cfg(not(windows))'.dependencies]
 ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }

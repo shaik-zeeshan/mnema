@@ -57,13 +57,82 @@ struct IdleDebugAudioProjection {
     system_audio: AudioSignalDebugProjection,
 }
 
-#[cfg(target_os = "macos")]
 fn current_system_idle_ms() -> Option<u64> {
     super::system_idle::current_system_idle_ms()
 }
 
-#[cfg(not(target_os = "macos"))]
-fn current_system_idle_ms() -> Option<u64> {
+#[cfg(target_os = "windows")]
+fn system_audio_activity_idle_ms() -> Option<u64> {
+    microphone_capture::system_audio_activity_idle_ms()
+}
+
+#[cfg(target_os = "macos")]
+fn system_audio_activity_idle_ms() -> Option<u64> {
+    capture_screen::system_audio_activity_idle_ms()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn system_audio_activity_idle_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn system_audio_activity_level() -> Option<f32> {
+    microphone_capture::system_audio_activity_level()
+}
+
+#[cfg(target_os = "macos")]
+fn system_audio_activity_level() -> Option<f32> {
+    capture_screen::system_audio_activity_level()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn system_audio_activity_level() -> Option<f32> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn last_system_audio_activity_unix_ms() -> Option<u64> {
+    microphone_capture::last_system_audio_activity_unix_ms()
+}
+
+#[cfg(target_os = "macos")]
+fn last_system_audio_activity_unix_ms() -> Option<u64> {
+    capture_screen::last_system_audio_activity_unix_ms()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn last_system_audio_activity_unix_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    microphone_capture::take_system_audio_activity_window_peak_level()
+}
+
+#[cfg(target_os = "macos")]
+fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    capture_screen::take_system_audio_activity_window_peak_level()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    microphone_capture::peek_system_audio_activity_window_peak_level()
+}
+
+#[cfg(target_os = "macos")]
+fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    capture_screen::peek_system_audio_activity_window_peak_level()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
     None
 }
 
@@ -165,14 +234,10 @@ fn current_activity_snapshot_with_audio_peak_mode(
         },
         system_audio_activity: AudioActivitySourceState {
             enabled: capture_source_requested(runtime, |sources| sources.system_audio),
-            idle_ms: capture_screen::system_audio_activity_idle_ms(),
+            idle_ms: system_audio_activity_idle_ms(),
             latest_normalized_level: match audio_peak_read_mode {
-                AudioPeakReadMode::Take => {
-                    capture_screen::take_system_audio_activity_window_peak_level()
-                }
-                AudioPeakReadMode::Peek => {
-                    capture_screen::peek_system_audio_activity_window_peak_level()
-                }
+                AudioPeakReadMode::Take => take_system_audio_activity_window_peak_level(),
+                AudioPeakReadMode::Peek => peek_system_audio_activity_window_peak_level(),
             },
         },
     }
@@ -204,7 +269,7 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
     let mut runtime = lock_runtime_for_idle_debug(&state);
     let runtime = runtime.runtime_mut();
     let now = now_monotonic_marker_ms();
-    let system_idle_ms = super::system_idle::current_system_idle_ms();
+    let system_idle_ms = current_system_idle_ms();
     let screen_activity_last_unix_ms = capture_screen::last_screen_activity_unix_ms();
     let screen_activity_idle_ms = capture_screen::screen_activity_idle_ms();
     let microphone_raw_sample = RawActivityReading {
@@ -212,8 +277,8 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
         level: microphone_capture::microphone_activity_level(),
     };
     let system_audio_raw_sample = RawActivityReading {
-        last_unix_ms: capture_screen::last_system_audio_activity_unix_ms(),
-        level: capture_screen::system_audio_activity_level(),
+        last_unix_ms: last_system_audio_activity_unix_ms(),
+        level: system_audio_activity_level(),
     };
     let activity_snapshot = current_activity_snapshot_for_debug(runtime);
     let combined_policy = runtime
@@ -235,6 +300,12 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
             "core_graphics".to_string()
         } else {
             "core_graphics_unavailable".to_string()
+        }
+    } else if cfg!(target_os = "windows") {
+        if system_idle_available {
+            "get_last_input_info".to_string()
+        } else {
+            "get_last_input_info_unavailable".to_string()
         }
     } else {
         "unavailable".to_string()
