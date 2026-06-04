@@ -33,9 +33,9 @@ use super::segments::{
 #[cfg(target_os = "windows")]
 use super::segments::{
     pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
-    pause_screen_for_inactivity_with_app_handle, pause_system_audio_for_inactivity_with_app_handle,
-    resume_microphone_from_inactivity, resume_runtime_from_inactivity, resume_screen_from_inactivity,
-    resume_system_audio_from_inactivity,
+    pause_screen_for_inactivity_with_app_handle, pause_screen_for_transient_liveness,
+    pause_system_audio_for_inactivity_with_app_handle, resume_microphone_from_inactivity,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity, resume_system_audio_from_inactivity,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::segments::{
@@ -72,12 +72,38 @@ pub(crate) enum TickOutcome {
 }
 
 impl RecordingLifecycle {
+    /// React to the Windows screen capture session stopping mid-recording.
+    ///
+    /// Per ADR 0023, a `GraphicsCaptureItem.Closed` / not-live signal (monitor
+    /// disconnect, lid close, session lock, sleep) is a transient liveness
+    /// condition, not a fatal error: instead of failing the session we enter a
+    /// screen-only transient suspension (reusing the inactivity pause path) and
+    /// keep the session alive so the throttled display-present probe in
+    /// `tick_inactivity` can auto-resume it. Only a genuine, non-transient stop
+    /// error still fails the session.
+    ///
+    /// Guards against re-triggering while already transient-paused: the pause path
+    /// clears `active_screen_session` (so the not-live branch can't fire again) and
+    /// sets `screen_paused`, which both branches below check.
     #[cfg(target_os = "windows")]
-    fn fail_if_windows_screen_capture_stopped(&mut self) -> TickOutcome {
+    fn handle_windows_screen_capture_stop(&mut self) -> TickOutcome {
+        if self.runtime.inactivity.is_screen_paused() {
+            // Already suspended (inactivity or transient liveness). The dead
+            // session has been stopped/cleared; nothing to react to until resume.
+            return TickOutcome::Continue;
+        }
+
         let stop_error = capture_screen::take_screen_capture_session_stop_error(
             self.runtime.active_screen_session.as_mut(),
         );
         if let Some(error) = stop_error {
+            if capture_screen::screen_capture_stop_error_is_transient_liveness(&error.code) {
+                return self.suspend_windows_screen_for_transient_liveness(&format!(
+                    "backend stop error [{}] {}",
+                    error.code, error.message
+                ));
+            }
+
             super::debug_log::log(format!(
                 "windows screen capture stopped unexpectedly; failing runtime session: [{}] {}",
                 error.code, error.message
@@ -92,16 +118,121 @@ impl RecordingLifecycle {
                 self.runtime.active_screen_session.as_ref(),
             )
         {
-            super::debug_log::log(
-                "windows screen capture stopped unexpectedly without a backend error; failing runtime session"
-                    .to_string(),
-            );
-            stop_active_sessions_after_failure(&mut self.runtime);
-            mark_runtime_session_failed(&mut self.runtime);
-            return TickOutcome::StopLoop;
+            // Not-live without a surfaced backend stop error is the same
+            // display-death family (ADR 0023) → transient suspension, not failure.
+            return self
+                .suspend_windows_screen_for_transient_liveness("session not live without a backend error");
         }
 
         TickOutcome::Continue
+    }
+
+    /// Enter a screen-only transient-liveness suspension and keep the session
+    /// alive (ADR 0023). The screen capture session is already dead; the pause
+    /// path finalizes the partial segment and records the
+    /// `TransientLiveness { DisplayUnavailable }` reason.
+    #[cfg(target_os = "windows")]
+    fn suspend_windows_screen_for_transient_liveness(&mut self, cause: &str) -> TickOutcome {
+        super::debug_log::log(format!(
+            "windows screen capture became unavailable ({cause}); suspending screen as transient liveness and keeping the session alive (ADR 0023)"
+        ));
+        if let Err(error) = pause_screen_for_transient_liveness(
+            &mut self.runtime,
+            super::inactivity::TransientLivenessTrigger::DisplayUnavailable,
+        ) {
+            // The pause path tolerates the dead-session stop error internally, so a
+            // returned error here is a genuine bookkeeping failure; reconcile and
+            // continue rather than killing the recording on a transient condition.
+            super::debug_log::log(format!(
+                "windows transient-liveness screen suspension reported an issue: [{}] {}",
+                error.code, error.message
+            ));
+        }
+        TickOutcome::Continue
+    }
+
+    /// Decide whether a transient-liveness screen pause should resume *now*,
+    /// encoding the exact gate→mark→predicate ordering the tick relies on (ADR
+    /// 0023). Returns `true` only when:
+    /// 1. the screen is paused for a `TransientLiveness` reason (cross-trigger
+    ///    isolation — an `Inactivity` pause is never resumed here), and
+    /// 2. a probe is due per the throttle window, and
+    /// 3. the display-present probe (invoked only when due, so the Win32 call stays
+    ///    rate limited) reports a display is back.
+    ///
+    /// When a probe is due, the throttle marker is advanced *before* the resume
+    /// predicate is evaluated — the same `now`. The predicate
+    /// (`should_resume_screen_from_transient_liveness`) therefore must not re-check
+    /// the throttle (it would see the just-set marker and always return false,
+    /// making auto-resume dead code); this helper owns the single throttle gate.
+    /// Factored out of [`try_resume_windows_screen_from_transient_liveness`] so the
+    /// ordering can be tested without a real `AppHandle` or Win32 probe.
+    #[cfg(target_os = "windows")]
+    fn transient_liveness_resume_decision(
+        &mut self,
+        now: u64,
+        probe_display_present: impl FnOnce() -> bool,
+    ) -> bool {
+        use super::inactivity::ScreenPauseReason;
+
+        if !matches!(
+            self.runtime.inactivity.screen_pause_reason(),
+            Some(ScreenPauseReason::TransientLiveness { .. })
+        ) {
+            return false;
+        }
+        if !self.runtime.inactivity.is_transient_liveness_probe_due(now) {
+            return false;
+        }
+
+        self.runtime.inactivity.mark_transient_liveness_probe(now);
+        let display_present = probe_display_present();
+        self.runtime
+            .inactivity
+            .should_resume_screen_from_transient_liveness(display_present, now)
+    }
+
+    /// Throttled display-present probe + auto-resume for a transient-liveness
+    /// screen pause (ADR 0023). Only runs when the screen is paused for a
+    /// `TransientLiveness` reason (cross-trigger isolation — an `Inactivity` pause
+    /// is never resumed here), and only attempts a resume when a probe is due and a
+    /// display/session is present again. A resume failure is logged and tolerated;
+    /// the screen stays suspended with its reason intact for the next probe.
+    #[cfg(target_os = "windows")]
+    fn try_resume_windows_screen_from_transient_liveness(
+        &mut self,
+        now: u64,
+        app_handle: &tauri::AppHandle,
+    ) {
+        // Decide whether to resume using the real display-present probe, in the
+        // same gate→mark→predicate ordering the decision helper encodes (and which
+        // the regression test drives with a stubbed display value). The probe is
+        // only invoked when a probe is actually due, so the throttle still rate
+        // limits the Win32 call. Route through `screen_display_available` for
+        // symmetry with the macOS recovery path (it delegates to
+        // `windows_display_present` on Windows).
+        if !self
+            .transient_liveness_resume_decision(now, capture_screen::screen_display_available)
+        {
+            return;
+        }
+
+        if let Err(error) = resume_screen_from_inactivity(&mut self.runtime, Some(app_handle)) {
+            // Display raced away again or WGC re-init failed: never fail the
+            // session on a transient resume (mirrors macOS retry philosophy). The
+            // screen stays suspended with its `TransientLiveness` reason; the next
+            // throttled probe retries.
+            super::debug_log::log(format!(
+                "windows transient-liveness screen resume attempt failed; leaving screen suspended and retrying on the next probe: [{}] {}",
+                error.code, error.message
+            ));
+            return;
+        }
+
+        super::debug_log::log(
+            "resumed Windows screen capture after transient-liveness recovery (display/session present again)"
+                .to_string(),
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -115,6 +246,18 @@ impl RecordingLifecycle {
             && (!sources.screen || self.runtime.inactivity.is_screen_paused())
             && (!sources.microphone || self.runtime.inactivity.is_microphone_paused())
             && (!sources.system_audio || self.runtime.inactivity.is_system_audio_paused())
+    }
+
+    /// True when the screen is paused for a transient-liveness reason (ADR 0023).
+    /// Used to keep activity-driven resume paths from resuming a screen whose
+    /// display may still be gone — only the throttled display-present probe resumes
+    /// a transient-liveness pause.
+    #[cfg(target_os = "windows")]
+    fn screen_paused_for_transient_liveness(&self) -> bool {
+        matches!(
+            self.runtime.inactivity.screen_pause_reason(),
+            Some(super::inactivity::ScreenPauseReason::TransientLiveness { .. })
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -349,6 +492,15 @@ impl RecordingLifecycle {
                 &sources,
                 "resuming user pause",
             )?;
+            // A user resume starts a fresh full segment for every requested family,
+            // so any lingering inactivity/transient-liveness family-pause state is
+            // now stale against a live session (ADR 0023). Clearing it here also
+            // clears `screen_pause_reason` and the pause-start timestamp, so the
+            // transient-liveness probe stops watching a screen that is live again and
+            // the activity resume-all path is no longer wrongly gated.
+            self.runtime
+                .inactivity
+                .set_family_paused_states(false, false, false);
             apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady)?;
         }
         self.runtime.user_capture_paused = false;
@@ -647,18 +799,31 @@ impl RecordingLifecycle {
         if self.runtime.user_capture_paused {
             return TickOutcome::SkipRotation;
         }
-        if self.fail_if_windows_screen_capture_stopped() == TickOutcome::StopLoop {
+        if self.handle_windows_screen_capture_stop() == TickOutcome::StopLoop {
             return TickOutcome::StopLoop;
         }
 
         let now = super::runtime::now_monotonic_marker_ms();
+
+        // Throttled transient-liveness auto-resume (ADR 0023): when the screen is
+        // paused for a transient-liveness reason and a probe is due, check whether
+        // a display/session is present again and, if so, resume the screen via the
+        // shared inactivity resume path. A failed resume (display raced away, WGC
+        // init error) must never fail the session — log and let the next throttled
+        // probe retry, mirroring macOS's `DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL`.
+        self.try_resume_windows_screen_from_transient_liveness(now, app_handle);
         let activity_snapshot = current_activity_snapshot(&mut self.runtime);
         let effective_idle = self
             .runtime
             .inactivity
             .effective_idle_for_snapshot(now, activity_snapshot);
 
-        if self.all_requested_families_paused_for_inactivity()
+        // Cross-trigger isolation (ADR 0023): the activity-driven resume-all-families
+        // branch must never resume a screen paused for transient liveness — the
+        // display may still be gone. The throttled display-present probe above owns
+        // that resume; audio families still resume via their per-family blocks below.
+        if !self.screen_paused_for_transient_liveness()
+            && self.all_requested_families_paused_for_inactivity()
             && effective_idle.idle_ms
                 < self
                     .runtime
@@ -1328,7 +1493,7 @@ impl RecordingLifecycle {
     pub(crate) fn tick_rotation(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
         // Screen liveness is only meaningful when screen is an active source; the
         // helper is a no-op when there is no active screen session (audio-only).
-        if self.fail_if_windows_screen_capture_stopped() == TickOutcome::StopLoop {
+        if self.handle_windows_screen_capture_stop() == TickOutcome::StopLoop {
             return TickOutcome::StopLoop;
         }
 
@@ -1669,8 +1834,15 @@ mod tests {
 
     fn closed_error() -> CaptureErrorResponse {
         CaptureErrorResponse {
-            code: "screen_capture_item_closed".to_string(),
+            code: capture_screen::SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE.to_string(),
             message: "fake monitor disconnect".to_string(),
+        }
+    }
+
+    fn genuine_stop_error() -> CaptureErrorResponse {
+        CaptureErrorResponse {
+            code: "screen_capture_encoder_failed".to_string(),
+            message: "fake non-transient encoder failure".to_string(),
         }
     }
 
@@ -1679,18 +1851,73 @@ mod tests {
         lifecycle.runtime.is_running = true;
         lifecycle.runtime.runtime_state = RuntimeState::Running;
         lifecycle.runtime.active_screen_session = Some(Box::new(session));
+        lifecycle.runtime.requested_sources = Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        });
         lifecycle
     }
 
     #[test]
-    fn windows_screen_stop_error_marks_runtime_failed() {
+    fn windows_transient_stop_error_suspends_screen_without_failing() {
+        // ADR 0023: a `GraphicsCaptureItem.Closed` stop error is transient — the
+        // session must survive with the screen suspended for transient liveness,
+        // not be failed.
         let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
             live: false,
             pending_stop_error: Some(closed_error()),
         });
 
         assert_eq!(
-            lifecycle.fail_if_windows_screen_capture_stopped(),
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+        assert!(lifecycle.runtime.is_running);
+        assert_eq!(lifecycle.runtime.runtime_state, RuntimeState::Running);
+        assert!(lifecycle.runtime.active_screen_session.is_none());
+        assert!(lifecycle.runtime.inactivity.is_screen_paused());
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(super::super::inactivity::ScreenPauseReason::TransientLiveness {
+                trigger: super::super::inactivity::TransientLivenessTrigger::DisplayUnavailable,
+            })
+        );
+    }
+
+    #[test]
+    fn windows_dead_screen_session_without_error_suspends_screen_without_failing() {
+        // ADR 0023: not-live without a backend stop error is the same
+        // display-death family → transient suspension, not failure.
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: None,
+        });
+
+        assert_eq!(
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+        assert!(lifecycle.runtime.is_running);
+        assert_eq!(lifecycle.runtime.runtime_state, RuntimeState::Running);
+        assert!(lifecycle.runtime.active_screen_session.is_none());
+        assert!(lifecycle.runtime.inactivity.is_screen_paused());
+        assert!(matches!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(super::super::inactivity::ScreenPauseReason::TransientLiveness { .. })
+        ));
+    }
+
+    #[test]
+    fn windows_genuine_stop_error_still_marks_runtime_failed() {
+        // A non-transient stop error keeps the existing fail-the-session path.
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(genuine_stop_error()),
+        });
+
+        assert_eq!(
+            lifecycle.handle_windows_screen_capture_stop(),
             TickOutcome::StopLoop
         );
         assert!(!lifecycle.runtime.is_running);
@@ -1698,19 +1925,352 @@ mod tests {
         assert!(lifecycle.runtime.active_screen_session.is_none());
     }
 
+    use super::super::inactivity::{InactivityState, ScreenPauseReason, TransientLivenessTrigger};
+
+    fn transient_pause_reason() -> ScreenPauseReason {
+        ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::DisplayUnavailable,
+        }
+    }
+
+    fn screen_only_inactivity_state() -> InactivityState {
+        InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            last_activity_monotonic_ms: 0,
+            ..InactivityState::default()
+        }
+    }
+
+    // Acceptance criterion 1 (lifecycle-level): the suspend path records
+    // `TransientLiveness { DisplayUnavailable }`, and a *later* inactivity pause on
+    // a fresh session records `Inactivity` — the discriminator distinguishes the
+    // two reasons through the real pause machinery, not just the unit setters.
     #[test]
-    fn windows_dead_screen_session_without_error_marks_runtime_failed() {
+    fn windows_transient_suspend_then_inactivity_pause_record_distinct_reasons() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(closed_error()),
+        });
+
+        assert_eq!(
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(transient_pause_reason()),
+            "the transient suspend path must record TransientLiveness {{ DisplayUnavailable }}"
+        );
+
+        // Clear the pause as a resume would, then drive a genuine inactivity pause
+        // through the same shared screen-pause primitive and confirm the reason
+        // discriminator now reads `Inactivity`.
+        lifecycle
+            .runtime
+            .inactivity
+            .set_family_paused_states(false, false, false);
+        assert_eq!(lifecycle.runtime.inactivity.screen_pause_reason(), None);
+
+        lifecycle.runtime.active_screen_session =
+            Some(Box::new(FakeScreenCaptureSession {
+                live: true,
+                pending_stop_error: None,
+            }));
+        super::super::segments::pause_screen_for_inactivity_with_app_handle(
+            &mut lifecycle.runtime,
+            None,
+        )
+        .expect("inactivity screen pause should succeed for a live session");
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(ScreenPauseReason::Inactivity),
+            "a subsequent inactivity pause must record the Inactivity reason"
+        );
+    }
+
+    // Acceptance criterion 2(b) at tick level: a display-present condition must not
+    // resume an `Inactivity`-paused screen, and no transient probe should even be
+    // considered for it. The transient resume gate in `tick_inactivity`
+    // (`screen_pause_reason()` matches `TransientLiveness`) and the pure
+    // `should_resume_screen_from_transient_liveness` predicate both reject an
+    // inactivity pause regardless of display presence.
+    #[test]
+    fn windows_inactivity_paused_screen_is_not_transient_resumed_by_present_display() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+        super::super::segments::pause_screen_for_inactivity_with_app_handle(
+            &mut lifecycle.runtime,
+            None,
+        )
+        .expect("inactivity screen pause should succeed");
+        assert!(lifecycle.runtime.inactivity.is_screen_paused());
+
+        // The lifecycle guard the tick uses to decide whether to run the transient
+        // probe at all rejects an inactivity pause.
+        assert!(
+            !lifecycle.screen_paused_for_transient_liveness(),
+            "an inactivity pause must not be seen as a transient-liveness pause"
+        );
+        // And the pure predicate refuses to resume it even with a present display.
+        assert!(
+            !lifecycle
+                .runtime
+                .inactivity
+                .should_resume_screen_from_transient_liveness(true, 1_000_000),
+            "a display-present probe must never resume an inactivity-paused screen"
+        );
+    }
+
+    // Acceptance criterion 2(a) at lifecycle level: while the screen is paused for
+    // transient liveness, fresh user activity must NOT resume it (the activity
+    // resume path is gated by `screen_paused_for_transient_liveness`), even though
+    // the inactivity resume predicate would otherwise fire on the active snapshot.
+    #[test]
+    fn windows_transient_paused_screen_is_not_resumed_by_user_activity() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(closed_error()),
+        });
+        assert_eq!(
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+        assert!(lifecycle.screen_paused_for_transient_liveness());
+
+        // A fully-active snapshot well past the resume guard window.
+        let active_snapshot = super::super::inactivity::ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: super::super::inactivity::AudioActivitySourceState::default(),
+            system_audio_activity: super::super::inactivity::AudioActivitySourceState::default(),
+        };
+        assert!(
+            !lifecycle
+                .runtime
+                .inactivity
+                .should_resume_screen_from_inactivity(1_000_000, active_snapshot),
+            "user activity must not resume a transient-liveness screen pause"
+        );
+    }
+
+    // Acceptance criterion 3 (status reflection): a transient suspension keeps the
+    // session running and surfaces a paused screen family via `is_screen_paused()`
+    // / the per-family flags the status surface reads.
+    #[test]
+    fn windows_transient_suspension_reflects_paused_status_with_session_running() {
         let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
             live: false,
             pending_stop_error: None,
         });
 
         assert_eq!(
-            lifecycle.fail_if_windows_screen_capture_stopped(),
-            TickOutcome::StopLoop
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
         );
-        assert!(!lifecycle.runtime.is_running);
-        assert_eq!(lifecycle.runtime.runtime_state, RuntimeState::Failed);
-        assert!(lifecycle.runtime.active_screen_session.is_none());
+        assert!(lifecycle.runtime.is_running, "session must keep running");
+        assert_eq!(lifecycle.runtime.runtime_state, RuntimeState::Running);
+        assert!(
+            lifecycle.runtime.inactivity.is_screen_paused(),
+            "screen family must read as paused"
+        );
+        assert!(
+            lifecycle.runtime.inactivity.is_paused,
+            "is_paused-style status must reflect the screen pause"
+        );
+    }
+
+    // Acceptance criterion 4 (throttle, lifecycle-level): consecutive ticks inside
+    // the 2s recovery interval perform at most one probe — modeled by asserting
+    // `last_transient_liveness_probe_monotonic_ms` only advances when a probe is
+    // due. `tick_inactivity` itself needs a real `tauri::AppHandle` (and calls the
+    // real `windows_display_present()` Win32 API), so we exercise the throttle
+    // bookkeeping the tick relies on directly.
+    #[test]
+    fn windows_transient_probe_throttle_advances_marker_only_when_due() {
+        let mut state = screen_only_inactivity_state();
+        state.set_family_paused_states_with_reason(
+            true,
+            false,
+            false,
+            transient_pause_reason(),
+        );
+
+        // First probe is always due; mark it.
+        assert!(state.is_transient_liveness_probe_due(10_000));
+        state.mark_transient_liveness_probe(10_000);
+        assert_eq!(
+            state.last_transient_liveness_probe_monotonic_ms,
+            Some(10_000)
+        );
+
+        // A tick 1s later (inside the 2s interval) is not due; the tick's gate
+        // (`is_transient_liveness_probe_due`) returns false so no probe runs and the
+        // marker does not advance.
+        assert!(!state.is_transient_liveness_probe_due(11_000));
+
+        // A tick at +2s is due; mark advances.
+        assert!(state.is_transient_liveness_probe_due(12_000));
+        state.mark_transient_liveness_probe(12_000);
+        assert_eq!(
+            state.last_transient_liveness_probe_monotonic_ms,
+            Some(12_000)
+        );
+    }
+
+    // Acceptance criterion 5 (partial): with screen as the only requested source, a
+    // transient suspension leaves every requested family paused, which means the
+    // activity-driven resume-all branch is gated off (it requires
+    // `!screen_paused_for_transient_liveness`) — the loop cannot churn the screen
+    // back on via activity, and rotation has nothing live to rotate.
+    #[test]
+    fn windows_screen_only_transient_suspension_pauses_all_requested_families() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(closed_error()),
+        });
+        assert_eq!(
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+
+        assert!(lifecycle.runtime.is_running, "session must survive screen-only loss");
+        assert!(
+            lifecycle.all_requested_families_paused_for_inactivity(),
+            "screen-only request with the screen paused means all requested families are paused"
+        );
+        assert!(
+            lifecycle.screen_paused_for_transient_liveness(),
+            "the activity resume-all branch must stay gated off while transient-paused"
+        );
+    }
+
+    // Finding 1 (BLOCKER) regression at the segments-path level: with the screen
+    // transient-paused, driving the real Windows microphone inactivity pause path
+    // must preserve the screen's `TransientLiveness { DisplayUnavailable }` reason
+    // and its pause-start timestamp (it now routes through the audio-only family
+    // setter instead of `set_family_paused_states`, which would have clobbered both).
+    #[test]
+    fn windows_microphone_inactivity_pause_preserves_transient_screen_reason() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(closed_error()),
+        });
+        lifecycle.runtime.requested_sources = Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        });
+
+        // Enter the transient-liveness screen suspension via the real path.
+        assert_eq!(
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(transient_pause_reason())
+        );
+        let pause_started_at = lifecycle.runtime.inactivity.screen_paused_at_monotonic_ms;
+        assert!(pause_started_at.is_some());
+
+        // Microphone crosses the inactivity threshold. No live microphone session is
+        // attached (the `if let Some` guard skips it) and finalize tolerates errors,
+        // so this exercises the family-state bookkeeping the regression is about.
+        super::super::segments::pause_microphone_for_inactivity_with_app_handle(
+            &mut lifecycle.runtime,
+            None,
+        )
+        .expect("microphone inactivity pause should succeed");
+
+        assert!(lifecycle.runtime.inactivity.is_microphone_paused());
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(transient_pause_reason()),
+            "microphone inactivity pause must not clobber the transient screen reason"
+        );
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_paused_at_monotonic_ms,
+            pause_started_at,
+            "microphone inactivity pause must not reset the screen pause-start timestamp"
+        );
+        assert!(lifecycle.screen_paused_for_transient_liveness());
+
+        // A microphone resume (state side, as `resume_microphone_from_inactivity`
+        // performs after restarting the mic segment) must likewise leave the screen
+        // reason and timestamp intact.
+        lifecycle
+            .runtime
+            .inactivity
+            .set_audio_family_paused_states(false, false);
+        assert!(!lifecycle.runtime.inactivity.is_microphone_paused());
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(transient_pause_reason()),
+            "microphone resume must not clear the transient screen reason"
+        );
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_paused_at_monotonic_ms,
+            pause_started_at,
+            "microphone resume must not reset the screen pause-start timestamp"
+        );
+    }
+
+    // Finding 2 (BLOCKER) regression: drive the REAL gate→mark→predicate ordering
+    // the tick uses (`transient_liveness_resume_decision`, which the tick calls with
+    // the live `windows_display_present` probe) with a stubbed display value. The
+    // decision must be true when a display is present, false when absent, and the
+    // second tick within the 2s throttle window must not probe again (so a present
+    // display on a throttled tick yields no resume).
+    #[test]
+    fn windows_transient_resume_decision_fires_when_display_present_and_throttles() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(closed_error()),
+        });
+        assert_eq!(
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+        assert!(lifecycle.screen_paused_for_transient_liveness());
+
+        // No display present at the first due probe: no resume, but the probe ran.
+        let mut probes = 0u32;
+        assert!(
+            !lifecycle.transient_liveness_resume_decision(10_000, || {
+                probes += 1;
+                false
+            }),
+            "absent display must not resume"
+        );
+        assert_eq!(probes, 1, "first probe is due and runs");
+
+        // A display IS present and a probe is due: the decision fires. This is the
+        // case the self-poisoning throttle bug made permanently false.
+        assert!(
+            lifecycle.transient_liveness_resume_decision(12_000, || {
+                probes += 1;
+                true
+            }),
+            "present display on a due probe must resume"
+        );
+        assert_eq!(probes, 2, "second probe at +2s is due and runs");
+
+        // A tick 1s later is inside the 2s throttle window: the probe must NOT run
+        // again and the decision must be false even though a display is present.
+        assert!(
+            !lifecycle.transient_liveness_resume_decision(13_000, || {
+                probes += 1;
+                true
+            }),
+            "a throttled tick must not resume"
+        );
+        assert_eq!(
+            probes, 2,
+            "the throttled tick must not invoke the display probe again"
+        );
     }
 }

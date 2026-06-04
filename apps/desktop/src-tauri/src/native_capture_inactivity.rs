@@ -48,6 +48,40 @@ const MAX_MICROPHONE_ACTIVITY_THRESHOLD: f32 = 0.15;
 const MIN_SYSTEM_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.002;
 const MAX_SYSTEM_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.05;
 const SCREEN_RESUME_MIN_PAUSED_MS: u64 = 2_000;
+// Throttle for the transient-liveness (display/session present?) recovery probe,
+// mirroring macOS's `DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL`
+// (`native_capture/segments.rs`, 2s) so a `TransientLiveness` screen pause waits
+// quietly between probes instead of re-spamming the capture backend per poll.
+const TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS: u64 = 2_000;
+
+/// Why a `TransientLiveness` screen pause was entered (ADR 0023). This slice only
+/// wires `DisplayUnavailable`; `SystemSuspend` and `SessionLock` are defined now
+/// per ADR 0023 for the follow-up trigger slices that wire `WM_POWERBROADCAST`
+/// and `WTSRegisterSessionNotification`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransientLivenessTrigger {
+    // Wired by a follow-up trigger slice (WM_POWERBROADCAST).
+    #[allow(dead_code)]
+    SystemSuspend,
+    // Wired by a follow-up trigger slice (WTSRegisterSessionNotification).
+    #[allow(dead_code)]
+    SessionLock,
+    // Constructed by the phase-2 transient-liveness recovery slice when the WGC
+    // screen session reports `GraphicsCaptureItem.Closed` / stops being live.
+    DisplayUnavailable,
+}
+
+/// Discriminator recording why the screen is currently paused (ADR 0023). The
+/// two reasons share the same stop/start-segment actions but never cross-trigger:
+/// `Inactivity` resumes on user activity, while `TransientLiveness` resumes on a
+/// throttled display/session-present probe regardless of activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScreenPauseReason {
+    Inactivity,
+    // Constructed by the phase-2 transient-liveness recovery slice via
+    // `set_family_paused_states_with_reason` / `mark_screen_pause_started_with_reason`.
+    TransientLiveness { trigger: TransientLivenessTrigger },
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ActivitySourceIdle {
@@ -115,6 +149,13 @@ pub(crate) struct InactivityState {
     pub microphone_paused: bool,
     pub system_audio_paused: bool,
     pub is_paused: bool,
+    // Why the screen is paused: `Some(reason)` exactly while `screen_paused`,
+    // `None` otherwise (ADR 0023). Kept in lockstep with `screen_paused` so the
+    // resume side can branch on inactivity vs transient-liveness recovery.
+    pub screen_pause_reason: Option<ScreenPauseReason>,
+    // Monotonic timestamp of the last transient-liveness recovery probe, used to
+    // throttle probes to `TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS`.
+    pub last_transient_liveness_probe_monotonic_ms: Option<u64>,
 }
 
 impl Default for InactivityState {
@@ -133,6 +174,8 @@ impl Default for InactivityState {
             microphone_paused: false,
             system_audio_paused: false,
             is_paused: false,
+            screen_pause_reason: None,
+            last_transient_liveness_probe_monotonic_ms: None,
         }
     }
 }
@@ -156,26 +199,105 @@ impl InactivityState {
             microphone_paused: false,
             system_audio_paused: false,
             is_paused: false,
+            screen_pause_reason: None,
+            last_transient_liveness_probe_monotonic_ms: None,
         }
     }
 
+    /// Set per-family pause flags, recording an inactivity-reason screen pause.
+    /// Existing inactivity-driven callers use this; the transient-liveness caller
+    /// uses `set_family_paused_states_with_reason`.
     pub(crate) fn set_family_paused_states(
         &mut self,
         screen_paused: bool,
         microphone_paused: bool,
         system_audio_paused: bool,
     ) {
+        self.set_family_paused_states_with_reason(
+            screen_paused,
+            microphone_paused,
+            system_audio_paused,
+            ScreenPauseReason::Inactivity,
+        );
+    }
+
+    /// Set per-family pause flags with an explicit reason for the screen pause.
+    /// The reason is recorded only when `screen_paused` is true and is cleared
+    /// (along with the pause-start timestamp) whenever the screen is not paused,
+    /// so `screen_pause_reason` can never be stale relative to `screen_paused`.
+    pub(crate) fn set_family_paused_states_with_reason(
+        &mut self,
+        screen_paused: bool,
+        microphone_paused: bool,
+        system_audio_paused: bool,
+        screen_pause_reason: ScreenPauseReason,
+    ) {
         self.screen_paused = screen_paused;
-        if !screen_paused {
+        if screen_paused {
+            self.screen_pause_reason = Some(screen_pause_reason);
+        } else {
             self.screen_paused_at_monotonic_ms = None;
+            self.screen_pause_reason = None;
         }
         self.microphone_paused = microphone_paused;
         self.system_audio_paused = system_audio_paused;
         self.is_paused = screen_paused || microphone_paused || system_audio_paused;
     }
 
+    /// Set only the audio (microphone / system-audio) family pause flags, leaving
+    /// the screen pause flag, reason, and pause-start timestamp untouched (ADR
+    /// 0023). Audio inactivity pause/resume must never clobber a `TransientLiveness`
+    /// screen pause into an `Inactivity` reason (which would un-gate the activity
+    /// resume-all path against a display that may still be gone) nor reset the
+    /// screen pause-start guard. Keeping screen state out of the audio path entirely
+    /// enforces that invariant here rather than trusting every caller to re-thread
+    /// the current screen reason.
+    pub(crate) fn set_audio_family_paused_states(
+        &mut self,
+        microphone_paused: bool,
+        system_audio_paused: bool,
+    ) {
+        self.microphone_paused = microphone_paused;
+        self.system_audio_paused = system_audio_paused;
+        self.is_paused = self.screen_paused || microphone_paused || system_audio_paused;
+    }
+
+    /// Convenience wrapper recording an `Inactivity`-reason screen pause start.
+    /// Now only used by this module's tests — the production inactivity screen-pause
+    /// path records its reason explicitly via `mark_screen_pause_started_with_reason`
+    /// (and the audio family paths no longer touch the screen pause-start timestamp
+    /// at all, per ADR 0023).
+    #[cfg(test)]
     pub(crate) fn mark_screen_pause_started(&mut self, now_monotonic_ms: u64) {
+        self.mark_screen_pause_started_with_reason(now_monotonic_ms, ScreenPauseReason::Inactivity);
+    }
+
+    /// Record the screen pause-start timestamp and the reason in one step. The
+    /// phase-2 transient-liveness caller passes
+    /// `ScreenPauseReason::TransientLiveness { .. }`.
+    pub(crate) fn mark_screen_pause_started_with_reason(
+        &mut self,
+        now_monotonic_ms: u64,
+        screen_pause_reason: ScreenPauseReason,
+    ) {
         self.screen_paused_at_monotonic_ms = Some(now_monotonic_ms);
+        self.screen_pause_reason = Some(screen_pause_reason);
+    }
+
+    /// The reason the screen is currently paused, or `None` when not paused.
+    // Read by the phase-2 transient-liveness wiring and by this module's tests.
+    pub(crate) fn screen_pause_reason(&self) -> Option<ScreenPauseReason> {
+        self.screen_pause_reason
+    }
+
+    /// True when the screen is paused for an `Inactivity` reason. Used to gate the
+    /// activity-based resume so it never fires for a `TransientLiveness` pause.
+    fn is_screen_paused_for_inactivity(&self) -> bool {
+        self.is_screen_paused()
+            && !matches!(
+                self.screen_pause_reason,
+                Some(ScreenPauseReason::TransientLiveness { .. })
+            )
     }
 
     fn has_legacy_global_pause_state(&self) -> bool {
@@ -487,7 +609,13 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || !self.is_screen_paused() || !snapshot.screen_activity_enabled {
+        // Cross-trigger isolation (ADR 0023): a `TransientLiveness` pause must
+        // never resume on user activity — only the throttled display/session
+        // probe resumes it via `should_resume_screen_from_transient_liveness`.
+        if !self.enabled
+            || !self.is_screen_paused_for_inactivity()
+            || !snapshot.screen_activity_enabled
+        {
             return false;
         }
         if !self.screen_resume_guard_elapsed(now_monotonic_ms) {
@@ -506,6 +634,55 @@ impl InactivityState {
                 now_monotonic_ms.saturating_sub(paused_at) >= SCREEN_RESUME_MIN_PAUSED_MS
             })
             .unwrap_or(true)
+    }
+
+    /// True when a transient-liveness recovery probe is due, i.e. no probe has
+    /// run yet or at least `TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS` has elapsed
+    /// since the last one. Pure timestamp logic; the caller records the probe via
+    /// `mark_transient_liveness_probe`.
+    // Wired by the phase-2 transient-liveness recovery slice.
+    pub(crate) fn is_transient_liveness_probe_due(&self, now_monotonic_ms: u64) -> bool {
+        self.last_transient_liveness_probe_monotonic_ms
+            .map(|last_probe_ms| {
+                now_monotonic_ms.saturating_sub(last_probe_ms)
+                    >= TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS
+            })
+            .unwrap_or(true)
+    }
+
+    /// Record that a transient-liveness recovery probe ran at `now_monotonic_ms`,
+    /// resetting the throttle window.
+    // Wired by the phase-2 transient-liveness recovery slice.
+    pub(crate) fn mark_transient_liveness_probe(&mut self, now_monotonic_ms: u64) {
+        self.last_transient_liveness_probe_monotonic_ms = Some(now_monotonic_ms);
+    }
+
+    /// Pure resume predicate for a `TransientLiveness` screen pause (ADR 0023).
+    /// Resumes only when the screen is paused for a transient-liveness reason and a
+    /// display/session is present again (`display_present`, supplied by the phase-2
+    /// probe). Independent of user activity by construction — it ignores the
+    /// activity snapshot entirely.
+    ///
+    /// The probe-throttle check lives in the caller, not here: the lifecycle tick
+    /// gates on [`is_transient_liveness_probe_due`] and then calls
+    /// [`mark_transient_liveness_probe`] *before* evaluating this predicate at the
+    /// same `now`. Re-checking the throttle here would always observe the
+    /// just-recorded marker and return false on every tick, so the auto-resume could
+    /// never fire (it would be dead code). `now_monotonic_ms` is retained for API
+    /// symmetry with the rest of the resume predicates.
+    // Wired by the phase-2 transient-liveness recovery slice.
+    pub(crate) fn should_resume_screen_from_transient_liveness(
+        &self,
+        display_present: bool,
+        _now_monotonic_ms: u64,
+    ) -> bool {
+        if !matches!(
+            self.screen_pause_reason,
+            Some(ScreenPauseReason::TransientLiveness { .. })
+        ) {
+            return false;
+        }
+        display_present
     }
 
     pub(crate) fn should_pause_microphone_for_inactivity(
@@ -1726,6 +1903,233 @@ mod tests {
         assert!(
             state.should_resume_from_inactivity(now, snapshot),
             "legacy resume should fire for legacy global pause"
+        );
+    }
+
+    #[test]
+    fn inactivity_screen_pause_records_and_clears_inactivity_reason() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+        assert_eq!(state.screen_pause_reason(), None);
+
+        state.set_family_paused_states(true, false, false);
+        assert_eq!(
+            state.screen_pause_reason(),
+            Some(ScreenPauseReason::Inactivity)
+        );
+
+        state.set_family_paused_states(false, false, false);
+        assert_eq!(
+            state.screen_pause_reason(),
+            None,
+            "reason must clear when the screen is no longer paused"
+        );
+        assert_eq!(state.screen_paused_at_monotonic_ms, None);
+    }
+
+    #[test]
+    fn mark_screen_pause_started_defaults_to_inactivity_reason() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+        state.set_family_paused_states(true, false, false);
+        state.mark_screen_pause_started(5_000);
+
+        assert_eq!(state.screen_paused_at_monotonic_ms, Some(5_000));
+        assert_eq!(
+            state.screen_pause_reason(),
+            Some(ScreenPauseReason::Inactivity)
+        );
+    }
+
+    #[test]
+    fn transient_liveness_screen_pause_records_and_clears_reason() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+
+        state.set_family_paused_states_with_reason(
+            true,
+            false,
+            false,
+            ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayUnavailable,
+            },
+        );
+        assert_eq!(
+            state.screen_pause_reason(),
+            Some(ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayUnavailable,
+            })
+        );
+
+        state.set_family_paused_states_with_reason(
+            false,
+            false,
+            false,
+            ScreenPauseReason::Inactivity,
+        );
+        assert_eq!(state.screen_pause_reason(), None);
+    }
+
+    #[test]
+    fn activity_resume_does_not_fire_for_transient_liveness_pause_even_with_fresh_activity() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+        state.set_family_paused_states_with_reason(
+            true,
+            false,
+            false,
+            ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayUnavailable,
+            },
+        );
+        state.mark_screen_pause_started_with_reason(
+            10_000,
+            ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayUnavailable,
+            },
+        );
+
+        // Fully active snapshot, well past the resume guard window.
+        let active_snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: empty_audio_activity(),
+            system_audio_activity: empty_audio_activity(),
+        };
+
+        assert!(
+            !state.should_resume_screen_from_inactivity(20_000, active_snapshot),
+            "user activity must not resume a transient-liveness screen pause"
+        );
+    }
+
+    #[test]
+    fn transient_resume_requires_transient_reason_and_display_present() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+
+        // Inactivity pause: transient resume must never fire regardless of display.
+        state.set_family_paused_states(true, false, false);
+        assert!(!state.should_resume_screen_from_transient_liveness(true, 100_000));
+
+        // Transient pause: resumes only when a display is present.
+        state.set_family_paused_states_with_reason(
+            true,
+            false,
+            false,
+            ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayUnavailable,
+            },
+        );
+        assert!(
+            !state.should_resume_screen_from_transient_liveness(false, 100_000),
+            "no display present means no transient resume"
+        );
+        assert!(state.should_resume_screen_from_transient_liveness(true, 100_000));
+    }
+
+    #[test]
+    fn transient_resume_ignores_user_activity_inputs() {
+        // The transient predicate takes no activity snapshot at all; recording
+        // fresh "activity" on the state must not change its verdict.
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+        state.set_family_paused_states_with_reason(
+            true,
+            false,
+            false,
+            ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayUnavailable,
+            },
+        );
+
+        state.last_activity_monotonic_ms = 100_000; // very recent user activity
+        assert!(
+            state.should_resume_screen_from_transient_liveness(true, 100_000),
+            "transient resume must depend only on display presence + throttle"
+        );
+        assert!(
+            !state.should_resume_screen_from_transient_liveness(false, 100_000),
+            "transient resume stays false without a display even with fresh activity"
+        );
+    }
+
+    #[test]
+    fn audio_family_pause_resume_preserves_transient_liveness_screen_reason() {
+        // Finding 1 (BLOCKER) regression: the screen is transient-paused
+        // (display gone), then audio crosses the inactivity threshold and later
+        // resumes. The audio family pause/resume must NOT clobber the screen's
+        // `TransientLiveness { DisplayUnavailable }` reason into `Inactivity`, and
+        // must NOT reset the screen pause-start timestamp — otherwise the display
+        // probe would stop watching the screen and the activity resume-all path
+        // would un-gate against a display that may still be gone.
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreenOrAudio, 100);
+        let transient = ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::DisplayUnavailable,
+        };
+        state.set_family_paused_states_with_reason(true, false, false, transient);
+        state.mark_screen_pause_started_with_reason(7_000, transient);
+        assert_eq!(state.screen_pause_reason(), Some(transient));
+        assert_eq!(state.screen_paused_at_monotonic_ms, Some(7_000));
+
+        // Microphone inactivity pause.
+        state.set_audio_family_paused_states(true, false);
+        assert!(state.is_microphone_paused());
+        assert_eq!(
+            state.screen_pause_reason(),
+            Some(transient),
+            "microphone pause must not flip the screen reason to Inactivity"
+        );
+        assert_eq!(
+            state.screen_paused_at_monotonic_ms,
+            Some(7_000),
+            "microphone pause must not reset the screen pause-start timestamp"
+        );
+        assert!(state.is_screen_paused());
+
+        // System-audio inactivity pause on top.
+        state.set_audio_family_paused_states(true, true);
+        assert!(state.is_system_audio_paused());
+        assert_eq!(state.screen_pause_reason(), Some(transient));
+        assert_eq!(state.screen_paused_at_monotonic_ms, Some(7_000));
+
+        // Microphone resume, then system-audio resume.
+        state.set_audio_family_paused_states(false, true);
+        assert!(!state.is_microphone_paused());
+        assert_eq!(state.screen_pause_reason(), Some(transient));
+        assert_eq!(state.screen_paused_at_monotonic_ms, Some(7_000));
+
+        state.set_audio_family_paused_states(false, false);
+        assert!(!state.is_system_audio_paused());
+        assert_eq!(
+            state.screen_pause_reason(),
+            Some(transient),
+            "the transient screen reason must survive every audio pause/resume"
+        );
+        assert_eq!(
+            state.screen_paused_at_monotonic_ms,
+            Some(7_000),
+            "the screen pause-start timestamp must survive every audio pause/resume"
+        );
+        assert!(
+            state.is_screen_paused() && state.is_paused,
+            "the screen stays transient-paused throughout"
+        );
+    }
+
+    #[test]
+    fn transient_liveness_probe_throttle_respects_interval() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+
+        // No probe yet: always due.
+        assert!(state.is_transient_liveness_probe_due(0));
+
+        state.mark_transient_liveness_probe(10_000);
+        assert!(
+            !state.is_transient_liveness_probe_due(
+                10_000 + TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS - 1
+            ),
+            "probe should not be due before the recovery interval elapses"
+        );
+        assert!(
+            state
+                .is_transient_liveness_probe_due(10_000 + TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS),
+            "probe should be due once the recovery interval elapses"
         );
     }
 }

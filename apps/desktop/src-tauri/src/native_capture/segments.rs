@@ -1741,20 +1741,47 @@ fn refresh_windows_current_segment_sources(runtime: &mut NativeCaptureRuntime) {
     );
 }
 
+/// Set only the audio (microphone / system-audio) family pause flags, leaving the
+/// screen pause flag, reason, and pause-start timestamp untouched (ADR 0023). An
+/// audio inactivity pause/resume must not disturb a concurrent `TransientLiveness`
+/// screen pause: clobbering its reason to `Inactivity` (the old behavior of
+/// routing the audio paths through `set_family_paused_states`) would stop the
+/// display probe from watching the screen and let the activity resume-all path
+/// churn the screen back on against a display that may still be gone.
 #[cfg(target_os = "windows")]
-fn mark_windows_family_paused(
+fn mark_windows_audio_family_paused(
     runtime: &mut NativeCaptureRuntime,
-    screen_paused: bool,
     microphone_paused: bool,
     system_audio_paused: bool,
 ) {
     runtime
         .inactivity
-        .set_family_paused_states(screen_paused, microphone_paused, system_audio_paused);
+        .set_audio_family_paused_states(microphone_paused, system_audio_paused);
+    refresh_windows_current_segment_sources(runtime);
+}
+
+/// Like [`mark_windows_family_paused`] but records an explicit screen-pause reason
+/// (ADR 0023). The transient-liveness recovery path passes
+/// `ScreenPauseReason::TransientLiveness { .. }` so the resume side knows the screen
+/// must wait for a display/session-present probe rather than user activity.
+#[cfg(target_os = "windows")]
+fn mark_windows_family_paused_with_screen_reason(
+    runtime: &mut NativeCaptureRuntime,
+    screen_paused: bool,
+    microphone_paused: bool,
+    system_audio_paused: bool,
+    screen_pause_reason: super::inactivity::ScreenPauseReason,
+) {
+    runtime.inactivity.set_family_paused_states_with_reason(
+        screen_paused,
+        microphone_paused,
+        system_audio_paused,
+        screen_pause_reason,
+    );
     if screen_paused {
         runtime
             .inactivity
-            .mark_screen_pause_started(now_monotonic_marker_ms());
+            .mark_screen_pause_started_with_reason(now_monotonic_marker_ms(), screen_pause_reason);
     }
     refresh_windows_current_segment_sources(runtime);
 }
@@ -1763,6 +1790,46 @@ fn mark_windows_family_paused(
 pub(super) fn pause_screen_for_inactivity_with_app_handle(
     runtime: &mut NativeCaptureRuntime,
     _app_handle: Option<&tauri::AppHandle>,
+) -> Result<(), CaptureErrorResponse> {
+    pause_windows_screen_with_reason(
+        runtime,
+        super::inactivity::ScreenPauseReason::Inactivity,
+        "inactivity",
+        false,
+    )
+}
+
+/// Enter a screen-only transient-liveness suspension (ADR 0023). Reuses the same
+/// stop/finalize-segment screen pause path as the inactivity slice, but records
+/// the reason `TransientLiveness { trigger }` so the resume side waits for a
+/// display/session-present probe instead of user activity. The WGC screen session
+/// is already dead in this path (`GraphicsCaptureItem.Closed`/not-live), so the
+/// stop is expected to merely finalize the partially-written segment — any stop
+/// error is logged and tolerated rather than failing the session.
+#[cfg(target_os = "windows")]
+pub(super) fn pause_screen_for_transient_liveness(
+    runtime: &mut NativeCaptureRuntime,
+    trigger: super::inactivity::TransientLivenessTrigger,
+) -> Result<(), CaptureErrorResponse> {
+    pause_windows_screen_with_reason(
+        runtime,
+        super::inactivity::ScreenPauseReason::TransientLiveness { trigger },
+        "transient liveness",
+        true,
+    )
+}
+
+/// Shared body for the Windows screen pause used by both the inactivity slice and
+/// the transient-liveness recovery slice (ADR 0023). The two differ only in the
+/// recorded `screen_pause_reason` and whether a backend stop error fails the
+/// caller (`tolerate_stop_error`): the transient-liveness path's session is
+/// already dead, so the stop just finalizes the partial segment.
+#[cfg(target_os = "windows")]
+fn pause_windows_screen_with_reason(
+    runtime: &mut NativeCaptureRuntime,
+    screen_pause_reason: super::inactivity::ScreenPauseReason,
+    context: &str,
+    tolerate_stop_error: bool,
 ) -> Result<(), CaptureErrorResponse> {
     if runtime.inactivity.is_screen_paused()
         || !runtime
@@ -1782,10 +1849,19 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
     });
     let recording_file = runtime.recording_file.clone();
 
-    capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+    if let Err(error) = capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
         active_session: &mut runtime.active_screen_session,
         inactivity_tail_trim_seconds: runtime.inactivity.idle_timeout_seconds,
-    })?;
+    }) {
+        if tolerate_stop_error {
+            super::debug_log::log(format!(
+                "Windows screen capture stop reported an issue while pausing for {context} (tolerated; the partial segment is still finalized): [{}] {}",
+                error.code, error.message
+            ));
+        } else {
+            return Err(error);
+        }
+    }
 
     if let Some(tx) = runtime.frame_artifact_tx.as_ref() {
         flush_frame_artifacts(tx);
@@ -1803,7 +1879,7 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
         }),
     ) {
         super::debug_log::log(format!(
-            "Windows screen output finalization reported an issue while pausing for inactivity: [{}] {}",
+            "Windows screen output finalization reported an issue while pausing for {context}: [{}] {}",
             error.code, error.message
         ));
     }
@@ -1811,11 +1887,12 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
     append_committed_outputs(runtime, screen_outputs.as_ref());
     runtime.recording_file = None;
     clear_current_screen_output(runtime.current_segment_output_files.as_mut());
-    mark_windows_family_paused(
+    mark_windows_family_paused_with_screen_reason(
         runtime,
         true,
         runtime.inactivity.microphone_paused,
         runtime.inactivity.system_audio_paused,
+        screen_pause_reason,
     );
 
     Ok(())
@@ -1877,12 +1954,7 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
     );
     runtime.microphone_recording_file = None;
     clear_current_microphone_output(runtime.current_segment_output_files.as_mut());
-    mark_windows_family_paused(
-        runtime,
-        runtime.inactivity.screen_paused,
-        true,
-        runtime.inactivity.system_audio_paused,
-    );
+    mark_windows_audio_family_paused(runtime, true, runtime.inactivity.system_audio_paused);
 
     Ok(())
 }
@@ -1943,12 +2015,7 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
     );
     runtime.system_audio_recording_file = None;
     clear_current_system_audio_output(runtime.current_segment_output_files.as_mut());
-    mark_windows_family_paused(
-        runtime,
-        runtime.inactivity.screen_paused,
-        runtime.inactivity.microphone_paused,
-        true,
-    );
+    mark_windows_audio_family_paused(runtime, runtime.inactivity.microphone_paused, true);
 
     Ok(())
 }
@@ -2033,11 +2100,9 @@ pub(super) fn resume_microphone_from_inactivity(
         &resume_sources,
         "resuming Windows microphone from inactivity",
     )?;
-    runtime.inactivity.set_family_paused_states(
-        runtime.inactivity.screen_paused,
-        false,
-        runtime.inactivity.system_audio_paused,
-    );
+    runtime
+        .inactivity
+        .set_audio_family_paused_states(false, runtime.inactivity.system_audio_paused);
     refresh_windows_current_segment_sources(runtime);
 
     Ok(())
@@ -2078,11 +2143,9 @@ pub(super) fn resume_system_audio_from_inactivity(
         &resume_sources,
         "resuming Windows system audio from inactivity",
     )?;
-    runtime.inactivity.set_family_paused_states(
-        runtime.inactivity.screen_paused,
-        runtime.inactivity.microphone_paused,
-        false,
-    );
+    runtime
+        .inactivity
+        .set_audio_family_paused_states(runtime.inactivity.microphone_paused, false);
     refresh_windows_current_segment_sources(runtime);
 
     Ok(())
