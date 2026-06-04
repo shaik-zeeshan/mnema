@@ -480,12 +480,10 @@ fn ocr_unavailable_notification_opens_ocr_settings_tab() {
     assert_eq!(payload["action"]["type"], "open_settings_tab");
     assert_eq!(payload["action"]["tab"], "processing");
 
-    match notification.action {
-        Some(AppNotificationAction::OpenSettingsTab { tab }) => {
-            assert_eq!(tab, "processing");
-        }
-        None => panic!("OCR warning should include settings CTA"),
-    }
+    let Some(AppNotificationAction::OpenSettingsTab { tab }) = notification.action else {
+        panic!("OCR warning should include processing settings CTA");
+    };
+    assert_eq!(tab, "processing");
 }
 
 #[test]
@@ -514,12 +512,10 @@ fn audio_transcription_unavailable_notification_opens_transcription_settings_tab
     assert_eq!(payload["action"]["type"], "open_settings_tab");
     assert_eq!(payload["action"]["tab"], "processing");
 
-    match notification.action {
-        Some(AppNotificationAction::OpenSettingsTab { tab }) => {
-            assert_eq!(tab, "processing");
-        }
-        None => panic!("transcription warning should include settings CTA"),
-    }
+    let Some(AppNotificationAction::OpenSettingsTab { tab }) = notification.action else {
+        panic!("transcription warning should include processing settings CTA");
+    };
+    assert_eq!(tab, "processing");
 }
 
 #[test]
