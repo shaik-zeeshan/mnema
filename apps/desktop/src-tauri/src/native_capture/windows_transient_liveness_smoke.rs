@@ -1,26 +1,27 @@
-//! On-device smoke harness for Windows transient-liveness screen recovery
-//! (ADR 0023, GitHub issues #62/#63, label `needs-smoke-test`).
+//! On-device smoke harness for Windows transient-liveness recovery
+//! (ADR 0023, GitHub issues #62/#63/#64, label `needs-smoke-test`).
 //!
 //! This is a *true on-device* harness like `windows_inactivity_smoke`: it cannot
-//! synthesize monitor disconnects or workstation locks, so it drives a real
-//! native capture and then prompts the operator (on stdout) to perform the
+//! synthesize monitor disconnects, workstation locks, or system sleep, so it drives
+//! a real native capture and then prompts the operator (on stdout) to perform the
 //! transient-liveness action while the harness watches runtime bookkeeping.
 //!
 //! Run from the repo with:
 //! ```text
 //! cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-transient-liveness-smoke
 //! cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-transient-liveness-smoke --session-lock
+//! cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-transient-liveness-smoke --system-suspend
 //! ```
 //!
 //! Sequence:
-//!   1. Start a screen + microphone recording. Session-lock mode also requires
-//!      independent system audio so Issue #63 audio continuity is verified.
-//!   2. Prompt the operator to disconnect the monitor or press Win+L; wait
-//!      (bounded) for the screen to enter the exact transient-liveness pause for
-//!      the selected scenario while the session stays running and audio keeps
-//!      recording.
-//!   3. Prompt the operator to reconnect the monitor or unlock; wait (bounded)
-//!      for the screen to resume into a fresh segment with live output again.
+//!   1. Start a screen + microphone recording. Session-lock and system-suspend
+//!      modes also require independent system audio so Issues #63/#64 audio
+//!      continuity/restart coverage is verified.
+//!   2. Prompt the operator to disconnect the monitor, press Win+L, or sleep/wake
+//!      the system; wait (bounded) for the selected transient-liveness pause while
+//!      the session stays running.
+//!   3. Prompt the operator to reconnect/unlock/confirm wake; wait (bounded) for
+//!      capture to resume into a fresh segment with live output again.
 //!   4. Stop capture, verify finalized output files, print the output directory.
 //!
 //! Exits non-zero on any timeout or failed assertion, zero on success, and
@@ -58,6 +59,7 @@ const DEFAULT_MAX_RECONNECT_WAIT_SECONDS: u64 = 90;
 enum SmokeScenario {
     DisplayUnavailable,
     SessionLock,
+    SystemSuspend,
 }
 
 #[cfg(target_os = "windows")]
@@ -83,6 +85,7 @@ struct RuntimeSmokeSnapshot {
     system_audio_paused: bool,
     screen_paused_for_transient_display_unavailable: bool,
     screen_paused_for_transient_session_lock: bool,
+    screen_paused_for_transient_system_suspend: bool,
     active_screen_session: bool,
     active_microphone_session: bool,
     active_system_audio_session: bool,
@@ -183,6 +186,9 @@ impl SmokeConfig {
                 "--session-lock" => {
                     scenario = SmokeScenario::SessionLock;
                 }
+                "--system-suspend" => {
+                    scenario = SmokeScenario::SystemSuspend;
+                }
                 "--scenario" => {
                     index += 1;
                     let value = args
@@ -254,8 +260,9 @@ impl SmokeScenario {
         match value {
             "display-unavailable" => Ok(Self::DisplayUnavailable),
             "session-lock" => Ok(Self::SessionLock),
+            "system-suspend" => Ok(Self::SystemSuspend),
             other => Err(format!(
-                "unknown --scenario value: {other}; expected display-unavailable or session-lock"
+                "unknown --scenario value: {other}; expected display-unavailable, session-lock, or system-suspend"
             )),
         }
     }
@@ -264,6 +271,7 @@ impl SmokeScenario {
         match self {
             Self::DisplayUnavailable => "display-unavailable",
             Self::SessionLock => "session-lock",
+            Self::SystemSuspend => "system-suspend",
         }
     }
 
@@ -271,6 +279,7 @@ impl SmokeScenario {
         match self {
             Self::DisplayUnavailable => "TransientLiveness { DisplayUnavailable }",
             Self::SessionLock => "TransientLiveness { SessionLock }",
+            Self::SystemSuspend => "TransientLiveness { SystemSuspend }",
         }
     }
 }
@@ -278,7 +287,7 @@ impl SmokeScenario {
 #[cfg(target_os = "windows")]
 fn print_usage() {
     println!(
-        "Windows transient-liveness smoke (ADR 0023, issues #62/#63)\n\nRun from the repo with:\n  cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-transient-liveness-smoke\n  cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-transient-liveness-smoke --session-lock\n\nDefault scenario: display-unavailable (#62). It starts real screen + microphone capture, asks you to physically disconnect/reconnect a monitor, verifies the screen enters TransientLiveness {{ DisplayUnavailable }}, verifies microphone continuity, then verifies automatic screen resume.\n\nSession-lock scenario (#63): add --session-lock or --scenario session-lock. It starts real screen + microphone + independent system-audio when available, asks you to press Win+L, unlock, and continue. The harness verifies the screen enters TransientLiveness {{ SessionLock }}, microphone and requested system audio remain active/not paused with stable source-session ids, and unlock auto-resumes screen through the shared transient-liveness start-segment path.\n\nUse a multi-monitor machine or an external monitor you can unplug for display-unavailable. Use an interactive Windows desktop session for session-lock.\n\nOptions:\n  --session-lock                      run the #63 session-lock scenario\n  --display-unavailable               run the #62 display-unavailable scenario (default)\n  --scenario NAME                     display-unavailable or session-lock\n  --max-disconnect-wait-seconds N     max wait for the transient pause after the action (default: 90)\n  --max-reconnect-wait-seconds N      max wait for the screen resume after recovery (default: 90)\n  --save-directory PATH               smoke capture root (default: temp mnema-windows-transient-liveness-smoke-PID)"
+        "Windows transient-liveness smoke (ADR 0023, issues #62/#63/#64)\n\nRun from the repo with:\n  cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-transient-liveness-smoke\n  cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-transient-liveness-smoke --session-lock\n  cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-transient-liveness-smoke --system-suspend\n\nDefault scenario: display-unavailable (#62). It starts real screen + microphone capture, asks you to physically disconnect/reconnect a monitor, verifies the screen enters TransientLiveness {{ DisplayUnavailable }}, verifies microphone continuity, then verifies automatic screen resume.\n\nSession-lock scenario (#63): add --session-lock or --scenario session-lock. It starts real screen + microphone + independent system-audio when available, asks you to press Win+L/unlock, verifies TransientLiveness {{ SessionLock }}, verifies audio continuity, then verifies automatic screen resume.\n\nSystem-suspend scenario (#64): add --system-suspend or --scenario system-suspend. It starts real screen + microphone + independent system-audio when available, asks you to sleep and wake the machine manually, verifies all requested families enter TransientLiveness {{ SystemSuspend }} without ending the session, then verifies all families restart after wake.\n\nOptions:\n  --scenario <display-unavailable|session-lock|system-suspend>\n  --display-unavailable\n  --session-lock\n  --system-suspend\n  --max-disconnect-wait-seconds <seconds>\n  --max-reconnect-wait-seconds <seconds>\n  --save-directory <path>\n"
     );
 }
 
@@ -304,17 +313,24 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
                 .to_string(),
         );
     }
-    if config.scenario == SmokeScenario::SessionLock && !support.supported_sources.system_audio {
-        return Err(
-            "session-lock transient-liveness smoke requires Windows system-audio support; support reported supported_sources.system_audio=false, so Issue #63 continuity cannot be verified"
-                .to_string(),
-        );
+    if matches!(
+        config.scenario,
+        SmokeScenario::SessionLock | SmokeScenario::SystemSuspend
+    ) && !support.supported_sources.system_audio
+    {
+        return Err(format!(
+            "{} transient-liveness smoke requires Windows system-audio support; support reported supported_sources.system_audio=false, so audio coverage cannot be verified",
+            config.scenario.as_arg()
+        ));
     }
 
     let sources = CaptureSources {
         screen: true,
         microphone: true,
-        system_audio: config.scenario == SmokeScenario::SessionLock,
+        system_audio: matches!(
+            config.scenario,
+            SmokeScenario::SessionLock | SmokeScenario::SystemSuspend
+        ),
     };
     install_smoke_recording_settings(app.handle(), config, &sources)?;
     crate::app_infra::initialize(app).map_err(|error| {
@@ -370,6 +386,10 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
             "\n>>> ACTION REQUIRED (#63): make sure screen + microphone + system audio are recording; press Win+L now, then unlock and return to this desktop.\n>>> Waiting up to {}s for the screen to enter TransientLiveness {{ SessionLock }} while microphone and system audio keep recording...",
             config.max_disconnect_wait_seconds
         ),
+        SmokeScenario::SystemSuspend => println!(
+            "\n>>> ACTION REQUIRED (#64): put Windows to sleep now, then wake it manually before the timeout expires. Do not use this from automation.\n>>> Waiting up to {}s after wake to observe all families paused as TransientLiveness {{ SystemSuspend }} while the session remains alive...",
+            config.max_disconnect_wait_seconds
+        ),
     }
     let paused_snapshot = wait_for_snapshot(
         &app_handle,
@@ -381,7 +401,7 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
     })?;
     verify_transient_paused_snapshot(&start_snapshot, &paused_snapshot, &sources, config.scenario)?;
     println!(
-        "Windows transient-liveness smoke: observed {} screen pause; session still running; committed outputs {}",
+        "Windows transient-liveness smoke: observed {}; session still running; committed outputs {}",
         config.scenario.pause_label(),
         format_output_files(paused_snapshot.output_files.as_ref())
     );
@@ -393,6 +413,10 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
         ),
         SmokeScenario::SessionLock => println!(
             "\n>>> ACTION REQUIRED (#63): confirm the workstation is unlocked, then keep the capture running.\n>>> Waiting up to {}s for the screen to auto-resume...",
+            config.max_reconnect_wait_seconds
+        ),
+        SmokeScenario::SystemSuspend => println!(
+            "\n>>> ACTION REQUIRED (#64): the system is awake; keep the desktop unlocked and capture running.\n>>> Waiting up to {}s for all families to restart after SystemSuspend...",
             config.max_reconnect_wait_seconds
         ),
     }
@@ -531,6 +555,12 @@ fn snapshot(app_handle: &tauri::AppHandle) -> RuntimeSmokeSnapshot {
             trigger: TransientLivenessTrigger::SessionLock,
         })
     );
+    let screen_paused_for_transient_system_suspend = matches!(
+        runtime.inactivity.screen_pause_reason(),
+        Some(ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::SystemSuspend,
+        })
+    );
     RuntimeSmokeSnapshot {
         session_is_running: runtime.is_running,
         requested_sources: runtime.requested_sources.clone(),
@@ -543,6 +573,7 @@ fn snapshot(app_handle: &tauri::AppHandle) -> RuntimeSmokeSnapshot {
         system_audio_paused: runtime.inactivity.system_audio_paused,
         screen_paused_for_transient_display_unavailable,
         screen_paused_for_transient_session_lock,
+        screen_paused_for_transient_system_suspend,
         active_screen_session: capture_screen::screen_capture_session_is_live(
             runtime.active_screen_session.as_ref(),
         ),
@@ -583,23 +614,38 @@ fn verify_started_snapshot(
     Ok(())
 }
 
-// The transient-liveness screen suspension condition: the screen is paused for
-// the selected trigger, its live session is gone, the session is still running,
-// and requested audio sources keep recording.
+// The selected transient-liveness suspension condition: the screen carries the
+// selected trigger, the session is still running, and the expected family liveness
+// matches the scenario. DisplayUnavailable/SessionLock are screen-only outages;
+// SystemSuspend is an all-family outage.
 #[cfg(target_os = "windows")]
 fn transient_screen_suspended(
     snapshot: &RuntimeSmokeSnapshot,
     requested: &CaptureSources,
     scenario: SmokeScenario,
 ) -> bool {
-    snapshot.session_is_running
-        && snapshot.screen_paused
-        && screen_paused_for_scenario(snapshot, scenario)
-        && !snapshot.active_screen_session
-        && (!requested.microphone
-            || (!snapshot.microphone_paused && snapshot.active_microphone_session))
-        && (!requested.system_audio
-            || (!snapshot.system_audio_paused && snapshot.active_system_audio_session))
+    if !snapshot.session_is_running
+        || !snapshot.screen_paused
+        || !screen_paused_for_scenario(snapshot, scenario)
+        || snapshot.active_screen_session
+    {
+        return false;
+    }
+
+    match scenario {
+        SmokeScenario::DisplayUnavailable | SmokeScenario::SessionLock => {
+            (!requested.microphone
+                || (!snapshot.microphone_paused && snapshot.active_microphone_session))
+                && (!requested.system_audio
+                    || (!snapshot.system_audio_paused && snapshot.active_system_audio_session))
+        }
+        SmokeScenario::SystemSuspend => {
+            (!requested.microphone
+                || (snapshot.microphone_paused && !snapshot.active_microphone_session))
+                && (!requested.system_audio
+                    || (snapshot.system_audio_paused && !snapshot.active_system_audio_session))
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -609,6 +655,7 @@ fn screen_paused_for_scenario(snapshot: &RuntimeSmokeSnapshot, scenario: SmokeSc
             snapshot.screen_paused_for_transient_display_unavailable
         }
         SmokeScenario::SessionLock => snapshot.screen_paused_for_transient_session_lock,
+        SmokeScenario::SystemSuspend => snapshot.screen_paused_for_transient_system_suspend,
     }
 }
 
@@ -631,25 +678,50 @@ fn verify_transient_paused_snapshot(
     if snapshot.active_screen_session {
         return Err("screen session remained live while transient-paused".to_string());
     }
-    if requested.microphone && snapshot.microphone_paused {
-        return Err("microphone was paused during a screen-only transient outage".to_string());
+    match scenario {
+        SmokeScenario::DisplayUnavailable | SmokeScenario::SessionLock => {
+            if requested.microphone && snapshot.microphone_paused {
+                return Err(
+                    "microphone was paused during a screen-only transient outage".to_string(),
+                );
+            }
+            if requested.microphone && !snapshot.active_microphone_session {
+                return Err(
+                    "microphone session went down during a screen-only transient outage; audio continuity broken"
+                        .to_string(),
+                );
+            }
+            if requested.system_audio && snapshot.system_audio_paused {
+                return Err(
+                    "system audio was paused during a screen-only transient outage".to_string(),
+                );
+            }
+            if requested.system_audio && !snapshot.active_system_audio_session {
+                return Err(
+                    "system-audio session went down during a screen-only transient outage; audio continuity broken"
+                        .to_string(),
+                );
+            }
+            verify_audio_source_session_ids_stable(before, snapshot, requested, "transient pause")?;
+        }
+        SmokeScenario::SystemSuspend => {
+            if requested.microphone
+                && (!snapshot.microphone_paused || snapshot.active_microphone_session)
+            {
+                return Err(
+                    "microphone did not suspend during SystemSuspend transient outage".to_string(),
+                );
+            }
+            if requested.system_audio
+                && (!snapshot.system_audio_paused || snapshot.active_system_audio_session)
+            {
+                return Err(
+                    "system audio did not suspend during SystemSuspend transient outage"
+                        .to_string(),
+                );
+            }
+        }
     }
-    if requested.microphone && !snapshot.active_microphone_session {
-        return Err(
-            "microphone session went down during a screen-only transient outage; audio continuity broken"
-                .to_string(),
-        );
-    }
-    if requested.system_audio && snapshot.system_audio_paused {
-        return Err("system audio was paused during a screen-only transient outage".to_string());
-    }
-    if requested.system_audio && !snapshot.active_system_audio_session {
-        return Err(
-            "system-audio session went down during a screen-only transient outage; audio continuity broken"
-                .to_string(),
-        );
-    }
-    verify_audio_source_session_ids_stable(before, snapshot, requested, "transient pause")?;
     Ok(())
 }
 
@@ -702,6 +774,9 @@ fn verify_resumed_snapshot(
             before.current_segment_index, snapshot.current_segment_index
         ));
     }
+    if scenario != SmokeScenario::SystemSuspend {
+        verify_audio_source_session_ids_stable(before, snapshot, requested, "screen resume")?;
+    }
     if requested.screen
         && snapshot
             .current_segment_output_files
@@ -711,7 +786,6 @@ fn verify_resumed_snapshot(
     {
         return Err("resumed screen segment has no live screen output path".to_string());
     }
-    verify_audio_source_session_ids_stable(before, snapshot, requested, "screen resume")?;
     Ok(())
 }
 

@@ -43,9 +43,10 @@ use super::segments::{
 #[cfg(target_os = "windows")]
 use super::segments::{
     pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
-    pause_screen_for_inactivity_with_app_handle, pause_screen_for_transient_liveness,
-    pause_system_audio_for_inactivity_with_app_handle, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity, resume_screen_from_inactivity,
+    pause_runtime_for_system_suspend_with_app_handle, pause_screen_for_inactivity_with_app_handle,
+    pause_screen_for_transient_liveness, pause_system_audio_for_inactivity_with_app_handle,
+    resume_microphone_from_inactivity, resume_runtime_from_inactivity,
+    resume_runtime_from_system_suspend, resume_screen_from_inactivity,
     resume_system_audio_from_inactivity,
 };
 use capture_runtime::RuntimeSignal;
@@ -231,6 +232,50 @@ impl RecordingLifecycle {
         }
 
         Some(session_from_runtime(&self.runtime))
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn handle_windows_system_suspend(
+        &mut self,
+        app_handle: &tauri::AppHandle,
+    ) -> Option<NativeCaptureSession> {
+        if !self.runtime.is_running || self.runtime.user_capture_paused {
+            return None;
+        }
+
+        match pause_runtime_for_system_suspend_with_app_handle(&mut self.runtime, Some(app_handle)) {
+            Ok(true) => Some(session_from_runtime(&self.runtime)),
+            Ok(false) => None,
+            Err(error) => {
+                super::debug_log::log(format!(
+                    "windows system-suspend transient-liveness suspension failed; keeping session alive: [{}] {}",
+                    error.code, error.message
+                ));
+                None
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn handle_windows_system_resume(
+        &mut self,
+        app_handle: &tauri::AppHandle,
+    ) -> Option<NativeCaptureSession> {
+        if !self.runtime.is_running || self.runtime.user_capture_paused {
+            return None;
+        }
+
+        match resume_runtime_from_system_suspend(&mut self.runtime, Some(app_handle)) {
+            Ok(true) => Some(session_from_runtime(&self.runtime)),
+            Ok(false) => None,
+            Err(error) => {
+                super::debug_log::log(format!(
+                    "windows system-resume transient-liveness restart failed; leaving suspended families paused for retry: [{}] {}",
+                    error.code, error.message
+                ));
+                None
+            }
+        }
     }
 
     /// Decide whether a transient-liveness screen pause should resume *now*,
@@ -884,6 +929,9 @@ impl RecordingLifecycle {
         }
 
         let now = super::runtime::now_monotonic_marker_ms();
+        if self.runtime.inactivity.is_system_suspend_paused() {
+            return TickOutcome::SkipRotation;
+        }
 
         // Throttled transient-liveness auto-resume (ADR 0023): when the screen is
         // paused for a transient-liveness reason and a probe is due, check whether

@@ -1,6 +1,6 @@
 use capture_types::{
     default_microphone_activity_sensitivity, default_system_audio_activity_sensitivity,
-    InactivityActivityMode, RecordingSettings,
+    CaptureSources, InactivityActivityMode, RecordingSettings,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,13 +54,13 @@ const SCREEN_RESUME_MIN_PAUSED_MS: u64 = 2_000;
 // quietly between probes instead of re-spamming the capture backend per poll.
 const TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS: u64 = 2_000;
 
-/// Why a `TransientLiveness` screen pause was entered (ADR 0023). This slice only
-/// wires `DisplayUnavailable`; `SystemSuspend` and `SessionLock` are defined now
-/// per ADR 0023 for the follow-up trigger slices that wire `WM_POWERBROADCAST`
-/// and `WTSRegisterSessionNotification`.
+/// Why a `TransientLiveness` screen pause was entered (ADR 0023). `DisplayUnavailable`
+/// is wired by the WGC liveness path; `SystemSuspend` is wired through
+/// `WM_POWERBROADCAST`. `SessionLock` remains defined for the follow-up slice that
+/// wires `WTSRegisterSessionNotification`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransientLivenessTrigger {
-    // Wired by a follow-up trigger slice (WM_POWERBROADCAST).
+    // Wired through WM_POWERBROADCAST.
     #[allow(dead_code)]
     SystemSuspend,
     // Wired by a follow-up trigger slice (WTSRegisterSessionNotification).
@@ -156,6 +156,12 @@ pub(crate) struct InactivityState {
     // Monotonic timestamp of the last transient-liveness recovery probe, used to
     // throttle probes to `TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS`.
     pub last_transient_liveness_probe_monotonic_ms: Option<u64>,
+    // Sources paused by a Windows `SystemSuspend` transient-liveness event. This
+    // is separate from `screen_pause_reason` because microphone/system-audio
+    // families do not have per-family reason slots; it lets wake resume only the
+    // families that were active at suspend and prevents activity-driven inactivity
+    // resume from cross-triggering them.
+    pub system_suspend_paused_sources: Option<CaptureSources>,
 }
 
 impl Default for InactivityState {
@@ -176,6 +182,7 @@ impl Default for InactivityState {
             is_paused: false,
             screen_pause_reason: None,
             last_transient_liveness_probe_monotonic_ms: None,
+            system_suspend_paused_sources: None,
         }
     }
 }
@@ -201,6 +208,7 @@ impl InactivityState {
             is_paused: false,
             screen_pause_reason: None,
             last_transient_liveness_probe_monotonic_ms: None,
+            system_suspend_paused_sources: None,
         }
     }
 
@@ -242,6 +250,9 @@ impl InactivityState {
         self.microphone_paused = microphone_paused;
         self.system_audio_paused = system_audio_paused;
         self.is_paused = screen_paused || microphone_paused || system_audio_paused;
+        if !self.is_paused {
+            self.system_suspend_paused_sources = None;
+        }
     }
 
     /// Set only the audio (microphone / system-audio) family pause flags, leaving
@@ -260,6 +271,14 @@ impl InactivityState {
         self.microphone_paused = microphone_paused;
         self.system_audio_paused = system_audio_paused;
         self.is_paused = self.screen_paused || microphone_paused || system_audio_paused;
+        if !self.is_paused {
+            self.system_suspend_paused_sources = None;
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn is_system_suspend_paused(&self) -> bool {
+        self.system_suspend_paused_sources.is_some()
     }
 
     /// Convenience wrapper recording an `Inactivity`-reason screen pause start.

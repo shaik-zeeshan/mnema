@@ -1247,6 +1247,55 @@ pub(crate) fn handle_windows_session_unlock_from_app_handle(app_handle: &tauri::
     }
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_system_suspend_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows system suspend",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_system_suspend(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows system suspend",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_system_resume_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn("native capture state unavailable while handling Windows system resume");
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_system_resume(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows system resume",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+
 #[cfg(target_os = "macos")]
 fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<NativeCaptureState>();

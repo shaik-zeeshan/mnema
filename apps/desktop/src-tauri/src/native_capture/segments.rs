@@ -38,9 +38,10 @@ use super::lifecycle::TickOutcome;
 #[cfg(any(target_os = "macos", test))]
 use super::runtime::mark_runtime_session_failed;
 use super::runtime::{
-    active_sources_for_inactivity_paused_state, apply_runtime_signal, has_any_capture_sources,
-    now_monotonic_marker_ms, now_unix_ms, prefixed_capture_id, refresh_runtime_planner_dates,
-    reset_runtime_after_start_error, NativeCaptureRuntime, SegmentLoopControl,
+    active_sources_for_inactivity_paused_state, apply_runtime_signal, current_segment_sources_for_runtime,
+    has_any_capture_sources, now_monotonic_marker_ms, now_unix_ms, prefixed_capture_id,
+    refresh_runtime_planner_dates, reset_runtime_after_start_error, NativeCaptureRuntime,
+    SegmentLoopControl,
 };
 #[cfg(target_os = "macos")]
 use super::runtime::{
@@ -2172,6 +2173,88 @@ pub(super) fn resume_system_audio_from_inactivity(
     refresh_windows_current_segment_sources(runtime);
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn pause_runtime_for_system_suspend_with_app_handle(
+    runtime: &mut NativeCaptureRuntime,
+    app_handle: Option<&tauri::AppHandle>,
+) -> Result<bool, CaptureErrorResponse> {
+    if runtime.inactivity.is_system_suspend_paused() {
+        return Ok(false);
+    }
+
+    let active_sources = current_segment_sources_for_runtime(runtime).unwrap_or(CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: false,
+    });
+    if !active_sources.screen && !active_sources.microphone && !active_sources.system_audio {
+        return Ok(false);
+    }
+
+    if active_sources.microphone {
+        pause_microphone_for_inactivity_with_app_handle(runtime, app_handle)?;
+    }
+    if active_sources.system_audio {
+        pause_system_audio_for_inactivity_with_app_handle(runtime, app_handle)?;
+    }
+    if active_sources.screen {
+        pause_screen_for_transient_liveness(
+            runtime,
+            super::inactivity::TransientLivenessTrigger::SystemSuspend,
+        )?;
+    }
+
+    runtime.inactivity.is_paused = true;
+    runtime.inactivity.system_suspend_paused_sources = Some(active_sources);
+    refresh_windows_current_segment_sources(runtime);
+
+    Ok(true)
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn resume_runtime_from_system_suspend(
+    runtime: &mut NativeCaptureRuntime,
+    app_handle: Option<&tauri::AppHandle>,
+) -> Result<bool, CaptureErrorResponse> {
+    let Some(resume_sources) = runtime.inactivity.system_suspend_paused_sources.clone() else {
+        return Ok(false);
+    };
+
+    start_windows_active_segment(
+        app_handle,
+        runtime,
+        &resume_sources,
+        "resuming Windows native capture from system suspend",
+    )?;
+
+    let screen_paused = runtime.inactivity.screen_paused && !resume_sources.screen;
+    let microphone_paused = runtime.inactivity.microphone_paused && !resume_sources.microphone;
+    let system_audio_paused =
+        runtime.inactivity.system_audio_paused && !resume_sources.system_audio;
+    if screen_paused {
+        let reason = runtime
+            .inactivity
+            .screen_pause_reason()
+            .unwrap_or(super::inactivity::ScreenPauseReason::Inactivity);
+        runtime.inactivity.set_family_paused_states_with_reason(
+            true,
+            microphone_paused,
+            system_audio_paused,
+            reason,
+        );
+    } else {
+        runtime.inactivity.set_family_paused_states(
+            false,
+            microphone_paused,
+            system_audio_paused,
+        );
+    }
+    runtime.inactivity.system_suspend_paused_sources = None;
+    refresh_windows_current_segment_sources(runtime);
+
+    Ok(true)
 }
 
 #[cfg(target_os = "windows")]

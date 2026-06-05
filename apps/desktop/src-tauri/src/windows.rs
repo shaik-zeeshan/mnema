@@ -21,7 +21,9 @@ use windows_sys::Win32::{
     UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
-            WM_NCDESTROY, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+            PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
+            PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, WM_NCDESTROY, WM_POWERBROADCAST,
+            WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
     },
 };
@@ -30,6 +32,25 @@ use windows_sys::Win32::{
 static WINDOWS_SESSION_NOTIFICATION_HWND: Mutex<Option<isize>> = Mutex::new(None);
 #[cfg(target_os = "windows")]
 const WINDOWS_SESSION_NOTIFICATION_SUBCLASS_ID: usize = 1;
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsPowerBroadcastEvent {
+    Suspend,
+    Resume,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_power_broadcast_event(wparam: WPARAM) -> Option<WindowsPowerBroadcastEvent> {
+    match wparam as u32 {
+        PBT_APMSUSPEND => Some(WindowsPowerBroadcastEvent::Suspend),
+        PBT_APMRESUMEAUTOMATIC
+        | PBT_APMRESUMECRITICAL
+        | PBT_APMRESUMESTANDBY
+        | PBT_APMRESUMESUSPEND => Some(WindowsPowerBroadcastEvent::Resume),
+        _ => None,
+    }
+}
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
@@ -427,6 +448,26 @@ unsafe extern "system" fn windows_session_notification_subclass_proc(
     subclass_id: usize,
     app_handle_ptr: usize,
 ) -> LRESULT {
+    if msg == WM_POWERBROADCAST {
+        let app_handle = &*(app_handle_ptr as *const tauri::AppHandle);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            match windows_power_broadcast_event(wparam) {
+                Some(WindowsPowerBroadcastEvent::Suspend) => {
+                    crate::native_capture::handle_windows_system_suspend_from_app_handle(app_handle);
+                }
+                Some(WindowsPowerBroadcastEvent::Resume) => {
+                    crate::native_capture::handle_windows_system_resume_from_app_handle(app_handle);
+                }
+                None => {}
+            }
+        }));
+        if result.is_err() {
+            crate::native_capture::debug_log::log_error(
+                "Windows power broadcast callback panicked; continuing without aborting window procedure",
+            );
+        }
+    }
+
     if msg == WM_WTSSESSION_CHANGE {
         let app_handle = &*(app_handle_ptr as *const tauri::AppHandle);
         let result = catch_unwind(AssertUnwindSafe(|| match wparam as u32 {
@@ -1085,6 +1126,48 @@ mod tests {
         load_onboarding_state_from_path, normalize_settings_focus, normalize_settings_tab,
         settings_tab_focus_path, AppExitCoordinatorState, DestroyedWindowAction,
     };
+    #[cfg(target_os = "windows")]
+    use super::{windows_power_broadcast_event, WindowsPowerBroadcastEvent};
+    #[cfg(target_os = "windows")]
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        PBT_APMBATTERYLOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
+        PBT_APMRESUMESUSPEND, PBT_APMSUSPEND,
+    };
+
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_suspend_maps_to_system_suspend() {
+        assert_eq!(
+            windows_power_broadcast_event(PBT_APMSUSPEND as usize),
+            Some(WindowsPowerBroadcastEvent::Suspend)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_resume_variants_map_to_system_resume() {
+        for event in [
+            PBT_APMRESUMEAUTOMATIC,
+            PBT_APMRESUMECRITICAL,
+            PBT_APMRESUMESTANDBY,
+            PBT_APMRESUMESUSPEND,
+        ] {
+            assert_eq!(
+                windows_power_broadcast_event(event as usize),
+                Some(WindowsPowerBroadcastEvent::Resume)
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_ignores_unrelated_power_events() {
+        assert_eq!(
+            windows_power_broadcast_event(PBT_APMBATTERYLOW as usize),
+            None
+        );
+    }
 
     #[test]
     fn secondary_window_destruction_refocuses_main_window() {
