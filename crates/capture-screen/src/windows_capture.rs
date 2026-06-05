@@ -1338,7 +1338,12 @@ fn read_scaled_frame_equivalence(
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         context
             .Map(&staging_texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-            .map_err(|e| win_error(&format!("ID3D11DeviceContext.Map({readback_context}) failed"), &e))?;
+            .map_err(|e| {
+                win_error(
+                    &format!("ID3D11DeviceContext.Map({readback_context}) failed"),
+                    &e,
+                )
+            })?;
 
         bgra_to_rgb_and_rgba_scaled(
             mapped.pData as *const u8,

@@ -23,11 +23,11 @@ use futures_util::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager};
-#[cfg(test)]
-use time::{format_description, PrimitiveDateTime};
 #[cfg(any(target_os = "macos", test))]
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+#[cfg(test)]
+use time::{format_description, PrimitiveDateTime};
 use tokio::sync::watch;
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;

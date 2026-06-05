@@ -570,21 +570,27 @@ mod tests {
         let first = planner.screen_resume_file(1, ts);
         assert_eq!(
             first,
-            date_dir.join(format!("sess-screen-segment-0001-1700000000000.{extension}"))
+            date_dir.join(format!(
+                "sess-screen-segment-0001-1700000000000.{extension}"
+            ))
         );
 
         std::fs::write(&first, b"").unwrap();
         let second = planner.screen_resume_file(1, ts);
         assert_eq!(
             second,
-            date_dir.join(format!("sess-screen-segment-0001-1700000000000-1.{extension}"))
+            date_dir.join(format!(
+                "sess-screen-segment-0001-1700000000000-1.{extension}"
+            ))
         );
 
         std::fs::write(&second, b"").unwrap();
         let third = planner.screen_resume_file(1, ts);
         assert_eq!(
             third,
-            date_dir.join(format!("sess-screen-segment-0001-1700000000000-2.{extension}"))
+            date_dir.join(format!(
+                "sess-screen-segment-0001-1700000000000-2.{extension}"
+            ))
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -54,7 +54,6 @@ struct RuntimeSmokeSnapshot {
     active_system_audio_session: bool,
 }
 
-
 #[cfg(target_os = "windows")]
 pub(crate) fn maybe_run_from_args_and_exit() {
     let args = std::env::args().collect::<Vec<_>>();
@@ -158,7 +157,8 @@ impl SmokeConfig {
                 }
                 "--max-state-wait-seconds" => {
                     index += 1;
-                    max_state_wait_seconds = parse_u64_arg(args, index, "--max-state-wait-seconds")?;
+                    max_state_wait_seconds =
+                        parse_u64_arg(args, index, "--max-state-wait-seconds")?;
                 }
                 "--save-directory" => {
                     index += 1;
@@ -217,13 +217,21 @@ fn print_usage() {
 
 #[cfg(target_os = "windows")]
 fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
-    println!("Windows inactivity smoke: configuring isolated capture root at {}", config.save_directory.display());
+    println!(
+        "Windows inactivity smoke: configuring isolated capture root at {}",
+        config.save_directory.display()
+    );
     install_smoke_recording_settings(app.handle(), config)?;
-    crate::app_infra::initialize(app).map_err(|error| format!("failed to initialize app infra for smoke capture root: {error}"))?;
+    crate::app_infra::initialize(app).map_err(|error| {
+        format!("failed to initialize app infra for smoke capture root: {error}")
+    })?;
 
     let support = super::get_capture_support();
     if support.platform != "windows" {
-        return Err(format!("expected Windows capture platform, observed {}", support.platform));
+        return Err(format!(
+            "expected Windows capture platform, observed {}",
+            support.platform
+        ));
     }
 
     let sources = CaptureSources {
@@ -256,7 +264,12 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
         app_handle.state::<super::AppNotificationsState>(),
         app_handle.clone(),
     )
-    .map_err(|error| format!("failed to start native capture: [{}] {}", error.code, error.message))?;
+    .map_err(|error| {
+        format!(
+            "failed to start native capture: [{}] {}",
+            error.code, error.message
+        )
+    })?;
     super::emit_native_capture_session_changed(&app_handle, &start_response.session);
     crate::status_bar::refresh(&app_handle);
 
@@ -315,7 +328,12 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
         app_handle.state::<super::NativeCaptureState>(),
         &app_handle,
     )
-    .map_err(|error| format!("failed to stop native capture: [{}] {}", error.code, error.message))?;
+    .map_err(|error| {
+        format!(
+            "failed to stop native capture: [{}] {}",
+            error.code, error.message
+        )
+    })?;
     super::emit_native_capture_session_changed(&app_handle, &stop_response.session);
     crate::status_bar::refresh(&app_handle);
     if stop_response.session.is_running {
@@ -326,7 +344,10 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
         format_output_files(stop_response.session.output_files.as_ref())
     );
     verify_final_outputs(stop_response.session.output_files.as_ref(), &sources)?;
-    println!("Windows inactivity smoke: output directory {}", config.save_directory.display());
+    println!(
+        "Windows inactivity smoke: output directory {}",
+        config.save_directory.display()
+    );
 
     Ok(())
 }
@@ -502,7 +523,9 @@ fn verify_resumed_snapshot(
     requested: &CaptureSources,
 ) -> Result<(), String> {
     if !snapshot.session_is_running || snapshot.session_is_inactivity_paused {
-        return Err(format!("runtime did not resume from inactivity pause: {snapshot:?}"));
+        return Err(format!(
+            "runtime did not resume from inactivity pause: {snapshot:?}"
+        ));
     }
     if snapshot.current_segment_sources.as_ref() != Some(requested) {
         return Err(format!(
@@ -535,8 +558,14 @@ fn verify_source_session_ids_preserved(
     let before = before.ok_or_else(|| "initial source session metadata missing".to_string())?;
     let after = after.ok_or_else(|| "resumed source session metadata missing".to_string())?;
     if requested.screen
-        && before.screen.as_ref().map(|session| session.session_id.as_str())
-            != after.screen.as_ref().map(|session| session.session_id.as_str())
+        && before
+            .screen
+            .as_ref()
+            .map(|session| session.session_id.as_str())
+            != after
+                .screen
+                .as_ref()
+                .map(|session| session.session_id.as_str())
     {
         return Err("screen source session id changed across inactivity resume".to_string());
     }
@@ -620,7 +649,11 @@ fn verify_current_outputs_named_for_sources(
             .as_ref()
             .ok_or_else(|| "system-audio source session metadata missing".to_string())?
             .session_id;
-        verify_path_contains(outputs.system_audio_file.as_deref(), session_id, "system-audio")?;
+        verify_path_contains(
+            outputs.system_audio_file.as_deref(),
+            session_id,
+            "system-audio",
+        )?;
     }
     Ok(())
 }
@@ -656,7 +689,8 @@ fn verify_output_paths_changed(
     if requested.microphone && before_outputs.microphone_file == after_outputs.microphone_file {
         return Err("microphone resume reused the pre-pause output path".to_string());
     }
-    if requested.system_audio && before_outputs.system_audio_file == after_outputs.system_audio_file {
+    if requested.system_audio && before_outputs.system_audio_file == after_outputs.system_audio_file
+    {
         return Err("system-audio resume reused the pre-pause output path".to_string());
     }
     Ok(())
@@ -667,7 +701,8 @@ fn verify_final_outputs(
     outputs: Option<&CaptureOutputFiles>,
     requested: &CaptureSources,
 ) -> Result<(), String> {
-    let outputs = outputs.ok_or_else(|| "final output bookkeeping missing after stop".to_string())?;
+    let outputs =
+        outputs.ok_or_else(|| "final output bookkeeping missing after stop".to_string())?;
     if requested.screen && outputs.screen_files.is_empty() {
         return Err("no finalized screen output files were recorded".to_string());
     }
@@ -681,7 +716,10 @@ fn verify_final_outputs(
 }
 
 #[cfg(target_os = "windows")]
-fn all_requested_sources_paused(snapshot: &RuntimeSmokeSnapshot, requested: &CaptureSources) -> bool {
+fn all_requested_sources_paused(
+    snapshot: &RuntimeSmokeSnapshot,
+    requested: &CaptureSources,
+) -> bool {
     snapshot.session_is_running
         && snapshot.session_is_inactivity_paused
         && (!requested.screen || snapshot.screen_paused)
@@ -698,8 +736,10 @@ fn all_requested_sources_resumed(
         && !snapshot.session_is_inactivity_paused
         && snapshot.current_segment_sources.as_ref() == Some(requested)
         && (!requested.screen || (!snapshot.screen_paused && snapshot.active_screen_session))
-        && (!requested.microphone || (!snapshot.microphone_paused && snapshot.active_microphone_session))
-        && (!requested.system_audio || (!snapshot.system_audio_paused && snapshot.active_system_audio_session))
+        && (!requested.microphone
+            || (!snapshot.microphone_paused && snapshot.active_microphone_session))
+        && (!requested.system_audio
+            || (!snapshot.system_audio_paused && snapshot.active_system_audio_session))
 }
 
 #[cfg(target_os = "windows")]
@@ -708,9 +748,17 @@ fn stop_after_failure(app_handle: &tauri::AppHandle) -> Result<(), String> {
     if !snapshot.session_is_running {
         return Ok(());
     }
-    super::stop_native_capture_with_state(app_handle.state::<super::NativeCaptureState>(), app_handle)
-        .map(|_| ())
-        .map_err(|error| format!("failed to stop native capture after smoke failure: [{}] {}", error.code, error.message))
+    super::stop_native_capture_with_state(
+        app_handle.state::<super::NativeCaptureState>(),
+        app_handle,
+    )
+    .map(|_| ())
+    .map_err(|error| {
+        format!(
+            "failed to stop native capture after smoke failure: [{}] {}",
+            error.code, error.message
+        )
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -747,7 +795,9 @@ fn send_resume_input() -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn count_sources(sources: &CaptureSources) -> usize {
-    usize::from(sources.screen) + usize::from(sources.microphone) + usize::from(sources.system_audio)
+    usize::from(sources.screen)
+        + usize::from(sources.microphone)
+        + usize::from(sources.system_audio)
 }
 
 #[cfg(target_os = "windows")]

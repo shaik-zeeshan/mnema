@@ -49,10 +49,10 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
-#[cfg(target_os = "macos")]
-use std::sync::{Arc, Mutex};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::sync::OnceLock;
+#[cfg(target_os = "macos")]
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::time::Instant;

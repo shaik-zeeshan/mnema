@@ -764,7 +764,6 @@ pub(crate) fn load_recording_settings_from_disk(
     load_recording_settings_from_path(&recording_settings_file_path(app_handle))
 }
 
-
 pub(crate) fn initialize_recording_settings_state_from_disk(
     app_handle: &tauri::AppHandle,
     state: &RecordingSettingsState,
@@ -1395,7 +1394,8 @@ mod tests {
     }
 
     #[test]
-    fn capture_sources_domain_rejects_system_audio_without_screen_when_capability_requires_screen() {
+    fn capture_sources_domain_rejects_system_audio_without_screen_when_capability_requires_screen()
+    {
         let error = apply_domain_patch_for_test(
             default_recording_settings(),
             RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
@@ -1414,7 +1414,8 @@ mod tests {
     }
 
     #[test]
-    fn capture_sources_domain_allows_system_audio_without_screen_when_capability_allows_independent_audio() {
+    fn capture_sources_domain_allows_system_audio_without_screen_when_capability_allows_independent_audio(
+    ) {
         let updated = apply_domain_patch_for_test_with_capture_support(
             default_recording_settings(),
             RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {

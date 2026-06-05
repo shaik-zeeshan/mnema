@@ -65,7 +65,9 @@ pub(crate) fn current_system_idle_ms() -> Option<u64> {
     // LASTINPUTINFO::dwTime is a 32-bit tick value; subtract in that domain so
     // uptime wraparound matches the Win32 GetTickCount/GetLastInputInfo contract.
     let now_tick_ms = unsafe { GetTickCount64() };
-    Some(u64::from((now_tick_ms as u32).wrapping_sub(last_input.dwTime)))
+    Some(u64::from(
+        (now_tick_ms as u32).wrapping_sub(last_input.dwTime),
+    ))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

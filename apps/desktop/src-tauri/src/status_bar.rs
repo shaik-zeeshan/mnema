@@ -154,7 +154,10 @@ fn source_item_enabled(
     if !supported {
         return false;
     }
-    if source_id == SOURCE_SYSTEM_AUDIO_ID && support.system_audio_requires_screen && !current.screen {
+    if source_id == SOURCE_SYSTEM_AUDIO_ID
+        && support.system_audio_requires_screen
+        && !current.screen
+    {
         return false;
     }
     if checked {
@@ -471,7 +474,8 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
         microphone: settings.capture_microphone,
         system_audio: settings.capture_system_audio,
     };
-    let Some(next) = computed_toggle_sources(current, id, model.system_audio_requires_screen) else {
+    let Some(next) = computed_toggle_sources(current, id, model.system_audio_requires_screen)
+    else {
         refresh(app);
         return;
     };

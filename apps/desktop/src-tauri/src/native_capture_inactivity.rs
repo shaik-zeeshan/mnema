@@ -2058,7 +2058,8 @@ mod tests {
         // must NOT reset the screen pause-start timestamp — otherwise the display
         // probe would stop watching the screen and the activity resume-all path
         // would un-gate against a display that may still be gone.
-        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreenOrAudio, 100);
+        let mut state =
+            inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreenOrAudio, 100);
         let transient = ScreenPauseReason::TransientLiveness {
             trigger: TransientLivenessTrigger::DisplayUnavailable,
         };
@@ -2127,8 +2128,7 @@ mod tests {
             "probe should not be due before the recovery interval elapses"
         );
         assert!(
-            state
-                .is_transient_liveness_probe_due(10_000 + TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS),
+            state.is_transient_liveness_probe_due(10_000 + TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS),
             "probe should be due once the recovery interval elapses"
         );
     }

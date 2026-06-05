@@ -631,7 +631,6 @@ pub fn microphone_activity_level() -> Option<f32> {
     None
 }
 
-
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests {
     use super::{

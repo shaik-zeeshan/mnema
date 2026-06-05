@@ -136,7 +136,6 @@ fn sync_finalized_screen_output_file(
     true
 }
 
-
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn is_usable_audio_output_file_with_duration_validator(
     path: &str,
@@ -201,7 +200,6 @@ fn maybe_remove_unusable_audio_output_file_with_duration_validator(
     let cleanup_label = format!("unusable {label}");
     maybe_remove_intermediate_file(file, cleanup_label.as_str(), failures);
 }
-
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sync_finalized_audio_output_file_with_duration_validator(
@@ -773,7 +771,10 @@ mod tests {
             output_files.system_audio_file,
             Some(system_audio_rotated_file.clone())
         );
-        assert_eq!(output_files.system_audio_files, vec![system_audio_rotated_file]);
+        assert_eq!(
+            output_files.system_audio_files,
+            vec![system_audio_rotated_file]
+        );
         assert!(!Path::new(&system_audio_file).exists());
     }
 

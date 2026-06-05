@@ -2173,10 +2173,11 @@ mod windows_aac_m4a {
         IMFMediaBuffer, IMFSample, IMFSinkWriter, IMFSourceReader, MFAudioFormat_AAC,
         MFAudioFormat_PCM, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
         MFCreateSinkWriterFromURL, MFCreateSourceReaderFromURL, MFMediaType_Audio, MFShutdown,
-        MFStartup, MFSTARTUP_FULL, MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, MF_MT_AAC_PAYLOAD_TYPE,
-        MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE,
-        MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
-        MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_PD_DURATION, MF_SOURCE_READER_MEDIASOURCE, MF_VERSION,
+        MFStartup, MFSTARTUP_FULL, MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION,
+        MF_MT_AAC_PAYLOAD_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+        MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS,
+        MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_PD_DURATION,
+        MF_SOURCE_READER_MEDIASOURCE, MF_VERSION,
     };
 
     /// One AAC stream muxed into a `.m4a` via `IMFSinkWriter`.
@@ -2372,11 +2373,11 @@ mod windows_aac_m4a {
     }
 
     unsafe fn probe_positive_duration(url: &[u16]) -> bool {
-        let reader: IMFSourceReader =
-            match MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), None) {
-                Ok(reader) => reader,
-                Err(_) => return false,
-            };
+        let reader: IMFSourceReader = match MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), None)
+        {
+            Ok(reader) => reader,
+            Err(_) => return false,
+        };
 
         let propvariant = match reader
             .GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION)
@@ -2401,4 +2402,3 @@ mod windows_aac_m4a {
 
 #[cfg(target_os = "windows")]
 pub use windows_aac_m4a::{windows_audio_file_has_positive_duration, WindowsAacM4aSinkWriter};
-

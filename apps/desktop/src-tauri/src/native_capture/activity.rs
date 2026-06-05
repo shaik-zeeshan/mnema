@@ -432,9 +432,7 @@ fn idle_debug_audio_projection(
     }
 }
 
-pub(super) fn build_runtime_sources_status(
-    runtime: &NativeCaptureRuntime,
-) -> RuntimeSourcesStatus {
+pub(super) fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSourcesStatus {
     let requested_screen = runtime.requested_sources.as_ref().is_some_and(|s| s.screen);
     let requested_mic = runtime
         .requested_sources
