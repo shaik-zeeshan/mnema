@@ -1,4 +1,6 @@
 use super::metadata;
+#[cfg(target_os = "macos")]
+use super::output::cleanup_unusable_segment_artifacts;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::output::finalize_capture_outputs;
 use super::output::{
@@ -35,13 +37,14 @@ use tokio::sync::mpsc;
 
 use super::emit_audio_segments_changed;
 use super::lifecycle::TickOutcome;
+#[cfg(target_os = "windows")]
+use super::runtime::current_segment_sources_for_runtime;
 #[cfg(any(target_os = "macos", test))]
 use super::runtime::mark_runtime_session_failed;
 use super::runtime::{
-    active_sources_for_inactivity_paused_state, apply_runtime_signal, current_segment_sources_for_runtime,
-    has_any_capture_sources, now_monotonic_marker_ms, now_unix_ms, prefixed_capture_id,
-    refresh_runtime_planner_dates, reset_runtime_after_start_error, NativeCaptureRuntime,
-    SegmentLoopControl,
+    active_sources_for_inactivity_paused_state, apply_runtime_signal, has_any_capture_sources,
+    now_monotonic_marker_ms, now_unix_ms, prefixed_capture_id, refresh_runtime_planner_dates,
+    reset_runtime_after_start_error, NativeCaptureRuntime, SegmentLoopControl,
 };
 #[cfg(target_os = "macos")]
 use super::runtime::{
@@ -3174,9 +3177,10 @@ fn mark_screen_paused_for_inactivity(runtime: &mut NativeCaptureRuntime) {
         runtime.inactivity.microphone_paused,
         runtime.inactivity.system_audio_paused,
     );
-    runtime
-        .inactivity
-        .mark_screen_pause_started(now_monotonic_marker_ms());
+    runtime.inactivity.mark_screen_pause_started_with_reason(
+        now_monotonic_marker_ms(),
+        super::inactivity::ScreenPauseReason::Inactivity,
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -4659,6 +4663,7 @@ fn live_windows_system_audio_rotation_path(
     Ok(Some(planner.system_audio_file(target_index)))
 }
 
+#[cfg(target_os = "windows")]
 pub(super) fn start_windows_active_segment(
     app_handle: Option<&tauri::AppHandle>,
     runtime: &mut NativeCaptureRuntime,

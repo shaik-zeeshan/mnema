@@ -21,10 +21,10 @@ use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
     stopped_session_from_runtime, NativeCaptureRuntime,
 };
-#[cfg(target_os = "macos")]
-use super::segments::plan_live_rotation_segment;
 #[cfg(target_os = "windows")]
 use super::segments::start_windows_active_segment;
+#[cfg(target_os = "macos")]
+use super::segments::{apply_microphone_output_finalization, plan_live_rotation_segment};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::segments::{
     cleanup_failed_segment_dirs, create_segment_output_dirs, reanchor_active_segment_timing,
