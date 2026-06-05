@@ -3,9 +3,6 @@ mod activity;
 pub(crate) mod debug_log;
 #[path = "native_capture_inactivity.rs"]
 pub(crate) mod inactivity;
-#[cfg(target_os = "windows")]
-pub(crate) mod windows_inactivity_smoke;
-pub(crate) mod windows_transient_liveness_smoke;
 mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
@@ -21,6 +18,9 @@ pub(crate) mod settings;
 pub(crate) mod system_idle;
 #[cfg(test)]
 mod tests;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_inactivity_smoke;
+pub(crate) mod windows_transient_liveness_smoke;
 
 use capture_microphone as microphone_capture;
 use capture_types::{
@@ -1199,6 +1199,54 @@ pub fn maybe_push_ocr_unavailable_startup_warning(app_handle: &tauri::AppHandle)
     );
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_session_lock_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn("native capture state unavailable while handling Windows session lock");
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_session_lock(),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows session lock",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_session_unlock_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows session unlock",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_session_unlock(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows session unlock",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<NativeCaptureState>();
@@ -2282,8 +2330,8 @@ pub fn open_capture_privacy_settings(
             "microphone" => "ms-settings:privacy-microphone",
             other => {
                 return Err(format!(
-                    "capture privacy settings deep link is not supported on Windows for kind: {other}"
-                ))
+                "capture privacy settings deep link is not supported on Windows for kind: {other}"
+            ))
             }
         };
 

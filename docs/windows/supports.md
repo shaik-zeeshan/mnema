@@ -19,12 +19,17 @@ Companion research: [`runtime-capture-research.md`](./runtime-capture-research.m
   `native_capture_supported = false`, and the existing "native capture
   unsupported" settings UI renders. No new failure UI.
 
-## What the Windows MVP captures
+## What the Windows runtime captures
 
 - **Screen video** of the **primary monitor**, via Windows Graphics Capture
   (`CreateForMonitor`), encoded to **H.264 `.mp4`** through the Media Foundation
   `IMFSinkWriter`.
-- **Cursor** is included in the recording (hardcoded on for the MVP).
+- **Microphone audio** from the selected/default WASAPI capture endpoint,
+  encoded to **AAC `.m4a`** through Media Foundation.
+- **Independent system audio** via WASAPI loopback when a default render endpoint
+  is available, encoded to **AAC `.m4a`**. Windows does not require screen
+  capture to request system audio.
+- **Cursor** is included in the recording.
 - **Resolution presets and custom output sizes are honored.** WGC still captures
   the primary monitor at native size, then the CPU BGRA -> NV12 conversion scales
   to the resolved output size. "Original" preserves the native size.
@@ -33,37 +38,31 @@ Companion research: [`runtime-capture-research.md`](./runtime-capture-research.m
 - **JPEG frame export** writes low-cadence frame artifacts at the configured
   output resolution, matching the encoded video size.
 
-## Explicitly out of scope for the MVP (deferred follow-ups)
+## Explicitly out of scope for current Windows support (deferred follow-ups)
 
 These are **not bugs** — they are deliberately deferred:
 
-- **No system-audio capture** (WASAPI loopback). Screen video only.
-- **No microphone capture.**
 - **No finalized-video frame-index sidecars yet.** Windows can export JPEG frame
   artifacts, but indexed finalized-video preview timing remains a later follow-up.
 - **No Windows OCR provider default yet.** The cross-platform Tesseract provider
   is the intended later path.
 - **No privacy / per-app exclusion filters.** WGC has no ScreenCaptureKit-style
   live app-exclusion for full-monitor capture; do not promise it.
-- **No inactivity auto-pause.** See below.
-- **No hardware-accelerated encode.** Software H.264 only for the MVP; hardware
+- **No hardware-accelerated encode.** Software H.264 only for now; hardware
   encode is a later optimization behind the same backend trait.
 - **No multi-monitor or per-window capture.** Primary monitor only.
 
-## Behavioral notes & known limitations (accepted for the MVP)
+## Behavioral notes & known limitations
 
-### Inactivity pause is disabled on Windows
+### Inactivity pause is source-family aware on Windows
 
-macOS defaults to pausing capture when the user is idle
-(`pause_capture_on_inactivity: true`). On Windows there is **no usable activity
-signal** (`current_system_idle_ms()` is `None`, screen-activity polling is
-macOS-only, audio is deferred) and the pause mechanism itself is macOS-only.
-
-**Therefore Windows records continuously whenever recording is on**, regardless of
-the `pause_capture_on_inactivity` setting, which is treated as off and hidden in
-Settings on Windows. Consequence: an idle Windows machine keeps recording and
-rotating 60 s segments — **more disk and battery use than macOS**. Idle-based
-pausing (`GetLastInputInfo` + hard stop/start) is a self-contained follow-up.
+Windows uses system-input snapshots plus capture-sourced screen, microphone, and
+system-audio activity samples for inactivity decisions. When inactivity pause is
+enabled, Windows pauses the requested source families independently and resumes
+only the paused families when relevant activity returns. Whole-runtime
+inactivity pause/resume and screen transient-liveness resume use the same
+segment-start path, preserving shared `CaptureClock` / `SegmentSchedule`
+boundaries and segment naming.
 
 ### Primary monitor only
 
@@ -80,9 +79,17 @@ is more likely to surprise Windows users.
   still the configured segment size; frames from the new native source size are
   scaled into that output size.
 - **Monitor sleep / DPMS off:** frames pause and resume; usually no action needed.
-- **Primary monitor disconnected (`GraphicsCaptureItem.Closed`):** the session is
-  marked failed and surfaced; **recording stops until the user restarts it.** No
-  automatic re-acquire in the MVP.
+- **Display unavailable / primary monitor loss (#62):** when the runtime observes
+  the display-unavailable transient-liveness path, it suspends **screen only** as
+  `TransientLiveness { DisplayUnavailable }`, keeps microphone and independent
+  system audio running, and auto-resumes screen through the shared
+  transient-liveness/start-segment path when a display returns.
+- **Windows session lock (#63):** `Win+L` / workstation lock suspends **screen
+  only** as `TransientLiveness { SessionLock }`. Microphone remains active/not
+  paused, independent system audio remains active/not paused when requested, and
+  audio source-session ids stay stable. Unlock automatically resumes screen
+  through the shared transient-liveness/start-segment path; audio must not stop
+  or rotate solely because of the lock.
 
 ### Frame pacing
 
@@ -105,5 +112,11 @@ use more CPU on Windows. Hardware encode (a later optimization) removes this cos
   scaling.
 - Bitrate preset/custom controls are enabled on Windows and describe Media
   Foundation H.264 bitrate control.
-- System audio, microphone, privacy filters, and inactivity remain **macOS-only**
-  / hidden on Windows.
+- System audio is supported through independent WASAPI loopback when the support
+  probe finds a default render endpoint; it does not require screen capture on
+  Windows.
+- Microphone capture is supported through WASAPI endpoints with best-effort
+  Windows privacy-denial surfacing.
+- Inactivity and transient-liveness controls are Windows-aware: display
+  unavailable and session lock pause screen only, while requested microphone and
+  independent system audio continue.

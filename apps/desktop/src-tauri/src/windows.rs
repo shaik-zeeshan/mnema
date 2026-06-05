@@ -10,6 +10,26 @@ use std::{
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::native_capture;
+#[cfg(target_os = "windows")]
+use std::panic::{catch_unwind, AssertUnwindSafe};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    System::RemoteDesktop::{
+        WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+    },
+    UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::{
+            WM_NCDESTROY, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+        },
+    },
+};
+
+#[cfg(target_os = "windows")]
+static WINDOWS_SESSION_NOTIFICATION_HWND: Mutex<Option<isize>> = Mutex::new(None);
+#[cfg(target_os = "windows")]
+const WINDOWS_SESSION_NOTIFICATION_SUBCLASS_ID: usize = 1;
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
@@ -308,6 +328,145 @@ fn show_and_focus_window(window: &WebviewWindow) {
     refresh_macos_dock_icon_visibility(window.app_handle());
 }
 
+#[cfg(target_os = "windows")]
+fn register_windows_session_notifications(window: &WebviewWindow) {
+    if window.label() != AppWindow::Main.config().label {
+        return;
+    }
+
+    let hwnd = match window.hwnd() {
+        Ok(hwnd) => hwnd.0 as HWND,
+        Err(error) => {
+            crate::native_capture::debug_log::log_warn(format!(
+                "failed to get main window HWND for Windows session notifications: {error}"
+            ));
+            return;
+        }
+    };
+    if hwnd.is_null() {
+        crate::native_capture::debug_log::log_warn(
+            "main window HWND was null while registering Windows session notifications",
+        );
+        return;
+    }
+
+    let raw_hwnd = hwnd as isize;
+    let mut registered_hwnd = match WINDOWS_SESSION_NOTIFICATION_HWND.lock() {
+        Ok(registered_hwnd) => registered_hwnd,
+        Err(_) => {
+            crate::native_capture::debug_log::log_warn(
+                "Windows session notification state poisoned; skipping registration",
+            );
+            return;
+        }
+    };
+    if registered_hwnd.is_some_and(|registered| registered == raw_hwnd) {
+        return;
+    }
+    if let Some(registered) = registered_hwnd.take() {
+        unsafe {
+            unregister_windows_session_notifications(registered as HWND);
+        }
+    }
+
+    let app_handle = Box::into_raw(Box::new(window.app_handle().clone())) as usize;
+    let registered = unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) != 0 };
+    if !registered {
+        unsafe {
+            drop(Box::from_raw(app_handle as *mut tauri::AppHandle));
+        }
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to register Windows session notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+        return;
+    }
+
+    let subclassed = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(windows_session_notification_subclass_proc),
+            WINDOWS_SESSION_NOTIFICATION_SUBCLASS_ID,
+            app_handle,
+        ) != 0
+    };
+    if !subclassed {
+        unsafe {
+            unregister_windows_session_notifications(hwnd);
+            drop(Box::from_raw(app_handle as *mut tauri::AppHandle));
+        }
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to subclass main window for Windows session notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+        return;
+    }
+
+    *registered_hwnd = Some(raw_hwnd);
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn unregister_windows_session_notifications(hwnd: HWND) {
+    if hwnd.is_null() {
+        return;
+    }
+    if WTSUnRegisterSessionNotification(hwnd) == 0 {
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to unregister Windows session notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn windows_session_notification_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    subclass_id: usize,
+    app_handle_ptr: usize,
+) -> LRESULT {
+    if msg == WM_WTSSESSION_CHANGE {
+        let app_handle = &*(app_handle_ptr as *const tauri::AppHandle);
+        let result = catch_unwind(AssertUnwindSafe(|| match wparam as u32 {
+            WTS_SESSION_LOCK => {
+                crate::native_capture::handle_windows_session_lock_from_app_handle(app_handle);
+            }
+            WTS_SESSION_UNLOCK => {
+                crate::native_capture::handle_windows_session_unlock_from_app_handle(app_handle);
+            }
+            _ => {}
+        }));
+        if result.is_err() {
+            crate::native_capture::debug_log::log_error(
+                "Windows session notification callback panicked; continuing without aborting window procedure",
+            );
+        }
+    }
+
+    if msg == WM_NCDESTROY {
+        unregister_windows_session_notifications(hwnd);
+        if let Ok(mut registered_hwnd) = WINDOWS_SESSION_NOTIFICATION_HWND.lock() {
+            if registered_hwnd.is_some_and(|registered| registered == hwnd as isize) {
+                *registered_hwnd = None;
+            }
+        } else {
+            crate::native_capture::debug_log::log_warn(
+                "Windows session notification state poisoned while clearing registration",
+            );
+        }
+        RemoveWindowSubclass(
+            hwnd,
+            Some(windows_session_notification_subclass_proc),
+            subclass_id,
+        );
+        drop(Box::from_raw(app_handle_ptr as *mut tauri::AppHandle));
+    }
+
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
 pub(crate) fn open_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(app, AppWindow::Main, None)
 }
@@ -360,6 +519,9 @@ fn build_app_window(
     }
 
     let built = builder.build().map_err(|err| err.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    register_windows_session_notifications(&built);
 
     #[cfg(target_os = "macos")]
     if let Some(radius) = config.macos_corner_radius {

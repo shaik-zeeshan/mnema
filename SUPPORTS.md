@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-06-04_
+_Last reviewed: 2026-06-05_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -29,7 +29,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Audio transcription: Local Whisper/Parakeet | [x] | [~] | [~] | Models are cross-platform-ish, but audio decode is AVFoundation-only today. |
 | Speaker analysis | [x] | [~] | [~] | Model runtime is cross-platform-ish, but audio decode is AVFoundation-only today. |
 | Inactivity detection | [x] | [~] | [ ] | macOS uses CoreGraphics input idle plus capture-sourced screen/audio activity. Windows uses system-input snapshots plus capture-sourced screen/microphone/system-audio activity for inactivity pause/resume. |
-| Sleep/wake recovery | [x] | [ ] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. |
+| Sleep/wake/session-lock recovery | [x] | [~] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. Windows transient-liveness recovery currently covers display-unavailable and session-lock screen suspension while audio continues. |
 | Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
 | Active app/window metadata | [x] | [ ] | [ ] | macOS uses NSWorkspace/CoreGraphics. |
 | Browser URL metadata | [x] | [ ] | [ ] | macOS uses AppleScript for supported browsers. |
@@ -120,7 +120,7 @@ Research notes:
   - Active WASAPI capture endpoint enumeration, selected/default endpoint capture, default-device tracking, `IMMNotificationClient` device-change notifications, and `FallbackToDefault` / `WaitForSameDevice` reconnect policy are implemented.
   - Best-effort permission UX is implemented: a blocked microphone (Windows privacy denial surfacing as `E_ACCESSDENIED` at WASAPI `IAudioClient` activation) is mapped to the recoverable `microphone_access_denied` error at capture start, which raises an app notification deep-linking to `ms-settings:privacy-microphone`. The `microphone` permission reports as `Unknown` (best-effort) since per-app privacy cannot be queried synchronously.
   - The microphone capture callback emits a VAD PCM feed and peak-since-last-poll Audio Activity Samples (debug-visible raw samples via the `get_idle_debug` surface); those samples feed Windows per-family inactivity pause/resume decisions.
-  - Still outstanding: audio decode/processing and on-device disconnect/reconnect smoke-test coverage.
+  - Still outstanding: audio decode/processing and broader audio device-disconnect smoke coverage.
 - [~] Implement Windows system-audio capture.
   - WASAPI loopback captures the default render endpoint as an independent source when the support probe succeeds, tracks default render-endpoint changes via `IMMNotificationClient`, re-attaches loopback mid-recording when the default changes, and emits audio activity samples for inactivity decisions.
   - System audio is modeled as an independent source on Windows (ADR 0022); backend source validation allows system-audio-only sessions instead of requiring screen capture.
@@ -129,8 +129,8 @@ Research notes:
 - [~] Implement Windows capture session IDs and source-session bookkeeping. Screen and microphone `SourceSessions` metadata are populated; Windows system audio uses `sysaudio_session`-prefixed source ids when loopback capture is active.
 - [~] Implement segment rotation without dropping OCR/frame-index invariants. Screen, microphone, and independent system audio rotate on the shared 5-minute boundary; an audio-only session rotates without a screen planner/session.
 - [x] Implement inactivity pause/resume for each requested source family. Windows pauses screen, microphone, and independent system-audio families after the inactivity threshold and resumes only the paused families when system input, screen, microphone, or system-audio activity returns; whole-runtime inactivity pause/resume uses the same segment-start path so resumed segments keep shared `CaptureClock` / `SegmentSchedule` boundaries and segment naming.
-- [~] Implement capture liveness/error propagation equivalent to ScreenCaptureKit delegate stop errors. Windows now surfaces `GraphicsCaptureItem.Closed` primary-monitor disconnects as failed sessions, and microphone endpoint disconnects flow through the microphone device-policy notifier/reconnect path; broader source recovery is still outstanding.
-- [~] Implement sleep/wake/session-lock recovery. Windows monitor sleep / DPMS-off pauses and resumes WGC frames implicitly, but broader OS sleep/session-lock recovery policy is still outstanding.
+- [~] Implement capture liveness/error propagation equivalent to ScreenCaptureKit delegate stop errors. Windows now treats primary-monitor display-unavailable transitions as transient liveness instead of fatal failure: `DisplayUnavailable` from monitor/display loss (#62) and `SessionLock` from workstation lock (#63) suspend screen capture only, keep the native session running, and auto-resume screen through the shared transient-liveness/start-segment path when the display returns or the session unlocks.
+- [~] Implement sleep/wake/session-lock recovery. Session lock on Windows is supported as `TransientLiveness { SessionLock }`: screen is paused, microphone remains active/not paused, independent system audio remains active/not paused when requested, audio source-session ids are preserved, and unlock resumes screen automatically. Broader OS sleep policy is still outstanding.
 
 ### Media writers and previews
 

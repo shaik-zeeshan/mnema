@@ -1,52 +1,53 @@
 use super::activity::current_activity_snapshot;
 use super::output::append_committed_segment_output_files;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use super::output::finalize_capture_outputs;
 #[cfg(target_os = "macos")]
 use super::output::cleanup_unusable_segment_artifacts;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use super::output::finalize_capture_outputs;
 use super::output::{
     set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,
-};
-use super::runtime::{
-    apply_runtime_signal, current_segment_sources_for_runtime, mark_runtime_session_failed,
-    microphone_planner_for_runtime, refresh_runtime_planner_dates, screen_planner_for_runtime,
-    system_audio_planner_for_runtime,
 };
 #[cfg(target_os = "macos")]
 use super::runtime::{
     active_sources_for_inactivity_paused_state, ensure_system_audio_planner_for_runtime,
 };
 use super::runtime::{
+    apply_runtime_signal, current_segment_sources_for_runtime, mark_runtime_session_failed,
+    microphone_planner_for_runtime, refresh_runtime_planner_dates, screen_planner_for_runtime,
+    system_audio_planner_for_runtime,
+};
+use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
     stopped_session_from_runtime, NativeCaptureRuntime,
 };
+#[cfg(target_os = "macos")]
+use super::segments::plan_live_rotation_segment;
+#[cfg(target_os = "windows")]
+use super::segments::start_windows_active_segment;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use super::segments::{
+    cleanup_failed_segment_dirs, create_segment_output_dirs, reanchor_active_segment_timing,
+    stop_active_sessions_after_failure,
+};
+use super::segments::{empty_output_files, start_capture_runtime, stop_capture_runtime};
 #[cfg(target_os = "macos")]
 use super::segments::{
     handle_inactivity_resume_error, pause_microphone_for_inactivity_with_app_handle,
     pause_runtime_for_inactivity_with_app_handle, pause_screen_for_inactivity_with_app_handle,
     pause_system_audio_for_inactivity_with_app_handle, recover_from_segment_finalize_error,
     recover_screen_capture_after_wake, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity, resume_screen_from_inactivity, resume_system_audio_from_inactivity,
-    start_segment_with_current_privacy_filter,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity,
+    resume_system_audio_from_inactivity, start_segment_with_current_privacy_filter,
 };
 #[cfg(target_os = "windows")]
 use super::segments::{
     pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
     pause_screen_for_inactivity_with_app_handle, pause_screen_for_transient_liveness,
     pause_system_audio_for_inactivity_with_app_handle, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity, resume_screen_from_inactivity, resume_system_audio_from_inactivity,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity,
+    resume_system_audio_from_inactivity,
 };
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use super::segments::{
-    cleanup_failed_segment_dirs, create_segment_output_dirs, reanchor_active_segment_timing,
-    stop_active_sessions_after_failure,
-};
-#[cfg(target_os = "macos")]
-use super::segments::plan_live_rotation_segment;
-#[cfg(target_os = "windows")]
-use super::segments::start_windows_active_segment;
-use super::segments::{empty_output_files, start_capture_runtime, stop_capture_runtime};
 use capture_runtime::RuntimeSignal;
 use capture_types::{
     CaptureErrorResponse, CaptureSources, NativeCaptureSession, RecordingSettings,
@@ -98,10 +99,10 @@ impl RecordingLifecycle {
         );
         if let Some(error) = stop_error {
             if capture_screen::screen_capture_stop_error_is_transient_liveness(&error.code) {
-                return self.suspend_windows_screen_for_transient_liveness(&format!(
-                    "backend stop error [{}] {}",
-                    error.code, error.message
-                ));
+                return self.suspend_windows_screen_for_transient_liveness(
+                    super::inactivity::TransientLivenessTrigger::DisplayUnavailable,
+                    &format!("backend stop error [{}] {}", error.code, error.message),
+                );
             }
 
             super::debug_log::log(format!(
@@ -120,26 +121,29 @@ impl RecordingLifecycle {
         {
             // Not-live without a surfaced backend stop error is the same
             // display-death family (ADR 0023) → transient suspension, not failure.
-            return self
-                .suspend_windows_screen_for_transient_liveness("session not live without a backend error");
+            return self.suspend_windows_screen_for_transient_liveness(
+                super::inactivity::TransientLivenessTrigger::DisplayUnavailable,
+                "session not live without a backend error",
+            );
         }
 
         TickOutcome::Continue
     }
 
     /// Enter a screen-only transient-liveness suspension and keep the session
-    /// alive (ADR 0023). The screen capture session is already dead; the pause
-    /// path finalizes the partial segment and records the
-    /// `TransientLiveness { DisplayUnavailable }` reason.
+    /// alive (ADR 0023). The screen capture session is already dead/unavailable;
+    /// the pause path finalizes the partial segment and records the supplied
+    /// `TransientLiveness { trigger }` reason.
     #[cfg(target_os = "windows")]
-    fn suspend_windows_screen_for_transient_liveness(&mut self, cause: &str) -> TickOutcome {
+    fn suspend_windows_screen_for_transient_liveness(
+        &mut self,
+        trigger: super::inactivity::TransientLivenessTrigger,
+        cause: &str,
+    ) -> TickOutcome {
         super::debug_log::log(format!(
             "windows screen capture became unavailable ({cause}); suspending screen as transient liveness and keeping the session alive (ADR 0023)"
         ));
-        if let Err(error) = pause_screen_for_transient_liveness(
-            &mut self.runtime,
-            super::inactivity::TransientLivenessTrigger::DisplayUnavailable,
-        ) {
+        if let Err(error) = pause_screen_for_transient_liveness(&mut self.runtime, trigger) {
             // The pause path tolerates the dead-session stop error internally, so a
             // returned error here is a genuine bookkeeping failure; reconcile and
             // continue rather than killing the recording on a transient condition.
@@ -149,6 +153,84 @@ impl RecordingLifecycle {
             ));
         }
         TickOutcome::Continue
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn handle_windows_session_lock(&mut self) -> Option<NativeCaptureSession> {
+        if !self.runtime.is_running
+            || self.runtime.user_capture_paused
+            || self.runtime.inactivity.is_screen_paused()
+            || !self
+                .runtime
+                .requested_sources
+                .as_ref()
+                .is_some_and(|sources| sources.screen)
+        {
+            return None;
+        }
+
+        if let Err(error) = pause_screen_for_transient_liveness(
+            &mut self.runtime,
+            super::inactivity::TransientLivenessTrigger::SessionLock,
+        ) {
+            super::debug_log::log(format!(
+                "windows session-lock screen suspension reported an issue: [{}] {}",
+                error.code, error.message
+            ));
+        }
+
+        if matches!(
+            self.runtime.inactivity.screen_pause_reason(),
+            Some(super::inactivity::ScreenPauseReason::TransientLiveness {
+                trigger: super::inactivity::TransientLivenessTrigger::SessionLock,
+            })
+        ) {
+            Some(session_from_runtime(&self.runtime))
+        } else {
+            None
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn windows_session_unlock_can_resume_screen(&self) -> bool {
+        matches!(
+            self.runtime.inactivity.screen_pause_reason(),
+            Some(super::inactivity::ScreenPauseReason::TransientLiveness {
+                trigger: super::inactivity::TransientLivenessTrigger::SessionLock,
+            })
+        )
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn handle_windows_session_unlock(
+        &mut self,
+        app_handle: &tauri::AppHandle,
+    ) -> Option<NativeCaptureSession> {
+        if !self.windows_session_unlock_can_resume_screen() {
+            return None;
+        }
+
+        if let Err(error) = resume_screen_from_inactivity(&mut self.runtime, Some(app_handle)) {
+            let microphone_paused = self.runtime.inactivity.microphone_paused;
+            let system_audio_paused = self.runtime.inactivity.system_audio_paused;
+            self.runtime
+                .inactivity
+                .set_family_paused_states_with_reason(
+                    true,
+                    microphone_paused,
+                    system_audio_paused,
+                    super::inactivity::ScreenPauseReason::TransientLiveness {
+                        trigger: super::inactivity::TransientLivenessTrigger::SessionLock,
+                    },
+                );
+            super::debug_log::log(format!(
+                "windows session-unlock screen resume failed; leaving screen suspended: [{}] {}",
+                error.code, error.message
+            ));
+            return None;
+        }
+
+        Some(session_from_runtime(&self.runtime))
     }
 
     /// Decide whether a transient-liveness screen pause should resume *now*,
@@ -211,9 +293,7 @@ impl RecordingLifecycle {
         // limits the Win32 call. Route through `screen_display_available` for
         // symmetry with the macOS recovery path (it delegates to
         // `windows_display_present` on Windows).
-        if !self
-            .transient_liveness_resume_decision(now, capture_screen::screen_display_available)
-        {
+        if !self.transient_liveness_resume_decision(now, capture_screen::screen_display_available) {
             return;
         }
 
@@ -584,7 +664,8 @@ impl RecordingLifecycle {
             #[cfg(target_os = "macos")]
             let resume_result = resume_microphone_from_inactivity(&mut self.runtime);
             #[cfg(target_os = "windows")]
-            let resume_result = resume_microphone_from_inactivity(&mut self.runtime, Some(app_handle));
+            let resume_result =
+                resume_microphone_from_inactivity(&mut self.runtime, Some(app_handle));
             if let Err(error) = resume_result {
                 super::debug_log::log(format!(
                     "failed to resume microphone capture after activity: [{}] {}",
@@ -793,7 +874,6 @@ impl RecordingLifecycle {
         TickOutcome::Continue
     }
 
-
     #[cfg(target_os = "windows")]
     pub(crate) fn tick_inactivity(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
         if self.runtime.user_capture_paused {
@@ -831,8 +911,7 @@ impl RecordingLifecycle {
                     .idle_timeout_seconds
                     .saturating_mul(1000)
         {
-            if let Err(error) =
-                resume_runtime_from_inactivity(&mut self.runtime, Some(app_handle))
+            if let Err(error) = resume_runtime_from_inactivity(&mut self.runtime, Some(app_handle))
             {
                 super::debug_log::log(format!(
                     "failed to resume Windows native capture after activity: [{}] {}",
@@ -856,7 +935,8 @@ impl RecordingLifecycle {
             .inactivity
             .should_resume_microphone_from_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime, Some(app_handle))
+            if let Err(error) =
+                resume_microphone_from_inactivity(&mut self.runtime, Some(app_handle))
             {
                 super::debug_log::log(format!(
                     "failed to resume Windows microphone capture after activity: [{}] {}",
@@ -1016,7 +1096,8 @@ impl RecordingLifecycle {
             .inactivity
             .should_resume_from_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = resume_runtime_from_inactivity(&mut self.runtime, Some(app_handle)) {
+            if let Err(error) = resume_runtime_from_inactivity(&mut self.runtime, Some(app_handle))
+            {
                 super::debug_log::log(format!(
                     "failed to resume Windows native capture after activity: [{}] {}",
                     error.code, error.message
@@ -1776,7 +1857,9 @@ mod tests {
     use super::*;
     use capture_runtime::RuntimeState;
     use capture_screen::{RotatedCaptureOutputs, ScreenCaptureSession};
-    use capture_types::{CaptureErrorResponse, CaptureOutputFiles};
+    use capture_types::{
+        CaptureErrorResponse, CaptureOutputFiles, SourceSessionMeta, SourceSessions,
+    };
     use std::path::Path;
 
     #[derive(Debug)]
@@ -1879,9 +1962,11 @@ mod tests {
         assert!(lifecycle.runtime.inactivity.is_screen_paused());
         assert_eq!(
             lifecycle.runtime.inactivity.screen_pause_reason(),
-            Some(super::super::inactivity::ScreenPauseReason::TransientLiveness {
-                trigger: super::super::inactivity::TransientLivenessTrigger::DisplayUnavailable,
-            })
+            Some(
+                super::super::inactivity::ScreenPauseReason::TransientLiveness {
+                    trigger: super::super::inactivity::TransientLivenessTrigger::DisplayUnavailable,
+                }
+            )
         );
     }
 
@@ -1933,6 +2018,12 @@ mod tests {
         }
     }
 
+    fn session_lock_pause_reason() -> ScreenPauseReason {
+        ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::SessionLock,
+        }
+    }
+
     fn screen_only_inactivity_state() -> InactivityState {
         InactivityState {
             enabled: true,
@@ -1940,6 +2031,175 @@ mod tests {
             last_activity_monotonic_ms: 0,
             ..InactivityState::default()
         }
+    }
+
+    #[test]
+    fn windows_session_lock_records_session_lock_reason() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+
+        let session = lifecycle
+            .handle_windows_session_lock()
+            .expect("session lock should pause requested screen capture");
+
+        assert!(session.is_running);
+        assert!(session.is_inactivity_paused);
+        assert!(lifecycle.runtime.active_screen_session.is_none());
+        assert!(lifecycle.runtime.inactivity.is_screen_paused());
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(session_lock_pause_reason())
+        );
+        assert!(lifecycle.windows_session_unlock_can_resume_screen());
+    }
+
+    #[test]
+    fn windows_session_lock_noops_when_recording_cannot_accept_screen_pause() {
+        let mut not_running = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+        not_running.runtime.is_running = false;
+        assert!(not_running.handle_windows_session_lock().is_none());
+        assert!(!not_running.runtime.inactivity.is_screen_paused());
+
+        let mut screen_not_requested = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+        screen_not_requested.runtime.requested_sources = Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: true,
+        });
+        assert!(screen_not_requested.handle_windows_session_lock().is_none());
+        assert!(!screen_not_requested.runtime.inactivity.is_screen_paused());
+
+        let mut user_paused = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+        user_paused.runtime.user_capture_paused = true;
+        assert!(user_paused.handle_windows_session_lock().is_none());
+        assert!(!user_paused.runtime.inactivity.is_screen_paused());
+    }
+
+    #[test]
+    fn windows_session_lock_preserves_audio_pause_flags_and_source_sessions() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+        lifecycle.runtime.requested_sources = Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        });
+        lifecycle.runtime.current_segment_sources = Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        });
+        let source_sessions = SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "screen-session".to_string(),
+                started_at_unix_ms: 1,
+            }),
+            microphone: Some(SourceSessionMeta {
+                session_id: "microphone-session".to_string(),
+                started_at_unix_ms: 2,
+            }),
+            system_audio: Some(SourceSessionMeta {
+                session_id: "system-audio-session".to_string(),
+                started_at_unix_ms: 3,
+            }),
+        };
+        lifecycle.runtime.source_sessions = Some(source_sessions.clone());
+
+        let session = lifecycle
+            .handle_windows_session_lock()
+            .expect("session lock should pause only the screen family");
+
+        assert!(lifecycle.runtime.inactivity.is_screen_paused());
+        assert!(!lifecycle.runtime.inactivity.is_microphone_paused());
+        assert!(!lifecycle.runtime.inactivity.is_system_audio_paused());
+        assert_eq!(
+            lifecycle.runtime.source_sessions,
+            Some(source_sessions.clone())
+        );
+        assert_eq!(session.source_sessions, Some(source_sessions));
+        assert_eq!(
+            lifecycle.runtime.current_segment_sources,
+            Some(CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: true,
+            })
+        );
+    }
+
+    #[test]
+    fn windows_session_unlock_gate_rejects_display_unavailable_and_inactivity() {
+        let mut display_unavailable = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(closed_error()),
+        });
+        assert_eq!(
+            display_unavailable.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+        assert_eq!(
+            display_unavailable.runtime.inactivity.screen_pause_reason(),
+            Some(transient_pause_reason())
+        );
+        assert!(!display_unavailable.windows_session_unlock_can_resume_screen());
+        assert_eq!(
+            display_unavailable.runtime.inactivity.screen_pause_reason(),
+            Some(transient_pause_reason())
+        );
+
+        let mut inactivity = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+        super::super::segments::pause_screen_for_inactivity_with_app_handle(
+            &mut inactivity.runtime,
+            None,
+        )
+        .expect("inactivity screen pause should succeed");
+        assert_eq!(
+            inactivity.runtime.inactivity.screen_pause_reason(),
+            Some(ScreenPauseReason::Inactivity)
+        );
+        assert!(!inactivity.windows_session_unlock_can_resume_screen());
+        assert_eq!(
+            inactivity.runtime.inactivity.screen_pause_reason(),
+            Some(ScreenPauseReason::Inactivity)
+        );
+    }
+
+    #[test]
+    fn windows_repeated_session_lock_preserves_existing_pause_reason() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(closed_error()),
+        });
+        assert_eq!(
+            lifecycle.handle_windows_screen_capture_stop(),
+            TickOutcome::Continue
+        );
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(transient_pause_reason())
+        );
+
+        assert!(lifecycle.handle_windows_session_lock().is_none());
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(transient_pause_reason())
+        );
     }
 
     // Acceptance criterion 1 (lifecycle-level): the suspend path records
@@ -1972,11 +2232,10 @@ mod tests {
             .set_family_paused_states(false, false, false);
         assert_eq!(lifecycle.runtime.inactivity.screen_pause_reason(), None);
 
-        lifecycle.runtime.active_screen_session =
-            Some(Box::new(FakeScreenCaptureSession {
-                live: true,
-                pending_stop_error: None,
-            }));
+        lifecycle.runtime.active_screen_session = Some(Box::new(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        }));
         super::super::segments::pause_screen_for_inactivity_with_app_handle(
             &mut lifecycle.runtime,
             None,
@@ -2092,12 +2351,7 @@ mod tests {
     #[test]
     fn windows_transient_probe_throttle_advances_marker_only_when_due() {
         let mut state = screen_only_inactivity_state();
-        state.set_family_paused_states_with_reason(
-            true,
-            false,
-            false,
-            transient_pause_reason(),
-        );
+        state.set_family_paused_states_with_reason(true, false, false, transient_pause_reason());
 
         // First probe is always due; mark it.
         assert!(state.is_transient_liveness_probe_due(10_000));
@@ -2137,7 +2391,10 @@ mod tests {
             TickOutcome::Continue
         );
 
-        assert!(lifecycle.runtime.is_running, "session must survive screen-only loss");
+        assert!(
+            lifecycle.runtime.is_running,
+            "session must survive screen-only loss"
+        );
         assert!(
             lifecycle.all_requested_families_paused_for_inactivity(),
             "screen-only request with the screen paused means all requested families are paused"
@@ -2193,8 +2450,7 @@ mod tests {
             "microphone inactivity pause must not clobber the transient screen reason"
         );
         assert_eq!(
-            lifecycle.runtime.inactivity.screen_paused_at_monotonic_ms,
-            pause_started_at,
+            lifecycle.runtime.inactivity.screen_paused_at_monotonic_ms, pause_started_at,
             "microphone inactivity pause must not reset the screen pause-start timestamp"
         );
         assert!(lifecycle.screen_paused_for_transient_liveness());
@@ -2213,8 +2469,7 @@ mod tests {
             "microphone resume must not clear the transient screen reason"
         );
         assert_eq!(
-            lifecycle.runtime.inactivity.screen_paused_at_monotonic_ms,
-            pause_started_at,
+            lifecycle.runtime.inactivity.screen_paused_at_monotonic_ms, pause_started_at,
             "microphone resume must not reset the screen pause-start timestamp"
         );
     }
