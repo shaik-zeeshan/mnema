@@ -139,6 +139,14 @@ const ASK_AI_SOURCE_EVENT: &str = "ask_ai_source";
 const ASK_AI_SOURCE_FRAME_CAP: usize = 6;
 const ASK_AI_SOURCE_AUDIO_CAP: usize = 4;
 
+/// Maximum size (in chars) of the formatted prior-conversation context block
+/// prepended to a resurrected session's first prompt. When the formatted turns
+/// exceed this, the OLDEST turns are dropped whole until the block fits; if even
+/// the single most recent turn alone still exceeds it, that turn's text is
+/// truncated to fit. Keeps a resurrected prompt bounded so an old, long
+/// conversation cannot blow up the first turn's token budget.
+const ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP: usize = 12_000;
+
 /// Translate the persisted `askAiMaxToolCalls` setting (`0` = no cap) into the
 /// per-session cap passed to the agent loop. `0` becomes `usize::MAX` so the
 /// agent may issue unlimited follow-up brokered queries.
@@ -531,12 +539,31 @@ pub async fn get_pi_runtime_status(
 // bypassing both the PI flow and the cap while audit still attributed access to
 // PI. Keep them internal.
 
+/// One prior question/answer turn carried into a resurrected session.
+///
+/// Only the question and answer text are included — no tool logs, no Answer
+/// Sources — per the resurrection contract. The frontend builds the list from
+/// its in-memory transcript when a follow-up lands on an expired/errored thread.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAiPriorTurn {
+    question: String,
+    answer: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AskAiStartRequest {
     conversation_id: String,
     question: String,
     seed_query: Option<String>,
+    /// Prior questions and answers from an earlier (expired or errored) session,
+    /// oldest first. When present, Rust formats a size-capped context block and
+    /// prepends it to the first prompt so the fresh session is "resurrected" with
+    /// the prior conversation. Optional and fully backward-compatible: absent or
+    /// empty behaves exactly as a plain start.
+    #[serde(default)]
+    prior_transcript: Option<Vec<AskAiPriorTurn>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -668,6 +695,89 @@ answer, say so briefly. Be concise and direct.\n",
     prompt
 }
 
+/// Format one prior turn into its context-block lines.
+fn format_prior_turn_lines(index: usize, turn: &AskAiPriorTurn) -> String {
+    format!(
+        "Q{n}: {question}\nA{n}: {answer}\n",
+        n = index + 1,
+        question = turn.question.trim(),
+        answer = turn.answer.trim(),
+    )
+}
+
+/// Build the resurrection context block prepended to the first prompt of a fresh
+/// session, from prior questions/answers (oldest first).
+///
+/// Returns `None` when there is nothing to prepend (no turns, or every turn is
+/// blank after trimming). Otherwise returns a clearly-delimited block that tells
+/// the model this is prior conversation from an earlier session, followed by the
+/// numbered Q/A turns.
+///
+/// Size cap: the formatted block is bounded by [`ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP`].
+/// Trimming drops the OLDEST whole turns first, keeping the most recent turns
+/// intact. Edge case: if even the single most recent turn alone still exceeds the
+/// cap, that turn's answer text is truncated (a `… [truncated]` marker appended)
+/// so the block always fits. Returns `(block, truncated)` where `truncated` is
+/// true when any oldest turns were dropped or the last turn's text was cut, for
+/// caller logging.
+fn format_prior_transcript_block(turns: &[AskAiPriorTurn]) -> Option<(String, bool)> {
+    // Drop fully-blank turns up front so they neither render nor count against
+    // the cap; resurrection should carry real Q/A only.
+    let turns: Vec<&AskAiPriorTurn> = turns
+        .iter()
+        .filter(|turn| !turn.question.trim().is_empty() || !turn.answer.trim().is_empty())
+        .collect();
+    if turns.is_empty() {
+        return None;
+    }
+
+    const HEADER: &str =
+        "The following is prior conversation context from an EARLIER Ask AI session that has \
+since ended. Treat these questions and answers as established context for the new question \
+below. Do not repeat them back; build on them.\n\n";
+    const FOOTER: &str = "\n(End of prior conversation context.)\n\n";
+    // The header + footer are fixed overhead the turn lines must fit within.
+    let overhead = HEADER.len() + FOOTER.len();
+    let turn_budget = ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP.saturating_sub(overhead);
+
+    // Render newest-first, accumulating turns until the budget is spent, then
+    // reverse back to oldest-first for the final block. Dropping happens from the
+    // oldest end (the turns left unrendered when the budget runs out).
+    let mut rendered_newest_first: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    let mut truncated = false;
+    for (display_index, turn) in turns.iter().enumerate().rev() {
+        let line = format_prior_turn_lines(display_index, turn);
+        if used + line.len() <= turn_budget {
+            used += line.len();
+            rendered_newest_first.push(line);
+            continue;
+        }
+        // This turn does not fit. If it is the most recent turn and nothing has
+        // been rendered yet, the single newest turn alone exceeds the budget:
+        // truncate its rendered line so the block still carries the latest
+        // exchange rather than dropping everything.
+        if rendered_newest_first.is_empty() {
+            let truncation_marker = "… [truncated]\n";
+            let keep = turn_budget.saturating_sub(truncation_marker.len());
+            let mut clipped: String = line.chars().take(keep).collect();
+            clipped.push_str(truncation_marker);
+            rendered_newest_first.push(clipped);
+        }
+        // Older turns are dropped wholesale.
+        truncated = true;
+        break;
+    }
+
+    let mut block = String::with_capacity(used + overhead);
+    block.push_str(HEADER);
+    for line in rendered_newest_first.iter().rev() {
+        block.push_str(line);
+    }
+    block.push_str(FOOTER);
+    Some((block, truncated))
+}
+
 #[tauri::command]
 pub async fn ask_ai_availability(
     app_handle: tauri::AppHandle,
@@ -726,12 +836,20 @@ pub async fn ask_ai_start(
         conversation_id,
         question,
         seed_query,
+        prior_transcript,
     } = request;
 
     // Resolve the seed query (trimmed, non-empty).
     let seed_query = seed_query
         .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
+
+    // Build the resurrection context block (if any). `seedQuery` stays the bare
+    // new question — the transcript only ever rides in the first prompt, never
+    // the seed search — so seeding is not polluted by prior turns.
+    let prior_context_block = prior_transcript
+        .as_deref()
+        .and_then(format_prior_transcript_block);
 
     // Register the cancellable session handle BEFORE the awaitable seeding so a
     // cancel arriving mid-seed (the user dismisses Quick Recall while the broker
@@ -816,7 +934,25 @@ pub async fn ask_ai_start(
         }),
     );
 
-    let prompt = build_ask_ai_prompt(&question, seed_query.as_deref(), &seed_results);
+    let mut prompt = build_ask_ai_prompt(&question, seed_query.as_deref(), &seed_results);
+
+    // Resurrection: prepend the formatted prior-conversation context block so the
+    // fresh session continues an earlier (expired/errored) conversation. Logged
+    // to ease diagnosing "the AI forgot context" reports.
+    if let Some((block, truncated)) = prior_context_block {
+        let turn_count = prior_transcript.as_ref().map_or(0, |turns| turns.len());
+        tauri_plugin_log::log::info!(
+            "Ask AI resurrecting conversation {conversation_id} with {turn_count} prior turn(s); \
+context block {} chars{}",
+            block.len(),
+            if truncated {
+                " (transcript capped: oldest turns dropped and/or last turn truncated)"
+            } else {
+                ""
+            }
+        );
+        prompt = format!("{block}{prompt}");
+    }
 
     // Resolve node, shim, and the pi executable path (for SDK resolution in the shim).
     let node_path = resolve_node_executable()?;
@@ -1609,6 +1745,110 @@ mod tests {
 
         // Clean up the registry so the static map does not leak into other tests.
         let _ = take_ask_ai_session(id);
+    }
+
+    fn prior_turn(question: &str, answer: &str) -> AskAiPriorTurn {
+        AskAiPriorTurn {
+            question: question.to_string(),
+            answer: answer.to_string(),
+        }
+    }
+
+    #[test]
+    fn start_request_deserializes_without_prior_transcript() {
+        // Existing callers (no priorTranscript) must keep working unchanged.
+        let request: AskAiStartRequest = serde_json::from_str(
+            r#"{"conversationId":"conv-1","question":"what did I do?","seedQuery":"build"}"#,
+        )
+        .expect("start request without priorTranscript should deserialize");
+        assert_eq!(request.conversation_id, "conv-1");
+        assert_eq!(request.question, "what did I do?");
+        assert_eq!(request.seed_query.as_deref(), Some("build"));
+        assert!(request.prior_transcript.is_none());
+    }
+
+    #[test]
+    fn start_request_deserializes_prior_transcript_camel_case() {
+        let request: AskAiStartRequest = serde_json::from_str(
+            r#"{"conversationId":"conv-2","question":"and after that?","priorTranscript":[{"question":"q1","answer":"a1"},{"question":"q2","answer":"a2"}]}"#,
+        )
+        .expect("start request with priorTranscript should deserialize");
+        let turns = request.prior_transcript.expect("prior_transcript present");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].question, "q1");
+        assert_eq!(turns[0].answer, "a1");
+        assert_eq!(turns[1].question, "q2");
+        assert_eq!(turns[1].answer, "a2");
+    }
+
+    #[test]
+    fn prior_transcript_block_none_when_empty() {
+        assert!(format_prior_transcript_block(&[]).is_none());
+        // Fully-blank turns carry nothing and are dropped, leaving nothing.
+        assert!(format_prior_transcript_block(&[prior_turn("   ", "\n\t")]).is_none());
+    }
+
+    #[test]
+    fn prior_transcript_block_formats_ordered_qa_with_delimiters() {
+        let turns = vec![prior_turn("first?", "answer one"), prior_turn("second?", "answer two")];
+        let (block, truncated) =
+            format_prior_transcript_block(&turns).expect("non-empty transcript yields a block");
+        assert!(!truncated);
+        // Clear "prior conversation from an earlier session" framing.
+        assert!(block.contains("prior conversation context from an EARLIER Ask AI session"));
+        assert!(block.contains("(End of prior conversation context.)"));
+        // Numbered, ordered Q/A — oldest first.
+        assert!(block.contains("Q1: first?\nA1: answer one\n"));
+        assert!(block.contains("Q2: second?\nA2: answer two\n"));
+        let q1 = block.find("Q1:").expect("Q1 present");
+        let q2 = block.find("Q2:").expect("Q2 present");
+        assert!(q1 < q2, "turns should render oldest-first");
+    }
+
+    #[test]
+    fn prior_transcript_block_trims_oldest_turns_first() {
+        // Many large turns: the oldest should be dropped, the newest kept whole.
+        let big = "x".repeat(4_000);
+        let turns: Vec<AskAiPriorTurn> = (0..6)
+            .map(|i| prior_turn(&format!("q{i}"), &big))
+            .collect();
+        let (block, truncated) =
+            format_prior_transcript_block(&turns).expect("yields a block");
+        assert!(truncated, "oversized transcript should report truncation");
+        assert!(block.len() <= ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP);
+        // The newest turn (index 5 -> Q6) must survive; the oldest (Q1) must be
+        // dropped to fit the cap.
+        assert!(block.contains("Q6: q5\n"), "newest turn kept whole");
+        assert!(!block.contains("Q1: q0\n"), "oldest turn dropped");
+    }
+
+    #[test]
+    fn prior_transcript_block_truncates_single_oversized_turn() {
+        // A single turn whose answer alone blows past the cap: it must be
+        // truncated (with a marker) rather than dropped, so the latest exchange
+        // still rides along, and the block still fits.
+        let huge = "y".repeat(ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP * 2);
+        let turns = vec![prior_turn("only?", &huge)];
+        let (block, truncated) =
+            format_prior_transcript_block(&turns).expect("yields a block");
+        assert!(truncated);
+        assert!(block.len() <= ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP);
+        assert!(block.contains("… [truncated]"));
+        assert!(block.contains("Q1: only?"));
+    }
+
+    #[test]
+    fn prior_transcript_block_keeps_modest_transcript_whole() {
+        let turns = vec![
+            prior_turn("a", "alpha"),
+            prior_turn("b", "beta"),
+            prior_turn("c", "gamma"),
+        ];
+        let (block, truncated) =
+            format_prior_transcript_block(&turns).expect("yields a block");
+        assert!(!truncated);
+        assert!(block.contains("Q1: a\nA1: alpha\n"));
+        assert!(block.contains("Q3: c\nA3: gamma\n"));
     }
 
     #[test]

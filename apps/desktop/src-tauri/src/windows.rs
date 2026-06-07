@@ -777,9 +777,17 @@ fn dismiss_quick_recall_window(window: &WebviewWindow) {
         let _ = window.hide();
     }
     // The webview is hidden, not destroyed, so the Svelte `onDestroy` teardown
-    // never runs on dismiss. Notify the panel so it cancels any resident Ask AI
-    // PI session instead of leaving that child process alive until the next ask
-    // or app exit.
+    // never runs on dismiss. Notify the panel so it can decide whether to cancel
+    // its Ask AI PI session.
+    //
+    // Contract (PLAN.md "Ask AI seen" — background completion): the panel no
+    // longer cancels unconditionally on this event. If an Ask AI conversation is
+    // still in flight or finished-but-unseen, the panel intentionally KEEPS the
+    // PI session resident and the conversation alive so a re-summon lands back on
+    // it; the session is torn down only once the conversation is seen (or there
+    // is none). A resident PI session after dismiss is therefore expected, not a
+    // leak. It is bounded by a 30-minute unseen cap (implemented in a later
+    // slice, owned frontend-side) and by app exit / the panel's `onDestroy`.
     let _ = window.emit(QUICK_RECALL_DISMISSED_EVENT, ());
 }
 
