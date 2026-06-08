@@ -37,7 +37,9 @@ _Avoid_: model file, downloaded artifact, checkpoint
 - An **Audio Transcription Job** uses exactly one **Audio Transcription Provider**.
 - V1 **Audio Transcription Provider** values are local-only: `local_whisper`, `apple_speech_on_device`, and `parakeet`.
 - V1 `local_whisper` **Audio Transcription Model** choices are `tiny`, `base`, `small`, and `medium`, with `base` as the default.
-- V1 `parakeet` uses `parakeet-tdt-0.6b-v3-onnx` as its **Audio Transcription Model** and runs it through the Rust ONNX Runtime adapter.
+- V1 `parakeet` uses `parakeet-tdt-0.6b-v3-onnx` (full) or `parakeet-tdt-0.6b-v3-onnx-int8` as its **Audio Transcription Model** and runs it through the Rust ONNX Runtime adapter.
+- **Audio Transcription Model** availability is platform-gated where footprint warrants it: Windows offers only the int8 `parakeet` model, while macOS offers both variants. A selected model that is unavailable on the current platform behaves like a missing **Audio Transcription Model**, not an error.
+- `parakeet` runs CPU-only in v1 on every platform; GPU execution providers (DirectML, CUDA) are a future, separately-decided change.
 - `apple_speech_on_device` uses OS-managed language models rather than an app-managed **Audio Transcription Model**.
 - An **Audio Transcription Provider** may require one selected **Audio Transcription Model**.
 - A microphone **Audio Segment** gets one **Audio Transcription Job** for the selected **Audio Transcription Provider** when that provider and its required **Audio Transcription Model** are available.

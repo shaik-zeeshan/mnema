@@ -14,6 +14,14 @@ _Avoid_: scrub-time extraction, exact frame preview generation, thumbnail pipeli
 The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. On macOS, screen and system audio share the screen capture backend while microphone runs as a separate native session; on Windows, microphone and system audio are each independent native audio sessions decoupled from screen capture.
 _Avoid_: capture runtime, recorder service, session manager
 
+**Runtime Capture**:
+The capture-side half of the recording pipeline: the **Recording Lifecycle** producing finalized **Capture Segment** and **Audio Segment** artifacts, including pause/resume, transient liveness recovery, segment rotation, and inactivity tail handling.
+_Avoid_: recording pipeline (that includes processing), media processing, capture runtime
+
+**Media Processing Seam**:
+The platform primitives that consume finalized capture artifacts after commit: audio decode to mono PCM, video decode/frame extraction, and artifact validation. Distinct from **Runtime Capture** — a gap here blocks downstream pipelines (transcription, speaker analysis, previews) but does not change what capture produces.
+_Avoid_: runtime capture, capture writers (the crate also holds writer-side capture code)
+
 **Live Privacy Filter**:
 The native screen-capture filtering mechanism that applies **App Privacy Exclusion** before frames are delivered to Mnema.
 _Avoid_: privacy promise, metadata redaction, post-capture filtering
@@ -55,6 +63,7 @@ _Avoid_: recording settings, browser local storage, one-time prompt state
 - A timeline interval with a usable frame index but no indexed screen position is unavailable for **Scrub Preview** without treating the whole frame index as missing.
 - The generated **Scrub Preview** cache defaults to a 512 MB budget and 7-day last-access window, pruned by segment cache directory rather than individual preview file.
 - Generated **Scrub Preview** cache policy is separate from exact frame preview cache policy.
+- Exact frame preview image format is a platform rendition detail (WebP-preferred on macOS, JPEG on Windows); consumers read the MIME type from the preview result rather than assuming a format.
 - Existing exact preview cache TTL settings do not control generated **Scrub Preview** disk cache lifetime.
 - **Scrub Preview Generation** runs outside the active scrub interaction path; timeline navigation may request availability, but missing generated **Scrub Preview** values are materialized in background work.
 - **Scrub Preview Generation** uses a single coalescing worker where the newest visible timeline window takes priority over stale queued preview intervals.
@@ -85,7 +94,10 @@ _Avoid_: recording settings, browser local storage, one-time prompt state
 - Metadata-derived website, title, private-browser, and per-window decisions must not feed the **Live Privacy Filter**.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
+- A **Media Processing Seam** implementation lives in a dedicated processing crate; processing crates depend on the seam crate and never on capture crates, and capture crates do not grow processing-seam decoders.
+- A committed **Audio Segment** never contains the inactivity idle tail: the tail is withheld at the audio writer and discarded on an inactivity stop (boundary refined by peak-level or VAD speech activity), on every platform — trimming is not a post-finalization file operation.
 - A **Recording Lifecycle** creates one **Capture Session** for a user recording and **Capture Segment** rows only for produced artifacts.
+- A finalized screen **Capture Segment** commits together with its frame index on every platform; an index-less segment is a degraded recovery case (exact-preview fallback, never scrub-eligible), not a normal platform outcome.
 - **App Update** installation is gated outside the **Recording Lifecycle** and waits for the active **Capture Session** to end rather than stopping or pausing capture itself.
 - The **App Update Service** owns update policy and exposes app-specific commands/events to Svelte rather than exposing generic updater plugin behavior as product logic.
 - The **App Update Service** selects the update feed endpoint at runtime from the user's selected update channel.
@@ -124,3 +136,4 @@ _Avoid_: recording settings, browser local storage, one-time prompt state
 ## Flagged Ambiguities
 
 - "audio activity" previously referred to both raw probe output and inactivity-policy state; resolved: raw probe output is an **Audio Activity Sample**, while policy-facing threshold-qualified state is an **Audio Activity Decision**.
+- "runtime capture" previously referred to both producing capture artifacts and processing them; resolved: artifact production is **Runtime Capture**, while decode/extraction/validation of committed artifacts is a **Media Processing Seam**.
