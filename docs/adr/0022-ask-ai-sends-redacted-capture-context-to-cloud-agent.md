@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Ask AI sends redacted capture context to a third-party cloud agent
 
 Mnema's **Quick Recall** overlay adds an **Ask AI** action that answers questions over retained capture by running a PI Agent SDK conversation in the cloud. This is Mnema's first outbound flow of captured-derived content to a third-party service other than the user-driven `mnema` CLI, so it is gated by an explicit, off-by-default, standing **Ask AI Setting** with a disclosure that questions send redacted capture context to PI's cloud, rather than shipping enabled.

@@ -664,12 +664,18 @@ function modelValue(model) {
  * Enumerate selectable models from the registry. Prefers models that already
  * have auth configured (`getAvailable`); falls back to all known models so the
  * picker is never empty just because auth probing varies across PI releases.
+ *
+ * `getAvailable`/`getAll` may be sync or return a Promise depending on the PI
+ * release, so both are awaited; awaiting a non-Promise is a no-op. Without the
+ * await a Promise-returning `getAvailable` would fail the `Array.isArray` check
+ * and silently fall through to `getAll`, listing every known model instead of
+ * only the authenticated ones.
  */
-function collectModels(modelRegistry) {
+async function collectModels(modelRegistry) {
   let models = [];
   try {
     if (typeof modelRegistry.getAvailable === "function") {
-      models = modelRegistry.getAvailable() ?? [];
+      models = (await modelRegistry.getAvailable()) ?? [];
     }
   } catch (err) {
     diag("getAvailable failed:", err?.message ?? err);
@@ -677,7 +683,7 @@ function collectModels(modelRegistry) {
   if (!Array.isArray(models) || models.length === 0) {
     try {
       if (typeof modelRegistry.getAll === "function") {
-        models = modelRegistry.getAll() ?? [];
+        models = (await modelRegistry.getAll()) ?? [];
       }
     } catch (err) {
       diag("getAll failed:", err?.message ?? err);
@@ -763,7 +769,7 @@ async function main() {
 
   // List mode: enumerate selectable models, emit one line, and exit.
   if (listMode) {
-    emit({ type: "models", models: collectModels(modelRegistry) });
+    emit({ type: "models", models: await collectModels(modelRegistry) });
     process.exit(0);
     return;
   }

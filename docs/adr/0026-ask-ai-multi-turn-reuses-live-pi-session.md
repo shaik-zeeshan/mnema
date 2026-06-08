@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Ask AI multi-turn reuses one live PI session for the whole thread
 
 **Quick Recall**'s **Ask AI** is no longer a one-shot question/answer; it is an ephemeral multi-turn **Ask AI Thread**. The whole thread is backed by **one** long-lived Node shim child and **one** PI Agent SDK session that stays resident for the life of the thread. Follow-up questions are fed into that same session as additional `{"prompt":…}` lines; the session retains prior turns in-memory, so each follow-up is answered with the earlier turns already in context. Mnema does **not** replay the transcript or re-seed context to the cloud per turn — context accumulates inside PI, and only the new turn's text is sent on each follow-up.

@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Ask AI exposes broker tools through a PI tool shim
 
 **Quick Recall**'s **Ask AI** uses the user's installed PI runtime and PI's stored auth, but it does not rely on `pi --mode rpc` to forward model tool calls back to Mnema. PI RPC is a JSONL session-control protocol for prompts, state, model selection, bash/session operations, messages, and slash-command discovery; its current `RpcCommand` union has no host-tool registration or tool-call-result channel. PI's supported custom-tool surface is in-process TypeScript: extension `pi.registerTool(...)` or SDK `defineTool(...)`/`customTools`, whose `execute(...)` callback runs inside the PI runtime.

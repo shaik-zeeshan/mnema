@@ -1,3 +1,7 @@
+---
+status: accepted
+---
+
 # Ask AI delegates provider auth to the user's installed PI
 
 **Quick Recall**'s **Ask AI** delegates all LLM provider authentication to the user's already-installed, already-signed-in PI, reading its stored auth (`~/.pi/agent/auth.json`) as-is. Mnema collects no provider credentials, ships no API-key field, runs no OAuth flow, and operates no backend or token proxy. Mnema detects the installed PI the way **Access Settings** detects the `mnema` CLI and drives it over RPC (PI is Node-only); when PI is absent or has no configured provider, **Ask AI** is unavailable with a set-up-PI pointer.
