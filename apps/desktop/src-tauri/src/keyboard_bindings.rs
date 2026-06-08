@@ -14,6 +14,7 @@ const KEYBOARD_BINDINGS_CHANGED_EVENT: &str = "keyboard_bindings_settings_change
 const TOGGLE_RECORDING_DEFAULT: &str = "CommandOrControl+Alt+R";
 const PAUSE_RESUME_RECORDING_DEFAULT: &str = "CommandOrControl+Alt+P";
 const TOGGLE_MAIN_WINDOW_DEFAULT: &str = "CommandOrControl+Alt+M";
+const TOGGLE_QUICK_RECALL_DEFAULT: &str = "CommandOrControl+Alt+Space";
 const REGISTRATION_WARNING_ID: &str = "global-shortcuts-registration-failed";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,6 +50,8 @@ pub struct GlobalShortcutBindings {
     pause_resume_recording: String,
     #[serde(default = "default_toggle_main_window")]
     toggle_main_window: String,
+    #[serde(rename = "quickRecall", default = "default_toggle_quick_recall")]
+    toggle_quick_recall: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -115,6 +118,7 @@ enum GlobalShortcutAction {
     ToggleRecording,
     PauseResumeRecording,
     ToggleMainWindow,
+    ToggleQuickRecall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,66 +165,257 @@ struct ParsedShortcut {
 }
 
 const RESERVED_SHORTCUTS: &[ReservedShortcut] = &[
-    ReservedShortcut { scope: ReservedShortcutScope::Foreground, binding: "Escape", label: "close the active surface" },
-    ReservedShortcut { scope: ReservedShortcutScope::Foreground, binding: "Tab", label: "move keyboard focus" },
-    ReservedShortcut { scope: ReservedShortcutScope::Foreground, binding: "Shift+Tab", label: "move keyboard focus backward" },
-    ReservedShortcut { scope: ReservedShortcutScope::Dashboard, binding: "ArrowLeft", label: "move to an older frame" },
-    ReservedShortcut { scope: ReservedShortcutScope::Dashboard, binding: "ArrowRight", label: "move to a newer frame" },
-    ReservedShortcut { scope: ReservedShortcutScope::Dashboard, binding: "Shift+ArrowLeft", label: "move 10 frames older" },
-    ReservedShortcut { scope: ReservedShortcutScope::Dashboard, binding: "Shift+ArrowRight", label: "move 10 frames newer" },
+    ReservedShortcut {
+        scope: ReservedShortcutScope::Foreground,
+        binding: "Escape",
+        label: "close the active surface",
+    },
+    ReservedShortcut {
+        scope: ReservedShortcutScope::Foreground,
+        binding: "Tab",
+        label: "move keyboard focus",
+    },
+    ReservedShortcut {
+        scope: ReservedShortcutScope::Foreground,
+        binding: "Shift+Tab",
+        label: "move keyboard focus backward",
+    },
+    ReservedShortcut {
+        scope: ReservedShortcutScope::Dashboard,
+        binding: "ArrowLeft",
+        label: "move to an older frame",
+    },
+    ReservedShortcut {
+        scope: ReservedShortcutScope::Dashboard,
+        binding: "ArrowRight",
+        label: "move to a newer frame",
+    },
+    ReservedShortcut {
+        scope: ReservedShortcutScope::Dashboard,
+        binding: "Shift+ArrowLeft",
+        label: "move 10 frames older",
+    },
+    ReservedShortcut {
+        scope: ReservedShortcutScope::Dashboard,
+        binding: "Shift+ArrowRight",
+        label: "move 10 frames newer",
+    },
 ];
 
 const EDITABLE_ACTIONS: &[EditableAction] = &[
-    EditableAction { id: "toggleRecording", label: "Start or stop recording", scope: ShortcutScope::NativeGlobal, policy: BindingPolicy::NativeBackground },
-    EditableAction { id: "pauseResumeRecording", label: "Pause or resume recording", scope: ShortcutScope::NativeGlobal, policy: BindingPolicy::NativeBackground },
-    EditableAction { id: "toggleMainWindow", label: "Show or hide Mnema", scope: ShortcutScope::NativeGlobal, policy: BindingPolicy::NativeBackground },
-    EditableAction { id: "openSettings", label: "Open settings", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "openDebug", label: "Open debug", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "toggleSourceScreen", label: "Toggle screen for the next recording", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "toggleSourceMicrophone", label: "Toggle microphone for the next recording", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "toggleSourceSystemAudio", label: "Toggle system audio for the next recording", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "toggleShortcutsHelp", label: "Show keyboard shortcuts", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.openJumpPicker", label: "Open jump picker", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.search", label: "Search captured content", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.jumpLatest", label: "Jump to latest", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.toggleOcr", label: "Toggle OCR panel", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.refreshTimeline", label: "Refresh timeline", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.copyFrame", label: "Copy active frame image", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.downloadFrame", label: "Download active frame image", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.playPause", label: "Play or pause", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.seekBack", label: "Seek back 5 seconds", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.seekForward", label: "Seek forward 5 seconds", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.seekBackFast", label: "Seek back 30 seconds", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.seekForwardFast", label: "Seek forward 30 seconds", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
+    EditableAction {
+        id: "toggleRecording",
+        label: "Start or stop recording",
+        scope: ShortcutScope::NativeGlobal,
+        policy: BindingPolicy::NativeBackground,
+    },
+    EditableAction {
+        id: "pauseResumeRecording",
+        label: "Pause or resume recording",
+        scope: ShortcutScope::NativeGlobal,
+        policy: BindingPolicy::NativeBackground,
+    },
+    EditableAction {
+        id: "toggleMainWindow",
+        label: "Show or hide Mnema",
+        scope: ShortcutScope::NativeGlobal,
+        policy: BindingPolicy::NativeBackground,
+    },
+    EditableAction {
+        id: "toggleQuickRecall",
+        label: "Summon Quick Recall",
+        scope: ShortcutScope::NativeGlobal,
+        policy: BindingPolicy::NativeBackground,
+    },
+    EditableAction {
+        id: "openSettings",
+        label: "Open settings",
+        scope: ShortcutScope::Foreground,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "openDebug",
+        label: "Open debug",
+        scope: ShortcutScope::Foreground,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "toggleSourceScreen",
+        label: "Toggle screen for the next recording",
+        scope: ShortcutScope::Foreground,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "toggleSourceMicrophone",
+        label: "Toggle microphone for the next recording",
+        scope: ShortcutScope::Foreground,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "toggleSourceSystemAudio",
+        label: "Toggle system audio for the next recording",
+        scope: ShortcutScope::Foreground,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "toggleShortcutsHelp",
+        label: "Show keyboard shortcuts",
+        scope: ShortcutScope::Foreground,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "dashboard.openJumpPicker",
+        label: "Open jump picker",
+        scope: ShortcutScope::Dashboard,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "dashboard.search",
+        label: "Search captured content",
+        scope: ShortcutScope::Dashboard,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "dashboard.jumpLatest",
+        label: "Jump to latest",
+        scope: ShortcutScope::Dashboard,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "dashboard.toggleOcr",
+        label: "Toggle OCR panel",
+        scope: ShortcutScope::Dashboard,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "dashboard.refreshTimeline",
+        label: "Refresh timeline",
+        scope: ShortcutScope::Dashboard,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "dashboard.copyFrame",
+        label: "Copy active frame image",
+        scope: ShortcutScope::Dashboard,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "dashboard.downloadFrame",
+        label: "Download active frame image",
+        scope: ShortcutScope::Dashboard,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "audioDrawer.playPause",
+        label: "Play or pause",
+        scope: ShortcutScope::AudioDrawer,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "audioDrawer.seekBack",
+        label: "Seek back 5 seconds",
+        scope: ShortcutScope::AudioDrawer,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "audioDrawer.seekForward",
+        label: "Seek forward 5 seconds",
+        scope: ShortcutScope::AudioDrawer,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "audioDrawer.seekBackFast",
+        label: "Seek back 30 seconds",
+        scope: ShortcutScope::AudioDrawer,
+        policy: BindingPolicy::Foreground,
+    },
+    EditableAction {
+        id: "audioDrawer.seekForwardFast",
+        label: "Seek forward 30 seconds",
+        scope: ShortcutScope::AudioDrawer,
+        policy: BindingPolicy::Foreground,
+    },
 ];
 
-fn schema_version_default() -> u32 { 1 }
-fn bool_true() -> bool { true }
-fn default_toggle_recording() -> String { TOGGLE_RECORDING_DEFAULT.to_string() }
-fn default_pause_resume_recording() -> String { PAUSE_RESUME_RECORDING_DEFAULT.to_string() }
-fn default_toggle_main_window() -> String { TOGGLE_MAIN_WINDOW_DEFAULT.to_string() }
-fn default_open_settings() -> String { "CommandOrControl+,".to_string() }
-fn default_open_debug() -> String { "CommandOrControl+D".to_string() }
-fn default_toggle_source_screen() -> String { "1".to_string() }
-fn default_toggle_source_microphone() -> String { "2".to_string() }
-fn default_toggle_source_system_audio() -> String { "3".to_string() }
-fn default_toggle_shortcuts_help() -> String { "/".to_string() }
-fn default_dashboard_open_jump_picker() -> String { "J".to_string() }
-fn default_dashboard_search() -> String { "CommandOrControl+K".to_string() }
-fn default_dashboard_jump_latest() -> String { "L".to_string() }
-fn default_dashboard_toggle_ocr() -> String { "O".to_string() }
-fn default_dashboard_refresh_timeline() -> String { "R".to_string() }
-fn default_dashboard_copy_frame() -> String { "C".to_string() }
-fn default_dashboard_download_frame() -> String { "D".to_string() }
-fn default_audio_play_pause() -> String { "Space".to_string() }
-fn default_audio_seek_back() -> String { "ArrowLeft".to_string() }
-fn default_audio_seek_forward() -> String { "ArrowRight".to_string() }
-fn default_audio_seek_back_fast() -> String { "Shift+ArrowLeft".to_string() }
-fn default_audio_seek_forward_fast() -> String { "Shift+ArrowRight".to_string() }
+fn schema_version_default() -> u32 {
+    1
+}
+fn bool_true() -> bool {
+    true
+}
+fn default_toggle_recording() -> String {
+    TOGGLE_RECORDING_DEFAULT.to_string()
+}
+fn default_pause_resume_recording() -> String {
+    PAUSE_RESUME_RECORDING_DEFAULT.to_string()
+}
+fn default_toggle_main_window() -> String {
+    TOGGLE_MAIN_WINDOW_DEFAULT.to_string()
+}
+fn default_toggle_quick_recall() -> String {
+    TOGGLE_QUICK_RECALL_DEFAULT.to_string()
+}
+fn default_open_settings() -> String {
+    "CommandOrControl+,".to_string()
+}
+fn default_open_debug() -> String {
+    "CommandOrControl+D".to_string()
+}
+fn default_toggle_source_screen() -> String {
+    "1".to_string()
+}
+fn default_toggle_source_microphone() -> String {
+    "2".to_string()
+}
+fn default_toggle_source_system_audio() -> String {
+    "3".to_string()
+}
+fn default_toggle_shortcuts_help() -> String {
+    "/".to_string()
+}
+fn default_dashboard_open_jump_picker() -> String {
+    "J".to_string()
+}
+fn default_dashboard_search() -> String {
+    "CommandOrControl+K".to_string()
+}
+fn default_dashboard_jump_latest() -> String {
+    "L".to_string()
+}
+fn default_dashboard_toggle_ocr() -> String {
+    "O".to_string()
+}
+fn default_dashboard_refresh_timeline() -> String {
+    "R".to_string()
+}
+fn default_dashboard_copy_frame() -> String {
+    "C".to_string()
+}
+fn default_dashboard_download_frame() -> String {
+    "D".to_string()
+}
+fn default_audio_play_pause() -> String {
+    "Space".to_string()
+}
+fn default_audio_seek_back() -> String {
+    "ArrowLeft".to_string()
+}
+fn default_audio_seek_forward() -> String {
+    "ArrowRight".to_string()
+}
+fn default_audio_seek_back_fast() -> String {
+    "Shift+ArrowLeft".to_string()
+}
+fn default_audio_seek_forward_fast() -> String {
+    "Shift+ArrowRight".to_string()
+}
 
 impl GlobalShortcutSettings {
     fn defaults() -> Self {
-        Self { enabled: true, bindings: GlobalShortcutBindings::defaults() }
+        Self {
+            enabled: true,
+            bindings: GlobalShortcutBindings::defaults(),
+        }
     }
 }
 
@@ -230,6 +425,7 @@ impl GlobalShortcutBindings {
             toggle_recording: default_toggle_recording(),
             pause_resume_recording: default_pause_resume_recording(),
             toggle_main_window: default_toggle_main_window(),
+            toggle_quick_recall: default_toggle_quick_recall(),
         }
     }
 }
@@ -338,6 +534,7 @@ fn get_binding<'a>(settings: &'a KeyboardBindingsSettings, id: &str) -> &'a str 
         "toggleRecording" => &settings.global_shortcuts.bindings.toggle_recording,
         "pauseResumeRecording" => &settings.global_shortcuts.bindings.pause_resume_recording,
         "toggleMainWindow" => &settings.global_shortcuts.bindings.toggle_main_window,
+        "toggleQuickRecall" => &settings.global_shortcuts.bindings.toggle_quick_recall,
         "openSettings" => &settings.app_shortcuts.open_settings,
         "openDebug" => &settings.app_shortcuts.open_debug,
         "toggleSourceScreen" => &settings.app_shortcuts.toggle_source_screen,
@@ -365,6 +562,7 @@ fn set_binding(settings: &mut KeyboardBindingsSettings, id: &str, value: String)
         "toggleRecording" => settings.global_shortcuts.bindings.toggle_recording = value,
         "pauseResumeRecording" => settings.global_shortcuts.bindings.pause_resume_recording = value,
         "toggleMainWindow" => settings.global_shortcuts.bindings.toggle_main_window = value,
+        "toggleQuickRecall" => settings.global_shortcuts.bindings.toggle_quick_recall = value,
         "openSettings" => settings.app_shortcuts.open_settings = value,
         "openDebug" => settings.app_shortcuts.open_debug = value,
         "toggleSourceScreen" => settings.app_shortcuts.toggle_source_screen = value,
@@ -397,7 +595,8 @@ fn normalize_binding(value: &str, policy: BindingPolicy) -> Result<Option<String
         return Err("Background shortcuts must include Command/Control or Alt".to_string());
     }
     let canonical = parsed.canonical();
-    if policy == BindingPolicy::NativeBackground && Shortcut::try_from(canonical.as_str()).is_err() {
+    if policy == BindingPolicy::NativeBackground && Shortcut::try_from(canonical.as_str()).is_err()
+    {
         return Err(format!("'{canonical}' is not a valid native shortcut"));
     }
     Ok(Some(canonical))
@@ -416,18 +615,25 @@ fn parse_shortcut(value: &str) -> Result<ParsedShortcut, String> {
         }
         let lower = part.to_ascii_lowercase().replace('-', "");
         let is_modifier = match lower.as_str() {
-            "commandorcontrol" | "cmdorctrl" | "primary" | "command" | "cmd" | "meta" | "control" | "ctrl" => {
-                if primary { return Err("Shortcut repeats the primary modifier".to_string()); }
+            "commandorcontrol" | "cmdorctrl" | "primary" | "command" | "cmd" | "meta"
+            | "control" | "ctrl" => {
+                if primary {
+                    return Err("Shortcut repeats the primary modifier".to_string());
+                }
                 primary = true;
                 true
             }
             "alt" | "option" | "opt" => {
-                if alt { return Err("Shortcut repeats the Alt modifier".to_string()); }
+                if alt {
+                    return Err("Shortcut repeats the Alt modifier".to_string());
+                }
                 alt = true;
                 true
             }
             "shift" => {
-                if shift { return Err("Shortcut repeats the Shift modifier".to_string()); }
+                if shift {
+                    return Err("Shortcut repeats the Shift modifier".to_string());
+                }
                 shift = true;
                 true
             }
@@ -446,7 +652,12 @@ fn parse_shortcut(value: &str) -> Result<ParsedShortcut, String> {
     }
 
     let key = key.ok_or_else(|| "Shortcut must include a key".to_string())?;
-    Ok(ParsedShortcut { primary, alt, shift, key })
+    Ok(ParsedShortcut {
+        primary,
+        alt,
+        shift,
+        key,
+    })
 }
 
 fn normalize_key(key: &str) -> Result<String, String> {
@@ -476,9 +687,15 @@ impl ParsedShortcut {
 
     fn canonical(&self) -> String {
         let mut parts = Vec::new();
-        if self.primary { parts.push("CommandOrControl".to_string()); }
-        if self.alt { parts.push("Alt".to_string()); }
-        if self.shift { parts.push("Shift".to_string()); }
+        if self.primary {
+            parts.push("CommandOrControl".to_string());
+        }
+        if self.alt {
+            parts.push("Alt".to_string());
+        }
+        if self.shift {
+            parts.push("Shift".to_string());
+        }
         parts.push(self.key.clone());
         parts.join("+")
     }
@@ -527,14 +744,15 @@ fn validate_conflicts(settings: &KeyboardBindingsSettings) -> Result<(), String>
     let mut seen: HashMap<String, (&EditableAction, String)> = HashMap::new();
     for action in EDITABLE_ACTIONS {
         let binding = get_binding(settings, action.id).trim();
-        if binding.is_empty() { continue; }
+        if binding.is_empty() {
+            continue;
+        }
         let key = binding.to_ascii_lowercase();
         if let Some((previous, previous_binding)) = seen.get(&key) {
             if scopes_conflict(previous.scope, action.scope) {
                 return Err(format!(
                     "Shortcut '{previous_binding}' is assigned to both '{}' and '{}'",
-                    previous.label,
-                    action.label
+                    previous.label, action.label
                 ));
             }
         }
@@ -551,9 +769,13 @@ fn repair_load_conflicts(
     let mut accepted: HashMap<String, (&EditableAction, String)> = HashMap::new();
     for repair_defaulted in [false, true] {
         for action in EDITABLE_ACTIONS {
-            if defaulted_bindings.contains(action.id) != repair_defaulted { continue; }
+            if defaulted_bindings.contains(action.id) != repair_defaulted {
+                continue;
+            }
             let binding = get_binding(settings, action.id).trim().to_string();
-            if binding.is_empty() { continue; }
+            if binding.is_empty() {
+                continue;
+            }
 
             if binding_conflicts_with_accepted(action, &binding, &accepted)
                 || binding_conflicts_with_reserved(action, &binding)
@@ -568,7 +790,9 @@ fn repair_load_conflicts(
                     String::new()
                 };
                 set_binding(settings, action.id, replacement.clone());
-                if replacement.is_empty() { continue; }
+                if replacement.is_empty() {
+                    continue;
+                }
                 accepted.insert(replacement.to_ascii_lowercase(), (action, replacement));
                 continue;
             }
@@ -646,6 +870,7 @@ fn binding_json_pointer(id: &str) -> Option<&'static str> {
         "toggleRecording" => Some("/globalShortcuts/bindings/toggleRecording"),
         "pauseResumeRecording" => Some("/globalShortcuts/bindings/pauseResumeRecording"),
         "toggleMainWindow" => Some("/globalShortcuts/bindings/toggleMainWindow"),
+        "toggleQuickRecall" => Some("/globalShortcuts/bindings/quickRecall"),
         "openSettings" => Some("/appShortcuts/openSettings"),
         "openDebug" => Some("/appShortcuts/openDebug"),
         "toggleSourceScreen" => Some("/appShortcuts/toggleSourceScreen"),
@@ -696,19 +921,74 @@ fn current_settings(app: &tauri::AppHandle) -> KeyboardBindingsSettings {
     settings
 }
 
-fn parse_registered_shortcuts(settings: &KeyboardBindingsSettings) -> Vec<Shortcut> {
+#[derive(Debug, Clone)]
+struct RegisteredShortcut {
+    shortcut: Shortcut,
+    /// Stable action id from `EDITABLE_ACTIONS`, used to look up the display label.
+    action_id: &'static str,
+    /// The accelerator string the user assigned (e.g. "CommandOrControl+Shift+Space").
+    accelerator: String,
+}
+
+impl RegisteredShortcut {
+    /// Human-readable description naming the action and its accelerator, e.g.
+    /// "Summon Quick Recall (CommandOrControl+Shift+Space)".
+    fn display_label(&self) -> String {
+        let label = EDITABLE_ACTIONS
+            .iter()
+            .find(|action| action.id == self.action_id)
+            .map(|action| action.label)
+            .unwrap_or(self.action_id);
+        format!("{label} ({})", self.accelerator)
+    }
+}
+
+fn parse_registered_shortcuts(settings: &KeyboardBindingsSettings) -> Vec<RegisteredShortcut> {
     if !settings.global_shortcuts.enabled {
         return Vec::new();
     }
 
     [
-        settings.global_shortcuts.bindings.toggle_recording.as_str(),
-        settings.global_shortcuts.bindings.pause_resume_recording.as_str(),
-        settings.global_shortcuts.bindings.toggle_main_window.as_str(),
+        (
+            "toggleRecording",
+            settings.global_shortcuts.bindings.toggle_recording.as_str(),
+        ),
+        (
+            "pauseResumeRecording",
+            settings
+                .global_shortcuts
+                .bindings
+                .pause_resume_recording
+                .as_str(),
+        ),
+        (
+            "toggleMainWindow",
+            settings
+                .global_shortcuts
+                .bindings
+                .toggle_main_window
+                .as_str(),
+        ),
+        (
+            "toggleQuickRecall",
+            settings
+                .global_shortcuts
+                .bindings
+                .toggle_quick_recall
+                .as_str(),
+        ),
     ]
     .into_iter()
-    .filter(|binding| !binding.trim().is_empty())
-    .filter_map(|binding| Shortcut::try_from(binding).ok())
+    .filter(|(_, binding)| !binding.trim().is_empty())
+    .filter_map(|(action_id, binding)| {
+        Shortcut::try_from(binding)
+            .ok()
+            .map(|shortcut| RegisteredShortcut {
+                shortcut,
+                action_id,
+                accelerator: binding.trim().to_string(),
+            })
+    })
     .collect()
 }
 
@@ -725,6 +1005,7 @@ fn global_shortcut_action(
     let toggle_recording = parse_shortcut_for_match(&bindings.toggle_recording);
     let pause_resume_recording = parse_shortcut_for_match(&bindings.pause_resume_recording);
     let toggle_main_window = parse_shortcut_for_match(&bindings.toggle_main_window);
+    let toggle_quick_recall = parse_shortcut_for_match(&bindings.toggle_quick_recall);
 
     if Some(shortcut) == toggle_recording.as_ref() {
         Some(GlobalShortcutAction::ToggleRecording)
@@ -732,27 +1013,31 @@ fn global_shortcut_action(
         Some(GlobalShortcutAction::PauseResumeRecording)
     } else if Some(shortcut) == toggle_main_window.as_ref() {
         Some(GlobalShortcutAction::ToggleMainWindow)
+    } else if Some(shortcut) == toggle_quick_recall.as_ref() {
+        Some(GlobalShortcutAction::ToggleQuickRecall)
     } else {
         None
     }
 }
 
 fn parse_shortcut_for_match(binding: &str) -> Option<Shortcut> {
-    if binding.trim().is_empty() { return None; }
+    if binding.trim().is_empty() {
+        return None;
+    }
     Shortcut::try_from(binding).ok()
 }
 
 pub(crate) fn initialize(app: &tauri::AppHandle) {
     let settings = current_settings(app);
-    if let Err(error) = refresh_global_shortcuts(app, &settings) {
-        warn_registration_failure(app, &error);
+    if let Err(failures) = refresh_global_shortcuts(app, &settings) {
+        warn_registration_failure(app, &failures);
     }
 }
 
 fn refresh_global_shortcuts(
     app: &tauri::AppHandle,
     settings: &KeyboardBindingsSettings,
-) -> Result<(), String> {
+) -> Result<(), Vec<String>> {
     let previous = {
         let state = app.state::<KeyboardBindingsState>();
         let mut runtime = state.lock().expect("keyboard bindings state poisoned");
@@ -770,16 +1055,20 @@ fn refresh_global_shortcuts(
     let shortcuts = parse_registered_shortcuts(settings);
     let mut registered = Vec::new();
     let mut unique = HashSet::new();
-    for shortcut in shortcuts {
-        let shortcut_string = shortcut.to_string();
+    let mut failures = Vec::new();
+    for entry in shortcuts {
+        let shortcut_string = entry.shortcut.to_string();
         if !unique.insert(shortcut_string.clone()) {
             continue;
         }
-        if let Err(error) = app.global_shortcut().register(shortcut) {
-            let state = app.state::<KeyboardBindingsState>();
-            let mut runtime = state.lock().expect("keyboard bindings state poisoned");
-            runtime.registered_shortcuts = registered;
-            return Err(format!("failed to register '{shortcut_string}': {error}"));
+        // Best-effort: a failure registering one shortcut is logged/collected but
+        // does not abort registration of the remaining shortcuts.
+        if let Err(error) = app.global_shortcut().register(entry.shortcut) {
+            crate::native_capture::debug_log::log_warn(format!(
+                "failed to register global shortcut '{shortcut_string}': {error}"
+            ));
+            failures.push(entry.display_label());
+            continue;
         }
         registered.push(shortcut_string);
     }
@@ -787,8 +1076,13 @@ fn refresh_global_shortcuts(
     let state = app.state::<KeyboardBindingsState>();
     let mut runtime = state.lock().expect("keyboard bindings state poisoned");
     runtime.registered_shortcuts = registered;
+    drop(runtime);
 
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures)
+    }
 }
 
 pub(crate) fn handle_global_shortcut(
@@ -810,6 +1104,13 @@ pub(crate) fn handle_global_shortcut(
         Some(GlobalShortcutAction::PauseResumeRecording) => handle_pause_resume_recording(app),
         Some(GlobalShortcutAction::ToggleMainWindow) => {
             crate::windows::toggle_main_window_visibility(app);
+        }
+        Some(GlobalShortcutAction::ToggleQuickRecall) => {
+            if let Err(error) = crate::windows::toggle_quick_recall_window(app) {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "global shortcut failed to toggle quick recall: {error}"
+                ));
+            }
         }
         None => {}
     }
@@ -861,15 +1162,30 @@ fn handle_pause_resume_recording(app: &tauri::AppHandle) {
     });
 }
 
-fn warn_registration_failure(app: &tauri::AppHandle, message: &str) {
+fn warn_registration_failure(app: &tauri::AppHandle, failures: &[String]) {
+    if failures.is_empty() {
+        return;
+    }
+
+    let names = failures.join(", ");
     crate::native_capture::debug_log::log_warn(format!(
-        "global shortcut registration failed: {message}"
+        "global shortcut registration failed: {names}"
     ));
+
+    let plural = failures.len() > 1;
+    let body = format!(
+        "Mnema could not register {}: {names}. Another app may already be using the same shortcut.",
+        if plural {
+            "these global shortcuts"
+        } else {
+            "this global shortcut"
+        }
+    );
     crate::native_capture::push_warning_app_notification(
         app,
         REGISTRATION_WARNING_ID,
         "Global shortcuts unavailable",
-        "Mnema could not register one or more global shortcuts. Another app may already be using the same shortcut.",
+        &body,
         Some("shortcuts"),
         now_unix_ms(),
     );
@@ -901,8 +1217,8 @@ pub fn update_keyboard_bindings_settings(
         runtime.settings = Some(settings.clone());
     }
 
-    if let Err(error) = refresh_global_shortcuts(&app, &settings) {
-        warn_registration_failure(&app, &error);
+    if let Err(failures) = refresh_global_shortcuts(&app, &settings) {
+        warn_registration_failure(&app, &failures);
     }
 
     let _ = app.emit(KEYBOARD_BINDINGS_CHANGED_EVENT, &settings);
@@ -918,9 +1234,18 @@ mod tests {
     fn defaults_include_expected_global_shortcuts() {
         let settings = KeyboardBindingsSettings::defaults();
         assert!(settings.global_shortcuts.enabled);
-        assert_eq!(settings.global_shortcuts.bindings.toggle_recording, TOGGLE_RECORDING_DEFAULT);
-        assert_eq!(settings.global_shortcuts.bindings.pause_resume_recording, PAUSE_RESUME_RECORDING_DEFAULT);
-        assert_eq!(settings.global_shortcuts.bindings.toggle_main_window, TOGGLE_MAIN_WINDOW_DEFAULT);
+        assert_eq!(
+            settings.global_shortcuts.bindings.toggle_recording,
+            TOGGLE_RECORDING_DEFAULT
+        );
+        assert_eq!(
+            settings.global_shortcuts.bindings.pause_resume_recording,
+            PAUSE_RESUME_RECORDING_DEFAULT
+        );
+        assert_eq!(
+            settings.global_shortcuts.bindings.toggle_main_window,
+            TOGGLE_MAIN_WINDOW_DEFAULT
+        );
     }
 
     #[test]
@@ -933,6 +1258,7 @@ mod tests {
                     toggle_recording: "".to_string(),
                     pause_resume_recording: "not-a-shortcut".to_string(),
                     toggle_main_window: TOGGLE_MAIN_WINDOW_DEFAULT.to_string(),
+                    toggle_quick_recall: TOGGLE_QUICK_RECALL_DEFAULT.to_string(),
                 },
             },
             app_shortcuts: AppShortcutBindings::defaults(),
@@ -943,12 +1269,16 @@ mod tests {
 
         assert!(!settings.global_shortcuts.enabled);
         assert_eq!(settings.global_shortcuts.bindings.toggle_recording, "");
-        assert_eq!(settings.global_shortcuts.bindings.pause_resume_recording, PAUSE_RESUME_RECORDING_DEFAULT);
+        assert_eq!(
+            settings.global_shortcuts.bindings.pause_resume_recording,
+            PAUSE_RESUME_RECORDING_DEFAULT
+        );
     }
 
     #[test]
     fn load_sanitization_preserves_existing_bindings_when_new_default_collides() {
-        let settings = parse_settings_from_raw(r#"{
+        let settings = parse_settings_from_raw(
+            r#"{
             "schemaVersion": 1,
             "globalShortcuts": {
                 "enabled": true,
@@ -960,15 +1290,26 @@ mod tests {
             "appShortcuts": {
                 "openSettings": "CommandOrControl+Shift+,"
             }
-        }"#)
+        }"#,
+        )
         .expect("legacy settings should deserialize");
 
-        assert_eq!(settings.global_shortcuts.bindings.toggle_recording, PAUSE_RESUME_RECORDING_DEFAULT);
-        assert_eq!(settings.global_shortcuts.bindings.pause_resume_recording, "");
-        assert_eq!(settings.app_shortcuts.open_settings, "CommandOrControl+Shift+,");
+        assert_eq!(
+            settings.global_shortcuts.bindings.toggle_recording,
+            PAUSE_RESUME_RECORDING_DEFAULT
+        );
+        assert_eq!(
+            settings.global_shortcuts.bindings.pause_resume_recording,
+            ""
+        );
+        assert_eq!(
+            settings.app_shortcuts.open_settings,
+            "CommandOrControl+Shift+,"
+        );
         validate_conflicts(&settings).expect("sanitized settings should be conflict-free");
 
-        let settings = parse_settings_from_raw(r#"{
+        let settings = parse_settings_from_raw(
+            r#"{
             "schemaVersion": 1,
             "globalShortcuts": {
                 "enabled": true,
@@ -977,11 +1318,18 @@ mod tests {
                     "toggleMainWindow": "CommandOrControl+Alt+P"
                 }
             }
-        }"#)
+        }"#,
+        )
         .expect("legacy settings should deserialize");
 
-        assert_eq!(settings.global_shortcuts.bindings.pause_resume_recording, "");
-        assert_eq!(settings.global_shortcuts.bindings.toggle_main_window, PAUSE_RESUME_RECORDING_DEFAULT);
+        assert_eq!(
+            settings.global_shortcuts.bindings.pause_resume_recording,
+            ""
+        );
+        assert_eq!(
+            settings.global_shortcuts.bindings.toggle_main_window,
+            PAUSE_RESUME_RECORDING_DEFAULT
+        );
         validate_conflicts(&settings).expect("sanitized settings should be conflict-free");
     }
 
@@ -989,7 +1337,9 @@ mod tests {
     fn update_validation_allows_cleared_binding() {
         let mut settings = KeyboardBindingsSettings::defaults();
         settings.dashboard_shortcuts.copy_frame = "".to_string();
-        let settings = settings.validated_for_update().expect("cleared binding should be valid");
+        let settings = settings
+            .validated_for_update()
+            .expect("cleared binding should be valid");
         assert_eq!(settings.dashboard_shortcuts.copy_frame, "");
     }
 
@@ -1031,7 +1381,9 @@ mod tests {
     fn shortcuts_are_canonicalized() {
         let mut settings = KeyboardBindingsSettings::defaults();
         settings.dashboard_shortcuts.open_jump_picker = "shift+j".to_string();
-        let settings = settings.validated_for_update().expect("shortcut should canonicalize");
+        let settings = settings
+            .validated_for_update()
+            .expect("shortcut should canonicalize");
         assert_eq!(settings.dashboard_shortcuts.open_jump_picker, "Shift+J");
     }
 
@@ -1055,6 +1407,20 @@ mod tests {
         settings.audio_drawer_shortcuts.seek_back = "".to_string();
         settings.dashboard_shortcuts.open_jump_picker = "ArrowLeft".to_string();
         assert!(settings.validated_for_update().is_err());
+    }
+
+    #[test]
+    fn defaults_include_quick_recall_global_shortcut() {
+        let settings = KeyboardBindingsSettings::defaults();
+        assert_eq!(
+            settings.global_shortcuts.bindings.toggle_quick_recall,
+            TOGGLE_QUICK_RECALL_DEFAULT
+        );
+        let shortcut = Shortcut::try_from(TOGGLE_QUICK_RECALL_DEFAULT).unwrap();
+        assert_eq!(
+            global_shortcut_action(&settings, &shortcut, true),
+            Some(GlobalShortcutAction::ToggleQuickRecall)
+        );
     }
 
     #[test]

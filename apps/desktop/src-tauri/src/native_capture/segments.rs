@@ -3574,8 +3574,10 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                             < DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL;
                     if !throttle_display_recovery {
                         last_suspension_recovery_attempt = Instant::now();
-                        match attempt_privacy_suspension_recovery(&app_handle, runtime.runtime_mut())
-                        {
+                        match attempt_privacy_suspension_recovery(
+                            &app_handle,
+                            runtime.runtime_mut(),
+                        ) {
                             PrivacySuspensionRecoveryOutcome::Recovered => {
                                 super::debug_log::log(
                                     "screen/system-audio capture recovered; restarted after suspension",

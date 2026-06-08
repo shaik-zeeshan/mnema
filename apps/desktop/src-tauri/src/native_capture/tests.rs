@@ -16,8 +16,6 @@ use super::microphone::{
     should_reconnect_waiting_microphone_session,
 };
 use super::output::set_current_microphone_output_file;
-#[cfg(target_os = "macos")]
-use super::runtime::{CaptureSuspensionKind, PrivacyCaptureSuspension};
 use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -27,6 +25,8 @@ use super::runtime::{
     stopped_session_from_runtime, system_audio_planner_for_runtime,
     system_audio_writer_active_for_runtime, validate_start_request, NativeCaptureRuntime,
 };
+#[cfg(target_os = "macos")]
+use super::runtime::{CaptureSuspensionKind, PrivacyCaptureSuspension};
 #[cfg(target_os = "macos")]
 use super::segments::{
     apply_microphone_output_finalization, audio_duration_time_to_ms,
@@ -65,7 +65,7 @@ use capture_types::{
     default_audio_transcription_settings, default_inactivity_activity_mode,
     default_metadata_settings, default_microphone_vad_adapter, default_ocr_settings,
     default_preview_cache_ttl_seconds, default_privacy_settings, default_retention_policy,
-    default_speaker_analysis_settings, default_video_bitrate, AppearanceSetting,
+    default_speaker_analysis_settings, default_video_bitrate, AccessSettings, AppearanceSetting,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
     InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
@@ -235,6 +235,7 @@ fn recording_settings_fixture() -> RecordingSettings {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -268,6 +269,7 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         audio_speech_detection: settings.audio_speech_detection,
         metadata: settings.metadata,
         privacy: settings.privacy,
+        access: settings.access,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -1433,6 +1435,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1477,6 +1480,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1517,6 +1521,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1869,7 +1874,10 @@ fn session_from_runtime_reports_running_during_privacy_suspension_with_live_micr
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &privacy_error)),
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+            CaptureSuspensionKind::PrivacyFilter,
+            &privacy_error,
+        )),
         ..Default::default()
     };
 
@@ -7301,7 +7309,10 @@ fn current_segment_sources_for_runtime_masks_stale_screen_during_privacy_suspens
             system_audio: true,
         }),
         microphone_recording_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &privacy_error)),
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+            CaptureSuspensionKind::PrivacyFilter,
+            &privacy_error,
+        )),
         ..Default::default()
     };
 
@@ -7358,7 +7369,10 @@ fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &privacy_error)),
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+            CaptureSuspensionKind::PrivacyFilter,
+            &privacy_error,
+        )),
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {

@@ -721,7 +721,10 @@ mod tests {
         let params = descriptor_for(DEFAULT_SHERPA_ONNX_MODEL_ID)
             .sherpa_params
             .expect("default preset has sherpa_params");
-        assert_eq!(params.segmentation_relative_path, "pyannote-segmentation-3.0/model.onnx");
+        assert_eq!(
+            params.segmentation_relative_path,
+            "pyannote-segmentation-3.0/model.onnx"
+        );
         assert_eq!(params.embedding_relative_path, "nemo_en_titanet_small.onnx");
         // clustering_threshold (fast-clustering, #3) keeps the historical 0.65.
         assert_eq!(params.clustering_threshold, 0.65_f32);
@@ -736,13 +739,20 @@ mod tests {
     #[test]
     fn multilingual_preset_uses_campplus_zh_en_embedding() {
         let descriptor = descriptor_for(MULTILINGUAL_SHERPA_ONNX_MODEL_ID);
-        let params = descriptor.sherpa_params.expect("multilingual sherpa_params");
-        assert_eq!(params.segmentation_relative_path, "pyannote-segmentation-3.0/model.onnx");
+        let params = descriptor
+            .sherpa_params
+            .expect("multilingual sherpa_params");
+        assert_eq!(
+            params.segmentation_relative_path,
+            "pyannote-segmentation-3.0/model.onnx"
+        );
         assert_eq!(
             params.embedding_relative_path,
             "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
         );
-        let ModelManagement::AppManaged { expected_layout, .. } = &descriptor.management;
+        let ModelManagement::AppManaged {
+            expected_layout, ..
+        } = &descriptor.management;
         assert_eq!(
             expected_layout.required_files,
             vec![
@@ -755,10 +765,17 @@ mod tests {
     #[test]
     fn high_accuracy_preset_uses_reverb_v1_and_titanet_large() {
         let descriptor = descriptor_for(HIGH_ACCURACY_SHERPA_ONNX_MODEL_ID);
-        let params = descriptor.sherpa_params.expect("high-accuracy sherpa_params");
-        assert_eq!(params.segmentation_relative_path, "reverb-diarization-v1/model.onnx");
+        let params = descriptor
+            .sherpa_params
+            .expect("high-accuracy sherpa_params");
+        assert_eq!(
+            params.segmentation_relative_path,
+            "reverb-diarization-v1/model.onnx"
+        );
         assert_eq!(params.embedding_relative_path, "nemo_en_titanet_large.onnx");
-        let ModelManagement::AppManaged { expected_layout, .. } = &descriptor.management;
+        let ModelManagement::AppManaged {
+            expected_layout, ..
+        } = &descriptor.management;
         assert_eq!(
             expected_layout.required_files,
             vec![

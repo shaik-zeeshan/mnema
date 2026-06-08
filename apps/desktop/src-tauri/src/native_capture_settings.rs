@@ -8,15 +8,16 @@ use capture_types::{
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
     default_preview_cache_ttl_seconds, default_privacy_settings, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
-    default_system_audio_activity_sensitivity, default_video_bitrate, AudioSpeechDetectionSettings,
-    AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SettingsOwnershipDomain,
-    SpeakerAnalysisSettings, UpdateCaptureSourceSettingsRequest,
-    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
-    UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
-    UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest,
-    UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    default_system_audio_activity_sensitivity, default_video_bitrate, AccessSettings,
+    AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionProvider,
+    AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
+    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
+    SettingsOwnershipDomain, SpeakerAnalysisSettings, UpdateAccessSettingsRequest,
+    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
+    UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
+    UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
+    UpdateStorageSettingsRequest, UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset,
+    VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -96,6 +97,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -630,6 +632,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         audio_speech_detection: audio_speech_detection.clone(),
         metadata: request.metadata,
         privacy,
+        access: request.access,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -685,6 +688,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             audio_speech_detection: parsed.audio_speech_detection,
             metadata: parsed.metadata,
             privacy: parsed.privacy,
+            access: parsed.access,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -809,6 +813,7 @@ pub(crate) enum RecordingSettingsDomainPatch {
     Inactivity(UpdateInactivitySettingsRequest),
     Processing(UpdateProcessingSettingsRequest),
     Developer(UpdateDeveloperSettingsRequest),
+    Access(UpdateAccessSettingsRequest),
 }
 
 impl RecordingSettingsDomainPatch {
@@ -823,6 +828,7 @@ impl RecordingSettingsDomainPatch {
             Self::Inactivity(_) => SettingsOwnershipDomain::Inactivity,
             Self::Processing(_) => SettingsOwnershipDomain::Processing,
             Self::Developer(_) => SettingsOwnershipDomain::Developer,
+            Self::Access(_) => SettingsOwnershipDomain::Access,
         }
     }
 }
@@ -859,6 +865,7 @@ fn recording_settings_request_from_settings(
         audio_speech_detection: settings.audio_speech_detection,
         metadata: settings.metadata,
         privacy: settings.privacy,
+        access: settings.access,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -981,6 +988,25 @@ fn apply_domain_patch_to_settings(
             }
             if let Some(value) = request.preview_cache_ttl_seconds {
                 settings.preview_cache_ttl_seconds = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::Access(request) => {
+            if let Some(value) = request.ask_ai_enabled {
+                settings.access.ask_ai_enabled = value;
+                touched = true;
+            }
+            if let Some(value) = request.ask_ai_max_tool_calls {
+                settings.access.ask_ai_max_tool_calls = value;
+                touched = true;
+            }
+            if let Some(value) = request.ask_ai_model {
+                let trimmed = value.trim();
+                settings.access.ask_ai_model = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
                 touched = true;
             }
         }
@@ -1199,6 +1225,11 @@ mod tests {
     }
 
     #[test]
+    fn default_recording_settings_disable_ask_ai_access() {
+        assert!(!default_recording_settings().access.ask_ai_enabled);
+    }
+
+    #[test]
     fn default_recording_settings_disable_native_capture_debug_logging() {
         assert!(!default_recording_settings().native_capture_debug_logging_enabled);
     }
@@ -1252,6 +1283,25 @@ mod tests {
             load_recording_settings_from_path(&path).expect("settings should load from disk");
 
         assert!(loaded.developer_options_enabled);
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_preserves_ask_ai_access_flag() {
+        let dir = TestDir::new("ask-ai-enabled");
+        let path = dir.path().join("recording-settings.json");
+        let mut settings = default_recording_settings();
+        settings.access.ask_ai_enabled = true;
+
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&settings).expect("settings should serialize"),
+        )
+        .expect("settings file should write");
+
+        let loaded =
+            load_recording_settings_from_path(&path).expect("settings should load from disk");
+
+        assert!(loaded.access.ask_ai_enabled);
     }
 
     #[test]
@@ -1359,6 +1409,47 @@ mod tests {
         assert_eq!(updated.ocr, base.ocr);
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
+    }
+
+    #[test]
+    fn access_domain_update_preserves_unrelated_settings_fields() {
+        let mut base = default_recording_settings();
+        base.capture_microphone = true;
+        base.ocr.enabled = false;
+        base.appearance = capture_types::AppearanceSetting::Dark;
+        base.save_directory = "/tmp/mnema-before".to_string();
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::Access(UpdateAccessSettingsRequest {
+                ask_ai_enabled: Some(true),
+                ask_ai_max_tool_calls: Some(0),
+                ask_ai_model: Some("anthropic:claude-opus-4".to_string()),
+            }),
+        )
+        .expect("access patch should validate");
+
+        assert!(updated.access.ask_ai_enabled);
+        assert_eq!(updated.access.ask_ai_max_tool_calls, 0);
+        assert_eq!(
+            updated.access.ask_ai_model.as_deref(),
+            Some("anthropic:claude-opus-4")
+        );
+        assert_eq!(updated.capture_microphone, base.capture_microphone);
+        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.appearance, base.appearance);
+        assert_eq!(updated.save_directory, base.save_directory);
+    }
+
+    #[test]
+    fn empty_access_domain_patch_is_rejected() {
+        let error = apply_domain_patch_for_test(
+            default_recording_settings(),
+            RecordingSettingsDomainPatch::Access(UpdateAccessSettingsRequest::default()),
+        )
+        .expect_err("empty access patch should be rejected");
+
+        assert_eq!(error.code, "empty_settings_patch");
     }
 
     #[test]
@@ -1557,6 +1648,7 @@ mod tests {
                 },
                 metadata: default_metadata_settings(),
                 privacy: default_privacy_settings(),
+                access: AccessSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1613,6 +1705,7 @@ mod tests {
                 audio_speech_detection: default_audio_speech_detection_settings(),
                 metadata: default_metadata_settings(),
                 privacy: default_privacy_settings(),
+                access: AccessSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1685,6 +1778,7 @@ mod tests {
                 audio_speech_detection: default_audio_speech_detection_settings(),
                 metadata: default_metadata_settings(),
                 privacy: default_privacy_settings(),
+                access: AccessSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1731,6 +1825,7 @@ mod tests {
                 audio_speech_detection: default_audio_speech_detection_settings(),
                 metadata: default_metadata_settings(),
                 privacy: default_privacy_settings(),
+                access: AccessSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1798,6 +1893,7 @@ mod tests {
         assert_eq!(loaded.follow_timeline_live, default_follow_timeline_live());
         assert_eq!(loaded.appearance, default_appearance());
         assert_eq!(loaded.ocr, default_ocr_settings());
+        assert_eq!(loaded.access, AccessSettings::default());
         assert_eq!(loaded.transcription, default_audio_transcription_settings());
     }
 
@@ -1827,6 +1923,7 @@ mod tests {
             audio_speech_detection: default_audio_speech_detection_settings(),
             metadata: default_metadata_settings(),
             privacy: default_privacy_settings(),
+            access: AccessSettings::default(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

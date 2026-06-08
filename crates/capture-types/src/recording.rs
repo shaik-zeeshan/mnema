@@ -438,6 +438,39 @@ impl Default for ScreenResolution {
     }
 }
 
+/// Default per-question Ask AI tool-call cap. `0` means "no cap" (unlimited
+/// follow-up brokered queries), so the default is a bounded value rather than 0.
+pub fn default_ask_ai_max_tool_calls() -> u32 {
+    12
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessSettings {
+    #[serde(default)]
+    pub ask_ai_enabled: bool,
+    /// Maximum brokered tool calls Ask AI may issue per question. `0` disables
+    /// the cap (unlimited). Bounds how much retained capture history a single
+    /// conversation can pull through the broker.
+    #[serde(default = "default_ask_ai_max_tool_calls")]
+    pub ask_ai_max_tool_calls: u32,
+    /// PI model id Ask AI should use for Quick Recall, in the form
+    /// `provider:modelId` (e.g. `anthropic:claude-opus-4`). `None`/empty lets
+    /// the PI runtime pick its own configured default model.
+    #[serde(default)]
+    pub ask_ai_model: Option<String>,
+}
+
+impl Default for AccessSettings {
+    fn default() -> Self {
+        Self {
+            ask_ai_enabled: false,
+            ask_ai_max_tool_calls: default_ask_ai_max_tool_calls(),
+            ask_ai_model: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettings {
@@ -476,6 +509,8 @@ pub struct RecordingSettings {
     pub metadata: MetadataSettings,
     #[serde(default = "default_privacy_settings")]
     pub privacy: PrivacySettings,
+    #[serde(default)]
+    pub access: AccessSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -563,6 +598,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub metadata: MetadataSettings,
     #[serde(default = "default_privacy_settings")]
     pub privacy: PrivacySettings,
+    #[serde(default)]
+    pub access: AccessSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -646,6 +683,17 @@ pub struct UpdateProcessingSettingsRequest {
     pub transcription: Option<AudioTranscriptionSettings>,
     pub speaker_analysis: Option<SpeakerAnalysisSettings>,
     pub preview_cache_ttl_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAccessSettingsRequest {
+    pub ask_ai_enabled: Option<bool>,
+    /// New per-question tool-call cap (`0` = no cap). `None` leaves it unchanged.
+    pub ask_ai_max_tool_calls: Option<u32>,
+    /// New Ask AI model id (`provider:modelId`). `None` leaves it unchanged; an
+    /// empty string clears the selection back to the PI runtime default.
+    pub ask_ai_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

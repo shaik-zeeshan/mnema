@@ -355,8 +355,7 @@ fn record_novelty_memory(
     captured_at: Option<OffsetDateTime>,
 ) {
     let admitted = outcome == ::app_infra::OcrAdmissionOutcome::Admitted;
-    let deduped_to_equivalent =
-        reason == ::app_infra::OcrAdmissionReason::SkippedEquivalentFrame;
+    let deduped_to_equivalent = reason == ::app_infra::OcrAdmissionReason::SkippedEquivalentFrame;
     // A confirmed duplicate (equivalence reuse) is never novel, regardless of
     // the stale decide-time signal.
     let novel_for_bookkeeping = decide_time_fingerprint_novel && !deduped_to_equivalent;
@@ -434,8 +433,7 @@ pub async fn decide_admission(
             let recent_fingerprints = scope
                 .map(|scope| &scope.recent_fingerprints)
                 .unwrap_or(&empty_ring);
-            let fingerprint_novel_in_scope =
-                fingerprint_is_novel(recent_fingerprints, fingerprint);
+            let fingerprint_novel_in_scope = fingerprint_is_novel(recent_fingerprints, fingerprint);
             let rate_floor_satisfied = novelty_rate_floor_satisfied(
                 captured_at,
                 scope.and_then(|scope| scope.last_novelty_admitted_at),
@@ -1106,9 +1104,13 @@ mod tests {
 
     #[test]
     fn continuous_novelty_burst_trips_at_threshold() {
-        assert!(!in_continuous_novelty_burst(NOVELTY_SUSTAINED_RUN_SUPPRESS - 1));
+        assert!(!in_continuous_novelty_burst(
+            NOVELTY_SUSTAINED_RUN_SUPPRESS - 1
+        ));
         assert!(in_continuous_novelty_burst(NOVELTY_SUSTAINED_RUN_SUPPRESS));
-        assert!(in_continuous_novelty_burst(NOVELTY_SUSTAINED_RUN_SUPPRESS + 5));
+        assert!(in_continuous_novelty_burst(
+            NOVELTY_SUSTAINED_RUN_SUPPRESS + 5
+        ));
     }
 
     /// Capture time `base_seconds + offset` (UTC) for building temporally
@@ -1175,7 +1177,14 @@ mod tests {
         };
         let (outcome, reason) = skipped_low_value();
         // A non-novel frame (decide-time not novel) resets the run to 0.
-        record_novelty_memory(&mut scope, false, Some(99), outcome, reason, captured_at_seconds(6));
+        record_novelty_memory(
+            &mut scope,
+            false,
+            Some(99),
+            outcome,
+            reason,
+            captured_at_seconds(6),
+        );
         assert_eq!(scope.consecutive_novel_run, 0);
         assert!(!in_continuous_novelty_burst(scope.consecutive_novel_run));
     }
@@ -1289,8 +1298,7 @@ mod tests {
         // Exactly NOVELTY_CONTINUOUS_GAP_SECONDS apart is still continuous
         // (frames arriving "at least this often" build the burst).
         let previous = captured_at_seconds(0);
-        let current =
-            previous.map(|t| t + time::Duration::seconds(NOVELTY_CONTINUOUS_GAP_SECONDS));
+        let current = previous.map(|t| t + time::Duration::seconds(NOVELTY_CONTINUOUS_GAP_SECONDS));
         assert!(novel_frame_is_temporally_continuous(previous, current));
     }
 

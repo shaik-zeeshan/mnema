@@ -66,14 +66,13 @@ pub use processing::{
     OcrProcessorBackend, PersonProfile, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
     ProcessingJobReclamationSummary, ProcessingJobRunOutcome, ProcessingJobStatus,
     ProcessingModelCleanupLock, ProcessingResult, ProcessingResultDraft, ProcessingRuntime,
-    ProcessingStore, ProcessingSubject, ProcessorBackend,
-    ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
-    SpeakerAnalysisProcessorBackend, SpeakerClusterView, SpeakerTurnView,
-    SystemAudioSpeechActivityJobPayload, SystemAudioSpeechActivityProcessorBackend,
-    SystemAudioSpeechActivityResult, AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR,
-    FRAME_SUBJECT_TYPE, HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR,
-    SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY, SPEAKER_ANALYSIS_PROCESSOR,
-    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+    ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
+    SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend,
+    SpeakerClusterView, SpeakerTurnView, SystemAudioSpeechActivityJobPayload,
+    SystemAudioSpeechActivityProcessorBackend, SystemAudioSpeechActivityResult,
+    AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
+    HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
+    SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 pub use search::{
     AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
@@ -279,6 +278,22 @@ impl AppInfra {
         Ok(infra)
     }
 
+    /// Read-only initialization for brokered-access consumers (the `mnema` CLI and
+    /// the in-app Ask AI agent).
+    ///
+    /// Opens the database and builds every store but, unlike [`Self::initialize`],
+    /// does **not** run [`Self::run_startup_maintenance`]. Brokered access only
+    /// issues read queries (search / timeline / show-text / opaque-reference
+    /// authorization) and never spawns processing workers, so it must not run the
+    /// startup maintenance scans — in particular orphaned-job reconciliation, which
+    /// is only safe while nothing is executing those jobs (see ADR 0020). Running
+    /// it against a database whose live owner (the desktop app) has workers
+    /// actively processing would requeue legitimately-`running` jobs and cause
+    /// duplicate processing.
+    pub async fn initialize_read_only<P: AsRef<Path>>(base_dir: P) -> Result<Self> {
+        Self::initialize_fast_with_processing_registry(base_dir, default_processing_registry()).await
+    }
+
     /// Fast initialization path: opens the database and constructs every store
     /// and runtime, but does **not** run the startup maintenance scans
     /// (frame-equivalence / search-projection backfills, orphaned-job
@@ -337,9 +352,7 @@ impl AppInfra {
         // live and holding a freshly acquired cleanup lock, so only clear locks old enough to be
         // orphaned by a prior crash (see `MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS`).
         self.processing
-            .clear_stale_model_cleanup_locks(
-                processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS,
-            )
+            .clear_stale_model_cleanup_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
             .await?;
         self.processing.backfill_frame_equivalence().await?;
         self.search.backfill_missing_projections().await?;
@@ -2015,7 +2028,9 @@ mod tests {
 
             // No equivalent existed, so the equivalence gate did not override the
             // novelty admission: an OCR job is enqueued for the singleton.
-            let job = captured.job.expect("novel singleton should enqueue an OCR job");
+            let job = captured
+                .job
+                .expect("novel singleton should enqueue an OCR job");
             let decision = captured
                 .ocr_admission_decision
                 .expect("admission decision should be recorded");
@@ -2039,12 +2054,16 @@ mod tests {
             // The previously-skippable singleton now carries a direct search row,
             // which is the exact criterion for CLI find-by-content.
             assert_eq!(
-                search_document_kind(&infra, captured.frame.id).await.as_deref(),
+                search_document_kind(&infra, captured.frame.id)
+                    .await
+                    .as_deref(),
                 Some("direct")
             );
-            assert!(search_representative_frame_ids(&infra, "scrolled pull request")
-                .await
-                .contains(&captured.frame.id));
+            assert!(
+                search_representative_frame_ids(&infra, "scrolled pull request")
+                    .await
+                    .contains(&captured.frame.id)
+            );
         });
     }
 
@@ -2094,7 +2113,10 @@ mod tests {
                 .await
                 .expect("repeat frame should persist");
 
-            assert!(repeat.job.is_none(), "repeat must not spend a novelty OCR read");
+            assert!(
+                repeat.job.is_none(),
+                "repeat must not spend a novelty OCR read"
+            );
             let decision = repeat
                 .ocr_admission_decision
                 .expect("admission decision should be recorded");
@@ -2104,11 +2126,15 @@ mod tests {
 
             // The repeat is still searchable, via reused text rather than a direct read.
             assert_eq!(
-                search_document_kind(&infra, first.frame.id).await.as_deref(),
+                search_document_kind(&infra, first.frame.id)
+                    .await
+                    .as_deref(),
                 Some("direct")
             );
             assert_eq!(
-                search_document_kind(&infra, repeat.frame.id).await.as_deref(),
+                search_document_kind(&infra, repeat.frame.id)
+                    .await
+                    .as_deref(),
                 Some("equivalent_reuse")
             );
         });
@@ -4554,9 +4580,7 @@ mod tests {
 
             let cleared = infra
                 .processing()
-                .clear_stale_model_cleanup_locks(
-                    processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS,
-                )
+                .clear_stale_model_cleanup_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
                 .await
                 .expect("stale-only clear should run");
             assert_eq!(cleared, 1, "only the stale lock should be cleared");
@@ -4577,7 +4601,10 @@ mod tests {
             .fetch_one(infra.pool())
             .await
             .expect("fresh lock count should query");
-            assert_eq!(fresh_remaining, 1, "freshly acquired live lock should survive");
+            assert_eq!(
+                fresh_remaining, 1,
+                "freshly acquired live lock should survive"
+            );
 
             infra
                 .release_processing_model_cleanup_locks(&fresh_lock)

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/stores";
   import { tick } from "svelte";
+  import { Portal } from "bits-ui";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
@@ -35,6 +36,7 @@
   import type {
     ActivityMode,
     AppearanceSetting,
+    AskAiModel,
     CaptureSupport,
     GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
@@ -48,6 +50,7 @@
     RecordingSettings,
     RecordingSettingsDomainUpdateResponse,
     SettingsOwnershipDomain,
+    UpdateAccessSettingsRequest,
     UpdateCaptureSourceSettingsRequest,
     UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest,
@@ -122,6 +125,22 @@
     existingTarget: string | null;
   };
 
+  type PiRuntimeStatus = {
+    source: "managed" | "path" | "unmanaged" | "missing";
+    executablePath: string | null;
+    version: string | null;
+    minimumVersion: string;
+    versionOk: boolean;
+    authJsonPath: string;
+    authJsonExists: boolean;
+    ready: boolean;
+    reason: "pi_not_found" | "pi_version_unavailable" | "pi_version_too_old" | "pi_auth_missing" | string | null;
+    providerCount?: number;
+    providerConfigured?: boolean;
+    authJsonProviderCount?: number;
+    authJsonProviderConfigured?: boolean;
+  };
+
   type RetentionCleanupSummary = {
     policy: string;
     cutoffEndedBefore: string | null;
@@ -147,8 +166,8 @@
     | "inactivity"
     | "processing"
     | "developer"
+    | "access"
   >;
-
   type RecordingSettingsDraftDomain = AutosaveRecordingDomain | "app_privacy_exclusion";
 
   type RecordingDomainRequest =
@@ -160,7 +179,8 @@
     | UpdateMetadataSettingsRequest
     | UpdateInactivitySettingsRequest
     | UpdateProcessingSettingsRequest
-    | UpdateDeveloperSettingsRequest;
+    | UpdateDeveloperSettingsRequest
+    | UpdateAccessSettingsRequest;
 
   const RECORDING_AUTOSAVE_DOMAINS: readonly AutosaveRecordingDomain[] = [
     "capture_sources",
@@ -172,6 +192,7 @@
     "inactivity",
     "processing",
     "developer",
+    "access",
   ];
 
   const RECORDING_DRAFT_DOMAINS: readonly RecordingSettingsDraftDomain[] = [
@@ -189,6 +210,7 @@
     inactivity: "update_inactivity_settings",
     processing: "update_processing_settings",
     developer: "update_developer_settings",
+    access: "update_access_settings",
   };
 
   function makeRecordingDomainState<T>(value: T): Record<RecordingSettingsDraftDomain, T> {
@@ -256,6 +278,144 @@
   let draftMetadataEnabled = $state(true);
   let draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
   let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
+  let draftAskAiEnabled = $state(false);
+  // Tool-call cap. Persisted as a single number where 0 = no cap; the UI splits
+  // that into a "limit on/off" toggle plus the numeric value (kept around for
+  // re-enabling so toggling off then on restores the previous number).
+  const ASK_AI_DEFAULT_TOOL_CALL_LIMIT = 12;
+  let draftAskAiLimitToolCalls = $state(true);
+  let draftAskAiMaxToolCalls = $state(ASK_AI_DEFAULT_TOOL_CALL_LIMIT);
+  // Effective persisted value: 0 when the cap is off, else the chosen number
+  // (floored to 1 so an empty/invalid input never silently becomes unlimited).
+  let effectiveAskAiMaxToolCalls = $derived(
+    draftAskAiLimitToolCalls
+      ? Math.max(1, Math.floor(draftAskAiMaxToolCalls || ASK_AI_DEFAULT_TOOL_CALL_LIMIT))
+      : 0,
+  );
+  // Quick Recall model selection. Empty string means "let PI pick its default".
+  // `askAiModels` is the list discovered from the user's PI runtime.
+  let draftAskAiModel = $state("");
+  let askAiModels = $state<AskAiModel[]>([]);
+  let askAiModelsLoading = $state(false);
+  let askAiModelsError = $state<string | null>(null);
+  // Editable combobox state: the text the user types to filter, whether the
+  // dropdown is open, and the keyboard-highlighted row. The panel is portaled to
+  // <body> and fixed-positioned (computed from the input rect) so no overflow or
+  // transform ancestor in the settings layout can clip it.
+  let askAiModelOpen = $state(false);
+  let askAiModelQuery = $state("");
+  let askAiModelHighlight = $state(0);
+  let askAiModelInputEl = $state<HTMLInputElement | null>(null);
+  let askAiModelPanelStyle = $state("");
+
+  function updateAskAiModelPanelPosition() {
+    const el = askAiModelInputEl;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // Anchor the panel above the input: pin its bottom just over the input's top
+    // so it opens upward, away from the clipped bottom edge of the settings card.
+    askAiModelPanelStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; width: ${rect.width}px;`;
+  }
+
+  function openAskAiModelMenu() {
+    askAiModelOpen = true;
+    updateAskAiModelPanelPosition();
+  }
+
+  // While the menu is open, keep it pinned under the input as the page scrolls or
+  // resizes (capture phase catches scrolling inner containers, not just window).
+  $effect(() => {
+    if (!askAiModelOpen) return;
+    const handler = () => updateAskAiModelPanelPosition();
+    window.addEventListener("scroll", handler, true);
+    window.addEventListener("resize", handler);
+    return () => {
+      window.removeEventListener("scroll", handler, true);
+      window.removeEventListener("resize", handler);
+    };
+  });
+
+  function askAiModelLabel(value: string): string {
+    if (!value) return "Use PI default";
+    const match = askAiModels.find((model) => model.value === value);
+    if (!match) return value;
+    return match.provider ? `${match.name} (${match.provider})` : match.name;
+  }
+
+  // All selectable entries: the "PI default" sentinel plus every discovered
+  // model. `sublabel` shows the provider:id so ids stay recognizable.
+  let askAiModelEntries = $derived([
+    {
+      value: "",
+      label: "Use PI default",
+      sublabel: "Follows the model configured in your PI runtime",
+    },
+    ...askAiModels.map((model) => ({
+      value: model.value,
+      label: model.provider ? `${model.name} (${model.provider})` : model.name,
+      sublabel: model.value,
+    })),
+  ]);
+
+  // Substring filter on the typed query. When the query still equals the
+  // committed selection's label (e.g. just focused), show the whole list.
+  let askAiModelFiltered = $derived.by(() => {
+    const query = askAiModelQuery.trim().toLowerCase();
+    if (!query || query === askAiModelLabel(draftAskAiModel).toLowerCase()) {
+      return askAiModelEntries;
+    }
+    return askAiModelEntries.filter(
+      (entry) =>
+        entry.label.toLowerCase().includes(query) ||
+        entry.value.toLowerCase().includes(query),
+    );
+  });
+
+  // Keep the input text in sync with the committed selection while the dropdown
+  // is closed (covers settings/model loads that change the resolved label).
+  $effect(() => {
+    if (!askAiModelOpen) {
+      askAiModelQuery = askAiModelLabel(draftAskAiModel);
+    }
+  });
+
+  function commitAskAiModel(value: string) {
+    draftAskAiModel = value;
+    askAiModelQuery = askAiModelLabel(value);
+    askAiModelOpen = false;
+  }
+
+  function closeAskAiModelSoon() {
+    // Delay so an option's click (mousedown → click) lands before we close.
+    setTimeout(() => {
+      askAiModelOpen = false;
+      askAiModelQuery = askAiModelLabel(draftAskAiModel);
+    }, 120);
+  }
+
+  function handleAskAiModelKeydown(event: KeyboardEvent) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      openAskAiModelMenu();
+      askAiModelHighlight = Math.min(askAiModelHighlight + 1, askAiModelFiltered.length - 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      askAiModelHighlight = Math.max(askAiModelHighlight - 1, 0);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const choice = askAiModelFiltered[askAiModelHighlight];
+      if (choice) {
+        commitAskAiModel(choice.value);
+      } else {
+        // No list match: accept a typed provider:id as a custom model.
+        const typed = askAiModelQuery.trim();
+        if (typed.includes(":")) commitAskAiModel(typed);
+      }
+    } else if (event.key === "Escape") {
+      askAiModelOpen = false;
+      askAiModelQuery = askAiModelLabel(draftAskAiModel);
+    }
+  }
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
   let retentionCleanupError = $state<string | null>(null);
@@ -264,9 +424,12 @@
   let brokerGrantSaving = $state(false);
   let brokerGrantError = $state<string | null>(null);
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
+  let piRuntimeStatus = $state<PiRuntimeStatus | null>(null);
   let mnemaCliLoading = $state(false);
+  let piRuntimeLoading = $state(false);
   let mnemaCliInstalling = $state(false);
   let mnemaCliError = $state<string | null>(null);
+  let piRuntimeError = $state<string | null>(null);
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
@@ -820,6 +983,14 @@
     draftExcludedApps = [...(s.privacy?.excludedApps ?? [])];
   }
 
+  function syncAccessDrafts(s: RecordingSettings) {
+    draftAskAiEnabled = s.access?.askAiEnabled ?? false;
+    const cap = s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT;
+    draftAskAiLimitToolCalls = cap > 0;
+    draftAskAiMaxToolCalls = cap > 0 ? cap : ASK_AI_DEFAULT_TOOL_CALL_LIMIT;
+    draftAskAiModel = s.access?.askAiModel ?? "";
+  }
+
   function syncInactivityDrafts(s: RecordingSettings) {
     draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
@@ -902,6 +1073,9 @@
         break;
       case "developer":
         syncDeveloperDrafts(s);
+        break;
+      case "access":
+        syncAccessDrafts(s);
         break;
     }
   }
@@ -1025,6 +1199,12 @@
           developerOptionsEnabled: draftDeveloperOptionsEnabled,
           nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
         };
+      case "access":
+        return {
+          askAiEnabled: draftAskAiEnabled,
+          askAiMaxToolCalls: effectiveAskAiMaxToolCalls,
+          askAiModel: draftAskAiModel,
+        };
     }
   }
 
@@ -1071,6 +1251,33 @@
       mnemaCliError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       mnemaCliLoading = false;
+    }
+  }
+
+  async function loadPiRuntimeStatus() {
+    piRuntimeLoading = true;
+    piRuntimeError = null;
+    try {
+      piRuntimeStatus = await invoke<PiRuntimeStatus>("get_pi_runtime_status");
+    } catch (err) {
+      piRuntimeError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      piRuntimeLoading = false;
+    }
+    // Refresh the selectable model list whenever PI status is (re)checked.
+    void loadAskAiModels();
+  }
+
+  async function loadAskAiModels() {
+    askAiModelsLoading = true;
+    askAiModelsError = null;
+    try {
+      askAiModels = await invoke<AskAiModel[]>("ask_ai_list_models");
+    } catch (err) {
+      askAiModels = [];
+      askAiModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      askAiModelsLoading = false;
     }
   }
 
@@ -1343,6 +1550,46 @@
     return `Expires ${formatGrantTime(grant.expiresAtUnixMs)}`;
   }
 
+  function formatPiRuntimeSource(source: PiRuntimeStatus["source"]): string {
+    if (source === "managed") return "managed";
+    if (source === "path") return "PATH";
+    if (source === "unmanaged") return "configured path";
+    return "not found";
+  }
+
+  function formatPiRuntimeReason(status: PiRuntimeStatus): string {
+    if (status.ready) return "ready";
+    if (status.reason === "pi_not_found") return "pi was not found in PATH";
+    if (status.reason === "pi_version_unavailable") return "pi --version did not return a usable version";
+    if (status.reason === "pi_version_too_old") return `pi ${status.version ?? "unknown"} is older than ${status.minimumVersion}`;
+    if (status.reason === "pi_auth_missing") return `PI auth is missing at ${status.authJsonPath}`;
+    if (status.reason === "pi_auth_empty") return `PI auth has no providers at ${status.authJsonPath}`;
+    if (status.reason === "pi_auth_malformed") return `PI auth is not valid JSON at ${status.authJsonPath}`;
+    if (status.reason === "pi_auth_misconfigured") return `PI auth has no configured provider at ${status.authJsonPath}`;
+    return "PI is not ready";
+  }
+
+  function piProviderConfigured(status: PiRuntimeStatus | null): boolean {
+    return status?.providerConfigured ?? status?.authJsonProviderConfigured ?? false;
+  }
+
+  function piProviderCount(status: PiRuntimeStatus | null): number {
+    return status?.providerCount ?? status?.authJsonProviderCount ?? 0;
+  }
+
+  function askAiStatusLabel(status: PiRuntimeStatus | null): string {
+    return draftAskAiEnabled && status?.ready ? "Available" : "Unavailable";
+  }
+
+  function askAiStatusDetail(status: PiRuntimeStatus | null): string {
+    if (!draftAskAiEnabled) return "Ask AI is off. Enable it here after PI is set up.";
+    if (status === null) return "Checking PI setup.";
+    if (status.ready) return `PI ready via ${formatPiRuntimeSource(status.source)}${status.executablePath ? ` at ${status.executablePath}` : ""}.`;
+    if (!status.versionOk) return formatPiRuntimeReason(status);
+    if (!piProviderConfigured(status)) return `Set up a PI provider in ${status.authJsonPath}; no credentials are collected by Mnema.`;
+    return formatPiRuntimeReason(status);
+  }
+
   async function setBrowserUrlMode(mode: string) {
     if (mode === draftBrowserUrlMode) return;
     if (mode === "full") {
@@ -1363,6 +1610,7 @@
   ): unknown {
     switch (domain) {
       case "capture_sources":
+
         return {
           captureScreen: s.captureScreen,
           captureMicrophone: s.captureMicrophone,
@@ -1419,6 +1667,12 @@
         return {
           developerOptionsEnabled: s.developerOptionsEnabled ?? false,
           nativeCaptureDebugLoggingEnabled: s.nativeCaptureDebugLoggingEnabled ?? false,
+        };
+      case "access":
+        return {
+          askAiEnabled: s.access?.askAiEnabled ?? false,
+          askAiMaxToolCalls: s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
+          askAiModel: s.access?.askAiModel ?? "",
         };
     }
   }
@@ -2771,6 +3025,7 @@
     void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
     loadBrokerGrants();
     loadMnemaCliStatus();
+    loadPiRuntimeStatus();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -3366,55 +3621,19 @@
               {/if}
             {/if}
           </div>
-          <section class="access-guide" aria-label="How CLI Access works">
-            <div class="access-guide__lead">
-              <h3>For AI agents and local tools</h3>
-              <p>
-                Agents use the same <code>mnema</code> CLI path as humans. Known clients such as Codex, Claude Code,
-                Cursor, OpenCode, and PI can be labeled automatically, or a tool can declare a label with
-                <code>--client</code> or <code>MNEMA_CLI_CLIENT</code>.
-              </p>
-            </div>
-            <div class="access-guide__grid">
-              <article class="access-guide__item">
-                <span class="access-guide__kicker">Access</span>
-                <p>
-                  First use opens a Mnema approval prompt. Grants are read-only, redacted, time-bounded, and
-                  revocable from this screen.
-                </p>
-              </article>
-              <article class="access-guide__item">
-                <span class="access-guide__kicker">CLI</span>
-                <p>
-                  Search returns redacted snippets and opaque result IDs. <code>show-text</code> expands an ID, and
-                  <code>open</code> brings the result back into Mnema.
-                </p>
-              </article>
-              <article class="access-guide__item">
-                <span class="access-guide__kicker">Skill</span>
-                <p>
-                  The <code>mnema-data</code> agent skill is the supported wrapper for agent workflows. It should use
-                  CLI Access, not direct SQLite or media-file reads.
-                </p>
-              </article>
-            </div>
-            <div class="access-guide__commands" aria-label="Common commands">
-              <code>mnema access request --scope last-day --duration 24h</code>
-              <code>mnema search --query "project notes" --format json</code>
-              <code>mnema show-text &lt;result-id&gt;</code>
-              <code>mnema open &lt;result-id&gt;</code>
-            </div>
-          </section>
           <div class="row-actions">
             <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
               {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
             </button>
-            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}>
+            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading || piRuntimeLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); void loadPiRuntimeStatus(); }}>
               Refresh
             </button>
           </div>
           {#if mnemaCliError}
             <p class="error-text">{mnemaCliError}</p>
+          {/if}
+          {#if piRuntimeError}
+            <p class="error-text">{piRuntimeError}</p>
           {/if}
           {#if brokerGrantError}
             <p class="error-text">{brokerGrantError}</p>
@@ -3449,6 +3668,149 @@
           {:else}
             <p class="group-hint">No CLI Access grants yet. Tools you approve will appear here.</p>
           {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Ask AI</span>
+        <div class="settings-stack">
+          <Switch
+            bind:checked={draftAskAiEnabled}
+            label="Enable Ask AI"
+            description="Allow Mnema to send your questions plus redacted capture context to your configured PI provider. Off by default."
+          />
+          <div class="privacy-disclosure">
+            <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
+            <p>When enabled, questions and the redacted context needed to answer them are sent through PI to your configured provider/cloud. Mnema never asks for or stores provider credentials here.</p>
+          </div>
+          <Switch
+            bind:checked={draftAskAiLimitToolCalls}
+            label="Limit tool calls per question"
+            description="Cap how many follow-up searches Ask AI can run for one question. Off means no cap."
+          />
+          {#if draftAskAiLimitToolCalls}
+            <label class="field-label" for="ask-ai-max-tool-calls">Max tool calls per question</label>
+            <input
+              id="ask-ai-max-tool-calls"
+              class="text-input"
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+              bind:value={draftAskAiMaxToolCalls}
+            />
+            <p class="group-hint">
+              Each tool call is one brokered query into your redacted capture history. A lower cap bounds how much a single answer can pull; the default is {ASK_AI_DEFAULT_TOOL_CALL_LIMIT}.
+            </p>
+          {:else}
+            <p class="group-hint group-hint--warn">
+              No cap: a single question can issue unlimited brokered queries into your retained capture history.
+            </p>
+          {/if}
+          <label class="field-label" for="ask-ai-model">Quick Recall model</label>
+          <div class="model-combobox">
+            <input
+              id="ask-ai-model"
+              class="text-input model-combobox__input"
+              role="combobox"
+              aria-expanded={askAiModelOpen}
+              aria-controls="ask-ai-model-list"
+              aria-autocomplete="list"
+              autocomplete="off"
+              placeholder="Use PI default"
+              disabled={!draftAskAiEnabled}
+              bind:this={askAiModelInputEl}
+              bind:value={askAiModelQuery}
+              oninput={() => { openAskAiModelMenu(); askAiModelHighlight = 0; }}
+              onfocus={(event) => { openAskAiModelMenu(); event.currentTarget.select(); }}
+              onblur={closeAskAiModelSoon}
+              onkeydown={handleAskAiModelKeydown}
+            />
+            {#if askAiModelOpen && draftAskAiEnabled}
+              <Portal>
+                <div
+                  class="model-combobox__panel"
+                  id="ask-ai-model-list"
+                  role="listbox"
+                  style={askAiModelPanelStyle}
+                >
+                  {#if askAiModelsLoading}
+                    <span class="model-combobox__empty">Loading models from PI…</span>
+                  {:else if askAiModelFiltered.length > 0}
+                    {#each askAiModelFiltered as entry, index (entry.value)}
+                      <button
+                        class="model-combobox__option"
+                        class:model-combobox__option--active={index === askAiModelHighlight}
+                        type="button"
+                        role="option"
+                        aria-selected={entry.value === draftAskAiModel}
+                        onmousedown={(event) => event.preventDefault()}
+                        onmouseenter={() => { askAiModelHighlight = index; }}
+                        onclick={() => commitAskAiModel(entry.value)}
+                      >
+                        <span class="model-combobox__option-main">
+                          <span class="model-combobox__name">{entry.label}</span>
+                          {#if entry.sublabel}
+                            <span class="model-combobox__sub">{entry.sublabel}</span>
+                          {/if}
+                        </span>
+                        {#if entry.value === draftAskAiModel}
+                          <span class="model-combobox__check" aria-hidden="true">✓</span>
+                        {/if}
+                      </button>
+                    {/each}
+                  {:else}
+                    <span class="model-combobox__empty">
+                      {askAiModelQuery.trim().includes(":")
+                        ? `Press Enter to use "${askAiModelQuery.trim()}"`
+                        : "No matching models"}
+                    </span>
+                  {/if}
+                </div>
+              </Portal>
+            {/if}
+          </div>
+          {#if askAiModelsError}
+            <p class="group-hint group-hint--warn">
+              Could not list PI models, so only the PI default is guaranteed. Set up PI and refresh status — you can still type a model id as provider:id.
+            </p>
+          {:else}
+            <p class="group-hint">
+              Type to filter the models from your PI runtime. "Use PI default" follows the model configured in PI.
+            </p>
+          {/if}
+          <div class="model-status" class:model-status--available={draftAskAiEnabled && piRuntimeStatus?.ready}>
+            <div>
+              <div class="model-status__title">Ask AI {askAiStatusLabel(piRuntimeStatus)}</div>
+              <div class="model-status__meta">{askAiStatusDetail(piRuntimeStatus)}</div>
+            </div>
+            <span class="model-status__pill">{draftAskAiEnabled && piRuntimeStatus?.ready ? "available" : "unavailable"}</span>
+          </div>
+          {#if piRuntimeStatus}
+            <p class="group-hint">
+              PI: {piRuntimeStatus.ready
+                ? `ready via ${formatPiRuntimeSource(piRuntimeStatus.source)}${piRuntimeStatus.executablePath ? ` at ${piRuntimeStatus.executablePath}` : ""}`
+                : formatPiRuntimeReason(piRuntimeStatus)}
+            </p>
+            <p class="group-hint">
+              PI auth: {piRuntimeStatus.authJsonExists ? `found at ${piRuntimeStatus.authJsonPath}` : `not found at ${piRuntimeStatus.authJsonPath}`}.
+              Providers configured: {piProviderCount(piRuntimeStatus)}.
+            </p>
+            {#if draftAskAiEnabled && !piRuntimeStatus.ready}
+              <p class="group-hint group-hint--warn">Set up PI and configure a provider in PI auth, then refresh status. Do not enter provider credentials in Mnema.</p>
+            {/if}
+          {:else if piRuntimeLoading}
+            <p class="group-hint">Checking PI setup…</p>
+          {:else}
+            <p class="group-hint group-hint--warn">Refresh PI status before enabling Ask AI.</p>
+          {/if}
+          <div class="row-actions">
+            <button class="btn btn--ghost btn--sm" type="button" disabled={piRuntimeLoading} onclick={loadPiRuntimeStatus}>
+              {piRuntimeLoading ? "Checking" : "Refresh PI status"}
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -6490,6 +6852,93 @@
     color: var(--app-text-muted);
   }
 
+  /* Editable, filterable model picker (combobox): a text input over a floating
+     listbox panel, matching the App Privacy Exclusion combobox idiom. */
+  .model-combobox {
+    position: relative;
+    min-width: 0;
+  }
+
+  .model-combobox__input {
+    width: 100%;
+  }
+
+  /* Positioning (position/top/left/width) is supplied inline because the panel
+     is portaled to <body>; only its appearance lives here. */
+  .model-combobox__panel {
+    z-index: 9999;
+    display: flex;
+    max-height: 260px;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-bg) 34%, transparent);
+  }
+
+  .model-combobox__option {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .model-combobox__option--active,
+  .model-combobox__option:hover {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+  }
+
+  .model-combobox__option-main {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .model-combobox__name {
+    overflow: hidden;
+    color: var(--app-text-strong);
+    font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .model-combobox__sub {
+    overflow: hidden;
+    color: var(--app-text-faint);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .model-combobox__check {
+    flex: 0 0 auto;
+    color: var(--app-accent);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .model-combobox__empty {
+    padding: 10px;
+    color: var(--app-text-faint);
+    font-size: 11px;
+    font-style: italic;
+  }
+
   .model-status {
     display: flex;
     align-items: center;
@@ -7836,91 +8285,6 @@
     color: var(--app-text-muted);
     font-size: 11px;
     line-height: 1.5;
-  }
-
-  .access-guide {
-    display: grid;
-    gap: 12px;
-    padding: 12px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--app-surface-subtle) 82%, var(--app-surface));
-  }
-
-  .access-guide__lead {
-    display: grid;
-    gap: 5px;
-  }
-
-  .access-guide__lead h3 {
-    margin: 0;
-    color: var(--app-text);
-    font-size: 13px;
-    font-weight: 750;
-    line-height: 1.25;
-  }
-
-  .access-guide__lead p,
-  .access-guide__item p {
-    margin: 0;
-    color: var(--app-text-muted);
-    font-size: 11px;
-    line-height: 1.55;
-  }
-
-  .access-guide code {
-    color: var(--app-text);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
-    font-size: 10.5px;
-  }
-
-  .access-guide__grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-  }
-
-  .access-guide__item {
-    display: grid;
-    align-content: start;
-    gap: 5px;
-    min-width: 0;
-    padding: 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    background: var(--app-surface);
-  }
-
-  .access-guide__kicker {
-    color: var(--app-text);
-    font-size: 10px;
-    font-weight: 750;
-    line-height: 1.2;
-    text-transform: uppercase;
-  }
-
-  .access-guide__commands {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
-  }
-
-  .access-guide__commands code {
-    min-width: 0;
-    overflow: hidden;
-    padding: 7px 8px;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    background: var(--app-surface);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  @media (max-width: 760px) {
-    .access-guide__grid,
-    .access-guide__commands {
-      grid-template-columns: 1fr;
-    }
   }
 
   .agent-access-callout {
