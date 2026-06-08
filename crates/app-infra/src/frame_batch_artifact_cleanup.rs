@@ -205,6 +205,14 @@ mod tests {
         }
     }
 
+    /// Visible-segment file name for the current platform's container
+    /// (`.mov` on macOS, `.mp4` on Windows). Cleanup keys off the sibling the
+    /// resolver derives, so fixtures must use the matching extension on
+    /// whichever platform CI runs.
+    fn visible_segment_file_name(stem: &str) -> String {
+        format!("{stem}.{}", capture_runtime::screen_segment_extension())
+    }
+
     fn test_frame(file_path: PathBuf) -> Frame {
         Frame {
             id: 1,
@@ -316,7 +324,7 @@ mod tests {
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
         fs::write(
-            recordings_day_dir.join("session-x-segment-0001.mov"),
+            recordings_day_dir.join(visible_segment_file_name("session-x-segment-0001")),
             b"fake mov",
         )
         .expect("visible segment should be written");
@@ -341,7 +349,7 @@ mod tests {
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
         fs::write(
-            recordings_day_dir.join("session-z-segment-0001.mov"),
+            recordings_day_dir.join(visible_segment_file_name("session-z-segment-0001")),
             b"fake mov",
         )
         .expect("visible segment should be written");
@@ -361,7 +369,7 @@ mod tests {
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
         fs::write(
-            recordings_day_dir.join("session-audio-sep-segment-0001.mov"),
+            recordings_day_dir.join(visible_segment_file_name("session-audio-sep-segment-0001")),
             b"fake mov",
         )
         .expect("visible segment should be written");
@@ -397,7 +405,7 @@ mod tests {
             segment_dir
                 .parent()
                 .expect("segment dir should have a date parent")
-                .join("session-y-segment-0001.mov"),
+                .join(visible_segment_file_name("session-y-segment-0001")),
             b"fake mov",
         )
         .expect("visible segment should be written");
@@ -426,7 +434,7 @@ mod tests {
             segment_dir
                 .parent()
                 .expect("segment dir should have a date parent")
-                .join("session-shared-segment-0001.mov"),
+                .join(visible_segment_file_name("session-shared-segment-0001")),
             b"fake mov",
         )
         .expect("visible segment should be written");
@@ -470,7 +478,7 @@ mod tests {
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
         fs::write(
-            recordings_day_dir.join("session-preview-segment-0001.mov"),
+            recordings_day_dir.join(visible_segment_file_name("session-preview-segment-0001")),
             b"fake mov",
         )
         .expect("visible segment should be written");
@@ -493,7 +501,7 @@ mod tests {
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
         fs::write(
-            recordings_day_dir.join("session-preview-segment-0001.mov"),
+            recordings_day_dir.join(visible_segment_file_name("session-preview-segment-0001")),
             b"fake mov",
         )
         .expect("visible segment should be written");
@@ -519,7 +527,7 @@ mod tests {
             segment_dir
                 .parent()
                 .expect("segment dir should have a date parent")
-                .join("session-out-of-tree-segment-0001.mov"),
+                .join(visible_segment_file_name("session-out-of-tree-segment-0001")),
             b"fake mov",
         )
         .expect("visible segment should be written");

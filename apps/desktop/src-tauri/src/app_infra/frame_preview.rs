@@ -1373,7 +1373,14 @@ fn read_segment_frame_preview_or_return_video_error(
     )))
 }
 
-pub(super) fn mov_file_appears_openable_for_preview(video_path: &Path) -> std::io::Result<bool> {
+/// Byte-level openability probe for a visible screen segment used as a preview
+/// source. Both the macOS `.mov` and Windows `.mp4` containers are ISO-BMFF and
+/// carry a `moov` atom once finalized, so this check is container-agnostic — the
+/// per-platform extension is resolved upstream by
+/// `HiddenSegmentWorkspacePaths` (`capture_runtime::screen_segment_extension`).
+pub(super) fn segment_video_appears_openable_for_preview(
+    video_path: &Path,
+) -> std::io::Result<bool> {
     const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
 
     let mut file = fs::File::open(video_path)?;
@@ -2019,7 +2026,7 @@ pub(super) async fn get_frame_preview_inner(
         );
     }
 
-    if !mov_file_appears_openable_for_preview(&segment_paths.video_path)? {
+    if !segment_video_appears_openable_for_preview(&segment_paths.video_path)? {
         return read_segment_frame_preview_or_return_video_error(
             &frame,
             infra,
@@ -2306,7 +2313,7 @@ async fn prepare_frame_scrub_preview(
     if fs::metadata(&segment_paths.video_path)
         .map(|metadata| metadata.len() == 0)
         .unwrap_or(true)
-        || !mov_file_appears_openable_for_preview(&segment_paths.video_path).unwrap_or(false)
+        || !segment_video_appears_openable_for_preview(&segment_paths.video_path).unwrap_or(false)
     {
         return Ok(PreparedFrameScrubPreview::Ready(
             FrameScrubPreviewResultDto {
@@ -3038,7 +3045,7 @@ fn scrub_preview_generation_job_for_video_path(
         || fs::metadata(&video_path)
             .map(|metadata| metadata.len() == 0)
             .unwrap_or(true)
-        || !mov_file_appears_openable_for_preview(&video_path).unwrap_or(false)
+        || !segment_video_appears_openable_for_preview(&video_path).unwrap_or(false)
     {
         return Ok(None);
     }
@@ -3178,7 +3185,7 @@ pub async fn get_scrub_preview_availability(
             || fs::metadata(&video_path)
                 .map(|metadata| metadata.len() == 0)
                 .unwrap_or(true)
-            || !mov_file_appears_openable_for_preview(&video_path).unwrap_or(false)
+            || !segment_video_appears_openable_for_preview(&video_path).unwrap_or(false)
         {
             intervals.push(ScrubPreviewAvailabilityIntervalDto {
                 segment_cache_key,

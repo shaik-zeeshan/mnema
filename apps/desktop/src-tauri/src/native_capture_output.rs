@@ -1,11 +1,11 @@
 use capture_types::{CaptureErrorResponse, CaptureOutputFiles, CaptureSources};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::collections::BTreeSet;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::fs::File;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::io::{Read, Seek, SeekFrom};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::path::Path;
 
 pub(crate) fn set_current_microphone_output_file(
@@ -79,7 +79,15 @@ fn microphone_output_files(output_files: &CaptureOutputFiles) -> Vec<&str> {
     }
 }
 
-#[cfg(target_os = "macos")]
+/// Byte-level openability probe for a finalized visible screen segment.
+///
+/// Both the macOS `.mov` (QuickTime) and Windows `.mp4` (Media Foundation)
+/// containers are ISO-BMFF and carry a `moov` atom once finalized; an
+/// in-flight, truncated, or otherwise unopenable file is missing it. The check
+/// is purely on bytes, so it validates `.mp4` exactly as it validates `.mov` —
+/// the only per-platform difference is the extension used to *find* the file,
+/// resolved by `capture_runtime::screen_segment_extension()` upstream.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn screen_output_appears_openable(path: &str) -> bool {
     const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
 
@@ -119,7 +127,7 @@ fn screen_output_appears_openable(path: &str) -> bool {
     suffix.windows(4).any(|window| window == b"moov")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sync_finalized_screen_output_file(
     output_files: &mut CaptureOutputFiles,
     recording_file: Option<&str>,
@@ -339,7 +347,7 @@ fn sync_finalized_system_audio_output_files(
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn audio_output_files_are_empty(output_files: &CaptureOutputFiles) -> bool {
     output_files.microphone_file.is_none()
         && output_files.microphone_files.is_empty()
@@ -347,7 +355,7 @@ fn audio_output_files_are_empty(output_files: &CaptureOutputFiles) -> bool {
         && output_files.system_audio_files.is_empty()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn missing_requested_screen_output_failure(recording_file: Option<&str>) -> String {
     let path_detail = recording_file
         .map(|path| format!(" at {path}"))
@@ -555,10 +563,19 @@ fn finalize_windows_audio_outputs_with_duration_validator(
 ///
 /// Windows writes the final `.m4a` directly via Media Foundation, so there is no
 /// source→`.m4a` conversion or video-only strip step (those are macOS-only). The
-/// only finalization work is validating produced audio outputs through the
+/// finalization work is (1) validating the produced audio outputs through the
 /// shared injectable validator seam — `MF_PD_DURATION > 0` via the MF Source
-/// Reader probe — and dropping any unusable files. The screen `.mp4` is committed
-/// as captured.
+/// Reader probe — and dropping any unusable files, and (2) validating the
+/// finalized screen `.mp4` is openable.
+///
+/// The screen-output validation mirrors macOS: a requested screen segment whose
+/// `.mp4` is missing or unopenable (no `moov` atom — e.g. a sink writer that
+/// crashed mid-segment) is rejected exactly as an unopenable macOS `.mov` is.
+/// `.mp4` and `.mov` are both ISO-BMFF, so the byte-level `moov` probe in
+/// [`screen_output_appears_openable`] is container-agnostic; the only thing that
+/// made this Windows-blind before was that the screen path was never validated
+/// here at all. When valid audio was captured, the audio-only segment is
+/// preserved instead of discarding the whole segment, matching macOS.
 #[cfg(target_os = "windows")]
 pub(crate) fn finalize_capture_outputs(
     output_files: Option<&mut CaptureOutputFiles>,
@@ -567,20 +584,50 @@ pub(crate) fn finalize_capture_outputs(
     system_audio_recording_file: Option<&str>,
     requested_sources: Option<&CaptureSources>,
 ) -> Result<(), CaptureErrorResponse> {
-    let _ = (
-        recording_file,
-        microphone_recording_file,
-        system_audio_recording_file,
-        requested_sources,
-    );
+    let _ = (microphone_recording_file, system_audio_recording_file);
     let Some(output_files) = output_files else {
         return Ok(());
     };
 
-    finalize_windows_audio_outputs_with_duration_validator(
+    let mut failures: Vec<String> = Vec::new();
+    let has_screen_output = sync_finalized_screen_output_file(output_files, recording_file);
+    if requested_sources.is_some_and(|sources| sources.screen) && !has_screen_output {
+        failures.push(missing_requested_screen_output_failure(recording_file));
+    }
+
+    // Validate/drop unusable audio outputs. `failures` only carries the
+    // missing-screen failure (audio problems route through `audio_failures`),
+    // so `failures.len() == 1` with empty `audio_failures` means the screen
+    // output is the lone problem — the same invariant the macOS path relies on.
+    let audio_failures = match finalize_windows_audio_outputs_with_duration_validator(
         output_files,
         audio_file_has_positive_duration,
-    )
+    ) {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![error.message],
+    };
+
+    // When the only failure is a missing/unopenable screen segment but usable
+    // audio was captured, drop the unusable screen recording and commit the
+    // audio-only segment rather than discarding everything. Mirrors the macOS
+    // `preserve_audio_despite_missing_screen` path.
+    let preserve_audio_despite_missing_screen = requested_sources
+        .is_some_and(|sources| sources.screen && (sources.microphone || sources.system_audio))
+        && !has_screen_output
+        && audio_failures.is_empty()
+        && failures.len() == 1
+        && !audio_output_files_are_empty(output_files);
+
+    if preserve_audio_despite_missing_screen {
+        if let Some(recording_file) = recording_file {
+            let mut discarded_failures = Vec::new();
+            maybe_remove_intermediate_file(recording_file, "screen", &mut discarded_failures);
+        }
+        return capture_writers::aggregate_output_processing_failures(Vec::new());
+    }
+
+    failures.extend(audio_failures);
+    capture_writers::aggregate_output_processing_failures(failures)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -815,6 +862,89 @@ mod tests {
                 "system-audio-rotated-2.m4a".to_string(),
             ]
         );
+    }
+
+    // A finalized `.mp4` carries a `moov` atom, exactly like a finalized `.mov`.
+    #[cfg(target_os = "windows")]
+    fn write_openable_screen_mp4(path: &Path) {
+        fs::write(path, b"\0\0\0\x14ftypisom\0\0\0\0isom\0\0\0\x10moovtrak")
+            .expect("screen artifact should exist");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_finalization_commits_openable_mp4_screen_segment() {
+        let dir = TestDir::new("windows-openable-mp4");
+        let recording_file = dir.path.join("screen.mp4");
+        write_openable_screen_mp4(&recording_file);
+        let recording_file = recording_file.to_string_lossy().to_string();
+        let requested_sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        };
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some(recording_file.clone()),
+            screen_files: vec![recording_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+
+        finalize_capture_outputs(
+            Some(&mut output_files),
+            Some(&recording_file),
+            None,
+            None,
+            Some(&requested_sources),
+        )
+        .expect("openable mp4 screen segment should finalize");
+
+        assert_eq!(output_files.screen_file, Some(recording_file.clone()));
+        assert_eq!(output_files.screen_files, vec![recording_file.clone()]);
+        assert!(Path::new(&recording_file).exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_finalization_rejects_existing_but_unopenable_mp4_screen_segment() {
+        let dir = TestDir::new("windows-unopenable-mp4");
+        let recording_file = dir.path.join("screen.mp4");
+        // Present on disk but missing the `moov` atom — e.g. the MF sink writer
+        // crashed mid-segment. Must be rejected exactly like an unopenable `.mov`.
+        fs::write(&recording_file, b"\0\0\0\x14ftypisom\0\0\0\0isom\0\0\0\x10mdatjunk")
+            .expect("unopenable screen artifact should exist");
+        let recording_file = recording_file.to_string_lossy().to_string();
+        let requested_sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        };
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some(recording_file.clone()),
+            screen_files: vec![recording_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+
+        let error = finalize_capture_outputs(
+            Some(&mut output_files),
+            Some(&recording_file),
+            None,
+            None,
+            Some(&requested_sources),
+        )
+        .expect_err("unopenable mp4 screen segment should be rejected");
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(error
+            .message
+            .contains("screen output missing: expected screen recording file"));
+        assert_eq!(output_files.screen_file, None);
+        assert!(output_files.screen_files.is_empty());
     }
 
     #[cfg(target_os = "macos")]

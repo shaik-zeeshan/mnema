@@ -5831,7 +5831,10 @@ mod tests {
         );
         assert_eq!(
             resolved.video_path,
-            PathBuf::from("/tmp/2026/04/12/session-abc-segment-0004.mov")
+            PathBuf::from(format!(
+                "/tmp/2026/04/12/session-abc-segment-0004.{}",
+                capture_runtime::screen_segment_extension()
+            ))
         );
     }
 
@@ -6553,7 +6556,7 @@ mod tests {
     }
 
     #[test]
-    fn mov_file_appears_openable_for_preview_requires_moov_atom() {
+    fn segment_video_appears_openable_for_preview_requires_moov_atom() {
         let dir = TestDir::new("frame-preview-moov-check");
         let missing_moov_path = dir.path().join("missing-moov.mov");
         let with_moov_path = dir.path().join("with-moov.mov");
@@ -6563,9 +6566,9 @@ mod tests {
         fs::write(&with_moov_path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  moov")
             .expect("mov fixture with moov should be written");
 
-        assert!(!mov_file_appears_openable_for_preview(&missing_moov_path)
+        assert!(!segment_video_appears_openable_for_preview(&missing_moov_path)
             .expect("missing-moov fixture should read"));
-        assert!(mov_file_appears_openable_for_preview(&with_moov_path)
+        assert!(segment_video_appears_openable_for_preview(&with_moov_path)
             .expect("with-moov fixture should read"));
     }
 
