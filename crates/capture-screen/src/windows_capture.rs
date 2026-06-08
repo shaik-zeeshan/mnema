@@ -4,9 +4,11 @@
 //! **primary monitor** with Windows Graphics Capture (WGC) and encode it to a
 //! single playable H.264 `.mp4` via the Media Foundation `IMFSinkWriter`.
 //!
-//! Scope is deliberately narrow: primary-monitor screen video, segment rotation,
-//! and low-cadence frame export. Resolution/bitrate honoring, system audio, and
-//! privacy filters are still out of scope.
+//! Scope: primary-monitor screen video with segment rotation, output
+//! resolution/bitrate honoring, low-cadence frame export, and an inline
+//! frame-index sidecar written at segment finalization (in the same on-disk
+//! format the macOS path emits). System audio and privacy filters remain out of
+//! scope on this module.
 //!
 //! ## Threading model
 //!
@@ -71,10 +73,12 @@ use crate::frame_schedule::{
 };
 use crate::{
     captured_frame_equivalence_from_interleaved_bytes, captured_frame_equivalence_proofs_match,
-    resolve_stream_resolution, screen_frame_artifact_path, CapturedFrameEquivalence,
-    CapturedFrameEquivalenceOutcome, PrivacyFilterApplyOutcome, RotatedCaptureOutputs,
-    ScreenCaptureSession, ScreenCaptureSessionOptions, ScreenCaptureSources, ScreenFrameArtifact,
-    ScreenFrameArtifactHandler, ScreenFrameExportConfig, StartedCaptureSession,
+    encode_screen_segment_frame_index, resolve_stream_resolution, screen_frame_artifact_path,
+    screen_segment_frame_index_offsets_are_monotonic, screen_segment_frame_index_path,
+    CapturedFrameEquivalence, CapturedFrameEquivalenceOutcome, PrivacyFilterApplyOutcome,
+    RotatedCaptureOutputs, ScreenCaptureSession, ScreenCaptureSessionOptions, ScreenCaptureSources,
+    ScreenFrameArtifact, ScreenFrameArtifactHandler, ScreenFrameExportConfig, ScreenSegmentFrameIndex,
+    ScreenSegmentFrameIndexEntry, StartedCaptureSession, SCREEN_SEGMENT_FRAME_INDEX_VERSION,
 };
 use capture_types::CaptureErrorResponse;
 
@@ -569,6 +573,10 @@ struct CaptureEngine {
     frame_pool_size: SizeInt32,
     session: GraphicsCaptureSession,
     writer: Option<SinkWriter>,
+    /// Filesystem path of the video the open writer is producing. The frame-index
+    /// sidecar is written alongside it (via [`screen_segment_frame_index_path`])
+    /// when that segment is finalized.
+    current_output_path: PathBuf,
     staging: Option<ID3D11Texture2D>,
     frame_export: Option<WindowsFrameExportRuntime>,
     screen_activity: WindowsScreenActivityRuntime,
@@ -612,6 +620,14 @@ struct WindowsFrameExportRuntime {
     staging: Option<ID3D11Texture2D>,
     rgb: Vec<u8>,
     rgba_for_equivalence: Vec<u8>,
+    /// Frame-index entries accumulated for the open segment.
+    ///
+    /// Unlike macOS (which reconciles offsets post-hoc from the finalized video
+    /// via `AVAssetReader`), the Windows capture thread already knows each
+    /// exported frame's exact segment-relative video offset at write time, so
+    /// entries are pushed live here and the sidecar is serialized at segment
+    /// finalization via [`persist_windows_segment_frame_index`].
+    segment_frame_index_entries: Vec<ScreenSegmentFrameIndexEntry>,
 }
 
 struct WindowsScreenActivityRuntime {
@@ -639,6 +655,7 @@ impl WindowsFrameExportRuntime {
         self.artifact_dir = windows_frame_artifact_dir(segment_dir)?;
         self.last_exported_at = None;
         self.next_frame_index = 0;
+        self.segment_frame_index_entries.clear();
         Ok(())
     }
 }
@@ -663,6 +680,7 @@ fn windows_frame_export_runtime(
         staging: None,
         rgb: vec![0u8; (width as usize) * (height as usize) * 3],
         rgba_for_equivalence: vec![0u8; (width as usize) * (height as usize) * 4],
+        segment_frame_index_entries: Vec::new(),
     }))
 }
 
@@ -784,6 +802,7 @@ impl CaptureEngine {
                 frame_pool_size: size,
                 session,
                 writer: Some(writer),
+                current_output_path: config.output_path.clone(),
                 staging: None,
                 frame_export: windows_frame_export_runtime(
                     &config.segment_dir,
@@ -874,7 +893,7 @@ impl CaptureEngine {
         }
 
         let exported_equivalence = if should_export_frame {
-            match self.export_frame_artifact(&texture, now_unix_ms()) {
+            match self.export_frame_artifact(&texture, now_unix_ms(), relative_ticks) {
                 Ok(equivalence) => Some(equivalence),
                 Err(error) => {
                     capture_runtime::debug_log!(
@@ -1031,6 +1050,7 @@ impl CaptureEngine {
         &mut self,
         texture: &ID3D11Texture2D,
         captured_at_unix_ms: u64,
+        relative_ticks: i64,
     ) -> Result<CapturedFrameEquivalenceOutcome, CaptureErrorResponse> {
         let Some(runtime) = self.frame_export.as_mut() else {
             return Ok(CapturedFrameEquivalenceOutcome::quarantined(
@@ -1043,6 +1063,20 @@ impl CaptureEngine {
         runtime.next_frame_index = runtime.next_frame_index.saturating_add(1);
         let file_path =
             screen_frame_artifact_path(&runtime.artifact_dir, frame_index, captured_at_unix_ms);
+
+        // The segment timeline rebases the first kept frame to tick zero, so a
+        // frame's segment-relative video offset is exactly its `relative_ticks`
+        // converted to milliseconds — the same finalized-video-relative offset
+        // the macOS path derives post-hoc from the encoded sample PTS. Exported
+        // frames are processed in increasing tick order, keeping offsets
+        // monotonic by construction.
+        runtime
+            .segment_frame_index_entries
+            .push(ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms,
+                frame_index,
+                video_offset_ms: ticks_to_ms(relative_ticks),
+            });
 
         let captured_frame_equivalence = read_scaled_frame_equivalence(
             &self.device,
@@ -1206,6 +1240,7 @@ impl CaptureEngine {
                     .Finalize()
                     .map_err(|e| win_error("IMFSinkWriter.Finalize (rotate) failed", &e))?;
             }
+            self.persist_segment_frame_index();
         }
 
         let writer = create_sink_writer(
@@ -1216,6 +1251,7 @@ impl CaptureEngine {
             self.video_bitrate_bps,
         )?;
         self.writer = Some(writer);
+        self.current_output_path = output_path.to_path_buf();
         self.timeline.reset();
         self.last_kept_ticks = None;
         self.pending_frame = None;
@@ -1237,8 +1273,35 @@ impl CaptureEngine {
                     .Finalize()
                     .map_err(|e| win_error("IMFSinkWriter.Finalize (stop) failed", &e))?;
             }
+            self.persist_segment_frame_index();
         }
         Ok(())
+    }
+
+    /// Serialize the open segment's accumulated frame-index entries to a binary
+    /// sidecar next to the finalized video.
+    ///
+    /// Called once per segment, immediately after the writer is `Finalize`d (in
+    /// [`Self::rotate`], [`Self::stop`], and [`Self::shutdown`]). A segment with
+    /// no exported frames writes no sidecar, which downstream consumers treat as
+    /// an exact-preview-only, never-scrub-eligible degradation rather than an
+    /// error. Sidecar I/O failures are logged but never abort finalization — a
+    /// missing sidecar degrades the same way.
+    fn persist_segment_frame_index(&mut self) {
+        let Some(frame_export) = self.frame_export.as_ref() else {
+            return;
+        };
+        if let Err(error) = persist_windows_segment_frame_index(
+            &self.current_output_path,
+            &frame_export.segment_frame_index_entries,
+        ) {
+            capture_runtime::debug_log!(
+                "[capture-screen] failed to persist Windows screen frame index for {}: [{}] {}",
+                self.current_output_path.display(),
+                error.code,
+                error.message
+            );
+        }
     }
 
     /// Close the WGC session and frame pool. Safe to call more than once.
@@ -1261,6 +1324,7 @@ impl CaptureEngine {
             unsafe {
                 let _ = writer.writer.Finalize();
             }
+            self.persist_segment_frame_index();
         }
     }
 }
@@ -1771,6 +1835,62 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Convert a non-negative 100ns-tick offset to whole milliseconds (rounding to
+/// nearest), clamped at zero so a clamped-to-zero segment-relative time maps to
+/// offset 0.
+fn ticks_to_ms(ticks: i64) -> u64 {
+    let ms = (ticks.max(0) as i128 * 1_000 + TICKS_PER_SECOND as i128 / 2) / TICKS_PER_SECOND as i128;
+    u64::try_from(ms).unwrap_or(0)
+}
+
+/// Assemble the in-memory frame index for a finalized Windows segment.
+///
+/// The entries already carry their finalized-video-relative `video_offset_ms`
+/// (the Windows capture thread knows each frame's exact segment-relative offset
+/// at write time), so this just stamps the shared format version and reuses the
+/// macOS-shared monotonicity check rather than re-deriving offsets from the
+/// encoded video.
+fn build_windows_segment_frame_index(
+    entries: &[ScreenSegmentFrameIndexEntry],
+) -> ScreenSegmentFrameIndex {
+    let index = ScreenSegmentFrameIndex {
+        version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+        entries: entries.to_vec(),
+    };
+    if !screen_segment_frame_index_offsets_are_monotonic(&index.entries) {
+        capture_runtime::debug_log!(
+            "[capture-screen] Windows screen frame index offsets regressed ({} entries)",
+            index.entries.len()
+        );
+    }
+    index
+}
+
+/// Serialize the segment's frame-index entries to the binary sidecar next to the
+/// finalized video, in the same on-disk format the macOS path emits.
+///
+/// An empty entry set writes no sidecar (the segment degrades to
+/// exact-preview-only, never scrub-eligible) so an index-less Windows segment is
+/// indistinguishable on disk from a macOS segment that produced no frame index.
+fn persist_windows_segment_frame_index(
+    video_path: &Path,
+    entries: &[ScreenSegmentFrameIndexEntry],
+) -> Result<(), CaptureErrorResponse> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let index = build_windows_segment_frame_index(entries);
+    let index_path = screen_segment_frame_index_path(video_path);
+    let bytes = encode_screen_segment_frame_index(&index);
+    std::fs::write(&index_path, bytes).map_err(|error| CaptureErrorResponse {
+        code: "io_error".to_string(),
+        message: format!(
+            "Failed to write Windows screen segment frame index {}: {error}",
+            index_path.display()
+        ),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Small shared utilities
 // ---------------------------------------------------------------------------
@@ -1964,6 +2084,93 @@ mod tests {
     #[test]
     fn windows_display_present_reports_attached_display() {
         assert!(windows_display_present());
+    }
+
+    fn entry(
+        captured_at_unix_ms: u64,
+        frame_index: u64,
+        video_offset_ms: u64,
+    ) -> ScreenSegmentFrameIndexEntry {
+        ScreenSegmentFrameIndexEntry {
+            captured_at_unix_ms,
+            frame_index,
+            video_offset_ms,
+        }
+    }
+
+    #[test]
+    fn ticks_to_ms_rounds_to_nearest_and_clamps_negative() {
+        // 100ns ticks: 1 ms == 10_000 ticks.
+        assert_eq!(ticks_to_ms(0), 0);
+        assert_eq!(ticks_to_ms(10_000), 1);
+        assert_eq!(ticks_to_ms(TICKS_PER_SECOND), 1_000);
+        // 1.5 ms rounds to 2 ms.
+        assert_eq!(ticks_to_ms(15_000), 2);
+        // Out-of-order frames clamp to offset zero rather than underflowing.
+        assert_eq!(ticks_to_ms(-5_000), 0);
+    }
+
+    #[test]
+    fn build_windows_segment_frame_index_stamps_shared_version() {
+        let index = build_windows_segment_frame_index(&[entry(10, 0, 0), entry(20, 1, 33)]);
+        assert_eq!(index.version, SCREEN_SEGMENT_FRAME_INDEX_VERSION);
+        assert_eq!(index.entries.len(), 2);
+        assert!(screen_segment_frame_index_offsets_are_monotonic(
+            &index.entries
+        ));
+    }
+
+    #[test]
+    fn windows_segment_sidecar_round_trips_in_macos_format() {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-frame-index-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let video_path = dir.join("session-preview-segment-0001.mp4");
+
+        let entries = vec![entry(1_000, 0, 0), entry(1_500, 1, 500), entry(2_000, 2, 1_000)];
+        persist_windows_segment_frame_index(&video_path, &entries).expect("persist sidecar");
+
+        let sidecar_path = screen_segment_frame_index_path(&video_path);
+        assert!(sidecar_path.exists(), "sidecar should be written");
+        assert_eq!(
+            sidecar_path.extension().and_then(|e| e.to_str()),
+            Some("bin")
+        );
+
+        let bytes = std::fs::read(&sidecar_path).expect("read sidecar");
+        let decoded =
+            crate::decode_screen_segment_frame_index(&bytes).expect("decode sidecar in shared format");
+        assert_eq!(decoded.version, SCREEN_SEGMENT_FRAME_INDEX_VERSION);
+        assert_eq!(decoded.entries, entries);
+        assert!(screen_segment_frame_index_offsets_are_monotonic(
+            &decoded.entries
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn windows_segment_without_frames_writes_no_sidecar() {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-frame-index-empty-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let video_path = dir.join("session-preview-segment-0002.mp4");
+
+        persist_windows_segment_frame_index(&video_path, &[]).expect("empty persist is a no-op");
+
+        let sidecar_path = screen_segment_frame_index_path(&video_path);
+        assert!(
+            !sidecar_path.exists(),
+            "an index-less segment writes no sidecar and degrades gracefully"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

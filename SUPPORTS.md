@@ -20,7 +20,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Native system-audio capture | [x] | [~] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. Windows uses independent WASAPI loopback when a default render endpoint is available. |
 | Capture segment lifecycle | [x] | [~] | [ ] | Lifecycle is generic in shape; Windows now drives screen, microphone, and independent system-audio segment rotation off the shared `CaptureClock`/`SegmentSchedule`. |
 | Media writers/finalization | [x] | [~] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. Windows uses Media Foundation for H.264 `.mp4` screen output and AAC `.m4a` microphone/system-audio output, with an MF Source Reader positive-duration `.m4a` validator. |
-| Screen frame export / frame index | [x] | [~] | [ ] | Windows writes ~1 fps JPEG frame artifacts; frame-index sidecars remain missing. |
+| Screen frame export / frame index | [x] | [x] | [ ] | Windows writes ~1 fps JPEG frame artifacts and, at segment finalization, a binary frame-index sidecar in the same on-disk format macOS emits (offsets pushed live from capture-thread tick offsets; macOS-shared monotonicity check). An index-less segment degrades to exact-preview-only, never scrub-eligible. The MF decode-based rebuild-from-video recovery path stays unported. |
 | Exact frame preview from video | [x] | [ ] | [ ] | macOS uses AVAssetImageGenerator. |
 | Scrub preview generation | [x] | [ ] | [ ] | macOS-only today. |
 | OCR: Apple Vision | [x] | [ ] | [ ] | Apple-only provider. |
@@ -142,7 +142,7 @@ Research notes:
 - [x] Honor Windows screen bitrate presets/custom bitrate through Media Foundation H.264 `MF_MT_AVG_BITRATE`.
 - [ ] Implement finalized video validation equivalent to “openable `.mov` with moov”.
 - [x] Implement screen frame export to JPEG artifacts.
-- [ ] Implement frame-index sidecar generation from finalized video timing.
+- [x] Implement frame-index sidecar generation. Index entries are accumulated live on the capture thread (each exported frame's segment-relative tick offset, which the encoder rebases to zero) and serialized to a binary sidecar at segment finalization in the same on-disk format macOS emits; monotonicity is enforced via the macOS-shared check. The decode-based rebuild-from-finalized-video recovery path stays unported, so an index-less segment is an exact-preview-only, never-scrub-eligible degradation.
 - [ ] Implement exact frame preview extraction from video.
 - [ ] Implement scrub preview batch generation.
 - [~] Implement audio trim/convert/finalization for microphone and system-audio outputs. Windows microphone and system-audio `.m4a` outputs are finalized and validated via the MF Source Reader positive-duration probe; trim/convert remains outstanding.
