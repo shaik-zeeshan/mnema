@@ -26,7 +26,8 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | OCR: Apple Vision | [x] | [ ] | [ ] | Apple-only provider. |
 | OCR: Tesseract/PaddleOCR | [x] | [~] | [~] | Cross-platform intent, but Windows/Linux packaging/runtime need verification. |
 | Audio transcription: Apple Speech | [x] | [ ] | [ ] | Apple-only provider. |
-| Audio transcription: Local Whisper/Parakeet | [x] | [~] | [~] | Models are cross-platform-ish, but audio decode is AVFoundation-only today. |
+| Audio transcription: Local Whisper | [x] | [x] | [~] | macOS decodes via AVFoundation; Windows decodes a captured `.m4a` through the `media-decode` MF Source Reader seam (ADR 0024), resamples to 16 kHz mono in-crate, and runs whisper.cpp CPU-only. No-speech segments complete as empty (successful) transcriptions. On-device decode of real captured audio is deferred to an operator. |
+| Audio transcription: Parakeet | [x] | [~] | [~] | Models are cross-platform-ish; Windows audio decode still needs wiring through the `media-decode` seam. |
 | Speaker analysis | [x] | [~] | [~] | Model runtime is cross-platform-ish, but audio decode is AVFoundation-only today. |
 | Audio decode to mono PCM (`media-decode` seam) | [x] | [~] | [ ] | macOS keeps its AVFoundation decoders in-crate. Windows decodes `.m4a`/`.mp4` audio to native-rate mono `f32` via the `crates/media-decode` MF Source Reader seam (ADR 0024). Transcription/speaker-analysis still resample in-crate; only system-audio speech activity is wired through the seam so far. |
 | System-audio speech activity | [x] | [~] | [ ] | macOS decodes via AVFoundation; Windows decodes through the `media-decode` MF Source Reader seam and runs the same VAD runtime. On-device decode of a captured Windows `.m4a` is deferred to an operator. |
@@ -151,7 +152,7 @@ Research notes:
 ### Processing
 
 - [x] Add the `crates/media-decode` MF Source Reader seam decoding `.m4a`/`.mp4` audio to native-rate mono `f32` (ADR 0024); processing crates depend on it, no capture crate grows a decoder. On-device decode of a captured Windows `.m4a` is deferred to an operator.
-- [ ] Wire Local Whisper through the `media-decode` seam on Windows (still AVFoundation-only).
+- [x] Wire Local Whisper through the `media-decode` seam on Windows: a captured `.m4a` decodes via the MF Source Reader seam, resamples to 16 kHz mono in-crate, and transcribes with whisper.cpp CPU-only (`base` default). No-speech segments complete as successful empty transcriptions. On-device decode of real captured audio is deferred to an operator.
 - [ ] Wire Parakeet through the `media-decode` seam on Windows (still AVFoundation-only).
 - [ ] Wire speaker analysis through the `media-decode` seam on Windows (still AVFoundation-only).
 - [x] Wire system-audio speech activity through the `media-decode` seam on Windows; decoded mono PCM runs the same VAD runtime as macOS. On-device verification deferred to an operator.

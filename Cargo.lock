@@ -453,6 +453,7 @@ dependencies = [
  "block",
  "block2",
  "cidre",
+ "media-decode",
  "ndarray 0.17.2",
  "objc",
  "objc2",

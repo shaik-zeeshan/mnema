@@ -33,5 +33,8 @@ whisper-rs = { version = "0.16", optional = true, features = ["metal"] }
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 whisper-rs = { version = "0.16", optional = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+media-decode = { path = "../media-decode" }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt"] }
