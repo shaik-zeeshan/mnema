@@ -250,93 +250,114 @@ pub enum ModelStatusKind {
 }
 
 pub fn builtin_model_manifest() -> AudioTranscriptionModelManifest {
+    let mut models = vec![
+        whisper_model(
+            "tiny",
+            "Whisper Tiny",
+            "Smallest local Whisper model; fastest, lowest accuracy.",
+            77_691_713,
+            "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        ),
+        whisper_model(
+            "base",
+            "Whisper Base",
+            "Default local Whisper model; balanced speed, size, and quality.",
+            147_951_465,
+            "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        ),
+        whisper_model(
+            "small",
+            "Whisper Small",
+            "Higher quality local Whisper model with larger disk and CPU cost.",
+            487_601_967,
+            "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        ),
+        whisper_model(
+            "medium",
+            "Whisper Medium",
+            "Largest v1 local Whisper option; best quality, highest resource use.",
+            1_533_763_059,
+            "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+        ),
+        AudioTranscriptionModelDescriptor {
+            provider: APPLE_SPEECH_ON_DEVICE_PROVIDER_ID.to_string(),
+            model_id: None,
+            display_name: "Apple Speech (on-device)".to_string(),
+            description: "OS-managed on-device Apple Speech recognition executed through Speech.framework. No app-managed download.".to_string(),
+            license_label: None,
+            source_url: Some("https://developer.apple.com/documentation/speech".to_string()),
+            management: ModelManagement::OsManaged,
+        },
+    ];
+
+    // Parakeet model availability is platform-gated at this single source of
+    // truth: the full-precision `parakeet-tdt-0.6b-v3-onnx` variant is hidden on
+    // Windows v1 (which offers only the int8 bundle), while macOS keeps both
+    // variants. A platform that does not list a variant treats a setting that
+    // still names it like a MISSING Audio Transcription Model — the segment stays
+    // eligible and no job is enqueued until backfill — rather than an error,
+    // because `find_model_descriptor`/status lookups simply do not match it.
+    #[cfg(not(target_os = "windows"))]
+    models.push(parakeet_v3_onnx_model());
+    models.push(parakeet_v3_onnx_int8_model());
+
     AudioTranscriptionModelManifest {
         version: MANIFEST_VERSION,
-        models: vec![
-            whisper_model(
-                "tiny",
-                "Whisper Tiny",
-                "Smallest local Whisper model; fastest, lowest accuracy.",
-                77_691_713,
-                "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
-            ),
-            whisper_model(
-                "base",
-                "Whisper Base",
-                "Default local Whisper model; balanced speed, size, and quality.",
-                147_951_465,
-                "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
-            ),
-            whisper_model(
-                "small",
-                "Whisper Small",
-                "Higher quality local Whisper model with larger disk and CPU cost.",
-                487_601_967,
-                "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
-            ),
-            whisper_model(
-                "medium",
-                "Whisper Medium",
-                "Largest v1 local Whisper option; best quality, highest resource use.",
-                1_533_763_059,
-                "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
-            ),
-            AudioTranscriptionModelDescriptor {
-                provider: APPLE_SPEECH_ON_DEVICE_PROVIDER_ID.to_string(),
-                model_id: None,
-                display_name: "Apple Speech (on-device)".to_string(),
-                description: "OS-managed on-device Apple Speech recognition executed through Speech.framework. No app-managed download.".to_string(),
-                license_label: None,
-                source_url: Some("https://developer.apple.com/documentation/speech".to_string()),
-                management: ModelManagement::OsManaged,
-            },
-            AudioTranscriptionModelDescriptor {
-                provider: PARAKEET_PROVIDER_ID.to_string(),
-                model_id: Some("parakeet-tdt-0.6b-v3-onnx".to_string()),
-                display_name: "Parakeet TDT 0.6B v3 ONNX".to_string(),
-                description: "Local multilingual Parakeet TDT model executed with a Rust ONNX Runtime adapter. Highest memory use.".to_string(),
-                license_label: Some("CC-BY-4.0".to_string()),
-                source_url: Some("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx".to_string()),
-                management: ModelManagement::AppManaged {
-                    expected_layout: InstalledModelLayout {
-                        marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
-                        required_files: vec![
-                            "config.json".to_string(),
-                            "nemo128.onnx".to_string(),
-                            "encoder-model.onnx".to_string(),
-                            "encoder-model.onnx.data".to_string(),
-                            "decoder_joint-model.onnx".to_string(),
-                            "vocab.txt".to_string(),
-                        ],
-                    },
-                    artifact: Some(parakeet_v3_onnx_artifact()),
-                },
-            },
-            AudioTranscriptionModelDescriptor {
-                provider: PARAKEET_PROVIDER_ID.to_string(),
-                model_id: Some("parakeet-tdt-0.6b-v3-onnx-int8".to_string()),
-                display_name: "Parakeet TDT 0.6B v3 ONNX int8".to_string(),
-                description: "Memory-saving int8 Parakeet ONNX bundle. Smaller download and lower runtime weight memory; accuracy may differ from full precision.".to_string(),
-                license_label: Some("CC-BY-4.0".to_string()),
-                source_url: Some("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx".to_string()),
-                management: ModelManagement::AppManaged {
-                    expected_layout: InstalledModelLayout {
-                        marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
-                        required_files: vec![
-                            "config.json".to_string(),
-                            "nemo128.onnx".to_string(),
-                            "encoder-model.int8.onnx".to_string(),
-                            "decoder_joint-model.int8.onnx".to_string(),
-                            "vocab.txt".to_string(),
-                        ],
-                    },
-                    artifact: Some(parakeet_v3_onnx_int8_artifact()),
-                },
-            },
-        ],
+        models,
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn parakeet_v3_onnx_model() -> AudioTranscriptionModelDescriptor {
+    AudioTranscriptionModelDescriptor {
+        provider: PARAKEET_PROVIDER_ID.to_string(),
+        model_id: Some("parakeet-tdt-0.6b-v3-onnx".to_string()),
+        display_name: "Parakeet TDT 0.6B v3 ONNX".to_string(),
+        description: "Local multilingual Parakeet TDT model executed with a Rust ONNX Runtime adapter. Highest memory use.".to_string(),
+        license_label: Some("CC-BY-4.0".to_string()),
+        source_url: Some("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx".to_string()),
+        management: ModelManagement::AppManaged {
+            expected_layout: InstalledModelLayout {
+                marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
+                required_files: vec![
+                    "config.json".to_string(),
+                    "nemo128.onnx".to_string(),
+                    "encoder-model.onnx".to_string(),
+                    "encoder-model.onnx.data".to_string(),
+                    "decoder_joint-model.onnx".to_string(),
+                    "vocab.txt".to_string(),
+                ],
+            },
+            artifact: Some(parakeet_v3_onnx_artifact()),
+        },
+    }
+}
+
+fn parakeet_v3_onnx_int8_model() -> AudioTranscriptionModelDescriptor {
+    AudioTranscriptionModelDescriptor {
+        provider: PARAKEET_PROVIDER_ID.to_string(),
+        model_id: Some("parakeet-tdt-0.6b-v3-onnx-int8".to_string()),
+        display_name: "Parakeet TDT 0.6B v3 ONNX int8".to_string(),
+        description: "Memory-saving int8 Parakeet ONNX bundle. Smaller download and lower runtime weight memory; accuracy may differ from full precision.".to_string(),
+        license_label: Some("CC-BY-4.0".to_string()),
+        source_url: Some("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx".to_string()),
+        management: ModelManagement::AppManaged {
+            expected_layout: InstalledModelLayout {
+                marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
+                required_files: vec![
+                    "config.json".to_string(),
+                    "nemo128.onnx".to_string(),
+                    "encoder-model.int8.onnx".to_string(),
+                    "decoder_joint-model.int8.onnx".to_string(),
+                    "vocab.txt".to_string(),
+                ],
+            },
+            artifact: Some(parakeet_v3_onnx_int8_artifact()),
+        },
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn parakeet_v3_onnx_artifact() -> ModelArtifact {
     const BASE_URL: &str =
         "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main";
@@ -1198,6 +1219,8 @@ mod tests {
         );
     }
 
+    // The full-precision Parakeet variant is offered only off-Windows (macOS v1).
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn builtin_parakeet_descriptor_includes_download_artifact() {
         let manifest = builtin_model_manifest();
@@ -1241,7 +1264,13 @@ mod tests {
         assert!(files
             .iter()
             .any(|file| file.relative_path == "encoder-model.onnx.data"));
+    }
 
+    // The int8 Parakeet variant is offered on every platform (the only Windows
+    // Parakeet variant).
+    #[test]
+    fn builtin_parakeet_int8_descriptor_includes_download_artifact() {
+        let manifest = builtin_model_manifest();
         let parakeet_int8 = manifest
             .models
             .iter()
@@ -1280,6 +1309,36 @@ mod tests {
             file.relative_path == "decoder_joint-model.int8.onnx"
                 && file.sha256 == "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"
         }));
+    }
+
+    // Single source of truth for Parakeet model availability: the int8 variant
+    // is always offered, and the full-precision variant is hidden on Windows v1
+    // but offered everywhere else.
+    #[test]
+    fn parakeet_full_variant_is_platform_gated() {
+        let manifest = builtin_model_manifest();
+        let model_ids: Vec<&str> = manifest
+            .models
+            .iter()
+            .filter(|model| model.provider == PARAKEET_PROVIDER_ID)
+            .filter_map(|model| model.model_id.as_deref())
+            .collect();
+
+        assert!(
+            model_ids.contains(&"parakeet-tdt-0.6b-v3-onnx-int8"),
+            "int8 Parakeet variant must be offered on every platform"
+        );
+
+        #[cfg(target_os = "windows")]
+        assert!(
+            !model_ids.contains(&"parakeet-tdt-0.6b-v3-onnx"),
+            "full-precision Parakeet variant must be hidden on Windows"
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert!(
+            model_ids.contains(&"parakeet-tdt-0.6b-v3-onnx"),
+            "full-precision Parakeet variant must be offered off Windows"
+        );
     }
 
     #[test]

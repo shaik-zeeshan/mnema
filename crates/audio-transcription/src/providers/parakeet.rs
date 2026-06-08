@@ -1275,10 +1275,30 @@ fn decode_audio_to_mono_16khz(request: &TranscriptionRequest) -> TranscriptionRe
     ))
 }
 
-#[cfg(all(feature = "parakeet-onnx", not(target_os = "macos")))]
+#[cfg(all(feature = "parakeet-onnx", target_os = "windows"))]
+fn decode_audio_to_mono_16khz(request: &TranscriptionRequest) -> TranscriptionResult<Vec<f32>> {
+    // Windows routes through the shared `media-decode` MF Source Reader seam
+    // (ADR 0024) rather than AVFoundation, then resamples the native-rate mono
+    // output to Parakeet's 16 kHz with the same in-crate resampler macOS uses,
+    // mirroring the Local Whisper Windows path (#79).
+    let decoded = media_decode::decode_to_mono_f32(&request.audio_path)
+        .map_err(|error| TranscriptionError::Transcription(error.to_string()))?;
+    Ok(resample_linear(
+        &decoded.samples,
+        decoded.sample_rate_hz,
+        PARAKEET_SAMPLE_RATE_HZ,
+    ))
+}
+
+#[cfg(all(
+    feature = "parakeet-onnx",
+    not(target_os = "macos"),
+    not(target_os = "windows")
+))]
 fn decode_audio_to_mono_16khz(_request: &TranscriptionRequest) -> TranscriptionResult<Vec<f32>> {
     Err(TranscriptionError::ProviderUnavailable(
-        "Parakeet ONNX audio decoding is only implemented with AVFoundation on macOS in v1"
+        "Parakeet ONNX audio decoding is only implemented with AVFoundation on macOS and the \
+         media-decode seam on Windows in v1"
             .to_string(),
     ))
 }
@@ -1411,5 +1431,69 @@ mod tests {
             join_text_parts(&[" hello ".to_string(), "".to_string(), "world".to_string()]),
             "hello world"
         );
+    }
+
+    // Exercises the Windows Parakeet decode->resample wiring end to end through
+    // the real `media-decode` MF Source Reader seam: a synthesized 8 kHz mono PCM
+    // WAV (MF reads WAV natively) decodes to native-rate mono and resamples to
+    // Parakeet's 16 kHz, mirroring the Local Whisper Windows seam test (#79).
+    // Decoding a captured `.m4a` on real hardware is the operator-deferred gap.
+    #[cfg(all(feature = "parakeet-onnx", target_os = "windows"))]
+    #[test]
+    fn windows_decode_resamples_to_16khz_through_seam() {
+        let source_rate_hz = 8_000u32;
+        let pcm_i16: Vec<i16> = (0..16).map(|i| (i * 1000) as i16).collect();
+        let wav = build_mono_pcm16_wav(source_rate_hz, &pcm_i16);
+
+        let path = std::env::temp_dir()
+            .join(format!("parakeet-decode-test-{}.wav", std::process::id()));
+        std::fs::write(&path, &wav).expect("write temp wav");
+
+        let request = TranscriptionRequest::new(
+            path.to_string_lossy().to_string(),
+            PARAKEET_PROVIDER_ID,
+            Some(PARAKEET_TDT_0_6B_V3_ONNX_INT8_MODEL_ID.to_string()),
+            "auto",
+        );
+        let samples = decode_audio_to_mono_16khz(&request);
+        let _ = std::fs::remove_file(&path);
+        let samples = samples.expect("Windows seam should decode and resample the WAV");
+
+        assert!(!samples.is_empty(), "resampled 16 kHz output must be non-empty");
+        assert!(
+            samples.len() >= pcm_i16.len(),
+            "expected at least as many samples after upsampling, got {}",
+            samples.len()
+        );
+        assert!(samples.iter().all(|s| (-1.0..=1.0).contains(s)));
+    }
+
+    /// Build a minimal canonical 44-byte-header mono 16-bit PCM WAV.
+    #[cfg(all(feature = "parakeet-onnx", target_os = "windows"))]
+    fn build_mono_pcm16_wav(sample_rate_hz: u32, samples: &[i16]) -> Vec<u8> {
+        let channels: u16 = 1;
+        let bits_per_sample: u16 = 16;
+        let block_align: u16 = channels * bits_per_sample / 8;
+        let byte_rate: u32 = sample_rate_hz * block_align as u32;
+        let data_len: u32 = (samples.len() * 2) as u32;
+
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
+        wav.extend_from_slice(&1u16.to_le_bytes()); // WAVE_FORMAT_PCM
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate_hz.to_le_bytes());
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&bits_per_sample.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
     }
 }
