@@ -2422,7 +2422,13 @@ pub(super) fn persist_committed_audio_segments(
     }
 }
 
-#[cfg(target_os = "macos")]
+// Enqueue full one-second-interval scrub-preview generation for the screen
+// segments a just-committed capture produced. Shared by the macOS and Windows
+// finalize/rotate/stop paths (issue #83): the enqueue itself is platform-neutral
+// and the eligibility/extraction backend behind it (`AVAssetImageGenerator` on
+// macOS, the Media Foundation `media-decode` seam on Windows) decides whether a
+// segment is generated — so there is no per-OS fork here.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn warm_scrub_previews_for_committed_screen_outputs(
     app_handle: Option<&tauri::AppHandle>,
     output_files: Option<&CaptureOutputFiles>,
@@ -6236,6 +6242,15 @@ pub(super) fn stop_capture_runtime(
             runtime.source_sessions.as_ref(),
             runtime.segment_schedule.as_ref(),
             runtime.current_segment_index,
+            current_segment_output_files.as_ref(),
+        );
+
+        // Enqueue scrub-preview generation for the finalized screen segment. The
+        // SFI1 frame-index sidecar was written during the screen-session stop
+        // above, so the segment is now scrub-eligible (issue #83); the shared
+        // eligibility/extraction path no-ops if it is not.
+        warm_scrub_previews_for_committed_screen_outputs(
+            app_handle,
             current_segment_output_files.as_ref(),
         );
 

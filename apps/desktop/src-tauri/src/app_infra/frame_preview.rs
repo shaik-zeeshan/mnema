@@ -60,6 +60,19 @@ const GENERATED_SCRUB_PREVIEW_CACHE_MAX_FILES: usize = 4096;
 const GENERATED_SCRUB_PREVIEW_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const GENERATED_SCRUB_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 
+/// Whether this platform has a scrub-preview frame-extraction backend.
+///
+/// Scrub-preview eligibility (frame index + openable recording) and the
+/// queue/cache/keying/event layers are platform-neutral; the only platform fork
+/// is the frame-extraction backend behind
+/// [`extract_scrub_preview_images_from_video_batch`] — `AVAssetImageGenerator`
+/// on macOS, the Media Foundation `media-decode` seam on Windows (issue #83).
+/// This predicate gates eligibility/enqueue on the existence of that backend so
+/// no call site special-cases an individual OS.
+const fn scrub_preview_video_generation_supported() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedFramePreview {
     preview: FramePreviewDto,
@@ -1916,14 +1929,162 @@ async fn extract_scrub_preview_images_from_video_batch(
     .map_err(|error| format!("failed to join scrub preview extraction task: {error}"))?
 }
 
-#[cfg(not(target_os = "macos"))]
+// Windows scrub-preview batch extraction through the `media-decode` MF video
+// seam (ADR 0024 / issues #81, #83). This is the single extraction-backend fork:
+// everything above this seam (eligibility, queue, cache keying, coalesced
+// cache-change events, navigation/regeneration) is shared with macOS. For each
+// one-second interval offset we seek+decode-forward the frame via the MF seam,
+// downscale the RGBA frame to the scrub rendition's max pixel size with the same
+// `image`-crate Triangle filter the macOS derivative uses, and JPEG-encode it at
+// the shared `SCRUB_PREVIEW_JPEG_QUALITY` (q72) so Windows produces a
+// byte-compatible `v1-jpeg-q72-max360-1fps` rendition. macOS keeps
+// `AVAssetImageGenerator` above.
+#[cfg(target_os = "windows")]
+fn extract_scrub_preview_images_from_video_batch_blocking(
+    video_path: PathBuf,
+    video_offset_ms: Vec<u64>,
+    max_pixel_size: u32,
+    cancel_requested: Arc<AtomicBool>,
+) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
+    #[cfg(test)]
+    if test_video_preview_extractor_state()
+        .lock()
+        .expect("test video preview extractor poisoned")
+        .is_some()
+    {
+        let mut results = HashMap::new();
+        for offset_ms in video_offset_ms {
+            if let Some(result) =
+                run_test_video_preview_extractor(&video_path, offset_ms as f64 / 1000.0)
+            {
+                results.insert(offset_ms, result.map(|(bytes, _)| bytes));
+            }
+        }
+        return Ok(results);
+    }
+
+    if video_offset_ms.is_empty() {
+        return Ok(HashMap::new());
+    }
+    if cancel_requested.load(Ordering::SeqCst) {
+        return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+    }
+
+    let mut results = HashMap::with_capacity(video_offset_ms.len());
+    for offset_ms in video_offset_ms {
+        if cancel_requested.load(Ordering::SeqCst) {
+            return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+        }
+        results.insert(
+            offset_ms,
+            scrub_preview_jpeg_from_video_offset(&video_path, offset_ms, max_pixel_size),
+        );
+    }
+    Ok(results)
+}
+
+/// Extract the frame at `offset_ms` via the MF seam and render it into the
+/// shared scrub rendition (downscale to `max_pixel_size`, JPEG q72). Returns the
+/// JPEG bytes or a per-offset error so a single bad interval does not fail the
+/// batch.
+#[cfg(target_os = "windows")]
+fn scrub_preview_jpeg_from_video_offset(
+    video_path: &Path,
+    offset_ms: u64,
+    max_pixel_size: u32,
+) -> Result<Vec<u8>, String> {
+    let frame = media_decode::extract_video_frame_rgba(video_path, offset_ms).map_err(|error| {
+        format!(
+            "failed to extract scrub frame from video {} at {offset_ms}ms: {error}",
+            video_path.display()
+        )
+    })?;
+    render_scrub_preview_jpeg(&frame.pixels, frame.width, frame.height, max_pixel_size).map_err(
+        |error| {
+            format!(
+                "failed to render scrub frame from video {} at {offset_ms}ms: {error}",
+                video_path.display()
+            )
+        },
+    )
+}
+
+/// Downscale a top-down RGBA8 frame to the scrub rendition and JPEG-encode it.
+///
+/// This is the pure rendition step shared by the Windows scrub backend (issue
+/// #83): it resizes with the same `image`-crate Triangle filter the macOS
+/// derivative encoder uses and encodes at [`SCRUB_PREVIEW_JPEG_QUALITY`] (q72),
+/// yielding byte-compatible `v1-jpeg-q72-max360-1fps` output. Kept separate from
+/// the Media Foundation extraction so the resize/encode boundary is testable
+/// without an MF backend.
+#[cfg(target_os = "windows")]
+fn render_scrub_preview_jpeg(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    max_pixel_size: u32,
+) -> Result<Vec<u8>, String> {
+    let buffer: image::RgbaImage =
+        image::ImageBuffer::from_raw(width, height, pixels.to_vec()).ok_or_else(|| {
+            format!("scrub frame pixel buffer ({} bytes) does not match {width}x{height} RGBA", pixels.len())
+        })?;
+    let derivative = image::DynamicImage::ImageRgba8(buffer).resize(
+        max_pixel_size,
+        max_pixel_size,
+        image::imageops::FilterType::Triangle,
+    );
+    let mut output = Vec::new();
+    let mut encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, SCRUB_PREVIEW_JPEG_QUALITY);
+    encoder
+        .encode_image(&derivative)
+        .map_err(|error| format!("failed to JPEG-encode scrub frame: {error}"))?;
+    Ok(output)
+}
+
+#[cfg(target_os = "windows")]
+async fn extract_scrub_preview_images_from_video_batch(
+    video_path: &Path,
+    video_offset_ms: &[u64],
+    max_pixel_size: u32,
+    cancel_requested: Arc<AtomicBool>,
+) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
+    let cancel_on_timeout = Arc::clone(&cancel_requested);
+    tokio::time::timeout(
+        SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT,
+        tokio::task::spawn_blocking({
+            let video_path = video_path.to_path_buf();
+            let video_offset_ms = video_offset_ms.to_vec();
+            let cancel_requested = Arc::clone(&cancel_requested);
+            move || {
+                extract_scrub_preview_images_from_video_batch_blocking(
+                    video_path,
+                    video_offset_ms,
+                    max_pixel_size,
+                    cancel_requested,
+                )
+            }
+        }),
+    )
+    .await
+    .map_err(|_| {
+        cancel_on_timeout.store(true, Ordering::SeqCst);
+        format!(
+            "timed out joining scrub preview extraction task after {}s",
+            SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|error| format!("failed to join scrub preview extraction task: {error}"))?
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn extract_scrub_preview_images_from_video_batch(
     _video_path: &Path,
     _video_offset_ms: &[u64],
     _max_pixel_size: u32,
     _cancel_requested: Arc<AtomicBool>,
 ) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
-    Err("scrub preview video generation is only supported on macOS".to_string())
+    Err("scrub preview video generation is only supported on macOS and Windows".to_string())
 }
 
 // Windows exact-preview fallback through the `media-decode` MF Source Reader
@@ -2822,7 +2983,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn finalized_screen_segment_scrub_preview_job_plans_indexed_buckets() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2866,7 +3027,7 @@ mod tests {
         assert_eq!(job.intervals, vec![(0, 0), (1_000, 1_000)]);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn finalized_screen_segment_scrub_preview_job_skips_cached_intervals() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2913,6 +3074,92 @@ mod tests {
             .expect("uncached interval should still queue");
 
         assert_eq!(job.intervals, vec![(1_000, 1_000)]);
+    }
+
+    // Windows scrub-preview rendition: a large RGBA frame downscales to the
+    // q72/360px JPEG rendition (issue #83). This proves the pure resize/encode
+    // boundary the MF scrub backend feeds into; the MF decode itself is the
+    // operator-deferred on-device gap (no capture hardware here).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn render_scrub_preview_jpeg_downscales_rgba_to_q72_max360() {
+        let width = 1280u32;
+        let height = 720u32;
+        let pixels = vec![10u8, 120, 240, 255].repeat((width * height) as usize);
+
+        let jpeg = render_scrub_preview_jpeg(&pixels, width, height, SCRUB_PREVIEW_MAX_PIXEL_SIZE)
+            .expect("render scrub preview jpeg");
+
+        assert!(jpeg.len() > 2, "jpeg should be non-trivial");
+        assert_eq!(&jpeg[0..2], &[0xFF, 0xD8], "expected JPEG SOI marker");
+        let decoded = image::load_from_memory(&jpeg).expect("decode produced JPEG");
+        // 1280x720 fit into a 360px box preserves aspect ratio: 360x202.
+        assert!(decoded.width() <= SCRUB_PREVIEW_MAX_PIXEL_SIZE);
+        assert!(decoded.height() <= SCRUB_PREVIEW_MAX_PIXEL_SIZE);
+        assert_eq!(decoded.width(), SCRUB_PREVIEW_MAX_PIXEL_SIZE);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn render_scrub_preview_jpeg_rejects_mismatched_buffer() {
+        // Far too few bytes for a 2x2 RGBA frame (needs 16).
+        let error = render_scrub_preview_jpeg(&[0u8; 3], 2, 2, SCRUB_PREVIEW_MAX_PIXEL_SIZE)
+            .expect_err("undersized buffer must fail");
+        assert!(error.contains("does not match"));
+    }
+
+    #[cfg(target_os = "windows")]
+    struct TestVideoPreviewExtractorGuard;
+
+    #[cfg(target_os = "windows")]
+    impl TestVideoPreviewExtractorGuard {
+        fn install(extractor: Arc<TestVideoPreviewExtractor>) -> Self {
+            *test_video_preview_extractor_state()
+                .lock()
+                .expect("test video preview extractor poisoned") = Some(extractor);
+            Self
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    impl Drop for TestVideoPreviewExtractorGuard {
+        fn drop(&mut self) {
+            *test_video_preview_extractor_state()
+                .lock()
+                .expect("test video preview extractor poisoned") = None;
+        }
+    }
+
+    // Windows scrub batch integration through the injectable extractor seam:
+    // verifies the batch backend honors per-offset results and is keyed by
+    // offset. The real MF decode is exercised on-device (deferred); the seam
+    // stands in for it so the batch plumbing is covered cross-target.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_scrub_batch_returns_per_offset_results_through_seam() {
+        let _guard = TestVideoPreviewExtractorGuard::install(Arc::new(
+            |_path: PathBuf, offset_seconds: f64| {
+                let offset_ms = (offset_seconds * 1000.0).round() as u64;
+                Ok((format!("jpeg-{offset_ms}").into_bytes(), "image/jpeg"))
+            },
+        ));
+
+        let results = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(extract_scrub_preview_images_from_video_batch(
+                Path::new("session-segment-0003.mp4"),
+                &[0, 1_000, 2_000],
+                SCRUB_PREVIEW_MAX_PIXEL_SIZE,
+                Arc::new(AtomicBool::new(false)),
+            ))
+            .expect("windows scrub batch should resolve through the seam");
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results.get(&0).unwrap().as_ref().unwrap(), b"jpeg-0");
+        assert_eq!(results.get(&1_000).unwrap().as_ref().unwrap(), b"jpeg-1000");
+        assert_eq!(results.get(&2_000).unwrap().as_ref().unwrap(), b"jpeg-2000");
     }
 
     fn count_scrub_preview_jpegs(cache_root: &Path) -> usize {
@@ -3131,7 +3378,7 @@ fn scrub_preview_generation_job_for_video_path(
     cache_root: &Path,
     video_path: PathBuf,
 ) -> Result<Option<ScrubPreviewGenerationJob>, String> {
-    if !cfg!(target_os = "macos")
+    if !scrub_preview_video_generation_supported()
         || !video_path.is_file()
         || fs::metadata(&video_path)
             .map(|metadata| metadata.len() == 0)
@@ -3200,7 +3447,7 @@ pub fn enqueue_scrub_preview_generation_for_screen_files(
     app_handle: &tauri::AppHandle,
     screen_files: &[String],
 ) -> Result<usize, String> {
-    if !cfg!(target_os = "macos") || screen_files.is_empty() {
+    if !scrub_preview_video_generation_supported() || screen_files.is_empty() {
         return Ok(0);
     }
 
@@ -3364,7 +3611,7 @@ pub async fn get_scrub_preview_availability(
                     status: ScrubPreviewAvailabilityStatusDto::Ready,
                 });
             } else if let Some(selected_offset) = indexed_offsets.get(&bucket) {
-                if cfg!(target_os = "macos") && enqueue_missing {
+                if scrub_preview_video_generation_supported() && enqueue_missing {
                     missing_for_generation.push((bucket, *selected_offset));
                 }
                 intervals.push(ScrubPreviewAvailabilityIntervalDto {
@@ -3374,7 +3621,7 @@ pub async fn get_scrub_preview_availability(
                     interval_start_unix_ms,
                     interval_end_unix_ms,
                     preview: None,
-                    status: if !cfg!(target_os = "macos") {
+                    status: if !scrub_preview_video_generation_supported() {
                         ScrubPreviewAvailabilityStatusDto::UnsupportedPlatform
                     } else if enqueue_missing {
                         ScrubPreviewAvailabilityStatusDto::Queued
