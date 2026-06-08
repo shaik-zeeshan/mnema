@@ -39,6 +39,13 @@ const SCRUB_PREVIEW_MAX_MAX_PIXEL_SIZE: u32 = 1280;
 const SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS: u128 = 25;
 const SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT: Duration = Duration::from_secs(2);
 const SCRUB_PREVIEW_JPEG_QUALITY: u8 = 72;
+/// JPEG quality for Windows exact frame previews extracted via the
+/// `media-decode` MF seam (issue #81). Exact previews are full-resolution and
+/// shown at 1:1, so they use a higher quality than the downscaled scrub
+/// rendition. macOS keeps its ImageIO WebP/JPEG path; this constant is the
+/// Windows-only JPEG rendition (ADR 0024: JPEG-only on Windows v1, no WebP).
+#[cfg(target_os = "windows")]
+const EXACT_PREVIEW_JPEG_QUALITY: u8 = 90;
 const SCRUB_PREVIEW_RENDITION: &str = "v1-jpeg-q72-max360-1fps";
 const SCRUB_PREVIEW_MAX_PIXEL_SIZE: u32 = 360;
 const SCRUB_PREVIEW_INTERVAL_MS: u64 = 1000;
@@ -1919,7 +1926,91 @@ async fn extract_scrub_preview_images_from_video_batch(
     Err("scrub preview video generation is only supported on macOS".to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
+// Windows exact-preview fallback through the `media-decode` MF Source Reader
+// video seam (ADR 0024 / issue #81). MF seeking lands on keyframes, so the seam
+// seeks to (or before) the target offset and decodes forward to it; the decoded
+// RGBA frame is JPEG-encoded here (JPEG-only on Windows v1 — no WebP) and the
+// `image/jpeg` MIME flows back so consumers never assume a format. macOS keeps
+// AVAssetImageGenerator above.
+#[cfg(target_os = "windows")]
+fn extract_preview_image_from_video_blocking(
+    video_path: PathBuf,
+    exact_offset_ms: Option<u64>,
+    offset_seconds: f64,
+    cancel_requested: Arc<AtomicBool>,
+) -> Result<(Vec<u8>, &'static str), String> {
+    #[cfg(test)]
+    if let Some(result) = run_test_video_preview_extractor(&video_path, offset_seconds) {
+        return result;
+    }
+
+    if cancel_requested.load(Ordering::SeqCst) {
+        return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+    }
+
+    // The frame-index sidecar offset (when exact) is preferred; otherwise the
+    // estimated offset from the related-frame timeline, clamped to >= 0.
+    let target_offset_ms = exact_offset_ms.unwrap_or_else(|| (offset_seconds.max(0.0) * 1000.0).round() as u64);
+
+    let frame = media_decode::extract_video_frame_rgba(&video_path, target_offset_ms)
+        .map_err(|error| {
+            format!(
+                "failed to extract exact frame from video {} at {}ms: {error}",
+                video_path.display(),
+                target_offset_ms,
+            )
+        })?;
+
+    if cancel_requested.load(Ordering::SeqCst) {
+        return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+    }
+
+    let jpeg = frame.encode_jpeg(EXACT_PREVIEW_JPEG_QUALITY).map_err(|error| {
+        format!(
+            "failed to JPEG-encode exact frame from video {}: {error}",
+            video_path.display()
+        )
+    })?;
+    Ok((jpeg, "image/jpeg"))
+}
+
+#[cfg(target_os = "windows")]
+async fn extract_preview_image_from_video(
+    video_path: &Path,
+    _frame: &::app_infra::Frame,
+    exact_offset_ms: Option<u64>,
+    offset_seconds: f64,
+    _require_exact_time: bool,
+    cancel_requested: Arc<AtomicBool>,
+) -> Result<(Vec<u8>, &'static str), String> {
+    let cancel_on_timeout = Arc::clone(&cancel_requested);
+    tokio::time::timeout(
+        FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT,
+        tokio::task::spawn_blocking({
+            let video_path = video_path.to_path_buf();
+            let cancel_requested = Arc::clone(&cancel_requested);
+            move || {
+                extract_preview_image_from_video_blocking(
+                    video_path,
+                    exact_offset_ms,
+                    offset_seconds,
+                    cancel_requested,
+                )
+            }
+        }),
+    )
+    .await
+    .map_err(|_| {
+        cancel_on_timeout.store(true, Ordering::SeqCst);
+        format!(
+            "timed out generating exact frame preview after {}s",
+            FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|error| format!("failed to join video preview extraction task: {error}"))?
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn extract_preview_image_from_video(
     _video_path: &Path,
     _frame: &::app_infra::Frame,
@@ -1928,7 +2019,7 @@ async fn extract_preview_image_from_video(
     _require_exact_time: bool,
     _cancel_requested: Arc<AtomicBool>,
 ) -> Result<(Vec<u8>, &'static str), String> {
-    Err("video frame preview fallback is only supported on macOS".to_string())
+    Err("video frame preview fallback is only supported on macOS and Windows".to_string())
 }
 
 pub(super) async fn get_frame_preview_inner(

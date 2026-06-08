@@ -906,6 +906,7 @@ dependencies = [
  "capture-writers",
  "cidre",
  "image",
+ "media-decode",
  "objc2",
  "objc2-av-foundation",
  "objc2-foundation",
@@ -3639,6 +3640,7 @@ dependencies = [
 name = "media-decode"
 version = "0.1.0"
 dependencies = [
+ "image",
  "windows",
 ]
 
@@ -3720,6 +3722,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "image",
+ "media-decode",
  "objc",
  "ocr",
  "reqwest 0.12.28",

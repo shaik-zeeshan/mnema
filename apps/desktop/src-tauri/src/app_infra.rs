@@ -6388,6 +6388,65 @@ mod tests {
         });
     }
 
+    // Windows exact previews come back as JPEG (ADR 0024 / issue #81). This
+    // proves the video-fallback path carries whatever MIME the extractor reports
+    // (here `image/jpeg`) all the way to the DTO and persists with the matching
+    // extension — consumers read the MIME rather than assuming WebP/PNG. The
+    // extractor hook stands in for the real MF seam (no capture hardware in CI);
+    // the seam's own RGBA->JPEG encoding is covered by `media-decode` unit tests.
+    #[test]
+    fn get_frame_preview_inner_flows_jpeg_mime_from_video_fallback() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-preview-jpeg-mime");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let cache = FramePreviewCacheState::default();
+            let segment_dir = dir.path().join("2026/04/12");
+            let workspace_dir = segment_dir.join(".session-preview-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("frames directory should be created");
+
+            // Windows visible segments are `.mp4`; write a fixture with a `moov`
+            // atom so the openability probe passes and the video path is taken.
+            let target_frame_path = frames_dir.join("frame-1744459201500-1.png");
+            let video_path = segment_dir.join("session-preview-segment-0001.mp4");
+            fs::write(&video_path, b"\0\0\0\x14ftypmp42\0\0\0\0mp42 moov mdat")
+                .expect("visible segment video should be written");
+
+            let target_frame = infra
+                .insert_frame(&::app_infra::NewFrame::new(
+                    "session-preview",
+                    target_frame_path.to_string_lossy().to_string(),
+                    "2025-04-12T10:00:01.500Z",
+                ))
+                .await
+                .expect("target frame should be inserted");
+
+            let _extractor_guard = TestVideoPreviewExtractorGuard::install(Arc::new(
+                |_path, _offset_seconds| Ok((b"jpeg-preview-bytes".to_vec(), "image/jpeg")),
+            ));
+
+            let preview = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                target_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect("preview should load")
+            .expect("preview should exist");
+
+            assert_eq!(preview.mime_type, "image/jpeg");
+            assert_eq!(preview.source_kind, FramePreviewSourceKindDto::VideoFallback);
+            // The persisted file uses the JPEG extension derived from the MIME,
+            // proving nothing downstream hard-codes WebP/PNG for the fallback.
+            assert!(preview.file_path.ends_with(".jpg"));
+            assert!(Path::new(&preview.file_path).is_file());
+        });
+    }
+
     #[test]
     fn frame_preview_cache_returns_entries_within_ttl() {
         let dir = TestDir::new("frame-preview-cache-hit");

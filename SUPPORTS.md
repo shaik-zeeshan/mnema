@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-06-05_
+_Last reviewed: 2026-06-08_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -21,7 +21,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Capture segment lifecycle | [x] | [~] | [ ] | Lifecycle is generic in shape; Windows now drives screen, microphone, and independent system-audio segment rotation off the shared `CaptureClock`/`SegmentSchedule`. |
 | Media writers/finalization | [x] | [~] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. Windows uses Media Foundation for H.264 `.mp4` screen output and AAC `.m4a` microphone/system-audio output, with an MF Source Reader positive-duration `.m4a` validator. |
 | Screen frame export / frame index | [x] | [x] | [ ] | Windows writes ~1 fps JPEG frame artifacts and, at segment finalization, a binary frame-index sidecar in the same on-disk format macOS emits (offsets pushed live from capture-thread tick offsets; macOS-shared monotonicity check). An index-less segment degrades to exact-preview-only, never scrub-eligible. The MF decode-based rebuild-from-video recovery path stays unported. |
-| Exact frame preview from video | [x] | [ ] | [ ] | macOS uses AVAssetImageGenerator. |
+| Exact frame preview from video | [x] | [x] | [ ] | macOS uses AVAssetImageGenerator. Windows extracts the exact frame through the `crates/media-decode` MF Source Reader video seam (ADR 0024: seek-to-keyframe + decode-forward to the target offset), then JPEG-encodes it (JPEG-only on Windows v1, no WebP); the `image/jpeg` MIME flows through the preview result so consumers never assume a format. On-device extraction from a real captured segment is deferred to an operator. |
 | Scrub preview generation | [x] | [ ] | [ ] | macOS-only today. |
 | OCR: Apple Vision | [x] | [ ] | [ ] | Apple-only provider. |
 | OCR: Tesseract/PaddleOCR | [x] | [~] | [~] | Cross-platform intent, but Windows/Linux packaging/runtime need verification. |
@@ -141,10 +141,10 @@ Research notes:
   - Candidate APIs: Media Foundation, FFmpeg, GStreamer, or a Rust media pipeline.
 - [x] Honor Windows screen resolution presets/custom dimensions by scaling WGC frames during CPU BGRA -> NV12 conversion and JPEG frame export.
 - [x] Honor Windows screen bitrate presets/custom bitrate through Media Foundation H.264 `MF_MT_AVG_BITRATE`.
-- [ ] Implement finalized video validation equivalent to “openable `.mov` with moov”.
+- [x] Implement finalized video validation equivalent to “openable `.mov` with moov”. On a user stop, the finalized Windows `.mp4` screen segment is inspected through the `media-decode` MF Source Reader video seam (`inspect_video`): it must open, expose a decodable video stream, and report positive duration/dimensions — the MF analogue of the macOS `AVAssetReader` timing check. An invalid artifact is removed (mirroring the macOS validate-and-remove). This is stronger than the byte-level `moov` openability probe the preview layer uses.
 - [x] Implement screen frame export to JPEG artifacts.
 - [x] Implement frame-index sidecar generation. Index entries are accumulated live on the capture thread (each exported frame's segment-relative tick offset, which the encoder rebases to zero) and serialized to a binary sidecar at segment finalization in the same on-disk format macOS emits; monotonicity is enforced via the macOS-shared check. The decode-based rebuild-from-finalized-video recovery path stays unported, so an index-less segment is an exact-preview-only, never-scrub-eligible degradation.
-- [ ] Implement exact frame preview extraction from video.
+- [x] Implement exact frame preview extraction from video. The `media-decode` MF Source Reader video seam negotiates the first video stream to CPU-readable `RGB32`, seeks to (or before) the frame-index/estimated target offset, decodes forward to the target timestamp (MF seeks land on keyframes), and returns straight RGBA pixels; the exact-preview fallback JPEG-encodes them (JPEG-only on Windows v1) and flows the `image/jpeg` MIME. On-device extraction from a real captured segment is deferred to an operator.
 - [ ] Implement scrub preview batch generation.
 - [~] Implement audio trim/convert/finalization for microphone and system-audio outputs. Windows microphone and system-audio `.m4a` outputs are finalized and validated via the MF Source Reader positive-duration probe. Inactivity-tail trim is implemented writer-side: both sessions hold back the last N seconds of PCM ahead of the AAC sink writer and discard that tail on an inactivity stop (flush it on a normal stop or rotation), with the trim boundary refined by peak level or VAD speech, mirroring the macOS asset-writer hold-back; general re-encode trim/convert remains outstanding.
 - [ ] Implement video-only screen output finalization when audio is muxed or recorded together.
@@ -264,8 +264,8 @@ Use this map when turning checklist items into implementation slices.
 | `apps/desktop/src-tauri/src/native_capture_metadata.rs` | NSWorkspace, CoreGraphics window list, AppleScript browser URL probe | Foreground-window/app metadata and optional browser metadata per OS |
 | `apps/desktop/src-tauri/src/native_capture/privacy.rs` | ScreenCaptureKit app exclusion filters | OS-specific live exclusion or explicit unsupported/degraded behavior |
 | `apps/desktop/src-tauri/src/native_capture_system_idle.rs` | CoreGraphics idle time | `GetLastInputInfo` on Windows; portal/X11/compositor path on Linux |
-| `apps/desktop/src-tauri/src/app_infra/frame_preview.rs` | AVAssetImageGenerator exact/scrub previews | FFmpeg/GStreamer/Media Foundation extractor |
-| `crates/media-decode/src/lib.rs` | Windows MF Source Reader audio decode to native-rate mono `f32` (ADR 0024); shared processing seam | Cross-platform decode seam; macOS decoders stay in their existing crates (out of scope here) |
+| `apps/desktop/src-tauri/src/app_infra/frame_preview.rs` | AVAssetImageGenerator exact/scrub previews | Windows exact preview wired through the `media-decode` MF video seam (JPEG); scrub preview (#83) still needed on Windows/Linux |
+| `crates/media-decode/src/lib.rs` | Windows MF Source Reader audio decode to native-rate mono `f32` plus video frame extraction (RGBA + JPEG) and finalized-video timing inspection (ADR 0024); shared processing seam | Cross-platform decode/extract seam; macOS decoders/AVAssetImageGenerator stay in their existing crates (out of scope here) |
 | `crates/audio-transcription/src/macos_audio_decode.rs` | AVFoundation audio decode for Local Whisper/Parakeet | Migrate Windows decode to the `media-decode` seam; keep macOS in-crate |
 | `crates/speaker-analysis/src/macos_audio_decode.rs` | AVFoundation audio decode for diarization/recognition | Migrate Windows decode to the `media-decode` seam; keep macOS in-crate |
 | `crates/ocr/src/lib.rs`, `crates/app-infra/src/processing/apple_vision.rs` | Apple Vision OCR | Disable on non-Apple; default to Tesseract/PaddleOCR |

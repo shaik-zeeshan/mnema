@@ -1274,6 +1274,21 @@ impl CaptureEngine {
                     .map_err(|e| win_error("IMFSinkWriter.Finalize (stop) failed", &e))?;
             }
             self.persist_segment_frame_index();
+            // Mirror the macOS finalized-video validation: inspect timing through
+            // the MF seam and remove the artifact if it is unplayable, so the
+            // runtime never records a broken segment. A failed inspection is
+            // logged rather than aborting the whole stop (the remaining outputs
+            // are still finalized by the runtime).
+            if let Err(error) = validate_windows_screen_video_file(&self.current_output_path) {
+                capture_runtime::debug_log!(
+                    "[capture-screen] finalized Windows screen segment failed validation, removing {}: [{}] {}",
+                    self.current_output_path.display(),
+                    error.code,
+                    error.message
+                );
+                let _ = std::fs::remove_file(&self.current_output_path);
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -1889,6 +1904,38 @@ fn persist_windows_segment_frame_index(
             index_path.display()
         ),
     })
+}
+
+/// Validate a finalized Windows screen segment through the `media-decode` MF
+/// Source Reader video seam (ADR 0024 / issue #81).
+///
+/// This is the Windows equivalent of the macOS `validate_screen_video_file`
+/// `AVAssetReader` check: it proves the finalized `.mp4` opens, exposes a
+/// decodable video stream, and reports positive timing/dimensions. The byte-level
+/// `moov` openability probe used by the preview layer only proves the container
+/// finalized; this stronger MF timing inspection mirrors what macOS does at
+/// segment finalization. It returns a `CaptureErrorResponse` (rather than
+/// panicking) so the caller can remove the invalid artifact.
+fn validate_windows_screen_video_file(path: &Path) -> Result<(), CaptureErrorResponse> {
+    let metadata = std::fs::metadata(path).map_err(|error| CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: format!("Failed to inspect finalized screen recording: {error}"),
+    })?;
+    if metadata.len() == 0 {
+        return Err(CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: "Finalized screen recording is empty".to_string(),
+        });
+    }
+
+    media_decode::inspect_video(path)
+        .map(|_info| ())
+        .map_err(|error| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Finalized screen recording failed Media Foundation validation: {error}"
+            ),
+        })
 }
 
 // ---------------------------------------------------------------------------
