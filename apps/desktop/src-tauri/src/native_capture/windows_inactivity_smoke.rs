@@ -27,11 +27,16 @@ const DEFAULT_MAX_IDLE_WAIT_SECONDS: u64 = 45;
 const DEFAULT_MAX_STATE_WAIT_SECONDS: u64 = 20;
 
 #[cfg(target_os = "windows")]
+const DEFAULT_AUDIO_TAIL_TOLERANCE_SECONDS: u64 = 1;
+
+#[cfg(target_os = "windows")]
 #[derive(Debug)]
 struct SmokeConfig {
     idle_timeout_seconds: u64,
     max_idle_wait_seconds: u64,
     max_state_wait_seconds: u64,
+    audio_tail_tolerance_seconds: u64,
+    stop_while_paused: bool,
     save_directory: PathBuf,
 }
 
@@ -141,6 +146,8 @@ impl SmokeConfig {
         let mut idle_timeout_seconds = DEFAULT_IDLE_TIMEOUT_SECONDS;
         let mut max_idle_wait_seconds = DEFAULT_MAX_IDLE_WAIT_SECONDS;
         let mut max_state_wait_seconds = DEFAULT_MAX_STATE_WAIT_SECONDS;
+        let mut audio_tail_tolerance_seconds = DEFAULT_AUDIO_TAIL_TOLERANCE_SECONDS;
+        let mut stop_while_paused = false;
         let mut save_directory = default_smoke_save_directory();
 
         let mut index = 0;
@@ -159,6 +166,14 @@ impl SmokeConfig {
                     index += 1;
                     max_state_wait_seconds =
                         parse_u64_arg(args, index, "--max-state-wait-seconds")?;
+                }
+                "--audio-tail-tolerance-seconds" => {
+                    index += 1;
+                    audio_tail_tolerance_seconds =
+                        parse_u64_arg(args, index, "--audio-tail-tolerance-seconds")?;
+                }
+                "--stop-while-paused" => {
+                    stop_while_paused = true;
                 }
                 "--save-directory" => {
                     index += 1;
@@ -187,6 +202,8 @@ impl SmokeConfig {
             idle_timeout_seconds,
             max_idle_wait_seconds,
             max_state_wait_seconds,
+            audio_tail_tolerance_seconds,
+            stop_while_paused,
             save_directory,
         })
     }
@@ -211,7 +228,7 @@ fn default_smoke_save_directory() -> PathBuf {
 #[cfg(target_os = "windows")]
 fn print_usage() {
     println!(
-        "Windows inactivity smoke\n\nRun from the repo with:\n  cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-inactivity-smoke\n\nDuring the smoke, stop touching the keyboard/mouse until prompted. The harness starts a real native capture using screen, microphone, and system-audio when supported, waits for Windows idle to cross the configured inactivity threshold, verifies backend pause bookkeeping, sends a real Win32 mouse input event to resume, verifies resumed segment bookkeeping, stops capture, and prints the smoke output directory.\n\nOptions:\n  --idle-timeout-seconds N      inactivity threshold (default: 2)\n  --max-idle-wait-seconds N     max wait for real Windows idle (default: 45)\n  --max-state-wait-seconds N    max wait for pause/resume bookkeeping (default: 20)\n  --save-directory PATH         smoke capture root (default: temp mnema-windows-inactivity-smoke-PID)"
+        "Windows inactivity smoke\n\nRun from the repo with:\n  cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-inactivity-smoke\n  cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-inactivity-smoke --stop-while-paused\n\nDuring the smoke, stop touching the keyboard/mouse until prompted. The harness starts a real native capture using screen, microphone, and system-audio when supported, waits for Windows idle to cross the configured inactivity threshold, verifies backend pause bookkeeping, then either resumes (default) or stops while paused (--stop-while-paused).\n\nAfter stop it verifies the milestone capture invariants (#84): every finalized screen segment carries a monotonic frame-index sidecar (#73), and the committed .m4a tail honors #74 -- a --stop-while-paused (inactivity) stop commits audio measurably SHORTER than the wall-clock capture window, while the default normal stop does NOT.\n\nOptions:\n  --idle-timeout-seconds N           inactivity threshold (default: 2)\n  --max-idle-wait-seconds N          max wait for real Windows idle (default: 45)\n  --max-state-wait-seconds N         max wait for pause/resume bookkeeping (default: 20)\n  --audio-tail-tolerance-seconds N   wall-clock vs committed .m4a tolerance for #74 (default: 1)\n  --stop-while-paused                stop during the inactivity pause to assert the #74 tail hold-back\n  --save-directory PATH              smoke capture root (default: temp mnema-windows-inactivity-smoke-PID)"
     );
 }
 
@@ -272,6 +289,10 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
     })?;
     super::emit_native_capture_session_changed(&app_handle, &start_response.session);
     crate::status_bar::refresh(&app_handle);
+    // Wall-clock window for the #74 tail invariant: how long capture is alive
+    // from start to stop. An inactivity stop must commit audio shorter than this;
+    // a normal stop must not.
+    let capture_started_at = Instant::now();
 
     let start_snapshot = snapshot(&app_handle);
     verify_started_snapshot(&start_snapshot, &sources)?;
@@ -305,24 +326,38 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
         format_output_files(paused_snapshot.output_files.as_ref())
     );
 
-    thread::sleep(Duration::from_secs(2));
-    send_resume_input()?;
-    println!("Windows inactivity smoke: sent Win32 mouse input event; waiting for resume");
+    let stop_kind = if config.stop_while_paused {
+        // Stop directly out of the inactivity pause: #74 discards the held-back
+        // idle tail, so the committed audio must be shorter than the wall-clock
+        // window. This is the inactivity-stop half of acceptance criterion #5.
+        println!(
+            "Windows inactivity smoke: --stop-while-paused; stopping during the inactivity pause to assert the #74 tail hold-back"
+        );
+        super::windows_smoke_invariants::StopKind::Inactivity
+    } else {
+        // Resume, then stop normally: #74 drains the tail, so the committed audio
+        // must NOT be shorter than the wall-clock window. This is the normal-stop
+        // half of acceptance criterion #5 and also exercises segment rotation.
+        thread::sleep(Duration::from_secs(2));
+        send_resume_input()?;
+        println!("Windows inactivity smoke: sent Win32 mouse input event; waiting for resume");
 
-    let resumed_snapshot = wait_for_snapshot(
-        &app_handle,
-        Duration::from_secs(config.max_state_wait_seconds),
-        |snapshot| all_requested_sources_resumed(snapshot, &sources),
-    )
-    .inspect_err(|_| {
-        let _ = stop_after_failure(&app_handle);
-    })?;
-    verify_resumed_snapshot(&start_snapshot, &resumed_snapshot, &sources)?;
-    println!(
-        "Windows inactivity smoke: observed resume into segment {}; active output paths {}",
-        resumed_snapshot.current_segment_index,
-        format_output_files(resumed_snapshot.current_segment_output_files.as_ref())
-    );
+        let resumed_snapshot = wait_for_snapshot(
+            &app_handle,
+            Duration::from_secs(config.max_state_wait_seconds),
+            |snapshot| all_requested_sources_resumed(snapshot, &sources),
+        )
+        .inspect_err(|_| {
+            let _ = stop_after_failure(&app_handle);
+        })?;
+        verify_resumed_snapshot(&start_snapshot, &resumed_snapshot, &sources)?;
+        println!(
+            "Windows inactivity smoke: observed resume into segment {}; active output paths {}",
+            resumed_snapshot.current_segment_index,
+            format_output_files(resumed_snapshot.current_segment_output_files.as_ref())
+        );
+        super::windows_smoke_invariants::StopKind::Normal
+    };
 
     let stop_response = super::stop_native_capture_with_state(
         app_handle.state::<super::NativeCaptureState>(),
@@ -334,6 +369,7 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
             error.code, error.message
         )
     })?;
+    let wall_clock_ms = capture_started_at.elapsed().as_millis() as u64;
     super::emit_native_capture_session_changed(&app_handle, &stop_response.session);
     crate::status_bar::refresh(&app_handle);
     if stop_response.session.is_running {
@@ -344,9 +380,67 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
         format_output_files(stop_response.session.output_files.as_ref())
     );
     verify_final_outputs(stop_response.session.output_files.as_ref(), &sources)?;
+    verify_capture_invariants(
+        stop_response.session.output_files.as_ref(),
+        &sources,
+        stop_kind,
+        wall_clock_ms,
+        config.audio_tail_tolerance_seconds.saturating_mul(1000),
+    )?;
     println!(
         "Windows inactivity smoke: output directory {}",
         config.save_directory.display()
+    );
+
+    Ok(())
+}
+
+/// Assert the milestone capture invariants (#84) over the finalized artifacts.
+///
+/// - #73: every finalized screen segment carries a monotonic frame-index sidecar.
+/// - #74: the committed `.m4a` audio honors the tail hold-back for `stop_kind` --
+///   an inactivity stop commits shorter than `wall_clock_ms`, a normal stop does
+///   not (within `tolerance_ms`).
+#[cfg(target_os = "windows")]
+fn verify_capture_invariants(
+    outputs: Option<&CaptureOutputFiles>,
+    requested: &CaptureSources,
+    stop_kind: super::windows_smoke_invariants::StopKind,
+    wall_clock_ms: u64,
+    tolerance_ms: u64,
+) -> Result<(), String> {
+    let outputs = outputs.ok_or_else(|| {
+        "final output bookkeeping missing; cannot verify capture invariants".to_string()
+    })?;
+
+    if requested.screen {
+        super::windows_smoke_invariants::assert_all_screen_segments_have_monotonic_sidecars(
+            &outputs.screen_files,
+        )?;
+        println!(
+            "Windows inactivity smoke: verified monotonic frame-index sidecars (#73) for {} finalized screen segment(s)",
+            outputs.screen_files.len()
+        );
+    }
+
+    if requested.microphone {
+        super::windows_smoke_invariants::assert_audio_tail_holdback(
+            stop_kind,
+            &outputs.microphone_files,
+            wall_clock_ms,
+            tolerance_ms,
+        )?;
+    }
+    if requested.system_audio {
+        super::windows_smoke_invariants::assert_audio_tail_holdback(
+            stop_kind,
+            &outputs.system_audio_files,
+            wall_clock_ms,
+            tolerance_ms,
+        )?;
+    }
+    println!(
+        "Windows inactivity smoke: verified committed audio tail invariant (#74, stop_kind={stop_kind:?}) against wall-clock {wall_clock_ms}ms"
     );
 
     Ok(())

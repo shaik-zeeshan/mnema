@@ -20,6 +20,7 @@ pub(crate) mod system_idle;
 mod tests;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_inactivity_smoke;
+pub(crate) mod windows_smoke_invariants;
 pub(crate) mod windows_transient_liveness_smoke;
 
 use capture_microphone as microphone_capture;

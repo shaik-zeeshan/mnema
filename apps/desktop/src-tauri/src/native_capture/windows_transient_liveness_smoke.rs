@@ -460,11 +460,39 @@ fn run_smoke(app: &mut tauri::App, config: &SmokeConfig) -> Result<(), String> {
         format_output_files(stop_response.session.output_files.as_ref())
     );
     verify_final_outputs(stop_response.session.output_files.as_ref(), &sources)?;
+    verify_capture_invariants(stop_response.session.output_files.as_ref(), &sources)?;
     println!(
         "Windows transient-liveness smoke: output directory {}",
         config.save_directory.display()
     );
 
+    Ok(())
+}
+
+/// Assert the milestone capture invariants (#84) over the finalized artifacts.
+///
+/// This scenario performs a *normal* stop, so the only invariant that applies is
+/// the #73 frame-index sidecar: every finalized screen segment — including the
+/// pre-pause segment and the fresh post-resume segment the transient recovery
+/// rotated into — must carry a monotonic frame-index sidecar. The #74
+/// inactivity-tail invariant is exercised by the inactivity smoke instead, which
+/// is the harness that can produce an inactivity stop.
+#[cfg(target_os = "windows")]
+fn verify_capture_invariants(
+    outputs: Option<&CaptureOutputFiles>,
+    requested: &CaptureSources,
+) -> Result<(), String> {
+    let outputs = outputs
+        .ok_or_else(|| "final output bookkeeping missing; cannot verify capture invariants".to_string())?;
+    if requested.screen {
+        super::windows_smoke_invariants::assert_all_screen_segments_have_monotonic_sidecars(
+            &outputs.screen_files,
+        )?;
+        println!(
+            "Windows transient-liveness smoke: verified monotonic frame-index sidecars (#73) for {} finalized screen segment(s)",
+            outputs.screen_files.len()
+        );
+    }
     Ok(())
 }
 
