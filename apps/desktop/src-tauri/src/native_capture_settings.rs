@@ -64,9 +64,13 @@ pub(crate) struct AppliedRecordingSettingsUpdate {
 }
 
 pub(crate) fn default_save_directory() -> String {
-    std::env::var("HOME")
-        .map(|home| Path::new(&home).join(".mnema"))
-        .unwrap_or_else(|_| PathBuf::from(".mnema"))
+    // Resolve the user's home directory cross-platform. `std::env::home_dir`
+    // reads `%USERPROFILE%` on Windows (where `HOME` is usually unset) and
+    // `$HOME` on Unix, so the default lands at `<home>/.mnema` everywhere
+    // instead of a bare relative `.mnema` when `HOME` is absent.
+    std::env::home_dir()
+        .map(|home| home.join(".mnema"))
+        .unwrap_or_else(|| PathBuf::from(".mnema"))
         .to_string_lossy()
         .to_string()
 }

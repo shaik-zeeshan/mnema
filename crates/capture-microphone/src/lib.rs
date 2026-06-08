@@ -3279,6 +3279,22 @@ pub fn ensure_microphone_permission() -> bool {
     windows_microphone::microphone_capture_supported()
 }
 
+#[cfg(target_os = "windows")]
+pub fn system_audio_loopback_permission_state() -> CapturePermissionState {
+    // Windows system audio is captured via WASAPI render-endpoint loopback, which
+    // needs no per-app privacy permission (unlike the microphone, which has a
+    // per-app toggle and so reports `Unknown`). When a default render endpoint
+    // exists, capture will succeed without any prompt, so report `Granted`;
+    // report `Unsupported` only when no endpoint is present. The screen-capture
+    // permission path hardcodes `Unsupported` off macOS, so callers must use this
+    // for Windows system audio.
+    if windows_microphone::system_audio_loopback_capture_supported() {
+        CapturePermissionState::Granted
+    } else {
+        CapturePermissionState::Unsupported
+    }
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_permission_state() -> CapturePermissionState {
     CapturePermissionState::Unsupported

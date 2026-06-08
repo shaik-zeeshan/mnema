@@ -2243,6 +2243,113 @@ mod tests {
             }
         ));
     }
+
+    /// Encode a real H.264 `.mp4` with `frames` NV12 samples through the same
+    /// sink-writer path the live capture uses, returning the `Finalize` result.
+    fn write_test_screen_segment(
+        path: &Path,
+        width: u32,
+        height: u32,
+        frames: usize,
+    ) -> WinResult<()> {
+        let writer = create_sink_writer(path, width, height, 30, None).unwrap();
+        let nv12 = vec![0u8; (width * height * 3 / 2) as usize];
+        let frame_ticks = 333_333i64;
+        for i in 0..frames {
+            write_nv12_sample(
+                &writer.writer,
+                writer.stream_index,
+                &nv12,
+                i as i64 * frame_ticks,
+                frame_ticks,
+            )
+            .unwrap();
+        }
+        unsafe { writer.writer.Finalize() }
+    }
+
+    /// Regression test for the inactivity-pause session teardown bug: a finalized
+    /// H.264 screen segment (the Microsoft H.264 decoder natively outputs `NV12`)
+    /// must pass `validate_windows_screen_video_file`, which inspects it through
+    /// the `media-decode` MF Source Reader and requests an `RGB32` output. Before
+    /// the `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` fix the reader had
+    /// no color converter, so `SetCurrentMediaType(RGB32)` failed with
+    /// `MF_E_INVALIDMEDIATYPE` (`0xC00D36B4`) on *every* real segment — the
+    /// finalized inactivity-pause segment was then wrongly removed and the
+    /// inactivity pause returned an error that tore down the whole session.
+    #[test]
+    fn finalized_screen_segment_passes_mf_validation() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION, MFSTARTUP_FULL).expect("MFStartup");
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-screen-validation-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A few representative shapes: the minimal multi-sample segment and a
+        // realistic capture resolution, both of which the production validation
+        // path previously rejected.
+        for (label, width, height, frames) in [
+            ("small", 320u32, 240u32, 2usize),
+            ("hd", 1920, 1080, 3),
+        ] {
+            let path = dir.join(format!("{label}.mp4"));
+            write_test_screen_segment(&path, width, height, frames)
+                .unwrap_or_else(|e| panic!("finalize {label} segment: {e:?}"));
+
+            let result = validate_windows_screen_video_file(&path);
+            assert!(
+                result.is_ok(),
+                "finalized {label} screen segment should pass MF validation, got {result:?}"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+
+        unsafe { MFShutdown().ok() };
+    }
+
+    /// Regression test for the frame-preview path the bug was actually reported
+    /// from: `media_decode::extract_video_frame_rgba` over a real finalized
+    /// H.264/NV12 segment. Unlike `inspect_video` (which only negotiates the
+    /// `RGB32` output type and reads duration), extraction must also pull a
+    /// sample through `ReadSample` and convert it — proving the Video Processor
+    /// MFT inserted by `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` not
+    /// only *accepts* `RGB32` but actually *delivers* a full `width*height*4`
+    /// RGBA frame. Before the fix this failed identically with
+    /// `MF_E_INVALIDMEDIATYPE` (`0xC00D36B4`) at `SetCurrentMediaType(RGB32)`.
+    #[test]
+    fn finalized_screen_segment_extracts_rgba_frame() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION, MFSTARTUP_FULL).expect("MFStartup");
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-screen-extract-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (width, height, frames) = (320u32, 240u32, 3usize);
+        let path = dir.join("extract.mp4");
+        write_test_screen_segment(&path, width, height, frames)
+            .unwrap_or_else(|e| panic!("finalize extract segment: {e:?}"));
+
+        let frame = media_decode::extract_video_frame_rgba(&path, 0)
+            .expect("extract first frame from finalized H.264 segment");
+        assert_eq!(frame.width, width, "extracted frame width");
+        assert_eq!(frame.height, height, "extracted frame height");
+        assert_eq!(
+            frame.pixels.len(),
+            (width * height * 4) as usize,
+            "extracted frame must be a tightly packed RGBA buffer"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        unsafe { MFShutdown().ok() };
+    }
 }
 
 // `OsStr::encode_wide` lives behind this platform extension trait.

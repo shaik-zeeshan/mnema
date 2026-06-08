@@ -2276,6 +2276,20 @@ fn windows_system_audio_supported_without_prompt() -> bool {
     false
 }
 
+/// System-audio permission state for the capture-permissions surface. On Windows
+/// this reflects WASAPI loopback-endpoint availability (no per-app prompt); on
+/// every other platform it defers to the screen-capture permission, which owns
+/// system audio there.
+#[cfg(target_os = "windows")]
+fn windows_system_audio_permission_state() -> CapturePermissionState {
+    microphone_capture::system_audio_loopback_permission_state()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_audio_permission_state() -> CapturePermissionState {
+    capture_screen::system_audio_permission_state()
+}
+
 #[tauri::command]
 pub fn get_capture_support() -> CaptureSupportResponse {
     let response = capture_support_response_from_observed_platform(
@@ -2300,7 +2314,12 @@ pub fn get_capture_permissions(
     let permissions = CapturePermissions {
         screen: capture_screen::screen_permission_state(),
         microphone: microphone_capture::microphone_permission_state(),
-        system_audio: capture_screen::system_audio_permission_state(),
+        // On Windows system audio is independent WASAPI loopback, not the
+        // screen-recording permission (which `capture_screen` hardcodes as
+        // `Unsupported` off macOS). Use the loopback-endpoint probe so the
+        // onboarding permission row reports the real state instead of a spurious
+        // "Unsupported".
+        system_audio: windows_system_audio_permission_state(),
     };
 
     log_capture_permissions_if_changed(&permissions);

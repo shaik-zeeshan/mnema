@@ -438,9 +438,10 @@ mod windows_mf_video {
 
     use windows::core::{GUID, PCWSTR};
     use windows::Win32::Media::MediaFoundation::{
-        IMFSourceReader, MFCreateSourceReaderFromURL, MFShutdown, MFStartup, MFVideoFormat_RGB32,
-        MFMediaType_Video, MFSTARTUP_FULL, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE,
-        MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_PD_DURATION, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+        IMFSourceReader, MFCreateAttributes, MFCreateSourceReaderFromURL, MFShutdown, MFStartup,
+        MFVideoFormat_RGB32, MFMediaType_Video, MFSTARTUP_FULL, MF_MT_DEFAULT_STRIDE,
+        MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_PD_DURATION,
+        MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
         MF_SOURCE_READER_MEDIASOURCE, MF_VERSION,
     };
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
@@ -496,6 +497,30 @@ mod windows_mf_video {
         Ok(url)
     }
 
+    /// Open `url` as an MF Source Reader with advanced video processing enabled.
+    ///
+    /// `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` lets the reader insert
+    /// the Video Processor MFT so it can satisfy an `RGB32` output request from a
+    /// decoder that only natively produces `NV12` (which is what the Microsoft
+    /// H.264 decoder behind our captured `.mp4`s emits). Without it,
+    /// `SetCurrentMediaType(RGB32)` fails with `MF_E_INVALIDMEDIATYPE`
+    /// (`0xC00D36B4`) on every real H.264 segment, since the reader will only
+    /// accept the decoder's native (non-RGB) output subtypes.
+    unsafe fn create_video_source_reader(url: &[u16]) -> Result<IMFSourceReader> {
+        let mut attributes = None;
+        MFCreateAttributes(&mut attributes, 1)
+            .map_err(|e| win_error("MFCreateAttributes (source reader) failed", &e))?;
+        let attributes =
+            attributes.ok_or_else(|| MediaDecodeError::Decode(
+                "MFCreateAttributes returned a null attribute store".to_string(),
+            ))?;
+        attributes
+            .SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)
+            .map_err(|e| win_error("enable advanced video processing failed", &e))?;
+        MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), &attributes)
+            .map_err(|e| win_error("MFCreateSourceReaderFromURL failed", &e))
+    }
+
     /// Configure the first video stream of `reader` to decode to uncompressed
     /// `RGB32` and return the negotiated `(width, height)`.
     unsafe fn configure_rgb32_output(
@@ -539,8 +564,7 @@ mod windows_mf_video {
         path: &Path,
         target_offset_ms: u64,
     ) -> Result<VideoFrame> {
-        let reader: IMFSourceReader = MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), None)
-            .map_err(|e| win_error("MFCreateSourceReaderFromURL failed", &e))?;
+        let reader = create_video_source_reader(url)?;
         let stream_index = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
         let (width, height) = configure_rgb32_output(&reader, path)?;
 
@@ -614,8 +638,7 @@ mod windows_mf_video {
     }
 
     unsafe fn inspect_with_reader(url: &[u16], path: &Path) -> Result<VideoInfo> {
-        let reader: IMFSourceReader = MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), None)
-            .map_err(|e| win_error("MFCreateSourceReaderFromURL failed", &e))?;
+        let reader = create_video_source_reader(url)?;
         let (width, height) = configure_rgb32_output(&reader, path)?;
 
         let duration = reader
