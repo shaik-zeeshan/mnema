@@ -56,7 +56,7 @@ static LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
 static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "windows")]
 static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -348,7 +348,15 @@ pub fn reset_microphone_vad_tail_activity() {
     *boundaries = MicrophoneVadSpeechBoundaryState::default();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn reset_microphone_vad_tail_activity() {
+    // Windows refines the audio writer tail boundary with the same VAD-speech
+    // sequence pulse as macOS, but has no AVFoundation boundary-trim mutex to
+    // reset, so it only zeroes the shared sequence counter.
+    MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.store(0, Ordering::Relaxed);
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn reset_microphone_vad_tail_activity() {}
 
 #[cfg(target_os = "macos")]
@@ -388,7 +396,16 @@ pub fn record_microphone_vad_speech_event(_event: MicrophoneVadSpeechEvent) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn record_microphone_vad_speech_event(_event: MicrophoneVadSpeechEvent) {
+    // Pulse the shared tail-speech sequence so the WASAPI capture thread can
+    // observe speech and preserve audio up to the speech boundary in the audio
+    // writer's rolling tail buffer. Windows carries no AVFoundation
+    // boundary-trim state, so only the sequence is bumped.
+    MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn record_microphone_vad_speech_event(_event: MicrophoneVadSpeechEvent) {}
 
 #[cfg(target_os = "macos")]
@@ -399,7 +416,7 @@ pub fn disable_microphone_vad_boundary_trim_for_current_output() {
 #[cfg(not(target_os = "macos"))]
 pub fn disable_microphone_vad_boundary_trim_for_current_output() {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn current_microphone_vad_tail_speech_sequence() -> u64 {
     MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.load(Ordering::Relaxed)
 }

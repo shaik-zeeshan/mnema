@@ -171,6 +171,21 @@ fn microphone_tail_trim_activity_mode_for_runtime(
     microphone_tail_trim_activity_mode_for_vad(&runtime.microphone_vad)
 }
 
+/// Windows mirror of [`microphone_tail_trim_activity_mode_for_runtime`]. Selects
+/// VAD-speech tail-boundary refinement when a real VAD adapter is active,
+/// otherwise peak-level. Used to configure the WASAPI audio writer's inactivity
+/// tail hold-back.
+#[cfg(target_os = "windows")]
+fn microphone_tail_trim_activity_mode_for_runtime(
+    runtime: &NativeCaptureRuntime,
+) -> microphone_capture::MicrophoneInactivityTailTrimActivityMode {
+    if runtime.microphone_vad.uses_vad_adapter() {
+        microphone_capture::MicrophoneInactivityTailTrimActivityMode::VadSpeech
+    } else {
+        microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameArtifactForwardingResult {
     Enqueued,
@@ -1939,7 +1954,9 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
     let microphone_recording_file = runtime.microphone_recording_file.clone();
 
     if let Some(session) = runtime.active_microphone_session.as_mut() {
-        let finalization = session.stop_returning_finalization()?;
+        // Inactivity pause: discard the withheld tail so the committed final
+        // microphone segment never carries the dead idle tail.
+        let finalization = stop_windows_audio_session_for_inactivity(session)?;
         apply_windows_microphone_output_finalization(microphone_outputs.as_mut(), &finalization);
     }
     runtime.active_microphone_session = None;
@@ -2004,7 +2021,9 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
     let system_audio_recording_file = runtime.system_audio_recording_file.clone();
 
     if let Some(session) = runtime.active_system_audio_session.as_mut() {
-        let finalization = session.stop_returning_finalization()?;
+        // Inactivity pause: discard the withheld tail so the committed final
+        // system-audio segment never carries the dead idle tail.
+        let finalization = stop_windows_audio_session_for_inactivity(session)?;
         apply_windows_system_audio_output_finalization(
             system_audio_outputs.as_mut(),
             &finalization,
@@ -4440,6 +4459,48 @@ pub(super) fn set_windows_screen_start_hook_for_test(
     }
 }
 
+/// Enable the WASAPI audio writer's inactivity tail hold-back on a freshly
+/// started session so the active `.m4a` withholds its last `tail_trim_seconds`
+/// of PCM ahead of the AAC encoder. Best-effort downcast: test mock sessions are
+/// not `WasapiMicrophoneCaptureSession`, so a failed downcast is a no-op.
+#[cfg(target_os = "windows")]
+fn configure_windows_audio_session_tail_holdback(
+    session: &mut Box<dyn microphone_capture::AudioCaptureSession>,
+    tail_trim_seconds: u64,
+    activity_threshold: f32,
+    tail_activity_mode: microphone_capture::MicrophoneInactivityTailTrimActivityMode,
+) {
+    if let Some(session) = session
+        .as_any_mut()
+        .downcast_mut::<microphone_capture::WasapiMicrophoneCaptureSession>()
+    {
+        session.configure_inactivity_tail_holdback(
+            tail_trim_seconds,
+            activity_threshold,
+            tail_activity_mode,
+        );
+    }
+}
+
+/// Stop a Windows audio session as an inactivity pause, DISCARDING the withheld
+/// tail so the committed final segment never carries the dead idle tail. Falls
+/// back to the cross-platform [`AudioCaptureSession::stop_returning_finalization`]
+/// (a normal flush) when the concrete session is not a
+/// `WasapiMicrophoneCaptureSession` (e.g. a test mock).
+#[cfg(target_os = "windows")]
+fn stop_windows_audio_session_for_inactivity(
+    session: &mut Box<dyn microphone_capture::AudioCaptureSession>,
+) -> Result<microphone_capture::MicrophoneOutputFinalization, CaptureErrorResponse> {
+    if let Some(session) = session
+        .as_any_mut()
+        .downcast_mut::<microphone_capture::WasapiMicrophoneCaptureSession>()
+    {
+        session.stop_for_inactivity_returning_finalization()
+    } else {
+        session.stop_returning_finalization()
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn start_windows_microphone_session_for_file(
     output_file: &str,
@@ -4998,6 +5059,16 @@ pub(super) fn start_windows_active_segment(
         };
         set_current_microphone_output_file(&mut segment_outputs, output_file.clone());
         microphone_recording_file = Some(output_file);
+        // Enable the audio writer's inactivity tail hold-back so a later
+        // inactivity pause can discard the dead idle tail. The boundary is
+        // refined by VAD speech when a VAD adapter is active, else peak level.
+        let mut session = session;
+        configure_windows_audio_session_tail_holdback(
+            &mut session,
+            runtime.inactivity.idle_timeout_seconds,
+            runtime.inactivity.microphone_activity_threshold(),
+            microphone_tail_trim_activity_mode_for_runtime(runtime),
+        );
         active_microphone_session = Some(session);
     }
 
@@ -5024,6 +5095,15 @@ pub(super) fn start_windows_active_segment(
         };
         set_current_system_audio_output_file(&mut segment_outputs, output_file.clone());
         system_audio_recording_file = Some(output_file);
+        // System-audio loopback uses peak-level tail refinement (it does not feed
+        // microphone VAD), with its own activity threshold.
+        let mut session = session;
+        configure_windows_audio_session_tail_holdback(
+            &mut session,
+            runtime.inactivity.idle_timeout_seconds,
+            runtime.inactivity.system_audio_activity_threshold(),
+            microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+        );
         active_system_audio_session = Some(session);
     }
 

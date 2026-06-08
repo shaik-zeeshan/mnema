@@ -31,7 +31,7 @@ use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
 
 use capture_types::{CaptureErrorResponse, MicrophoneDevice};
-use capture_writers::WindowsAacM4aSinkWriter;
+use capture_writers::{WindowsAacM4aSinkWriter, WindowsAudioTailHoldbackSink};
 use wasapi::{
     get_default_device, initialize_mta, DeviceCollection, Direction, SampleType, StreamMode,
     WaveFormat,
@@ -45,7 +45,9 @@ use windows::Win32::Media::MediaFoundation::{MFShutdown, MFStartup, MFSTARTUP_FU
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 use windows_core::{implement, Interface, PCWSTR};
 
-use crate::{AudioCaptureSession, MicrophoneOutputFinalization};
+use crate::{
+    AudioCaptureSession, MicrophoneInactivityTailTrimActivityMode, MicrophoneOutputFinalization,
+};
 
 /// 100ns ticks in one second (Media Foundation time unit).
 const TICKS_PER_SECOND: i64 = 10_000_000;
@@ -166,13 +168,27 @@ fn list_microphone_devices_on_initialized_thread(
 // ---------------------------------------------------------------------------
 
 enum Message {
+    /// Configure the audio writer's inactivity tail hold-back. Mirrors the macOS
+    /// `set_audio_writer_inactivity_tail_trim_seconds` /
+    /// `set_audio_writer_activity_threshold`: a non-zero `tail_trim_seconds`
+    /// makes the active segment withhold its last N seconds of PCM ahead of the
+    /// AAC encoder so an inactivity stop can discard the dead idle tail.
+    ConfigureTailHoldback {
+        tail_trim_seconds: u64,
+        activity_threshold: f32,
+        tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
+    },
     /// Finalize the current segment and begin writing the next at `output_path`.
+    /// A rotation is a normal segment boundary, so the withheld tail is flushed.
     Rotate {
         output_path: PathBuf,
         reply: Sender<Result<MicrophoneOutputFinalization, CaptureErrorResponse>>,
     },
-    /// Finalize the final segment and tear the session down.
+    /// Finalize the final segment and tear the session down. `discard_inactivity_tail`
+    /// is `true` when the stop is an inactivity pause (drop the withheld tail) and
+    /// `false` for a normal stop (flush the withheld tail).
     Stop {
+        discard_inactivity_tail: bool,
         reply: Sender<Result<MicrophoneOutputFinalization, CaptureErrorResponse>>,
     },
     DefaultRenderDeviceChanged {
@@ -236,7 +252,10 @@ impl WasapiMicrophoneCaptureSession {
             .unwrap_or_else(|_| Err(capture_thread_gone_error()))
     }
 
-    fn send_stop(&mut self) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+    fn send_stop(
+        &mut self,
+        discard_inactivity_tail: bool,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         if self.stopped {
             return Ok(MicrophoneOutputFinalization {
                 source_file: None,
@@ -250,7 +269,14 @@ impl WasapiMicrophoneCaptureSession {
         self.shared.live.store(false, Ordering::Relaxed);
 
         let (reply_tx, reply_rx) = mpsc::channel();
-        if self.sender.send(Message::Stop { reply: reply_tx }).is_err() {
+        if self
+            .sender
+            .send(Message::Stop {
+                discard_inactivity_tail,
+                reply: reply_tx,
+            })
+            .is_err()
+        {
             // Capture thread already gone; nothing more to finalize.
             if let Some(handle) = self.join_handle.take() {
                 let _ = handle.join();
@@ -271,6 +297,34 @@ impl WasapiMicrophoneCaptureSession {
         }
         result
     }
+
+    /// Enable inactivity tail hold-back on the live segment writer. Mirrors the
+    /// macOS `configure_microphone_writer_tail_buffer`: a non-zero
+    /// `tail_trim_seconds` makes the active `.m4a` withhold its last N seconds of
+    /// PCM ahead of the AAC encoder, with the trim boundary refined by peak level
+    /// (`PeakLevel`) or VAD speech (`VadSpeech`). Best-effort — a dropped capture
+    /// thread leaves the (already finalized) session untouched.
+    pub fn configure_inactivity_tail_holdback(
+        &mut self,
+        tail_trim_seconds: u64,
+        activity_threshold: f32,
+        tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
+    ) {
+        let _ = self.sender.send(Message::ConfigureTailHoldback {
+            tail_trim_seconds,
+            activity_threshold,
+            tail_activity_mode,
+        });
+    }
+
+    /// Stop the session for an inactivity pause, DISCARDING the withheld tail so
+    /// the committed final segment never carries the dead idle tail. Mirrors the
+    /// macOS `finish_audio_asset_writer_discarding_inactivity_tail` path.
+    pub fn stop_for_inactivity_returning_finalization(
+        &mut self,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        self.send_stop(true)
+    }
 }
 
 impl AudioCaptureSession for WasapiMicrophoneCaptureSession {
@@ -284,7 +338,7 @@ impl AudioCaptureSession for WasapiMicrophoneCaptureSession {
     fn stop_returning_finalization(
         &mut self,
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
-        self.send_stop()
+        self.send_stop(false)
     }
 
     fn is_live(&self) -> bool {
@@ -310,7 +364,9 @@ impl AudioCaptureSession for WasapiMicrophoneCaptureSession {
 
 impl Drop for WasapiMicrophoneCaptureSession {
     fn drop(&mut self) {
-        let _ = self.send_stop();
+        // A dropped session without an explicit stop is a normal teardown, so
+        // flush the withheld tail rather than discard it.
+        let _ = self.send_stop(false);
     }
 }
 
@@ -539,6 +595,17 @@ fn run_capture_loop(
         }
 
         match receiver.try_recv() {
+            Ok(Message::ConfigureTailHoldback {
+                tail_trim_seconds,
+                activity_threshold,
+                tail_activity_mode,
+            }) => {
+                engine.configure_tail_holdback(
+                    tail_trim_seconds,
+                    activity_threshold,
+                    tail_activity_mode,
+                );
+            }
             Ok(Message::Rotate { output_path, reply }) => {
                 let result = engine.rotate(&output_path);
                 let _ = reply.send(result);
@@ -548,9 +615,12 @@ fn run_capture_loop(
                     record_stop_error(shared, error);
                 }
             }
-            Ok(Message::Stop { reply }) => {
+            Ok(Message::Stop {
+                discard_inactivity_tail,
+                reply,
+            }) => {
                 shared.live.store(false, Ordering::Relaxed);
-                let result = engine.stop();
+                let result = engine.stop(discard_inactivity_tail);
                 let _ = reply.send(result);
                 break;
             }
@@ -558,8 +628,9 @@ fn run_capture_loop(
                 std::thread::sleep(POLL_INTERVAL);
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                // Handle dropped without an explicit stop; finalize best-effort.
-                let _ = engine.stop();
+                // Handle dropped without an explicit stop; finalize best-effort
+                // as a normal stop (flush the withheld tail).
+                let _ = engine.stop(false);
                 break;
             }
         }
@@ -602,14 +673,26 @@ struct CaptureEngine {
     current_render_endpoint_id: Option<String>,
     _default_render_notifier: Option<SystemAudioDefaultDeviceChangeRegistration>,
 
-    /// Active segment writer; `None` once stopped.
-    writer: Option<WindowsAacM4aSinkWriter>,
+    /// Active segment writer wrapped with the rolling inactivity tail hold-back;
+    /// `None` once stopped.
+    sink: Option<WindowsAudioTailHoldbackSink>,
     /// Filesystem path of the active segment.
     current_path: PathBuf,
     /// Frames appended to the active segment (for timing + empty detection).
     frames_in_segment: u64,
     /// First fatal error recorded for the active segment.
     failed: bool,
+    /// Inactivity tail hold-back configuration applied to each new segment's
+    /// sink. `tail_trim_seconds == 0` disables hold-back.
+    tail_trim_seconds: u64,
+    /// Peak-level activity threshold (0.0..=1.0) for `PeakLevel` boundary mode.
+    activity_threshold: f32,
+    /// Tail boundary refinement mode (peak level vs VAD speech).
+    tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
+    /// Last VAD tail-speech sequence value observed by this engine, so a new
+    /// speech pulse can be turned into a one-shot "mark tail active" exactly
+    /// like the macOS `microphone_tail_activity_override` path.
+    observed_vad_tail_speech_sequence: u64,
 }
 
 struct CaptureStream {
@@ -700,6 +783,7 @@ impl CaptureEngine {
             stream.sample_rate_hz,
             stream.output_channels,
         )?;
+        let sink = WindowsAudioTailHoldbackSink::new(writer, stream.sample_rate_hz);
         let default_render_notifier = if matches!(source, AudioCaptureSource::SystemAudioLoopback) {
             Some(SystemAudioDefaultDeviceChangeRegistration::register(
                 notification_sender,
@@ -722,11 +806,47 @@ impl CaptureEngine {
             source,
             current_render_endpoint_id: stream.endpoint_id,
             _default_render_notifier: default_render_notifier,
-            writer: Some(writer),
+            sink: Some(sink),
             current_path: output_path.to_path_buf(),
             frames_in_segment: 0,
             failed: false,
+            tail_trim_seconds: 0,
+            activity_threshold: 0.0,
+            tail_activity_mode: MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+            observed_vad_tail_speech_sequence: 0,
         })
+    }
+
+    /// Apply the inactivity tail hold-back configuration to the active sink and
+    /// remember it for sinks created on later rotations. Resets the observed VAD
+    /// speech sequence baseline so a pulse that predates this configuration does
+    /// not spuriously mark the tail active.
+    fn configure_tail_holdback(
+        &mut self,
+        tail_trim_seconds: u64,
+        activity_threshold: f32,
+        tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
+    ) {
+        self.tail_trim_seconds = tail_trim_seconds;
+        self.activity_threshold = activity_threshold;
+        self.tail_activity_mode = tail_activity_mode;
+        self.observed_vad_tail_speech_sequence =
+            crate::current_microphone_vad_tail_speech_sequence();
+        self.apply_tail_holdback_to_sink();
+    }
+
+    fn apply_tail_holdback_to_sink(&mut self) {
+        let vad_speech_mode = matches!(
+            self.tail_activity_mode,
+            MicrophoneInactivityTailTrimActivityMode::VadSpeech
+        );
+        if let Some(sink) = self.sink.as_mut() {
+            sink.configure_tail_holdback(
+                self.tail_trim_seconds,
+                self.activity_threshold,
+                vad_speech_mode,
+            );
+        }
     }
 
     fn open_capture_stream(
@@ -788,7 +908,7 @@ impl CaptureEngine {
 
     /// Drain all queued WASAPI packets and append them to the active segment.
     fn pump(&mut self) -> Result<(), CaptureErrorResponse> {
-        if self.failed || self.writer.is_none() {
+        if self.failed || self.sink.is_none() {
             return Ok(());
         }
         loop {
@@ -865,20 +985,73 @@ impl CaptureEngine {
         let sample_time_100ns = frames_to_ticks(self.frames_in_segment, self.sample_rate_hz);
         let duration_100ns = frames_to_ticks(frame_count, self.sample_rate_hz);
 
-        if let Some(writer) = self.writer.as_mut() {
-            writer.append_pcm_s16(&pcm, sample_time_100ns, duration_100ns)?;
+        // In VadSpeech mode the speech decision is computed off the capture
+        // thread (the activity poller feeds the writer's VAD and pulses the
+        // shared tail-speech sequence). A pulse since this engine last looked
+        // means the chunk that was already buffered must be preserved up to the
+        // speech boundary, so mark the latest buffered chunk active and release
+        // the backlog BEFORE buffering the current (still no-speech) chunk —
+        // mirroring the macOS `microphone_tail_activity_override` one-shot mark
+        // followed by an `activity_override == Some(false)` append.
+        let vad_speech_pulse = self.consume_vad_tail_speech_pulse();
+        if vad_speech_pulse {
+            if let Some(sink) = self.sink.as_mut() {
+                sink.mark_tail_active()?;
+            }
+        }
+
+        if let Some(sink) = self.sink.as_mut() {
+            // `vad_speech` is always `false` here: in VadSpeech mode the pulse was
+            // already consumed above against the prior chunk; in PeakLevel mode the
+            // sink ignores this flag and uses the per-chunk peak instead.
+            sink.append_pcm_s16(&pcm, sample_time_100ns, duration_100ns, peak, false)?;
             self.frames_in_segment += frame_count;
         }
         Ok(())
     }
 
+    /// Returns `true` once per newly observed VAD tail-speech pulse. Only the
+    /// microphone source participates: system-audio loopback does not feed
+    /// microphone VAD, so it always trims by peak level. Mirrors the macOS
+    /// `microphone_tail_activity_override` sequence comparison.
+    fn consume_vad_tail_speech_pulse(&mut self) -> bool {
+        if self.tail_trim_seconds == 0
+            || !self.records_microphone_activity
+            || !matches!(
+                self.tail_activity_mode,
+                MicrophoneInactivityTailTrimActivityMode::VadSpeech
+            )
+        {
+            return false;
+        }
+        let sequence = crate::current_microphone_vad_tail_speech_sequence();
+        if sequence > self.observed_vad_tail_speech_sequence {
+            self.observed_vad_tail_speech_sequence = sequence;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Finalize the active segment and build its finalization record.
-    fn finalize_segment(&mut self) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+    ///
+    /// `discard_inactivity_tail` selects the tail policy: a normal stop or a
+    /// rotation flushes the withheld tail into the encoder (whole segment), while
+    /// an inactivity stop discards it so the committed `.m4a` is shorter than
+    /// wall-clock and never carries the dead idle tail.
+    fn finalize_segment(
+        &mut self,
+        discard_inactivity_tail: bool,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         let closed_path = self.current_path.to_string_lossy().to_string();
         let had_frames = self.frames_in_segment > 0;
 
-        if let Some(writer) = self.writer.take() {
-            writer.finalize()?;
+        if let Some(sink) = self.sink.take() {
+            if discard_inactivity_tail {
+                sink.finalize_discarding_inactivity_tail()?;
+            } else {
+                sink.finalize_flushing()?;
+            }
         }
 
         if had_frames {
@@ -900,21 +1073,25 @@ impl CaptureEngine {
         }
     }
 
-    /// Finalize the current segment and begin a fresh one at `output_path`.
+    /// Finalize the current segment and begin a fresh one at `output_path`. A
+    /// rotation is a normal segment boundary, so the withheld tail is flushed
+    /// into the closing segment rather than discarded.
     fn rotate(
         &mut self,
         output_path: &Path,
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
-        let finalization = self.finalize_segment()?;
+        let finalization = self.finalize_segment(false)?;
 
         let writer = WindowsAacM4aSinkWriter::create(
             output_path,
             self.sample_rate_hz,
             self.output_channels,
         )?;
-        self.writer = Some(writer);
+        self.sink = Some(WindowsAudioTailHoldbackSink::new(writer, self.sample_rate_hz));
         self.current_path = output_path.to_path_buf();
         self.frames_in_segment = 0;
+        // Carry the tail hold-back configuration onto the fresh segment's sink.
+        self.apply_tail_holdback_to_sink();
 
         Ok(finalization)
     }
@@ -981,10 +1158,15 @@ impl CaptureEngine {
         Ok(())
     }
 
-    /// Finalize the current segment and tear down capture.
-    fn stop(&mut self) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+    /// Finalize the current segment and tear down capture. `discard_inactivity_tail`
+    /// drops the withheld tail (inactivity stop) instead of flushing it (normal
+    /// stop).
+    fn stop(
+        &mut self,
+        discard_inactivity_tail: bool,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         let _ = self.audio_client.stop_stream();
-        self.finalize_segment()
+        self.finalize_segment(discard_inactivity_tail)
     }
 }
 

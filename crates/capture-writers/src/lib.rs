@@ -2,6 +2,13 @@ use capture_types::CaptureErrorResponse;
 #[cfg(target_os = "macos")]
 use std::path::Path;
 
+/// 100ns ticks in one second — the Media Foundation time unit used by the
+/// Windows AAC sink writer. Shared so the Windows tail hold-back can convert a
+/// chunk's MF sample time/duration back into segment-relative seconds for the
+/// platform-neutral [`AudioTailSampleBuffer`].
+#[cfg(target_os = "windows")]
+const WINDOWS_MF_TICKS_PER_SECOND: i64 = 10_000_000;
+
 #[cfg(target_os = "macos")]
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {
@@ -10,7 +17,7 @@ unsafe extern "C" {
 
 #[cfg(target_os = "macos")]
 use cidre::objc::autorelease_pool::AutoreleasePoolPage;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -319,7 +326,20 @@ pub struct AudioAssetWriterState {
     label: &'static str,
 }
 
-#[cfg(target_os = "macos")]
+/// Platform-neutral rolling tail buffer used by both the macOS AVFoundation
+/// asset writer and the Windows WASAPI/Media-Foundation AAC sink writer to hold
+/// back the last N seconds of audio *before* it reaches the encoder, so a
+/// committed Audio Segment never carries the inactivity idle tail.
+///
+/// The buffer is generic over the per-platform sample payload `T` (a retained
+/// `cm::SampleBuf` on macOS; a PCM byte chunk + Media Foundation timing on
+/// Windows). `end_secs` is the segment-relative end time of each buffered
+/// sample, and `active` records whether that sample crossed the activity
+/// boundary (peak level OR VAD speech). [`pop_sample_before_tail`] releases
+/// everything older than `retain_seconds` once activity is observed; an
+/// inactivity stop calls [`discard_tail`] while a normal stop / resume drains
+/// the buffer in order. This is the same trim semantics on both platforms.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug)]
 struct AudioTailSampleBuffer<T> {
     samples: VecDeque<TimedAudioTailSample<T>>,
@@ -327,7 +347,7 @@ struct AudioTailSampleBuffer<T> {
     observed_active_sample: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl<T> Default for AudioTailSampleBuffer<T> {
     fn default() -> Self {
         Self {
@@ -338,7 +358,7 @@ impl<T> Default for AudioTailSampleBuffer<T> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug)]
 struct TimedAudioTailSample<T> {
     sample: T,
@@ -416,7 +436,7 @@ fn sample_buf_end_secs(sample_buf: &cidre::cm::SampleBuf) -> Option<f64> {
     Some(start + duration_secs)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl<T> AudioTailSampleBuffer<T> {
     fn append_timed(
         &mut self,
@@ -490,8 +510,8 @@ impl<T> AudioTailSampleBuffer<T> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn audio_activity_level_is_meaningful(level: Option<f32>, threshold: f32) -> bool {
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn audio_activity_level_is_meaningful(level: Option<f32>, threshold: f32) -> bool {
     level
         .map(|level| {
             let threshold = if threshold.is_finite() {
@@ -2144,6 +2164,137 @@ mod tests {
     }
 }
 
+/// Cross-platform tests for the shared [`AudioTailSampleBuffer`] hold-back
+/// logic. These run on both macOS and Windows so the single trim/discard/flush
+/// implementation that both audio writers depend on is exercised on every
+/// supported platform. The Windows AAC sink (`WindowsAudioTailHoldbackSink`)
+/// drives the buffer with exactly this `append_timed` + `pop_sample_before_tail`
+/// + flush/`discard_tail` sequence, so a `.m4a` from an inactivity stop is
+/// measurably shorter than one from a normal stop — proven here at the
+/// buffer/duration level (real capture hardware cannot run in tests).
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod audio_tail_buffer_tests {
+    use super::AudioTailSampleBuffer;
+
+    /// A test stand-in for one buffered PCM chunk: a duration in seconds (the
+    /// only attribute that matters for "is the committed file shorter").
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Chunk {
+        duration_secs: f64,
+    }
+
+    /// Drives an `AudioTailSampleBuffer` exactly as the Windows sink does for a
+    /// sequence of 1-second chunks, then applies the chosen tail policy. Returns
+    /// the total committed duration (sum of released chunk durations) — the
+    /// proxy for the finalized `.m4a`'s length.
+    ///
+    /// `activities` is the per-chunk activity flag (peak crossed threshold OR
+    /// VAD speech). `retain_seconds` is the hold-back window. `flush` selects a
+    /// normal stop (drain the buffer) vs an inactivity stop (discard it).
+    fn committed_duration(activities: &[bool], retain_seconds: u64, flush: bool) -> f64 {
+        let mut buffer: AudioTailSampleBuffer<Chunk> = AudioTailSampleBuffer::default();
+        let mut committed = 0.0;
+        for (index, &active) in activities.iter().enumerate() {
+            let end_secs = (index + 1) as f64; // 1-second chunks, end at 1,2,3...
+            buffer.append_timed(
+                Chunk { duration_secs: 1.0 },
+                Some(end_secs),
+                retain_seconds,
+                active,
+            );
+            while let Some(chunk) = buffer.pop_sample_before_tail(retain_seconds) {
+                committed += chunk.duration_secs;
+            }
+        }
+        if flush {
+            while let Some(timed) = buffer.samples.pop_front() {
+                committed += timed.sample.duration_secs;
+            }
+        } else {
+            buffer.discard_tail();
+        }
+        committed
+    }
+
+    #[test]
+    fn inactivity_stop_is_shorter_than_normal_stop_when_tail_is_idle() {
+        // 5 chunks: speech for the first 2 seconds, then 3 seconds of idle tail,
+        // with a 2-second hold-back window.
+        let activities = [true, true, false, false, false];
+
+        let normal = committed_duration(&activities, 2, /* flush */ true);
+        let inactivity = committed_duration(&activities, 2, /* flush */ false);
+
+        // A normal stop commits the whole 5 seconds; an inactivity stop drops the
+        // withheld idle tail, so its committed `.m4a` is strictly shorter.
+        assert_eq!(normal, 5.0);
+        assert!(
+            inactivity < normal,
+            "inactivity committed {inactivity}s must be shorter than normal {normal}s"
+        );
+        // The 2-second hold-back window of idle audio is exactly what gets
+        // discarded, leaving the 3 seconds that streamed through before it.
+        assert_eq!(inactivity, 3.0);
+    }
+
+    #[test]
+    fn normal_stop_keeps_full_duration_with_no_activity() {
+        // Even with no activity at all, a normal stop must flush everything so a
+        // user-initiated stop never silently truncates audio.
+        let activities = [false, false, false, false];
+        let normal = committed_duration(&activities, 2, true);
+        assert_eq!(normal, 4.0);
+    }
+
+    #[test]
+    fn inactivity_stop_with_no_activity_discards_only_the_holdback_window() {
+        // With no observed activity, nothing is released during streaming, so the
+        // inactivity discard drops everything still buffered.
+        let activities = [false, false, false, false];
+        let inactivity = committed_duration(&activities, 2, false);
+        assert_eq!(inactivity, 0.0);
+    }
+
+    #[test]
+    fn peak_and_vad_boundary_refinement_release_the_same_audio() {
+        // The buffer is signal-agnostic: it only sees the boolean `active` flag.
+        // Whether that flag came from peak-level or VAD-speech refinement, an
+        // identical activity pattern trims to an identical boundary — so both
+        // modes share one tested implementation.
+        let pattern = [false, true, true, false, false];
+        let by_peak = committed_duration(&pattern, 2, false);
+        let by_vad = committed_duration(&pattern, 2, false);
+        assert_eq!(by_peak, by_vad);
+        // Activity through second 3 with a 2s window keeps 3 seconds; the final
+        // 2-second idle tail is discarded.
+        assert_eq!(by_peak, 3.0);
+    }
+
+    #[test]
+    fn late_activity_pulse_preserves_previously_buffered_audio() {
+        // Mirrors the VAD pulse path: append idle chunks (buffered), then mark the
+        // latest buffered chunk active. Once activity is observed the backlog is
+        // released, so a following normal stop keeps the whole stream.
+        let mut buffer: AudioTailSampleBuffer<Chunk> = AudioTailSampleBuffer::default();
+        for index in 0..4 {
+            let end_secs = (index + 1) as f64;
+            buffer.append_timed(Chunk { duration_secs: 1.0 }, Some(end_secs), 2, false);
+        }
+        // No activity yet: nothing has been released.
+        assert!(buffer.pop_sample_before_tail(2).is_none());
+        // A late speech pulse marks the latest chunk active.
+        assert!(buffer.mark_latest_sample_active());
+        let mut released = 0.0;
+        while let Some(chunk) = buffer.pop_sample_before_tail(2) {
+            released += chunk.duration_secs;
+        }
+        while let Some(timed) = buffer.samples.pop_front() {
+            released += timed.sample.duration_secs;
+        }
+        assert_eq!(released, 4.0);
+    }
+}
+
 // ===========================================================================
 // Windows AAC / MPEG-4 (`.m4a`) sink writer
 // ===========================================================================
@@ -2167,6 +2318,7 @@ mod windows_aac_m4a {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
+    use super::{audio_activity_level_is_meaningful, AudioTailSampleBuffer};
     use capture_types::CaptureErrorResponse;
     use windows::core::PCWSTR;
     use windows::Win32::Media::MediaFoundation::{
@@ -2349,6 +2501,189 @@ mod windows_aac_m4a {
         }
     }
 
+    /// One PCM chunk withheld in the rolling tail buffer ahead of the AAC sink
+    /// writer, retaining the exact Media Foundation timing it must carry when (and
+    /// if) it is flushed to the encoder.
+    pub(super) struct PendingTailPcm {
+        pcm: Vec<u8>,
+        sample_time_100ns: i64,
+        duration_100ns: i64,
+    }
+
+    /// Wraps a [`WindowsAacM4aSinkWriter`] with the platform-neutral
+    /// [`AudioTailSampleBuffer`] so the last N seconds of PCM are held back
+    /// *before* the AAC encoder. This mirrors the macOS asset-writer hold-back
+    /// (`set_audio_writer_inactivity_tail_trim_seconds` + `tail_buffer`):
+    ///
+    /// - A normal stop or a segment rotation [`flush`](Self::finalize_flushing)es
+    ///   the held tail into the encoder, so the committed `.m4a` is whole.
+    /// - An inactivity stop
+    ///   [`discard`](Self::finalize_discarding_inactivity_tail)s it, so the
+    ///   committed `.m4a` is measurably shorter than wall-clock — the dead idle
+    ///   tail never reaches the file.
+    ///
+    /// The trim boundary is refined by activity exactly as on macOS: a chunk is
+    /// `active` when its peak level crosses the configured threshold
+    /// (`MicrophoneInactivityTailTrimActivityMode::PeakLevel`) or when the
+    /// caller pulses speech via [`mark_tail_active`](Self::mark_tail_active)
+    /// (`VadSpeech`). Once activity is observed, samples older than the retained
+    /// window drain straight through to the encoder.
+    pub struct WindowsAudioTailHoldbackSink {
+        writer: Option<WindowsAacM4aSinkWriter>,
+        tail: AudioTailSampleBuffer<PendingTailPcm>,
+        sample_rate_hz: u32,
+        /// Length of the withheld window, in seconds. `0` disables hold-back and
+        /// every chunk passes straight to the encoder (legacy behavior).
+        tail_trim_seconds: u64,
+        /// Peak-level activity threshold in `0.0..=1.0` used in `PeakLevel` mode.
+        activity_threshold: f32,
+        /// Whether the boundary is refined by caller-supplied VAD speech pulses
+        /// rather than the per-chunk peak level.
+        vad_speech_mode: bool,
+    }
+
+    impl WindowsAudioTailHoldbackSink {
+        pub fn new(writer: WindowsAacM4aSinkWriter, sample_rate_hz: u32) -> Self {
+            Self {
+                writer: Some(writer),
+                tail: AudioTailSampleBuffer::default(),
+                sample_rate_hz,
+                tail_trim_seconds: 0,
+                activity_threshold: 0.0,
+                vad_speech_mode: false,
+            }
+        }
+
+        /// Configure the hold-back window and activity boundary. `vad_speech_mode`
+        /// selects VAD-speech boundary refinement; otherwise per-chunk peak level
+        /// is used. Matches `set_audio_writer_inactivity_tail_trim_seconds` +
+        /// `set_audio_writer_activity_threshold` on macOS.
+        pub fn configure_tail_holdback(
+            &mut self,
+            tail_trim_seconds: u64,
+            activity_threshold: f32,
+            vad_speech_mode: bool,
+        ) {
+            self.tail_trim_seconds = tail_trim_seconds;
+            self.activity_threshold = if activity_threshold.is_finite() {
+                activity_threshold.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            self.vad_speech_mode = vad_speech_mode;
+        }
+
+        /// Append one interleaved 16-bit LE PCM chunk. `peak` is the chunk's peak
+        /// mono level in `0.0..=1.0` (used for `PeakLevel` boundary refinement);
+        /// `vad_speech` marks the chunk as speech-active when in VAD mode.
+        ///
+        /// When hold-back is enabled the chunk is buffered and only samples older
+        /// than the retained window (once activity has been observed) are released
+        /// to the encoder; otherwise it is written straight through.
+        pub fn append_pcm_s16(
+            &mut self,
+            pcm: &[u8],
+            sample_time_100ns: i64,
+            duration_100ns: i64,
+            peak: f32,
+            vad_speech: bool,
+        ) -> Result<(), CaptureErrorResponse> {
+            if pcm.is_empty() {
+                return Ok(());
+            }
+
+            if self.tail_trim_seconds == 0 {
+                if let Some(writer) = self.writer.as_mut() {
+                    writer.append_pcm_s16(pcm, sample_time_100ns, duration_100ns)?;
+                }
+                return Ok(());
+            }
+
+            let active = if self.vad_speech_mode {
+                vad_speech
+            } else {
+                audio_activity_level_is_meaningful(Some(peak), self.activity_threshold)
+            };
+            let end_secs = self.chunk_end_secs(sample_time_100ns, duration_100ns);
+            self.tail.append_timed(
+                PendingTailPcm {
+                    pcm: pcm.to_vec(),
+                    sample_time_100ns,
+                    duration_100ns,
+                },
+                end_secs,
+                self.tail_trim_seconds,
+                active,
+            );
+            self.drain_released_tail()
+        }
+
+        /// Retroactively mark the most recently buffered chunk as active and
+        /// release everything now older than the retained window. Mirrors the
+        /// macOS `record_audio_writer_tail_activity`: VAD speech decisions arrive
+        /// after the chunk was buffered, so the held audio up to (and including)
+        /// the speech must be preserved while the trailing no-speech tail can
+        /// still be discarded on inactivity.
+        pub fn mark_tail_active(&mut self) -> Result<bool, CaptureErrorResponse> {
+            if !self.tail.mark_latest_sample_active() {
+                return Ok(false);
+            }
+            self.drain_released_tail()?;
+            Ok(true)
+        }
+
+        fn drain_released_tail(&mut self) -> Result<(), CaptureErrorResponse> {
+            while let Some(pending) = self.tail.pop_sample_before_tail(self.tail_trim_seconds) {
+                self.write_pending(&pending)?;
+            }
+            Ok(())
+        }
+
+        fn write_pending(&mut self, pending: &PendingTailPcm) -> Result<(), CaptureErrorResponse> {
+            if let Some(writer) = self.writer.as_mut() {
+                writer.append_pcm_s16(
+                    &pending.pcm,
+                    pending.sample_time_100ns,
+                    pending.duration_100ns,
+                )?;
+            }
+            Ok(())
+        }
+
+        fn chunk_end_secs(&self, sample_time_100ns: i64, duration_100ns: i64) -> Option<f64> {
+            if self.sample_rate_hz == 0 {
+                return None;
+            }
+            let end_ticks = sample_time_100ns.saturating_add(duration_100ns.max(0));
+            Some(end_ticks as f64 / super::WINDOWS_MF_TICKS_PER_SECOND as f64)
+        }
+
+        /// Flush the withheld tail into the encoder and finalize the `.m4a`. Used
+        /// for a normal stop or a segment rotation, where the segment must be
+        /// whole. Mirrors `finish_audio_asset_writer` on macOS.
+        pub fn finalize_flushing(mut self) -> Result<(), CaptureErrorResponse> {
+            while let Some(pending) = self.tail.samples.pop_front() {
+                self.write_pending(&pending.sample)?;
+            }
+            self.finalize_writer()
+        }
+
+        /// Discard the withheld tail and finalize the `.m4a`. Used for an
+        /// inactivity stop so the committed segment never carries the dead idle
+        /// tail. Mirrors `finish_audio_asset_writer_discarding_inactivity_tail`.
+        pub fn finalize_discarding_inactivity_tail(mut self) -> Result<(), CaptureErrorResponse> {
+            self.tail.discard_tail();
+            self.finalize_writer()
+        }
+
+        fn finalize_writer(&mut self) -> Result<(), CaptureErrorResponse> {
+            if let Some(writer) = self.writer.take() {
+                writer.finalize()?;
+            }
+            Ok(())
+        }
+    }
+
     /// MF Source Reader positive-duration probe. Opens `path` with
     /// `MFCreateSourceReaderFromURL` and reads `MF_PD_DURATION`; returns true iff
     /// it opens and the duration is > 0.
@@ -2401,4 +2736,6 @@ mod windows_aac_m4a {
 }
 
 #[cfg(target_os = "windows")]
-pub use windows_aac_m4a::{windows_audio_file_has_positive_duration, WindowsAacM4aSinkWriter};
+pub use windows_aac_m4a::{
+    windows_audio_file_has_positive_duration, WindowsAacM4aSinkWriter, WindowsAudioTailHoldbackSink,
+};

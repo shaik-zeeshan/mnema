@@ -145,7 +145,7 @@ Research notes:
 - [x] Implement frame-index sidecar generation. Index entries are accumulated live on the capture thread (each exported frame's segment-relative tick offset, which the encoder rebases to zero) and serialized to a binary sidecar at segment finalization in the same on-disk format macOS emits; monotonicity is enforced via the macOS-shared check. The decode-based rebuild-from-finalized-video recovery path stays unported, so an index-less segment is an exact-preview-only, never-scrub-eligible degradation.
 - [ ] Implement exact frame preview extraction from video.
 - [ ] Implement scrub preview batch generation.
-- [~] Implement audio trim/convert/finalization for microphone and system-audio outputs. Windows microphone and system-audio `.m4a` outputs are finalized and validated via the MF Source Reader positive-duration probe; trim/convert remains outstanding.
+- [~] Implement audio trim/convert/finalization for microphone and system-audio outputs. Windows microphone and system-audio `.m4a` outputs are finalized and validated via the MF Source Reader positive-duration probe. Inactivity-tail trim is implemented writer-side: both sessions hold back the last N seconds of PCM ahead of the AAC sink writer and discard that tail on an inactivity stop (flush it on a normal stop or rotation), with the trim boundary refined by peak level or VAD speech, mirroring the macOS asset-writer hold-back; general re-encode trim/convert remains outstanding.
 - [ ] Implement video-only screen output finalization when audio is muxed or recorded together.
 
 ### Processing
