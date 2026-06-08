@@ -387,6 +387,117 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_models_dir_accepts_platform_native_path() {
+        // The helper resolves the models dir from argv. On Windows the path
+        // carries a drive letter and backslashes; `PathBuf::from(OsString)`
+        // preserves it verbatim, so the helper never assumes a POSIX layout.
+        #[cfg(windows)]
+        let models_dir = r"C:\Users\example\AppData\mnema\speaker-analysis-models";
+        #[cfg(not(windows))]
+        let models_dir = "/home/example/.mnema/speaker-analysis-models";
+
+        let args = vec![
+            OsString::from("mnema.exe"),
+            OsString::from(SPEAKER_ANALYSIS_MODELS_DIR_ARG),
+            OsString::from(models_dir),
+        ];
+        let parsed = parse_models_dir_from_args(args).expect("models dir parses");
+        assert_eq!(parsed, PathBuf::from(models_dir));
+    }
+
+    #[test]
+    fn helper_request_payload_round_trips_over_byte_stream() {
+        // The helper frames its request/response as raw UTF-8 JSON bytes over
+        // stdin/stdout with no newline delimiter — the host writes
+        // `serde_json::to_vec`, the helper reads the whole stream and parses it.
+        // This must survive byte-for-byte on Windows (Rust stdio is binary, so
+        // there is no CRLF translation), so assert the exact serialize -> parse
+        // round trip the two sides rely on.
+        let request = SpeakerAnalysisRequest::new(
+            "/tmp/audio.m4a",
+            speaker_analysis::SHERPA_ONNX_PROVIDER_ID,
+            Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            "session-round-trip",
+            7,
+        );
+        let payload = SpeakerAnalysisHelperPayload {
+            request: request.clone(),
+        };
+        let bytes = serde_json::to_vec(&payload).expect("serialize request payload");
+        assert!(
+            !bytes.contains(&b'\n'),
+            "payload framing must not depend on a trailing newline"
+        );
+        let decoded: SpeakerAnalysisHelperPayload =
+            serde_json::from_slice(&bytes).expect("parse request payload");
+        assert_eq!(decoded.request.session_id, request.session_id);
+        assert_eq!(decoded.request.audio_segment_id, request.audio_segment_id);
+        assert_eq!(decoded.request.provider, request.provider);
+    }
+
+    // Windows kill-on-drop: spawning a long-lived child through tokio with the
+    // same `kill_on_drop(true)` flag the helper sets must terminate it when the
+    // handle is dropped (tokio maps the flag to `TerminateProcess` on Windows).
+    // We spawn `ping -n 30 127.0.0.1` directly rather than through
+    // `speaker_analysis_helper_command` because the helper builder hard-codes
+    // the `--speaker-analysis-models-dir` argv that `ping` would reject; the
+    // kill semantics under test are identical (same `kill_on_drop` flag), and
+    // the production argv/env/stdio shape is already covered by the JSON
+    // round-trip and `parse_models_dir` tests above. Verifying the kill against
+    // the *real Sherpa helper subprocess* on multi-speaker hardware is the
+    // operator-deferred gap.
+    #[cfg(windows)]
+    #[test]
+    fn kill_on_drop_terminates_child_on_windows() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                use tokio::time::{sleep, Duration};
+
+                let mut child = Command::new("ping")
+                    .arg("-n")
+                    .arg("30")
+                    .arg("127.0.0.1")
+                    .kill_on_drop(true)
+                    .stdout(Stdio::null())
+                    .spawn()
+                    .expect("spawn ping");
+                let pid = child.id().expect("child has a pid");
+
+                sleep(Duration::from_millis(300)).await;
+                assert!(process_is_alive(pid), "ping child did not start");
+
+                drop(child);
+                sleep(Duration::from_millis(1_500)).await;
+
+                assert!(
+                    !process_is_alive(pid),
+                    "dropped child {pid} kept running after kill_on_drop"
+                );
+            });
+    }
+
+    #[cfg(windows)]
+    fn process_is_alive(pid: u32) -> bool {
+        // `tasklist /FI "PID eq <pid>"` lists the process row when alive and
+        // prints "INFO: No tasks..." otherwise; the PID appears in the CSV row
+        // (quoted) only when the process exists.
+        let output = std::process::Command::new("tasklist")
+            .arg("/FI")
+            .arg(format!("PID eq {pid}"))
+            .arg("/NH")
+            .arg("/FO")
+            .arg("CSV")
+            .output()
+            .expect("run tasklist");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.contains(&format!("\"{pid}\""))
+    }
+
     #[cfg(unix)]
     #[test]
     fn helper_command_kills_child_when_dropped() {

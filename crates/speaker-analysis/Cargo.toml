@@ -26,6 +26,7 @@ tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 sherpa-onnx-runtime = { package = "sherpa-onnx", version = "1.13.1", optional = true, default-features = false, features = ["shared"] }
+media-decode = { path = "../media-decode" }
 
 [target.'cfg(not(windows))'.dependencies]
 sherpa-onnx-runtime = { package = "sherpa-onnx", version = "1.13.1", optional = true }

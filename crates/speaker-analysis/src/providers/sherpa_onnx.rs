@@ -8,7 +8,7 @@ use std::{
 use async_trait::async_trait;
 use serde_json::json;
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 use crate::macos_audio_decode::resample_linear;
 #[cfg(target_os = "macos")]
 use crate::macos_audio_decode::{decode_audio_to_mono_with_avassetreader_fallback, DecodedAudio};
@@ -1358,10 +1358,29 @@ fn decode_audio_to_mono_16khz(path: &Path) -> SpeakerAnalysisResult<Vec<f32>> {
     ))
 }
 
-#[cfg(all(feature = "sherpa-onnx", not(target_os = "macos")))]
+#[cfg(all(feature = "sherpa-onnx", target_os = "windows"))]
+fn decode_audio_to_mono_16khz(path: &Path) -> SpeakerAnalysisResult<Vec<f32>> {
+    // Windows routes through the shared `media-decode` MF Source Reader seam
+    // (ADR 0024) rather than AVFoundation, then resamples the native-rate mono
+    // output to Sherpa's 16 kHz with the same in-crate resampler macOS uses.
+    let decoded = media_decode::decode_to_mono_f32(path)
+        .map_err(|error| SpeakerAnalysisError::Analysis(error.to_string()))?;
+    Ok(resample_linear(
+        &decoded.samples,
+        decoded.sample_rate_hz,
+        SAMPLE_RATE_HZ,
+    ))
+}
+
+#[cfg(all(
+    feature = "sherpa-onnx",
+    not(target_os = "macos"),
+    not(target_os = "windows")
+))]
 fn decode_audio_to_mono_16khz(_path: &Path) -> SpeakerAnalysisResult<Vec<f32>> {
     Err(SpeakerAnalysisError::ProviderUnavailable(
-        "sherpa-onnx audio decoding is only implemented with AVFoundation on macOS in v1"
+        "sherpa-onnx audio decoding is only implemented with AVFoundation on macOS and the \
+         media-decode seam on Windows in v1"
             .to_string(),
     ))
 }
@@ -1489,6 +1508,71 @@ mod tests {
         let embedding = vec![0.1, -0.2, 0.3];
         let bytes = f32_embedding_to_le_bytes(&embedding);
         assert_eq!(f32_embedding_from_le_bytes(&bytes), Some(embedding));
+    }
+
+    // Exercises the Windows decode->resample wiring end to end through the real
+    // `media-decode` MF Source Reader seam: a synthesized 8 kHz mono PCM WAV (MF
+    // reads WAV natively, no AAC fixture needed) decodes to native-rate mono and
+    // resamples to Sherpa's 16 kHz. Running real diarization on a captured `.m4a`
+    // on multi-speaker hardware is the operator-deferred gap.
+    #[cfg(all(feature = "sherpa-onnx", target_os = "windows"))]
+    #[test]
+    fn windows_decode_resamples_to_16khz_through_seam() {
+        let source_rate_hz = 8_000u32;
+        // A short non-empty ramp so the resampled output is observably non-empty.
+        let pcm_i16: Vec<i16> = (0..16).map(|i| (i * 1000) as i16).collect();
+        let wav = build_mono_pcm16_wav(source_rate_hz, &pcm_i16);
+
+        let path = std::env::temp_dir().join(format!(
+            "sherpa-decode-test-{}.wav",
+            std::process::id()
+        ));
+        std::fs::write(&path, &wav).expect("write temp wav");
+
+        let samples = decode_audio_to_mono_16khz(&path);
+        let _ = std::fs::remove_file(&path);
+        let samples = samples.expect("Windows seam should decode and resample the WAV");
+
+        assert!(
+            !samples.is_empty(),
+            "resampled 16 kHz output must be non-empty"
+        );
+        // Upsampling 8 kHz -> 16 kHz roughly doubles the sample count.
+        assert!(
+            samples.len() >= pcm_i16.len(),
+            "expected at least as many samples after upsampling, got {}",
+            samples.len()
+        );
+        assert!(samples.iter().all(|s| (-1.0..=1.0).contains(s)));
+    }
+
+    /// Build a minimal canonical 44-byte-header mono 16-bit PCM WAV.
+    #[cfg(all(feature = "sherpa-onnx", target_os = "windows"))]
+    fn build_mono_pcm16_wav(sample_rate_hz: u32, samples: &[i16]) -> Vec<u8> {
+        let channels: u16 = 1;
+        let bits_per_sample: u16 = 16;
+        let block_align: u16 = channels * bits_per_sample / 8;
+        let byte_rate: u32 = sample_rate_hz * block_align as u32;
+        let data_len: u32 = (samples.len() * 2) as u32;
+
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
+        wav.extend_from_slice(&1u16.to_le_bytes()); // WAVE_FORMAT_PCM
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate_hz.to_le_bytes());
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&bits_per_sample.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
     }
 
     fn request_with_enrollment(score: f32) -> SpeakerAnalysisRequest {

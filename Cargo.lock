@@ -6362,6 +6362,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "cidre",
+ "media-decode",
  "serde",
  "serde_bytes",
  "serde_json",
