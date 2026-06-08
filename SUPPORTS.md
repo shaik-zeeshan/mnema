@@ -28,6 +28,8 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Audio transcription: Apple Speech | [x] | [ ] | [ ] | Apple-only provider. |
 | Audio transcription: Local Whisper/Parakeet | [x] | [~] | [~] | Models are cross-platform-ish, but audio decode is AVFoundation-only today. |
 | Speaker analysis | [x] | [~] | [~] | Model runtime is cross-platform-ish, but audio decode is AVFoundation-only today. |
+| Audio decode to mono PCM (`media-decode` seam) | [x] | [~] | [ ] | macOS keeps its AVFoundation decoders in-crate. Windows decodes `.m4a`/`.mp4` audio to native-rate mono `f32` via the `crates/media-decode` MF Source Reader seam (ADR 0024). Transcription/speaker-analysis still resample in-crate; only system-audio speech activity is wired through the seam so far. |
+| System-audio speech activity | [x] | [~] | [ ] | macOS decodes via AVFoundation; Windows decodes through the `media-decode` MF Source Reader seam and runs the same VAD runtime. On-device decode of a captured Windows `.m4a` is deferred to an operator. |
 | Inactivity detection | [x] | [~] | [ ] | macOS uses CoreGraphics input idle plus capture-sourced screen/audio activity. Windows uses system-input snapshots plus capture-sourced screen/microphone/system-audio activity for inactivity pause/resume. |
 | Sleep/wake/session-lock recovery | [x] | [~] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. Windows transient-liveness recovery currently covers display-unavailable and session-lock screen suspension while audio continues. |
 | Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
@@ -148,10 +150,11 @@ Research notes:
 
 ### Processing
 
-- [ ] Add Windows audio decode to mono PCM for Local Whisper.
-- [ ] Add Windows audio decode to mono PCM for Parakeet.
-- [ ] Add Windows audio decode to mono PCM for speaker analysis.
-- [ ] Add Windows audio decode to mono PCM for system-audio speech activity.
+- [x] Add the `crates/media-decode` MF Source Reader seam decoding `.m4a`/`.mp4` audio to native-rate mono `f32` (ADR 0024); processing crates depend on it, no capture crate grows a decoder. On-device decode of a captured Windows `.m4a` is deferred to an operator.
+- [ ] Wire Local Whisper through the `media-decode` seam on Windows (still AVFoundation-only).
+- [ ] Wire Parakeet through the `media-decode` seam on Windows (still AVFoundation-only).
+- [ ] Wire speaker analysis through the `media-decode` seam on Windows (still AVFoundation-only).
+- [x] Wire system-audio speech activity through the `media-decode` seam on Windows; decoded mono PCM runs the same VAD runtime as macOS. On-device verification deferred to an operator.
 - [ ] Verify packaged Tesseract/PaddleOCR runtimes and model installation on Windows.
 - [ ] Choose Windows OCR default provider.
 - [ ] Choose Windows transcription default provider.
@@ -261,8 +264,9 @@ Use this map when turning checklist items into implementation slices.
 | `apps/desktop/src-tauri/src/native_capture/privacy.rs` | ScreenCaptureKit app exclusion filters | OS-specific live exclusion or explicit unsupported/degraded behavior |
 | `apps/desktop/src-tauri/src/native_capture_system_idle.rs` | CoreGraphics idle time | `GetLastInputInfo` on Windows; portal/X11/compositor path on Linux |
 | `apps/desktop/src-tauri/src/app_infra/frame_preview.rs` | AVAssetImageGenerator exact/scrub previews | FFmpeg/GStreamer/Media Foundation extractor |
-| `crates/audio-transcription/src/macos_audio_decode.rs` | AVFoundation audio decode for Local Whisper/Parakeet | Cross-platform audio decode module |
-| `crates/speaker-analysis/src/macos_audio_decode.rs` | AVFoundation audio decode for diarization/recognition | Cross-platform audio decode module |
+| `crates/media-decode/src/lib.rs` | Windows MF Source Reader audio decode to native-rate mono `f32` (ADR 0024); shared processing seam | Cross-platform decode seam; macOS decoders stay in their existing crates (out of scope here) |
+| `crates/audio-transcription/src/macos_audio_decode.rs` | AVFoundation audio decode for Local Whisper/Parakeet | Migrate Windows decode to the `media-decode` seam; keep macOS in-crate |
+| `crates/speaker-analysis/src/macos_audio_decode.rs` | AVFoundation audio decode for diarization/recognition | Migrate Windows decode to the `media-decode` seam; keep macOS in-crate |
 | `crates/ocr/src/lib.rs`, `crates/app-infra/src/processing/apple_vision.rs` | Apple Vision OCR | Disable on non-Apple; default to Tesseract/PaddleOCR |
 | `crates/audio-transcription/src/providers/apple_speech.rs` | Apple Speech | Disable on non-Apple; default to local providers/cloud if introduced |
 | `crates/app-infra/src/capture_index_key_store.rs` | macOS Keychain through `security` CLI | Windows Credential Manager/DPAPI; Linux Secret Service/KWallet |

@@ -154,13 +154,31 @@ fn detect_system_audio_speech(
         .map_err(|error| AppInfraError::AudioTranscriptionEngine(error.to_string()))
 }
 
-#[cfg(not(target_os = "macos"))]
+// On Windows the captured system-audio segment is an AAC `.m4a`; decode it to
+// native-rate mono `f32` through the `media-decode` seam (MF Source Reader) and
+// run the same VAD runtime over the mono PCM as the macOS path. The seam returns
+// the native rate; `detect_f32_mono` resamples internally as needed.
+#[cfg(target_os = "windows")]
+fn detect_system_audio_speech(
+    file_path: &str,
+    detector: AudioSpeechDetector,
+) -> Result<capture_vad::AudioSpeechDetectionOutcome> {
+    let decoded = media_decode::decode_to_mono_f32(file_path)
+        .map_err(|error| AppInfraError::AudioTranscriptionEngine(error.to_string()))?;
+    let mut runtime = capture_vad::AudioSpeechDetectorRuntime::new(detector)
+        .map_err(|error| AppInfraError::AudioTranscriptionEngine(error.to_string()))?;
+    runtime
+        .detect_f32_mono(&decoded.samples, decoded.sample_rate_hz)
+        .map_err(|error| AppInfraError::AudioTranscriptionEngine(error.to_string()))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn detect_system_audio_speech(
     _file_path: &str,
     detector: AudioSpeechDetector,
 ) -> Result<capture_vad::AudioSpeechDetectionOutcome> {
     Err(AppInfraError::AudioTranscriptionEngine(format!(
-        "system-audio speech detection with {} is only available on macOS",
+        "system-audio speech detection with {} is only available on macOS and Windows",
         capture_vad::configured_adapter_as_str(detector)
     )))
 }
