@@ -3869,6 +3869,35 @@ async fn delete_recent_capture_inner(
             deleted_audio_segment_ids: deletion.audio_segment_ids.clone(),
         },
     );
+
+    // ADR 0029: the privacy panic button cascades into derived **User Context**.
+    // The raw rows just deleted are the primary, already-committed guarantee; now
+    // purge the Activities derived from those exact frame/audio subjects and drop
+    // any Conclusion left ungrounded, so "spent 5 minutes on [the sensitive
+    // thing]" cannot survive in the dossier and that derivation is no longer
+    // re-runnable (its Activities are gone). Best-effort: a failure is logged but
+    // never undoes or fails the raw capture deletion. Time-based Retention Policy
+    // deliberately does NOT take this path.
+    match infra
+        .user_context()
+        .delete_derived_for_capture_subjects(&deletion.frame_ids, &deletion.audio_segment_ids)
+        .await
+    {
+        Ok(cascade) => {
+            if cascade.deleted_activities > 0 || cascade.deleted_conclusions > 0 {
+                let _ = app_handle.emit(
+                    crate::user_context::worker::USER_CONTEXT_CHANGED_EVENT,
+                    (),
+                );
+            }
+        }
+        Err(error) => {
+            crate::native_capture::debug_log::log_warn(format!(
+                "delete recent capture: derived user-context cascade failed (raw delete already committed): {error}"
+            ));
+        }
+    }
+
     let post_delete_result = async {
         let file_delete_errors =
             delete_recent_capture_files_and_tombstone(infra, &deletion, &retention_context).await?;

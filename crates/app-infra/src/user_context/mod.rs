@@ -19,5 +19,5 @@ pub mod store;
 pub use capture_source::{CaptureWindow, CaptureWindowItem};
 pub use store::{
     evidence_fingerprint, NewActivity, NewActivityEvidence, NewConclusion, NewConclusionEvidence,
-    NewDerivationRun, UserContextStore,
+    NewDerivationRun, UserContextCascadeSummary, UserContextStore,
 };

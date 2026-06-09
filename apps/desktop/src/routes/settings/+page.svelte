@@ -4,7 +4,7 @@
   import { Portal } from "bits-ui";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { ask } from "@tauri-apps/plugin-dialog";
+  import { ask, confirm } from "@tauri-apps/plugin-dialog";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
@@ -703,6 +703,34 @@
       userContextRunNowMessage = error instanceof Error ? error.message : String(error);
     } finally {
       userContextRunNowRunning = false;
+    }
+  }
+
+  // Wipe User Context (#97, ADR 0029): the explicit, full clear of the derived
+  // dossier — the one control that erases the longer-than-retention memory. It
+  // clears all derived understanding (Activities, Conclusions, Dismissal State),
+  // keeps raw captures + settings, and turns the Reasoning Engine off (the
+  // recording_settings_changed event flips the engine toggle for us). Disk-
+  // destructive of derived data, so it goes behind a Tauri confirm dialog.
+  let userContextWiping = $state(false);
+
+  async function wipeUserContext() {
+    if (userContextWiping) return;
+    const confirmed = await confirm(
+      "This permanently clears everything Mnema has derived about you — all Activities, Conclusions, and your Dismissal corrections. Your raw recordings and settings are kept. The Reasoning Engine will be turned off; turning it back on starts learning from scratch.",
+      { title: "Wipe User Context?", kind: "warning", okLabel: "Wipe", cancelLabel: "Cancel" }
+    );
+    if (!confirmed) return;
+    userContextWiping = true;
+    try {
+      await invoke("wipe_user_context");
+      // The surface is now empty; the recording_settings_changed event turns the
+      // engine toggle off on its own, but refresh status/lists here immediately.
+      await refreshUserContext();
+    } catch (error) {
+      userContextStatusError = error instanceof Error ? error.message : String(error);
+    } finally {
+      userContextWiping = false;
     }
   }
 
@@ -4539,6 +4567,25 @@
                 {/each}
               </ul>
             {/if}
+          </div>
+
+          <div class="user-context-wipe">
+            <p class="group-hint">
+              This derived understanding deliberately outlives your raw-capture
+              Retention Policy window — Mnema can keep what it learned about you
+              long after the recordings it learned from have aged out. Wipe User
+              Context is the only control that clears it.
+            </p>
+            <div class="row-actions">
+              <button
+                class="btn btn--ghost btn--sm user-context-wipe__btn"
+                type="button"
+                disabled={userContextWiping}
+                onclick={wipeUserContext}
+              >
+                {userContextWiping ? "Wiping…" : "Wipe User Context"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -8867,6 +8914,29 @@
 
   .btn--danger:not(:disabled):hover {
     background: var(--app-danger-bg);
+    border-color: var(--app-danger);
+  }
+
+  /* ── Wipe User Context (destructive end of the User Context block) ── */
+  .user-context-wipe {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--app-border-subtle, var(--app-border));
+  }
+
+  /* A subtly destructive ghost button: ghost shape, danger-tinted text so it
+     reads as a recovery/destructive control without the full filled-danger
+     weight of a Delete button. */
+  .user-context-wipe__btn {
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+
+  .user-context-wipe__btn:not(:disabled):hover {
+    background: var(--app-danger-bg-soft);
     border-color: var(--app-danger);
   }
 

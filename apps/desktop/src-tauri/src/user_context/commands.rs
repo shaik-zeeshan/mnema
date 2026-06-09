@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use capture_types::{
-    Activity, Conclusion, SubjectTrajectory, SubjectView, UserContextStatus, UserContextTokenUsage,
+    Activity, Conclusion, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest,
+    UserContextStatus, UserContextTokenUsage,
 };
 use serde::Serialize;
 use tauri::Emitter;
@@ -273,6 +274,51 @@ pub async fn user_context_set_pinned(
         .set_pinned(id, pinned)
         .await
         .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// **Wipe User Context** (#97, ADR 0029): the explicit, full clear of the derived
+/// dossier. Because that dossier deliberately outlives the raw-capture Retention
+/// Policy window, this is the disclosed control for erasing it. In order:
+///
+/// 1. Clear every `user_context_*` table — all derived **Activity** /
+///    **Conclusion** data AND **Dismissal State** and the derivation-run ledger
+///    (`wipe_all`). Raw captures and other settings are untouched.
+/// 2. Turn the **Reasoning Engine** OFF through the normal AI-runtime settings
+///    flow (`enabled = false`), so it persists to `recording-settings.json` and
+///    broadcasts `recording_settings_changed`/`*_domain_changed`. Wiping implies
+///    "I'm done"; rebuilding is a deliberate re-opt-in. (Merely toggling the
+///    engine off — the separate master toggle — is NOT a wipe: it stops new
+///    derivation but leaves the dossier readable.)
+/// 3. Emit `user_context_changed` so the now-empty surface refreshes.
+#[tauri::command]
+pub async fn wipe_user_context(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+    infra: tauri::State<'_, AppInfraState>,
+) -> Result<(), String> {
+    // 1. Storage half: clear the whole dossier.
+    infra
+        .user_context()
+        .wipe_all()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 2. Disable the engine via the same settings-update path the toggle uses, so
+    //    persistence + broadcasts (recording_settings_changed / domain_changed)
+    //    are identical.
+    crate::native_capture::update_ai_runtime_settings(
+        UpdateAiRuntimeSettingsRequest {
+            enabled: Some(false),
+            ..Default::default()
+        },
+        app_handle.clone(),
+        state,
+    )
+    .map_err(|e| e.message)?;
+
+    // 3. Refresh the (now empty) User Context surface.
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     Ok(())
 }

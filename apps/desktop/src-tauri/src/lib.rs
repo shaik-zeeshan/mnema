@@ -495,6 +495,7 @@ pub fn run() {
             user_context::commands::user_context_run_derivation_now,
             user_context::commands::user_context_dismiss_conclusion,
             user_context::commands::user_context_set_pinned,
+            user_context::commands::wipe_user_context,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,

@@ -9,7 +9,7 @@
 //! `0022_user_context_activities.sql`); they are read/written as raw `i64`
 //! columns with no RFC3339 parsing.
 
-use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
 use time::OffsetDateTime;
 
 use capture_types::{
@@ -18,6 +18,11 @@ use capture_types::{
 };
 
 use crate::Result;
+
+/// Max bound parameters per `IN (...)` chunk, mirroring
+/// `capture_retention.rs`'s `SQLITE_BIND_CHUNK_SIZE` so large delete-subject
+/// id lists stay well under SQLite's bind limit.
+const SQLITE_BIND_CHUNK_SIZE: usize = 500;
 
 /// A new Activity (the evidence layer) plus the raw-capture evidence it is
 /// grounded in, ready to persist via
@@ -82,6 +87,16 @@ pub struct NewConclusion {
 pub struct NewConclusionEvidence {
     pub activity_id: i64,
     pub stance: EvidenceStance,
+}
+
+/// Counts from a **Delete Recent Capture** derived-data cascade
+/// ([`UserContextStore::delete_derived_for_capture_subjects`]): how many
+/// **Activity** rows and how many now-ungrounded **Conclusion** rows were
+/// dropped. Used for the warning log + UI refresh; not persisted.
+#[derive(Debug, Clone, Default)]
+pub struct UserContextCascadeSummary {
+    pub deleted_activities: i64,
+    pub deleted_conclusions: i64,
 }
 
 /// SQLite-backed storage for the User Context dossier (Activities + evidence +
@@ -827,7 +842,135 @@ impl UserContextStore {
         &self.pool
     }
 
-    // later-slice: wipe / cascade methods (#97) land with their own slices.
+    // --- #97: Delete Recent Capture cascade + Wipe User Context ------------
+
+    /// **Delete Recent Capture** derived-data cascade (ADR 0029). The privacy
+    /// panic button has just deleted the raw frames / audio segments named by
+    /// `frame_ids` / `audio_ids`; this purges the **Activity** rows derived from
+    /// them and drops any **Conclusion** left with no surviving evidence.
+    ///
+    /// In ONE transaction:
+    /// 1. Find every Activity with ANY evidence row pointing at a deleted subject
+    ///    (`subject_type='frame' AND subject_id IN frame_ids` OR
+    ///    `subject_type='audio_segment' AND subject_id IN audio_ids`), chunked by
+    ///    [`SQLITE_BIND_CHUNK_SIZE`].
+    /// 2. DELETE those Activities — their `*_activity_evidence` and
+    ///    `*_conclusion_evidence` link rows cascade via FK.
+    /// 3. DROP every Conclusion that now has ZERO remaining
+    ///    `*_conclusion_evidence` rows (no ungrounded Conclusions). A Conclusion
+    ///    still grounded by ≥1 surviving evidence Activity STAYS — the minimal
+    ///    "re-judge or drop" rule: drop ungrounded, keep grounded.
+    ///
+    /// **Dismissal State is left untouched**: a dismissal is keyed by
+    /// subject/statement (no FK to any capture subject) and must survive capture
+    /// deletion. Returns the dropped Activity / Conclusion counts. A no-op (and an
+    /// empty summary) when both id lists are empty.
+    pub async fn delete_derived_for_capture_subjects(
+        &self,
+        frame_ids: &[i64],
+        audio_ids: &[i64],
+    ) -> Result<UserContextCascadeSummary> {
+        if frame_ids.is_empty() && audio_ids.is_empty() {
+            return Ok(UserContextCascadeSummary::default());
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        // 1. Activities with any evidence row in the deleted subjects.
+        let mut activity_ids: Vec<i64> = Vec::new();
+        for (subject_type, subject_ids) in
+            [("frame", frame_ids), ("audio_segment", audio_ids)]
+        {
+            for chunk in subject_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
+                if chunk.is_empty() {
+                    continue;
+                }
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    "SELECT DISTINCT activity_id FROM user_context_activity_evidence \
+                     WHERE subject_type = ",
+                );
+                query.push_bind(subject_type);
+                query.push(" AND subject_id IN (");
+                let mut separated = query.separated(", ");
+                for id in chunk {
+                    separated.push_bind(id);
+                }
+                separated.push_unseparated(")");
+                activity_ids.extend(
+                    query
+                        .build()
+                        .fetch_all(&mut *tx)
+                        .await?
+                        .into_iter()
+                        .map(|row| row.get::<i64, _>("activity_id")),
+                );
+            }
+        }
+        activity_ids.sort_unstable();
+        activity_ids.dedup();
+
+        // 2. DELETE those Activities; activity_evidence + conclusion_evidence rows
+        //    cascade via FK.
+        let mut deleted_activities = 0_i64;
+        for chunk in activity_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "DELETE FROM user_context_activities WHERE id IN (",
+            );
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(id);
+            }
+            separated.push_unseparated(")");
+            deleted_activities += query.build().execute(&mut *tx).await?.rows_affected() as i64;
+        }
+
+        // 3. Drop every Conclusion now grounded by ZERO evidence Activities (no
+        //    ungrounded Conclusions). A Conclusion with ≥1 surviving evidence row
+        //    stays.
+        let deleted_conclusions = sqlx::query(
+            "DELETE FROM user_context_conclusions \
+             WHERE NOT EXISTS (\
+                 SELECT 1 FROM user_context_conclusion_evidence ce \
+                 WHERE ce.conclusion_id = user_context_conclusions.id\
+             )",
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected() as i64;
+
+        tx.commit().await?;
+        Ok(UserContextCascadeSummary {
+            deleted_activities,
+            deleted_conclusions,
+        })
+    }
+
+    /// **Wipe User Context** storage half (ADR 0029): in ONE transaction, clear
+    /// every `user_context_*` table — all derived **Activity** / **Conclusion**
+    /// data AND **Dismissal State** and the derivation-run ledger. Raw captures
+    /// and settings are untouched (this only owns the dossier tables); the engine
+    /// is turned off by the Tauri command, not here. Deletes children before
+    /// parents to stay correct regardless of FK enforcement.
+    pub async fn wipe_all(&self) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for table in [
+            // Children first (leaf evidence / history), then parents, then the
+            // FK-free dismissal + derivation-run ledgers.
+            "user_context_activity_evidence",
+            "user_context_conclusion_evidence",
+            "user_context_confidence_history",
+            "user_context_activities",
+            "user_context_conclusions",
+            "user_context_dismissals",
+            "user_context_derivation_runs",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table}"))
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 /// Deterministic fingerprint of an evidence **Activity**-id set: the sorted,
@@ -991,6 +1134,21 @@ mod tests {
             .await
             .expect("enable foreign keys");
         for statement in [
+            "CREATE TABLE user_context_derivation_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                window_start_ms INTEGER,
+                window_end_ms INTEGER,
+                status TEXT NOT NULL DEFAULT 'completed',
+                activities_derived INTEGER NOT NULL DEFAULT 0,
+                conclusions_derived INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                provider TEXT,
+                model TEXT,
+                error TEXT,
+                created_at_ms INTEGER NOT NULL
+            )",
             "CREATE TABLE user_context_activities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -1431,5 +1589,226 @@ mod tests {
         let after = store.list_decayable_conclusions().await.expect("decayable");
         assert!(after.iter().any(|c| c.id == pinned), "unpinned is decayable again");
         });
+    }
+
+    /// Seed an Activity with a SINGLE evidence row of the given subject, so the
+    /// cascade test can target it precisely by (subject_type, subject_id).
+    async fn seed_activity_with_subject(
+        store: &UserContextStore,
+        title: &str,
+        started_at_ms: i64,
+        subject_type: &str,
+        subject_id: i64,
+    ) -> i64 {
+        store
+            .insert_activity_with_evidence(NewActivity {
+                title: title.to_string(),
+                summary: format!("{title} summary"),
+                category: None,
+                started_at_ms,
+                ended_at_ms: started_at_ms + 1,
+                derivation_run_id: None,
+                evidence: vec![NewActivityEvidence {
+                    subject_type: subject_type.to_string(),
+                    subject_id,
+                    captured_at_ms: Some(started_at_ms),
+                }],
+            })
+            .await
+            .expect("insert activity")
+    }
+
+    #[test]
+    fn delete_derived_for_capture_subjects_drops_ungrounded_keeps_grounded() {
+        block_on(async {
+        let store = test_store().await;
+
+        // Activity A is grounded in frame 10 (which will be deleted).
+        // Activity B is grounded in frame 20 (which survives).
+        let activity_a = seed_activity_with_subject(&store, "Worked on the spec", 100, "frame", 10).await;
+        let activity_b = seed_activity_with_subject(&store, "Reviewed a PR", 200, "frame", 20).await;
+        // Activity C is grounded in audio segment 30 (which will be deleted).
+        let activity_c = seed_activity_with_subject(&store, "Call about the spec", 300, "audio_segment", 30).await;
+
+        // Conclusion 1: grounded ONLY by A (lost entirely when A goes) -> dropped.
+        let only_a = store
+            .upsert_conclusion(draft("Spec", "Cares about the spec", 0.7))
+            .await
+            .expect("only_a");
+        store
+            .replace_conclusion_evidence(
+                only_a,
+                vec![NewConclusionEvidence { activity_id: activity_a, stance: EvidenceStance::Support }],
+            )
+            .await
+            .expect("evidence only_a");
+
+        // Conclusion 2: grounded by BOTH A and B; A goes but B survives -> stays.
+        let a_and_b = store
+            .upsert_conclusion(draft("Work", "Active on work", 0.6))
+            .await
+            .expect("a_and_b");
+        store
+            .replace_conclusion_evidence(
+                a_and_b,
+                vec![
+                    NewConclusionEvidence { activity_id: activity_a, stance: EvidenceStance::Support },
+                    NewConclusionEvidence { activity_id: activity_b, stance: EvidenceStance::Support },
+                ],
+            )
+            .await
+            .expect("evidence a_and_b");
+
+        // Conclusion 3: grounded ONLY by C (audio); C goes -> dropped.
+        let only_c = store
+            .upsert_conclusion(draft("Calls", "On calls", 0.5))
+            .await
+            .expect("only_c");
+        store
+            .replace_conclusion_evidence(
+                only_c,
+                vec![NewConclusionEvidence { activity_id: activity_c, stance: EvidenceStance::Support }],
+            )
+            .await
+            .expect("evidence only_c");
+
+        // A dismissal row keyed by subject/statement: must survive the cascade.
+        let dismissed = store
+            .upsert_conclusion(draft("Vim", "Uses Vim", 0.4))
+            .await
+            .expect("dismissed");
+        store.dismiss_conclusion(dismissed).await.expect("dismiss");
+        assert_eq!(store.list_dismissals().await.expect("dismissals").len(), 1);
+
+        // Cascade: frame 10 + audio segment 30 were deleted (frame 20 survives).
+        let summary = store
+            .delete_derived_for_capture_subjects(&[10], &[30])
+            .await
+            .expect("cascade");
+
+        // Activities A and C dropped; B survives.
+        assert_eq!(summary.deleted_activities, 2, "A (frame 10) and C (audio 30)");
+        assert!(store.list_recent_activities(100, 0).await.expect("activities")
+            .iter().all(|a| a.id != activity_a && a.id != activity_c));
+        assert!(store.list_recent_activities(100, 0).await.expect("activities")
+            .iter().any(|a| a.id == activity_b), "B (frame 20) survives");
+
+        // Conclusion 1 (only A) and 3 (only C) dropped; Conclusion 2 (A+B) stays
+        // because B's evidence link survives.
+        assert_eq!(summary.deleted_conclusions, 2, "only_a and only_c dropped");
+        assert!(store.get_conclusion(only_a).await.expect("get").is_none());
+        assert!(store.get_conclusion(only_c).await.expect("get").is_none());
+        let surviving = store.get_conclusion(a_and_b).await.expect("get").expect("a_and_b stays");
+        assert_eq!(surviving.evidence.len(), 1, "only B's evidence link remains");
+        assert_eq!(surviving.evidence[0].activity_id, activity_b);
+
+        // Dismissal State is untouched by the capture cascade.
+        let dismissals = store.list_dismissals().await.expect("dismissals after");
+        assert_eq!(dismissals.len(), 1, "dismissal survives capture deletion");
+        assert_eq!(dismissals[0].statement, "Uses Vim");
+        });
+    }
+
+    #[test]
+    fn delete_derived_for_capture_subjects_is_noop_for_empty_ids() {
+        block_on(async {
+        let store = test_store().await;
+        let activity = seed_activity_with_subject(&store, "Kept", 100, "frame", 10).await;
+        let summary = store
+            .delete_derived_for_capture_subjects(&[], &[])
+            .await
+            .expect("noop cascade");
+        assert_eq!(summary.deleted_activities, 0);
+        assert_eq!(summary.deleted_conclusions, 0);
+        assert!(store.list_recent_activities(100, 0).await.expect("activities")
+            .iter().any(|a| a.id == activity), "nothing deleted on empty ids");
+        });
+    }
+
+    #[test]
+    fn wipe_all_empties_every_user_context_table() {
+        block_on(async {
+        let store = test_store().await;
+
+        // Populate every table: an Activity (+ evidence), a Conclusion
+        // (+ evidence + confidence history), a derivation run, and a dismissal.
+        let activity = seed_activity_with_subject(&store, "Did a thing", 100, "frame", 10).await;
+        let conclusion = store
+            .upsert_conclusion(draft("Topic", "Engaged with topic", 0.8))
+            .await
+            .expect("conclusion");
+        store
+            .replace_conclusion_evidence(
+                conclusion,
+                vec![NewConclusionEvidence { activity_id: activity, stance: EvidenceStance::Support }],
+            )
+            .await
+            .expect("evidence");
+        store.insert_confidence_snapshot(conclusion, 0.8, 1_000).await.expect("snapshot");
+        store
+            .insert_derivation_run(NewDerivationRun {
+                kind: "activity".to_string(),
+                window_start_ms: Some(0),
+                window_end_ms: Some(1),
+                status: "completed".to_string(),
+                activities_derived: 1,
+                conclusions_derived: 0,
+                input_tokens: 10,
+                output_tokens: 5,
+                provider: Some("test".to_string()),
+                model: Some("test".to_string()),
+                error: None,
+            })
+            .await
+            .expect("derivation run");
+        let to_dismiss = store
+            .upsert_conclusion(draft("Vim", "Uses Vim", 0.4))
+            .await
+            .expect("to dismiss");
+        store.dismiss_conclusion(to_dismiss).await.expect("dismiss");
+
+        // Sanity: everything present before the wipe.
+        assert!(store.count_activities().await.expect("count") > 0);
+        assert!(store.count_conclusions().await.expect("count") > 0);
+        assert!(!store.list_dismissals().await.expect("dismissals").is_empty());
+
+        store.wipe_all().await.expect("wipe");
+
+        // Every table is empty.
+        assert_eq!(store.count_activities().await.expect("count"), 0);
+        assert_eq!(store.count_conclusions().await.expect("count"), 0);
+        assert!(store.list_dismissals().await.expect("dismissals").is_empty());
+        for table in [
+            "user_context_activity_evidence",
+            "user_context_conclusion_evidence",
+            "user_context_confidence_history",
+            "user_context_activities",
+            "user_context_conclusions",
+            "user_context_dismissals",
+            "user_context_derivation_runs",
+        ] {
+            let count: i64 =
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(store.pool())
+                    .await
+                    .expect("count table");
+            assert_eq!(count, 0, "{table} should be empty after wipe");
+        }
+        });
+    }
+
+    /// Regression for ADR 0029: time-based **Retention Policy** aging of raw
+    /// media must NOT cascade into derived data. This asserts the structural
+    /// guarantee directly — the `capture_retention` delete path never names a
+    /// `user_context_*` table — so aging a frame out leaves the Activity derived
+    /// from it intact (only Delete Recent Capture cascades).
+    #[test]
+    fn retention_cleanup_source_never_touches_user_context_tables() {
+        let retention_src = include_str!("../capture_retention.rs");
+        assert!(
+            !retention_src.contains("user_context"),
+            "capture_retention.rs must not reference any user_context_* table; \
+             Retention Policy aging must not cascade into derived data (ADR 0029)"
+        );
     }
 }
