@@ -21,7 +21,7 @@ use app_infra::{
     CaptureWindow, NewActivity, NewActivityEvidence, NewConclusion, NewConclusionEvidence,
     UserContextStore,
 };
-use app_infra::user_context::confidence;
+use app_infra::user_context::{confidence, guardrail};
 
 /// System instruction for the Activity-segmentation pass. Kept terse: the
 /// detailed item formatting + the return shape live in the per-call prompt and
@@ -35,8 +35,10 @@ Do not emit one Activity per app or per time slice. For each Activity give a sho
 or two sentence summary of what the user was doing and how, an optional category from this fixed \
 taxonomy (coding, research, communication, design, testing, personal, distractions) or omit it \
 when unsure, and the list of evidence reference tags (the f<id>/a<id> tags shown on each input \
-item) that belong to that Activity. Only use tags that appear in the input. Return the structured \
-result.";
+item) that belong to that Activity. Only use tags that appear in the input. Do NOT describe an \
+Activity, or label its category or focus, in terms of the user's health or mental health, sexual \
+orientation, religion, political views, or similar protected/intimate domains; keep titles and \
+summaries to the work/task itself. Return the structured result.";
 
 /// Per-item text cap so a single noisy capture cannot dominate the prompt budget.
 const ITEM_TEXT_CHAR_CAP: usize = 1200;
@@ -291,13 +293,12 @@ pub async fn derive_activities(
 /// Activities, each carrying a Subject and the Activity ids that are its
 /// supporting (and any contradicting) evidence.
 ///
-// TODO(#96): prepend guardrail::SENSITIVE_GUARDRAIL_INSTRUCTION. The soft
-// guardrail instruction text (do not form conclusions about health, mental
-// health, sexual orientation, religion, politics, and similar intimate domains)
-// lands with the Sensitive Category Guardrail (#96) and should be prepended to
-// this preamble; the hard `is_sensitive` post-filter is hooked at the per-
-// conclusion persist site below.
-const CONCLUSION_PREAMBLE: &str = "You read a list of a single user's recent Activity episodes \
+/// The **soft** half of the Sensitive Category Guardrail (#96) prepends
+/// [`guardrail::SENSITIVE_GUARDRAIL_INSTRUCTION`] to this base text via
+/// [`conclusion_preamble`] before it reaches the engine; the **hard**
+/// `guardrail::is_sensitive` post-filter is hooked at the per-conclusion persist
+/// site below, since the soft instruction alone is not enough (ADR 0030).
+const CONCLUSION_PREAMBLE_BASE: &str = "You read a list of a single user's recent Activity episodes \
 (each with an id, a title, a one or two sentence summary, a capture time, and an optional category) \
 and distill open-ended, plain-language Conclusion statements about the user. A Conclusion is a \
 natural-language belief such as \"Has been increasingly interested in Apple\" or \"Prefers async \
@@ -306,6 +307,19 @@ Subject: a short grouping handle like \"Apple\" or \"async communication\". Grou
 in evidence: list the Activity ids that SUPPORT it, and (only when an Activity genuinely cuts \
 against it) the Activity ids that CONTRADICT it. Only reference Activity ids that appear in the \
 input. Prefer a few well-supported Conclusions over many flimsy ones. Return the structured result.";
+
+/// The full Conclusion-distillation preamble the engine sees: the **soft**
+/// Sensitive Category Guardrail instruction (#96) prepended to
+/// [`CONCLUSION_PREAMBLE_BASE`]. The guardrail leads so the off-limits-category
+/// rule frames the whole task before the engine reads what to produce. The
+/// engine never sees the bare base text.
+fn conclusion_preamble() -> String {
+    format!(
+        "{}\n\n{}",
+        guardrail::SENSITIVE_GUARDRAIL_INSTRUCTION,
+        CONCLUSION_PREAMBLE_BASE
+    )
+}
 
 /// Number of recent Activities pulled into one distillation pass.
 const DISTILLATION_ACTIVITY_LIMIT: i64 = 60;
@@ -435,12 +449,16 @@ pub async fn distill_conclusions(
         .map(|a| (a.id, a.started_at_ms))
         .collect();
 
+    // Soft guardrail (#96): the engine sees the Sensitive Category Guardrail
+    // instruction prepended to the base preamble — it must not form conclusions
+    // about health, sexuality, religion, politics, or similar intimate domains.
+    let preamble = conclusion_preamble();
     let prompt = build_distillation_prompt(&activities);
-    let input_tokens = estimate_tokens(CONCLUSION_PREAMBLE) + estimate_tokens(&prompt);
+    let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
     let batch: DistilledConclusionBatch = ai_engine::extract_with_preamble::<
         DistilledConclusionBatch,
-    >(engine, CONCLUSION_PREAMBLE, &prompt)
+    >(engine, &preamble, &prompt)
     .await
     .map_err(|error| error.to_string())?;
 
@@ -467,10 +485,16 @@ pub async fn distill_conclusions(
             continue;
         }
 
-        // TODO(#96): drop sensitive-category conclusions via
-        // app_infra::user_context::guardrail::is_sensitive before persisting.
-        // The hard post-filter lands with the Sensitive Category Guardrail (#96);
-        // a sensitive Conclusion must never enter the store.
+        // Hard guardrail (#96, ADR 0030): drop any Conclusion that lands in a
+        // sensitive inference category (health/mental health, sexual orientation,
+        // religion, politics, and similar protected/intimate domains) BEFORE the
+        // formation bar and the upsert, so a sensitive Conclusion never enters the
+        // store and the `recall_context` broker tool cannot return it. This is the
+        // deterministic backstop for when the engine ignores the soft instruction;
+        // it deliberately errs toward over-suppression.
+        if guardrail::is_sensitive(subject, statement) {
+            continue;
+        }
 
         // Formation bar (#95, Confidence Policy): a Conclusion needs at least
         // FORMATION_BAR_EVIDENCE (≥2) supporting Activities before it forms — no
