@@ -417,11 +417,10 @@ pub(crate) async fn run_conclusion_distillation(
 /// the count touched. Resilient: every error is swallowed-with-log; it never
 /// panics the worker.
 ///
-/// `pinned` is hardcoded `false` until the `pinned` column lands in #99: today no
-/// Conclusion can be pinned, and `list_decayable_conclusions` likewise does not
-/// yet exclude pinned rows. When #99 wires pinning, pass the real pinned flag here
-/// (a pinned Conclusion is exempt from decay — `decay()`/`status_for()` already
-/// honor that) and have the store query exclude pinned rows.
+/// A **pinned** Conclusion is exempt from decay (#99): `list_decayable_conclusions`
+/// already drops pinned rows from the set entirely, and the per-row `pinned` flag
+/// is passed to `decay()`/`status_for()` (which also honor it) as a belt-and-braces
+/// guard. So pinned Conclusions are never touched by this beat.
 pub(crate) async fn run_confidence_decay(
     store: &UserContextStore,
     provider_label: Option<String>,
@@ -452,10 +451,9 @@ pub(crate) async fn run_confidence_decay(
 
     let mut touched = 0i64;
     for conclusion in &conclusions {
-        // TODO(#99): use the real pinned flag once the column lands; a pinned
-        // Conclusion must be exempt from decay (decay() already returns `current`
-        // when pinned, but list_decayable_conclusions should also stop returning
-        // pinned rows entirely).
+        // A pinned Conclusion is exempt from decay (#99). `list_decayable_conclusions`
+        // already excludes pinned rows, so this is normally `false` here; passing the
+        // real flag keeps `decay()`/`status_for()` correct as a guard regardless.
         let pinned = conclusion.pinned;
         let decayed = confidence::decay(
             conclusion.confidence,

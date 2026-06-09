@@ -236,3 +236,43 @@ pub async fn user_context_run_derivation_now(
         message: run.message,
     })
 }
+
+/// **Dismiss** a Conclusion (#99): record its **Dismissal State** (which evidence,
+/// when) and remove it from the dossier in one transaction. A dismissed Conclusion
+/// is a user correction ("you're wrong") with a high resurface bar — it returns
+/// only on substantially more *fresh* evidence, never from the same evidence just
+/// rejected (enforced at derivation). Emits `user_context_changed` so the surface
+/// refreshes and the row disappears.
+#[tauri::command]
+pub async fn user_context_dismiss_conclusion(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    id: i64,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        .dismiss_conclusion(id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// **Pin** / unpin a Conclusion (#99): a pinned Conclusion is exempt from
+/// confidence decay so it does not quietly fade during a quiet stretch. Emits
+/// `user_context_changed` so the surface reflects the new pinned state.
+#[tauri::command]
+pub async fn user_context_set_pinned(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    id: i64,
+    pinned: bool,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        .set_pinned(id, pinned)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}

@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 
 use capture_types::{
     Activity, ActivityCategory, ActivityEvidenceRef, Conclusion, ConclusionEvidenceRef,
-    ConclusionStatus, ConfidenceSnapshot, EvidenceStance, UserContextTokenUsage,
+    ConclusionStatus, ConfidenceSnapshot, DismissalState, EvidenceStance, UserContextTokenUsage,
 };
 
 use crate::Result;
@@ -436,13 +436,13 @@ impl UserContextStore {
     /// rows are NEVER returned. Ordered by confidence DESC, then recency.
     pub async fn list_conclusions(&self, include_faded: bool) -> Result<Vec<Conclusion>> {
         let sql = if include_faded {
-            "SELECT id, subject, statement, confidence, status, formed_at_ms, \
+            "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
                     last_supported_at_ms, updated_at_ms \
              FROM user_context_conclusions \
              WHERE status IN ('visible', 'faded') \
              ORDER BY confidence DESC, updated_at_ms DESC, id DESC"
         } else {
-            "SELECT id, subject, statement, confidence, status, formed_at_ms, \
+            "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
                     last_supported_at_ms, updated_at_ms \
              FROM user_context_conclusions \
              WHERE status = 'visible' \
@@ -457,7 +457,7 @@ impl UserContextStore {
     /// faded included, hydrated with their evidence. Powers the Subject page.
     pub async fn list_conclusions_for_subject(&self, subject: &str) -> Result<Vec<Conclusion>> {
         let rows = sqlx::query(
-            "SELECT id, subject, statement, confidence, status, formed_at_ms, \
+            "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
                     last_supported_at_ms, updated_at_ms \
              FROM user_context_conclusions \
              WHERE subject = ?1 COLLATE NOCASE AND status != 'dismissed' \
@@ -482,7 +482,7 @@ impl UserContextStore {
     /// Fetch one Conclusion by id, hydrated with its evidence. `None` if absent.
     pub async fn get_conclusion(&self, id: i64) -> Result<Option<Conclusion>> {
         let row = sqlx::query(
-            "SELECT id, subject, statement, confidence, status, formed_at_ms, \
+            "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
                     last_supported_at_ms, updated_at_ms \
              FROM user_context_conclusions \
              WHERE id = ?1",
@@ -675,22 +675,16 @@ impl UserContextStore {
     }
 
     /// Conclusions eligible for the confidence-decay beat: `visible` or `faded`
-    /// (dismissed Conclusions are out of the dossier), hydrated with their
-    /// evidence. Ordered oldest-supported-first so the loop touches the stalest
-    /// rows first.
-    ///
-    /// The `pinned` column does not exist until migration 0026 (#99); a pinned
-    /// Conclusion is exempt from decay, so once that column lands this query must
-    /// add `AND COALESCE(pinned, 0) = 0`.
+    /// (dismissed Conclusions are out of the dossier) and **not pinned** — a Pin
+    /// exempts a Conclusion from confidence decay, so a pinned row is dropped from
+    /// the decayable set entirely. Hydrated with their evidence. Ordered
+    /// oldest-supported-first so the loop touches the stalest rows first.
     pub async fn list_decayable_conclusions(&self) -> Result<Vec<Conclusion>> {
-        // TODO(#99): exclude pinned — add `AND COALESCE(pinned, 0) = 0` once the
-        // `pinned` column lands in migration 0026; pinned Conclusions are exempt
-        // from confidence decay.
         let rows = sqlx::query(
-            "SELECT id, subject, statement, confidence, status, formed_at_ms, \
+            "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
                     last_supported_at_ms, updated_at_ms \
              FROM user_context_conclusions \
-             WHERE status IN ('visible', 'faded') \
+             WHERE status IN ('visible', 'faded') AND COALESCE(pinned, 0) = 0 \
              ORDER BY last_supported_at_ms ASC, id ASC",
         )
         .fetch_all(&self.pool)
@@ -698,13 +692,169 @@ impl UserContextStore {
         self.hydrate_conclusions(rows).await
     }
 
+    // --- #99: Pin + Dismiss + Dismissal State -----------------------------
+
+    /// Set (or clear) a Conclusion's **Pin** flag. A pinned Conclusion is exempt
+    /// from confidence decay (it is dropped from `list_decayable_conclusions` and
+    /// `confidence::decay`/`status_for` already honor `pinned`). Bumps
+    /// `updated_at_ms` so the dossier re-sorts.
+    pub async fn set_pinned(&self, id: i64, pinned: bool) -> Result<()> {
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE user_context_conclusions \
+             SET pinned = ?2, updated_at_ms = ?3 \
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(if pinned { 1_i64 } else { 0_i64 })
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// **Dismiss** a Conclusion: in ONE transaction, record its **Dismissal
+    /// State** (which evidence, when) and then remove the Conclusion. The
+    /// dismissal row OUTLIVES the deleted Conclusion (no FK to it) and is fed to
+    /// every future derivation pass so the engine can tell fresh evidence from the
+    /// evidence already vetoed and honor the high resurface bar. A no-op (and no
+    /// dismissal row) when `id` names no Conclusion.
+    ///
+    /// The recorded `evidence_fingerprint` is the deterministic
+    /// [`evidence_fingerprint`] of the Conclusion's distinct evidence Activity ids
+    /// (all stances), and `evidence_activity_count` is the count of its
+    /// support-stance evidence — the baseline the resurface bar is measured
+    /// against. Deleting the Conclusion cascades its evidence + confidence-history
+    /// rows via FK.
+    pub async fn dismiss_conclusion(&self, id: i64) -> Result<()> {
+        let now = now_ms();
+        let mut transaction = self.pool.begin().await?;
+
+        // Load the Conclusion's subject/statement; bail (no dismissal) if absent.
+        let conclusion = sqlx::query(
+            "SELECT subject, statement FROM user_context_conclusions WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(conclusion) = conclusion else {
+            transaction.commit().await?;
+            return Ok(());
+        };
+        let subject: String = conclusion.get("subject");
+        let statement: String = conclusion.get("statement");
+
+        // The full distinct evidence activity-id set (any stance) → fingerprint, so
+        // the same evidence just rejected can never resurface the Conclusion.
+        let evidence_rows = sqlx::query(
+            "SELECT activity_id FROM user_context_conclusion_evidence WHERE conclusion_id = ?1",
+        )
+        .bind(id)
+        .fetch_all(&mut *transaction)
+        .await?;
+        let evidence_ids: Vec<i64> =
+            evidence_rows.iter().map(|row| row.get("activity_id")).collect();
+        let fingerprint = evidence_fingerprint(&evidence_ids);
+
+        // The support-stance count is the baseline the high resurface bar measures
+        // fresh support against (a Dismiss needs substantially MORE to overturn).
+        let support_count: i64 = sqlx::query(
+            "SELECT COUNT(*) AS count FROM user_context_conclusion_evidence \
+             WHERE conclusion_id = ?1 AND stance = 'support'",
+        )
+        .bind(id)
+        .fetch_one(&mut *transaction)
+        .await?
+        .get("count");
+
+        sqlx::query(
+            "INSERT INTO user_context_dismissals \
+                (subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(&subject)
+        .bind(&statement)
+        .bind(&fingerprint)
+        .bind(support_count)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+
+        // Remove the Conclusion; its evidence + confidence-history cascade via FK.
+        sqlx::query("DELETE FROM user_context_conclusions WHERE id = ?1")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Every recorded **Dismissal State**, newest first. Fed to the derivation
+    /// pass so it can avoid reconstituting dismissed Conclusions (and so the
+    /// resurface gate can compare fresh evidence to what was vetoed).
+    pub async fn list_dismissals(&self) -> Result<Vec<DismissalState>> {
+        let rows = sqlx::query(
+            "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms \
+             FROM user_context_dismissals \
+             ORDER BY dismissed_at_ms DESC, id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(map_dismissal).collect())
+    }
+
+    /// Recorded **Dismissal State** for one Subject (case-insensitive), newest
+    /// first.
+    pub async fn list_dismissals_for_subject(
+        &self,
+        subject: &str,
+    ) -> Result<Vec<DismissalState>> {
+        let rows = sqlx::query(
+            "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms \
+             FROM user_context_dismissals \
+             WHERE subject = ?1 COLLATE NOCASE \
+             ORDER BY dismissed_at_ms DESC, id DESC",
+        )
+        .bind(subject)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(map_dismissal).collect())
+    }
+
     /// The pool handle, for the capture-window reader (`capture_source.rs`).
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
 
-    // later-slice: dismissal / pin / wipe / cascade methods land with their own
-    // migrations (0026) in their own slices.
+    // later-slice: wipe / cascade methods (#97) land with their own slices.
+}
+
+/// Deterministic fingerprint of an evidence **Activity**-id set: the sorted,
+/// distinct ids joined by `','` (an empty set → `""`). Used both when recording a
+/// **Dismissal State** (the evidence a Conclusion was built on) and by the
+/// derivation layer when re-deriving a Conclusion, so an identical evidence set
+/// produces an identical fingerprint and the resurface gate can recognize "the
+/// same evidence just rejected" exactly.
+pub fn evidence_fingerprint(activity_ids: &[i64]) -> String {
+    let mut ids: Vec<i64> = activity_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Map a `user_context_dismissals` row onto a [`DismissalState`].
+fn map_dismissal(row: SqliteRow) -> DismissalState {
+    DismissalState {
+        subject: row.get("subject"),
+        statement: row.get("statement"),
+        evidence_fingerprint: row.get("evidence_fingerprint"),
+        evidence_activity_count: row.get("evidence_activity_count"),
+        dismissed_at_ms: row.get("dismissed_at_ms"),
+    }
 }
 
 /// "Now" in unix milliseconds, derived from `time` (no `Date.now()`-style
@@ -803,9 +953,9 @@ fn map_conclusion(row: SqliteRow) -> Conclusion {
         statement: row.get("statement"),
         confidence: row.get("confidence"),
         status: status_from_str(&status),
-        // TODO(#99): read pinned column. The `pinned` column lands in migration
-        // 0026 (#99); until then every Conclusion maps as unpinned.
-        pinned: false,
+        // The `pinned` column (migration 0025, #99) is stored as INTEGER 0/1; map
+        // any non-zero value to a pinned Conclusion (exempt from confidence decay).
+        pinned: row.get::<i64, _>("pinned") != 0,
         formed_at_ms: row.get("formed_at_ms"),
         last_supported_at_ms: row.get("last_supported_at_ms"),
         updated_at_ms: row.get("updated_at_ms"),
@@ -869,7 +1019,8 @@ mod tests {
                 last_supported_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL,
                 created_at_ms INTEGER NOT NULL,
-                last_decayed_at_ms INTEGER
+                last_decayed_at_ms INTEGER,
+                pinned INTEGER NOT NULL DEFAULT 0
             )",
             "CREATE TABLE user_context_conclusion_evidence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -884,6 +1035,14 @@ mod tests {
                 conclusion_id INTEGER NOT NULL REFERENCES user_context_conclusions(id) ON DELETE CASCADE,
                 confidence REAL NOT NULL,
                 snapshot_at_ms INTEGER NOT NULL
+            )",
+            "CREATE TABLE user_context_dismissals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                evidence_fingerprint TEXT NOT NULL,
+                evidence_activity_count INTEGER NOT NULL DEFAULT 0,
+                dismissed_at_ms INTEGER NOT NULL
             )",
         ] {
             sqlx::query(statement)
@@ -1159,6 +1318,118 @@ mod tests {
         assert!(ids.contains(&visible), "visible is decayable");
         assert!(ids.contains(&faded), "faded is decayable (history still snapshotted)");
         assert!(!ids.contains(&dismissed), "dismissed is not decayable");
+        });
+    }
+
+    #[test]
+    fn evidence_fingerprint_is_deterministic_and_sorted_distinct() {
+        // Order- and duplicate-independent: the same id set yields the same string.
+        assert_eq!(evidence_fingerprint(&[3, 1, 2]), "1,2,3");
+        assert_eq!(evidence_fingerprint(&[2, 1, 3]), "1,2,3");
+        assert_eq!(evidence_fingerprint(&[3, 1, 2, 1, 3]), "1,2,3");
+        // Empty set → empty string.
+        assert_eq!(evidence_fingerprint(&[]), "");
+        // A single id.
+        assert_eq!(evidence_fingerprint(&[42]), "42");
+    }
+
+    #[test]
+    fn dismiss_records_state_and_removes_conclusion() {
+        block_on(async {
+        let store = test_store().await;
+        let a1 = seed_activity(&store, "Read Apple news", 100).await;
+        let a2 = seed_activity(&store, "Watched Apple keynote", 200).await;
+        let contradict = seed_activity(&store, "Bought a Pixel", 300).await;
+        let id = store
+            .upsert_conclusion(draft("Apple", "Interested in Apple", 0.6))
+            .await
+            .expect("upsert");
+        store
+            .replace_conclusion_evidence(
+                id,
+                vec![
+                    NewConclusionEvidence { activity_id: a1, stance: EvidenceStance::Support },
+                    NewConclusionEvidence { activity_id: a2, stance: EvidenceStance::Support },
+                    NewConclusionEvidence {
+                        activity_id: contradict,
+                        stance: EvidenceStance::Contradict,
+                    },
+                ],
+            )
+            .await
+            .expect("evidence");
+
+        store.dismiss_conclusion(id).await.expect("dismiss");
+
+        // The Conclusion is gone (Dismiss removes it).
+        assert!(store.get_conclusion(id).await.expect("get").is_none());
+        assert_eq!(store.count_conclusions().await.expect("count"), 0);
+
+        // The Dismissal State persists, with the support count (2, not 3) and a
+        // fingerprint of ALL distinct evidence ids (support + contradict).
+        let dismissals = store.list_dismissals().await.expect("dismissals");
+        assert_eq!(dismissals.len(), 1);
+        assert_eq!(dismissals[0].subject, "Apple");
+        assert_eq!(dismissals[0].statement, "Interested in Apple");
+        assert_eq!(dismissals[0].evidence_activity_count, 2, "support-stance count");
+        assert_eq!(
+            dismissals[0].evidence_fingerprint,
+            evidence_fingerprint(&[a1, a2, contradict])
+        );
+
+        // Subject-scoped listing finds it case-insensitively.
+        let by_subject = store
+            .list_dismissals_for_subject("apple")
+            .await
+            .expect("by subject");
+        assert_eq!(by_subject.len(), 1);
+        // A different subject sees nothing.
+        assert!(store
+            .list_dismissals_for_subject("Rust")
+            .await
+            .expect("other subject")
+            .is_empty());
+        });
+    }
+
+    #[test]
+    fn dismiss_missing_conclusion_records_nothing() {
+        block_on(async {
+        let store = test_store().await;
+        store.dismiss_conclusion(9999).await.expect("dismiss noop");
+        assert!(store.list_dismissals().await.expect("dismissals").is_empty());
+        });
+    }
+
+    #[test]
+    fn set_pinned_excludes_from_list_decayable_conclusions() {
+        block_on(async {
+        let store = test_store().await;
+        let pinned = store
+            .upsert_conclusion(draft("Rust", "Learning Rust", 0.8))
+            .await
+            .expect("pinned");
+        let unpinned = store
+            .upsert_conclusion(draft("Vim", "Used Vim", 0.6))
+            .await
+            .expect("unpinned");
+
+        store.set_pinned(pinned, true).await.expect("pin");
+
+        // The pinned row maps as pinned and is dropped from the decayable set;
+        // the unpinned row stays decayable.
+        let fetched = store.get_conclusion(pinned).await.expect("get").expect("present");
+        assert!(fetched.pinned, "pinned column is read back as true");
+
+        let decayable = store.list_decayable_conclusions().await.expect("decayable");
+        let ids: Vec<i64> = decayable.iter().map(|c| c.id).collect();
+        assert!(!ids.contains(&pinned), "pinned is exempt from decay");
+        assert!(ids.contains(&unpinned), "unpinned stays decayable");
+
+        // Unpinning restores decayability.
+        store.set_pinned(pinned, false).await.expect("unpin");
+        let after = store.list_decayable_conclusions().await.expect("decayable");
+        assert!(after.iter().any(|c| c.id == pinned), "unpinned is decayable again");
         });
     }
 }

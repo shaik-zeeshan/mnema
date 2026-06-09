@@ -13,13 +13,13 @@
 
 use std::collections::HashMap;
 
-use capture_types::{ActivityCategory, EvidenceStance};
+use capture_types::{ActivityCategory, DismissalState, EvidenceStance};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use app_infra::{
-    CaptureWindow, NewActivity, NewActivityEvidence, NewConclusion, NewConclusionEvidence,
-    UserContextStore,
+    evidence_fingerprint, CaptureWindow, NewActivity, NewActivityEvidence, NewConclusion,
+    NewConclusionEvidence, UserContextStore,
 };
 use app_infra::user_context::{confidence, guardrail};
 
@@ -439,9 +439,13 @@ pub async fn distill_conclusions(
         });
     }
 
-    // TODO(#99): load dismissal state here and add a "do not reconstitute these
-    // dismissed conclusions unless substantially more fresh evidence" block to
-    // the prompt; that input also gates resurface at the persist site below.
+    // Dismissal State (#99): every Conclusion the user has rejected, with which
+    // evidence and when. This feeds BOTH the prompt (a soft "do not reconstitute"
+    // instruction) and the deterministic resurface gate at the persist site below.
+    let dismissals = store
+        .list_dismissals()
+        .await
+        .map_err(|error| error.to_string())?;
 
     let valid_ids: std::collections::HashSet<i64> = activities.iter().map(|a| a.id).collect();
     let started_at_by_id: HashMap<i64, i64> = activities
@@ -453,7 +457,13 @@ pub async fn distill_conclusions(
     // instruction prepended to the base preamble — it must not form conclusions
     // about health, sexuality, religion, politics, or similar intimate domains.
     let preamble = conclusion_preamble();
-    let prompt = build_distillation_prompt(&activities);
+    let mut prompt = build_distillation_prompt(&activities);
+    // Append the DISMISSED-CONCLUSIONS block (#99): tell the engine not to simply
+    // reconstitute corrections the user already made unless substantially MORE and
+    // NEWER evidence rebuilds them. This is appended context only — it does not
+    // touch the seedQuery / window text. The deterministic resurface gate at the
+    // persist site is the hard backstop for when the engine ignores this.
+    prompt.push_str(&build_dismissed_conclusions_block(&dismissals));
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
     let batch: DistilledConclusionBatch = ai_engine::extract_with_preamble::<
@@ -503,10 +513,32 @@ pub async fn distill_conclusions(
             continue;
         }
 
-        // TODO(#99): resurface-bar gate here. When a dismissal exists for ~this
-        // subject/statement, require the high resurface bar
-        // (confidence::meets_resurface_bar — already implemented in #95) before
-        // re-forming it.
+        // Dismissal resurface gate (#99): if the user already dismissed ~this
+        // Conclusion (case-insensitive subject AND statement equality), a Dismiss
+        // is a reset with a HIGH resurface bar — never a re-form from the same
+        // evidence just rejected, and otherwise only on substantially MORE fresh
+        // support than it took to form. Ordering: the cheap deterministic drops
+        // above (#96 guardrail, #95 formation bar) run first; this is the last gate
+        // before the upsert. The fresh fingerprint covers the same distinct
+        // evidence set the dismissal recorded (all stances), so an identical
+        // evidence set produces an identical fingerprint.
+        let mut fresh_evidence: Vec<i64> = support_refs.clone();
+        fresh_evidence.extend(contradict_refs.iter().copied());
+        let fresh_fingerprint = evidence_fingerprint(&fresh_evidence);
+        if let Some(dismissal) = matching_dismissal(&dismissals, subject, statement) {
+            if fresh_fingerprint == dismissal.evidence_fingerprint {
+                // The exact evidence the user just rejected — never resurface.
+                continue;
+            }
+            if !confidence::meets_resurface_bar(
+                support_refs.len(),
+                dismissal.evidence_activity_count,
+            ) {
+                // Fresh evidence exists but does not clear the high resurface bar;
+                // honor the correction (a dismissal must never feel ignored).
+                continue;
+            }
+        }
 
         let confidence =
             confidence::initial_confidence(support_refs.len(), contradict_refs.len());
@@ -565,6 +597,50 @@ fn now_ms() -> i64 {
     (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
 
+/// Render the DISMISSED-CONCLUSIONS prompt block (#99): the soft half of the
+/// resurface rule. Lists each rejected Conclusion's subject + statement and tells
+/// the engine these are corrections the user already made — do NOT reconstitute
+/// them unless substantially MORE and NEWER evidence than before rebuilds them.
+/// Empty (no trailing block) when there are no dismissals, so a fresh dossier's
+/// prompt is unchanged.
+fn build_dismissed_conclusions_block(dismissals: &[DismissalState]) -> String {
+    if dismissals.is_empty() {
+        return String::new();
+    }
+    let mut block = String::new();
+    block.push_str(
+        "\nDISMISSED CONCLUSIONS — the user already REJECTED each belief below as wrong (a \
+correction they made). Do NOT reconstitute, restate, or paraphrase any of these unless there is \
+substantially MORE and NEWER Activity evidence than before that genuinely rebuilds it; never \
+re-form one from the same evidence that was already rejected. When in doubt, leave a dismissed \
+belief out.\n\n",
+    );
+    for dismissal in dismissals {
+        block.push_str(&format!(
+            "- subject={} statement={}\n",
+            dismissal.subject.trim(),
+            dismissal.statement.trim()
+        ));
+    }
+    block
+}
+
+/// Find the dismissal (if any) that matches a freshly-distilled Conclusion by
+/// case-insensitive subject AND case-insensitive statement equality. The match is
+/// exact (not fuzzy): a dismissal vetoes the specific belief the user rejected, so
+/// the resurface gate keys on the same `(subject, statement)` identity the store
+/// dedups Conclusions by.
+fn matching_dismissal<'a>(
+    dismissals: &'a [DismissalState],
+    subject: &str,
+    statement: &str,
+) -> Option<&'a DismissalState> {
+    dismissals.iter().find(|dismissal| {
+        dismissal.subject.eq_ignore_ascii_case(subject)
+            && dismissal.statement.eq_ignore_ascii_case(statement)
+    })
+}
+
 /// Filter a list of Activity-id refs to the ones present in `valid_ids`,
 /// preserving order and dropping duplicates.
 fn filter_known_refs(refs: &[i64], valid_ids: &std::collections::HashSet<i64>) -> Vec<i64> {
@@ -618,6 +694,66 @@ mod tests {
         assert_eq!(filtered, vec![2, 1, 3]);
         // No valid refs at all => empty (the caller skips ungrounded conclusions).
         assert!(filter_known_refs(&[9, 10], &valid).is_empty());
+    }
+
+    fn dismissal(subject: &str, statement: &str, fingerprint: &str, count: i64) -> DismissalState {
+        DismissalState {
+            subject: subject.to_string(),
+            statement: statement.to_string(),
+            evidence_fingerprint: fingerprint.to_string(),
+            evidence_activity_count: count,
+            dismissed_at_ms: 1_000,
+        }
+    }
+
+    #[test]
+    fn matching_dismissal_is_case_insensitive_on_subject_and_statement() {
+        let dismissals = vec![dismissal("Apple", "Interested in Apple", "1,2", 2)];
+        // Exact match on both, case-insensitively.
+        assert!(matching_dismissal(&dismissals, "apple", "INTERESTED IN APPLE").is_some());
+        // A different statement (even same subject) does not match.
+        assert!(matching_dismissal(&dismissals, "Apple", "Loves Apple").is_none());
+        // A different subject does not match.
+        assert!(matching_dismissal(&dismissals, "Rust", "Interested in Apple").is_none());
+    }
+
+    #[test]
+    fn dismissed_conclusions_block_is_empty_without_dismissals() {
+        assert!(build_dismissed_conclusions_block(&[]).is_empty());
+    }
+
+    #[test]
+    fn dismissed_conclusions_block_lists_each_rejection() {
+        let dismissals = vec![
+            dismissal("Apple", "Interested in Apple", "1,2", 2),
+            dismissal("Vim", "Prefers Vim", "3,4", 2),
+        ];
+        let block = build_dismissed_conclusions_block(&dismissals);
+        assert!(block.contains("DISMISSED CONCLUSIONS"));
+        assert!(block.contains("subject=Apple statement=Interested in Apple"));
+        assert!(block.contains("subject=Vim statement=Prefers Vim"));
+        // The instruction enforces the high-bar / never-same-evidence rule.
+        assert!(block.contains("substantially MORE and NEWER"));
+    }
+
+    #[test]
+    fn resurface_gate_drops_same_evidence_and_below_bar() {
+        // The fresh fingerprint for the same evidence set matches the dismissal's,
+        // so the same-evidence drop fires regardless of count.
+        let d = dismissal("Apple", "Interested in Apple", &evidence_fingerprint(&[1, 2]), 2);
+        let dismissals = vec![d];
+
+        // Same evidence as rejected → must be recognized as a same-evidence match.
+        let same = evidence_fingerprint(&[2, 1]);
+        let matched = matching_dismissal(&dismissals, "apple", "interested in apple")
+            .expect("matches");
+        assert_eq!(same, matched.evidence_fingerprint, "same evidence => drop");
+
+        // Different (more) evidence: fingerprint differs, and the resurface bar
+        // gates on the support count vs the prior 2 (needs ≥ 4 at 2.0×).
+        assert_ne!(evidence_fingerprint(&[1, 2, 3, 4]), matched.evidence_fingerprint);
+        assert!(!confidence::meets_resurface_bar(3, matched.evidence_activity_count));
+        assert!(confidence::meets_resurface_bar(4, matched.evidence_activity_count));
     }
 
     #[test]

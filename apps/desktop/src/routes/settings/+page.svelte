@@ -648,6 +648,43 @@
     return conclusion.evidence.length;
   }
 
+  // Per-row in-flight guard so a double click cannot fire two Pin/Dismiss calls.
+  let userContextConclusionActionId = $state<number | null>(null);
+
+  // Pin / unpin a Conclusion (#99): a pinned Conclusion is exempt from confidence
+  // decay. Refresh through the shared user-context flow so the pinned tag updates.
+  async function toggleConclusionPinned(conclusion: Conclusion) {
+    if (userContextConclusionActionId !== null) return;
+    userContextConclusionActionId = conclusion.id;
+    try {
+      await invoke("user_context_set_pinned", {
+        id: conclusion.id,
+        pinned: !conclusion.pinned,
+      });
+      await refreshUserContext();
+    } catch (error) {
+      userContextConclusionsError = error instanceof Error ? error.message : String(error);
+    } finally {
+      userContextConclusionActionId = null;
+    }
+  }
+
+  // Dismiss a Conclusion (#99): a reversible correction ("you're wrong") that
+  // removes it AND records Dismissal State. A direct action (no confirm) is fine —
+  // it is not destructive deletion. The row simply disappears after the refresh.
+  async function dismissConclusion(conclusion: Conclusion) {
+    if (userContextConclusionActionId !== null) return;
+    userContextConclusionActionId = conclusion.id;
+    try {
+      await invoke("user_context_dismiss_conclusion", { id: conclusion.id });
+      await refreshUserContext();
+    } catch (error) {
+      userContextConclusionsError = error instanceof Error ? error.message : String(error);
+    } finally {
+      userContextConclusionActionId = null;
+    }
+  }
+
   // Render a confidence in [0,1] as a whole-number percent.
   function formatConfidencePercent(confidence: number): string {
     return `${Math.round(confidence * 100)}%`;
@@ -4458,9 +4495,13 @@
                   <li
                     class="user-context-conclusion"
                     class:user-context-conclusion--faded={conclusion.status === "faded"}
+                    class:user-context-conclusion--pinned={conclusion.pinned}
                   >
                     <div class="user-context-conclusion__statement">
                       {conclusion.statement}
+                      {#if conclusion.pinned}
+                        <span class="user-context-conclusion__tag user-context-conclusion__tag--pinned" title="Pinned; exempt from confidence decay">pinned</span>
+                      {/if}
                       {#if conclusion.status === "faded"}
                         <span class="user-context-conclusion__tag" title="Below the display floor; its history is kept">faded</span>
                       {/if}
@@ -4473,6 +4514,25 @@
                       <span>
                         {conclusionEvidenceCount(conclusion)}
                         {conclusionEvidenceCount(conclusion) === 1 ? "Activity" : "Activities"}
+                      </span>
+                      <span class="user-context-conclusion__actions">
+                        <button
+                          class="btn btn--ghost btn--sm"
+                          type="button"
+                          aria-pressed={conclusion.pinned}
+                          disabled={userContextConclusionActionId !== null}
+                          onclick={() => toggleConclusionPinned(conclusion)}
+                        >
+                          {conclusion.pinned ? "Unpin" : "Pin"}
+                        </button>
+                        <button
+                          class="btn btn--ghost btn--sm"
+                          type="button"
+                          disabled={userContextConclusionActionId !== null}
+                          onclick={() => dismissConclusion(conclusion)}
+                        >
+                          Dismiss
+                        </button>
                       </span>
                     </div>
                   </li>
@@ -7688,9 +7748,10 @@
     color: var(--app-accent);
   }
 
-  /* User Context Conclusion preview list (read-only; #94). Row layout matches
-     the Activity preview so the two lists read as one dossier. Pin/Dismiss
-     controls are intentionally absent here (they belong to #99). */
+  /* User Context Conclusion preview list (#94). Row layout matches the Activity
+     preview so the two lists read as one dossier. Each row carries Pin/Dismiss
+     controls (#99): Pin exempts a Conclusion from decay; Dismiss is a reversible
+     correction that removes it and records Dismissal State. */
   .user-context-conclusions {
     display: flex;
     flex-direction: column;
@@ -7735,6 +7796,24 @@
     letter-spacing: 0.08em;
     color: var(--app-text-muted);
     vertical-align: middle;
+  }
+
+  /* A pinned Conclusion (#99) is exempt from confidence decay; mark it in the
+     accent color so the protected state reads at a glance. */
+  .user-context-conclusion__tag--pinned {
+    border-color: var(--app-accent);
+    color: var(--app-accent);
+  }
+
+  .user-context-conclusion--pinned {
+    border-color: color-mix(in srgb, var(--app-accent) 40%, var(--app-border));
+  }
+
+  /* Pin/Dismiss controls pushed to the trailing edge of the meta row. */
+  .user-context-conclusion__actions {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
   }
 
   .user-context-conclusion__meta {
