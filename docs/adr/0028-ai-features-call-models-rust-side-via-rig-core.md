@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # AI features call models from the Rust side via rig-core, with a hybrid local/cloud engine and bring-your-own-key
