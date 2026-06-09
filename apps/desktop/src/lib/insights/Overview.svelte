@@ -293,14 +293,25 @@
       const key = a.category ?? "__uncat__";
       totals.set(key, (totals.get(key) ?? 0) + dur);
     }
-    const segments: { label: string; value: number; colorVar: string }[] = [];
+    // `value` is the RAW duration (ms) so the stacked-bar widths stay
+    // proportional even for sub-hour categories; `display` carries the
+    // human-readable legend readout. Rounding to whole hours here would
+    // collapse every category under ~30min to a 0-width sliver — a single
+    // hour-scale category (e.g. coding) would then claim the whole bar.
+    const segments: {
+      label: string;
+      value: number;
+      colorVar: string;
+      display: string;
+    }[] = [];
     for (const c of CATEGORY_ORDER) {
       const v = totals.get(c);
       if (v && v > 0) {
         segments.push({
           label: categoryLabel(c),
-          value: Math.round(v / 3600000), // hours for legend readout
+          value: v,
           colorVar: CATEGORY_COLOR[c],
+          display: humanizeMs(v),
         });
       }
     }
@@ -308,8 +319,9 @@
     if (uncat && uncat > 0) {
       segments.push({
         label: "Uncategorized",
-        value: Math.round(uncat / 3600000),
+        value: uncat,
         colorVar: UNCATEGORIZED_COLOR,
+        display: humanizeMs(uncat),
       });
     }
     return segments;

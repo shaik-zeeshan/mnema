@@ -1,9 +1,12 @@
 <script lang="ts">
   // StackedBar — a single horizontal stacked bar of category segments, with an
   // optional legend underneath. Segment widths are computed as a share of the
-  // total value, so callers pass raw values (e.g. hours) rather than percents.
+  // total value, so callers pass raw values (e.g. minutes/ms) rather than
+  // percents — pass the FINEST-GRAINED magnitude available, not a pre-rounded
+  // one, or sub-unit segments collapse to a 0-width sliver. `display` overrides
+  // the legend readout when the raw value isn't human-friendly (e.g. ms).
   // Props:
-  //   segments: { label: string; value: number; colorVar: string }[]
+  //   segments: { label: string; value: number; colorVar: string; display?: string }[]
   //             colorVar is a CSS custom-property NAME, e.g. "--cat-coding".
   //   showLegend?: boolean   — render the label/value legend below (default true).
 
@@ -11,6 +14,7 @@
     label: string;
     value: number;
     colorVar: string;
+    display?: string;
   }
 
   interface Props {
@@ -32,7 +36,7 @@
   <div
     class="bar"
     role="img"
-    aria-label={segments.map((s) => `${s.label} ${s.value}`).join(", ")}
+    aria-label={segments.map((s) => `${s.label} ${s.display ?? s.value}`).join(", ")}
   >
     {#each segments as segment (segment.label)}
       <span style="width:{pct(segment.value)}%; background:var({segment.colorVar});"></span>
@@ -44,7 +48,7 @@
         <span class="item">
           <span class="sw" style="background:var({segment.colorVar});"></span>
           {segment.label}
-          <span class="v">{segment.value}</span>
+          <span class="v">{segment.display ?? segment.value}</span>
         </span>
       {/each}
     </div>
