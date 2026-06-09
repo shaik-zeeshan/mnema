@@ -32,7 +32,8 @@ use capture_types::{
     UpdateDeveloperSettingsRequest,
     UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
     UpdateMicrophoneControllerRequest, UpdateProcessingSettingsRequest,
-    UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest, UpdateVideoSettingsRequest,
+    UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest,
+    UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest,
     VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::configured_adapter_as_str;
@@ -2705,6 +2706,19 @@ pub fn update_ai_runtime_settings(
         &app_handle,
         state.inner(),
         RecordingSettingsDomainPatch::AiRuntime(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_user_context_settings(
+    request: UpdateUserContextSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::UserContext(request),
     )
 }
 

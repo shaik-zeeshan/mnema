@@ -3,6 +3,7 @@ mod logs;
 mod microphone;
 mod recording;
 mod session;
+mod user_context;
 
 use serde::Serialize;
 
@@ -12,6 +13,7 @@ pub use logs::*;
 pub use microphone::*;
 pub use recording::*;
 pub use session::*;
+pub use user_context::*;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,6 +167,7 @@ mod tests {
             privacy: default_privacy_settings(),
             access: AccessSettings::default(),
             ai_runtime: AiRuntimeSettings::default(),
+            user_context: UserContextSettings::default(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -351,6 +354,7 @@ mod tests {
                 privacy: default_privacy_settings(),
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
+                user_context: UserContextSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,

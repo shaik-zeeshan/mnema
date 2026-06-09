@@ -16,6 +16,7 @@ mod ocr_budget;
 pub mod processing;
 mod search;
 pub mod status;
+mod user_context;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::BTreeSet, path::Path, sync::Arc};
@@ -84,6 +85,10 @@ pub use search::{
     SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
 };
 pub use status::AppInfraStatus;
+pub use user_context::{
+    CaptureWindow, CaptureWindowItem, NewActivity, NewActivityEvidence, NewDerivationRun,
+    UserContextStore,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSegmentTranscriptionAdmission {
@@ -260,6 +265,7 @@ pub struct AppInfra {
     capture_retention: CaptureRetentionStore,
     processing: ProcessingStore,
     search: SearchStore,
+    user_context: UserContextStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
     runtime: JobRuntime,
@@ -319,6 +325,7 @@ impl AppInfra {
         let capture_retention = CaptureRetentionStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
         let search = SearchStore::new(database.pool().clone());
+        let user_context = UserContextStore::new(database.pool().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
@@ -334,6 +341,7 @@ impl AppInfra {
             capture_retention,
             processing,
             search,
+            user_context,
             captured_frame_equivalence,
             captured_frame_pipeline,
             runtime,
@@ -403,6 +411,10 @@ impl AppInfra {
 
     pub fn capture_retention(&self) -> &CaptureRetentionStore {
         &self.capture_retention
+    }
+
+    pub fn user_context(&self) -> &user_context::UserContextStore {
+        &self.user_context
     }
 
     pub async fn frame_secret_redaction_count(&self, frame_id: i64) -> Result<u32> {

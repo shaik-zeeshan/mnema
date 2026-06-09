@@ -61,6 +61,8 @@
     UpdateStorageSettingsRequest,
     UpdateVideoSettingsRequest,
     UpdateAiRuntimeSettingsRequest,
+    UpdateUserContextSettingsRequest,
+    DerivationBudgetTier,
     AiEngineKind,
     AiCloudProvider,
     AiLocalKind,
@@ -174,6 +176,7 @@
     | "developer"
     | "access"
     | "ai_runtime"
+    | "user_context"
   >;
   type RecordingSettingsDraftDomain = AutosaveRecordingDomain | "app_privacy_exclusion";
 
@@ -188,7 +191,8 @@
     | UpdateProcessingSettingsRequest
     | UpdateDeveloperSettingsRequest
     | UpdateAccessSettingsRequest
-    | UpdateAiRuntimeSettingsRequest;
+    | UpdateAiRuntimeSettingsRequest
+    | UpdateUserContextSettingsRequest;
 
   const RECORDING_AUTOSAVE_DOMAINS: readonly AutosaveRecordingDomain[] = [
     "capture_sources",
@@ -202,6 +206,7 @@
     "developer",
     "access",
     "ai_runtime",
+    "user_context",
   ];
 
   const RECORDING_DRAFT_DOMAINS: readonly RecordingSettingsDraftDomain[] = [
@@ -221,6 +226,7 @@
     developer: "update_developer_settings",
     access: "update_access_settings",
     ai_runtime: "update_ai_runtime_settings",
+    user_context: "update_user_context_settings",
   };
 
   function makeRecordingDomainState<T>(value: T): Record<RecordingSettingsDraftDomain, T> {
@@ -454,6 +460,19 @@
   let draftAiLocalKind = $state<AiLocalKind>("ollama");
   let draftAiLocalEndpoint = $state(DEFAULT_AI_LOCAL_ENDPOINT);
   let draftAiLocalModel = $state("");
+
+  // User Context (derivation) drafts. Autosaved through the `user_context`
+  // domain, mirroring the `ai_runtime` draft-state pattern. The settings card
+  // UI is a later slice; these keep types/snapshots consistent for now.
+  const DEFAULT_USER_CONTEXT_BUDGET_TIER: DerivationBudgetTier = "balanced";
+  const DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS = 30;
+  let draftUserContextBudgetTier = $state<DerivationBudgetTier>(
+    DEFAULT_USER_CONTEXT_BUDGET_TIER
+  );
+  let draftUserContextBackfillWindowDays = $state(
+    DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS
+  );
+  let draftUserContextBackfillGoDeeper = $state(false);
 
   // Reasoning Engine availability snapshot + the cloud-key entry box. The key is
   // not part of any draft/autosave; it has its own loading/error/saved state and
@@ -1136,6 +1155,14 @@
     draftAiLocalModel = s.aiRuntime?.localModel ?? "";
   }
 
+  function syncUserContextDrafts(s: RecordingSettings) {
+    draftUserContextBudgetTier =
+      s.userContext?.derivationBudgetTier ?? DEFAULT_USER_CONTEXT_BUDGET_TIER;
+    draftUserContextBackfillWindowDays =
+      s.userContext?.backfillWindowDays ?? DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS;
+    draftUserContextBackfillGoDeeper = s.userContext?.backfillGoDeeper ?? false;
+  }
+
   function syncInactivityDrafts(s: RecordingSettings) {
     draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
@@ -1224,6 +1251,9 @@
         break;
       case "ai_runtime":
         syncAiRuntimeDrafts(s);
+        break;
+      case "user_context":
+        syncUserContextDrafts(s);
         break;
     }
   }
@@ -1363,6 +1393,12 @@
           localKind: draftAiLocalKind,
           localEndpoint: draftAiLocalEndpoint,
           localModel: draftAiLocalModel,
+        };
+      case "user_context":
+        return {
+          derivationBudgetTier: draftUserContextBudgetTier,
+          backfillWindowDays: draftUserContextBackfillWindowDays,
+          backfillGoDeeper: draftUserContextBackfillGoDeeper,
         };
     }
   }
@@ -1843,6 +1879,14 @@
           localKind: s.aiRuntime?.localKind ?? "ollama",
           localEndpoint: s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT,
           localModel: s.aiRuntime?.localModel ?? "",
+        };
+      case "user_context":
+        return {
+          derivationBudgetTier:
+            s.userContext?.derivationBudgetTier ?? DEFAULT_USER_CONTEXT_BUDGET_TIER,
+          backfillWindowDays:
+            s.userContext?.backfillWindowDays ?? DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS,
+          backfillGoDeeper: s.userContext?.backfillGoDeeper ?? false,
         };
     }
   }

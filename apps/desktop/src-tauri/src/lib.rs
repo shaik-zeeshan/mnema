@@ -481,6 +481,7 @@ pub fn run() {
             native_capture::update_developer_settings,
             native_capture::update_access_settings,
             native_capture::update_ai_runtime_settings,
+            native_capture::update_user_context_settings,
             ai_runtime::ai_runtime_set_provider_key,
             ai_runtime::ai_runtime_clear_provider_key,
             ai_runtime::ai_runtime_has_provider_key,

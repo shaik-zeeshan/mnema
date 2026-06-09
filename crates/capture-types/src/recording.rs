@@ -562,6 +562,57 @@ pub struct UpdateAiRuntimeSettingsRequest {
     pub local_model: Option<String>,
 }
 
+/// The named **Derivation Budget** intensity tier for a cloud Reasoning Engine
+/// (CONTEXT.md "Derivation Budget"). Local engines ignore the tier (fixed
+/// resource pacing only).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DerivationBudgetTier {
+    Light,
+    Balanced,
+    Thorough,
+}
+
+pub fn default_derivation_budget_tier() -> DerivationBudgetTier {
+    DerivationBudgetTier::Balanced
+}
+
+pub fn default_backfill_window_days() -> u32 {
+    30
+}
+
+/// The non-secret **User Context** derivation settings domain (CONTEXT.md
+/// "Derivation Budget" / "History Backfill"). Persisted like every other
+/// `RecordingSettings` domain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserContextSettings {
+    #[serde(default = "default_derivation_budget_tier")]
+    pub derivation_budget_tier: DerivationBudgetTier,
+    #[serde(default = "default_backfill_window_days")]
+    pub backfill_window_days: u32,
+    #[serde(default)]
+    pub backfill_go_deeper: bool,
+}
+
+impl Default for UserContextSettings {
+    fn default() -> Self {
+        Self {
+            derivation_budget_tier: default_derivation_budget_tier(),
+            backfill_window_days: default_backfill_window_days(),
+            backfill_go_deeper: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateUserContextSettingsRequest {
+    pub derivation_budget_tier: Option<DerivationBudgetTier>,
+    pub backfill_window_days: Option<u32>,
+    pub backfill_go_deeper: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettings {
@@ -604,6 +655,8 @@ pub struct RecordingSettings {
     pub access: AccessSettings,
     #[serde(default)]
     pub ai_runtime: AiRuntimeSettings,
+    #[serde(default)]
+    pub user_context: UserContextSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -644,6 +697,7 @@ pub enum SettingsOwnershipDomain {
     AppUpdate,
     Access,
     AiRuntime,
+    UserContext,
     OneTimePromptState,
 }
 
@@ -696,6 +750,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub access: AccessSettings,
     #[serde(default)]
     pub ai_runtime: AiRuntimeSettings,
+    #[serde(default)]
+    pub user_context: UserContextSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]

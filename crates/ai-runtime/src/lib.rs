@@ -98,18 +98,38 @@ pub struct ConnectionProbe {
     pub message: Option<String>,
 }
 
+/// The generic preamble used by [`extract`] and [`run_connection_probe`].
+const PREAMBLE: &str = "You verify structured output works.";
+
 /// Run a generic structured extraction against the selected engine.
 ///
 /// Builds the appropriate provider client for `config`, asks the model to
 /// extract a value of type `T` from `prompt`, and returns the deserialized
 /// value. `T` must describe its own JSON schema so the model knows the shape to
-/// produce.
+/// produce. Uses the crate's generic [`PREAMBLE`]; callers that need their own
+/// system instruction use [`extract_with_preamble`].
 pub async fn extract<T>(config: &EngineConfig, prompt: &str) -> Result<T, AiRuntimeError>
 where
     T: schemars::JsonSchema + serde::de::DeserializeOwned + serde::Serialize + Send + Sync + 'static,
 {
-    const PREAMBLE: &str = "You verify structured output works.";
+    extract_with_preamble(config, PREAMBLE, prompt).await
+}
 
+/// Run a generic structured extraction with a caller-supplied `preamble`.
+///
+/// Identical to [`extract`] but lets the caller drive the system instruction —
+/// used by the User Context derivation worker, which needs task-specific
+/// preambles (Activity segmentation, Conclusion distillation, the Sensitive
+/// Category Guardrail instruction) rather than the generic structured-output
+/// check.
+pub async fn extract_with_preamble<T>(
+    config: &EngineConfig,
+    preamble: &str,
+    prompt: &str,
+) -> Result<T, AiRuntimeError>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned + serde::Serialize + Send + Sync + 'static,
+{
     match config {
         EngineConfig::Cloud {
             provider,
@@ -129,7 +149,7 @@ where
                     let client = anthropic::Client::builder().api_key(api_key).build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
-                        .preamble(PREAMBLE)
+                        .preamble(preamble)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }
@@ -137,7 +157,7 @@ where
                     let client = openai::Client::builder().api_key(api_key).build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
-                        .preamble(PREAMBLE)
+                        .preamble(preamble)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }
@@ -157,7 +177,7 @@ where
                         .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
-                        .preamble(PREAMBLE)
+                        .preamble(preamble)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }
@@ -182,7 +202,7 @@ where
                         .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
-                        .preamble(PREAMBLE)
+                        .preamble(preamble)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }
@@ -190,7 +210,7 @@ where
                     let client = llamafile::Client::from_url(endpoint)?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
-                        .preamble(PREAMBLE)
+                        .preamble(preamble)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }

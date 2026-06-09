@@ -17,8 +17,8 @@ use capture_types::{
     UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
     UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
-    UpdateStorageSettingsRequest, UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset,
-    VideoBitrateSettings,
+    UpdateStorageSettingsRequest, UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest,
+    UserContextSettings, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -100,6 +100,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         privacy: default_privacy_settings(),
         access: AccessSettings::default(),
         ai_runtime: AiRuntimeSettings::default(),
+        user_context: UserContextSettings::default(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -636,6 +637,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         privacy,
         access: request.access,
         ai_runtime: request.ai_runtime,
+        user_context: request.user_context,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -693,6 +695,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             privacy: parsed.privacy,
             access: parsed.access,
             ai_runtime: parsed.ai_runtime,
+            user_context: parsed.user_context,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -819,6 +822,7 @@ pub(crate) enum RecordingSettingsDomainPatch {
     Developer(UpdateDeveloperSettingsRequest),
     Access(UpdateAccessSettingsRequest),
     AiRuntime(UpdateAiRuntimeSettingsRequest),
+    UserContext(UpdateUserContextSettingsRequest),
 }
 
 impl RecordingSettingsDomainPatch {
@@ -835,6 +839,7 @@ impl RecordingSettingsDomainPatch {
             Self::Developer(_) => SettingsOwnershipDomain::Developer,
             Self::Access(_) => SettingsOwnershipDomain::Access,
             Self::AiRuntime(_) => SettingsOwnershipDomain::AiRuntime,
+            Self::UserContext(_) => SettingsOwnershipDomain::UserContext,
         }
     }
 }
@@ -873,6 +878,7 @@ fn recording_settings_request_from_settings(
         privacy: settings.privacy,
         access: settings.access,
         ai_runtime: settings.ai_runtime,
+        user_context: settings.user_context,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -1048,6 +1054,20 @@ fn apply_domain_patch_to_settings(
             }
             if let Some(value) = request.local_model {
                 settings.ai_runtime.local_model = value.trim().to_string();
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::UserContext(request) => {
+            if let Some(value) = request.derivation_budget_tier {
+                settings.user_context.derivation_budget_tier = value;
+                touched = true;
+            }
+            if let Some(value) = request.backfill_window_days {
+                settings.user_context.backfill_window_days = value;
+                touched = true;
+            }
+            if let Some(value) = request.backfill_go_deeper {
+                settings.user_context.backfill_go_deeper = value;
                 touched = true;
             }
         }
@@ -1691,6 +1711,7 @@ mod tests {
                 privacy: default_privacy_settings(),
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
+                user_context: UserContextSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1749,6 +1770,7 @@ mod tests {
                 privacy: default_privacy_settings(),
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
+                user_context: UserContextSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1823,6 +1845,7 @@ mod tests {
                 privacy: default_privacy_settings(),
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
+                user_context: UserContextSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1871,6 +1894,7 @@ mod tests {
                 privacy: default_privacy_settings(),
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
+                user_context: UserContextSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1970,6 +1994,7 @@ mod tests {
             privacy: default_privacy_settings(),
             access: AccessSettings::default(),
             ai_runtime: AiRuntimeSettings::default(),
+            user_context: UserContextSettings::default(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

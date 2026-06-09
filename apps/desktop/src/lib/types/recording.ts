@@ -62,6 +62,22 @@ export interface UpdateAiRuntimeSettingsRequest {
 	localModel?: string;
 }
 
+/** Named Derivation Budget intensity tier for a cloud Reasoning Engine. */
+export type DerivationBudgetTier = "light" | "balanced" | "thorough";
+
+/** Non-secret User Context derivation settings domain. */
+export interface UserContextSettings {
+	derivationBudgetTier: DerivationBudgetTier;
+	backfillWindowDays: number;
+	backfillGoDeeper: boolean;
+}
+
+export interface UpdateUserContextSettingsRequest {
+	derivationBudgetTier?: DerivationBudgetTier;
+	backfillWindowDays?: number;
+	backfillGoDeeper?: boolean;
+}
+
 /** Reasoning Engine availability snapshot, mirroring the Rust `AiRuntimeStatus`. */
 export interface AiRuntimeStatus {
 	enabled: boolean;
@@ -103,6 +119,7 @@ export interface RecordingSettings {
 	privacy: PrivacySettings;
 	access: AccessSettings;
 	aiRuntime: AiRuntimeSettings;
+	userContext: UserContextSettings;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;
@@ -129,6 +146,7 @@ export type SettingsOwnershipDomain =
 	| "app_update"
 	| "access"
 	| "ai_runtime"
+	| "user_context"
 	| "one_time_prompt_state";
 
 export interface RecordingSettingsDomainUpdateResponse {
