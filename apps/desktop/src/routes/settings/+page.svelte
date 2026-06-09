@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from "$app/stores";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { Portal } from "bits-ui";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -3408,25 +3408,32 @@
   // ─── Init ─────────────────────────────────────────────────────────────────
 
   $effect(() => {
-    loadCaptureSupport();
-    loadRecordingSettings();
-    loadKeyboardBindingsSettings();
-    loadMicState();
-    loadOcrModelStatus();
-    loadTranscriptionModelStatus();
-    loadSpeakerModelStatus();
-    void loadPersonProfileCount();
-    loadDebugLogStatus();
-    loadGeneralLogStatus();
-    loadAppUpdateStatus();
-    void appPrivacyExclusion.loadPrivacyAppCandidates();
-    void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
-    loadBrokerGrants();
-    loadMnemaCliStatus();
-    loadPiRuntimeStatus();
-    void loadAiRuntimeStatus();
-    void refreshAiProviderKeyPresence();
-    void refreshUserContext();
+    // One-time mount init. Wrapped in `untrack` because several of these
+    // loaders synchronously read draft `$state` (e.g. refreshAiProviderKeyPresence
+    // reads draftAiCloudProvider). Without untrack the effect would subscribe to
+    // those drafts and re-run on every edit — re-firing loadRecordingSettings and
+    // clobbering the in-flight draft back to the persisted value before autosave.
+    untrack(() => {
+      loadCaptureSupport();
+      loadRecordingSettings();
+      loadKeyboardBindingsSettings();
+      loadMicState();
+      loadOcrModelStatus();
+      loadTranscriptionModelStatus();
+      loadSpeakerModelStatus();
+      void loadPersonProfileCount();
+      loadDebugLogStatus();
+      loadGeneralLogStatus();
+      loadAppUpdateStatus();
+      void appPrivacyExclusion.loadPrivacyAppCandidates();
+      void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
+      loadBrokerGrants();
+      loadMnemaCliStatus();
+      loadPiRuntimeStatus();
+      void loadAiRuntimeStatus();
+      void refreshAiProviderKeyPresence();
+      void refreshUserContext();
+    });
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenUserContextChanged: (() => void) | undefined;
