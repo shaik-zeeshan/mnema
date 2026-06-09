@@ -1022,6 +1022,7 @@
     | "capture"
     | "video"
     | "access"
+    | "intelligence"
     | "privacy"
     | "shortcuts"
     | "audio"
@@ -1204,6 +1205,7 @@
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
     { id: "access",     label: "Access",      description: "CLI and local tools" },
+    { id: "intelligence", label: "Reasoning Engine", description: "Engine and User Context" },
     { id: "privacy",    label: "Privacy",     description: "Metadata and exclusions" },
     { id: "shortcuts",  label: "Shortcuts",   description: "View and customize keys" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
@@ -1219,6 +1221,16 @@
     if (value === "about") return "about";
     if (value === "capture" || value === "behavior") return "capture";
     if (value === "access" || value === "cliAccess" || value === "cli-access") return "access";
+    if (
+      value === "intelligence" ||
+      value === "reasoning" ||
+      value === "reasoning-engine" ||
+      value === "ai" ||
+      value === "ai-runtime" ||
+      value === "user-context" ||
+      value === "userContext"
+    )
+      return "intelligence";
     if (value === "privacy" || value === "metadata") return "privacy";
     if (value === "shortcuts" || value === "keyboard" || value === "keyboard-shortcuts" || value === "keyboard_bindings") return "shortcuts";
     if (value === "video") return "video";
@@ -3713,6 +3725,12 @@
         <path d="m7 9 3 3-3 3" />
         <path d="M13 15h4" />
       </svg>
+    {:else if kind === "intelligence"}
+      <svg viewBox="0 0 24 24">
+        <path d="M12 3a4 4 0 0 0-4 4 3 3 0 0 0-1 5.8V17a3 3 0 0 0 5 2" />
+        <path d="M12 3a4 4 0 0 1 4 4 3 3 0 0 1 1 5.8V17a3 3 0 0 1-5 2" />
+        <path d="M12 3v18" />
+      </svg>
     {:else if kind === "privacy"}
       <svg viewBox="0 0 24 24">
         <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6Z" />
@@ -4358,7 +4376,11 @@
         </div>
       </div>
     </section>
+  </div>
+{/if}
 
+{#if activeTab === "intelligence"}
+  <div role="tabpanel" id="settings-panel-intelligence" aria-labelledby="settings-tab-intelligence" tabindex="0">
     {#snippet aiModelCombobox(inputId: string, placeholder: string)}
       <div class="model-combobox">
         <input
@@ -4462,6 +4484,25 @@
               { value: "local", label: "Local", description: "Ollama or Llamafile on this machine. No key, no egress." },
             ]}
           />
+
+          {#if draftAiEngineKind === "cloud"}
+            <div class="cloud-egress-disclosure" role="note">
+              <span class="cloud-egress-disclosure__icon" aria-hidden="true">⚠</span>
+              <div class="cloud-egress-disclosure__body">
+                <strong>Cloud egress consent</strong>
+                <p>
+                  Enabling a cloud engine sends <em>redacted</em> OCR and transcript text to
+                  {draftAiCloudProvider === "anthropic"
+                    ? "Anthropic"
+                    : draftAiCloudProvider === "openai"
+                      ? "OpenAI"
+                      : "your configured provider"} over HTTPS, billed to your own key.
+                  Your on-device data — frames, audio, and the assembled dossier — never leaves
+                  this machine. The master toggle above is your explicit opt-in, separate from Ask AI.
+                </p>
+              </div>
+            </div>
+          {/if}
 
           {#if draftAiEngineKind === "cloud"}
             <div class="settings-divider"></div>
@@ -9490,6 +9531,44 @@
   }
 
   .privacy-disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  /* Cloud-egress consent: a warn-tinted callout placed right beside the engine
+     picker, shown only for the cloud engine kind. Uses the shared --app-warn
+     tokens so it reads as a "this sends data off-device" disclosure rather than
+     a neutral surface note. */
+  .cloud-egress-disclosure {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-warn) 8%, transparent);
+  }
+
+  .cloud-egress-disclosure__icon {
+    color: var(--app-warn);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .cloud-egress-disclosure__body {
+    display: grid;
+    gap: 4px;
+  }
+
+  .cloud-egress-disclosure__body strong {
+    color: var(--app-warn);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+
+  .cloud-egress-disclosure__body p {
     margin: 0;
     color: var(--app-text-muted);
     font-size: 11px;
