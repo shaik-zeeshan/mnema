@@ -505,7 +505,7 @@
   async function refreshAiProviderKeyPresence() {
     try {
       aiProviderKeySaved = await invoke<boolean>("ai_runtime_has_provider_key", {
-        provider: draftAiCloudProvider,
+        request: { provider: draftAiCloudProvider },
       });
     } catch (error) {
       aiProviderKeyError = error instanceof Error ? error.message : String(error);
@@ -522,8 +522,7 @@
     aiProviderKeyError = null;
     try {
       await invoke("ai_runtime_set_provider_key", {
-        provider: draftAiCloudProvider,
-        key,
+        request: { provider: draftAiCloudProvider, key },
       });
       aiProviderKeyInput = "";
       await refreshAiProviderKeyPresence();
@@ -540,7 +539,7 @@
     aiProviderKeyError = null;
     try {
       await invoke("ai_runtime_clear_provider_key", {
-        provider: draftAiCloudProvider,
+        request: { provider: draftAiCloudProvider },
       });
       aiProviderKeyInput = "";
       await refreshAiProviderKeyPresence();
