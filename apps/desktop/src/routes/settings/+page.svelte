@@ -68,6 +68,9 @@
     AiLocalKind,
     AiRuntimeStatus,
     AiRuntimeTestResult,
+    UserContextStatus,
+    UserContextDerivationRunResult,
+    Activity,
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
@@ -582,6 +585,87 @@
       aiRuntimeTestRunning = false;
       void loadAiRuntimeStatus();
     }
+  }
+
+  // ----- User Context (issue #93): status + recent Activity preview + run-now -
+  // Read-only surface inside the Reasoning Engine card; the derivation worker
+  // runs in the background and emits `user_context_changed` to refresh this.
+  let userContextStatus = $state<UserContextStatus | null>(null);
+  let userContextStatusError = $state<string | null>(null);
+  let userContextActivities = $state<Activity[]>([]);
+  let userContextActivitiesError = $state<string | null>(null);
+  let userContextRunNowRunning = $state(false);
+  let userContextRunNowMessage = $state<string | null>(null);
+
+  async function loadUserContextStatus() {
+    try {
+      userContextStatus = await invoke<UserContextStatus>("get_user_context_status");
+      userContextStatusError = null;
+    } catch (error) {
+      userContextStatusError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function loadUserContextActivities() {
+    try {
+      userContextActivities = await invoke<Activity[]>("list_user_context_activities", {
+        limit: 8,
+        offset: 0,
+      });
+      userContextActivitiesError = null;
+    } catch (error) {
+      userContextActivitiesError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function refreshUserContext() {
+    await Promise.all([loadUserContextStatus(), loadUserContextActivities()]);
+  }
+
+  async function runUserContextDerivationNow() {
+    userContextRunNowRunning = true;
+    userContextRunNowMessage = null;
+    try {
+      const result = await invoke<UserContextDerivationRunResult>(
+        "user_context_run_derivation_now"
+      );
+      userContextRunNowMessage = result.message;
+      await refreshUserContext();
+    } catch (error) {
+      userContextRunNowMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      userContextRunNowRunning = false;
+    }
+  }
+
+  // Compact label for an ActivityCategory (or "—" when uncategorized).
+  function activityCategoryLabel(category: string | null | undefined): string {
+    if (!category) return "—";
+    return category.charAt(0).toUpperCase() + category.slice(1);
+  }
+
+  // "MMM D, h:mm a" range for an Activity row (best-effort; locale formatting).
+  function formatActivityRange(startedAtMs: number, endedAtMs: number): string {
+    const fmt = (ms: number) =>
+      new Date(ms).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    const start = fmt(startedAtMs);
+    if (endedAtMs <= startedAtMs) return start;
+    return `${start} – ${fmt(endedAtMs)}`;
+  }
+
+  function formatLastDerived(ms: number | null | undefined): string {
+    if (!ms) return "never";
+    return new Date(ms).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
   }
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
@@ -3246,8 +3330,10 @@
     loadPiRuntimeStatus();
     void loadAiRuntimeStatus();
     void refreshAiProviderKeyPresence();
+    void refreshUserContext();
 
     let unlistenControllerChanged: (() => void) | undefined;
+    let unlistenUserContextChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let unlistenRecordingSettingsDomainChanged: (() => void) | undefined;
@@ -3349,6 +3435,13 @@
       else unlistenSpeakerDownloadProgress = fn;
     });
 
+    listen("user_context_changed", () => {
+      void refreshUserContext();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenUserContextChanged = fn;
+    });
+
     return () => {
       destroyed = true;
       for (const timer of recAutoSaveTimers.values()) clearTimeout(timer);
@@ -3363,6 +3456,7 @@
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
       unlistenSpeakerDownloadProgress?.();
+      unlistenUserContextChanged?.();
     };
   });
 </script>
@@ -4225,6 +4319,99 @@
             <p class="group-hint group-hint--warn">Test connection failed.</p>
             <p class="error-text">{aiRuntimeTestError}</p>
           {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">User Context</span>
+        <div class="settings-stack">
+          <div
+            class="model-status"
+            class:model-status--available={userContextStatus?.engineAvailable}
+          >
+            <div>
+              <div class="model-status__title">
+                {userContextStatus?.engineAvailable ? "Deriving Activities" : "Derivation paused"}
+              </div>
+              <div class="model-status__meta">
+                {#if userContextStatus}
+                  {userContextStatus.activityCount}
+                  {userContextStatus.activityCount === 1 ? "Activity" : "Activities"} derived ·
+                  last run {formatLastDerived(userContextStatus.lastDerivedAtMs)}
+                  {#if !userContextStatus.engineAvailable}
+                    · {aiRuntimeReasonLabel(userContextStatus.reason)}
+                  {/if}
+                {:else}
+                  Loading…
+                {/if}
+              </div>
+            </div>
+            <span class="model-status__pill">
+              {userContextStatus?.engineAvailable ? "active" : "paused"}
+            </span>
+          </div>
+
+          {#if userContextStatus}
+            <p class="group-hint">
+              ≈ {userContextStatus.tokenUsage.totalTokens.toLocaleString()} tokens used across
+              {userContextStatus.tokenUsage.runCount}
+              derivation {userContextStatus.tokenUsage.runCount === 1 ? "pass" : "passes"}
+              (estimated).
+            </p>
+          {/if}
+
+          {#if userContextStatusError}
+            <p class="error-text">{userContextStatusError}</p>
+          {/if}
+
+          <div class="row-actions">
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              disabled={userContextRunNowRunning || !userContextStatus?.engineAvailable}
+              onclick={runUserContextDerivationNow}
+            >
+              {userContextRunNowRunning ? "Deriving" : "Run derivation now"}
+            </button>
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              onclick={refreshUserContext}
+            >
+              Refresh
+            </button>
+          </div>
+
+          {#if userContextRunNowMessage}
+            <p class="group-hint" aria-live="polite">{userContextRunNowMessage}</p>
+          {/if}
+
+          <div class="settings-stack">
+            <span class="field-label">Recent activity</span>
+            {#if userContextActivitiesError}
+              <p class="error-text">{userContextActivitiesError}</p>
+            {:else if userContextActivities.length === 0}
+              <p class="group-hint">No Activities derived yet.</p>
+            {:else}
+              <ul class="user-context-activities">
+                {#each userContextActivities as activity (activity.id)}
+                  <li class="user-context-activity">
+                    <div class="user-context-activity__title">{activity.title}</div>
+                    <div class="user-context-activity__meta">
+                      {#if activity.category}
+                        <span class="user-context-activity__category"
+                          >{activityCategoryLabel(activity.category)}</span
+                        >
+                      {/if}
+                      <span>{formatActivityRange(activity.startedAtMs, activity.endedAtMs)}</span>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
         </div>
       </div>
     </section>
@@ -7389,6 +7576,48 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text-muted);
+  }
+
+  /* User Context recent-Activity preview list (read-only). */
+  .user-context-activities {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .user-context-activity {
+    padding: 8px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 4%, transparent);
+  }
+
+  .user-context-activity__title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--app-text);
+    line-height: 1.4;
+  }
+
+  .user-context-activity__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 3px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--app-text-muted);
+  }
+
+  .user-context-activity__category {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--app-accent);
   }
 
   .permission-callout {

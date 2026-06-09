@@ -88,7 +88,9 @@ fn local_kind(kind: AiLocalKind) -> ai_engine::LocalKind {
 /// Build an [`ai_engine::EngineConfig`] from the current settings, sourcing the
 /// cloud credential from the keychain. Returns a human-readable reason string on
 /// failure (no model, no key, no endpoint).
-fn resolve_engine_config(settings: &AiRuntimeSettings) -> Result<ai_engine::EngineConfig, String> {
+pub(crate) fn resolve_engine_config(
+    settings: &AiRuntimeSettings,
+) -> Result<ai_engine::EngineConfig, String> {
     match settings.engine_kind {
         AiEngineKind::Cloud => {
             let model = settings.cloud_model.trim();

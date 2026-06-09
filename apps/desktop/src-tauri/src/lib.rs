@@ -17,6 +17,7 @@ mod sensitive_capture_recommendations;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
+mod user_context;
 mod windows;
 
 use std::{collections::VecDeque, path::Path, sync::Mutex};
@@ -487,6 +488,9 @@ pub fn run() {
             ai_runtime::ai_runtime_has_provider_key,
             ai_runtime::get_ai_runtime_status,
             ai_runtime::ai_runtime_test_connection,
+            user_context::commands::get_user_context_status,
+            user_context::commands::list_user_context_activities,
+            user_context::commands::user_context_run_derivation_now,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,

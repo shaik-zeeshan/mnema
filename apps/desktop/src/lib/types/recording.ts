@@ -97,6 +97,64 @@ export interface AiRuntimeTestResult {
 	rawJson: string;
 }
 
+/** Fixed v1 Activity taxonomy (engine-tier; may be absent on a tracer). */
+export type ActivityCategory =
+	| "coding"
+	| "research"
+	| "communication"
+	| "design"
+	| "testing"
+	| "personal"
+	| "distractions";
+
+/** A raw-capture evidence reference grounding an Activity. */
+export interface ActivityEvidenceRef {
+	subjectType: string;
+	subjectId: number;
+	capturedAtMs?: number | null;
+}
+
+/** A derived episode of what the user did and how (the evidence layer). */
+export interface Activity {
+	id: number;
+	title: string;
+	summary: string;
+	category?: ActivityCategory | null;
+	startedAtMs: number;
+	endedAtMs: number;
+	createdAtMs: number;
+	evidence: ActivityEvidenceRef[];
+}
+
+/** Aggregated (estimated) token usage across derivation runs. */
+export interface UserContextTokenUsage {
+	inputTokens: number;
+	outputTokens: number;
+	totalTokens: number;
+	runCount: number;
+}
+
+/** Availability + counts + token usage for the User Context settings surface. */
+export interface UserContextStatus {
+	engineAvailable: boolean;
+	reason?: string | null;
+	activityCount: number;
+	conclusionCount: number;
+	lastDerivedAtMs?: number | null;
+	backfilling: boolean;
+	tokenUsage: UserContextTokenUsage;
+	budgetTier: DerivationBudgetTier;
+}
+
+/** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */
+export interface UserContextDerivationRunResult {
+	activitiesDerived: number;
+	windowStartMs: number;
+	windowEndMs: number;
+	itemsRead: number;
+	message: string;
+}
+
 export interface RecordingSettings {
 	captureScreen: boolean;
 	captureMicrophone: boolean;

@@ -152,7 +152,7 @@ impl Default for BackgroundWorkersControl {
 }
 
 impl BackgroundWorkersControl {
-    fn subscribe(&self) -> watch::Receiver<bool> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
         self.inner.shutdown_tx.subscribe()
     }
 
@@ -169,7 +169,7 @@ impl BackgroundWorkersControl {
         let _ = self.inner.retention_schedule_tx.send(version);
     }
 
-    fn track(&self, handle: JoinHandle<()>) {
+    pub(crate) fn track(&self, handle: JoinHandle<()>) {
         if self.inner.shutdown_requested.load(Ordering::SeqCst) {
             handle.abort();
             return;
@@ -1781,6 +1781,12 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    crate::user_context::worker::spawn_user_context_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
     spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
 }
 
@@ -2316,7 +2322,10 @@ impl ProcessingWorkerKind {
     }
 }
 
-async fn shutdown_aware_sleep(shutdown_rx: &mut watch::Receiver<bool>, duration: Duration) -> bool {
+pub(crate) async fn shutdown_aware_sleep(
+    shutdown_rx: &mut watch::Receiver<bool>,
+    duration: Duration,
+) -> bool {
     if *shutdown_rx.borrow() {
         return true;
     }
