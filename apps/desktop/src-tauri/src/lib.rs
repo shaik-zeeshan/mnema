@@ -490,6 +490,8 @@ pub fn run() {
             ai_runtime::ai_runtime_test_connection,
             user_context::commands::get_user_context_status,
             user_context::commands::list_user_context_activities,
+            user_context::commands::list_user_context_conclusions,
+            user_context::commands::get_user_context_subject,
             user_context::commands::user_context_run_derivation_now,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,

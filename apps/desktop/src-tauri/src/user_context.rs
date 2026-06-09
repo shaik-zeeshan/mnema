@@ -15,10 +15,16 @@
 //! frame images or audio. The provider key is read from the OS keychain at call
 //! time and is never logged.
 //!
+//! Activity derivation (#93) and Conclusion distillation (#94) share this
+//! orchestration: the worker runs the frequent Activity beat and a slower
+//! Conclusion beat, both funnelling results through `UserContextStore`.
+//!
 //! Submodules:
-//! - [`derivation`] — prompt construction + the structured-extraction call.
+//! - [`derivation`] — prompt construction + the structured-extraction calls
+//!   (`derive_activities` and `distill_conclusions`).
 //! - [`worker`] — the background, tier-paced derivation loop (OCR Catch-Up style).
-//! - [`commands`] — the Tauri command surface (status / list / run-now).
+//! - [`commands`] — the Tauri command surface (status / list activities +
+//!   conclusions / subject view / run-now).
 
 pub mod commands;
 pub mod derivation;

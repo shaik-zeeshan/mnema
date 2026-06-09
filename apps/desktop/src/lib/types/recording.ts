@@ -126,6 +126,54 @@ export interface Activity {
 	evidence: ActivityEvidenceRef[];
 }
 
+/** Whether a piece of evidence supports or contradicts a Conclusion. */
+export type EvidenceStance = "support" | "contradict";
+
+/** Visibility status of a Conclusion (`faded` = below the display floor). */
+export type ConclusionStatus = "visible" | "faded" | "dismissed";
+
+/** A reference from a Conclusion to the Activity that is its evidence. */
+export interface ConclusionEvidenceRef {
+	activityId: number;
+	stance: EvidenceStance;
+	activityTitle?: string | null;
+	activityStartedAtMs?: number | null;
+}
+
+/** A distilled, plain-language belief about the user, grounded in Activities. */
+export interface Conclusion {
+	id: number;
+	subject: string;
+	statement: string;
+	confidence: number;
+	status: ConclusionStatus;
+	pinned: boolean;
+	formedAtMs: number;
+	lastSupportedAtMs: number;
+	updatedAtMs: number;
+	evidence: ConclusionEvidenceRef[];
+}
+
+/** A single point on a Conclusion's confidence-over-time line. */
+export interface ConfidenceSnapshot {
+	confidence: number;
+	snapshotAtMs: number;
+}
+
+/** A single Conclusion's confidence trajectory for the Subject page. */
+export interface SubjectTrajectory {
+	conclusionId: number;
+	statement: string;
+	history: ConfidenceSnapshot[];
+}
+
+/** The Subject page: every Conclusion about a Subject plus its trajectories. */
+export interface SubjectView {
+	subject: string;
+	conclusions: Conclusion[];
+	trajectories: SubjectTrajectory[];
+}
+
 /** Aggregated (estimated) token usage across derivation runs. */
 export interface UserContextTokenUsage {
 	inputTokens: number;
@@ -149,6 +197,7 @@ export interface UserContextStatus {
 /** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */
 export interface UserContextDerivationRunResult {
 	activitiesDerived: number;
+	conclusionsDerived: number;
 	windowStartMs: number;
 	windowEndMs: number;
 	itemsRead: number;

@@ -86,8 +86,8 @@ pub use search::{
 };
 pub use status::AppInfraStatus;
 pub use user_context::{
-    CaptureWindow, CaptureWindowItem, NewActivity, NewActivityEvidence, NewDerivationRun,
-    UserContextStore,
+    CaptureWindow, CaptureWindowItem, NewActivity, NewActivityEvidence, NewConclusion,
+    NewConclusionEvidence, NewDerivationRun, UserContextStore,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

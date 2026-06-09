@@ -6,17 +6,21 @@
 //! slices), and persists each one with its raw-capture evidence via
 //! [`app_infra::UserContextStore::insert_activity_with_evidence`].
 //!
-//! Conclusion distillation (issue #94) extends this module with its own
-//! `DistilledConclusion*` schemas and a `distill_conclusions` fn; this slice
-//! ships only the Activity path.
+//! Conclusion distillation (issue #94) lives in the second half of this module:
+//! the `DistilledConclusion*` schemas and `distill_conclusions`, which read
+//! accumulated **Activity** episodes and ask the engine to form open-ended,
+//! plain-language **Conclusion** statements grounded in Activity evidence.
 
 use std::collections::HashMap;
 
-use capture_types::ActivityCategory;
+use capture_types::{ActivityCategory, EvidenceStance};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use app_infra::{CaptureWindow, NewActivity, NewActivityEvidence, UserContextStore};
+use app_infra::{
+    CaptureWindow, NewActivity, NewActivityEvidence, NewConclusion, NewConclusionEvidence,
+    UserContextStore,
+};
 
 /// System instruction for the Activity-segmentation pass. Kept terse: the
 /// detailed item formatting + the return shape live in the per-call prompt and
@@ -279,6 +283,281 @@ pub async fn derive_activities(
     })
 }
 
+// === #94: Conclusion distillation =========================================
+
+/// System instruction for the Conclusion-distillation pass. Describes the task:
+/// form open-ended, plain-language beliefs about the user grounded in the listed
+/// Activities, each carrying a Subject and the Activity ids that are its
+/// supporting (and any contradicting) evidence.
+///
+// TODO(#96): prepend guardrail::SENSITIVE_GUARDRAIL_INSTRUCTION. The soft
+// guardrail instruction text (do not form conclusions about health, mental
+// health, sexual orientation, religion, politics, and similar intimate domains)
+// lands with the Sensitive Category Guardrail (#96) and should be prepended to
+// this preamble; the hard `is_sensitive` post-filter is hooked at the per-
+// conclusion persist site below.
+const CONCLUSION_PREAMBLE: &str = "You read a list of a single user's recent Activity episodes \
+(each with an id, a title, a one or two sentence summary, a capture time, and an optional category) \
+and distill open-ended, plain-language Conclusion statements about the user. A Conclusion is a \
+natural-language belief such as \"Has been increasingly interested in Apple\" or \"Prefers async \
+communication\" — NOT a fixed subject+attribute+value row and NOT a tag. Each Conclusion is ABOUT a \
+Subject: a short grouping handle like \"Apple\" or \"async communication\". Ground every Conclusion \
+in evidence: list the Activity ids that SUPPORT it, and (only when an Activity genuinely cuts \
+against it) the Activity ids that CONTRADICT it. Only reference Activity ids that appear in the \
+input. Prefer a few well-supported Conclusions over many flimsy ones. Return the structured result.";
+
+/// Number of recent Activities pulled into one distillation pass.
+const DISTILLATION_ACTIVITY_LIMIT: i64 = 60;
+
+/// Per-summary text cap so one verbose Activity summary cannot dominate the
+/// prompt budget.
+const ACTIVITY_SUMMARY_CHAR_CAP: usize = 600;
+
+/// One distilled Conclusion as returned by the engine. `support_refs` /
+/// `contradict_refs` are Activity ids (matched back against the pulled set).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct DistilledConclusion {
+    /// The Subject the Conclusion is about (a short grouping handle).
+    pub subject: String,
+    /// The open-ended, plain-language belief statement.
+    pub statement: String,
+    /// Activity ids that support the Conclusion.
+    #[serde(default)]
+    pub support_refs: Vec<i64>,
+    /// Activity ids that contradict the Conclusion (usually empty).
+    #[serde(default)]
+    pub contradict_refs: Vec<i64>,
+}
+
+/// The structured batch the engine returns for one distillation pass.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct DistilledConclusionBatch {
+    pub conclusions: Vec<DistilledConclusion>,
+}
+
+/// The outcome of one [`distill_conclusions`] call. The caller stamps a single
+/// `derivation_run` ledger row (kind `'conclusion'`) from this, mirroring the
+/// [`ActivityDerivationOutcome`] single-shot pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConclusionDistillationOutcome {
+    /// Number of Conclusions inserted/updated in the store.
+    pub upserted: usize,
+    /// Best-effort estimated input tokens (preamble + prompt).
+    pub input_tokens: i64,
+    /// Best-effort estimated output tokens (serialized extracted batch).
+    pub output_tokens: i64,
+}
+
+/// PLACEHOLDER initial confidence. A fresh Conclusion starts at a low base,
+/// rises with each supporting Activity, and is dragged down (faster) by
+/// contradictions, then clamped to a sane band.
+///
+// TODO(#95): replace with Confidence Policy (confidence.rs). The pure
+// `app_infra::user_context::confidence::initial_confidence(support, contradict)`
+// function lands with #95; this inline formula is a stand-in so the tracer can
+// store a plausible value end-to-end.
+fn placeholder_initial_confidence(support_count: usize, contradict_count: usize) -> f64 {
+    (0.3 + 0.15 * support_count as f64 - 0.2 * contradict_count as f64).clamp(0.05, 0.95)
+}
+
+/// Render the distillation prompt: one line per Activity (id, time, category,
+/// title) plus its truncated summary.
+fn build_distillation_prompt(activities: &[capture_types::Activity]) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(
+        "Below is a list of the user's recent Activity episodes, newest first. Each is tagged with \
+its numeric Activity id. Distill open-ended Conclusion statements about the user and reference the \
+Activity ids that are each Conclusion's supporting (and any contradicting) evidence. Return \
+DistilledConclusionBatch.\n\n",
+    );
+    prompt.push_str(&format!("Activities ({}):\n\n", activities.len()));
+
+    for activity in activities {
+        let category = activity
+            .category
+            .map(category_label)
+            .unwrap_or("uncategorized");
+        prompt.push_str(&format!(
+            "[id={}] t={}ms category={category} title={}\n",
+            activity.id,
+            activity.started_at_ms,
+            activity.title.trim()
+        ));
+        let summary = truncate_chars(activity.summary.trim(), ACTIVITY_SUMMARY_CHAR_CAP);
+        if !summary.is_empty() {
+            prompt.push_str(&summary);
+            prompt.push('\n');
+        }
+        prompt.push('\n');
+    }
+
+    prompt
+}
+
+/// snake_case label for an [`ActivityCategory`] (matches the capture-types serde
+/// rename) used in the distillation prompt.
+fn category_label(category: ActivityCategory) -> &'static str {
+    match category {
+        ActivityCategory::Coding => "coding",
+        ActivityCategory::Research => "research",
+        ActivityCategory::Communication => "communication",
+        ActivityCategory::Design => "design",
+        ActivityCategory::Testing => "testing",
+        ActivityCategory::Personal => "personal",
+        ActivityCategory::Distractions => "distractions",
+    }
+}
+
+/// Distill **Conclusion** statements from the accumulated **Activity** episodes
+/// and persist each one grounded in its Activity evidence. Returns the count
+/// upserted plus best-effort token estimates.
+///
+/// Mirrors [`derive_activities`]'s single-shot shape: the caller (the worker /
+/// the run-now command) owns recording the single `derivation_run` ledger row
+/// (kind `'conclusion'`) from the returned [`ConclusionDistillationOutcome`].
+///
+/// Distillation is a no-op below two Activities: intent / belief signal needs at
+/// least a couple of episodes to form a non-flimsy Conclusion.
+pub async fn distill_conclusions(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+) -> Result<ConclusionDistillationOutcome, String> {
+    let activities = store
+        .activities_for_distillation(DISTILLATION_ACTIVITY_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // Nothing to distill from a single (or zero) Activity.
+    if activities.len() < 2 {
+        return Ok(ConclusionDistillationOutcome {
+            upserted: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+        });
+    }
+
+    // TODO(#99): load dismissal state here and add a "do not reconstitute these
+    // dismissed conclusions unless substantially more fresh evidence" block to
+    // the prompt; that input also gates resurface at the persist site below.
+
+    let valid_ids: std::collections::HashSet<i64> = activities.iter().map(|a| a.id).collect();
+    let started_at_by_id: HashMap<i64, i64> = activities
+        .iter()
+        .map(|a| (a.id, a.started_at_ms))
+        .collect();
+
+    let prompt = build_distillation_prompt(&activities);
+    let input_tokens = estimate_tokens(CONCLUSION_PREAMBLE) + estimate_tokens(&prompt);
+
+    let batch: DistilledConclusionBatch = ai_engine::extract_with_preamble::<
+        DistilledConclusionBatch,
+    >(engine, CONCLUSION_PREAMBLE, &prompt)
+    .await
+    .map_err(|error| error.to_string())?;
+
+    let output_tokens = serde_json::to_string(&batch)
+        .map(|json| estimate_tokens(&json))
+        .unwrap_or(0);
+
+    let now = now_ms();
+    let mut upserted = 0usize;
+    for conclusion in &batch.conclusions {
+        let subject = conclusion.subject.trim();
+        let statement = conclusion.statement.trim();
+        if subject.is_empty() || statement.is_empty() {
+            continue;
+        }
+
+        // Keep only refs that name an Activity actually in the pulled set; dedup.
+        let support_refs = filter_known_refs(&conclusion.support_refs, &valid_ids);
+        let contradict_refs = filter_known_refs(&conclusion.contradict_refs, &valid_ids);
+
+        // No resolvable supporting evidence => ungrounded; skip (never store a
+        // free-floating Conclusion).
+        if support_refs.is_empty() {
+            continue;
+        }
+
+        // TODO(#96): drop sensitive-category conclusions via
+        // app_infra::user_context::guardrail::is_sensitive before persisting.
+        // The hard post-filter lands with the Sensitive Category Guardrail (#96);
+        // a sensitive Conclusion must never enter the store.
+
+        // TODO(#95): formation-bar gate here. The Confidence Policy's
+        // `meets_formation_bar(support_refs.len())` (≥2 supporting Activities)
+        // lands with #95 and should gate persistence before the upsert.
+
+        // TODO(#99): resurface-bar gate here. When a dismissal exists for ~this
+        // subject/statement, require the high resurface bar (substantially more
+        // fresh evidence) before re-forming it.
+
+        let confidence = placeholder_initial_confidence(support_refs.len(), contradict_refs.len());
+
+        // started / last_supported = the most recent supporting Activity time
+        // (fallback: now if none resolved, though support_refs is non-empty here).
+        let last_supported_at_ms = support_refs
+            .iter()
+            .filter_map(|id| started_at_by_id.get(id).copied())
+            .max()
+            .unwrap_or(now);
+
+        let conclusion_id = store
+            .upsert_conclusion(NewConclusion {
+                subject: subject.to_string(),
+                statement: statement.to_string(),
+                confidence,
+                formed_at_ms: last_supported_at_ms,
+                last_supported_at_ms,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let mut evidence: Vec<NewConclusionEvidence> = Vec::with_capacity(
+            support_refs.len() + contradict_refs.len(),
+        );
+        for id in &support_refs {
+            evidence.push(NewConclusionEvidence {
+                activity_id: *id,
+                stance: EvidenceStance::Support,
+            });
+        }
+        for id in &contradict_refs {
+            evidence.push(NewConclusionEvidence {
+                activity_id: *id,
+                stance: EvidenceStance::Contradict,
+            });
+        }
+
+        store
+            .replace_conclusion_evidence(conclusion_id, evidence)
+            .await
+            .map_err(|error| error.to_string())?;
+        upserted += 1;
+    }
+
+    Ok(ConclusionDistillationOutcome {
+        upserted,
+        input_tokens,
+        output_tokens,
+    })
+}
+
+/// Current unix time in milliseconds (no `Date.now()`-style nondeterminism).
+fn now_ms() -> i64 {
+    (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
+}
+
+/// Filter a list of Activity-id refs to the ones present in `valid_ids`,
+/// preserving order and dropping duplicates.
+fn filter_known_refs(refs: &[i64], valid_ids: &std::collections::HashSet<i64>) -> Vec<i64> {
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    refs.iter()
+        .copied()
+        .filter(|id| valid_ids.contains(id))
+        .filter(|id| seen.insert(*id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +590,30 @@ mod tests {
         let truncated = truncate_chars(&text, ITEM_TEXT_CHAR_CAP);
         // cap chars + the ellipsis.
         assert_eq!(truncated.chars().count(), ITEM_TEXT_CHAR_CAP + 1);
+    }
+
+    #[test]
+    fn filter_known_refs_drops_unknown_and_dedups() {
+        let valid: std::collections::HashSet<i64> = [1, 2, 3].into_iter().collect();
+        // 9 is not in the set; the second `2` is a duplicate; order preserved.
+        let filtered = filter_known_refs(&[2, 9, 1, 2, 3], &valid);
+        assert_eq!(filtered, vec![2, 1, 3]);
+        // No valid refs at all => empty (the caller skips ungrounded conclusions).
+        assert!(filter_known_refs(&[9, 10], &valid).is_empty());
+    }
+
+    #[test]
+    fn placeholder_confidence_rises_with_support_drops_on_contradiction() {
+        // More support => higher confidence.
+        assert!(
+            placeholder_initial_confidence(3, 0) > placeholder_initial_confidence(1, 0)
+        );
+        // A contradiction drops it below the same-support no-contradiction case.
+        assert!(
+            placeholder_initial_confidence(3, 1) < placeholder_initial_confidence(3, 0)
+        );
+        // Clamped to the [0.05, 0.95] band.
+        assert!(placeholder_initial_confidence(0, 100) >= 0.05);
+        assert!(placeholder_initial_confidence(100, 0) <= 0.95);
     }
 }

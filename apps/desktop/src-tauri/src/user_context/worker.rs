@@ -11,8 +11,9 @@
 //! default**, so a tick with `ai_runtime.enabled == false` (or an unresolved
 //! engine) does nothing but sleep the idle interval. No store/LLM work happens.
 //!
-//! Conclusion distillation (#94) and confidence decay (#95) extend this loop on
-//! slower beats — see the cadence note near [`run_forward_activity_window`].
+//! Conclusion distillation (#94) runs on a slower beat after the Activity window
+//! each tick (see [`WorkerCadence`]); confidence decay (#95) extends the loop on
+//! a slower beat still — see the cadence note near [`run_forward_activity_window`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -288,9 +289,105 @@ pub async fn run_forward_activity_window(
     }
 }
 
+/// Run Conclusion distillation on the slower beat once every this many
+/// successful Activity ticks, so the dossier (expensive, occasional) re-distills
+/// less often than the diary (cheap, frequent). A distillation also runs early
+/// whenever the Activity count has grown since the last one (see [`WorkerCadence`]).
+const CONCLUSION_EVERY_K_ACTIVITY_TICKS: u32 = 3;
+
+/// Cross-tick state for the slower Conclusion-distillation beat. The worker loop
+/// owns one of these and threads it through each tick. Activity derivation stays
+/// the frequent beat; this counts successful Activity ticks so distillation runs
+/// on a slower cadence (or sooner when new Activities have accumulated).
+#[derive(Debug, Default)]
+struct WorkerCadence {
+    /// Successful Activity ticks since the last distillation.
+    activity_ticks_since_distillation: u32,
+    /// `count_activities()` observed at the last distillation, so a tick can
+    /// distill early when the Activity total has grown.
+    last_distilled_activity_count: Option<i64>,
+}
+
+impl WorkerCadence {
+    /// Whether this tick should run a Conclusion distillation: every Kth
+    /// successful Activity tick, OR as soon as new Activities exist since the
+    /// last distillation.
+    fn should_distill(&self, current_activity_count: i64) -> bool {
+        let grew = self
+            .last_distilled_activity_count
+            .map(|last| current_activity_count > last)
+            .unwrap_or(current_activity_count > 0);
+        grew || self.activity_ticks_since_distillation >= CONCLUSION_EVERY_K_ACTIVITY_TICKS
+    }
+}
+
+/// Run one Conclusion distillation pass over accumulated Activities and stamp a
+/// single `derivation_run` (kind `'conclusion'`) with the outcome. Resilient:
+/// any engine/store error records a `failed` run and returns `false`; it never
+/// panics the worker. Returns whether the dossier changed (≥1 upsert).
+///
+/// Shared with the run-now command so manual and automatic distillation behave
+/// identically and both stamp the same ledger row.
+pub(crate) async fn run_conclusion_distillation(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> bool {
+    match derivation::distill_conclusions(engine, store).await {
+        Ok(outcome) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "conclusion".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "completed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: outcome.upserted as i64,
+                    input_tokens: outcome.input_tokens,
+                    output_tokens: outcome.output_tokens,
+                    provider: provider_label,
+                    model: model_label,
+                    error: None,
+                })
+                .await;
+            if outcome.upserted > 0 {
+                crate::native_capture::debug_log::log_info(format!(
+                    "user context worker distilled {} conclusion(s)",
+                    outcome.upserted
+                ));
+            }
+            outcome.upserted > 0
+        }
+        Err(error) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "conclusion".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error),
+                })
+                .await;
+            false
+        }
+    }
+}
+
 /// One worker tick. Returns the sleep to wait before the next tick. All errors
-/// are logged, never propagated.
-async fn worker_tick(infra: &AppInfraState, app_handle: &tauri::AppHandle) -> Duration {
+/// are logged, never propagated. `cadence` carries the slower Conclusion beat
+/// across ticks.
+async fn worker_tick(
+    infra: &AppInfraState,
+    app_handle: &tauri::AppHandle,
+    cadence: &mut WorkerCadence,
+) -> Duration {
     let Some(settings_state) = app_handle.try_state::<RecordingSettingsState>() else {
         return IDLE_INTERVAL;
     };
@@ -315,22 +412,51 @@ async fn worker_tick(infra: &AppInfraState, app_handle: &tauri::AppHandle) -> Du
     let provider_label = provider_label_for(&ai_runtime);
     let model_label = model_label_for(&ai_runtime);
 
+    // --- Activity beat (frequent) ---
     let run = run_forward_activity_window(
         &engine,
         infra.user_context(),
-        provider_label,
-        model_label,
+        provider_label.clone(),
+        model_label.clone(),
     )
     .await;
 
-    if run.changed {
-        let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
-    }
+    let mut dossier_changed = run.changed;
     if run.activities_derived > 0 {
         crate::native_capture::debug_log::log_info(format!(
             "user context worker derived {} activities (window=[{},{}], items={})",
             run.activities_derived, run.window_start_ms, run.window_end_ms, run.items_read
         ));
+        cadence.activity_ticks_since_distillation =
+            cadence.activity_ticks_since_distillation.saturating_add(1);
+    }
+
+    // --- Conclusion beat (slower) ---
+    // CADENCE HOOK (spec §6 / §4): after the forward Activity window, run
+    // Conclusion distillation on a slower beat — every Kth successful Activity
+    // tick, or whenever the Activity count has grown since the last distillation.
+    // It shares the SAME resolved engine and records its own `derivation_run`
+    // (kind `'conclusion'`). #95 adds the confidence-decay beat as a sibling here.
+    let activity_count = infra
+        .user_context()
+        .count_activities()
+        .await
+        .unwrap_or(0);
+    if cadence.should_distill(activity_count) {
+        let changed = run_conclusion_distillation(
+            &engine,
+            infra.user_context(),
+            provider_label,
+            model_label,
+        )
+        .await;
+        dossier_changed = dossier_changed || changed;
+        cadence.activity_ticks_since_distillation = 0;
+        cadence.last_distilled_activity_count = Some(activity_count);
+    }
+
+    if dossier_changed {
+        let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     }
 
     tick_interval(ai_runtime.engine_kind, user_context.derivation_budget_tier)
@@ -384,6 +510,9 @@ pub fn spawn_user_context_worker(
     );
     let handle = tauri::async_runtime::spawn(async move {
         let infra = Arc::clone(&infra);
+        // The slower Conclusion-distillation beat is paced relative to the
+        // frequent Activity beat; this state survives across ticks.
+        let mut cadence = WorkerCadence::default();
         loop {
             if *shutdown_rx.borrow() {
                 break;
@@ -391,7 +520,7 @@ pub fn spawn_user_context_worker(
 
             // Every tick path is error-recording (no `?`, no `unwrap`), so a
             // tick returns an idle/paced sleep rather than panicking the worker.
-            let next_sleep = worker_tick(&infra, &app_handle).await;
+            let next_sleep = worker_tick(&infra, &app_handle, &mut cadence).await;
 
             if shutdown_aware_sleep(&mut shutdown_rx, next_sleep).await {
                 break;
@@ -436,6 +565,29 @@ mod tests {
         let last_end = now - (5 * MAX_WINDOW_MS);
         let window = next_forward_window(now, Some(last_end)).expect("clamped window");
         assert_eq!(window.1 - window.0, MAX_WINDOW_MS);
+    }
+
+    #[test]
+    fn cadence_distills_when_activity_count_grows() {
+        let mut cadence = WorkerCadence::default();
+        // Cold: distills as soon as there is at least one Activity.
+        assert!(cadence.should_distill(1));
+        cadence.last_distilled_activity_count = Some(5);
+        cadence.activity_ticks_since_distillation = 0;
+        // No growth and below the K threshold => skip.
+        assert!(!cadence.should_distill(5));
+        // Growth => distill early even below the K threshold.
+        assert!(cadence.should_distill(6));
+    }
+
+    #[test]
+    fn cadence_distills_every_kth_tick_without_growth() {
+        let mut cadence = WorkerCadence {
+            activity_ticks_since_distillation: CONCLUSION_EVERY_K_ACTIVITY_TICKS,
+            last_distilled_activity_count: Some(10),
+        };
+        // No growth, but the K-tick threshold is met => distill.
+        assert!(cadence.should_distill(10));
     }
 
     #[test]

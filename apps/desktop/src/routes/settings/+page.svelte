@@ -71,6 +71,7 @@
     UserContextStatus,
     UserContextDerivationRunResult,
     Activity,
+    Conclusion,
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
@@ -594,6 +595,8 @@
   let userContextStatusError = $state<string | null>(null);
   let userContextActivities = $state<Activity[]>([]);
   let userContextActivitiesError = $state<string | null>(null);
+  let userContextConclusions = $state<Conclusion[]>([]);
+  let userContextConclusionsError = $state<string | null>(null);
   let userContextRunNowRunning = $state(false);
   let userContextRunNowMessage = $state<string | null>(null);
 
@@ -618,8 +621,33 @@
     }
   }
 
+  async function loadUserContextConclusions() {
+    try {
+      userContextConclusions = await invoke<Conclusion[]>("list_user_context_conclusions", {
+        includeFaded: false,
+      });
+      userContextConclusionsError = null;
+    } catch (error) {
+      userContextConclusionsError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   async function refreshUserContext() {
-    await Promise.all([loadUserContextStatus(), loadUserContextActivities()]);
+    await Promise.all([
+      loadUserContextStatus(),
+      loadUserContextActivities(),
+      loadUserContextConclusions(),
+    ]);
+  }
+
+  // Count a Conclusion's supporting/contradicting evidence links for the row.
+  function conclusionEvidenceCount(conclusion: Conclusion): number {
+    return conclusion.evidence.length;
+  }
+
+  // Render a confidence in [0,1] as a whole-number percent.
+  function formatConfidencePercent(confidence: number): string {
+    return `${Math.round(confidence * 100)}%`;
   }
 
   async function runUserContextDerivationNow() {
@@ -4338,7 +4366,9 @@
               <div class="model-status__meta">
                 {#if userContextStatus}
                   {userContextStatus.activityCount}
-                  {userContextStatus.activityCount === 1 ? "Activity" : "Activities"} derived ·
+                  {userContextStatus.activityCount === 1 ? "Activity" : "Activities"} ·
+                  {userContextStatus.conclusionCount}
+                  {userContextStatus.conclusionCount === 1 ? "Conclusion" : "Conclusions"} ·
                   last run {formatLastDerived(userContextStatus.lastDerivedAtMs)}
                   {#if !userContextStatus.engineAvailable}
                     · {aiRuntimeReasonLabel(userContextStatus.reason)}
@@ -4406,6 +4436,33 @@
                         >
                       {/if}
                       <span>{formatActivityRange(activity.startedAtMs, activity.endedAtMs)}</span>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+
+          <div class="settings-stack">
+            <span class="field-label">Conclusions</span>
+            {#if userContextConclusionsError}
+              <p class="error-text">{userContextConclusionsError}</p>
+            {:else if userContextConclusions.length === 0}
+              <p class="group-hint">No Conclusions distilled yet.</p>
+            {:else}
+              <ul class="user-context-conclusions">
+                {#each userContextConclusions as conclusion (conclusion.id)}
+                  <li class="user-context-conclusion">
+                    <div class="user-context-conclusion__statement">{conclusion.statement}</div>
+                    <div class="user-context-conclusion__meta">
+                      <span class="user-context-conclusion__subject">{conclusion.subject}</span>
+                      <span class="user-context-conclusion__confidence"
+                        >{formatConfidencePercent(conclusion.confidence)} confidence</span
+                      >
+                      <span>
+                        {conclusionEvidenceCount(conclusion)}
+                        {conclusionEvidenceCount(conclusion) === 1 ? "Activity" : "Activities"}
+                      </span>
                     </div>
                   </li>
                 {/each}
@@ -7618,6 +7675,54 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--app-accent);
+  }
+
+  /* User Context Conclusion preview list (read-only; #94). Row layout matches
+     the Activity preview so the two lists read as one dossier. Pin/Dismiss
+     controls are intentionally absent here (they belong to #99). */
+  .user-context-conclusions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .user-context-conclusion {
+    padding: 8px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 4%, transparent);
+  }
+
+  .user-context-conclusion__statement {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--app-text);
+    line-height: 1.4;
+  }
+
+  .user-context-conclusion__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 3px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--app-text-muted);
+  }
+
+  .user-context-conclusion__subject {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--app-accent);
+  }
+
+  .user-context-conclusion__confidence {
+    font-variant-numeric: tabular-nums;
   }
 
   .permission-callout {
