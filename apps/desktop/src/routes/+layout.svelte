@@ -54,11 +54,16 @@
 
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
+  const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
   const isOnboarding = $derived(normalizedPathname.startsWith("/onboarding"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const isPanelSurface = isQuickRecallWindow();
-  const showMainTitlebar = $derived(isMainRoute && !isPanelSurface);
+  // The Main window now hosts two top-level Surfaces — Timeline (`/`) and
+  // Insights (`/insights`). The shared main titlebar (record controls, source
+  // pills, settings, the Timeline⇄Insights surface toggle) renders on both.
+  const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute);
+  const showMainTitlebar = $derived(isMainSurfaceRoute && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
   const isMainWindow = $derived(!showDedicatedTitlebar && !isPanelSurface);
@@ -432,6 +437,16 @@
     if (!captureControls.isRunning) {
       await startCapture();
     }
+  }
+
+  // ── Main surface toggle (Timeline ⇄ Insights) ─────────────────────────
+  // "dashboard" is retired: the Main window hosts two switchable Surfaces.
+  // The active segment reflects the current route (the static `/index.html`
+  // production entry normalizes to `/` = Timeline).
+  function goToSurface(surface: "timeline" | "insights"): void {
+    const target = surface === "insights" ? "/insights" : "/";
+    if (normalizeAppPathname($page.url.pathname) === target) return;
+    void goto(target);
   }
 
   function openNotifications(openedByKeyboard = false): void {
@@ -863,8 +878,32 @@
       {/if}
     </div>
 
-    <!-- Inert centre area carries the drag region + centered search trigger. -->
+    <!-- Inert centre area carries the drag region + the Timeline⇄Insights
+         surface toggle + the (Timeline-only) centered search trigger. -->
     <div class="titlebar__drag" data-tauri-drag-region>
+      <!-- Surface toggle — Main hosts Timeline + Insights; "dashboard" retired (#103). -->
+      <div class="surface-toggle" role="tablist" aria-label="Main surface">
+        <button
+          type="button"
+          role="tab"
+          class:active={isMainRoute}
+          aria-selected={isMainRoute}
+          aria-current={isMainRoute ? "page" : undefined}
+          onclick={() => goToSurface("timeline")}
+        >
+          Timeline
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class:active={isInsightsRoute}
+          aria-selected={isInsightsRoute}
+          aria-current={isInsightsRoute ? "page" : undefined}
+          onclick={() => goToSurface("insights")}
+        >
+          Insights
+        </button>
+      </div>
       {#if isMainRoute}
         <button
           type="button"
@@ -1250,6 +1289,28 @@
     --app-ocr-hover-shadow: rgba(0, 0, 0, 0.45);
     --app-ocr-hover-inset: rgba(255, 255, 255, 0.04);
     --app-ocr-chip-text-shadow: none;
+
+    /* Insights chart tokens (dark). Grayscale "free tier" ramp, the engine
+       category palette, and focus heat — consumed by the SVG chart primitives
+       in `$lib/insights/charts/`. Flipping `data-theme` reskins them via the
+       light overrides below. Values mirror docs/user-context/mockups/tokens.css. */
+    --chart-grey-1: #2c2c3a;
+    --chart-grey-2: #3e3e50;
+    --chart-grey-3: #565669;
+    --chart-grey-4: #757589;
+    --chart-grey-5: #9a9ab0;
+
+    --cat-coding: #3dffa0;
+    --cat-research: #60b0ff;
+    --cat-communication: #c0b0ff;
+    --cat-design: #ff9fd0;
+    --cat-testing: #b0c080;
+    --cat-personal: #d6a14a;
+    --cat-distractions: #ff6b7a;
+
+    --focus-deep: #3dffa0;
+    --focus-mid: #d6a14a;
+    --focus-distracted: #ff6b7a;
   }
 
   /* Light theme — bright, neutral, high contrast. The accent stays in the
@@ -1377,6 +1438,28 @@
     --app-ocr-hover-shadow: rgba(21, 28, 38, 0.18);
     --app-ocr-hover-inset: transparent;
     --app-ocr-chip-text-shadow: none;
+
+    /* Insights chart tokens (light). The category palette is darkened for
+       legibility on white surfaces; the grayscale ramp inverts (light → dark)
+       so bars read on the bright background. Mirrors the light-theme values in
+       docs/user-context/mockups/tokens.css. */
+    --chart-grey-1: #d8d8de;
+    --chart-grey-2: #b6b6c0;
+    --chart-grey-3: #909099;
+    --chart-grey-4: #6a6a74;
+    --chart-grey-5: #46464e;
+
+    --cat-coding: #1f7a4a;
+    --cat-research: #2b78c5;
+    --cat-communication: #5949b8;
+    --cat-design: #c2407f;
+    --cat-testing: #6f7a2e;
+    --cat-personal: #9a5a12;
+    --cat-distractions: #c43a48;
+
+    --focus-deep: #1f7a4a;
+    --focus-mid: #9a5a12;
+    --focus-distracted: #c43a48;
   }
 
   :global(html) {
@@ -1559,8 +1642,50 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 8px;
     overflow: hidden;
     cursor: default;
+  }
+
+  /* ── Surface toggle (Timeline ⇄ Insights) ─────────────────────
+     The canonical segmented control from the Insights mockups (app.css
+     `.surface-toggle`), token-driven. The active segment is signalled by an
+     accent fill alone so the segments stay even-width. Shared visual contract
+     with the Insights sub-nav switcher. */
+  .surface-toggle {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--app-border);
+    border-radius: 7px;
+    background: var(--app-surface-subtle);
+  }
+  .surface-toggle button {
+    font: inherit;
+    font-size: 11.5px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 13px;
+    height: 22px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  }
+  .surface-toggle button:hover {
+    color: var(--app-text-strong);
+  }
+  .surface-toggle button.active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
   }
 
   .titlebar__search-trigger {

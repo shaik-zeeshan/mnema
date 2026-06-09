@@ -114,16 +114,29 @@ export interface ActivityEvidenceRef {
 	capturedAtMs?: number | null;
 }
 
+/** How engaged the user was during an Activity (issue #109 focus correction). */
+export type ActivityFocus = "deep" | "mixed" | "distracted";
+
 /** A derived episode of what the user did and how (the evidence layer). */
 export interface Activity {
 	id: number;
 	title: string;
 	summary: string;
 	category?: ActivityCategory | null;
+	focus?: ActivityFocus | null;
 	startedAtMs: number;
 	endedAtMs: number;
 	createdAtMs: number;
 	evidence: ActivityEvidenceRef[];
+}
+
+/** One user-authored standing context statement (issue #107 backend DTO). */
+export interface AuthoredContext {
+	id: number;
+	text: string;
+	topic: string | null;
+	createdAtMs: number;
+	updatedAtMs: number;
 }
 
 /** Whether a piece of evidence supports or contradicts a Conclusion. */
