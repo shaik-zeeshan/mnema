@@ -1,3 +1,4 @@
+mod ai_provider_key_store;
 mod audio_segments;
 pub mod brokered_access;
 mod capture_index_key_store;
@@ -21,6 +22,9 @@ use std::{collections::BTreeSet, path::Path, sync::Arc};
 
 use sqlx::SqlitePool;
 
+pub use ai_provider_key_store::{
+    delete_ai_provider_key, has_ai_provider_key, load_ai_provider_key, store_ai_provider_key,
+};
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
