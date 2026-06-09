@@ -3,6 +3,7 @@ mod logs;
 mod microphone;
 mod recording;
 mod session;
+mod usage_charts;
 mod user_context;
 
 use serde::Serialize;
@@ -13,6 +14,7 @@ pub use logs::*;
 pub use microphone::*;
 pub use recording::*;
 pub use session::*;
+pub use usage_charts::*;
 pub use user_context::*;
 
 #[derive(Debug, Clone, Serialize)]
