@@ -7,10 +7,11 @@
 //! `ai-runtime`/`rig-core`: the LLM orchestration lives in the Tauri layer and
 //! funnels its results back through these stores.
 //!
-//! Later slices add `confidence` and `guardrail` submodules (pure, unit-tested
-//! policy); they are intentionally not declared yet.
+//! The `confidence` submodule (this slice, #95) holds the pure, unit-tested
+//! Confidence Policy math. A later slice adds the `guardrail` submodule (#96).
 
 pub mod capture_source;
+pub mod confidence;
 pub mod store;
 
 pub use capture_source::{CaptureWindow, CaptureWindowItem};

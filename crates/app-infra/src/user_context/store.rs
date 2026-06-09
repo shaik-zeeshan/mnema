@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 
 use capture_types::{
     Activity, ActivityCategory, ActivityEvidenceRef, Conclusion, ConclusionEvidenceRef,
-    ConclusionStatus, EvidenceStance, UserContextTokenUsage,
+    ConclusionStatus, ConfidenceSnapshot, EvidenceStance, UserContextTokenUsage,
 };
 
 use crate::Result;
@@ -544,13 +544,167 @@ impl UserContextStore {
             .collect())
     }
 
+    // --- #95: Confidence History + decay bookkeeping ----------------------
+
+    /// Append one **Confidence History** snapshot for a Conclusion. Snapshots are
+    /// the time-series that powers the Subject trajectory line; they are tiny and
+    /// aggressively prunable (see [`prune_confidence_history`]).
+    pub async fn insert_confidence_snapshot(
+        &self,
+        conclusion_id: i64,
+        confidence: f64,
+        at_ms: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO user_context_confidence_history \
+                (conclusion_id, confidence, snapshot_at_ms) \
+             VALUES (?1, ?2, ?3)",
+        )
+        .bind(conclusion_id)
+        .bind(confidence)
+        .bind(at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The full **Confidence History** for one Conclusion, oldest snapshot first
+    /// (ascending `snapshot_at_ms`) so the Subject page can plot the trajectory.
+    pub async fn list_confidence_history(
+        &self,
+        conclusion_id: i64,
+    ) -> Result<Vec<ConfidenceSnapshot>> {
+        let rows = sqlx::query(
+            "SELECT confidence, snapshot_at_ms \
+             FROM user_context_confidence_history \
+             WHERE conclusion_id = ?1 \
+             ORDER BY snapshot_at_ms ASC, id ASC",
+        )
+        .bind(conclusion_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| ConfidenceSnapshot {
+                confidence: row.get("confidence"),
+                snapshot_at_ms: row.get("snapshot_at_ms"),
+            })
+            .collect())
+    }
+
+    /// Prune **Confidence History** to the newest `max_per_conclusion` snapshots
+    /// per Conclusion, deleting older ones. Confidence History is aggressively
+    /// prunable: recency-weighting means old snapshots stop mattering, so the
+    /// trajectory keeps only its recent tail. Returns the number of rows deleted.
+    ///
+    /// `max_per_conclusion <= 0` is treated as "keep nothing" and deletes all
+    /// history (an explicit caller intent, not the worker's path — the worker
+    /// passes a positive cap).
+    pub async fn prune_confidence_history(&self, max_per_conclusion: i64) -> Result<u64> {
+        // Delete every snapshot that is NOT among the newest `max_per_conclusion`
+        // for its Conclusion. The subquery ranks each Conclusion's snapshots
+        // newest-first; rows ranked beyond the cap are removed.
+        let result = sqlx::query(
+            "DELETE FROM user_context_confidence_history \
+             WHERE id IN (\
+                 SELECT id FROM (\
+                     SELECT id, \
+                            ROW_NUMBER() OVER (\
+                                PARTITION BY conclusion_id \
+                                ORDER BY snapshot_at_ms DESC, id DESC\
+                            ) AS rn \
+                     FROM user_context_confidence_history\
+                 ) ranked \
+                 WHERE ranked.rn > ?1\
+             )",
+        )
+        .bind(max_per_conclusion.max(0))
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Persist a decayed confidence + recomputed visibility status for a
+    /// Conclusion and stamp `last_decayed_at_ms` (the decay-beat bookkeeping
+    /// column). Also bumps `updated_at_ms` so the surface re-sorts. Used by the
+    /// confidence-decay beat (#95).
+    pub async fn update_conclusion_confidence(
+        &self,
+        id: i64,
+        confidence: f64,
+        status: ConclusionStatus,
+        last_decayed_at_ms: i64,
+    ) -> Result<()> {
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE user_context_conclusions \
+             SET confidence = ?2, status = ?3, last_decayed_at_ms = ?4, updated_at_ms = ?5 \
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(confidence)
+        .bind(status_to_str(status))
+        .bind(last_decayed_at_ms)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Set a Conclusion's visibility status directly (bumping `updated_at_ms`).
+    /// A thin setter used where only the status changes (the confidence-decay
+    /// beat uses [`update_conclusion_confidence`]).
+    pub async fn set_conclusion_status(
+        &self,
+        id: i64,
+        status: ConclusionStatus,
+    ) -> Result<()> {
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE user_context_conclusions \
+             SET status = ?2, updated_at_ms = ?3 \
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(status_to_str(status))
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Conclusions eligible for the confidence-decay beat: `visible` or `faded`
+    /// (dismissed Conclusions are out of the dossier), hydrated with their
+    /// evidence. Ordered oldest-supported-first so the loop touches the stalest
+    /// rows first.
+    ///
+    /// The `pinned` column does not exist until migration 0026 (#99); a pinned
+    /// Conclusion is exempt from decay, so once that column lands this query must
+    /// add `AND COALESCE(pinned, 0) = 0`.
+    pub async fn list_decayable_conclusions(&self) -> Result<Vec<Conclusion>> {
+        // TODO(#99): exclude pinned — add `AND COALESCE(pinned, 0) = 0` once the
+        // `pinned` column lands in migration 0026; pinned Conclusions are exempt
+        // from confidence decay.
+        let rows = sqlx::query(
+            "SELECT id, subject, statement, confidence, status, formed_at_ms, \
+                    last_supported_at_ms, updated_at_ms \
+             FROM user_context_conclusions \
+             WHERE status IN ('visible', 'faded') \
+             ORDER BY last_supported_at_ms ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        self.hydrate_conclusions(rows).await
+    }
+
     /// The pool handle, for the capture-window reader (`capture_source.rs`).
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
 
-    // later-slice: confidence / dismissal / pin / wipe / cascade methods land
-    // with migrations 0024–0026 in their own slices.
+    // later-slice: dismissal / pin / wipe / cascade methods land with their own
+    // migrations (0026) in their own slices.
 }
 
 /// "Now" in unix milliseconds, derived from `time` (no `Date.now()`-style
@@ -617,6 +771,16 @@ fn stance_from_str(value: &str) -> EvidenceStance {
     match value {
         "contradict" => EvidenceStance::Contradict,
         _ => EvidenceStance::Support,
+    }
+}
+
+/// The stored snake_case string for a [`ConclusionStatus`] (matches the
+/// capture-types serde rename and the SQL `status` column).
+fn status_to_str(status: ConclusionStatus) -> &'static str {
+    match status {
+        ConclusionStatus::Visible => "visible",
+        ConclusionStatus::Faded => "faded",
+        ConclusionStatus::Dismissed => "dismissed",
     }
 }
 
@@ -704,7 +868,8 @@ mod tests {
                 formed_at_ms INTEGER NOT NULL,
                 last_supported_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL,
-                created_at_ms INTEGER NOT NULL
+                created_at_ms INTEGER NOT NULL,
+                last_decayed_at_ms INTEGER
             )",
             "CREATE TABLE user_context_conclusion_evidence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -713,6 +878,12 @@ mod tests {
                 stance TEXT NOT NULL DEFAULT 'support',
                 created_at_ms INTEGER NOT NULL,
                 UNIQUE (conclusion_id, activity_id)
+            )",
+            "CREATE TABLE user_context_confidence_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conclusion_id INTEGER NOT NULL REFERENCES user_context_conclusions(id) ON DELETE CASCADE,
+                confidence REAL NOT NULL,
+                snapshot_at_ms INTEGER NOT NULL
             )",
         ] {
             sqlx::query(statement)
@@ -880,6 +1051,114 @@ mod tests {
 
         // count_conclusions excludes dismissed only.
         assert_eq!(store.count_conclusions().await.expect("count"), 2);
+        });
+    }
+
+    #[test]
+    fn confidence_history_snapshots_round_trip_ascending() {
+        block_on(async {
+        let store = test_store().await;
+        let id = store
+            .upsert_conclusion(draft("Rust", "Learning Rust", 0.5))
+            .await
+            .expect("upsert");
+
+        // Insert out of order; list_confidence_history returns ascending time.
+        store.insert_confidence_snapshot(id, 0.50, 3_000).await.expect("snap 3");
+        store.insert_confidence_snapshot(id, 0.40, 1_000).await.expect("snap 1");
+        store.insert_confidence_snapshot(id, 0.45, 2_000).await.expect("snap 2");
+
+        let history = store.list_confidence_history(id).await.expect("history");
+        let times: Vec<i64> = history.iter().map(|s| s.snapshot_at_ms).collect();
+        assert_eq!(times, vec![1_000, 2_000, 3_000], "ascending snapshot_at_ms");
+        assert_eq!(history[0].confidence, 0.40);
+        });
+    }
+
+    #[test]
+    fn prune_confidence_history_keeps_newest_n_per_conclusion() {
+        block_on(async {
+        let store = test_store().await;
+        let a = store
+            .upsert_conclusion(draft("Rust", "Learning Rust", 0.5))
+            .await
+            .expect("a");
+        let b = store
+            .upsert_conclusion(draft("Apple", "Likes Apple", 0.5))
+            .await
+            .expect("b");
+
+        for t in [1_000, 2_000, 3_000, 4_000, 5_000] {
+            store.insert_confidence_snapshot(a, 0.5, t).await.expect("snap a");
+        }
+        store.insert_confidence_snapshot(b, 0.5, 1_000).await.expect("snap b");
+
+        // Keep newest 2 per conclusion: A loses 3 of its 5, B keeps its single.
+        let deleted = store.prune_confidence_history(2).await.expect("prune");
+        assert_eq!(deleted, 3, "three of A's oldest snapshots removed");
+
+        let a_history = store.list_confidence_history(a).await.expect("a history");
+        let a_times: Vec<i64> = a_history.iter().map(|s| s.snapshot_at_ms).collect();
+        assert_eq!(a_times, vec![4_000, 5_000], "newest two kept");
+        // B is untouched (it had fewer than the cap).
+        assert_eq!(store.list_confidence_history(b).await.expect("b history").len(), 1);
+        });
+    }
+
+    #[test]
+    fn update_conclusion_confidence_persists_value_and_status() {
+        block_on(async {
+        let store = test_store().await;
+        let id = store
+            .upsert_conclusion(draft("Vim", "Used Vim", 0.6))
+            .await
+            .expect("upsert");
+
+        store
+            .update_conclusion_confidence(id, 0.10, ConclusionStatus::Faded, 9_999)
+            .await
+            .expect("update");
+
+        // A faded Conclusion is excluded from the visible-only list but appears
+        // with include_faded, carrying the decayed confidence.
+        assert!(store.list_conclusions(false).await.expect("visible").is_empty());
+        let faded = store.list_conclusions(true).await.expect("with faded");
+        assert_eq!(faded.len(), 1);
+        assert_eq!(faded[0].confidence, 0.10);
+        assert_eq!(faded[0].status, ConclusionStatus::Faded);
+        });
+    }
+
+    #[test]
+    fn list_decayable_conclusions_excludes_dismissed_only() {
+        block_on(async {
+        let store = test_store().await;
+        let visible = store
+            .upsert_conclusion(draft("Rust", "Learning Rust", 0.8))
+            .await
+            .expect("visible");
+        let faded = store
+            .upsert_conclusion(draft("Vim", "Used Vim", 0.1))
+            .await
+            .expect("faded");
+        let dismissed = store
+            .upsert_conclusion(draft("Coffee", "Hates coffee", 0.6))
+            .await
+            .expect("dismissed");
+        store
+            .set_conclusion_status(faded, ConclusionStatus::Faded)
+            .await
+            .expect("set faded");
+        store
+            .set_conclusion_status(dismissed, ConclusionStatus::Dismissed)
+            .await
+            .expect("set dismissed");
+
+        let decayable = store.list_decayable_conclusions().await.expect("decayable");
+        let ids: Vec<i64> = decayable.iter().map(|c| c.id).collect();
+        assert!(ids.contains(&visible), "visible is decayable");
+        assert!(ids.contains(&faded), "faded is decayable (history still snapshotted)");
+        assert!(!ids.contains(&dismissed), "dismissed is not decayable");
         });
     }
 }

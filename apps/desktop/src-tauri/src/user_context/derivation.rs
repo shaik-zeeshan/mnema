@@ -21,6 +21,7 @@ use app_infra::{
     CaptureWindow, NewActivity, NewActivityEvidence, NewConclusion, NewConclusionEvidence,
     UserContextStore,
 };
+use app_infra::user_context::confidence;
 
 /// System instruction for the Activity-segmentation pass. Kept terse: the
 /// detailed item formatting + the return shape live in the per-call prompt and
@@ -348,18 +349,6 @@ pub struct ConclusionDistillationOutcome {
     pub output_tokens: i64,
 }
 
-/// PLACEHOLDER initial confidence. A fresh Conclusion starts at a low base,
-/// rises with each supporting Activity, and is dragged down (faster) by
-/// contradictions, then clamped to a sane band.
-///
-// TODO(#95): replace with Confidence Policy (confidence.rs). The pure
-// `app_infra::user_context::confidence::initial_confidence(support, contradict)`
-// function lands with #95; this inline formula is a stand-in so the tracer can
-// store a plausible value end-to-end.
-fn placeholder_initial_confidence(support_count: usize, contradict_count: usize) -> f64 {
-    (0.3 + 0.15 * support_count as f64 - 0.2 * contradict_count as f64).clamp(0.05, 0.95)
-}
-
 /// Render the distillation prompt: one line per Activity (id, time, category,
 /// title) plus its truncated summary.
 fn build_distillation_prompt(activities: &[capture_types::Activity]) -> String {
@@ -483,15 +472,20 @@ pub async fn distill_conclusions(
         // The hard post-filter lands with the Sensitive Category Guardrail (#96);
         // a sensitive Conclusion must never enter the store.
 
-        // TODO(#95): formation-bar gate here. The Confidence Policy's
-        // `meets_formation_bar(support_refs.len())` (≥2 supporting Activities)
-        // lands with #95 and should gate persistence before the upsert.
+        // Formation bar (#95, Confidence Policy): a Conclusion needs at least
+        // FORMATION_BAR_EVIDENCE (≥2) supporting Activities before it forms — no
+        // flimsy one-afternoon conclusions. Below the bar, skip the upsert.
+        if !confidence::meets_formation_bar(support_refs.len()) {
+            continue;
+        }
 
         // TODO(#99): resurface-bar gate here. When a dismissal exists for ~this
-        // subject/statement, require the high resurface bar (substantially more
-        // fresh evidence) before re-forming it.
+        // subject/statement, require the high resurface bar
+        // (confidence::meets_resurface_bar — already implemented in #95) before
+        // re-forming it.
 
-        let confidence = placeholder_initial_confidence(support_refs.len(), contradict_refs.len());
+        let confidence =
+            confidence::initial_confidence(support_refs.len(), contradict_refs.len());
 
         // started / last_supported = the most recent supporting Activity time
         // (fallback: now if none resolved, though support_refs is non-empty here).
@@ -603,17 +597,17 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_confidence_rises_with_support_drops_on_contradiction() {
-        // More support => higher confidence.
+    fn distillation_uses_the_confidence_policy_formation_bar() {
+        // The formation bar (#95) gates distillation: a single supporting
+        // Activity is below the bar and must not form a Conclusion.
+        assert!(!confidence::meets_formation_bar(1));
+        assert!(confidence::meets_formation_bar(2));
+        // And the wired initial_confidence rises with support, drops on contradiction.
         assert!(
-            placeholder_initial_confidence(3, 0) > placeholder_initial_confidence(1, 0)
+            confidence::initial_confidence(3, 0) > confidence::initial_confidence(2, 0)
         );
-        // A contradiction drops it below the same-support no-contradiction case.
         assert!(
-            placeholder_initial_confidence(3, 1) < placeholder_initial_confidence(3, 0)
+            confidence::initial_confidence(3, 1) < confidence::initial_confidence(3, 0)
         );
-        // Clamped to the [0.05, 0.95] band.
-        assert!(placeholder_initial_confidence(0, 100) >= 0.05);
-        assert!(placeholder_initial_confidence(100, 0) <= 0.95);
     }
 }

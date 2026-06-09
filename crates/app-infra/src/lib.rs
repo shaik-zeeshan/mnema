@@ -16,7 +16,7 @@ mod ocr_budget;
 pub mod processing;
 mod search;
 pub mod status;
-mod user_context;
+pub mod user_context;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::BTreeSet, path::Path, sync::Arc};

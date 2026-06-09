@@ -8,7 +8,9 @@
 
 use std::sync::Arc;
 
-use capture_types::{Activity, Conclusion, SubjectView, UserContextStatus, UserContextTokenUsage};
+use capture_types::{
+    Activity, Conclusion, SubjectTrajectory, SubjectView, UserContextStatus, UserContextTokenUsage,
+};
 use serde::Serialize;
 use tauri::Emitter;
 
@@ -118,25 +120,39 @@ pub async fn list_user_context_conclusions(
 }
 
 /// The Subject page: every non-dismissed **Conclusion** about a Subject (faded
-/// included) plus its confidence trajectories. Trajectories are empty in this
-/// slice — Confidence History (#95) fills them.
+/// included) plus its confidence trajectories — the per-Conclusion
+/// confidence-over-time lines drawn from **Confidence History** (#95). This is
+/// the literal "warming up to a thing then cooling off" picture: each trajectory
+/// is one Conclusion's snapshot series.
 #[tauri::command]
 pub async fn get_user_context_subject(
     infra: tauri::State<'_, AppInfraState>,
     subject: String,
 ) -> Result<SubjectView, String> {
-    let conclusions = infra
-        .user_context()
+    let store = infra.user_context();
+    let conclusions = store
         .list_conclusions_for_subject(&subject)
         .await
         .map_err(|e| e.to_string())?;
+
+    // One trajectory per Conclusion, built from its Confidence History snapshots.
+    let mut trajectories: Vec<SubjectTrajectory> = Vec::with_capacity(conclusions.len());
+    for conclusion in &conclusions {
+        let history = store
+            .list_confidence_history(conclusion.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        trajectories.push(SubjectTrajectory {
+            conclusion_id: conclusion.id,
+            statement: conclusion.statement.clone(),
+            history,
+        });
+    }
+
     Ok(SubjectView {
         subject,
         conclusions,
-        // TODO(#95): confidence history. The per-Conclusion confidence-over-time
-        // trajectories are populated from `list_confidence_history` once the
-        // Confidence History store + snapshotting (#95) land.
-        trajectories: vec![],
+        trajectories,
     })
 }
 

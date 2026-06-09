@@ -623,8 +623,11 @@
 
   async function loadUserContextConclusions() {
     try {
+      // Include faded Conclusions so the dossier preview shows the full picture:
+      // a faded Conclusion (below the display floor, #95) leaves the visible
+      // dossier but is dimmed + tagged here, with its confidence % still shown.
       userContextConclusions = await invoke<Conclusion[]>("list_user_context_conclusions", {
-        includeFaded: false,
+        includeFaded: true,
       });
       userContextConclusionsError = null;
     } catch (error) {
@@ -4452,8 +4455,16 @@
             {:else}
               <ul class="user-context-conclusions">
                 {#each userContextConclusions as conclusion (conclusion.id)}
-                  <li class="user-context-conclusion">
-                    <div class="user-context-conclusion__statement">{conclusion.statement}</div>
+                  <li
+                    class="user-context-conclusion"
+                    class:user-context-conclusion--faded={conclusion.status === "faded"}
+                  >
+                    <div class="user-context-conclusion__statement">
+                      {conclusion.statement}
+                      {#if conclusion.status === "faded"}
+                        <span class="user-context-conclusion__tag" title="Below the display floor; its history is kept">faded</span>
+                      {/if}
+                    </div>
                     <div class="user-context-conclusion__meta">
                       <span class="user-context-conclusion__subject">{conclusion.subject}</span>
                       <span class="user-context-conclusion__confidence"
@@ -7696,11 +7707,34 @@
     background: color-mix(in srgb, var(--app-accent) 4%, transparent);
   }
 
+  /* A faded Conclusion (#95) is below the display floor: it leaves the bright
+     dossier but is kept (its Confidence History persists), so it reads as dimmed
+     here rather than absent. */
+  .user-context-conclusion--faded {
+    opacity: 0.62;
+    background: transparent;
+    border-style: dashed;
+  }
+
   .user-context-conclusion__statement {
     font-size: 12px;
     font-weight: 600;
     color: var(--app-text);
     line-height: 1.4;
+  }
+
+  .user-context-conclusion__tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border: 1px solid var(--app-border);
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--app-text-muted);
+    vertical-align: middle;
   }
 
   .user-context-conclusion__meta {

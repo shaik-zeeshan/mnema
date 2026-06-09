@@ -21,6 +21,7 @@ use std::time::Duration;
 use capture_types::{AiEngineKind, DerivationBudgetTier};
 use tauri::{Emitter, Manager};
 
+use app_infra::user_context::confidence;
 use app_infra::{NewDerivationRun, UserContextStore};
 
 use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
@@ -295,6 +296,20 @@ pub async fn run_forward_activity_window(
 /// whenever the Activity count has grown since the last one (see [`WorkerCadence`]).
 const CONCLUSION_EVERY_K_ACTIVITY_TICKS: u32 = 3;
 
+/// Run the confidence-decay beat once every this many ticks. This is the
+/// *slowest* beat (M ≥ K, the Conclusion beat): confidence fades on a 30-day
+/// half-life, so re-evaluating decay only every few ticks is plenty, and decay
+/// uses **no LLM** (it is pure local math). Counting ticks (not successful
+/// Activity ticks) means the dossier keeps fading during quiet stretches even
+/// when no new Activities are arriving — silence is exactly when decay matters.
+const CONFIDENCE_DECAY_EVERY_M_TICKS: u32 = 6;
+
+/// Keep at most this many **Confidence History** snapshots per Conclusion. History
+/// is aggressively prunable: recency-weighting means old snapshots stop mattering,
+/// so the trajectory keeps only a recent tail. At one snapshot per decay beat this
+/// is many days of arc, far more than the Subject line needs.
+const MAX_SNAPSHOTS_PER_CONCLUSION: i64 = 64;
+
 /// Cross-tick state for the slower Conclusion-distillation beat. The worker loop
 /// owns one of these and threads it through each tick. Activity derivation stays
 /// the frequent beat; this counts successful Activity ticks so distillation runs
@@ -306,6 +321,9 @@ struct WorkerCadence {
     /// `count_activities()` observed at the last distillation, so a tick can
     /// distill early when the Activity total has grown.
     last_distilled_activity_count: Option<i64>,
+    /// Ticks (of any kind, including idle-but-resolved ones that reach the
+    /// decay check) since the last confidence-decay pass.
+    ticks_since_decay: u32,
 }
 
 impl WorkerCadence {
@@ -318,6 +336,13 @@ impl WorkerCadence {
             .map(|last| current_activity_count > last)
             .unwrap_or(current_activity_count > 0);
         grew || self.activity_ticks_since_distillation >= CONCLUSION_EVERY_K_ACTIVITY_TICKS
+    }
+
+    /// Whether this tick should run the confidence-decay beat: every Mth tick.
+    /// Decay is the slowest beat (M ≥ K) and unconditional on new Activities —
+    /// silence is precisely when a Conclusion should fade.
+    fn should_decay(&self) -> bool {
+        self.ticks_since_decay >= CONFIDENCE_DECAY_EVERY_M_TICKS
     }
 }
 
@@ -380,6 +405,125 @@ pub(crate) async fn run_conclusion_distillation(
     }
 }
 
+/// Run one **confidence-decay** pass (#95): the slowest, LLM-free beat. For each
+/// decayable Conclusion (`visible`/`faded`, never dismissed), apply the
+/// recency-weighted half-life [`confidence::decay`] over elapsed silence,
+/// recompute its [`confidence::status_for`] (below the display floor → `faded`,
+/// leaving the visible dossier while its Confidence History is kept), persist the
+/// new value + status + `last_decayed_at_ms`, and append a Confidence History
+/// snapshot so the Subject trajectory can plot the arc. After the loop, prune the
+/// history to [`MAX_SNAPSHOTS_PER_CONCLUSION`] per Conclusion. Records a single
+/// `derivation_run` (kind `'confidence'`, **0 tokens** — decay uses no LLM) with
+/// the count touched. Resilient: every error is swallowed-with-log; it never
+/// panics the worker.
+///
+/// `pinned` is hardcoded `false` until the `pinned` column lands in #99: today no
+/// Conclusion can be pinned, and `list_decayable_conclusions` likewise does not
+/// yet exclude pinned rows. When #99 wires pinning, pass the real pinned flag here
+/// (a pinned Conclusion is exempt from decay — `decay()`/`status_for()` already
+/// honor that) and have the store query exclude pinned rows.
+pub(crate) async fn run_confidence_decay(
+    store: &UserContextStore,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> bool {
+    let now = now_ms();
+    let conclusions = match store.list_decayable_conclusions().await {
+        Ok(conclusions) => conclusions,
+        Err(error) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "confidence".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error.to_string()),
+                })
+                .await;
+            return false;
+        }
+    };
+
+    let mut touched = 0i64;
+    for conclusion in &conclusions {
+        // TODO(#99): use the real pinned flag once the column lands; a pinned
+        // Conclusion must be exempt from decay (decay() already returns `current`
+        // when pinned, but list_decayable_conclusions should also stop returning
+        // pinned rows entirely).
+        let pinned = conclusion.pinned;
+        let decayed = confidence::decay(
+            conclusion.confidence,
+            conclusion.last_supported_at_ms,
+            now,
+            pinned,
+        );
+        let status = confidence::status_for(decayed, pinned);
+
+        if let Err(error) = store
+            .update_conclusion_confidence(conclusion.id, decayed, status, now)
+            .await
+        {
+            crate::native_capture::debug_log::log_info(format!(
+                "user context confidence decay: update failed for conclusion {}: {error}",
+                conclusion.id
+            ));
+            continue;
+        }
+        // Snapshot the (possibly-faded) value so the Subject trajectory keeps the
+        // arc even below the display floor (faded is not deleted).
+        if let Err(error) = store
+            .insert_confidence_snapshot(conclusion.id, decayed, now)
+            .await
+        {
+            crate::native_capture::debug_log::log_info(format!(
+                "user context confidence decay: snapshot failed for conclusion {}: {error}",
+                conclusion.id
+            ));
+        }
+        touched += 1;
+    }
+
+    // Aggressively prune the history tail (recency-weighting means old snapshots
+    // stop mattering). Best-effort: a prune error does not fail the beat.
+    if let Err(error) = store
+        .prune_confidence_history(MAX_SNAPSHOTS_PER_CONCLUSION)
+        .await
+    {
+        crate::native_capture::debug_log::log_info(format!(
+            "user context confidence decay: history prune failed: {error}"
+        ));
+    }
+
+    let _ = store
+        .insert_derivation_run(NewDerivationRun {
+            kind: "confidence".to_string(),
+            window_start_ms: None,
+            window_end_ms: None,
+            status: "completed".to_string(),
+            activities_derived: 0,
+            conclusions_derived: touched,
+            input_tokens: 0,
+            output_tokens: 0,
+            provider: provider_label,
+            model: model_label,
+            error: None,
+        })
+        .await;
+
+    if touched > 0 {
+        crate::native_capture::debug_log::log_info(format!(
+            "user context worker decayed {touched} conclusion(s)"
+        ));
+    }
+    touched > 0
+}
+
 /// One worker tick. Returns the sleep to wait before the next tick. All errors
 /// are logged, never propagated. `cadence` carries the slower Conclusion beat
 /// across ticks.
@@ -436,7 +580,7 @@ async fn worker_tick(
     // Conclusion distillation on a slower beat — every Kth successful Activity
     // tick, or whenever the Activity count has grown since the last distillation.
     // It shares the SAME resolved engine and records its own `derivation_run`
-    // (kind `'conclusion'`). #95 adds the confidence-decay beat as a sibling here.
+    // (kind `'conclusion'`).
     let activity_count = infra
         .user_context()
         .count_activities()
@@ -446,13 +590,31 @@ async fn worker_tick(
         let changed = run_conclusion_distillation(
             &engine,
             infra.user_context(),
-            provider_label,
-            model_label,
+            provider_label.clone(),
+            model_label.clone(),
         )
         .await;
         dossier_changed = dossier_changed || changed;
         cadence.activity_ticks_since_distillation = 0;
         cadence.last_distilled_activity_count = Some(activity_count);
+    }
+
+    // --- Confidence-decay beat (slowest, LLM-free) ---
+    // (#95) Every Mth tick, fade Conclusions on their recency-weighted half-life,
+    // recompute faded/visible status, snapshot Confidence History, and prune it.
+    // This beat counts ticks (not Activities) and runs even when no new Activities
+    // arrived — silence is exactly when a Conclusion should fade. It uses NO LLM,
+    // so it records a 0-token `derivation_run` (kind `'confidence'`).
+    cadence.ticks_since_decay = cadence.ticks_since_decay.saturating_add(1);
+    if cadence.should_decay() {
+        let changed = run_confidence_decay(
+            infra.user_context(),
+            provider_label,
+            model_label,
+        )
+        .await;
+        dossier_changed = dossier_changed || changed;
+        cadence.ticks_since_decay = 0;
     }
 
     if dossier_changed {
@@ -582,12 +744,26 @@ mod tests {
 
     #[test]
     fn cadence_distills_every_kth_tick_without_growth() {
-        let mut cadence = WorkerCadence {
+        let cadence = WorkerCadence {
             activity_ticks_since_distillation: CONCLUSION_EVERY_K_ACTIVITY_TICKS,
             last_distilled_activity_count: Some(10),
+            ticks_since_decay: 0,
         };
         // No growth, but the K-tick threshold is met => distill.
         assert!(cadence.should_distill(10));
+    }
+
+    #[test]
+    fn cadence_decays_on_the_slowest_beat() {
+        // The decay beat is strictly the slowest (M ≥ K).
+        assert!(CONFIDENCE_DECAY_EVERY_M_TICKS >= CONCLUSION_EVERY_K_ACTIVITY_TICKS);
+        let mut cadence = WorkerCadence::default();
+        // Below the M threshold => no decay yet.
+        cadence.ticks_since_decay = CONFIDENCE_DECAY_EVERY_M_TICKS - 1;
+        assert!(!cadence.should_decay());
+        // At the threshold => decay.
+        cadence.ticks_since_decay = CONFIDENCE_DECAY_EVERY_M_TICKS;
+        assert!(cadence.should_decay());
     }
 
     #[test]
