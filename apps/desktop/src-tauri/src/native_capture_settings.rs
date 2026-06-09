@@ -9,11 +9,12 @@ use capture_types::{
     default_preview_cache_ttl_seconds, default_privacy_settings, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AccessSettings,
-    AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionProvider,
+    AiRuntimeSettings, AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionProvider,
     AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
     RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
     SettingsOwnershipDomain, SpeakerAnalysisSettings, UpdateAccessSettingsRequest,
-    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
+    UpdateAiRuntimeSettingsRequest, UpdateCaptureSourceSettingsRequest,
+    UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
     UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
     UpdateStorageSettingsRequest, UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset,
@@ -98,6 +99,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
         access: AccessSettings::default(),
+        ai_runtime: AiRuntimeSettings::default(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -633,6 +635,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         metadata: request.metadata,
         privacy,
         access: request.access,
+        ai_runtime: request.ai_runtime,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -689,6 +692,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             metadata: parsed.metadata,
             privacy: parsed.privacy,
             access: parsed.access,
+            ai_runtime: parsed.ai_runtime,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -814,6 +818,7 @@ pub(crate) enum RecordingSettingsDomainPatch {
     Processing(UpdateProcessingSettingsRequest),
     Developer(UpdateDeveloperSettingsRequest),
     Access(UpdateAccessSettingsRequest),
+    AiRuntime(UpdateAiRuntimeSettingsRequest),
 }
 
 impl RecordingSettingsDomainPatch {
@@ -829,6 +834,7 @@ impl RecordingSettingsDomainPatch {
             Self::Processing(_) => SettingsOwnershipDomain::Processing,
             Self::Developer(_) => SettingsOwnershipDomain::Developer,
             Self::Access(_) => SettingsOwnershipDomain::Access,
+            Self::AiRuntime(_) => SettingsOwnershipDomain::AiRuntime,
         }
     }
 }
@@ -866,6 +872,7 @@ fn recording_settings_request_from_settings(
         metadata: settings.metadata,
         privacy: settings.privacy,
         access: settings.access,
+        ai_runtime: settings.ai_runtime,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -1007,6 +1014,36 @@ fn apply_domain_patch_to_settings(
                 } else {
                     Some(trimmed.to_string())
                 };
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::AiRuntime(request) => {
+            if let Some(value) = request.enabled {
+                settings.ai_runtime.enabled = value;
+                touched = true;
+            }
+            if let Some(value) = request.engine_kind {
+                settings.ai_runtime.engine_kind = value;
+                touched = true;
+            }
+            if let Some(value) = request.cloud_provider {
+                settings.ai_runtime.cloud_provider = value;
+                touched = true;
+            }
+            if let Some(value) = request.cloud_model {
+                settings.ai_runtime.cloud_model = value.trim().to_string();
+                touched = true;
+            }
+            if let Some(value) = request.local_kind {
+                settings.ai_runtime.local_kind = value;
+                touched = true;
+            }
+            if let Some(value) = request.local_endpoint {
+                settings.ai_runtime.local_endpoint = value.trim().to_string();
+                touched = true;
+            }
+            if let Some(value) = request.local_model {
+                settings.ai_runtime.local_model = value.trim().to_string();
                 touched = true;
             }
         }

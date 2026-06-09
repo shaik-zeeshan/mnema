@@ -1,3 +1,4 @@
+mod ai_runtime;
 mod app_infra;
 mod app_updates;
 mod ask_ai;
@@ -479,6 +480,12 @@ pub fn run() {
             native_capture::update_processing_settings,
             native_capture::update_developer_settings,
             native_capture::update_access_settings,
+            native_capture::update_ai_runtime_settings,
+            ai_runtime::ai_runtime_set_provider_key,
+            ai_runtime::ai_runtime_clear_provider_key,
+            ai_runtime::ai_runtime_has_provider_key,
+            ai_runtime::get_ai_runtime_status,
+            ai_runtime::ai_runtime_test_connection,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,

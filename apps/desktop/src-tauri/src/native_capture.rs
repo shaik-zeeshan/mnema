@@ -27,8 +27,9 @@ use capture_types::{
     NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, OcrProvider, OcrSettings,
     RecordingSettings, RecordingSettingsDomainUpdateResponse, ScreenResolution,
     ScreenResolutionPreset, SettingsOwnershipDomain, StartNativeCaptureRequest,
-    UpdateAccessSettingsRequest, UpdateCaptureSourceSettingsRequest,
-    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
+    UpdateAccessSettingsRequest, UpdateAiRuntimeSettingsRequest,
+    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
+    UpdateDeveloperSettingsRequest,
     UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
     UpdateMicrophoneControllerRequest, UpdateProcessingSettingsRequest,
     UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest, UpdateVideoSettingsRequest,
@@ -2691,6 +2692,19 @@ pub fn update_access_settings(
         &app_handle,
         state.inner(),
         RecordingSettingsDomainPatch::Access(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_ai_runtime_settings(
+    request: UpdateAiRuntimeSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::AiRuntime(request),
     )
 }
 
