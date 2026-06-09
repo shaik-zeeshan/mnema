@@ -4451,18 +4451,87 @@
             </span>
           </div>
 
+          {#if userContextStatus?.backfilling}
+            <p class="group-hint" aria-live="polite">
+              Building your understanding… deriving from your history in the background.
+            </p>
+          {:else if userContextStatus && userContextStatus.activityCount > 0}
+            <p class="group-hint">
+              Your understanding is up to date for the covered window.
+            </p>
+          {/if}
+
           {#if userContextStatus}
             <p class="group-hint">
-              ≈ {userContextStatus.tokenUsage.totalTokens.toLocaleString()} tokens used across
-              {userContextStatus.tokenUsage.runCount}
+              ≈ {userContextStatus.tokenUsage.totalTokens.toLocaleString()} tokens used,
+              cumulative across {userContextStatus.tokenUsage.runCount}
               derivation {userContextStatus.tokenUsage.runCount === 1 ? "pass" : "passes"}
-              (estimated).
+              (estimated from text length, not a billed count).
             </p>
           {/if}
 
           {#if userContextStatusError}
             <p class="error-text">{userContextStatusError}</p>
           {/if}
+
+          <div class="settings-divider"></div>
+
+          <div class="settings-group">
+            <span class="group-label">Derivation Budget</span>
+            <div class="settings-stack">
+              {#if draftAiEngineKind === "cloud"}
+                <RadioGroup
+                  value={draftUserContextBudgetTier}
+                  onValueChange={(value) =>
+                    (draftUserContextBudgetTier = value as DerivationBudgetTier)}
+                  label="Intensity"
+                  options={[
+                    {
+                      value: "light",
+                      label: "Light",
+                      description: "Slowest pacing, fewest tokens. Understanding fills in gradually.",
+                    },
+                    {
+                      value: "balanced",
+                      label: "Balanced",
+                      description: "Moderate pacing and token spend. A sensible default.",
+                    },
+                    {
+                      value: "thorough",
+                      label: "Thorough",
+                      description: "Fastest pacing, most tokens. Covers your history sooner.",
+                    },
+                  ]}
+                />
+                <p class="group-hint">
+                  Paces background work over time so tokens are spent as a trickle, never a
+                  one-time bill. A higher tier covers more of your history per pass.
+                </p>
+              {:else}
+                <p class="group-hint">
+                  Local engine uses fixed background pacing — no token spend, so there is no
+                  intensity knob to choose.
+                </p>
+              {/if}
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <span class="group-label">History Backfill</span>
+            <div class="settings-stack">
+              <p class="group-hint">
+                Newest history is derived first. By default Mnema reaches back about
+                {draftUserContextBackfillWindowDays}
+                {draftUserContextBackfillWindowDays === 1 ? "day" : "days"}; recent activity
+                drives your current understanding.
+              </p>
+              <Switch
+                bind:checked={draftUserContextBackfillGoDeeper}
+                label="Go deeper — derive all of history"
+                description="Extend backfill past the recent window to your entire history. Increases token spend over time (still a background trickle, not a one-time bill)."
+              />
+            </div>
+          </div>
 
           <div class="row-actions">
             <button

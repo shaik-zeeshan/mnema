@@ -62,9 +62,35 @@ const MAX_WINDOW_MS: i64 = 30 * 60 * 1000;
 /// Cap items per window so a busy stretch stays within a sane prompt budget.
 const MAX_ITEMS: i64 = 80;
 
+/// One **History Backfill** window walks this far back per pass (30 min, matching
+/// the forward `MAX_WINDOW_MS`). Backfill extends coverage backward, newest-first,
+/// one bounded window at a time — a background trickle paced by the Derivation
+/// Budget, never a synchronous whole-history bill.
+const BACKFILL_WINDOW_MS: i64 = 30 * 60 * 1000;
+
+/// Per-tick **backfill intensity** — how many backward windows one tick may
+/// derive — as a function of the resolved engine + tier. This is what makes the
+/// named cloud tier a *real* intensity knob (not just a sleep): Thorough chews
+/// through more history per pass, Light at most one. A LOCAL engine ignores the
+/// tier entirely (fixed resource pacing, like OCR) and does one window per tick.
+///
+/// Cloud: Light = 1, Balanced = 2, Thorough = 4 windows/tick (paired with the
+/// tier sleeps `LIGHT_INTERVAL` 600s / `BALANCED_INTERVAL` 300s / `THOROUGH_INTERVAL`
+/// 120s, so the windows-per-hour spread is wide: ~6 / ~24 / ~120). Local = 1.
+fn backfill_windows_per_tick(engine_kind: AiEngineKind, tier: DerivationBudgetTier) -> u32 {
+    match engine_kind {
+        AiEngineKind::Local => 1,
+        AiEngineKind::Cloud => match tier {
+            DerivationBudgetTier::Light => 1,
+            DerivationBudgetTier::Balanced => 2,
+            DerivationBudgetTier::Thorough => 4,
+        },
+    }
+}
+
 /// Current unix time in milliseconds (matches the user_context `*_at_ms`
 /// convention; no `Date.now()`-style nondeterminism).
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
 
@@ -93,6 +119,46 @@ fn next_forward_window(now: i64, last_covered_end: Option<i64>) -> Option<(i64, 
     Some((start, end))
 }
 
+/// The **History Backfill** floor (#98): how far back backfill is allowed to
+/// reach, newest-first. When **go-deeper** is on, the floor is the true earliest
+/// capture (`earliest_capture_at_ms`, all of history); otherwise it is the
+/// bounded recent window `now - backfill_window_days`. A `None` earliest-capture
+/// (no captures, or go-deeper but nothing recorded) collapses to `now`, which
+/// makes backfill a no-op (the floor is at/after coverage) until captures exist.
+///
+/// This bounded-by-default-with-explicit-go-deeper shape is what caps the
+/// "cost surprise" even at the Thorough tier: backfill stops at the floor.
+///
+/// Shared with the status command (`get_user_context_status`) so the worker's
+/// backfill floor and the "backfilling" progress readout agree on exactly the
+/// same floor for a given settings snapshot.
+pub(crate) fn backfill_floor_ms(
+    now: i64,
+    window_days: u32,
+    go_deeper: bool,
+    earliest_capture: Option<i64>,
+) -> i64 {
+    if go_deeper {
+        earliest_capture.unwrap_or(now)
+    } else {
+        now.saturating_sub((window_days as i64).saturating_mul(86_400_000))
+    }
+}
+
+/// The next backward backfill window `[start, end]`, or `None` when backfill has
+/// nothing to do this pass. `oldest_covered` is the trailing edge of coverage
+/// (`oldest_derivation_run_window_start`); the window is
+/// `[max(floor, oldest_covered - BACKFILL_WINDOW_MS) .. oldest_covered]`. When
+/// `oldest_covered <= floor`, coverage already reaches the floor → `None`
+/// (backfill complete).
+fn next_backfill_window(floor_ms: i64, oldest_covered: i64) -> Option<(i64, i64)> {
+    if oldest_covered <= floor_ms {
+        return None;
+    }
+    let start = floor_ms.max(oldest_covered.saturating_sub(BACKFILL_WINDOW_MS));
+    Some((start, oldest_covered))
+}
+
 /// The result of running one forward window (used by both the worker tick and
 /// the manual run-now command).
 #[derive(Debug, Clone)]
@@ -105,6 +171,14 @@ pub struct ForwardWindowRun {
     pub message: String,
     /// Whether the dossier changed (drives whether to emit the refresh event).
     pub changed: bool,
+    /// Whether a forward window was actually *picked* this pass (i.e.
+    /// `next_forward_window` returned a window). `false` means the forward catch-up
+    /// is caught up — there was no new recent window to derive — which is the signal
+    /// the worker uses to gate the backward **History Backfill** pass (newest-first:
+    /// backfill only runs when forward has nothing new). Note this is `true` even
+    /// when the window read empty / derived zero Activities — what matters for the
+    /// interleave is whether forward had ground to cover, not the yield.
+    pub derived_window: bool,
 }
 
 /// Run exactly one forward un-derived Activity window end-to-end: pick the
@@ -145,6 +219,7 @@ pub async fn run_forward_activity_window(
             items_read: 0,
             message: "Not enough new captures yet to derive an Activity.".to_string(),
             changed: false,
+            derived_window: false,
         };
     };
 
@@ -175,6 +250,7 @@ pub async fn run_forward_activity_window(
                 items_read: 0,
                 message: format!("Failed to read capture window: {error}"),
                 changed: false,
+                derived_window: true,
             };
         }
     };
@@ -206,6 +282,7 @@ pub async fn run_forward_activity_window(
             items_read: 0,
             message: "No captures in range; advanced the derivation cursor.".to_string(),
             changed: false,
+            derived_window: true,
         };
     }
 
@@ -258,6 +335,7 @@ pub async fn run_forward_activity_window(
                 items_read,
                 message,
                 changed: outcome.inserted > 0,
+                derived_window: true,
             }
         }
         Err(error) => {
@@ -285,9 +363,191 @@ pub async fn run_forward_activity_window(
                 items_read,
                 message: format!("Derivation failed: {error}"),
                 changed: false,
+                derived_window: true,
             }
         }
     }
+}
+
+/// The outcome of one backward **History Backfill** window pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackfillStep {
+    /// Coverage already reaches the floor — nothing left to backfill this pass.
+    Complete,
+    /// A window was read but had no captures; a `skipped` `backfill` run advanced
+    /// the cursor backward. Keep going (more windows may have content).
+    Advanced,
+    /// A window was derived (≥1 Activity), recorded as a completed `backfill` run.
+    Derived,
+    /// A window read empty-of-engine-work or failed; the cursor still advanced via
+    /// a recorded run. Keep going.
+    NoChange,
+}
+
+/// Run exactly ONE backward **History Backfill** window (#98): extend coverage
+/// older by `[max(floor, oldest_covered - BACKFILL_WINDOW_MS) .. oldest_covered]`.
+/// This walks history newest-first, one bounded window per call — a background
+/// trickle, NOT a synchronous whole-history bill (there is deliberately no
+/// "derive all of history now" path).
+///
+/// Every outcome records a `'backfill'`-kind `derivation_run` so the
+/// oldest-covered cursor advances backward each pass (empty → `skipped`,
+/// derived → `completed`, engine error → `failed`). Resilient: an error records
+/// a `failed` run and returns `BackfillStep::NoChange`; it never panics.
+///
+/// `oldest_covered` is the caller-resolved `oldest_derivation_run_window_start()`;
+/// the caller skips backfill entirely (forward seeds coverage first) when that is
+/// `None`. `floor_ms` is `backfill_floor_ms(...)`.
+async fn run_backfill_window(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    floor_ms: i64,
+    oldest_covered: i64,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> BackfillStep {
+    let Some((start, end)) = next_backfill_window(floor_ms, oldest_covered) else {
+        return BackfillStep::Complete;
+    };
+
+    let window = match store.read_capture_window(start, end, MAX_ITEMS).await {
+        Ok(window) => window,
+        Err(error) => {
+            // Record a failed backfill run so the cursor still advances backward.
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "backfill".to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error.to_string()),
+                })
+                .await;
+            return BackfillStep::NoChange;
+        }
+    };
+
+    // No captures in this older window: record a `skipped` backfill run to advance
+    // the cursor backward so the next pass picks the next-older window.
+    if window.items.is_empty() {
+        let _ = store
+            .insert_derivation_run(NewDerivationRun {
+                kind: "backfill".to_string(),
+                window_start_ms: Some(start),
+                window_end_ms: Some(end),
+                status: "skipped".to_string(),
+                activities_derived: 0,
+                conclusions_derived: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                provider: provider_label,
+                model: model_label,
+                error: None,
+            })
+            .await;
+        return BackfillStep::Advanced;
+    }
+
+    match derivation::derive_activities(
+        engine,
+        store,
+        window,
+        provider_label.clone(),
+        model_label.clone(),
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "backfill".to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "completed".to_string(),
+                    activities_derived: outcome.inserted as i64,
+                    conclusions_derived: 0,
+                    input_tokens: outcome.input_tokens,
+                    output_tokens: outcome.output_tokens,
+                    provider: provider_label,
+                    model: model_label,
+                    error: None,
+                })
+                .await;
+            if outcome.inserted > 0 {
+                BackfillStep::Derived
+            } else {
+                BackfillStep::NoChange
+            }
+        }
+        Err(error) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "backfill".to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error),
+                })
+                .await;
+            BackfillStep::NoChange
+        }
+    }
+}
+
+/// Run the per-tick backward **History Backfill** pass: up to
+/// `backfill_windows_per_tick(engine_kind, tier)` windows, oldest-covered →
+/// floor. Returns whether any window derived an Activity (so the caller can emit
+/// `user_context_changed`). Stops early when backfill is complete. Re-reads the
+/// oldest-covered cursor between windows so each window steps strictly older.
+///
+/// Newest-first ordering invariant (#98): the caller runs this ONLY after the
+/// forward catch-up is caught up this tick, so recent windows are always covered
+/// before older ones — recency-weighted Confidence means recent history drives
+/// current conclusions.
+async fn run_backfill_pass(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    floor_ms: i64,
+    max_windows: u32,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> bool {
+    let mut derived_anything = false;
+    for _ in 0..max_windows {
+        let oldest_covered = match store.oldest_derivation_run_window_start().await {
+            Ok(Some(oldest)) => oldest,
+            // No windowed coverage yet → the forward pass seeds it first; skip.
+            Ok(None) => break,
+            Err(_) => break,
+        };
+        let step = run_backfill_window(
+            engine,
+            store,
+            floor_ms,
+            oldest_covered,
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await;
+        match step {
+            BackfillStep::Complete => break,
+            BackfillStep::Derived => derived_anything = true,
+            BackfillStep::Advanced | BackfillStep::NoChange => {}
+        }
+    }
+    derived_anything
 }
 
 /// Run Conclusion distillation on the slower beat once every this many
@@ -573,6 +833,56 @@ async fn worker_tick(
             cadence.activity_ticks_since_distillation.saturating_add(1);
     }
 
+    // --- History Backfill beat (backward, newest-first) ---
+    // (#98) STRICTLY newest-first: only extend coverage *backward* once the forward
+    // catch-up has no new recent window to derive this tick (`!run.derived_window`).
+    // Recency-weighted Confidence means recent history drives current conclusions,
+    // so recent windows are always covered before older ones.
+    //
+    // This is a BACKGROUND TRICKLE paced by the Derivation Budget — one bounded
+    // window per pass, up to a small per-tier count — never a synchronous
+    // whole-history bill (there is deliberately no "derive all of history now"
+    // path). It is bounded by default (`backfill_window_days`) and extends to the
+    // true earliest capture only under the explicit go-deeper toggle.
+    if !run.derived_window {
+        let now = now_ms();
+        let earliest_capture = if user_context.backfill_go_deeper {
+            infra
+                .user_context()
+                .earliest_capture_at_ms()
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let floor_ms = backfill_floor_ms(
+            now,
+            user_context.backfill_window_days,
+            user_context.backfill_go_deeper,
+            earliest_capture,
+        );
+        let max_windows =
+            backfill_windows_per_tick(ai_runtime.engine_kind, user_context.derivation_budget_tier);
+        let backfilled = run_backfill_pass(
+            &engine,
+            infra.user_context(),
+            floor_ms,
+            max_windows,
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await;
+        if backfilled {
+            dossier_changed = true;
+            cadence.activity_ticks_since_distillation =
+                cadence.activity_ticks_since_distillation.saturating_add(1);
+            crate::native_capture::debug_log::log_info(
+                "user context worker backfilled older history (background trickle)",
+            );
+        }
+    }
+
     // --- Conclusion beat (slower) ---
     // CADENCE HOOK (spec §6 / §4): after the forward Activity window, run
     // Conclusion distillation on a slower beat — every Kth successful Activity
@@ -778,5 +1088,82 @@ mod tests {
             tick_interval(AiEngineKind::Local, DerivationBudgetTier::Thorough),
             LOCAL_INTERVAL
         );
+    }
+
+    // --- #98 History Backfill window math --------------------------------------
+
+    #[test]
+    fn bounded_backfill_floor_is_now_minus_window_days() {
+        let now = 10_000_000_000;
+        // go-deeper OFF: floor is the bounded recent window, ignoring the earliest
+        // capture even when there is much older history.
+        let floor = backfill_floor_ms(now, 30, false, Some(0));
+        assert_eq!(floor, now - 30 * 86_400_000);
+    }
+
+    #[test]
+    fn go_deeper_floor_reaches_earliest_capture() {
+        let now = 10_000_000_000;
+        let earliest = 1_234;
+        // go-deeper ON: floor is the true earliest capture (all of history).
+        assert_eq!(backfill_floor_ms(now, 30, true, Some(earliest)), earliest);
+        // go-deeper ON with no captures collapses to `now` (backfill no-op).
+        assert_eq!(backfill_floor_ms(now, 30, true, None), now);
+    }
+
+    #[test]
+    fn backfill_window_steps_one_window_older() {
+        let oldest_covered = 10_000_000_000;
+        let floor = oldest_covered - 10 * BACKFILL_WINDOW_MS;
+        let (start, end) = next_backfill_window(floor, oldest_covered).expect("backfill window");
+        // The window ends at the current trailing edge and reaches back exactly one
+        // BACKFILL_WINDOW_MS (the floor is far below, so it does not clamp here).
+        assert_eq!(end, oldest_covered);
+        assert_eq!(start, oldest_covered - BACKFILL_WINDOW_MS);
+    }
+
+    #[test]
+    fn backfill_window_clamps_to_floor() {
+        let oldest_covered = 10_000_000_000;
+        // Floor is closer than one full window: the window start clamps to the floor.
+        let floor = oldest_covered - (BACKFILL_WINDOW_MS / 2);
+        let (start, end) = next_backfill_window(floor, oldest_covered).expect("clamped window");
+        assert_eq!(start, floor);
+        assert_eq!(end, oldest_covered);
+    }
+
+    #[test]
+    fn backfill_complete_when_coverage_reaches_floor() {
+        let oldest_covered = 10_000_000_000;
+        // Coverage already AT the floor → nothing to backfill.
+        assert!(next_backfill_window(oldest_covered, oldest_covered).is_none());
+        // Coverage already BELOW the floor (e.g. floor moved up) → nothing to do.
+        assert!(next_backfill_window(oldest_covered + 1, oldest_covered).is_none());
+    }
+
+    #[test]
+    fn backfill_intensity_is_a_real_cloud_tier_knob() {
+        // The named cloud tier is a real intensity knob (windows/tick), not just a
+        // sleep: Light < Balanced < Thorough.
+        assert_eq!(
+            backfill_windows_per_tick(AiEngineKind::Cloud, DerivationBudgetTier::Light),
+            1
+        );
+        assert_eq!(
+            backfill_windows_per_tick(AiEngineKind::Cloud, DerivationBudgetTier::Balanced),
+            2
+        );
+        assert_eq!(
+            backfill_windows_per_tick(AiEngineKind::Cloud, DerivationBudgetTier::Thorough),
+            4
+        );
+        // Local ignores the tier entirely (fixed pacing): always one window/tick.
+        for tier in [
+            DerivationBudgetTier::Light,
+            DerivationBudgetTier::Balanced,
+            DerivationBudgetTier::Thorough,
+        ] {
+            assert_eq!(backfill_windows_per_tick(AiEngineKind::Local, tier), 1);
+        }
     }
 }

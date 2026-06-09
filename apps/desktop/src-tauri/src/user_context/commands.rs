@@ -19,8 +19,8 @@ use crate::app_infra::AppInfraState;
 use crate::native_capture::{read_recording_settings, RecordingSettingsState};
 
 use super::worker::{
-    model_label_for, provider_label_for, run_conclusion_distillation, run_forward_activity_window,
-    USER_CONTEXT_CHANGED_EVENT,
+    backfill_floor_ms, model_label_for, now_ms, provider_label_for, run_conclusion_distillation,
+    run_forward_activity_window, USER_CONTEXT_CHANGED_EVENT,
 };
 
 /// Result of a manual one-window derivation pass (the "Run derivation now"
@@ -40,7 +40,11 @@ pub struct UserContextDerivationRunResult {
 
 /// Availability + counts + token usage for the User Context settings surface.
 ///
-/// `backfilling` is false in this slice; it is owned by #98 (History Backfill).
+/// `backfilling` (#98) reflects whether the background **History Backfill** still
+/// has older history to cover — it drives the "building your understanding…"
+/// progress line. It is the engine-available AND not-yet-at-the-floor condition;
+/// see the inline computation. The floor is resolved from the SAME
+/// `user_context` settings the worker uses (`backfill_floor_ms`).
 #[tauri::command]
 pub async fn get_user_context_status(
     state: tauri::State<'_, RecordingSettingsState>,
@@ -76,13 +80,52 @@ pub async fn get_user_context_status(
             run_count: 0,
         });
 
+    // --- backfilling progress (#98) ---
+    // Cheap (two store reads): backfilling is true only when the engine is
+    // available AND the background History Backfill still has older history to
+    // reach. Two shapes count as "still backfilling":
+    //   1. No windowed coverage exists yet but there ARE captures — the forward
+    //      pass has not even seeded coverage, so older history is pending.
+    //   2. Coverage exists but its oldest-covered edge is still above the floor,
+    //      AND there is older captured history below that edge to derive
+    //      (earliest_capture < oldest_covered). Without older captures there is
+    //      nothing to backfill even if the floor is lower.
+    // The floor is resolved from the SAME settings the worker uses.
+    let backfilling = if !engine_available {
+        false
+    } else {
+        let oldest_covered = store
+            .oldest_derivation_run_window_start()
+            .await
+            .map_err(|e| e.to_string())?;
+        let earliest_capture = store
+            .earliest_capture_at_ms()
+            .await
+            .map_err(|e| e.to_string())?;
+        match oldest_covered {
+            // Shape 1: nothing windowed has run yet — backfilling iff captures exist.
+            None => earliest_capture.is_some(),
+            // Shape 2: coverage exists — older history remains iff the floor is
+            // below the trailing edge AND there are captures older than it.
+            Some(oldest) => {
+                let floor_ms = backfill_floor_ms(
+                    now_ms(),
+                    user_context.backfill_window_days,
+                    user_context.backfill_go_deeper,
+                    earliest_capture,
+                );
+                oldest > floor_ms && earliest_capture.map_or(false, |earliest| earliest < oldest)
+            }
+        }
+    };
+
     Ok(UserContextStatus {
         engine_available,
         reason,
         activity_count,
         conclusion_count,
         last_derived_at_ms,
-        backfilling: false, // TODO(#98): wire backfill progress.
+        backfilling,
         token_usage,
         budget_tier: user_context.derivation_budget_tier,
     })

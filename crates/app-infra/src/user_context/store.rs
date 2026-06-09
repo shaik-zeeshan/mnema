@@ -294,6 +294,58 @@ impl UserContextStore {
         Ok(row.get::<i64, _>("found") != 0)
     }
 
+    /// The OLDEST `window_start_ms` covered by a windowed (`'activity'` /
+    /// `'backfill'`) derivation run — the trailing edge of coverage that the
+    /// **History Backfill** (#98) extends backward, newest-first. `None` when
+    /// nothing windowed has run yet (the forward pass seeds coverage first).
+    ///
+    /// Only `activity`/`backfill` runs carry window bounds; `conclusion` /
+    /// `confidence` runs have NULL bounds and are excluded by the IS NOT NULL
+    /// filter anyway.
+    pub async fn oldest_derivation_run_window_start(&self) -> Result<Option<i64>> {
+        let row = sqlx::query(
+            "SELECT MIN(window_start_ms) AS oldest \
+             FROM user_context_derivation_runs \
+             WHERE window_start_ms IS NOT NULL \
+               AND kind IN ('activity', 'backfill')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        // MIN over an empty/all-NULL set is SQL NULL → read as an Option column.
+        Ok(row.get::<Option<i64>, _>("oldest"))
+    }
+
+    /// The earliest captured-at across all raw captures, in unix millis — the
+    /// true history floor that **go-deeper** backfill walks toward. Takes the
+    /// MIN of `frames.captured_at` and `audio_segments.started_at` (both legacy
+    /// RFC3339 TEXT), converting at the boundary exactly as `read_capture_window`
+    /// does. `None` when there are no captures at all.
+    pub async fn earliest_capture_at_ms(&self) -> Result<Option<i64>> {
+        // RFC3339 TEXT sorts lexicographically in captured order for a fixed
+        // zone/format, but we never rely on that across the two tables: read the
+        // MIN TEXT from each table independently, parse each to millis, and take
+        // the smaller. Parse failures fall through to the other source.
+        let frame_min: Option<String> = sqlx::query("SELECT MIN(captured_at) AS m FROM frames")
+            .fetch_one(&self.pool)
+            .await?
+            .get::<Option<String>, _>("m");
+        let audio_min: Option<String> =
+            sqlx::query("SELECT MIN(started_at) AS m FROM audio_segments")
+                .fetch_one(&self.pool)
+                .await?
+                .get::<Option<String>, _>("m");
+
+        let frame_ms = frame_min.as_deref().and_then(rfc3339_text_to_ms);
+        let audio_ms = audio_min.as_deref().and_then(rfc3339_text_to_ms);
+
+        Ok(match (frame_ms, audio_ms) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        })
+    }
+
     // --- Token-usage / last-derived readouts ------------------------------
 
     /// Aggregated (estimated) token usage across every derivation run.
@@ -1006,6 +1058,17 @@ pub(crate) fn now_ms() -> i64 {
     (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
 
+/// Converts a legacy RFC3339 TEXT timestamp (`frames.captured_at` /
+/// `audio_segments.started_at`) to unix milliseconds; `None` on a parse
+/// failure. Mirrors `capture_source.rs`'s boundary conversion so
+/// `earliest_capture_at_ms` and `read_capture_window` agree on the floor.
+fn rfc3339_text_to_ms(value: &str) -> Option<i64> {
+    use time::format_description::well_known::Rfc3339;
+    OffsetDateTime::parse(value, &Rfc3339)
+        .ok()
+        .map(|dt| (dt.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
 /// The stored snake_case string for an [`ActivityCategory`] (matches the
 /// capture-types serde rename).
 fn category_to_str(category: ActivityCategory) -> &'static str {
@@ -1201,6 +1264,16 @@ mod tests {
                 evidence_fingerprint TEXT NOT NULL,
                 evidence_activity_count INTEGER NOT NULL DEFAULT 0,
                 dismissed_at_ms INTEGER NOT NULL
+            )",
+            // Minimal raw-capture tables so `earliest_capture_at_ms` (#98) can be
+            // tested. Only the timestamp columns it reads are modeled.
+            "CREATE TABLE frames (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                captured_at TEXT NOT NULL
+            )",
+            "CREATE TABLE audio_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT NOT NULL
             )",
         ] {
             sqlx::query(statement)
@@ -1722,6 +1795,93 @@ mod tests {
         assert_eq!(summary.deleted_conclusions, 0);
         assert!(store.list_recent_activities(100, 0).await.expect("activities")
             .iter().any(|a| a.id == activity), "nothing deleted on empty ids");
+        });
+    }
+
+    /// #98 backfill-position SQL: `oldest_derivation_run_window_start` returns
+    /// the MIN windowed-run start over `activity`/`backfill` runs only (NULL-bound
+    /// `conclusion`/`confidence` runs are ignored), and `earliest_capture_at_ms`
+    /// takes the MIN across `frames.captured_at` / `audio_segments.started_at`,
+    /// RFC3339 → millis.
+    #[test]
+    fn backfill_position_helpers_compute_floor_and_oldest_covered() {
+        block_on(async {
+        let store = test_store().await;
+
+        // No runs / no captures yet → both None.
+        assert_eq!(
+            store.oldest_derivation_run_window_start().await.expect("oldest"),
+            None
+        );
+        assert_eq!(
+            store.earliest_capture_at_ms().await.expect("earliest"),
+            None
+        );
+
+        // Windowed runs: an activity window [5000, 6000] and an older backfill
+        // window [2000, 3000] → oldest start is 2000.
+        for (kind, start, end) in [("activity", 5_000, 6_000), ("backfill", 2_000, 3_000)] {
+            store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: kind.to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "completed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: None,
+                    model: None,
+                    error: None,
+                })
+                .await
+                .expect("windowed run");
+        }
+        // A NULL-bound conclusion run with an even smaller-looking window must NOT
+        // pull the floor down: it is excluded by kind + IS NOT NULL.
+        store
+            .insert_derivation_run(NewDerivationRun {
+                kind: "conclusion".to_string(),
+                window_start_ms: None,
+                window_end_ms: None,
+                status: "completed".to_string(),
+                activities_derived: 0,
+                conclusions_derived: 1,
+                input_tokens: 0,
+                output_tokens: 0,
+                provider: None,
+                model: None,
+                error: None,
+            })
+            .await
+            .expect("conclusion run");
+
+        assert_eq!(
+            store.oldest_derivation_run_window_start().await.expect("oldest"),
+            Some(2_000),
+            "MIN over activity/backfill window starts"
+        );
+
+        // Captures: a frame at 2020-01-01T00:00:10Z and an earlier audio segment
+        // at 2020-01-01T00:00:05Z → MIN is the audio start.
+        sqlx::query("INSERT INTO frames (captured_at) VALUES (?1)")
+            .bind("2020-01-01T00:00:10Z")
+            .execute(store.pool())
+            .await
+            .expect("frame");
+        sqlx::query("INSERT INTO audio_segments (started_at) VALUES (?1)")
+            .bind("2020-01-01T00:00:05Z")
+            .execute(store.pool())
+            .await
+            .expect("audio segment");
+
+        let expected_ms = rfc3339_text_to_ms("2020-01-01T00:00:05Z").expect("parse");
+        assert_eq!(
+            store.earliest_capture_at_ms().await.expect("earliest"),
+            Some(expected_ms),
+            "MIN across frames/audio_segments, RFC3339 → millis"
+        );
         });
     }
 
