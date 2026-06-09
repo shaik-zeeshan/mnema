@@ -37,7 +37,7 @@ export interface PrivacySettings {
 }
 
 export type AiEngineKind = "cloud" | "local";
-export type AiCloudProvider = "anthropic" | "openai";
+export type AiCloudProvider = "anthropic" | "openai" | "openai_compatible";
 export type AiLocalKind = "ollama" | "llamafile";
 
 export interface AiRuntimeSettings {
@@ -45,6 +45,7 @@ export interface AiRuntimeSettings {
 	engineKind: AiEngineKind;
 	cloudProvider: AiCloudProvider;
 	cloudModel: string;
+	cloudBaseUrl: string;
 	localKind: AiLocalKind;
 	localEndpoint: string;
 	localModel: string;
@@ -55,6 +56,7 @@ export interface UpdateAiRuntimeSettingsRequest {
 	engineKind?: AiEngineKind;
 	cloudProvider?: AiCloudProvider;
 	cloudModel?: string;
+	cloudBaseUrl?: string;
 	localKind?: AiLocalKind;
 	localEndpoint?: string;
 	localModel?: string;

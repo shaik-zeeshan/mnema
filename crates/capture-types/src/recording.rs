@@ -483,6 +483,7 @@ pub enum AiEngineKind {
 pub enum AiCloudProvider {
     Anthropic,
     Openai,
+    OpenaiCompatible,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -523,6 +524,8 @@ pub struct AiRuntimeSettings {
     pub cloud_provider: AiCloudProvider,
     #[serde(default = "default_ai_cloud_model")]
     pub cloud_model: String,
+    #[serde(default)]
+    pub cloud_base_url: String,
     #[serde(default = "default_ai_local_kind")]
     pub local_kind: AiLocalKind,
     #[serde(default = "default_ai_local_endpoint")]
@@ -538,6 +541,7 @@ impl Default for AiRuntimeSettings {
             engine_kind: default_ai_engine_kind(),
             cloud_provider: default_ai_cloud_provider(),
             cloud_model: default_ai_cloud_model(),
+            cloud_base_url: String::new(),
             local_kind: default_ai_local_kind(),
             local_endpoint: default_ai_local_endpoint(),
             local_model: String::new(),
@@ -552,6 +556,7 @@ pub struct UpdateAiRuntimeSettingsRequest {
     pub engine_kind: Option<AiEngineKind>,
     pub cloud_provider: Option<AiCloudProvider>,
     pub cloud_model: Option<String>,
+    pub cloud_base_url: Option<String>,
     pub local_kind: Option<AiLocalKind>,
     pub local_endpoint: Option<String>,
     pub local_model: Option<String>,

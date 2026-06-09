@@ -450,6 +450,7 @@
   let draftAiEngineKind = $state<AiEngineKind>("cloud");
   let draftAiCloudProvider = $state<AiCloudProvider>("anthropic");
   let draftAiCloudModel = $state(DEFAULT_AI_CLOUD_MODEL);
+  let draftAiCloudBaseUrl = $state("");
   let draftAiLocalKind = $state<AiLocalKind>("ollama");
   let draftAiLocalEndpoint = $state(DEFAULT_AI_LOCAL_ENDPOINT);
   let draftAiLocalModel = $state("");
@@ -477,6 +478,8 @@
         return "No model is configured.";
       case "no_cloud_key":
         return "No API key saved for this provider.";
+      case "no_base_url":
+        return "Add the base URL for the OpenAI-compatible provider.";
       case "local_no_model":
         return "No local model is configured.";
       case "local_endpoint_unreachable":
@@ -1128,6 +1131,7 @@
     draftAiEngineKind = s.aiRuntime?.engineKind ?? "cloud";
     draftAiCloudProvider = s.aiRuntime?.cloudProvider ?? "anthropic";
     draftAiCloudModel = s.aiRuntime?.cloudModel ?? DEFAULT_AI_CLOUD_MODEL;
+    draftAiCloudBaseUrl = s.aiRuntime?.cloudBaseUrl ?? "";
     draftAiLocalKind = s.aiRuntime?.localKind ?? "ollama";
     draftAiLocalEndpoint = s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT;
     draftAiLocalModel = s.aiRuntime?.localModel ?? "";
@@ -1356,6 +1360,7 @@
           engineKind: draftAiEngineKind,
           cloudProvider: draftAiCloudProvider,
           cloudModel: draftAiCloudModel,
+          cloudBaseUrl: draftAiCloudBaseUrl,
           localKind: draftAiLocalKind,
           localEndpoint: draftAiLocalEndpoint,
           localModel: draftAiLocalModel,
@@ -1835,6 +1840,7 @@
           engineKind: s.aiRuntime?.engineKind ?? "cloud",
           cloudProvider: s.aiRuntime?.cloudProvider ?? "anthropic",
           cloudModel: s.aiRuntime?.cloudModel ?? DEFAULT_AI_CLOUD_MODEL,
+          cloudBaseUrl: s.aiRuntime?.cloudBaseUrl ?? "",
           localKind: s.aiRuntime?.localKind ?? "ollama",
           localEndpoint: s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT,
           localModel: s.aiRuntime?.localModel ?? "",
@@ -4033,14 +4039,26 @@
               options={[
                 { value: "anthropic", label: "Anthropic", description: "Claude models" },
                 { value: "openai", label: "OpenAI", description: "GPT models" },
+                { value: "openai_compatible", label: "OpenAI-compatible", description: "Fireworks, OpenRouter, Together — custom base URL + key" },
               ]}
             />
+            {#if draftAiCloudProvider === "openai_compatible"}
+              <label class="field-label" for="ai-cloud-base-url">Base URL</label>
+              <input
+                id="ai-cloud-base-url"
+                class="text-input"
+                autocomplete="off"
+                placeholder="https://api.fireworks.ai/inference/v1"
+                disabled={!draftAiEnabled}
+                bind:value={draftAiCloudBaseUrl}
+              />
+            {/if}
             <label class="field-label" for="ai-cloud-model">Model</label>
             <input
               id="ai-cloud-model"
               class="text-input"
               autocomplete="off"
-              placeholder="claude-haiku-4-5"
+              placeholder={draftAiCloudProvider === "openai_compatible" ? "accounts/fireworks/models/…" : "claude-haiku-4-5"}
               disabled={!draftAiEnabled}
               bind:value={draftAiCloudModel}
             />

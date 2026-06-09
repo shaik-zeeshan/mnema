@@ -1034,6 +1034,10 @@ fn apply_domain_patch_to_settings(
                 settings.ai_runtime.cloud_model = value.trim().to_string();
                 touched = true;
             }
+            if let Some(value) = request.cloud_base_url {
+                settings.ai_runtime.cloud_base_url = value.trim().to_string();
+                touched = true;
+            }
             if let Some(value) = request.local_kind {
                 settings.ai_runtime.local_kind = value;
                 touched = true;

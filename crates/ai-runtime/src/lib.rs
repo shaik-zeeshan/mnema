@@ -27,6 +27,7 @@ const PING_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum CloudProvider {
     Anthropic,
     Openai,
+    OpenAiCompatible,
 }
 
 /// Local LLM runtime exposed on a user-controlled endpoint with no credential.
@@ -44,10 +45,15 @@ pub enum LocalKind {
 #[derive(Debug, Clone)]
 pub enum EngineConfig {
     /// A cloud provider reached over HTTPS with a bring-your-own-key credential.
+    ///
+    /// `base_url` is `None` for the first-party Anthropic/OpenAI providers (which
+    /// use the provider's default endpoint) and `Some(_)` for an
+    /// OpenAI-compatible provider reached at a custom Chat Completions base URL.
     Cloud {
         provider: CloudProvider,
         model: String,
         api_key: String,
+        base_url: Option<String>,
     },
     /// A local runtime reached on `endpoint` with no credential.
     Local {
@@ -66,6 +72,9 @@ pub enum AiRuntimeError {
     /// A cloud engine was selected without a bring-your-own-key credential.
     #[error("no API key is configured for the selected cloud provider")]
     MissingKey,
+    /// An OpenAI-compatible engine was selected without a base URL.
+    #[error("no base URL is configured for the OpenAI-compatible provider")]
+    MissingBaseUrl,
     /// Constructing the provider client failed.
     #[error("failed to build the engine client: {0}")]
     Build(#[from] rig_core::http_client::Error),
@@ -106,6 +115,7 @@ where
             provider,
             model,
             api_key,
+            base_url,
         } => {
             if model.trim().is_empty() {
                 return Err(AiRuntimeError::MissingModel);
@@ -125,6 +135,26 @@ where
                 }
                 CloudProvider::Openai => {
                     let client = openai::Client::builder().api_key(api_key).build()?;
+                    let extractor = client
+                        .extractor::<T>(model.as_str())
+                        .preamble(PREAMBLE)
+                        .build();
+                    Ok(extractor.extract(prompt).await?)
+                }
+                CloudProvider::OpenAiCompatible => {
+                    // OpenAI-compatible providers (Fireworks, OpenRouter, Together,
+                    // …) implement the Chat Completions API, not OpenAI's default
+                    // Responses API, so build a `CompletionsClient` pointed at the
+                    // user-supplied base URL.
+                    let base_url = base_url
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|url| !url.is_empty())
+                        .ok_or(AiRuntimeError::MissingBaseUrl)?;
+                    let client = openai::CompletionsClient::builder()
+                        .api_key(api_key)
+                        .base_url(base_url)
+                        .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(PREAMBLE)

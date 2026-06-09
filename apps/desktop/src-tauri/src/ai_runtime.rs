@@ -64,6 +64,7 @@ fn cloud_provider_id(provider: AiCloudProvider) -> &'static str {
     match provider {
         AiCloudProvider::Anthropic => "anthropic",
         AiCloudProvider::Openai => "openai",
+        AiCloudProvider::OpenaiCompatible => "openai_compatible",
     }
 }
 
@@ -72,6 +73,7 @@ fn cloud_provider_kind(provider: AiCloudProvider) -> ai_engine::CloudProvider {
     match provider {
         AiCloudProvider::Anthropic => ai_engine::CloudProvider::Anthropic,
         AiCloudProvider::Openai => ai_engine::CloudProvider::Openai,
+        AiCloudProvider::OpenaiCompatible => ai_engine::CloudProvider::OpenAiCompatible,
     }
 }
 
@@ -93,6 +95,12 @@ fn resolve_engine_config(settings: &AiRuntimeSettings) -> Result<ai_engine::Engi
             if model.is_empty() {
                 return Err("no_model".to_string());
             }
+            let base_url = settings.cloud_base_url.trim();
+            if matches!(settings.cloud_provider, AiCloudProvider::OpenaiCompatible)
+                && base_url.is_empty()
+            {
+                return Err("no_base_url".to_string());
+            }
             let provider_id = cloud_provider_id(settings.cloud_provider);
             let api_key = app_infra::load_ai_provider_key(provider_id)
                 .map_err(|error| error.to_string())?
@@ -102,6 +110,11 @@ fn resolve_engine_config(settings: &AiRuntimeSettings) -> Result<ai_engine::Engi
                 provider: cloud_provider_kind(settings.cloud_provider),
                 model: model.to_string(),
                 api_key,
+                base_url: if base_url.is_empty() {
+                    None
+                } else {
+                    Some(base_url.to_string())
+                },
             })
         }
         AiEngineKind::Local => {
@@ -184,6 +197,18 @@ pub async fn get_ai_runtime_status(
                     available: false,
                     has_cloud_key,
                     reason: Some("no_model".to_string()),
+                });
+            }
+            if matches!(settings.cloud_provider, AiCloudProvider::OpenaiCompatible)
+                && settings.cloud_base_url.trim().is_empty()
+            {
+                return Ok(AiRuntimeStatus {
+                    enabled: true,
+                    engine_kind,
+                    configured: false,
+                    available: false,
+                    has_cloud_key,
+                    reason: Some("no_base_url".to_string()),
                 });
             }
             if !has_cloud_key {
