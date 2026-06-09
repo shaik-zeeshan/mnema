@@ -45,7 +45,15 @@ const ITEM_TEXT_CHAR_CAP: usize = 1200;
 
 /// One Activity episode as returned by the engine. `evidence_refs` are the
 /// `f<id>`/`a<id>` tags (frame / audio_segment) that ground the episode.
+///
+/// `#[schemars(inline)]`: the engine schema must stay `$ref`/`$defs`-free.
+/// schemars renders a nested struct as a `#/$defs/DerivedActivity` reference by
+/// default, but several structured-output backends (vLLM/outlines-style guided
+/// decoding behind OpenAI-compatible/local endpoints) cannot resolve schema
+/// references and reject the request with `Error resolving schema reference`.
+/// Inlining emits the object schema directly inside `DerivedActivityBatch`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(inline)]
 pub struct DerivedActivity {
     pub title: String,
     pub summary: String,
@@ -330,7 +338,11 @@ const ACTIVITY_SUMMARY_CHAR_CAP: usize = 600;
 
 /// One distilled Conclusion as returned by the engine. `support_refs` /
 /// `contradict_refs` are Activity ids (matched back against the pulled set).
+///
+/// `#[schemars(inline)]`: see [`DerivedActivity`] — keep the batch schema free
+/// of `$ref`/`$defs` so reference-less structured-output backends accept it.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(inline)]
 pub struct DistilledConclusion {
     /// The Subject the Conclusion is about (a short grouping handle).
     pub subject: String,
@@ -655,6 +667,36 @@ fn filter_known_refs(refs: &[i64], valid_ids: &std::collections::HashSet<i64>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The engine schema must not contain `$ref`/`$defs`: reference-less
+    /// structured-output backends reject `Error resolving schema reference`.
+    /// `#[schemars(inline)]` on the nested item types keeps both batch schemas
+    /// flat — guard that here so a future field/type change cannot silently
+    /// reintroduce a `$ref`.
+    #[test]
+    fn batch_schemas_are_reference_free() {
+        // Walk the JSON structurally: a real reference is an object *key*
+        // (`$ref`/`$defs`), not the literal text that appears inside a
+        // `description` copied from these types' doc comments.
+        fn has_reference(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.contains_key("$ref")
+                        || map.contains_key("$defs")
+                        || map.values().any(has_reference)
+                }
+                serde_json::Value::Array(items) => items.iter().any(has_reference),
+                _ => false,
+            }
+        }
+
+        for schema in [
+            serde_json::to_value(schemars::schema_for!(DerivedActivityBatch)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(DistilledConclusionBatch)).unwrap(),
+        ] {
+            assert!(!has_reference(&schema), "schema has a reference: {schema}");
+        }
+    }
 
     #[test]
     fn parses_frame_and_audio_refs() {

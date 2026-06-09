@@ -35,6 +35,7 @@
   import { setAppearance } from "$lib/theme.svelte";
   import type {
     ActivityMode,
+    AiRuntimeModel,
     AppearanceSetting,
     AskAiModel,
     CaptureSupport,
@@ -464,6 +465,132 @@
   let draftAiLocalKind = $state<AiLocalKind>("ollama");
   let draftAiLocalEndpoint = $state(DEFAULT_AI_LOCAL_ENDPOINT);
   let draftAiLocalModel = $state("");
+
+  // Reasoning Engine model selection — an editable combobox populated from the
+  // engine's OpenAI-style `/models` route (OpenAI, OpenAI-compatible, Ollama,
+  // Llamafile, and Anthropic's models endpoint all expose `data[].id`). The
+  // selected id is the free-form model string written into cloud/local settings,
+  // so a typed id the route does not advertise is still accepted on Enter.
+  let aiModels = $state<AiRuntimeModel[]>([]);
+  let aiModelsLoading = $state(false);
+  let aiModelsError = $state<string | null>(null);
+  let aiModelOpen = $state(false);
+  let aiModelQuery = $state("");
+  let aiModelHighlight = $state(0);
+  let aiModelInputEl = $state<HTMLInputElement | null>(null);
+  let aiModelPanelStyle = $state("");
+
+  // Cloud and local each keep their own model id, but only one engine branch is
+  // on screen at a time, so a single combobox drives whichever is mounted.
+  let aiModelValue = $derived(
+    draftAiEngineKind === "cloud" ? draftAiCloudModel : draftAiLocalModel,
+  );
+
+  function setAiModelValue(value: string) {
+    if (draftAiEngineKind === "cloud") draftAiCloudModel = value;
+    else draftAiLocalModel = value;
+  }
+
+  function updateAiModelPanelPosition() {
+    const el = aiModelInputEl;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // Open upward, pinned just above the input, to clear the clipped card edge.
+    aiModelPanelStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; width: ${rect.width}px;`;
+  }
+
+  function openAiModelMenu() {
+    aiModelOpen = true;
+    updateAiModelPanelPosition();
+  }
+
+  $effect(() => {
+    if (!aiModelOpen) return;
+    const handler = () => updateAiModelPanelPosition();
+    window.addEventListener("scroll", handler, true);
+    window.addEventListener("resize", handler);
+    return () => {
+      window.removeEventListener("scroll", handler, true);
+      window.removeEventListener("resize", handler);
+    };
+  });
+
+  let aiModelEntries = $derived(
+    aiModels.map((model) => ({ value: model.id, label: model.id })),
+  );
+
+  let aiModelFiltered = $derived.by(() => {
+    const query = aiModelQuery.trim().toLowerCase();
+    if (!query || query === aiModelValue.toLowerCase()) return aiModelEntries;
+    return aiModelEntries.filter((entry) => entry.value.toLowerCase().includes(query));
+  });
+
+  // Keep the input text in sync with the committed model id while the dropdown is
+  // closed (covers settings loads and engine-kind switches that change the value).
+  $effect(() => {
+    if (!aiModelOpen) {
+      aiModelQuery = aiModelValue;
+    }
+  });
+
+  function commitAiModel(value: string) {
+    setAiModelValue(value);
+    aiModelQuery = value;
+    aiModelOpen = false;
+  }
+
+  function closeAiModelSoon() {
+    // Delay so an option's click (mousedown → click) lands before we close.
+    setTimeout(() => {
+      aiModelOpen = false;
+      aiModelQuery = aiModelValue;
+    }, 120);
+  }
+
+  function handleAiModelKeydown(event: KeyboardEvent) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      openAiModelMenu();
+      aiModelHighlight = Math.min(aiModelHighlight + 1, aiModelFiltered.length - 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      aiModelHighlight = Math.max(aiModelHighlight - 1, 0);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const choice = aiModelFiltered[aiModelHighlight];
+      if (choice) {
+        commitAiModel(choice.value);
+      } else {
+        // No list match: accept the typed id as a custom model.
+        const typed = aiModelQuery.trim();
+        if (typed) commitAiModel(typed);
+      }
+    } else if (event.key === "Escape") {
+      aiModelOpen = false;
+      aiModelQuery = aiModelValue;
+    }
+  }
+
+  async function loadAiModels() {
+    if (aiModelsLoading) return;
+    aiModelsLoading = true;
+    aiModelsError = null;
+    try {
+      aiModels = await invoke<AiRuntimeModel[]>("ai_runtime_list_models", {
+        request: {
+          engineKind: draftAiEngineKind,
+          cloudProvider: draftAiCloudProvider,
+          cloudBaseUrl: draftAiCloudBaseUrl,
+          localEndpoint: draftAiLocalEndpoint,
+        },
+      });
+    } catch (err) {
+      aiModels = [];
+      aiModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      aiModelsLoading = false;
+    }
+  }
 
   // User Context (derivation) drafts. Autosaved through the `user_context`
   // domain, mirroring the `ai_runtime` draft-state pattern. The settings card
@@ -4232,6 +4359,76 @@
       </div>
     </section>
 
+    {#snippet aiModelCombobox(inputId: string, placeholder: string)}
+      <div class="model-combobox">
+        <input
+          id={inputId}
+          class="text-input model-combobox__input"
+          role="combobox"
+          aria-expanded={aiModelOpen}
+          aria-controls="ai-model-list"
+          aria-autocomplete="list"
+          autocomplete="off"
+          {placeholder}
+          disabled={!draftAiEnabled}
+          bind:this={aiModelInputEl}
+          bind:value={aiModelQuery}
+          oninput={() => { openAiModelMenu(); aiModelHighlight = 0; }}
+          onfocus={(event) => { openAiModelMenu(); void loadAiModels(); event.currentTarget.select(); }}
+          onblur={closeAiModelSoon}
+          onkeydown={handleAiModelKeydown}
+        />
+        {#if aiModelOpen && draftAiEnabled}
+          <Portal>
+            <div
+              class="model-combobox__panel"
+              id="ai-model-list"
+              role="listbox"
+              style={aiModelPanelStyle}
+            >
+              {#if aiModelsLoading}
+                <span class="model-combobox__empty">Loading models…</span>
+              {:else if aiModelFiltered.length > 0}
+                {#each aiModelFiltered as entry, index (entry.value)}
+                  <button
+                    class="model-combobox__option"
+                    class:model-combobox__option--active={index === aiModelHighlight}
+                    type="button"
+                    role="option"
+                    aria-selected={entry.value === aiModelValue}
+                    onmousedown={(event) => event.preventDefault()}
+                    onmouseenter={() => { aiModelHighlight = index; }}
+                    onclick={() => commitAiModel(entry.value)}
+                  >
+                    <span class="model-combobox__option-main">
+                      <span class="model-combobox__name">{entry.label}</span>
+                    </span>
+                    {#if entry.value === aiModelValue}
+                      <span class="model-combobox__check" aria-hidden="true">✓</span>
+                    {/if}
+                  </button>
+                {/each}
+              {:else}
+                <span class="model-combobox__empty">
+                  {aiModelQuery.trim()
+                    ? `Press Enter to use "${aiModelQuery.trim()}"`
+                    : "No models found"}
+                </span>
+              {/if}
+            </div>
+          </Portal>
+        {/if}
+      </div>
+      {#if aiModelsError}
+        <p class="group-hint group-hint--warn">
+          Could not list models — check the engine is configured (key/base URL or endpoint), then refocus the field to retry. You can still type any model id.
+        </p>
+        <p class="error-text">{aiRuntimeReasonLabel(aiModelsError)}</p>
+      {:else}
+        <p class="group-hint">Type to filter the engine's available models, or type any model id.</p>
+      {/if}
+    {/snippet}
+
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
@@ -4294,14 +4491,10 @@
               />
             {/if}
             <label class="field-label" for="ai-cloud-model">Model</label>
-            <input
-              id="ai-cloud-model"
-              class="text-input"
-              autocomplete="off"
-              placeholder={draftAiCloudProvider === "openai_compatible" ? "accounts/fireworks/models/…" : "claude-haiku-4-5"}
-              disabled={!draftAiEnabled}
-              bind:value={draftAiCloudModel}
-            />
+            {@render aiModelCombobox(
+              "ai-cloud-model",
+              draftAiCloudProvider === "openai_compatible" ? "accounts/fireworks/models/…" : "claude-haiku-4-5",
+            )}
             <label class="field-label" for="ai-cloud-key">API key</label>
             <div class="row-actions">
               <input
@@ -4361,14 +4554,7 @@
               bind:value={draftAiLocalEndpoint}
             />
             <label class="field-label" for="ai-local-model">Model</label>
-            <input
-              id="ai-local-model"
-              class="text-input"
-              autocomplete="off"
-              placeholder="e.g. llama3.1"
-              disabled={!draftAiEnabled}
-              bind:value={draftAiLocalModel}
-            />
+            {@render aiModelCombobox("ai-local-model", "e.g. llama3.1")}
           {/if}
         </div>
       </div>

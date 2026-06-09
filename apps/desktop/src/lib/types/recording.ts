@@ -318,6 +318,11 @@ export interface AskAiModel {
 	name: string;
 }
 
+/** One model id discovered from the Reasoning Engine's `/models` route. */
+export interface AiRuntimeModel {
+	id: string;
+}
+
 export interface KeyboardBindingsSettings {
 	schemaVersion: number;
 	globalShortcuts: GlobalShortcutsSettings;

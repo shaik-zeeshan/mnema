@@ -488,6 +488,7 @@ pub fn run() {
             ai_runtime::ai_runtime_has_provider_key,
             ai_runtime::get_ai_runtime_status,
             ai_runtime::ai_runtime_test_connection,
+            ai_runtime::ai_runtime_list_models,
             user_context::commands::get_user_context_status,
             user_context::commands::list_user_context_activities,
             user_context::commands::list_user_context_conclusions,

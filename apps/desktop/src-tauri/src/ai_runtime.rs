@@ -38,6 +38,48 @@ pub struct AiRuntimeTestResult {
     raw_json: String,
 }
 
+/// One model id discovered from the engine's OpenAI-style `/models` route.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRuntimeModel {
+    id: String,
+}
+
+/// Minimal projection of the OpenAI-style `{ "data": [ { "id": … } ] }` model
+/// list. Anthropic's `/v1/models` shares this `data[].id` shape, so the same
+/// parse covers every provider/runtime we list.
+#[derive(Debug, Deserialize)]
+struct ModelsListResponse {
+    #[serde(default)]
+    data: Vec<ModelsListEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsListEntry {
+    id: String,
+}
+
+/// How long the `/models` request waits before giving up.
+const MODELS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `anthropic-version` header required by Anthropic's REST API.
+const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
+
+/// Build the `/models` URL for an OpenAI-style API base.
+///
+/// Bases that already include the `/v1` API prefix (the OpenAI-compatible and
+/// first-party cloud bases, e.g. `https://api.fireworks.ai/inference/v1`) get
+/// `/models` appended; bare hosts (a local Ollama/Llamafile endpoint like
+/// `http://localhost:11434`) get the full `/v1/models` suffix.
+fn models_endpoint_url(base: &str) -> String {
+    let trimmed = base.trim().trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeProviderKeyRequest {
@@ -298,4 +340,107 @@ pub async fn ai_runtime_test_connection(
         message,
         raw_json,
     })
+}
+
+/// The live engine selection the Settings combobox is currently editing.
+///
+/// This is the in-progress draft, not the persisted settings: model discovery is
+/// triggered while the user is still editing the card, so reading the autosaved
+/// settings would race the debounce and list models for a stale provider/base
+/// URL. The bring-your-own key still comes from the keychain (by `cloudProvider`),
+/// never over the wire.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRuntimeListModelsRequest {
+    engine_kind: AiEngineKind,
+    cloud_provider: AiCloudProvider,
+    #[serde(default)]
+    cloud_base_url: String,
+    #[serde(default)]
+    local_endpoint: String,
+}
+
+/// List the models the selected engine advertises via its OpenAI-style `/models`
+/// route, so the Settings model field can be a discovery combobox rather than a
+/// blind text input.
+///
+/// Takes the live draft engine selection (see [`AiRuntimeListModelsRequest`]),
+/// sources the cloud credential from the keychain, and issues a single
+/// `GET …/models`: `Authorization: Bearer` for OpenAI / OpenAI-compatible, the
+/// `x-api-key` + `anthropic-version` pair for Anthropic, and no credential for a
+/// local Ollama/Llamafile endpoint. Returns the sorted, de-duplicated model ids;
+/// the caller may still type a model id that the route does not advertise.
+#[tauri::command]
+pub async fn ai_runtime_list_models(
+    request: AiRuntimeListModelsRequest,
+) -> Result<Vec<AiRuntimeModel>, String> {
+    let client = reqwest::Client::new();
+    let http_request = match request.engine_kind {
+        AiEngineKind::Cloud => {
+            let api_key = app_infra::load_ai_provider_key(cloud_provider_id(request.cloud_provider))
+                .map_err(|error| error.to_string())?
+                .filter(|key| !key.is_empty())
+                .ok_or_else(|| "no_cloud_key".to_string())?;
+            match request.cloud_provider {
+                AiCloudProvider::Anthropic => client
+                    .get(models_endpoint_url("https://api.anthropic.com/v1"))
+                    .header("x-api-key", api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION_HEADER),
+                AiCloudProvider::Openai => client
+                    .get(models_endpoint_url("https://api.openai.com/v1"))
+                    .bearer_auth(api_key),
+                AiCloudProvider::OpenaiCompatible => {
+                    let base = request.cloud_base_url.trim();
+                    if base.is_empty() {
+                        return Err("no_base_url".to_string());
+                    }
+                    client.get(models_endpoint_url(base)).bearer_auth(api_key)
+                }
+            }
+        }
+        AiEngineKind::Local => {
+            let endpoint = request.local_endpoint.trim();
+            if endpoint.is_empty() {
+                return Err("local_endpoint_unreachable".to_string());
+            }
+            client.get(models_endpoint_url(endpoint))
+        }
+    };
+
+    let response = http_request
+        .timeout(MODELS_REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let status = response.status();
+    // reqwest is built without the `json` feature here, so read the body and
+    // deserialize with the already-present `serde_json`.
+    let body = response.text().await.map_err(|error| error.to_string())?;
+
+    if !status.is_success() {
+        // Surface the provider's own error body (e.g. an "invalid_api_key"
+        // message) so the Settings card can explain why listing failed.
+        let detail = body.trim();
+        return Err(if detail.is_empty() {
+            format!("model listing request failed with status {status}")
+        } else {
+            format!("model listing request failed with status {status}: {detail}")
+        });
+    }
+
+    let parsed: ModelsListResponse =
+        serde_json::from_str(&body).map_err(|error| error.to_string())?;
+
+    let mut models: Vec<AiRuntimeModel> = parsed
+        .data
+        .into_iter()
+        .map(|entry| AiRuntimeModel {
+            id: entry.id.trim().to_string(),
+        })
+        .filter(|model| !model.id.is_empty())
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    Ok(models)
 }
