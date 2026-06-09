@@ -471,6 +471,92 @@ impl Default for AccessSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiEngineKind {
+    Cloud,
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiCloudProvider {
+    Anthropic,
+    Openai,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiLocalKind {
+    Ollama,
+    Llamafile,
+}
+
+pub fn default_ai_engine_kind() -> AiEngineKind {
+    AiEngineKind::Cloud
+}
+
+pub fn default_ai_cloud_provider() -> AiCloudProvider {
+    AiCloudProvider::Anthropic
+}
+
+pub fn default_ai_cloud_model() -> String {
+    "claude-haiku-4-5".to_string()
+}
+
+pub fn default_ai_local_kind() -> AiLocalKind {
+    AiLocalKind::Ollama
+}
+
+pub fn default_ai_local_endpoint() -> String {
+    "http://localhost:11434".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRuntimeSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_ai_engine_kind")]
+    pub engine_kind: AiEngineKind,
+    #[serde(default = "default_ai_cloud_provider")]
+    pub cloud_provider: AiCloudProvider,
+    #[serde(default = "default_ai_cloud_model")]
+    pub cloud_model: String,
+    #[serde(default = "default_ai_local_kind")]
+    pub local_kind: AiLocalKind,
+    #[serde(default = "default_ai_local_endpoint")]
+    pub local_endpoint: String,
+    #[serde(default)]
+    pub local_model: String,
+}
+
+impl Default for AiRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            engine_kind: default_ai_engine_kind(),
+            cloud_provider: default_ai_cloud_provider(),
+            cloud_model: default_ai_cloud_model(),
+            local_kind: default_ai_local_kind(),
+            local_endpoint: default_ai_local_endpoint(),
+            local_model: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAiRuntimeSettingsRequest {
+    pub enabled: Option<bool>,
+    pub engine_kind: Option<AiEngineKind>,
+    pub cloud_provider: Option<AiCloudProvider>,
+    pub cloud_model: Option<String>,
+    pub local_kind: Option<AiLocalKind>,
+    pub local_endpoint: Option<String>,
+    pub local_model: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettings {
@@ -511,6 +597,8 @@ pub struct RecordingSettings {
     pub privacy: PrivacySettings,
     #[serde(default)]
     pub access: AccessSettings,
+    #[serde(default)]
+    pub ai_runtime: AiRuntimeSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -550,6 +638,7 @@ pub enum SettingsOwnershipDomain {
     MicrophoneController,
     AppUpdate,
     Access,
+    AiRuntime,
     OneTimePromptState,
 }
 
@@ -600,6 +689,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub privacy: PrivacySettings,
     #[serde(default)]
     pub access: AccessSettings,
+    #[serde(default)]
+    pub ai_runtime: AiRuntimeSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
