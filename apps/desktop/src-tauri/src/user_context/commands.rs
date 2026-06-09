@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use capture_types::{
-    Activity, Conclusion, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest,
-    UserContextStatus, UserContextTokenUsage,
+    Activity, ActivityCategory, AuthoredContext, Conclusion, FocusLevel, SubjectTrajectory,
+    SubjectView, UpdateAiRuntimeSettingsRequest, UserContextStatus, UserContextTokenUsage,
 };
 use serde::Serialize;
 use tauri::Emitter;
@@ -315,6 +315,129 @@ pub async fn user_context_set_pinned(
     infra
         .user_context()
         .set_pinned(id, pinned)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// **Correct** an Activity's Category (#108). The user override always WINS over
+/// the engine label on read, and is fed back into the next derivation pass so the
+/// engine is biased away from regenerating the corrected-away label. `category`
+/// is the new effective Category; `null`/absent corrects it to "unset" (an
+/// intentional clear, distinct from "never corrected"). Emits
+/// `user_context_changed` so the surface re-reads the effective label.
+#[tauri::command]
+pub async fn user_context_correct_activity_category(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    id: i64,
+    category: Option<ActivityCategory>,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        // `Some(category)` = "set this correction" (where `category` may itself be
+        // None = corrected to unset); the focus arg is `None` = "leave unchanged".
+        .correct_activity(id, Some(category), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// **Correct** an Activity's Focus Classification (#108). The user override always
+/// WINS over the engine label on read and feeds back into the next derivation
+/// pass. `focus` is the new effective Focus; `null`/absent corrects it to "unset".
+/// Emits `user_context_changed`.
+#[tauri::command]
+pub async fn user_context_correct_activity_focus(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    id: i64,
+    focus: Option<FocusLevel>,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        .correct_activity(id, None, Some(focus))
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// List every **user-authored Context** statement (#107), newest first. These are
+/// standing statements the user wrote about themselves; they are user-asserted, so
+/// they carry no confidence and never decay.
+#[tauri::command]
+pub async fn list_user_context_authored(
+    infra: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<AuthoredContext>, String> {
+    infra
+        .user_context()
+        .list_authored_context()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Add a **user-authored Context** statement (#107). Stored verbatim with an
+/// optional `topic` grouping handle; stamped with the same `now_ms` time source the
+/// rest of the module uses. Returns the persisted row and emits
+/// `user_context_changed` so the surface refreshes.
+#[tauri::command]
+pub async fn user_context_add_authored(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    text: String,
+    topic: Option<String>,
+) -> Result<AuthoredContext, String> {
+    let now = now_ms();
+    let topic = topic.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let store = infra.user_context();
+    let id = store
+        .add_authored_context(text.trim(), topic.as_deref(), now)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(AuthoredContext {
+        id,
+        text: text.trim().to_string(),
+        topic,
+        created_at_ms: now,
+        updated_at_ms: now,
+    })
+}
+
+/// Update a **user-authored Context** statement's text/topic (#107), bumping its
+/// `updated_at_ms`. Emits `user_context_changed`.
+#[tauri::command]
+pub async fn user_context_update_authored(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    id: i64,
+    text: String,
+    topic: Option<String>,
+) -> Result<(), String> {
+    let topic = topic.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    infra
+        .user_context()
+        .update_authored_context(id, text.trim(), topic.as_deref(), now_ms())
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// Delete a **user-authored Context** statement (#107). Emits
+/// `user_context_changed`.
+#[tauri::command]
+pub async fn user_context_delete_authored(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    id: i64,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        .delete_authored_context(id)
         .await
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());

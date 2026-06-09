@@ -32,6 +32,21 @@ pub enum ActivityCategory {
     Distractions,
 }
 
+/// Per-Activity **Focus Classification** (issue #105): how focused the episode
+/// was, driving the focus/distraction heatmap on the Overview. Fixed v1
+/// taxonomy mapped to the design's deep / mid / distracted bands. Engine-tier;
+/// may be `None` on a tracer or when the engine is unsure.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusLevel {
+    /// Sustained, single-thread deep work (the design's "deep" band).
+    Deep,
+    /// Some focus, but context-switching or interleaved (the design's "mid" band).
+    Mixed,
+    /// Scattered / interrupted / off-task (the design's "distracted" band).
+    Distracted,
+}
+
 /// Visibility status of a [`Conclusion`] in the dossier. `faded` means the
 /// Conclusion sits below the display floor but keeps its history.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,7 +83,12 @@ pub struct Activity {
     pub id: i64,
     pub title: String,
     pub summary: String,
+    /// Effective Activity Category: the user's correction if one exists, else
+    /// the engine's label (issue #105/#108). `None` when neither is set.
     pub category: Option<ActivityCategory>,
+    /// Effective Focus Classification: the user's correction if one exists, else
+    /// the engine's label (issue #105/#108). `None` when neither is set.
+    pub focus: Option<FocusLevel>,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub created_at_ms: i64,
@@ -154,6 +174,23 @@ pub struct UserContextStatus {
     pub backfilling: bool,
     pub token_usage: UserContextTokenUsage,
     pub budget_tier: DerivationBudgetTier,
+}
+
+/// A standing, user-authored Context statement (issue #107): something the user
+/// asserted about themselves ("I'm a designer", "I care about X"), stored
+/// verbatim. It is user-asserted rather than derived, so it carries no
+/// confidence and never decays; it is fed to the Reasoning Engine alongside
+/// derived User Context to steer derivation, survives Retention Policy aging and
+/// the Delete Recent Capture cascade, and is cleared only by Wipe User Context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthoredContext {
+    pub id: i64,
+    pub text: String,
+    /// Optional short grouping handle (mirrors a [`Conclusion`]'s Subject).
+    pub topic: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 /// Engine-carried state recording that the user rejected a particular

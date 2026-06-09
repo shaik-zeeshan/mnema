@@ -13,8 +13,9 @@ use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
 use time::OffsetDateTime;
 
 use capture_types::{
-    Activity, ActivityCategory, ActivityEvidenceRef, Conclusion, ConclusionEvidenceRef,
-    ConclusionStatus, ConfidenceSnapshot, DismissalState, EvidenceStance, UserContextTokenUsage,
+    Activity, ActivityCategory, ActivityEvidenceRef, AuthoredContext, Conclusion,
+    ConclusionEvidenceRef, ConclusionStatus, ConfidenceSnapshot, DismissalState, EvidenceStance,
+    FocusLevel, UserContextTokenUsage,
 };
 
 use crate::Result;
@@ -31,11 +32,33 @@ const SQLITE_BIND_CHUNK_SIZE: usize = 500;
 pub struct NewActivity {
     pub title: String,
     pub summary: String,
+    /// Engine-assigned Activity Category (#105). User corrections are recorded
+    /// separately via [`UserContextStore::correct_activity`] and win on read.
     pub category: Option<ActivityCategory>,
+    /// Engine-assigned Focus Classification (#105). User corrections are
+    /// recorded separately and win on read.
+    pub focus: Option<FocusLevel>,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub derivation_run_id: Option<i64>,
     pub evidence: Vec<NewActivityEvidence>,
+}
+
+/// A user **correction** of an Activity's Category and/or Focus (#108), as read
+/// back for the derivation feedback loop. Carries the *effective* corrected
+/// values (the engine label is irrelevant once corrected) plus the Activity's
+/// title/summary so the next derivation prompt can bias the engine away from
+/// regenerating the corrected-away label for similar activities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityCorrection {
+    pub activity_id: i64,
+    pub title: String,
+    pub summary: String,
+    /// The user's corrected Category (may be `None`: corrected to "unset").
+    pub corrected_category: Option<ActivityCategory>,
+    /// The user's corrected Focus (may be `None`: corrected to "unset").
+    pub corrected_focus: Option<FocusLevel>,
+    pub corrected_at_ms: i64,
 }
 
 /// One raw-capture evidence reference for a [`NewActivity`]. `subject_type` is
@@ -122,12 +145,13 @@ impl UserContextStore {
 
         let activity_id = sqlx::query(
             "INSERT INTO user_context_activities \
-                (title, summary, category, started_at_ms, ended_at_ms, derivation_run_id, created_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (title, summary, category, focus, started_at_ms, ended_at_ms, derivation_run_id, created_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .bind(&draft.title)
         .bind(&draft.summary)
         .bind(draft.category.map(category_to_str))
+        .bind(draft.focus.map(focus_to_str))
         .bind(draft.started_at_ms)
         .bind(draft.ended_at_ms)
         .bind(draft.derivation_run_id)
@@ -158,7 +182,8 @@ impl UserContextStore {
     /// with its evidence refs.
     pub async fn list_recent_activities(&self, limit: i64, offset: i64) -> Result<Vec<Activity>> {
         let rows = sqlx::query(
-            "SELECT id, title, summary, category, started_at_ms, ended_at_ms, created_at_ms \
+            "SELECT id, title, summary, category, focus, corrected_category, category_corrected, \
+                    corrected_focus, focus_corrected, started_at_ms, ended_at_ms, created_at_ms \
              FROM user_context_activities \
              ORDER BY started_at_ms DESC, id DESC \
              LIMIT ?1 OFFSET ?2",
@@ -204,6 +229,92 @@ impl UserContextStore {
             .fetch_one(&self.pool)
             .await?;
         Ok(row.get("count"))
+    }
+
+    // --- #108: Category / Focus corrections -------------------------------
+
+    /// Record a user **correction** of an Activity's Category and/or Focus
+    /// (#108). Each `Option<Option<_>>` argument is "leave unchanged" (`None`)
+    /// vs "set this correction" (`Some(value)`, where `value` may itself be
+    /// `None` = correct to "unset"). When a correction is set, its `*_corrected`
+    /// flag is raised so the corrected value WINS over the engine label on read,
+    /// even when the corrected value is NULL. Stamps `corrected_at_ms` whenever
+    /// any field is corrected. A no-op (no timestamp bump) when both args are
+    /// `None` or `id` names no Activity.
+    pub async fn correct_activity(
+        &self,
+        id: i64,
+        category: Option<Option<ActivityCategory>>,
+        focus: Option<Option<FocusLevel>>,
+    ) -> Result<()> {
+        // Nothing to change.
+        if category.is_none() && focus.is_none() {
+            return Ok(());
+        }
+        let now = now_ms();
+        let mut builder = QueryBuilder::<Sqlite>::new("UPDATE user_context_activities SET ");
+        let mut separated = builder.separated(", ");
+        if let Some(corrected) = category {
+            separated.push("corrected_category = ");
+            separated.push_bind_unseparated(corrected.map(category_to_str).map(str::to_string));
+            separated.push("category_corrected = 1");
+        }
+        if let Some(corrected) = focus {
+            separated.push("corrected_focus = ");
+            separated.push_bind_unseparated(corrected.map(focus_to_str).map(str::to_string));
+            separated.push("focus_corrected = 1");
+        }
+        separated.push("corrected_at_ms = ");
+        separated.push_bind_unseparated(now);
+        builder.push(" WHERE id = ");
+        builder.push_bind(id);
+        builder.build().execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Every Activity the user has corrected (#108), newest correction first.
+    /// Fed to the derivation pass so the engine is biased away from regenerating
+    /// a corrected-away Category/Focus for similar activities. Carries the
+    /// *effective* corrected values (the engine label is irrelevant once
+    /// corrected). Capped at `limit` (the most recent corrections matter most).
+    pub async fn list_activity_corrections(&self, limit: i64) -> Result<Vec<ActivityCorrection>> {
+        let rows = sqlx::query(
+            "SELECT id, title, summary, corrected_category, category_corrected, \
+                    corrected_focus, focus_corrected, corrected_at_ms \
+             FROM user_context_activities \
+             WHERE category_corrected = 1 OR focus_corrected = 1 \
+             ORDER BY corrected_at_ms DESC, id DESC \
+             LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let corrected_category = if row.get::<i64, _>("category_corrected") != 0 {
+                    category_from_str(
+                        row.get::<Option<String>, _>("corrected_category").as_deref(),
+                    )
+                } else {
+                    None
+                };
+                let corrected_focus = if row.get::<i64, _>("focus_corrected") != 0 {
+                    focus_from_str(row.get::<Option<String>, _>("corrected_focus").as_deref())
+                } else {
+                    None
+                };
+                ActivityCorrection {
+                    activity_id: row.get("id"),
+                    title: row.get("title"),
+                    summary: row.get("summary"),
+                    corrected_category,
+                    corrected_focus,
+                    corrected_at_ms: row.get::<Option<i64>, _>("corrected_at_ms").unwrap_or(0),
+                }
+            })
+            .collect())
     }
 
     // --- #93: Derivation runs ---------------------------------------------
@@ -480,7 +591,8 @@ impl UserContextStore {
     /// distillation pass, each hydrated with its evidence, capped at `limit`.
     pub async fn activities_for_distillation(&self, limit: i64) -> Result<Vec<Activity>> {
         let rows = sqlx::query(
-            "SELECT id, title, summary, category, started_at_ms, ended_at_ms, created_at_ms \
+            "SELECT id, title, summary, category, focus, corrected_category, category_corrected, \
+                    corrected_focus, focus_corrected, started_at_ms, ended_at_ms, created_at_ms \
              FROM user_context_activities \
              ORDER BY started_at_ms DESC, id DESC \
              LIMIT ?1",
@@ -889,6 +1001,86 @@ impl UserContextStore {
         Ok(rows.into_iter().map(map_dismissal).collect())
     }
 
+    // --- #107: User-authored Context --------------------------------------
+
+    /// Insert a standing **user-authored Context** statement, returning its id.
+    /// `text` is stored verbatim; `topic` is an optional grouping handle.
+    /// Authored Context is user-asserted (not derived), carries no confidence,
+    /// and never decays.
+    pub async fn add_authored_context(
+        &self,
+        text: &str,
+        topic: Option<&str>,
+        now_ms: i64,
+    ) -> Result<i64> {
+        let id = sqlx::query(
+            "INSERT INTO user_context_authored (text, topic, created_at_ms, updated_at_ms) \
+             VALUES (?1, ?2, ?3, ?3)",
+        )
+        .bind(text)
+        .bind(topic)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?
+        .last_insert_rowid();
+        Ok(id)
+    }
+
+    /// Update a user-authored Context statement's `text`/`topic`, bumping
+    /// `updated_at_ms`. A no-op when `id` names no row.
+    pub async fn update_authored_context(
+        &self,
+        id: i64,
+        text: &str,
+        topic: Option<&str>,
+        now_ms: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE user_context_authored \
+             SET text = ?2, topic = ?3, updated_at_ms = ?4 \
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(text)
+        .bind(topic)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete a user-authored Context statement. A no-op when `id` is absent.
+    pub async fn delete_authored_context(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM user_context_authored WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// List every user-authored Context statement, newest first (by
+    /// `created_at_ms`). Used by both the settings surface and the derivation
+    /// pass (which feeds them to the engine as standing context).
+    pub async fn list_authored_context(&self) -> Result<Vec<AuthoredContext>> {
+        let rows = sqlx::query(
+            "SELECT id, text, topic, created_at_ms, updated_at_ms \
+             FROM user_context_authored \
+             ORDER BY created_at_ms DESC, id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| AuthoredContext {
+                id: row.get("id"),
+                text: row.get("text"),
+                topic: row.get("topic"),
+                created_at_ms: row.get("created_at_ms"),
+                updated_at_ms: row.get("updated_at_ms"),
+            })
+            .collect())
+    }
+
     /// The pool handle, for the capture-window reader (`capture_source.rs`).
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
@@ -999,15 +1191,16 @@ impl UserContextStore {
 
     /// **Wipe User Context** storage half (ADR 0029): in ONE transaction, clear
     /// every `user_context_*` table — all derived **Activity** / **Conclusion**
-    /// data AND **Dismissal State** and the derivation-run ledger. Raw captures
-    /// and settings are untouched (this only owns the dossier tables); the engine
-    /// is turned off by the Tauri command, not here. Deletes children before
-    /// parents to stay correct regardless of FK enforcement.
+    /// data, **Dismissal State**, the derivation-run ledger, AND **user-authored
+    /// Context** (#107). Raw captures and settings are untouched (this only owns
+    /// the dossier tables); the engine is turned off by the Tauri command, not
+    /// here. Deletes children before parents to stay correct regardless of FK
+    /// enforcement.
     pub async fn wipe_all(&self) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         for table in [
             // Children first (leaf evidence / history), then parents, then the
-            // FK-free dismissal + derivation-run ledgers.
+            // FK-free dismissal + derivation-run + authored ledgers.
             "user_context_activity_evidence",
             "user_context_conclusion_evidence",
             "user_context_confidence_history",
@@ -1015,6 +1208,7 @@ impl UserContextStore {
             "user_context_conclusions",
             "user_context_dismissals",
             "user_context_derivation_runs",
+            "user_context_authored",
         ] {
             sqlx::query(&format!("DELETE FROM {table}"))
                 .execute(&mut *tx)
@@ -1098,13 +1292,48 @@ fn category_from_str(value: Option<&str>) -> Option<ActivityCategory> {
     }
 }
 
+/// The stored snake_case string for a [`FocusLevel`] (matches the capture-types
+/// serde rename and the SQL `focus` column).
+fn focus_to_str(focus: FocusLevel) -> &'static str {
+    match focus {
+        FocusLevel::Deep => "deep",
+        FocusLevel::Mixed => "mixed",
+        FocusLevel::Distracted => "distracted",
+    }
+}
+
+/// Parses a stored focus string back to a [`FocusLevel`]; unknown / NULL values
+/// map to `None`.
+fn focus_from_str(value: Option<&str>) -> Option<FocusLevel> {
+    match value {
+        Some("deep") => Some(FocusLevel::Deep),
+        Some("mixed") => Some(FocusLevel::Mixed),
+        Some("distracted") => Some(FocusLevel::Distracted),
+        _ => None,
+    }
+}
+
+/// Map a `user_context_activities` row onto an [`Activity`], applying the #108
+/// correction precedence: a user correction WINS over the engine label. When
+/// the `*_corrected` flag is set the corrected value (which may be NULL =
+/// deliberately "unset") is the effective value; otherwise the engine column is.
 fn map_activity(row: SqliteRow) -> Activity {
-    let category: Option<String> = row.get("category");
+    let category = if row.get::<i64, _>("category_corrected") != 0 {
+        category_from_str(row.get::<Option<String>, _>("corrected_category").as_deref())
+    } else {
+        category_from_str(row.get::<Option<String>, _>("category").as_deref())
+    };
+    let focus = if row.get::<i64, _>("focus_corrected") != 0 {
+        focus_from_str(row.get::<Option<String>, _>("corrected_focus").as_deref())
+    } else {
+        focus_from_str(row.get::<Option<String>, _>("focus").as_deref())
+    };
     Activity {
         id: row.get("id"),
         title: row.get("title"),
         summary: row.get("summary"),
-        category: category_from_str(category.as_deref()),
+        category,
+        focus,
         started_at_ms: row.get("started_at_ms"),
         ended_at_ms: row.get("ended_at_ms"),
         created_at_ms: row.get("created_at_ms"),
@@ -1217,6 +1446,12 @@ mod tests {
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 category TEXT,
+                focus TEXT,
+                corrected_category TEXT,
+                category_corrected INTEGER NOT NULL DEFAULT 0,
+                corrected_focus TEXT,
+                focus_corrected INTEGER NOT NULL DEFAULT 0,
+                corrected_at_ms INTEGER,
                 started_at_ms INTEGER NOT NULL,
                 ended_at_ms INTEGER NOT NULL,
                 derivation_run_id INTEGER,
@@ -1265,6 +1500,13 @@ mod tests {
                 evidence_activity_count INTEGER NOT NULL DEFAULT 0,
                 dismissed_at_ms INTEGER NOT NULL
             )",
+            "CREATE TABLE user_context_authored (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                topic TEXT,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            )",
             // Minimal raw-capture tables so `earliest_capture_at_ms` (#98) can be
             // tested. Only the timestamp columns it reads are modeled.
             "CREATE TABLE frames (
@@ -1290,6 +1532,7 @@ mod tests {
                 title: title.to_string(),
                 summary: format!("{title} summary"),
                 category: None,
+                focus: None,
                 started_at_ms,
                 ended_at_ms: started_at_ms + 1,
                 derivation_run_id: None,
@@ -1678,6 +1921,7 @@ mod tests {
                 title: title.to_string(),
                 summary: format!("{title} summary"),
                 category: None,
+                focus: None,
                 started_at_ms,
                 ended_at_ms: started_at_ms + 1,
                 derivation_run_id: None,
@@ -1926,11 +2170,16 @@ mod tests {
             .await
             .expect("to dismiss");
         store.dismiss_conclusion(to_dismiss).await.expect("dismiss");
+        store
+            .add_authored_context("I'm a designer", Some("role"), 1_000)
+            .await
+            .expect("authored");
 
         // Sanity: everything present before the wipe.
         assert!(store.count_activities().await.expect("count") > 0);
         assert!(store.count_conclusions().await.expect("count") > 0);
         assert!(!store.list_dismissals().await.expect("dismissals").is_empty());
+        assert!(!store.list_authored_context().await.expect("authored").is_empty());
 
         store.wipe_all().await.expect("wipe");
 
@@ -1938,6 +2187,7 @@ mod tests {
         assert_eq!(store.count_activities().await.expect("count"), 0);
         assert_eq!(store.count_conclusions().await.expect("count"), 0);
         assert!(store.list_dismissals().await.expect("dismissals").is_empty());
+        assert!(store.list_authored_context().await.expect("authored").is_empty());
         for table in [
             "user_context_activity_evidence",
             "user_context_conclusion_evidence",
@@ -1946,6 +2196,7 @@ mod tests {
             "user_context_conclusions",
             "user_context_dismissals",
             "user_context_derivation_runs",
+            "user_context_authored",
         ] {
             let count: i64 =
                 sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
@@ -1970,5 +2221,294 @@ mod tests {
             "capture_retention.rs must not reference any user_context_* table; \
              Retention Policy aging must not cascade into derived data (ADR 0029)"
         );
+    }
+
+    #[test]
+    fn authored_context_add_list_update_delete_round_trip() {
+        block_on(async {
+            let store = test_store().await;
+
+            // Add two statements; list is newest-first by created_at_ms.
+            let first = store
+                .add_authored_context("I'm a designer", Some("role"), 1_000)
+                .await
+                .expect("add first");
+            let second = store
+                .add_authored_context("I care about typography", None, 2_000)
+                .await
+                .expect("add second");
+
+            let listed = store.list_authored_context().await.expect("list");
+            assert_eq!(listed.len(), 2);
+            assert_eq!(listed[0].id, second, "newest first");
+            assert_eq!(listed[0].text, "I care about typography");
+            assert_eq!(listed[0].topic, None);
+            assert_eq!(listed[1].id, first);
+            assert_eq!(listed[1].topic.as_deref(), Some("role"));
+            assert_eq!(listed[1].created_at_ms, 1_000);
+            assert_eq!(listed[1].updated_at_ms, 1_000, "updated == created on insert");
+
+            // Update bumps text/topic and updated_at_ms but keeps created_at_ms.
+            store
+                .update_authored_context(first, "I'm a product designer", Some("job"), 5_000)
+                .await
+                .expect("update");
+            let updated = store
+                .list_authored_context()
+                .await
+                .expect("list after update")
+                .into_iter()
+                .find(|c| c.id == first)
+                .expect("present");
+            assert_eq!(updated.text, "I'm a product designer");
+            assert_eq!(updated.topic.as_deref(), Some("job"));
+            assert_eq!(updated.created_at_ms, 1_000, "created_at_ms unchanged");
+            assert_eq!(updated.updated_at_ms, 5_000, "updated_at_ms bumped");
+
+            // Delete removes only the named row.
+            store.delete_authored_context(first).await.expect("delete");
+            let remaining = store.list_authored_context().await.expect("list after delete");
+            assert_eq!(remaining.len(), 1);
+            assert_eq!(remaining[0].id, second);
+
+            // Deleting an absent id is a no-op.
+            store.delete_authored_context(9999).await.expect("noop delete");
+            assert_eq!(store.list_authored_context().await.expect("list").len(), 1);
+        });
+    }
+
+    #[test]
+    fn delete_recent_cascade_leaves_authored_context_intact() {
+        block_on(async {
+            let store = test_store().await;
+
+            // An Activity + Conclusion grounded in frame 10 (to be deleted), and a
+            // user-authored statement that must survive the cascade.
+            let activity = seed_activity_with_subject(&store, "Designed a thing", 100, "frame", 10).await;
+            let conclusion = store
+                .upsert_conclusion(draft("Design", "Cares about design", 0.7))
+                .await
+                .expect("conclusion");
+            store
+                .replace_conclusion_evidence(
+                    conclusion,
+                    vec![NewConclusionEvidence { activity_id: activity, stance: EvidenceStance::Support }],
+                )
+                .await
+                .expect("evidence");
+            store
+                .add_authored_context("I'm a designer", Some("role"), 1_000)
+                .await
+                .expect("authored");
+
+            // Delete frame 10: the derived Activity + ungrounded Conclusion drop.
+            let summary = store
+                .delete_derived_for_capture_subjects(&[10], &[])
+                .await
+                .expect("cascade");
+            assert_eq!(summary.deleted_activities, 1);
+            assert_eq!(summary.deleted_conclusions, 1);
+
+            // The user-authored statement is NOT derived from any capture, so the
+            // cascade leaves it untouched.
+            let authored = store.list_authored_context().await.expect("authored after cascade");
+            assert_eq!(authored.len(), 1, "authored Context survives Delete Recent cascade");
+            assert_eq!(authored[0].text, "I'm a designer");
+        });
+    }
+
+    /// #105: engine-assigned Category + Focus persist on insert and read back
+    /// (effective values equal the engine labels when uncorrected).
+    #[test]
+    fn category_and_focus_persist_and_read_back() {
+        block_on(async {
+            let store = test_store().await;
+            let id = store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "Wrote the parser".to_string(),
+                    summary: "Implemented the tokenizer".to_string(),
+                    category: Some(ActivityCategory::Coding),
+                    focus: Some(FocusLevel::Deep),
+                    started_at_ms: 100,
+                    ended_at_ms: 200,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 10,
+                        captured_at_ms: Some(100),
+                    }],
+                })
+                .await
+                .expect("insert");
+
+            let activities = store.list_recent_activities(10, 0).await.expect("list");
+            let activity = activities.iter().find(|a| a.id == id).expect("present");
+            assert_eq!(activity.category, Some(ActivityCategory::Coding));
+            assert_eq!(activity.focus, Some(FocusLevel::Deep));
+
+            // Same effective values via the distillation read path.
+            let distill = store.activities_for_distillation(10).await.expect("distill");
+            let from_distill = distill.iter().find(|a| a.id == id).expect("present");
+            assert_eq!(from_distill.category, Some(ActivityCategory::Coding));
+            assert_eq!(from_distill.focus, Some(FocusLevel::Deep));
+        });
+    }
+
+    /// #108: a user correction WINS over the engine label and survives a
+    /// re-persist (a fresh engine label on a NEW row never silently overwrites a
+    /// correction — corrections are per-row, and the override columns are not
+    /// touched by `insert_activity_with_evidence`). Also covers correcting to
+    /// `None` ("unset"), which the `*_corrected` flag distinguishes from
+    /// "never corrected".
+    #[test]
+    fn correction_overrides_engine_label_and_persists() {
+        block_on(async {
+            let store = test_store().await;
+            let id = store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "Scrolled social media".to_string(),
+                    summary: "Browsed feeds".to_string(),
+                    category: Some(ActivityCategory::Research),
+                    focus: Some(FocusLevel::Mixed),
+                    started_at_ms: 100,
+                    ended_at_ms: 200,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 10,
+                        captured_at_ms: Some(100),
+                    }],
+                })
+                .await
+                .expect("insert");
+
+            // Correct Category Research -> Distractions and Focus Mixed -> Distracted.
+            store
+                .correct_activity(
+                    id,
+                    Some(Some(ActivityCategory::Distractions)),
+                    Some(Some(FocusLevel::Distracted)),
+                )
+                .await
+                .expect("correct");
+
+            let activity = store
+                .list_recent_activities(10, 0)
+                .await
+                .expect("list")
+                .into_iter()
+                .find(|a| a.id == id)
+                .expect("present");
+            assert_eq!(
+                activity.category,
+                Some(ActivityCategory::Distractions),
+                "corrected category wins over engine Research"
+            );
+            assert_eq!(
+                activity.focus,
+                Some(FocusLevel::Distracted),
+                "corrected focus wins over engine Mixed"
+            );
+
+            // It shows up in the corrections feed (newest first), carrying the
+            // effective corrected values + the title/summary for the prompt.
+            let corrections = store.list_activity_corrections(10).await.expect("corrections");
+            assert_eq!(corrections.len(), 1);
+            assert_eq!(corrections[0].activity_id, id);
+            assert_eq!(corrections[0].title, "Scrolled social media");
+            assert_eq!(corrections[0].corrected_category, Some(ActivityCategory::Distractions));
+            assert_eq!(corrections[0].corrected_focus, Some(FocusLevel::Distracted));
+
+            // Simulate the engine re-deriving the SAME activity into a fresh row
+            // with its (wrong) label again. Corrections are per-row state on the
+            // existing corrected row, so the new engine row does not touch them:
+            // the corrected row's effective values are unchanged.
+            let _fresh = store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "Scrolled social media".to_string(),
+                    summary: "Browsed feeds".to_string(),
+                    category: Some(ActivityCategory::Research),
+                    focus: Some(FocusLevel::Mixed),
+                    started_at_ms: 300,
+                    ended_at_ms: 400,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 11,
+                        captured_at_ms: Some(300),
+                    }],
+                })
+                .await
+                .expect("fresh insert");
+            let still_corrected = store
+                .list_recent_activities(10, 0)
+                .await
+                .expect("list")
+                .into_iter()
+                .find(|a| a.id == id)
+                .expect("present");
+            assert_eq!(still_corrected.category, Some(ActivityCategory::Distractions));
+            assert_eq!(still_corrected.focus, Some(FocusLevel::Distracted));
+
+            // Correcting Category to None ("unset") wins over the engine label too:
+            // the flag is set, so the effective category is None, NOT Research.
+            store
+                .correct_activity(id, Some(None), None)
+                .await
+                .expect("correct to none");
+            let unset = store
+                .list_recent_activities(10, 0)
+                .await
+                .expect("list")
+                .into_iter()
+                .find(|a| a.id == id)
+                .expect("present");
+            assert_eq!(unset.category, None, "corrected-to-None wins over engine Research");
+            // Focus correction (Distracted) is untouched by the category-only correction.
+            assert_eq!(unset.focus, Some(FocusLevel::Distracted));
+        });
+    }
+
+    /// #108: `correct_activity` with both args `None` is a no-op (no correction
+    /// recorded, no timestamp), so an uncorrected Activity stays on its engine
+    /// label and never appears in the corrections feed.
+    #[test]
+    fn correct_activity_noop_when_nothing_supplied() {
+        block_on(async {
+            let store = test_store().await;
+            let id = store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "Reviewed a PR".to_string(),
+                    summary: "Looked at the diff".to_string(),
+                    category: Some(ActivityCategory::Testing),
+                    focus: Some(FocusLevel::Deep),
+                    started_at_ms: 100,
+                    ended_at_ms: 200,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 10,
+                        captured_at_ms: Some(100),
+                    }],
+                })
+                .await
+                .expect("insert");
+
+            store.correct_activity(id, None, None).await.expect("noop");
+
+            let activity = store
+                .list_recent_activities(10, 0)
+                .await
+                .expect("list")
+                .into_iter()
+                .find(|a| a.id == id)
+                .expect("present");
+            assert_eq!(activity.category, Some(ActivityCategory::Testing));
+            assert_eq!(activity.focus, Some(FocusLevel::Deep));
+            assert!(
+                store.list_activity_corrections(10).await.expect("corrections").is_empty(),
+                "no correction recorded"
+            );
+        });
     }
 }

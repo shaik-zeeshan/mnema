@@ -17,6 +17,7 @@ mod sensitive_capture_recommendations;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
+mod usage_charts;
 mod user_context;
 mod windows;
 
@@ -496,7 +497,14 @@ pub fn run() {
             user_context::commands::user_context_run_derivation_now,
             user_context::commands::user_context_dismiss_conclusion,
             user_context::commands::user_context_set_pinned,
+            user_context::commands::user_context_correct_activity_category,
+            user_context::commands::user_context_correct_activity_focus,
+            user_context::commands::list_user_context_authored,
+            user_context::commands::user_context_add_authored,
+            user_context::commands::user_context_update_authored,
+            user_context::commands::user_context_delete_authored,
             user_context::commands::wipe_user_context,
+            usage_charts::get_usage_charts,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,

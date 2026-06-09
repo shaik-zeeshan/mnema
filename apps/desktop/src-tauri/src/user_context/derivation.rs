@@ -13,13 +13,15 @@
 
 use std::collections::HashMap;
 
-use capture_types::{ActivityCategory, DismissalState, EvidenceStance};
+use capture_types::{
+    ActivityCategory, AuthoredContext, DismissalState, EvidenceStance, FocusLevel,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use app_infra::{
-    evidence_fingerprint, CaptureWindow, NewActivity, NewActivityEvidence, NewConclusion,
-    NewConclusionEvidence, UserContextStore,
+    evidence_fingerprint, ActivityCorrection, CaptureWindow, NewActivity, NewActivityEvidence,
+    NewConclusion, NewConclusionEvidence, UserContextStore,
 };
 use app_infra::user_context::{confidence, guardrail};
 
@@ -34,14 +36,30 @@ windows. A single Activity may span multiple apps, and a single app may host sev
 Do not emit one Activity per app or per time slice. For each Activity give a short title, a one \
 or two sentence summary of what the user was doing and how, an optional category from this fixed \
 taxonomy (coding, research, communication, design, testing, personal, distractions) or omit it \
-when unsure, and the list of evidence reference tags (the f<id>/a<id> tags shown on each input \
-item) that belong to that Activity. Only use tags that appear in the input. Do NOT describe an \
+when unsure, an optional focus level from this fixed taxonomy (deep = sustained single-thread deep \
+work, mixed = some focus but context-switching or interleaved, distracted = scattered, interrupted, \
+or off-task) or omit it when unsure, and the list of evidence reference tags (the f<id>/a<id> tags \
+shown on each input item) that belong to that Activity. Only use tags that appear in the input. \
+Do NOT describe an \
 Activity, or label its category or focus, in terms of the user's health or mental health, sexual \
 orientation, religion, political views, or similar protected/intimate domains; keep titles and \
 summaries to the work/task itself. Return the structured result.";
 
 /// Per-item text cap so a single noisy capture cannot dominate the prompt budget.
 const ITEM_TEXT_CHAR_CAP: usize = 1200;
+
+/// How many of the user's most-recent Category/Focus corrections (#108) are fed
+/// back into the Activity-derivation prompt. Newest-first; older corrections are
+/// dropped. Bounds the prompt growth from a heavy corrector.
+const CORRECTION_FEEDBACK_LIMIT: i64 = 30;
+
+/// Total char budget for the USER CORRECTIONS feedback block (#108). Corrections
+/// are included newest-first until the next would exceed this cap.
+const CORRECTION_FEEDBACK_CHAR_CAP: usize = 2_000;
+
+/// Per-correction title/summary cap inside the feedback block, so one verbose
+/// Activity cannot dominate the corrections budget.
+const CORRECTION_ITEM_CHAR_CAP: usize = 160;
 
 /// One Activity episode as returned by the engine. `evidence_refs` are the
 /// `f<id>`/`a<id>` tags (frame / audio_segment) that ground the episode.
@@ -60,6 +78,10 @@ pub struct DerivedActivity {
     /// Optional category; snake_case from the fixed taxonomy. Unknown → dropped.
     #[serde(default)]
     pub category: Option<String>,
+    /// Optional focus level; snake_case from the fixed taxonomy
+    /// (deep / mixed / distracted). Unknown → dropped (#105).
+    #[serde(default)]
+    pub focus: Option<String>,
     /// `f<id>` (frame) / `a<id>` (audio_segment) evidence tags.
     #[serde(default)]
     pub evidence_refs: Vec<String>,
@@ -130,6 +152,18 @@ fn parse_category(raw: &Option<String>) -> Option<ActivityCategory> {
     }
 }
 
+/// Map the engine's snake_case focus string onto [`FocusLevel`] (#105).
+/// Unknown / empty → `None` (the Activity is still stored, just unfocused-label).
+fn parse_focus(raw: &Option<String>) -> Option<FocusLevel> {
+    let raw = raw.as_deref()?.trim().to_ascii_lowercase();
+    match raw.as_str() {
+        "deep" => Some(FocusLevel::Deep),
+        "mixed" => Some(FocusLevel::Mixed),
+        "distracted" => Some(FocusLevel::Distracted),
+        _ => None,
+    }
+}
+
 /// Truncate on a char boundary to at most `cap` characters.
 fn truncate_chars(text: &str, cap: usize) -> String {
     if text.chars().count() <= cap {
@@ -176,6 +210,64 @@ items into Activity episodes by intent shift and return DerivedActivityBatch.\n\
     prompt
 }
 
+/// snake_case wire label for a corrected Category/Focus, or `"unset"` when the
+/// user corrected the label to "none". Used by the corrections feedback block.
+fn category_correction_label(category: Option<ActivityCategory>) -> &'static str {
+    category.map(category_label).unwrap_or("unset")
+}
+
+fn focus_correction_label(focus: Option<FocusLevel>) -> &'static str {
+    match focus {
+        Some(FocusLevel::Deep) => "deep",
+        Some(FocusLevel::Mixed) => "mixed",
+        Some(FocusLevel::Distracted) => "distracted",
+        None => "unset",
+    }
+}
+
+/// Render the USER CORRECTIONS prompt block (#108): the user's past
+/// Category/Focus corrections, fed back to the engine as a soft "respect these"
+/// instruction so it does not regenerate a label the user already corrected away
+/// on a similar Activity. Newest-first, kept until [`CORRECTION_FEEDBACK_CHAR_CAP`]
+/// is reached (older corrections dropped). Empty (no trailing block) when the
+/// user has corrected nothing, so a default prompt is unchanged. This is soft
+/// guidance only; the hard guarantee is that a stored correction always wins on
+/// read (the store coalesces it over any fresh engine label).
+fn build_corrections_block(corrections: &[ActivityCorrection]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for correction in corrections {
+        let title = truncate_chars(correction.title.trim(), CORRECTION_ITEM_CHAR_CAP);
+        let summary = truncate_chars(correction.summary.trim(), CORRECTION_ITEM_CHAR_CAP);
+        let line = format!(
+            "- category={} focus={} activity=\"{title}\" — {summary}\n",
+            category_correction_label(correction.corrected_category),
+            focus_correction_label(correction.corrected_focus),
+        );
+        if used + line.chars().count() > CORRECTION_FEEDBACK_CHAR_CAP && !lines.is_empty() {
+            break;
+        }
+        used += line.chars().count();
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut block = String::new();
+    block.push_str(
+        "\nUSER CORRECTIONS — for each Activity below the user CORRECTED the category and/or focus \
+you (or a prior pass) assigned to what is shown here. These are authoritative: when you encounter \
+a similar Activity, label its category and focus the way the user corrected it, and never \
+re-assign the label they corrected away. \"unset\" means the user deliberately removed that \
+label.\n\n",
+    );
+    for line in lines {
+        block.push_str(&line);
+    }
+    block
+}
+
 /// Derive **Activity** episodes from one redacted capture window and persist
 /// them. Returns the count inserted plus best-effort token estimates.
 ///
@@ -211,7 +303,19 @@ pub async fn derive_activities(
         );
     }
 
-    let prompt = build_prompt(&window);
+    // Correction feedback loop (#108): the user's past Category/Focus
+    // corrections, newest first. Appended to the prompt as a soft "respect these"
+    // block so the engine is biased away from regenerating a corrected-away label
+    // on a similar Activity. The hard backstop is that a stored correction always
+    // WINS on read (the store coalesces it over any fresh engine label), so even
+    // if the engine ignores this the corrected Activity keeps the user's label.
+    let corrections = store
+        .list_activity_corrections(CORRECTION_FEEDBACK_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut prompt = build_prompt(&window);
+    prompt.push_str(&build_corrections_block(&corrections));
     let input_tokens = estimate_tokens(ACTIVITY_PREAMBLE) + estimate_tokens(&prompt);
 
     let batch: DerivedActivityBatch =
@@ -274,6 +378,7 @@ pub async fn derive_activities(
             title: title.to_string(),
             summary: activity.summary.trim().to_string(),
             category: parse_category(&activity.category),
+            focus: parse_focus(&activity.focus),
             started_at_ms,
             ended_at_ms,
             derivation_run_id: None,
@@ -459,6 +564,17 @@ pub async fn distill_conclusions(
         .await
         .map_err(|error| error.to_string())?;
 
+    // User-authored Context (#107): standing statements the user wrote about
+    // themselves ("I'm a designer", "I care about X"). These are user-ASSERTED
+    // (not derived), so they steer which Conclusions form and what Subjects matter
+    // — fed to the engine as authoritative standing context, distinct from the
+    // derived Activity evidence. They do NOT bypass the guardrail/formation-bar/
+    // resurface gates applied to the engine's output below.
+    let authored = store
+        .list_authored_context()
+        .await
+        .map_err(|error| error.to_string())?;
+
     let valid_ids: std::collections::HashSet<i64> = activities.iter().map(|a| a.id).collect();
     let started_at_by_id: HashMap<i64, i64> = activities
         .iter()
@@ -470,6 +586,11 @@ pub async fn distill_conclusions(
     // about health, sexuality, religion, politics, or similar intimate domains.
     let preamble = conclusion_preamble();
     let mut prompt = build_distillation_prompt(&activities);
+    // Prepend the USER-AUTHORED CONTEXT block (#107): standing statements the user
+    // wrote about themselves, fed as authoritative steering context (distinct from
+    // derived Activity evidence). Appended context only — it does not touch the
+    // Activity list above. Empty (unchanged prompt) when the user has authored none.
+    prompt.push_str(&build_authored_context_block(&authored));
     // Append the DISMISSED-CONCLUSIONS block (#99): tell the engine not to simply
     // reconstitute corrections the user already made unless substantially MORE and
     // NEWER evidence rebuilds them. This is appended context only — it does not
@@ -609,6 +730,55 @@ fn now_ms() -> i64 {
     (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
 
+/// Total char budget for the USER-AUTHORED CONTEXT block (#107). Statements are
+/// included newest-first (the store lists them that way) until adding the next one
+/// would exceed this cap; the remaining (older) statements are dropped. Bounds the
+/// prompt growth from a user who authors many statements.
+const AUTHORED_CONTEXT_CHAR_CAP: usize = 2_000;
+
+/// Render the USER-AUTHORED CONTEXT prompt block (#107): the user's standing,
+/// self-asserted statements, fed to the engine as authoritative context that should
+/// steer which Conclusions form and what Subjects matter — clearly labeled as
+/// user-asserted, distinct from the derived Activity evidence above. Statements
+/// arrive newest-first and are kept until [`AUTHORED_CONTEXT_CHAR_CAP`] is reached
+/// (older ones are dropped). Empty (no trailing block) when the user has authored
+/// none, so a default dossier's prompt is unchanged.
+fn build_authored_context_block(authored: &[AuthoredContext]) -> String {
+    // Collect non-empty statement lines newest-first up to the char budget.
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for item in authored {
+        let text = item.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let line = match item.topic.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(topic) => format!("- (topic: {topic}) {text}\n"),
+            None => format!("- {text}\n"),
+        };
+        if used + line.chars().count() > AUTHORED_CONTEXT_CHAR_CAP && !lines.is_empty() {
+            break;
+        }
+        used += line.chars().count();
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut block = String::new();
+    block.push_str(
+        "\nUSER-AUTHORED CONTEXT — the user wrote these standing statements about themselves. They \
+are ASSERTED by the user (not inferred from the Activities above), so treat them as authoritative \
+steering context: let them shape which Conclusions you form and which Subjects matter, and do not \
+contradict them. They are not Activity evidence — do not cite them as support_refs.\n\n",
+    );
+    for line in lines {
+        block.push_str(&line);
+    }
+    block
+}
+
 /// Render the DISMISSED-CONCLUSIONS prompt block (#99): the soft half of the
 /// resurface rule. Lists each rejected Conclusion's subject + statement and tells
 /// the engine these are corrections the user already made — do NOT reconstitute
@@ -721,6 +891,75 @@ mod tests {
     }
 
     #[test]
+    fn parses_known_focus_levels_only() {
+        assert_eq!(parse_focus(&Some("Deep".to_string())), Some(FocusLevel::Deep));
+        assert_eq!(parse_focus(&Some(" mixed ".to_string())), Some(FocusLevel::Mixed));
+        assert_eq!(
+            parse_focus(&Some("distracted".to_string())),
+            Some(FocusLevel::Distracted)
+        );
+        assert_eq!(parse_focus(&Some("unknown".to_string())), None);
+        assert_eq!(parse_focus(&None), None);
+    }
+
+    fn correction(
+        id: i64,
+        title: &str,
+        category: Option<ActivityCategory>,
+        focus: Option<FocusLevel>,
+    ) -> ActivityCorrection {
+        ActivityCorrection {
+            activity_id: id,
+            title: title.to_string(),
+            summary: format!("{title} summary"),
+            corrected_category: category,
+            corrected_focus: focus,
+            corrected_at_ms: 1_000,
+        }
+    }
+
+    #[test]
+    fn corrections_block_is_empty_without_corrections() {
+        assert!(build_corrections_block(&[]).is_empty());
+    }
+
+    #[test]
+    fn corrections_block_lists_each_correction_with_labels() {
+        let corrections = vec![
+            correction(
+                1,
+                "Scrolled social media",
+                Some(ActivityCategory::Distractions),
+                Some(FocusLevel::Distracted),
+            ),
+            // A correction that unset both labels renders as "unset".
+            correction(2, "Misc", None, None),
+        ];
+        let block = build_corrections_block(&corrections);
+        assert!(block.contains("USER CORRECTIONS"));
+        assert!(block.contains("never re-assign the label they corrected away"));
+        assert!(block.contains("category=distractions focus=distracted"));
+        assert!(block.contains("Scrolled social media"));
+        assert!(block.contains("category=unset focus=unset"));
+    }
+
+    #[test]
+    fn corrections_block_respects_char_cap() {
+        let long = "x".repeat(200);
+        let corrections: Vec<ActivityCorrection> = (0..50)
+            .map(|i| {
+                correction(i, &long, Some(ActivityCategory::Coding), Some(FocusLevel::Deep))
+            })
+            .collect();
+        let block = build_corrections_block(&corrections);
+        assert!(block.contains("USER CORRECTIONS"));
+        assert!(
+            block.chars().count() < CORRECTION_FEEDBACK_CHAR_CAP + 800,
+            "block stays bounded by the char cap (+header/one-line slack)"
+        );
+    }
+
+    #[test]
     fn truncates_long_text_on_char_boundary() {
         let text = "a".repeat(ITEM_TEXT_CHAR_CAP + 50);
         let truncated = truncate_chars(&text, ITEM_TEXT_CHAR_CAP);
@@ -757,6 +996,57 @@ mod tests {
         assert!(matching_dismissal(&dismissals, "Apple", "Loves Apple").is_none());
         // A different subject does not match.
         assert!(matching_dismissal(&dismissals, "Rust", "Interested in Apple").is_none());
+    }
+
+    fn authored(id: i64, text: &str, topic: Option<&str>) -> AuthoredContext {
+        AuthoredContext {
+            id,
+            text: text.to_string(),
+            topic: topic.map(str::to_string),
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+        }
+    }
+
+    #[test]
+    fn authored_context_block_is_empty_without_statements() {
+        assert!(build_authored_context_block(&[]).is_empty());
+        // All-blank statements also yield no block.
+        assert!(build_authored_context_block(&[authored(1, "   ", None)]).is_empty());
+    }
+
+    #[test]
+    fn authored_context_block_labels_statements_and_topics() {
+        let items = vec![
+            authored(2, "I care about typography", None),
+            authored(1, "I'm a designer", Some("role")),
+        ];
+        let block = build_authored_context_block(&items);
+        assert!(block.contains("USER-AUTHORED CONTEXT"));
+        assert!(block.contains("ASSERTED by the user"));
+        assert!(block.contains("- I care about typography"));
+        assert!(block.contains("- (topic: role) I'm a designer"));
+        // Never cited as Activity evidence.
+        assert!(block.contains("do not cite them as support_refs"));
+    }
+
+    #[test]
+    fn authored_context_block_respects_char_cap() {
+        // Many long statements; the block must stay bounded by the cap (plus the
+        // single header + one over-budget line that the !lines.is_empty() guard
+        // allows once).
+        let long = "x".repeat(300);
+        let items: Vec<AuthoredContext> = (0..50)
+            .map(|i| authored(i, &long, None))
+            .collect();
+        let block = build_authored_context_block(&items);
+        // The header is always present; the statement body stays near the cap and
+        // does not include all 50 * 300 chars.
+        assert!(block.contains("USER-AUTHORED CONTEXT"));
+        assert!(
+            block.chars().count() < AUTHORED_CONTEXT_CHAR_CAP + 600,
+            "block stays bounded by the char cap (+header/one-line slack)"
+        );
     }
 
     #[test]
