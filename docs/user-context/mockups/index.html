@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · User Context — Insights Mockups</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    .sheet { max-width: 980px; margin: 0 auto; padding: 28px 22px 40px; }
+    .sheet-head {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 16px; margin-bottom: 6px;
+    }
+    .sheet-head h1 { font-size: 18px; margin: 0; color: var(--app-text-strong); font-weight: 600; }
+    .sheet-intro { color: var(--app-text-muted); font-size: 12.5px; margin: 4px 0 4px; }
+    .sheet-note {
+      font-size: 11px; color: var(--app-text-subtle);
+      margin: 0 0 22px;
+    }
+    .grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    }
+    .surface-card {
+      display: flex; flex-direction: column; gap: 8px;
+      text-decoration: none; color: inherit;
+      transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+    }
+    .surface-card:hover {
+      background: var(--app-surface-hover);
+      border-color: var(--app-border-hover);
+      transform: translateY(-1px);
+    }
+    .surface-card .sc-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .surface-card .sc-name { font-size: 13.5px; color: var(--app-text-strong); font-weight: 600; }
+    .surface-card .sc-desc { font-size: 12px; color: var(--app-text-muted); line-height: 1.5; }
+    .surface-card .sc-glyph { color: var(--app-text-subtle); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="sheet-head">
+      <div>
+        <h1>Mnema · User Context</h1>
+        <p class="sheet-intro">Insights surface mockups — static HTML, no build step. Open any card to review.</p>
+      </div>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+    </div>
+    <p class="sheet-note">Toggle ☀/☾ to check light &amp; dark. &nbsp;·&nbsp; Build guide: <a href="README.md">README.md</a></p>
+
+    <div class="grid">
+      <a class="card surface-card" href="main-shell.html">
+        <div class="sc-top">
+          <span class="sc-name">Main shell</span>
+          <span class="sc-glyph">▤</span>
+        </div>
+        <p class="sc-desc">App chrome with the Timeline / Insights surface toggle.</p>
+        <span class="chip">Chrome</span>
+      </a>
+
+      <a class="card surface-card" href="overview.html">
+        <div class="sc-top">
+          <span class="sc-name">Overview</span>
+          <span class="sc-glyph">▤</span>
+        </div>
+        <p class="sc-desc">At-a-glance day: free-tier grayscale charts, engine-tier categories, and the dossier.</p>
+        <span class="chip"><span class="tier-badge tier-badge--free">FREE</span>&nbsp;+&nbsp;<span class="tier-badge tier-badge--engine">ENGINE</span></span>
+      </a>
+
+      <a class="card surface-card" href="subjects-index.html">
+        <div class="sc-top">
+          <span class="sc-name">Subjects</span>
+          <span class="sc-glyph">▤</span>
+        </div>
+        <p class="sc-desc">Browsable grid of subjects — each card shows multiple conclusions, not one score.</p>
+        <span class="chip"><span class="tier-badge tier-badge--engine">ENGINE</span></span>
+      </a>
+
+      <a class="card surface-card" href="subject.html">
+        <div class="sc-top">
+          <span class="sc-name">Subject</span>
+          <span class="sc-glyph">◴</span>
+        </div>
+        <p class="sc-desc">Detail view: per-conclusion confidence trajectories + evidence inspector.</p>
+        <span class="chip"><span class="tier-badge tier-badge--engine">ENGINE</span></span>
+      </a>
+
+      <a class="card surface-card" href="context.html">
+        <div class="sc-top">
+          <span class="sc-name">Context</span>
+          <span class="sc-glyph">✎</span>
+        </div>
+        <p class="sc-desc">User-authored standing context that steers the engine.</p>
+        <span class="chip">User-authored</span>
+      </a>
+
+      <a class="card surface-card" href="chat.html">
+        <div class="sc-top">
+          <span class="sc-name">Chat</span>
+          <span class="sc-glyph">◇</span>
+        </div>
+        <p class="sc-desc">Ask questions; answers come back graphical, not just text.</p>
+        <span class="chip"><span class="tier-badge tier-badge--engine">ENGINE</span></span>
+      </a>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

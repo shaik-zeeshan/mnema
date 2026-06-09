@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<!--
+  overview.html — Insights · Overview.
+  Synthesis of variant-3 (bento) + variant-4 (feed): a compact BENTO GLANCE BAND
+  pinned at the top (scan in seconds) over a NARRATIVE STORY FEED you read below.
+  Single scroll, no mode toggle. Shared shell copied verbatim from _shell.html;
+  only .insights-main diverges. All color is token-driven.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Insights · Overview</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* ====================================================== PAGE LAYOUT
+       Everything here is scoped to the Overview surface: the glance band grid
+       and the reading-column feed. Colors stay token-driven. */
+
+    .overview { display: flex; flex-direction: column; gap: 20px; }
+
+    /* ---------------------------------------------------- PAGE HEADER */
+    .ov-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .ov-header .titles { flex: 1 1 auto; min-width: 0; }
+    .ov-header h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+    }
+    .ov-header .subtitle {
+      margin: 3px 0 0;
+      font-size: 12px;
+      color: var(--app-text-muted);
+    }
+
+    /* Overview header controls. The .date-range Day/Week/Month segmented control
+       uses the shared canonical rules in app.css (no page-scoped duplicate). */
+    .ov-controls { display: inline-flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+    .date-stepper {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 11.5px; color: var(--app-text-muted);
+    }
+    .date-stepper .nav {
+      width: 20px; height: 20px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--app-border);
+      border-radius: 5px;
+      color: var(--app-text-subtle);
+      cursor: pointer;
+      transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    }
+    .date-stepper .nav:hover {
+      background: var(--app-surface-hover);
+      color: var(--app-text-strong);
+      border-color: var(--app-border-hover);
+    }
+    .date-stepper .range-label { color: var(--app-text); letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+
+    /* ====================================================== BENTO GLANCE BAND
+       A fixed-height row of 4 scannable tiles. Pulled from variant-3 tiles. */
+    .glance-band {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+    @media (max-width: 920px) { .glance-band { grid-template-columns: repeat(2, 1fr); } }
+
+    .glance-tile {
+      display: flex;
+      flex-direction: column;
+      min-height: 156px;
+      padding: 12px 13px;
+      background: var(--app-surface);
+      border: 1px solid var(--app-border);
+      border-radius: 9px;
+      min-width: 0;
+      overflow: hidden;
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .glance-tile:hover { border-color: var(--app-border-hover); box-shadow: 0 6px 20px rgba(0,0,0,0.18); }
+    .glance-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 11px;
+    }
+    .glance-title {
+      font-size: 10.5px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--app-text-muted);
+      white-space: nowrap;
+    }
+    .glance-head .spacer { flex: 1 1 auto; }
+    .glance-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
+
+    /* ---- Time tile: grayscale mini app bars ---- */
+    .mini-appbars { display: flex; flex-direction: column; gap: 8px; }
+    .mini-appbar { display: grid; grid-template-columns: 50px 1fr 42px; align-items: center; gap: 8px; }
+    .mini-appbar .label { font-size: 11px; color: var(--app-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mini-appbar .track {
+      height: 8px; border-radius: 999px;
+      background: var(--app-surface-hover);
+      border: 1px solid var(--app-border);
+      overflow: hidden;
+    }
+    .mini-appbar .fill { height: 100%; border-radius: 999px; }
+    .mini-appbar .val { font-size: 10px; color: var(--app-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* ---- Categories tile: mini stacked bar + legend ---- */
+    .mini-stack {
+      display: flex; width: 100%; height: 16px;
+      border-radius: 5px; overflow: hidden;
+      border: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+    }
+    .mini-stack > span { display: block; height: 100%; }
+    .mini-cat-legend {
+      margin-top: 10px;
+      display: flex; flex-wrap: wrap; gap: 4px 10px;
+      font-size: 9.5px; color: var(--app-text-muted);
+    }
+    .mini-cat-legend .li { display: inline-flex; align-items: center; gap: 5px; }
+    .mini-cat-legend .li i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: 0 0 auto; }
+    .mini-cat-legend .li b { color: var(--app-text); font-weight: 600; }
+
+    /* ---- Focus tile: small day-strip heat ---- */
+    .focus-strip { display: flex; flex-direction: column; gap: 5px; }
+    .focus-strip .row { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 8px; }
+    .focus-strip .day { font-size: 9.5px; color: var(--app-text-muted); }
+    .focus-strip .cells { display: flex; gap: 3px; }
+    .focus-strip .cell {
+      flex: 1 1 0; height: 11px; border-radius: 3px;
+      border: 1px solid var(--app-border);
+    }
+    .fc-deep { background: var(--focus-deep); opacity: 0.88; border-color: transparent; }
+    .fc-mid  { background: var(--focus-mid); opacity: 0.62; border-color: transparent; }
+    .fc-scat { background: var(--focus-distracted); opacity: 0.45; border-color: transparent; }
+    .fc-rest { background: var(--app-surface-hover); }
+    .focus-cap { margin-top: 9px; font-size: 9.5px; color: var(--app-text-subtle); }
+
+    /* ---- This week tile: big stat ---- */
+    .week-stat { display: flex; flex-direction: column; gap: 9px; }
+    .week-big .n { font-size: 27px; line-height: 1; color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    .week-big .u { font-size: 10px; color: var(--app-text-muted); letter-spacing: 0.03em; }
+    .week-sub { display: flex; gap: 14px; }
+    .week-sub .cell .n { font-size: 13px; color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    .week-sub .cell .l { font-size: 9px; color: var(--app-text-muted); letter-spacing: 0.03em; text-transform: uppercase; }
+    .sparkbar { display: flex; gap: 3px; align-items: flex-end; height: 22px; }
+    .sparkbar span { flex: 1; border-radius: 2px; background: var(--app-accent); opacity: 0.82; }
+
+    /* ====================================================== ASK ENTRY POINT (slim bar) */
+    .ask-entry {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 9px 14px;
+      border: 1px solid var(--app-border);
+      border-radius: 9px;
+      background: var(--app-surface-subtle);
+      color: var(--app-text);
+      transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+    }
+    .ask-entry:hover { border-color: var(--app-accent-border); background: var(--app-accent-bg); color: var(--app-accent-strong); }
+    .ask-entry .glyph { color: var(--app-accent-strong); font-size: 13px; }
+    .ask-entry .label { flex: 1 1 auto; font-size: 12.5px; }
+    .ask-entry .hint { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-faint); }
+    .ask-entry:hover .hint { color: var(--app-accent-strong); }
+
+    /* ====================================================== STORY FEED (from variant-4) */
+    .story-rule {
+      display: flex; align-items: center; gap: 10px;
+      max-width: 720px; margin: 4px auto -2px;
+      font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--app-text-faint);
+    }
+    .story-rule .line { flex: 1 1 auto; height: 1px; background: var(--app-border); }
+
+    .feed-column {
+      width: 100%;
+      max-width: 720px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .entry {
+      position: relative;
+      padding: 20px 22px 18px;
+      border: 1px solid var(--app-border);
+      border-radius: 12px;
+      background: var(--app-surface);
+    }
+    .entry--hero {
+      background:
+        linear-gradient(180deg, var(--app-accent-bg), transparent 64%),
+        var(--app-surface-raised);
+      border-color: var(--app-accent-border);
+      padding-top: 22px;
+    }
+    .entry--faded { opacity: 0.7; }
+
+    .eyebrow {
+      display: flex; align-items: center; gap: 9px;
+      font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--app-text-subtle);
+      margin: 0 0 11px;
+    }
+    .eyebrow .tick { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--app-text-faint); }
+    .entry--hero .eyebrow { color: var(--app-accent-strong); }
+    .entry--hero .eyebrow .tick { background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+    .eyebrow .rule { flex: 1 1 auto; height: 1px; background: var(--app-border); }
+    .eyebrow .diamond { color: var(--app-text-faint); letter-spacing: 0; }
+    .entry--hero .eyebrow .diamond { color: var(--app-accent); }
+
+    .entry h2 {
+      margin: 0 0 10px;
+      font-size: 18px; line-height: 1.4; font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+    }
+    .entry--hero h2 { font-size: 20px; }
+    .entry p.lede { margin: 0; font-size: 13px; line-height: 1.7; color: var(--app-text); }
+    .entry .cat-word { font-weight: 600; }
+    .entry .accent-word { color: var(--app-accent-strong); }
+
+    .entry-figure {
+      margin-top: 15px;
+      padding-top: 14px;
+      border-top: 1px dashed var(--app-border);
+    }
+
+    /* hero stacked bar */
+    .stack-bar {
+      display: flex; width: 100%; height: 24px;
+      border-radius: 6px; overflow: hidden;
+      border: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+    }
+    .stack-bar > span { display: block; height: 100%; }
+    .stack-legend {
+      margin-top: 11px;
+      display: flex; flex-wrap: wrap; gap: 6px 14px;
+      font-size: 11px; color: var(--app-text-muted);
+    }
+    .stack-legend .item { display: inline-flex; align-items: center; gap: 6px; }
+    .stack-legend .sw { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
+    .stack-legend .v { color: var(--app-text-strong); }
+
+    .drift-row {
+      margin-top: 13px;
+      display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+      font-size: 12px; color: var(--app-text-muted);
+    }
+    .drift-row .app { display: inline-flex; align-items: center; gap: 5px; color: var(--app-text); }
+    .drift-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+
+    /* SVG figure helpers */
+    .figure-svg { display: block; width: 100%; height: auto; }
+    .fig-caption { margin-top: 8px; font-size: 10.5px; letter-spacing: 0.02em; color: var(--app-text-subtle); }
+    .stroke-accent { stroke: var(--app-accent); }
+    .stroke-grid { stroke: var(--app-border); }
+    .stroke-faint { stroke: var(--app-border-strong); }
+    .fill-accent-soft { fill: var(--app-accent-glow); }
+    .dot-accent { fill: var(--app-accent); }
+    .dot-cool { fill: var(--app-text-subtle); }
+
+    .spark-row { display: flex; align-items: center; gap: 14px; }
+    .spark-meta { font-size: 11.5px; color: var(--app-text-muted); }
+    .spark-meta b { color: var(--app-text-strong); font-weight: 600; }
+
+    /* focus heatmap strip (entry) */
+    .heat {
+      display: grid; grid-template-columns: 52px 1fr;
+      row-gap: 7px; column-gap: 12px; align-items: center;
+    }
+    .heat-label { font-size: 11px; color: var(--app-text-muted); text-align: right; }
+    .heat-cells { display: flex; gap: 4px; }
+    .heat-cell { flex: 1 1 0; height: 15px; border-radius: 3px; border: 1px solid var(--app-border); }
+    .heat-hours {
+      grid-column: 2; display: flex; justify-content: space-between;
+      font-size: 9.5px; letter-spacing: 0.04em; color: var(--app-text-faint); margin-top: 2px;
+    }
+    .heat-deep { background: var(--focus-deep); opacity: 0.85; border-color: transparent; }
+    .heat-mid  { background: var(--focus-mid); opacity: 0.6; border-color: transparent; }
+    .heat-scat { background: var(--focus-distracted); opacity: 0.42; border-color: transparent; }
+    .heat-rest { background: var(--app-surface-hover); }
+
+    /* conclusion row */
+    .conclusion {
+      margin-top: 15px;
+      padding-top: 13px;
+      border-top: 1px dashed var(--app-border);
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .conclusion-statement { flex: 1 1 240px; min-width: 0; font-size: 12.5px; color: var(--app-text); }
+    .conf-quiet { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--app-text-muted); }
+    .conf-quiet .conf-num { color: var(--app-text-strong); font-weight: 600; }
+    .trend-up { color: var(--app-accent-strong); }
+    .trend-flat { color: var(--app-text-muted); }
+    .trend-down { color: var(--app-danger-text); }
+    .conf-track {
+      width: 64px; height: 4px; border-radius: 999px;
+      background: var(--app-surface-hover); border: 1px solid var(--app-border); overflow: hidden;
+    }
+    .conf-track > i { display: block; height: 100%; background: var(--app-accent); opacity: 0.85; }
+    .entry--faded .conf-track > i { background: var(--app-text-subtle); }
+
+    .subject-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 10.5px; letter-spacing: 0.02em;
+      padding: 2px 8px; border-radius: 4px;
+      background: var(--app-accent-bg);
+      border: 1px solid var(--app-accent-border);
+      color: var(--app-accent-strong);
+      cursor: pointer;
+      transition: border-color 0.12s ease;
+    }
+    .subject-chip:hover { border-color: var(--app-accent); }
+
+    .evidence-link {
+      font-size: 11px; color: var(--app-text-muted);
+      border-bottom: 1px dotted var(--app-border-strong);
+      cursor: pointer;
+      transition: color 0.12s ease, border-color 0.12s ease;
+      white-space: nowrap;
+    }
+    .evidence-link:hover { color: var(--app-text-strong); border-bottom-color: var(--app-border-hover); }
+
+    .gentle-actions { display: inline-flex; gap: 4px; }
+    .gentle-btn {
+      font: inherit; font-size: 11px;
+      padding: 3px 9px; border: 1px solid transparent; border-radius: 6px;
+      background: transparent; color: var(--app-text-muted); cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .gentle-btn:hover { background: var(--app-surface-hover); color: var(--app-text-strong); border-color: var(--app-border); }
+    .gentle-btn.is-pinned { color: var(--app-accent-strong); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+
+    .fade-note {
+      margin-top: 12px;
+      font-size: 10.5px;
+      color: var(--app-text-faint);
+      font-style: italic;
+    }
+
+    .feed-end {
+      text-align: center; padding: 6px 0 0;
+      font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--app-text-faint);
+    }
+
+    /* ====================================================== NO-ENGINE STATE CARD */
+    .no-engine {
+      max-width: 720px; margin: 8px auto 0;
+      background: var(--app-surface-subtle);
+    }
+    .no-engine .ne-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .no-engine .ne-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; align-items: start; }
+    @media (max-width: 720px) { .no-engine .ne-grid { grid-template-columns: 1fr; } }
+    .no-engine .ne-mini {
+      border: 1px dashed var(--app-border);
+      border-radius: 8px; padding: 10px 11px;
+      background: var(--app-surface);
+    }
+    .no-engine .ne-mini .cap { font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-faint); margin-bottom: 8px; }
+    .no-engine .ne-invite { display: flex; flex-direction: column; gap: 10px; }
+    .no-engine .ne-invite p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--app-text-muted); }
+    .no-engine .ne-invite .strong { color: var(--app-text); }
+  </style>
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">mnema</span>
+      </div>
+      <div class="surface-toggle">
+        <button type="button">Timeline</button>
+        <button type="button" class="active" aria-current="page">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip"><span class="dot"></span>idle</span>
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <div class="insights">
+        <nav class="subnav">
+          <div class="subnav-tabs">
+            <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
+            <a class="subnav-tab" href="subjects-index.html">Subjects</a>
+            <a class="subnav-tab" href="context.html">Context</a>
+            <a class="subnav-tab" href="chat.html">Chat</a>
+          </div>
+          <div class="subnav-meta">
+            <div class="subnav-search">
+              <span class="subnav-search-glyph">⌕</span>
+              <span class="subnav-search-text">Jump to a subject or ask…</span>
+              <span class="kbd">⌘K</span>
+            </div>
+            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+          </div>
+        </nav>
+
+        <main class="insights-main">
+          <!-- BUILD NOTES — overview
+               Slice: #104 (FREE Usage Charts) + #105 (ENGINE categorized/focus charts + dossier).
+               Two tiers, tagged inline via .tier-badge:
+                 FREE = counting-only, grayscale, no engine — aggregated from captured Search Context
+                   (time/app, time/site, app-interaction graph, intensity heatmap). Always-on for everyone.
+                 ENGINE = the "color": categorized charts from Activity Category + Focus Classification,
+                   plus the dossier = Conclusion values + the Activity story feed. Gated on Reasoning Engine opt-in.
+               No-engine users still see the FREE grayscale tiles + an invite to enable the engine.
+               Concepts: Conclusion (open-ended belief, Confidence rises/fades), Activity (evidence),
+                 Pin/Dismiss correction, Confidence display floor (faded != deleted).
+               Reuse: SearchResultCard.svelte / AnswerSourceCard.svelte where capture refs appear.
+               Interactions: Pin/Dismiss = Correction UI (#108); subject chips → Subjects; "view evidence" → Activity → Timeline span handoff.
+               Charts are hand-built SVG/CSS — no chart library. Engine = rig-core; data in Encrypted Capture Index (design-stage).
+               ADRs: ../../adr/0028-ai-features-call-models-rust-side-via-rig-core.md,
+                     ../../adr/0030-user-context-sensitive-category-guardrail.md
+               Full guide: see README.md
+          -->
+          <!-- ============================================================
+               SURFACE CONTENT START
+               ============================================================ -->
+          <div class="overview">
+
+            <!-- =================================== PAGE HEADER =================================== -->
+            <div class="ov-header">
+              <div class="titles">
+                <h1>Overview</h1>
+                <p class="subtitle">Scan your week, then read what it adds up to.</p>
+              </div>
+              <div class="ov-controls">
+                <div class="date-range" role="group" aria-label="Date range">
+                  <button type="button">Day</button>
+                  <button type="button" class="active">Week</button>
+                  <button type="button">Month</button>
+                </div>
+                <div class="date-stepper">
+                  <span class="nav" aria-label="Previous">‹</span>
+                  <span class="range-label">Jun 2–8</span>
+                  <span class="nav" aria-label="Next">›</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- =================================== BENTO GLANCE BAND =================================== -->
+            <!-- BUILD: tiles tagged FREE vs ENGINE — free = counting from Search Context (grayscale),
+                 engine = Activity Category / Focus Classification (color, gated on engine opt-in). -->
+            <section class="glance-band" aria-label="At-a-glance summary">
+
+              <!-- Time (FREE, grayscale) -->
+              <div class="glance-tile">
+                <div class="glance-head">
+                  <span class="glance-title">Time</span>
+                  <span class="spacer"></span>
+                  <span class="tier-badge tier-badge--free">Free</span>
+                </div>
+                <div class="glance-body">
+                  <div class="mini-appbars">
+                    <div class="mini-appbar"><span class="label">VS Code</span><span class="track"><span class="fill" style="width:100%;background:var(--chart-grey-5);"></span></span><span class="val">3h12m</span></div>
+                    <div class="mini-appbar"><span class="label">Chrome</span><span class="track"><span class="fill" style="width:56%;background:var(--chart-grey-4);"></span></span><span class="val">1h48m</span></div>
+                    <div class="mini-appbar"><span class="label">Terminal</span><span class="track"><span class="fill" style="width:42%;background:var(--chart-grey-3);"></span></span><span class="val">1h20m</span></div>
+                    <div class="mini-appbar"><span class="label">Figma</span><span class="track"><span class="fill" style="width:27%;background:var(--chart-grey-2);"></span></span><span class="val">52m</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Categories (ENGINE, colored) -->
+              <div class="glance-tile">
+                <div class="glance-head">
+                  <span class="glance-title">Categories</span>
+                  <span class="spacer"></span>
+                  <span class="tier-badge tier-badge--engine">Engine</span>
+                </div>
+                <div class="glance-body">
+                  <div class="mini-stack" role="img" aria-label="Coding 14h, Communication 6h, Research 4h, Design 3h, Testing 2h, Personal 2h, Distractions 2h">
+                    <span style="width:42.4%;background:var(--cat-coding);"></span>
+                    <span style="width:18.2%;background:var(--cat-communication);"></span>
+                    <span style="width:12.1%;background:var(--cat-research);"></span>
+                    <span style="width:9.1%;background:var(--cat-design);"></span>
+                    <span style="width:6.1%;background:var(--cat-testing);"></span>
+                    <span style="width:6.1%;background:var(--cat-personal);"></span>
+                    <span style="width:6.0%;background:var(--cat-distractions);"></span>
+                  </div>
+                  <div class="mini-cat-legend">
+                    <span class="li"><i style="background:var(--cat-coding);"></i>Coding <b>14h</b></span>
+                    <span class="li"><i style="background:var(--cat-communication);"></i>Comms <b>6h</b></span>
+                    <span class="li"><i style="background:var(--cat-research);"></i>Research <b>4h</b></span>
+                    <span class="li"><i style="background:var(--cat-design);"></i>Design <b>3h</b></span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Focus (ENGINE, colored) -->
+              <div class="glance-tile">
+                <div class="glance-head">
+                  <span class="glance-title">Focus</span>
+                  <span class="spacer"></span>
+                  <span class="tier-badge tier-badge--engine">Engine</span>
+                </div>
+                <div class="glance-body">
+                  <div class="focus-strip">
+                    <div class="row"><span class="day">Mon</span><div class="cells">
+                      <span class="cell fc-deep"></span><span class="cell fc-deep"></span><span class="cell fc-mid"></span><span class="cell fc-scat"></span><span class="cell fc-scat"></span><span class="cell fc-rest"></span>
+                    </div></div>
+                    <div class="row"><span class="day">Wed</span><div class="cells">
+                      <span class="cell fc-deep"></span><span class="cell fc-deep"></span><span class="cell fc-deep"></span><span class="cell fc-mid"></span><span class="cell fc-scat"></span><span class="cell fc-rest"></span>
+                    </div></div>
+                    <div class="row"><span class="day">Fri</span><div class="cells">
+                      <span class="cell fc-deep"></span><span class="cell fc-mid"></span><span class="cell fc-scat"></span><span class="cell fc-scat"></span><span class="cell fc-rest"></span><span class="cell fc-rest"></span>
+                    </div></div>
+                  </div>
+                  <div class="focus-cap">deep mornings · scattered afternoons</div>
+                </div>
+              </div>
+
+              <!-- This week (FREE) -->
+              <div class="glance-tile">
+                <div class="glance-head">
+                  <span class="glance-title">This week</span>
+                  <span class="spacer"></span>
+                  <span class="tier-badge tier-badge--free">Free</span>
+                </div>
+                <div class="glance-body">
+                  <div class="week-stat">
+                    <div class="week-big">
+                      <span class="n">33h</span>
+                      <div class="u">tracked · 6 active days</div>
+                    </div>
+                    <div class="week-sub">
+                      <div class="cell"><div class="n">5.5h</div><div class="l">Daily avg</div></div>
+                      <div class="cell"><div class="n">42%</div><div class="l">Deep focus</div></div>
+                    </div>
+                    <div class="sparkbar" aria-hidden="true">
+                      <span style="height:55%;"></span>
+                      <span style="height:80%;"></span>
+                      <span style="height:100%;"></span>
+                      <span style="height:70%;"></span>
+                      <span style="height:90%;"></span>
+                      <span style="height:40%;"></span>
+                      <span style="height:18%;opacity:0.4;"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- =================================== ASK ENTRY (separate destination) =================================== -->
+            <a class="ask-entry" href="chat.html">
+              <span class="glyph">◇</span>
+              <span class="label">Ask about your history</span>
+              <span class="hint">Opens Chat →</span>
+            </a>
+
+            <!-- =================================== STORY FEED =================================== -->
+            <div class="story-rule"><span class="line"></span>The story this week<span class="line"></span></div>
+
+            <div class="feed-column">
+
+              <!-- HERO: THIS WEEK -->
+              <article class="entry entry--hero">
+                <p class="eyebrow"><span class="diamond">◆</span><span class="tick"></span>This week · Jun 2–8<span class="rule"></span></p>
+                <h2>Coding dominated your week — afternoons drifted toward Slack and HN.</h2>
+                <p class="lede">
+                  You spent <span class="strong">14 hours</span> writing code, most of it before lunch and most of it in
+                  <span class="cat-word" style="color:var(--cat-coding)">VS&nbsp;Code</span> (3h&nbsp;12m).
+                  Communication held steady at <span class="cat-word" style="color:var(--cat-communication)">6 hours</span>,
+                  and research, design, and testing split the rest fairly evenly — a focused, build-heavy week with a softer
+                  second half each day.
+                </p>
+
+                <div class="entry-figure">
+                  <div class="stack-bar" role="img"
+                       aria-label="Categories: Coding 14h, Communication 6h, Research 4h, Design 3h, Testing 2h, Personal 2h, Distractions 2h">
+                    <span style="width:42.4%;background:var(--cat-coding)"></span>
+                    <span style="width:18.2%;background:var(--cat-communication)"></span>
+                    <span style="width:12.1%;background:var(--cat-research)"></span>
+                    <span style="width:9.1%;background:var(--cat-design)"></span>
+                    <span style="width:6.1%;background:var(--cat-testing)"></span>
+                    <span style="width:6.1%;background:var(--cat-personal)"></span>
+                    <span style="width:6.0%;background:var(--cat-distractions)"></span>
+                  </div>
+                  <div class="stack-legend">
+                    <span class="item"><span class="sw" style="background:var(--cat-coding)"></span>Coding <span class="v">14h</span></span>
+                    <span class="item"><span class="sw" style="background:var(--cat-communication)"></span>Communication <span class="v">6h</span></span>
+                    <span class="item"><span class="sw" style="background:var(--cat-research)"></span>Research <span class="v">4h</span></span>
+                    <span class="item"><span class="sw" style="background:var(--cat-design)"></span>Design <span class="v">3h</span></span>
+                    <span class="item"><span class="sw" style="background:var(--cat-testing)"></span>Testing <span class="v">2h</span></span>
+                    <span class="item"><span class="sw" style="background:var(--cat-personal)"></span>Personal <span class="v">2h</span></span>
+                    <span class="item"><span class="sw" style="background:var(--cat-distractions)"></span>Distractions <span class="v">2h</span></span>
+                  </div>
+                  <p class="drift-row">
+                    Afternoons drifted to
+                    <span class="app"><span class="drift-dot" style="background:var(--cat-communication)"></span>Slack 38m</span>
+                    ·
+                    <span class="app"><span class="drift-dot" style="background:var(--cat-distractions)"></span>Chrome / HN 1h&nbsp;48m</span>
+                  </p>
+                </div>
+              </article>
+
+              <!-- APPLE SILICON -->
+              <article class="entry">
+                <p class="eyebrow"><span class="diamond">◆</span><span class="tick"></span>3 days ago<span class="rule"></span>Standing understanding</p>
+                <h2>Warming up to Apple silicon.</h2>
+                <p class="lede">
+                  Over the past few weeks Apple silicon has gone from an occasional read to a recurring thread — benchmarks,
+                  memory-bandwidth threads, and the unified-memory story keep resurfacing in what you read and watch. It built
+                  steadily through spring, then cooled a little this week as your attention shifted back to shipping.
+                </p>
+
+                <div class="entry-figure">
+                  <!-- BUILD: hand-built SVG (Confidence trajectory) — keep lightweight, no chart lib. -->
+                  <svg class="figure-svg" viewBox="0 0 660 140" preserveAspectRatio="none" role="img"
+                       aria-label="Confidence trajectory rising then easing, currently 78 percent">
+                    <line class="stroke-grid" x1="0" y1="34"  x2="660" y2="34"  stroke-width="1"/>
+                    <line class="stroke-grid" x1="0" y1="70"  x2="660" y2="70"  stroke-width="1"/>
+                    <line class="stroke-grid" x1="0" y1="106" x2="660" y2="106" stroke-width="1"/>
+                    <path class="fill-accent-soft"
+                          d="M0,112 L66,104 L150,86 L240,62 L330,44 L420,34 L500,40 L580,52 L660,58 L660,140 L0,140 Z"/>
+                    <path class="stroke-accent" fill="none" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"
+                          d="M0,112 L66,104 L150,86 L240,62 L330,44 L420,34 L500,40 L580,52 L660,58"/>
+                    <circle class="dot-accent" cx="420" cy="34" r="3.5"/>
+                    <circle class="dot-cool"   cx="660" cy="58" r="3.5"/>
+                  </svg>
+                  <div class="fig-caption">8 weeks · rose through May, eased slightly this week</div>
+                </div>
+
+                <div class="conclusion">
+                  <span class="conclusion-statement">
+                    Has been increasingly interested in
+                    <a class="subject-chip" href="subject.html">Apple silicon</a>.
+                  </span>
+                  <span class="conf-quiet">
+                    <span class="conf-num">78%</span><span class="trend-up">▲</span>
+                    <span class="conf-track"><i style="width:78%"></i></span>
+                  </span>
+                  <span class="gentle-actions">
+                    <button class="gentle-btn" type="button" data-pin>Pin</button>
+                    <button class="gentle-btn" type="button" data-dismiss>Dismiss</button>
+                  </span>
+                  <span class="evidence-link">view evidence →</span>
+                </div>
+              </article>
+
+              <!-- RUST LEARNING PHASE -->
+              <article class="entry">
+                <p class="eyebrow"><span class="diamond">◆</span><span class="tick"></span>A new pattern<span class="rule"></span>First seen 5 days ago</p>
+                <h2>You're in a Rust learning phase.</h2>
+                <p class="lede">
+                  Something shifted recently: more time in docs, more time re-reading the same files, and a clear lean toward
+                  <span class="cat-word accent-word">Rust</span> over the languages you usually reach for. It reads like deliberate
+                  learning rather than a one-off task.
+                </p>
+
+                <div class="entry-figure">
+                  <div class="spark-row">
+                    <svg width="180" height="40" viewBox="0 0 180 40" role="img" aria-label="Rust activity sparkline, rising">
+                      <polyline class="stroke-faint" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+                                points="2,34 24,32 46,30 68,26 90,27 112,20 134,16 156,9 178,6"/>
+                      <circle class="dot-accent" cx="178" cy="6" r="3"/>
+                    </svg>
+                    <span class="spark-meta"><b>+64%</b> activity vs. your 30-day baseline</span>
+                  </div>
+                </div>
+
+                <div class="conclusion">
+                  <span class="conclusion-statement">Is in a <span class="strong">Rust</span> learning phase.</span>
+                  <span class="conf-quiet">
+                    <span class="conf-num">64%</span><span class="trend-up">▲</span>
+                    <span class="conf-track"><i style="width:64%"></i></span>
+                  </span>
+                  <span class="gentle-actions">
+                    <button class="gentle-btn" type="button" data-pin>Pin</button>
+                    <button class="gentle-btn" type="button" data-dismiss>Dismiss</button>
+                  </span>
+                </div>
+              </article>
+
+              <!-- FOCUS RHYTHM -->
+              <article class="entry">
+                <p class="eyebrow"><span class="diamond">◆</span><span class="tick"></span>Your focus<span class="rule"></span>This week</p>
+                <h2>Deep mornings, scattered afternoons.</h2>
+                <p class="lede">
+                  Your focus has a clear shape this week: mornings run long and uninterrupted, and things loosen up after lunch.
+                  That's a perfectly normal rhythm — it just means your hardest work probably wants to land before noon.
+                </p>
+
+                <div class="entry-figure">
+                  <div class="heat" role="img" aria-label="Focus heatmap: deep mornings, scattered afternoons across the week">
+                    <span class="heat-label">Mon</span>
+                    <div class="heat-cells">
+                      <span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span>
+                      <span class="heat-cell heat-mid"></span><span class="heat-cell heat-scat"></span><span class="heat-cell heat-mid"></span>
+                      <span class="heat-cell heat-scat"></span><span class="heat-cell heat-rest"></span>
+                    </div>
+                    <span class="heat-label">Tue</span>
+                    <div class="heat-cells">
+                      <span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-mid"></span>
+                      <span class="heat-cell heat-deep"></span><span class="heat-cell heat-mid"></span><span class="heat-cell heat-scat"></span>
+                      <span class="heat-cell heat-scat"></span><span class="heat-cell heat-scat"></span>
+                    </div>
+                    <span class="heat-label">Wed</span>
+                    <div class="heat-cells">
+                      <span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span>
+                      <span class="heat-cell heat-deep"></span><span class="heat-cell heat-mid"></span><span class="heat-cell heat-mid"></span>
+                      <span class="heat-cell heat-scat"></span><span class="heat-cell heat-rest"></span>
+                    </div>
+                    <span class="heat-label">Thu</span>
+                    <div class="heat-cells">
+                      <span class="heat-cell heat-mid"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span>
+                      <span class="heat-cell heat-mid"></span><span class="heat-cell heat-scat"></span><span class="heat-cell heat-scat"></span>
+                      <span class="heat-cell heat-mid"></span><span class="heat-cell heat-scat"></span>
+                    </div>
+                    <span class="heat-label">Fri</span>
+                    <div class="heat-cells">
+                      <span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-mid"></span>
+                      <span class="heat-cell heat-scat"></span><span class="heat-cell heat-scat"></span><span class="heat-cell heat-scat"></span>
+                      <span class="heat-cell heat-rest"></span><span class="heat-cell heat-rest"></span>
+                    </div>
+                    <div class="heat-hours">
+                      <span>8a</span><span>10a</span><span>12p</span><span>2p</span><span>4p</span><span>6p</span>
+                    </div>
+                  </div>
+                  <div class="fig-caption">
+                    <span style="color:var(--focus-deep)">■</span> deep&nbsp;&nbsp;
+                    <span style="color:var(--focus-mid)">■</span> mixed&nbsp;&nbsp;
+                    <span style="color:var(--focus-distracted)">■</span> scattered
+                  </div>
+                </div>
+              </article>
+
+              <!-- QUIETLY FADING -->
+              <article class="entry entry--faded">
+                <p class="eyebrow"><span class="diamond">◆</span><span class="tick"></span>Quietly fading<span class="rule"></span>Cooling</p>
+                <h2>Cooled on switching away from Apple.</h2>
+                <p class="lede">
+                  A while back you were weighing alternatives — other platforms, other machines. That thread has gone quiet.
+                  Mnema is letting this one settle rather than spotlight it; noting it here in case it's worth a glance.
+                </p>
+
+                <div class="conclusion">
+                  <span class="conclusion-statement">Cooled on <span class="strong">switching away from Apple</span>.</span>
+                  <span class="conf-quiet">
+                    <span class="conf-num">41%</span><span class="trend-down">▼</span>
+                    <span class="conf-track"><i style="width:41%"></i></span>
+                  </span>
+                  <span class="evidence-link">view evidence →</span>
+                </div>
+                <p class="fade-note">Below the line — kept for your history.</p>
+              </article>
+
+              <div class="feed-end">— you're all caught up —</div>
+            </div>
+
+            <!-- =================================== NO-ENGINE STATE =================================== -->
+            <!-- BUILD: engine-off state — render the FREE grayscale tiles + an "enable engine" invite; never show an empty Overview. -->
+            <div class="card no-engine">
+              <div class="ne-head">
+                <span class="section-title">Without a reasoning engine
+                  <span class="tier-badge tier-badge--free">Free</span>
+                </span>
+              </div>
+              <div class="ne-grid">
+                <div class="ne-mini">
+                  <div class="cap">Glance band — free tiles only</div>
+                  <div class="mini-appbars">
+                    <div class="mini-appbar"><span class="label">VS Code</span><span class="track"><span class="fill" style="width:100%;background:var(--chart-grey-5);"></span></span><span class="val">3h12m</span></div>
+                    <div class="mini-appbar"><span class="label">Chrome</span><span class="track"><span class="fill" style="width:56%;background:var(--chart-grey-4);"></span></span><span class="val">1h48m</span></div>
+                    <div class="mini-appbar"><span class="label">Terminal</span><span class="track"><span class="fill" style="width:42%;background:var(--chart-grey-3);"></span></span><span class="val">1h20m</span></div>
+                  </div>
+                </div>
+                <div class="ne-invite">
+                  <p>
+                    The grayscale <span class="strong">Time</span> and <span class="strong">This week</span> tiles stay.
+                    Categories, Focus, and your story feed go dark until a reasoning engine is on.
+                  </p>
+                  <p>Enable a reasoning engine to light up categories, focus, and your dossier.</p>
+                  <div>
+                    <a class="btn btn--accent" href="#">Enable engine</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+          <!-- ============================================================
+               SURFACE CONTENT END
+               ============================================================ -->
+        </main>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+  <script>
+    /* Cosmetic-only wiring for the Overview surface. */
+    (function () {
+      "use strict";
+
+      // (date-range Day/Week/Month segment toggle is wired generically in app.js)
+
+      // gentle Pin / Dismiss inline actions in the feed
+      document.addEventListener("click", function (ev) {
+        var pin = ev.target.closest("[data-pin]");
+        if (pin) {
+          var on = pin.classList.toggle("is-pinned");
+          pin.textContent = on ? "Pinned ◆" : "Pin";
+          return;
+        }
+        var dis = ev.target.closest("[data-dismiss]");
+        if (dis) {
+          var entry = dis.closest(".entry");
+          if (entry) {
+            entry.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+            entry.style.opacity = "0";
+            entry.style.transform = "translateY(-4px)";
+            setTimeout(function () { entry.remove(); }, 200);
+          }
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<!--
+  subjects-index.html — Insights · Subjects index.
+  A browsable grid of the things Mnema has formed a view about. Each card drills
+  into subject.html. A Subject is NOT a single rolled-up sentiment score, so every
+  card shows MULTIPLE conclusions + their independent movement via a multi-line
+  micro-sparkline, never one net score line. Shared shell copied verbatim from
+  _shell.html; only .insights-main diverges. All color is token-driven.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Insights · Subjects</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* ====================================================== PAGE LAYOUT */
+    .subjects { display: flex; flex-direction: column; gap: 18px; }
+
+    /* ---------------------------------------------------- HEADER */
+    .subj-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .subj-header .titles { min-width: 0; }
+    .subj-header h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+    }
+    .subj-header .subtitle {
+      margin: 3px 0 0;
+      font-size: 12px;
+      color: var(--app-text-muted);
+    }
+
+    .subj-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      flex: 0 0 auto;
+    }
+    /* .sort-seg uses the shared canonical segmented control from app.css */
+    .subj-count {
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---------------------------------------------------- GRID */
+    .subj-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 14px;
+    }
+
+    /* ---------------------------------------------------- CARD */
+    .scard {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      text-decoration: none;
+      color: inherit;
+      transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+    }
+    .scard:hover {
+      border-color: var(--app-border-hover);
+      background: var(--app-surface-hover);
+    }
+    .scard--faded { opacity: 0.62; }
+    .scard--faded:hover { opacity: 0.85; }
+
+    /* top row: name + trend glyph */
+    .scard-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .scard-name {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--app-text-strong);
+      letter-spacing: -0.01em;
+      min-width: 0;
+    }
+    .scard-pin {
+      color: var(--app-text-faint);
+      font-size: 11px;
+      flex: 0 0 auto;
+    }
+
+    .trend-glyph {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 10.5px;
+      letter-spacing: 0.02em;
+      padding: 1px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--app-border);
+      background: var(--app-surface);
+      flex: 0 0 auto;
+    }
+    .trend-glyph--up {
+      color: var(--app-accent-strong);
+      border-color: var(--app-accent-border);
+      background: var(--app-accent-bg);
+    }
+    .trend-glyph--down {
+      color: var(--app-danger);
+      border-color: var(--app-danger-border);
+      background: var(--app-danger-bg);
+    }
+    .trend-glyph--steady {
+      color: var(--app-text-muted);
+    }
+
+    /* meta line */
+    .scard-meta {
+      font-size: 11px;
+      color: var(--app-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .scard-meta .dot-sep { color: var(--app-text-faint); margin: 0 2px; }
+
+    /* multi-line micro-sparkline */
+    .scard-spark { width: 100%; }
+    .mini-spark { display: block; width: 100%; height: 40px; }
+    .mini-floor { stroke: var(--app-text-faint); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.55; }
+    .mini-line { fill: none; stroke-width: 1.5; }
+    /* three faint trajectory strokes — honest to multiple conclusions */
+    .mini-line--a { stroke: var(--app-accent); opacity: 0.72; }
+    .mini-line--b { stroke: var(--app-text-muted); opacity: 0.62; }
+    .mini-line--c { stroke: var(--app-text-subtle); opacity: 0.78; }
+    .mini-line--down { stroke: var(--app-danger); opacity: 0.6; }
+
+    /* headline conclusion */
+    .scard-headline {
+      font-size: 12.5px;
+      line-height: 1.4;
+      color: var(--app-text-strong);
+      font-weight: 600;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    /* footer tags */
+    .scard-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: auto;
+    }
+    .scard-tags .chip { font-size: 10px; padding: 1px 7px; }
+
+    /* footer note */
+    .subj-foot {
+      font-size: 11px;
+      color: var(--app-text-muted);
+      margin-top: 4px;
+      padding-top: 12px;
+      border-top: 1px solid var(--app-border);
+    }
+  </style>
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">mnema</span>
+      </div>
+      <div class="surface-toggle">
+        <button type="button">Timeline</button>
+        <button type="button" class="active" aria-current="page">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip"><span class="dot"></span>idle</span>
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <div class="insights">
+        <nav class="subnav">
+          <div class="subnav-tabs">
+            <a class="subnav-tab" href="overview.html">Overview</a>
+            <a class="subnav-tab active" aria-current="page" href="subjects-index.html">Subjects</a>
+            <a class="subnav-tab" href="context.html">Context</a>
+            <a class="subnav-tab" href="chat.html">Chat</a>
+          </div>
+          <div class="subnav-meta">
+            <div class="subnav-search">
+              <span class="subnav-search-glyph">⌕</span>
+              <span class="subnav-search-text">Jump to a subject or ask…</span>
+              <span class="kbd">⌘K</span>
+            </div>
+            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+          </div>
+        </nav>
+
+        <main class="insights-main">
+          <!-- BUILD NOTES — subjects-index
+               Slice: #106 — browsable Subjects view. A Subject is a browsable entity, NOT a tag.
+               Each Subject holds MULTIPLE individual Conclusions, each with its OWN
+                 Confidence-over-time trajectory (Confidence History) — never one rolled-up sentiment score.
+               This index is the grid; each card drills into subject.html (the detail view).
+               Tier: ENGINE — Conclusions are engine-derived (rig-core), stored in the Encrypted Capture Index.
+               Concepts: Confidence (recency-weighted, fades on silence), display floor (faded Subjects
+                 kept for history), Pin protects from decay, Dismiss = high-bar resurface (#108 Correction UI).
+               Reuse: card pattern akin to SearchResultCard.svelte styling.
+               ADRs: ../../adr/0028-ai-features-call-models-rust-side-via-rig-core.md,
+                     ../../adr/0030-user-context-sensitive-category-guardrail.md
+               Full guide: see README.md
+          -->
+          <!-- ============================================================
+               SURFACE CONTENT START
+               ============================================================ -->
+          <div class="subjects">
+
+            <!-- 1. Header -->
+            <div class="subj-header">
+              <div class="titles">
+                <h1>Subjects</h1>
+                <p class="subtitle">Things Mnema has formed a view about — browse how each one has moved.</p>
+              </div>
+              <div class="subj-controls">
+                <div class="sort-seg" role="group" aria-label="Sort subjects">
+                  <button type="button" class="active">Most active</button>
+                  <button type="button">Recently moved</button>
+                  <button type="button">A–Z</button>
+                </div>
+                <span class="subj-count">7 subjects</span>
+              </div>
+            </div>
+
+            <!-- 2. Grid of subject cards -->
+            <div class="subj-grid">
+
+              <!-- Apple silicon — 6 conclusions, warming -->
+              <a class="card scard" href="subject.html">
+                <div class="scard-top">
+                  <span class="scard-name">Apple silicon</span>
+                  <span class="trend-glyph trend-glyph--up">▲ warming</span>
+                </div>
+                <div class="scard-meta">6 conclusions <span class="dot-sep">·</span> 4d ago</div>
+                <div class="scard-spark">
+                  <!-- BUILD: multi-line micro-trajectory = one line per Conclusion (their independent Confidence History), NOT one net score. -->
+                  <!-- viewBox 0..160 x, 0..40 y. floor at y=34. multiple conclusion lines -->
+                  <svg class="mini-spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="mini-floor" x1="0" y1="34" x2="160" y2="34" />
+                    <!-- rising -->
+                    <polyline class="mini-line mini-line--a" points="2,30 42,22 82,14 122,9 158,5" />
+                    <!-- warm-then-cool arc -->
+                    <polyline class="mini-line mini-line--b" points="2,28 42,12 82,7 122,16 158,26" />
+                    <!-- flat-low -->
+                    <polyline class="mini-line mini-line--c" points="2,29 42,30 82,28 122,30 158,29" />
+                  </svg>
+                </div>
+                <div class="scard-headline">Increasingly interested in Apple silicon.</div>
+                <div class="scard-tags">
+                  <span class="chip">hardware</span>
+                  <span class="chip">research</span>
+                </div>
+              </a>
+
+              <!-- Rust — 4 conclusions, warming -->
+              <a class="card scard" href="subject.html">
+                <div class="scard-top">
+                  <span class="scard-name">Rust</span>
+                  <span class="trend-glyph trend-glyph--up">▲ warming</span>
+                </div>
+                <div class="scard-meta">4 conclusions <span class="dot-sep">·</span> 1d ago</div>
+                <div class="scard-spark">
+                  <svg class="mini-spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="mini-floor" x1="0" y1="34" x2="160" y2="34" />
+                    <polyline class="mini-line mini-line--a" points="2,31 42,24 82,16 122,8 158,3" />
+                    <polyline class="mini-line mini-line--b" points="2,32 42,27 82,21 122,15 158,11" />
+                    <polyline class="mini-line mini-line--c" points="2,29 42,25 82,22 122,18 158,14" />
+                  </svg>
+                </div>
+                <div class="scard-headline">In a Rust learning phase.</div>
+                <div class="scard-tags">
+                  <span class="chip">language</span>
+                  <span class="chip">learning</span>
+                </div>
+              </a>
+
+              <!-- Async comms — 3 conclusions, steady + pinned -->
+              <a class="card scard" href="subject.html">
+                <div class="scard-top">
+                  <span class="scard-name">Async comms <span class="scard-pin" title="Pinned">📌</span></span>
+                  <span class="trend-glyph trend-glyph--steady">– steady</span>
+                </div>
+                <div class="scard-meta">3 conclusions <span class="dot-sep">·</span> 6h ago</div>
+                <div class="scard-spark">
+                  <svg class="mini-spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="mini-floor" x1="0" y1="34" x2="160" y2="34" />
+                    <polyline class="mini-line mini-line--a" points="2,11 42,10 82,12 122,10 158,11" />
+                    <polyline class="mini-line mini-line--b" points="2,19 42,20 82,18 122,20 158,19" />
+                    <polyline class="mini-line mini-line--c" points="2,27 42,26 82,28 122,27 158,27" />
+                  </svg>
+                </div>
+                <div class="scard-headline">Prefers async, written communication.</div>
+                <div class="scard-tags">
+                  <span class="chip">workstyle</span>
+                </div>
+              </a>
+
+              <!-- Local LLMs — 3 conclusions, warming -->
+              <a class="card scard" href="subject.html">
+                <div class="scard-top">
+                  <span class="scard-name">Local LLMs</span>
+                  <span class="trend-glyph trend-glyph--up">▲ warming</span>
+                </div>
+                <div class="scard-meta">3 conclusions <span class="dot-sep">·</span> 2d ago</div>
+                <div class="scard-spark">
+                  <svg class="mini-spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="mini-floor" x1="0" y1="34" x2="160" y2="34" />
+                    <polyline class="mini-line mini-line--a" points="2,30 42,23 82,17 122,10 158,6" />
+                    <polyline class="mini-line mini-line--b" points="2,28 42,24 82,25 122,19 158,13" />
+                    <polyline class="mini-line mini-line--c" points="2,31 42,30 82,29 122,30 158,28" />
+                  </svg>
+                </div>
+                <div class="scard-headline">Exploring local LLM tooling.</div>
+                <div class="scard-tags">
+                  <span class="chip">ai</span>
+                  <span class="chip">tooling</span>
+                </div>
+              </a>
+
+              <!-- Figma→code — 2 conclusions, warming -->
+              <a class="card scard" href="subject.html">
+                <div class="scard-top">
+                  <span class="scard-name">Figma→code</span>
+                  <span class="trend-glyph trend-glyph--up">▲ warming</span>
+                </div>
+                <div class="scard-meta">2 conclusions <span class="dot-sep">·</span> 5d ago</div>
+                <div class="scard-spark">
+                  <svg class="mini-spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="mini-floor" x1="0" y1="34" x2="160" y2="34" />
+                    <polyline class="mini-line mini-line--a" points="2,29 42,22 82,16 122,12 158,7" />
+                    <polyline class="mini-line mini-line--b" points="2,31 42,28 82,23 122,21 158,16" />
+                  </svg>
+                </div>
+                <div class="scard-headline">Moving toward a code-based design workflow.</div>
+                <div class="scard-tags">
+                  <span class="chip">design</span>
+                  <span class="chip">workflow</span>
+                </div>
+              </a>
+
+              <!-- Accessibility — 2 conclusions, steady -->
+              <a class="card scard" href="subject.html">
+                <div class="scard-top">
+                  <span class="scard-name">Accessibility</span>
+                  <span class="trend-glyph trend-glyph--steady">– steady</span>
+                </div>
+                <div class="scard-meta">2 conclusions <span class="dot-sep">·</span> 1w ago</div>
+                <div class="scard-spark">
+                  <svg class="mini-spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="mini-floor" x1="0" y1="34" x2="160" y2="34" />
+                    <polyline class="mini-line mini-line--a" points="2,14 42,13 82,15 122,13 158,14" />
+                    <polyline class="mini-line mini-line--c" points="2,24 42,25 82,23 122,25 158,24" />
+                  </svg>
+                </div>
+                <div class="scard-headline">Cares about accessibility &amp; performance.</div>
+                <div class="scard-tags">
+                  <span class="chip">values</span>
+                </div>
+              </a>
+
+              <!-- Switching away from Apple — 2 conclusions, cooling, faded -->
+              <a class="card scard scard--faded" href="subject.html">
+                <div class="scard-top">
+                  <span class="scard-name">Switching away from Apple</span>
+                  <span class="trend-glyph trend-glyph--down">▼ cooling</span>
+                </div>
+                <div class="scard-meta">2 conclusions <span class="dot-sep">·</span> 3w ago</div>
+                <div class="scard-spark">
+                  <svg class="mini-spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="mini-floor" x1="0" y1="34" x2="160" y2="34" />
+                    <polyline class="mini-line mini-line--down" points="2,10 42,16 82,22 122,28 158,33" />
+                    <polyline class="mini-line mini-line--c" points="2,18 42,22 82,27 122,30 158,33" />
+                  </svg>
+                </div>
+                <div class="scard-headline">Cooled on switching away from Apple.</div>
+                <div class="scard-tags">
+                  <span class="chip">hardware</span>
+                </div>
+              </a>
+
+            </div>
+
+            <!-- 3. Footer note -->
+            <p class="subj-foot">Subjects form as evidence accumulates · faded subjects are kept for history.</p>
+
+          </div>
+          <!-- ============================================================
+               SURFACE CONTENT END
+               ============================================================ -->
+        </main>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
