@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-06-03_
+_Last reviewed: 2026-06-10_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -36,6 +36,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
 | Quick Recall launcher panel | [x] | [~] | [~] | macOS summons a non-activating NSPanel (key without activating Mnema, like Spotlight/Raycast); non-macOS falls back to a plain shown/focused always-on-top window without non-activating semantics. |
 | Ask AI (PI runtime integration) | [x] | [~] | [~] | Delegates model/auth/session to the user's installed PI runtime through a bundled Node SDK shim; brokered `search`/`timeline`/`show_text` tools run under the All-Retained Ask AI broker scope. `pi`/`node` are discovered by spawning a login-shell PATH on macOS (packaged apps lack the shell PATH); Windows resolves through process PATH + PATHEXT shims (e.g. `pi.cmd`) and Linux would reuse the unix login-shell path, but non-macOS resolution and shim spawn are unverified. |
+| User Context / Reasoning Engine | [x] | [~] | [~] | Reasoning Engine + User Context derivation are cross-platform Rust via `rig-core` with no native capture dependency. A cloud engine (Anthropic/OpenAI bring-your-own-key) works on any platform with a key, but the key is stored in the **Encrypted Capture Index key store** (macOS Keychain only today, see that row). A local engine needs a running Ollama/Llamafile endpoint and no key, so it is platform-agnostic. Windows/Linux are blocked only on the platform key store for cloud keys; local-engine derivation should already work cross-platform. |
 | Status bar / tray | [x] | [~] | [~] | Tauri tray exists cross-platform; current UX includes macOS-only Exclude Current App behavior. |
 | Global shortcuts | [x] | [~] | [~] | Uses Tauri global shortcut plugin for background start/stop, pause/resume, and show/hide; platform behavior needs verification. |
 | Encrypted Capture Index key store | [x] | [ ] | [ ] | macOS uses Keychain. Windows/Linux platform key stores are missing. |
@@ -93,6 +94,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Broker Authorization Channel over per-user Unix socket.
 - [x] Ask AI brokered tool-calling session: delegates model/auth/session to the user's installed PI runtime through a bundled Node SDK shim (`apps/desktop/src-tauri/resources/pi-ask-ai-shim.mjs`) with the coding-agent's builtin tools disabled, exposing only the `search`/`timeline`/`show_text` brokered tools enforced through the All-Retained Ask AI broker scope. `pi`/`node` are resolved through a spawned login-shell PATH so packaged apps find Homebrew-installed binaries, with a user-driven "Refresh PI status" path to re-read PATH after a post-launch setup fix.
 - [x] Ask AI background completion and transcript resurrection: an unseen Ask AI thread survives panel dismiss/blur (`dismiss_quick_recall_window` defers the teardown decision to the panel) so the answer finishes in the background and a re-summon lands back on it; a finished-but-unseen thread keeps its resident PI session for a fixed 30-minute window, then releases the process while leaving the transcript readable, and a follow-up on a dead (expired/errored) thread resurrects it by starting a fresh session re-fed the prior Q/A as a 12k-char-capped, oldest-first `priorTranscript`. Disk-ephemeral throughout — nothing persists, full Quick Recall close / app exit tears the thread down. See [ADR 0027](docs/adr/0027-ask-ai-threads-complete-in-background-and-resurrect-from-transcript.md).
+- [x] User Context derivation via the Reasoning Engine (`rig-core`): cloud (Anthropic/OpenAI bring-your-own-key, key in Keychain) or local (Ollama/Llamafile endpoint, no key); only redacted OCR/transcript text crosses the wire for a cloud engine, the dossier stays on-device, and the deterministic Confidence Policy / Sensitive Category Guardrail run with no model.
 - [x] Deep-link app reopen fallback.
 - [x] Mnema CLI sidecar for Apple targets.
 - [x] macOS release workflow for Apple Silicon.

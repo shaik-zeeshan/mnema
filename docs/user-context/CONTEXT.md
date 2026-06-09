@@ -3,11 +3,16 @@
 The standing, continuously-updated understanding of the user that Mnema builds from
 its raw capture record — "what you did and how you did it," and what that adds up to.
 
-Design-stage context: no owning crate yet. When built, the derived-data storage and
-derivation jobs will most likely be owned by `crates/app-infra` (it already owns SQLite,
-background jobs, and the processing pipeline) and the surfacing by `apps/desktop`. Relocate
-this file beside its owning crate when code lands, and keep the [CONTEXT-MAP.md](../../CONTEXT-MAP.md)
-row pointing at it.
+Code has landed (issue #88). Ownership is split across two crates: `crates/app-infra/src/user_context/`
+owns the **Encrypted Capture Index** storage (`store.rs` over the `user_context_*` tables) and the
+deterministic policy — the **Confidence Policy** (`confidence.rs`) and the **Sensitive Category
+Guardrail** (`guardrail.rs`) — plus the capture-window reader (`capture_source.rs`), with **no
+`ai-runtime`/`rig-core` dependency**. `apps/desktop/src-tauri/src/user_context/` owns the
+**Reasoning Engine** orchestration (`derivation.rs`), the derivation `worker.rs`, and the Tauri
+`commands.rs`. The wire DTOs and the `UserContextSettings` settings domain live in
+`crates/capture-types`. Because ownership is split, this file stays here as the cross-cutting
+User Context context rather than moving beside one crate; keep the
+[CONTEXT-MAP.md](../../CONTEXT-MAP.md) row pointing at it.
 
 Root entry point: [CONTEXT-MAP.md](../../CONTEXT-MAP.md).
 
@@ -344,7 +349,18 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
 - **Activity**, **Conclusion**, and **Dismissal State** are stored inside the **Encrypted Capture
   Index** (page-level SQLCipher, key in the OS keychain via the **Capture Index Key Store**) — not a
   plaintext sidecar or a JSON file under `saveDirectory`. The dossier is more sensitive than the OCR
-  text already protected there, so it gets at least the same protection.
+  text already protected there, so it gets at least the same protection. The schema lands in
+  app-infra migrations `0022`–`0025` (INTEGER unix-millis timestamps); the derived tables carry
+  **no foreign key to frames/audio_segments** so the dossier survives **Retention Policy** aging
+  (the [ADR 0029](../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md) evidence floor).
+- Derivation runs in the background `worker.rs` (`spawn_user_context_worker`, started in deferred
+  startup beside the retention worker, off the capture hot path in the **OCR Catch-Up** pattern) on
+  three cadences: a frequent **Activity** beat (forward catch-up plus newest-first **History
+  Backfill** bounded by the **Derivation Budget**), a slower **Conclusion**-distillation beat, and a
+  slowest **Confidence**-decay-and-snapshot beat. The worker resolves the **Reasoning Engine** from
+  `AiRuntimeSettings` (plus the **bring-your-own-key** from the keychain) and runs only redacted
+  OCR/transcript text past a cloud engine; the assembled dossier stays on-device. Token usage is an
+  ESTIMATE (≈4 chars/token), not a billed figure.
 - **Wipe User Context** is a deliberate, confirmed action (Tauri dialog, like other destructive
   flows) that clears all derived data — **Activity**, **Conclusion**, **Dismissal State** — without
   touching raw captures or settings. It is the inverse of derivation: the raw record stays, the

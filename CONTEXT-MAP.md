@@ -25,7 +25,7 @@ System-wide decisions stay in [docs/adr](docs/adr/), while owner-local context l
 | Audio transcription | [crates/audio-transcription/CONTEXT.md](crates/audio-transcription/CONTEXT.md) | Audio transcription jobs, local providers, model selection, transcript spans, audio search units. |
 | Speaker analysis | [crates/speaker-analysis/CONTEXT.md](crates/speaker-analysis/CONTEXT.md) | Speaker analysis jobs, diarization policy, speaker turn alignment, speaker continuity. |
 | Secret redaction | [crates/secret-redaction/CONTEXT.md](crates/secret-redaction/CONTEXT.md) | Secret detection/redaction policy for searchable, copied, snippet, and broker-visible derived text. |
-| User Context (design-stage) | [docs/user-context/CONTEXT.md](docs/user-context/CONTEXT.md) | Standing, continuously-updated understanding of the user derived from captures: Activity (evidence) and Conclusion (distilled belief) layers. No owning crate yet. |
+| User Context | [docs/user-context/CONTEXT.md](docs/user-context/CONTEXT.md) | Standing, continuously-updated understanding of the user derived from captures: Activity (evidence) and Conclusion (distilled belief) layers. Storage + deterministic Confidence Policy / Sensitive Category Guardrail live in `crates/app-infra/src/user_context`; the Reasoning Engine derivation worker + Tauri commands live in `apps/desktop/src-tauri/src/user_context`. |
 
 ## ADR Scope
 

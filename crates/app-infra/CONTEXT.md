@@ -83,6 +83,10 @@ _Avoid_: encrypted capture store, media encryption, secure erase
 The platform-owned secret storage boundary that holds **Encrypted Capture Index** keys outside the recording save directory.
 _Avoid_: key file, save-directory secret, hard-coded key
 
+**User Context Store**:
+The app-infra storage owner for the User Context dossier (`crates/app-infra/src/user_context/store.rs`, `UserContextStore`) over the `user_context_*` tables added in migrations `0022`–`0025`: Activities + evidence + derivation runs, Conclusions + evidence, Confidence history, and pinned/dismissal state. It also owns the deterministic policy that needs no model — the fixed Confidence Policy math (`confidence.rs`) and the Sensitive Category Guardrail (`guardrail.rs`, soft instruction text plus the hard `is_sensitive` post-filter) — plus the capture-window reader (`capture_source.rs`) that assembles already-redacted OCR/transcript text. The LLM call itself lives in the desktop Tauri layer, so app-infra takes no `ai-runtime`/`rig-core` dependency.
+_Avoid_: profile table, inference engine, dossier service, ai-runtime dependency
+
 **Captured Frame Equivalence**:
 The rule for when two **Captured Frame** values should be treated as the same OCR-relevant visual content for downstream decisions such as **OCR Job** admission. **Captured Frame Equivalence** is defined over normalized visual content rather than persisted artifact bytes, and intentionally ignores cursor-sized changes plus limited localized visual noise that does not materially change OCR-relevant content.
 _Avoid_: dedupe hash, screenshot sameness, OCR skip heuristic
@@ -353,6 +357,11 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Hidden Segment Workspace** may be preserved when an incomplete **Frame Batch** or nonterminal **OCR Job** still references it.
 - **Hidden Segment Workspace Repair** removes only **Hidden Segment Workspace** values that are safe to remove.
 - New **Encrypted Capture Index** databases are encrypted by default and should not expose a user-facing plaintext mode.
+- **User Context Store** tables (migrations `0022`–`0025`) live inside the **Encrypted Capture Index** alongside OCR/transcript text, store timestamps as INTEGER unix-millis, and deliberately carry no foreign key to frame or audio_segment rows so the derived dossier survives **Retention Policy** aging as a durable evidence floor.
+- **Retention Cleanup** does NOT cascade into the **User Context Store**: a structural test (`retention_cleanup_source_never_touches_user_context_tables`) asserts that the `capture_retention.rs` delete path never references any `user_context_*` table, so derived Activities/Conclusions outlive the raw captures they came from.
+- **Delete Recent Capture** DOES cascade into the **User Context Store** through `delete_derived_for_capture_subjects`: it purges Activities derived from the deleted frame/audio window, drops Conclusions that lose all their evidence (no ungrounded Conclusions), keeps still-grounded ones, and leaves dismissal state alone.
+- **Wipe User Context** (`UserContextStore::wipe_all`) clears every `user_context_*` table — all derived data plus dismissal state — without touching raw captures or other settings; the desktop layer also turns the engine off as part of the wipe.
+- The fixed Confidence Policy (`confidence.rs`) and the Sensitive Category Guardrail (`guardrail.rs`) are pure, unit-tested deterministic logic in app-infra; the Guardrail's hard `is_sensitive` post-filter runs at derivation time so a sensitive Conclusion never enters the **User Context Store**, and app-infra keeps no `ai-runtime`/`rig-core` dependency because the model call lives in the desktop Tauri layer.
 - **Broker Client Identity** normalization is shared through app-infra so CLI execution, desktop grant creation, Access Settings, and revocation use the same matching rules.
 - app-infra enforces **Broker Client Identity** grant matching for **Brokered Capture Access** rather than relying on Mnema CLI filtering.
 - **Brokered Capture Access** grant state is app access-control state outside the capture index; V1 non-secret grant metadata belongs in app config, while future grant secrets or tokens belong in platform secret storage if introduced.
