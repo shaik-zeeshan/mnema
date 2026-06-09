@@ -36,6 +36,49 @@ export interface PrivacySettings {
 	excludedApps: ExcludedAppEntry[];
 }
 
+export type AiEngineKind = "cloud" | "local";
+export type AiCloudProvider = "anthropic" | "openai";
+export type AiLocalKind = "ollama" | "llamafile";
+
+export interface AiRuntimeSettings {
+	enabled: boolean;
+	engineKind: AiEngineKind;
+	cloudProvider: AiCloudProvider;
+	cloudModel: string;
+	localKind: AiLocalKind;
+	localEndpoint: string;
+	localModel: string;
+}
+
+export interface UpdateAiRuntimeSettingsRequest {
+	enabled?: boolean;
+	engineKind?: AiEngineKind;
+	cloudProvider?: AiCloudProvider;
+	cloudModel?: string;
+	localKind?: AiLocalKind;
+	localEndpoint?: string;
+	localModel?: string;
+}
+
+/** Reasoning Engine availability snapshot, mirroring the Rust `AiRuntimeStatus`. */
+export interface AiRuntimeStatus {
+	enabled: boolean;
+	engineKind: string;
+	configured: boolean;
+	available: boolean;
+	hasCloudKey: boolean;
+	reason?: string | null;
+}
+
+/** Reasoning Engine test-connection round-trip result, mirroring `AiRuntimeTestResult`. */
+export interface AiRuntimeTestResult {
+	ok: boolean;
+	engineKind: string;
+	model: string;
+	message: string;
+	rawJson: string;
+}
+
 export interface RecordingSettings {
 	captureScreen: boolean;
 	captureMicrophone: boolean;
@@ -57,6 +100,7 @@ export interface RecordingSettings {
 	metadata: MetadataSettings;
 	privacy: PrivacySettings;
 	access: AccessSettings;
+	aiRuntime: AiRuntimeSettings;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;
@@ -82,6 +126,7 @@ export type SettingsOwnershipDomain =
 	| "microphone_controller"
 	| "app_update"
 	| "access"
+	| "ai_runtime"
 	| "one_time_prompt_state";
 
 export interface RecordingSettingsDomainUpdateResponse {

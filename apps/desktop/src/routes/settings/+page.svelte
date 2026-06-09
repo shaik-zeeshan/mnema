@@ -60,6 +60,12 @@
     UpdateProcessingSettingsRequest,
     UpdateStorageSettingsRequest,
     UpdateVideoSettingsRequest,
+    UpdateAiRuntimeSettingsRequest,
+    AiEngineKind,
+    AiCloudProvider,
+    AiLocalKind,
+    AiRuntimeStatus,
+    AiRuntimeTestResult,
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
@@ -167,6 +173,7 @@
     | "processing"
     | "developer"
     | "access"
+    | "ai_runtime"
   >;
   type RecordingSettingsDraftDomain = AutosaveRecordingDomain | "app_privacy_exclusion";
 
@@ -180,7 +187,8 @@
     | UpdateInactivitySettingsRequest
     | UpdateProcessingSettingsRequest
     | UpdateDeveloperSettingsRequest
-    | UpdateAccessSettingsRequest;
+    | UpdateAccessSettingsRequest
+    | UpdateAiRuntimeSettingsRequest;
 
   const RECORDING_AUTOSAVE_DOMAINS: readonly AutosaveRecordingDomain[] = [
     "capture_sources",
@@ -193,6 +201,7 @@
     "processing",
     "developer",
     "access",
+    "ai_runtime",
   ];
 
   const RECORDING_DRAFT_DOMAINS: readonly RecordingSettingsDraftDomain[] = [
@@ -211,6 +220,7 @@
     processing: "update_processing_settings",
     developer: "update_developer_settings",
     access: "update_access_settings",
+    ai_runtime: "update_ai_runtime_settings",
   };
 
   function makeRecordingDomainState<T>(value: T): Record<RecordingSettingsDraftDomain, T> {
@@ -430,6 +440,128 @@
   let mnemaCliInstalling = $state(false);
   let mnemaCliError = $state<string | null>(null);
   let piRuntimeError = $state<string | null>(null);
+
+  // Reasoning Engine (AI runtime) drafts. Autosaved through the `ai_runtime`
+  // domain, EXCEPT the provider API key — that is stored only in the OS keychain
+  // and saved/cleared through explicit invokes (see below), never autosaved.
+  const DEFAULT_AI_CLOUD_MODEL = "claude-haiku-4-5";
+  const DEFAULT_AI_LOCAL_ENDPOINT = "http://localhost:11434";
+  let draftAiEnabled = $state(false);
+  let draftAiEngineKind = $state<AiEngineKind>("cloud");
+  let draftAiCloudProvider = $state<AiCloudProvider>("anthropic");
+  let draftAiCloudModel = $state(DEFAULT_AI_CLOUD_MODEL);
+  let draftAiLocalKind = $state<AiLocalKind>("ollama");
+  let draftAiLocalEndpoint = $state(DEFAULT_AI_LOCAL_ENDPOINT);
+  let draftAiLocalModel = $state("");
+
+  // Reasoning Engine availability snapshot + the cloud-key entry box. The key is
+  // not part of any draft/autosave; it has its own loading/error/saved state and
+  // explicit save/clear invokes mirroring installMnemaCli/loadPiRuntimeStatus.
+  let aiRuntimeStatus = $state<AiRuntimeStatus | null>(null);
+  let aiRuntimeStatusLoading = $state(false);
+  let aiRuntimeStatusError = $state<string | null>(null);
+  let aiProviderKeyInput = $state("");
+  let aiProviderKeySaved = $state(false);
+  let aiProviderKeySaving = $state(false);
+  let aiProviderKeyError = $state<string | null>(null);
+  let aiRuntimeTestRunning = $state(false);
+  let aiRuntimeTestResult = $state<AiRuntimeTestResult | null>(null);
+  let aiRuntimeTestError = $state<string | null>(null);
+
+  // Human-facing label for an AiRuntimeStatus.reason code.
+  function aiRuntimeReasonLabel(reason: string | null | undefined): string {
+    switch (reason) {
+      case "ai_runtime_disabled":
+        return "Reasoning Engine is turned off.";
+      case "no_model":
+        return "No model is configured.";
+      case "no_cloud_key":
+        return "No API key saved for this provider.";
+      case "local_no_model":
+        return "No local model is configured.";
+      case "local_endpoint_unreachable":
+        return "The local endpoint could not be reached.";
+      default:
+        return reason ? reason : "Unavailable";
+    }
+  }
+
+  async function loadAiRuntimeStatus() {
+    aiRuntimeStatusLoading = true;
+    aiRuntimeStatusError = null;
+    try {
+      aiRuntimeStatus = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
+    } catch (error) {
+      aiRuntimeStatusError = error instanceof Error ? error.message : String(error);
+    } finally {
+      aiRuntimeStatusLoading = false;
+    }
+  }
+
+  // Re-check whether a key is stored for the currently selected cloud provider.
+  async function refreshAiProviderKeyPresence() {
+    try {
+      aiProviderKeySaved = await invoke<boolean>("ai_runtime_has_provider_key", {
+        provider: draftAiCloudProvider,
+      });
+    } catch (error) {
+      aiProviderKeyError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function saveAiProviderKey() {
+    const key = aiProviderKeyInput.trim();
+    if (!key) {
+      aiProviderKeyError = "Enter an API key first.";
+      return;
+    }
+    aiProviderKeySaving = true;
+    aiProviderKeyError = null;
+    try {
+      await invoke("ai_runtime_set_provider_key", {
+        provider: draftAiCloudProvider,
+        key,
+      });
+      aiProviderKeyInput = "";
+      await refreshAiProviderKeyPresence();
+      await loadAiRuntimeStatus();
+    } catch (error) {
+      aiProviderKeyError = error instanceof Error ? error.message : String(error);
+    } finally {
+      aiProviderKeySaving = false;
+    }
+  }
+
+  async function clearAiProviderKey() {
+    aiProviderKeySaving = true;
+    aiProviderKeyError = null;
+    try {
+      await invoke("ai_runtime_clear_provider_key", {
+        provider: draftAiCloudProvider,
+      });
+      aiProviderKeyInput = "";
+      await refreshAiProviderKeyPresence();
+      await loadAiRuntimeStatus();
+    } catch (error) {
+      aiProviderKeyError = error instanceof Error ? error.message : String(error);
+    } finally {
+      aiProviderKeySaving = false;
+    }
+  }
+
+  async function runAiRuntimeTestConnection() {
+    aiRuntimeTestRunning = true;
+    aiRuntimeTestError = null;
+    aiRuntimeTestResult = null;
+    try {
+      aiRuntimeTestResult = await invoke<AiRuntimeTestResult>("ai_runtime_test_connection");
+    } catch (error) {
+      aiRuntimeTestError = error instanceof Error ? error.message : String(error);
+    } finally {
+      aiRuntimeTestRunning = false;
+      void loadAiRuntimeStatus();
+    }
+  }
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
@@ -991,6 +1123,16 @@
     draftAskAiModel = s.access?.askAiModel ?? "";
   }
 
+  function syncAiRuntimeDrafts(s: RecordingSettings) {
+    draftAiEnabled = s.aiRuntime?.enabled ?? false;
+    draftAiEngineKind = s.aiRuntime?.engineKind ?? "cloud";
+    draftAiCloudProvider = s.aiRuntime?.cloudProvider ?? "anthropic";
+    draftAiCloudModel = s.aiRuntime?.cloudModel ?? DEFAULT_AI_CLOUD_MODEL;
+    draftAiLocalKind = s.aiRuntime?.localKind ?? "ollama";
+    draftAiLocalEndpoint = s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT;
+    draftAiLocalModel = s.aiRuntime?.localModel ?? "";
+  }
+
   function syncInactivityDrafts(s: RecordingSettings) {
     draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
@@ -1076,6 +1218,9 @@
         break;
       case "access":
         syncAccessDrafts(s);
+        break;
+      case "ai_runtime":
+        syncAiRuntimeDrafts(s);
         break;
     }
   }
@@ -1204,6 +1349,16 @@
           askAiEnabled: draftAskAiEnabled,
           askAiMaxToolCalls: effectiveAskAiMaxToolCalls,
           askAiModel: draftAskAiModel,
+        };
+      case "ai_runtime":
+        return {
+          enabled: draftAiEnabled,
+          engineKind: draftAiEngineKind,
+          cloudProvider: draftAiCloudProvider,
+          cloudModel: draftAiCloudModel,
+          localKind: draftAiLocalKind,
+          localEndpoint: draftAiLocalEndpoint,
+          localModel: draftAiLocalModel,
         };
     }
   }
@@ -1674,6 +1829,16 @@
           askAiMaxToolCalls: s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
           askAiModel: s.access?.askAiModel ?? "",
         };
+      case "ai_runtime":
+        return {
+          enabled: s.aiRuntime?.enabled ?? false,
+          engineKind: s.aiRuntime?.engineKind ?? "cloud",
+          cloudProvider: s.aiRuntime?.cloudProvider ?? "anthropic",
+          cloudModel: s.aiRuntime?.cloudModel ?? DEFAULT_AI_CLOUD_MODEL,
+          localKind: s.aiRuntime?.localKind ?? "ollama",
+          localEndpoint: s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT,
+          localModel: s.aiRuntime?.localModel ?? "",
+        };
     }
   }
 
@@ -1719,6 +1884,10 @@
     if (draftDomain === "developer" && (force || !dirty)) {
       setDeveloperOptionsEnabled(s.developerOptionsEnabled ?? false);
       void loadDebugLogStatus();
+    }
+    if (draftDomain === "ai_runtime" && (force || !dirty)) {
+      void refreshAiProviderKeyPresence();
+      void loadAiRuntimeStatus();
     }
   }
 
@@ -3026,6 +3195,8 @@
     loadBrokerGrants();
     loadMnemaCliStatus();
     loadPiRuntimeStatus();
+    void loadAiRuntimeStatus();
+    void refreshAiProviderKeyPresence();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -3811,6 +3982,188 @@
               {piRuntimeLoading ? "Checking" : "Refresh PI status"}
             </button>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">Reasoning Engine</h2>
+          <p class="card__subtitle">
+            The model Mnema uses to derive understanding from your capture history. Pick a cloud
+            provider with your own key, or a local model that never leaves your machine.
+          </p>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <span class="group-label">Engine</span>
+        <div class="settings-stack">
+          <div class="privacy-disclosure">
+            <p>A cloud engine sends redacted capture text to your chosen provider over HTTPS to reason about it. That means continuous outbound egress and per-token cost billed to your provider account.</p>
+            <p>A local engine runs entirely on this machine through Ollama or Llamafile — nothing is sent anywhere and no API key is needed.</p>
+          </div>
+          <Switch
+            bind:checked={draftAiEnabled}
+            label="Enable Reasoning Engine"
+            description="Allow Mnema to run the selected model. Off by default."
+          />
+          <RadioGroup
+            value={draftAiEngineKind}
+            onValueChange={(value) => (draftAiEngineKind = value as AiEngineKind)}
+            label="Engine"
+            disabled={!draftAiEnabled}
+            options={[
+              { value: "cloud", label: "Cloud", description: "HTTPS to a provider with your own key. Sends redacted text off-device." },
+              { value: "local", label: "Local", description: "Ollama or Llamafile on this machine. No key, no egress." },
+            ]}
+          />
+
+          {#if draftAiEngineKind === "cloud"}
+            <div class="settings-divider"></div>
+            <RadioGroup
+              value={draftAiCloudProvider}
+              onValueChange={(value) => {
+                draftAiCloudProvider = value as AiCloudProvider;
+                void refreshAiProviderKeyPresence();
+              }}
+              label="Provider"
+              disabled={!draftAiEnabled}
+              options={[
+                { value: "anthropic", label: "Anthropic", description: "Claude models" },
+                { value: "openai", label: "OpenAI", description: "GPT models" },
+              ]}
+            />
+            <label class="field-label" for="ai-cloud-model">Model</label>
+            <input
+              id="ai-cloud-model"
+              class="text-input"
+              autocomplete="off"
+              placeholder="claude-haiku-4-5"
+              disabled={!draftAiEnabled}
+              bind:value={draftAiCloudModel}
+            />
+            <label class="field-label" for="ai-cloud-key">API key</label>
+            <div class="row-actions">
+              <input
+                id="ai-cloud-key"
+                class="text-input"
+                type="password"
+                autocomplete="off"
+                placeholder={aiProviderKeySaved ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
+                disabled={!draftAiEnabled || aiProviderKeySaving}
+                bind:value={aiProviderKeyInput}
+              />
+              {#if aiProviderKeySaved}
+                <span class="saved-badge">✓ key saved</span>
+              {/if}
+            </div>
+            <div class="row-actions">
+              <button
+                class="btn btn--ghost btn--sm"
+                type="button"
+                disabled={!draftAiEnabled || aiProviderKeySaving || aiProviderKeyInput.trim().length === 0}
+                onclick={saveAiProviderKey}
+              >
+                {aiProviderKeySaving ? "Saving" : "Save key"}
+              </button>
+              <button
+                class="btn btn--ghost btn--sm"
+                type="button"
+                disabled={aiProviderKeySaving || !aiProviderKeySaved}
+                onclick={clearAiProviderKey}
+              >
+                Clear
+              </button>
+            </div>
+            <p class="group-hint">Your key is stored only in the macOS keychain — never in Mnema's settings, config, or save directory.</p>
+            {#if aiProviderKeyError}
+              <p class="error-text">{aiProviderKeyError}</p>
+            {/if}
+          {:else}
+            <div class="settings-divider"></div>
+            <RadioGroup
+              value={draftAiLocalKind}
+              onValueChange={(value) => (draftAiLocalKind = value as AiLocalKind)}
+              label="Local runtime"
+              disabled={!draftAiEnabled}
+              options={[
+                { value: "ollama", label: "Ollama", description: "Default endpoint http://localhost:11434" },
+                { value: "llamafile", label: "Llamafile", description: "OpenAI-compatible local server" },
+              ]}
+            />
+            <label class="field-label" for="ai-local-endpoint">Endpoint</label>
+            <input
+              id="ai-local-endpoint"
+              class="text-input"
+              autocomplete="off"
+              placeholder="http://localhost:11434"
+              disabled={!draftAiEnabled}
+              bind:value={draftAiLocalEndpoint}
+            />
+            <label class="field-label" for="ai-local-model">Model</label>
+            <input
+              id="ai-local-model"
+              class="text-input"
+              autocomplete="off"
+              placeholder="e.g. llama3.1"
+              disabled={!draftAiEnabled}
+              bind:value={draftAiLocalModel}
+            />
+          {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Status</span>
+        <div class="settings-stack">
+          <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
+            <div>
+              <div class="model-status__title">Reasoning Engine {aiRuntimeStatus?.available ? "ready" : "unavailable"}</div>
+              <div class="model-status__meta">
+                {#if aiRuntimeStatusLoading}
+                  Checking engine…
+                {:else if aiRuntimeStatus?.available}
+                  {aiRuntimeStatus.engineKind === "cloud" ? "Cloud" : "Local"} engine configured and reachable.
+                {:else}
+                  {aiRuntimeReasonLabel(aiRuntimeStatus?.reason)}
+                {/if}
+              </div>
+            </div>
+            <span class="model-status__pill">{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
+          </div>
+          {#if aiRuntimeStatusError}
+            <p class="error-text">{aiRuntimeStatusError}</p>
+          {/if}
+          <div class="row-actions">
+            <button class="btn btn--ghost btn--sm" type="button" disabled={aiRuntimeStatusLoading} onclick={loadAiRuntimeStatus}>
+              {aiRuntimeStatusLoading ? "Refreshing" : "Refresh"}
+            </button>
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              disabled={!draftAiEnabled || aiRuntimeTestRunning}
+              onclick={runAiRuntimeTestConnection}
+            >
+              {aiRuntimeTestRunning ? "Testing" : "Test connection"}
+            </button>
+          </div>
+          {#if aiRuntimeTestResult}
+            <div class="cleanup-result" aria-live="polite">
+              <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
+              <p>Model: {aiRuntimeTestResult.model || "(none)"}</p>
+              {#if aiRuntimeTestResult.rawJson}
+                <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
+              {/if}
+            </div>
+          {/if}
+          {#if aiRuntimeTestError}
+            <p class="group-hint group-hint--warn">Test connection failed.</p>
+            <p class="error-text">{aiRuntimeTestError}</p>
+          {/if}
         </div>
       </div>
     </section>
@@ -7070,6 +7423,22 @@
     margin: 0;
     padding-left: 18px;
     color: var(--app-text-muted);
+  }
+
+  .ai-runtime-raw {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 4%, transparent);
+    color: var(--app-text-muted);
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 160px;
+    overflow: auto;
   }
 
   .delete-confirmation {
