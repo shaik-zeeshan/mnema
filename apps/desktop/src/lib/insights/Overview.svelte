@@ -19,13 +19,22 @@
   //   onOpenTab?: (tab) => void                 — jump Insights sub-surfaces.
 
   import { untrack } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { openSettingsWindow } from "$lib/surface-windows";
+  import {
+    appIconFallback,
+    canonicalBundleIdForComparison,
+    iconPathForBundleId,
+    mergeIconResolutions,
+    unresolvedIconBundleIds,
+    type AppIconResolution,
+  } from "$lib/app-privacy-exclusion";
   import type {
     Activity,
     ActivityCategory,
     Conclusion,
+    UserContextDigest,
     UserContextStatus,
     AiRuntimeStatus,
   } from "$lib/types/recording";
@@ -33,6 +42,7 @@
   import StackedBar from "$lib/insights/charts/StackedBar.svelte";
   import Heatmap from "$lib/insights/charts/Heatmap.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
+  import RhythmStrip from "$lib/insights/charts/RhythmStrip.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
 
   interface Props {
@@ -196,6 +206,10 @@
   let usage = $state<UsageCharts | null>(null);
   let activities = $state<Activity[]>([]);
   let conclusions = $state<Conclusion[]>([]);
+  // Narrative lede for the active range. `null` is the normal absent case
+  // (engine off, sparse range) — the lede silently omits, never errors.
+  let digest = $state<UserContextDigest | null>(null);
+  let digestLoading = $state(false);
 
   let loadingFree = $state(true);
   let loadingEngine = $state(false);
@@ -259,13 +273,79 @@
   }
 
   // ── FREE TILE 1: top apps (MiniBars) ─────────────────────────────────
-  const topApps = $derived.by(() => {
-    const list = usage?.timePerApp ?? [];
-    return list.slice(0, 5).map((a) => ({
+  const TOP_APP_COUNT = 5;
+  const topAppUsage = $derived.by(() =>
+    (usage?.timePerApp ?? []).slice(0, TOP_APP_COUNT),
+  );
+  // Rows carry the resolved icon (or letter fallback) beside each label;
+  // re-derives as `iconPathsByBundleId` fills in.
+  const topApps = $derived.by(() =>
+    topAppUsage.map((a) => ({
       label: a.app,
       value: a.activeMs,
       sublabel: humanizeMs(a.activeMs),
-    }));
+      iconSrc: appIconSrc(a.appBundleId),
+      fallback: appIconFallback(a.app, a.appBundleId),
+    })),
+  );
+
+  // ── Lede app strip: the range's top apps with real macOS icons ────────
+  // `timePerApp` arrives activeMs-desc from the backend, so a slice IS the top.
+  const LEDE_APP_COUNT = 5;
+  const ledeApps = $derived.by(() =>
+    (usage?.timePerApp ?? []).slice(0, LEDE_APP_COUNT).map((a) => ({
+      app: a.app,
+      bundleId: a.appBundleId,
+      timeLabel: humanizeMs(a.activeMs),
+    })),
+  );
+
+  // Icon resolutions are bundle-id-keyed facts, not range-scoped data: a late
+  // response from a previous range still maps the right id to the right icon,
+  // so the merge map doubles as a cross-range cache — no staleness token.
+  let iconPathsByBundleId = $state<Record<string, string>>({});
+  const requestedCanonicalIconBundleIds = new Set<string>();
+
+  async function resolveAppIcons(
+    bundleIds: Array<string | null | undefined>,
+  ): Promise<void> {
+    const unresolved = unresolvedIconBundleIds(
+      bundleIds,
+      iconPathsByBundleId,
+      requestedCanonicalIconBundleIds,
+    );
+    if (unresolved.length === 0) return;
+    for (const id of unresolved) {
+      requestedCanonicalIconBundleIds.add(canonicalBundleIdForComparison(id));
+    }
+    try {
+      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
+        request: { bundleIds: unresolved },
+      });
+      const result = mergeIconResolutions(iconPathsByBundleId, icons);
+      if (result.changed) iconPathsByBundleId = result.iconPathsByBundleId;
+    } catch {
+      for (const id of unresolved) {
+        requestedCanonicalIconBundleIds.delete(canonicalBundleIdForComparison(id));
+      }
+      // Icons are decorative; the letter fallback keeps working.
+    }
+  }
+
+  function appIconSrc(bundleId: string | null): string | null {
+    if (!bundleId) return null;
+    const iconPath = iconPathForBundleId(bundleId, iconPathsByBundleId);
+    return iconPath ? convertFileSrc(iconPath) : null;
+  }
+
+  // Ask for icons whenever the icon-bearing surfaces' apps change (usage
+  // payload / range) — one request unions the lede strip and the Top apps tile.
+  $effect(() => {
+    const ids = [
+      ...ledeApps.map((a) => a.bundleId),
+      ...topAppUsage.map((a) => a.appBundleId),
+    ];
+    void untrack(() => resolveAppIcons(ids));
   });
 
   // ── ENGINE TILE 2: categories aggregated by activity duration ─────────
@@ -369,6 +449,140 @@
     }
     return out;
   });
+
+  // ── Lede rhythm strip: the range's shape — when work happened, what kind ─
+  // One column per time bucket; each bucket aggregates the CLIPPED overlap of
+  // every range activity by category (an activity spanning buckets contributes
+  // its overlap to each). The StackedBar tile shows the aggregate mix without
+  // a time axis — the rhythm strip's whole point IS the time axis.
+  interface RhythmColumn {
+    label: string;
+    title: string;
+    segments: { colorVar: string; value: number }[];
+  }
+  // "8a" / "12p" / "4p" — compact hour tag for the day-mode sparse labels.
+  function slotHourLabel(hour24: number): string {
+    const h = hour24 % 12 === 0 ? 12 : hour24 % 12;
+    return `${h}${hour24 < 12 ? "a" : "p"}`;
+  }
+  // "8–10 AM" / "10 AM–12 PM" — the day-mode slot title prefix. Meridiem is
+  // merged when both ends share it.
+  function slotRangeTitle(startHour: number, endHour: number): string {
+    const h12 = (h: number) => (h % 12 === 0 ? 12 : h % 12);
+    const mer = (h: number) => (h < 12 ? "AM" : "PM");
+    if (mer(startHour) === mer(endHour)) {
+      return `${h12(startHour)}–${h12(endHour)} ${mer(endHour)}`;
+    }
+    return `${h12(startHour)} ${mer(startHour)}–${h12(endHour)} ${mer(endHour)}`;
+  }
+  const rhythmColumns = $derived.by<RhythmColumn[]>(() => {
+    const { startMs, endMs } = range;
+    // Bucket bounds + label/title shells per mode. Date stepping (not raw ms
+    // arithmetic) keeps bucket edges on local-calendar boundaries across DST.
+    interface RhythmBucket {
+      startMs: number;
+      endMs: number;
+      label: string;
+      titlePrefix: string;
+    }
+    const buckets: RhythmBucket[] = [];
+    if (rangeMode === "day") {
+      // Reuse the 6 focus slots (8a–8p in 2h bands); sparse labels on 0/2/4.
+      const dayStart = startOfDay(startMs);
+      for (let i = 0; i < SLOT_COUNT; i++) {
+        const startHour = SLOT_START_HOUR + i * SLOT_SPAN_HOURS;
+        const s = new Date(dayStart);
+        s.setHours(startHour, 0, 0, 0);
+        const e = new Date(dayStart);
+        e.setHours(startHour + SLOT_SPAN_HOURS, 0, 0, 0);
+        buckets.push({
+          startMs: s.getTime(),
+          endMs: e.getTime(),
+          label: i % 2 === 0 ? slotHourLabel(startHour) : "",
+          titlePrefix: slotRangeTitle(startHour, startHour + SLOT_SPAN_HOURS),
+        });
+      }
+    } else if (rangeMode === "week") {
+      // 7 columns Mon–Sun (the range already starts Monday).
+      for (let i = 0; i < 7; i++) {
+        const s = new Date(startMs);
+        s.setDate(s.getDate() + i);
+        const e = new Date(startMs);
+        e.setDate(e.getDate() + i + 1);
+        buckets.push({
+          startMs: s.getTime(),
+          endMs: e.getTime(),
+          label: s.toLocaleDateString(undefined, { weekday: "narrow" }),
+          titlePrefix: s.toLocaleDateString(undefined, { weekday: "long" }),
+        });
+      }
+    } else {
+      // month — one slim column per calendar day; labels on the 1st + Mondays.
+      const cursor = new Date(startMs);
+      while (cursor.getTime() < endMs) {
+        const s = cursor.getTime();
+        const dayOfMonth = cursor.getDate();
+        const isMonday = cursor.getDay() === 1;
+        const titlePrefix = cursor.toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        });
+        cursor.setDate(cursor.getDate() + 1);
+        buckets.push({
+          startMs: s,
+          endMs: Math.min(cursor.getTime(), endMs),
+          label: dayOfMonth === 1 || isMonday ? String(dayOfMonth) : "",
+          titlePrefix,
+        });
+      }
+    }
+    // Clipped per-bucket category totals — overlap math, zero/negative spans
+    // skipped (same posture as the other aggregations).
+    const totalsPerBucket = buckets.map(() => new Map<string, number>());
+    for (const a of rangeActivities) {
+      if (a.endedAtMs <= a.startedAtMs) continue;
+      const key = a.category ?? "__uncat__";
+      for (let i = 0; i < buckets.length; i++) {
+        const b = buckets[i];
+        const overlap =
+          Math.min(a.endedAtMs, b.endMs) - Math.max(a.startedAtMs, b.startMs);
+        if (overlap <= 0) continue;
+        const totals = totalsPerBucket[i];
+        totals.set(key, (totals.get(key) ?? 0) + overlap);
+      }
+    }
+    return buckets.map((b, i) => {
+      // Segment order mirrors `categorySegments`: CATEGORY_ORDER, then the
+      // uncategorized grey last.
+      const totals = totalsPerBucket[i];
+      const segments: { colorVar: string; value: number }[] = [];
+      let total = 0;
+      for (const c of CATEGORY_ORDER) {
+        const v = totals.get(c);
+        if (v && v > 0) {
+          segments.push({ colorVar: CATEGORY_COLOR[c], value: v });
+          total += v;
+        }
+      }
+      const uncat = totals.get("__uncat__");
+      if (uncat && uncat > 0) {
+        segments.push({ colorVar: UNCATEGORIZED_COLOR, value: uncat });
+        total += uncat;
+      }
+      return {
+        label: b.label,
+        title:
+          total > 0
+            ? `${b.titlePrefix} · ${humanizeMs(total)}`
+            : `${b.titlePrefix} · no activity`,
+        segments,
+      };
+    });
+  });
+  // All buckets empty → hide the strip entirely (no empty-graphic noise).
+  const rhythmHasActivity = $derived(
+    rhythmColumns.some((c) => c.segments.length > 0),
+  );
 
   // ── FREE TILE 4: this-range summary stats ─────────────────────────────
   const summary = $derived.by(() => {
@@ -492,8 +706,11 @@
   );
 
   // Per-group default cap — the compression that keeps a busy week one screen.
-  const DELTA_GROUP_CAP = 3;
-  // Groups showing every row past the cap, keyed by kind.
+  // Applies to formed/fading only; strengthened is the quiet group and shows
+  // ZERO rows by default — its header doubles as the expander, and one click
+  // reveals everything (no inner cap: the user asked for it).
+  const DELTA_GROUP_CAP = 2;
+  // Groups showing every row, keyed by kind.
   let expandedGroups = $state<Set<ConclusionDeltaKind>>(new Set());
   function toggleGroup(kind: ConclusionDeltaKind): void {
     const set = new Set(expandedGroups);
@@ -695,9 +912,60 @@
     }
   }
 
+  // Narrative lede fetch. Backend returns null (not an error) when the engine
+  // is off or the range is too sparse; real errors collapse into null too —
+  // the lede is omitted, never an error surface. An unchanged range is a cheap
+  // cache hit; a fresh range can take seconds (one model call).
+  let digestRequestToken = 0;
+  async function loadDigest(): Promise<void> {
+    if (!statusLoaded || !engineOn) {
+      digest = null;
+      digestLoading = false;
+      return;
+    }
+    const token = ++digestRequestToken;
+    digestLoading = true;
+    try {
+      const { startMs, endMs } = range;
+      const next = await invoke<UserContextDigest | null>(
+        "get_user_context_digest",
+        { rangeKind: rangeMode, startMs, endMs },
+      );
+      if (token !== digestRequestToken) return; // range moved on — stale
+      digest = next;
+    } catch {
+      if (token === digestRequestToken) digest = null;
+    } finally {
+      if (token === digestRequestToken) digestLoading = false;
+    }
+  }
+
+  // Range steps debounce the digest fetch — a changed range can cost a paid
+  // model call and the user may flick through weeks. Mount/refresh paths call
+  // `loadDigest` directly instead.
+  const DIGEST_DEBOUNCE_MS = 500;
+  let digestDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleDigestLoad(): void {
+    // Drop the old range's prose at once and invalidate in-flight responses —
+    // last week's lede never sits over this week's cards.
+    digestRequestToken += 1;
+    digest = null;
+    if (digestDebounceTimer != null) clearTimeout(digestDebounceTimer);
+    digestDebounceTimer = null;
+    if (!statusLoaded || !engineOn) {
+      digestLoading = false;
+      return;
+    }
+    digestLoading = true; // placeholder spans the debounce window too
+    digestDebounceTimer = setTimeout(() => {
+      digestDebounceTimer = null;
+      void loadDigest();
+    }, DIGEST_DEBOUNCE_MS);
+  }
+
   async function reloadAll(): Promise<void> {
     await loadStatus();
-    await Promise.all([loadFree(), loadEngine()]);
+    await Promise.all([loadFree(), loadEngine(), loadDigest()]);
   }
 
   // Re-query when the range changes (mode or step). Mark the range-scoped data
@@ -712,7 +980,13 @@
       engineLoadedOnce = false;
       void loadFree();
       void loadEngine();
+      scheduleDigestLoad();
     });
+    return () => {
+      // A pending debounce dies with the range (or the component).
+      if (digestDebounceTimer != null) clearTimeout(digestDebounceTimer);
+      digestDebounceTimer = null;
+    };
   });
 
   // ── Correction / pin / dismiss commands ───────────────────────────────
@@ -803,6 +1077,8 @@
     void listen("user_context_changed", () => {
       void loadStatus();
       void loadEngine();
+      // Same range → cache hit; keeps the current lede up until fresh prose.
+      void loadDigest();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -1060,7 +1336,20 @@
       <span class="line"></span>The story this {rangeMode}<span class="line"></span>
     </div>
     <div class="feed-column" aria-busy="true" aria-label="Loading your story">
-      <!-- Mirrors the two real cards: "What changed" rows + activity threads. -->
+      <!-- Mirrors the real feed: lede prose, then "What changed" rows +
+           activity threads. -->
+      <article class="entry entry--skeleton">
+        <div class="sk-eyebrow">
+          <Skeleton variant="text" width="64px" height="10px" />
+          <Skeleton variant="text" width="48px" height="10px" />
+        </div>
+        <div class="sk-row">
+          <Skeleton variant="text" width="92%" height="12px" />
+        </div>
+        <div class="sk-row">
+          <Skeleton variant="text" width="64%" height="12px" />
+        </div>
+      </article>
       {#each Array.from({ length: 2 }) as _, card (card)}
         <article class="entry entry--skeleton">
           <div class="sk-eyebrow">
@@ -1135,6 +1424,67 @@
       </div>
     {:else}
       <div class="feed-column">
+        <!-- Narrative lede — the engine's read of the range, in prose. A lede,
+             not a control surface: no actions, and silently absent when the
+             range is too sparse or the digest call fails. Layout top→bottom:
+             eyebrow → headline (when present) → prose (or shimmer) → rhythm
+             strip (when any bucket has activity) → app strip. -->
+        {#if digest || digestLoading}
+          <article class="entry entry--lede" aria-busy={!digest && digestLoading}>
+            <p class="eyebrow">
+              <span class="diamond" aria-hidden="true">◆</span>
+              <span class="tick" aria-hidden="true"></span>
+              In short
+              <span class="rule"></span>
+              {#if digest}{relativeTime(digest.generatedAtMs)}{/if}
+            </p>
+            {#if digest}
+              <!-- Keyed on generation time: fresh prose replays the reveal,
+                   a same-range cache hit does not. -->
+              {#key digest.generatedAtMs}
+                <div class="lede-body">
+                  {#if digest.headline}
+                    <h2 class="lede-headline">{digest.headline}</h2>
+                  {/if}
+                  <p class="lede-text">{digest.narrative}</p>
+                </div>
+              {/key}
+            {:else}
+              <div class="sk-row">
+                <Skeleton variant="text" width="92%" height="12px" />
+              </div>
+              <div class="sk-row">
+                <Skeleton variant="text" width="64%" height="12px" />
+              </div>
+            {/if}
+            {#if rhythmHasActivity}
+              <!-- Rhythm strip — the range's shape; may render before the
+                   prose lands (it doesn't wait on the digest). -->
+              <div class="lede-rhythm">
+                <RhythmStrip columns={rhythmColumns} />
+              </div>
+            {/if}
+            {#if ledeApps.length > 0}
+              <div class="lede-apps" aria-label="Top apps this {rangeMode}">
+                {#each ledeApps as a (a.app)}
+                  {@const iconSrc = appIconSrc(a.bundleId)}
+                  <span class="lede-app">
+                    <span class="lede-app-icon" aria-hidden="true">
+                      {#if iconSrc}
+                        <img src={iconSrc} alt="" loading="lazy" />
+                      {:else}
+                        <span>{appIconFallback(a.app, a.bundleId)}</span>
+                      {/if}
+                    </span>
+                    <span class="lede-app-name">{a.app}</span>
+                    <span class="lede-app-time">· {a.timeLabel}</span>
+                  </span>
+                {/each}
+              </div>
+            {/if}
+          </article>
+        {/if}
+
         <!-- What changed — one card; conclusion deltas as grouped rows -->
         {#if conclusionDeltas.length > 0}
           <article class="entry">
@@ -1147,9 +1497,28 @@
             </p>
             <div class="delta-groups">
               {#each deltaGroups as g (g.kind)}
+                {@const groupOpen = expandedGroups.has(g.kind)}
                 <div class="delta-group">
-                  <p class="delta-group-head">{deltaLabel(g.kind)} · {g.deltas.length}</p>
-                  {#each expandedGroups.has(g.kind) ? g.deltas : g.deltas.slice(0, DELTA_GROUP_CAP) as d (d.c.id)}
+                  {#if g.kind === "strengthened"}
+                    <!-- Strengthened collapses to its header: the head is the
+                         expander, identical typography, micro show/hide hint. -->
+                    <button
+                      type="button"
+                      class="delta-group-head delta-group-head--toggle"
+                      aria-expanded={groupOpen}
+                      onclick={() => toggleGroup(g.kind)}
+                    >
+                      {deltaLabel(g.kind)} · {g.deltas.length}
+                      <span class="delta-head-hint">{groupOpen ? "hide" : "show"}</span>
+                    </button>
+                  {:else}
+                    <p class="delta-group-head">{deltaLabel(g.kind)} · {g.deltas.length}</p>
+                  {/if}
+                  {#each groupOpen
+                    ? g.deltas
+                    : g.kind === "strengthened"
+                      ? []
+                      : g.deltas.slice(0, DELTA_GROUP_CAP) as d (d.c.id)}
                     {@const c = d.c}
                     {@const open = expandedDeltaRows.has(c.id)}
                     <div class="delta-row" class:delta-row--faded={d.kind === "fading"}>
@@ -1228,15 +1597,13 @@
                       {/if}
                     </div>
                   {/each}
-                  {#if g.deltas.length > DELTA_GROUP_CAP}
+                  {#if g.kind !== "strengthened" && g.deltas.length > DELTA_GROUP_CAP}
                     <button
                       type="button"
                       class="evidence-link delta-more"
                       onclick={() => toggleGroup(g.kind)}
                     >
-                      {expandedGroups.has(g.kind)
-                        ? "show fewer"
-                        : `+${g.deltas.length - DELTA_GROUP_CAP} more`}
+                      {groupOpen ? "show fewer" : `+${g.deltas.length - DELTA_GROUP_CAP} more`}
                     </button>
                   {/if}
                 </div>
@@ -1783,6 +2150,109 @@
     letter-spacing: 0;
   }
 
+  /* Narrative lede — 2-4 sentences of prose, read not clicked. The card is
+     the feed's hero: a 2px accent edge + a wash that fades into the surface
+     keep it distinct without leaving the terminal/green language. */
+  .entry--lede {
+    padding: 22px 24px 20px;
+    border-left: 2px solid var(--app-accent);
+    background: linear-gradient(
+      to right,
+      var(--app-accent-bg),
+      var(--app-surface) 42%
+    );
+  }
+  /* Fresh prose lands with a short reveal — the deliberate exception to the
+     0.12s house transition. */
+  .lede-body {
+    animation: lede-reveal 0.25s ease;
+  }
+  @keyframes lede-reveal {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .lede-body {
+      animation: none;
+    }
+  }
+  .lede-headline {
+    margin: 0 0 8px;
+    font-size: 19px;
+    line-height: 1.3;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--app-text-strong);
+  }
+  .lede-text {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--app-text);
+  }
+  /* Rhythm strip — when the range's work happened; sits between the prose
+     and the app strip with the card's usual block spacing. */
+  .lede-rhythm {
+    margin-top: 14px;
+  }
+  /* App icon strip — where the range's hours actually went, at a glance. */
+  .lede-apps {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--app-border);
+  }
+  .lede-app {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  /* Mirrors AppPrivacyExclusion's letter-avatar look, scaled to the strip. */
+  .lede-app-icon {
+    display: grid;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--app-border);
+    border-radius: 5px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-size: 9.5px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .lede-app-icon img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+  }
+  .lede-app-name {
+    font-size: 11px;
+    color: var(--app-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 140px;
+  }
+  .lede-app-time {
+    font-size: 10.5px;
+    color: var(--app-text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
   /* "What changed" — grouped conclusion-delta rows */
   .delta-groups {
     display: flex;
@@ -1799,6 +2269,40 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text-faint);
+  }
+  /* Strengthened's head doubles as its expander — button reset keeps the
+     typography identical to the plain heads; the hint is the only tell. */
+  .delta-group-head--toggle {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 7px;
+    font: inherit;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    transition: color 0.12s ease;
+  }
+  .delta-group-head--toggle:hover {
+    color: var(--app-text-muted);
+  }
+  .delta-head-hint {
+    font-size: 9.5px;
+    letter-spacing: 0.02em;
+    text-transform: lowercase;
+    color: var(--app-text-muted);
+    border-bottom: 1px dotted var(--app-border-strong);
+    padding-bottom: 1px;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease;
+  }
+  .delta-group-head--toggle:hover .delta-head-hint {
+    color: var(--app-text-strong);
+    border-bottom-color: var(--app-border-hover);
   }
   .delta-row {
     display: flex;
