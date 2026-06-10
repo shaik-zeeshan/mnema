@@ -19,6 +19,12 @@ use rig_core::providers::{anthropic, llamafile, ollama, openai};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
+mod agent_loop;
+
+pub use agent_loop::{
+    run_agent_loop, AgentHistoryTurn, AgentLoopEvent, AgentRole, AgentTool, ToolExecutor,
+};
+
 /// Maximum time [`ping_endpoint`] waits for a TCP connection to a local engine.
 const PING_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -84,6 +90,11 @@ pub enum AiRuntimeError {
     /// The structured-extraction round trip failed.
     #[error("structured extraction failed: {0}")]
     Extraction(#[from] rig_core::extractor::ExtractionError),
+    /// The streaming agent loop ([`run_agent_loop`]) failed mid-stream — a
+    /// provider/completion error or an unrecoverable prompt error. Hitting the
+    /// tool-call cap is *not* surfaced here; it ends the loop cleanly.
+    #[error("agent loop failed: {0}")]
+    AgentLoop(String),
 }
 
 /// The structured shape proved by [`run_connection_probe`].

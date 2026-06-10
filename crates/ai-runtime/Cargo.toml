@@ -5,8 +5,17 @@ edition = "2021"
 
 [dependencies]
 rig-core = "0.38"
+# `StreamExt` for consuming rig's streaming agent loop; the engine itself stays
+# runtime-agnostic (`run_agent_loop` is a plain `async fn`).
+futures-util = "0.3"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 url = "2"
+
+[dev-dependencies]
+# `test-utils` exposes `MockCompletionModel`/`MockStreamEvent` so the agent loop
+# can be exercised against a scripted provider with no network access.
+rig-core = { version = "0.38", features = ["test-utils"] }
+tokio = { version = "1", features = ["macros", "rt"] }
