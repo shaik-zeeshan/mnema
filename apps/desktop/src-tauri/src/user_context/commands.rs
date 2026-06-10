@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use capture_types::{
     Activity, ActivityCategory, AuthoredContext, Conclusion, FocusLevel, SubjectTrajectory,
-    SubjectView, UpdateAiRuntimeSettingsRequest, UserContextStatus, UserContextTokenUsage,
+    SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest, UserContextStatus,
+    UserContextTokenUsage,
 };
 use serde::Serialize;
 use tauri::Emitter;
@@ -279,6 +280,33 @@ pub async fn user_context_run_derivation_now(
         items_read: run.items_read,
         message: run.message,
     })
+}
+
+/// The **User Context Digest** (#89): the engine-written 2–4 sentence narrative
+/// lede the Insights Overview shows for one local-calendar range. Lazy +
+/// fingerprint-cached: an unchanged range returns the stored narrative with no
+/// engine call. `Ok(None)` — never an error — when the engine is off/unready or
+/// the range holds fewer than two Activities, so the frontend silently omits
+/// the lede. `range_kind` is `"day"` | `"week"` | `"month"`; `[start_ms,
+/// end_ms)` is the half-open local-calendar window the frontend computed
+/// (invoked as `{ rangeKind, startMs, endMs }`).
+#[tauri::command]
+pub async fn get_user_context_digest(
+    state: tauri::State<'_, RecordingSettingsState>,
+    infra: tauri::State<'_, AppInfraState>,
+    range_kind: String,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Option<UserContextDigest>, String> {
+    let settings = read_recording_settings(state.inner());
+    super::digest::get_or_generate_digest(
+        &settings.ai_runtime,
+        infra.user_context(),
+        &range_kind,
+        start_ms,
+        end_ms,
+    )
+    .await
 }
 
 /// **Dismiss** a Conclusion (#99): record its **Dismissal State** (which evidence,

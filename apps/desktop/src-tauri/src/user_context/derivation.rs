@@ -164,8 +164,9 @@ fn parse_focus(raw: &Option<String>) -> Option<FocusLevel> {
     }
 }
 
-/// Truncate on a char boundary to at most `cap` characters.
-fn truncate_chars(text: &str, cap: usize) -> String {
+/// Truncate on a char boundary to at most `cap` characters. Shared with the
+/// Digest prompt builder (`super::digest`).
+pub(crate) fn truncate_chars(text: &str, cap: usize) -> String {
     if text.chars().count() <= cap {
         return text.to_string();
     }
@@ -515,8 +516,9 @@ DistilledConclusionBatch.\n\n",
 }
 
 /// snake_case label for an [`ActivityCategory`] (matches the capture-types serde
-/// rename) used in the distillation prompt.
-fn category_label(category: ActivityCategory) -> &'static str {
+/// rename) used in the distillation prompt and the Digest prompt
+/// (`super::digest`).
+pub(crate) fn category_label(category: ActivityCategory) -> &'static str {
     match category {
         ActivityCategory::Coding => "coding",
         ActivityCategory::Research => "research",

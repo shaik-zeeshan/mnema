@@ -22,10 +22,13 @@
 //! Submodules:
 //! - [`derivation`] — prompt construction + the structured-extraction calls
 //!   (`derive_activities` and `distill_conclusions`).
+//! - [`digest`] — the lazy, fingerprint-cached **User Context Digest** (the
+//!   Insights Overview narrative lede) generation (#89).
 //! - [`worker`] — the background, tier-paced derivation loop (OCR Catch-Up style).
 //! - [`commands`] — the Tauri command surface (status / list activities +
-//!   conclusions / subject view / run-now).
+//!   conclusions / subject view / digest / run-now).
 
 pub mod commands;
 pub mod derivation;
+pub mod digest;
 pub mod worker;

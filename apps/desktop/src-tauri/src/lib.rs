@@ -545,6 +545,7 @@ pub fn run() {
             user_context::commands::list_user_context_activities,
             user_context::commands::list_user_context_conclusions,
             user_context::commands::get_user_context_subject,
+            user_context::commands::get_user_context_digest,
             user_context::commands::user_context_run_derivation_now,
             user_context::commands::user_context_dismiss_conclusion,
             user_context::commands::user_context_set_pinned,
