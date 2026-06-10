@@ -99,13 +99,14 @@ export interface AiRuntimeTestResult {
 
 /** Fixed v1 Activity taxonomy (engine-tier; may be absent on a tracer). */
 export type ActivityCategory =
-	| "coding"
-	| "research"
+	| "creating"
 	| "communication"
-	| "design"
-	| "testing"
+	| "meetings"
+	| "research"
+	| "learning"
+	| "organizing"
 	| "personal"
-	| "distractions";
+	| "entertainment";
 
 /** A raw-capture evidence reference grounding an Activity. */
 export interface ActivityEvidenceRef {

@@ -18,18 +18,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::DerivationBudgetTier;
 
-/// Fixed v1 taxonomy (CONTEXT.md "Activity Category"). Engine-tier; may be
-/// `None` on a tracer.
+/// Fixed taxonomy of profession-neutral work modes (CONTEXT.md "Activity
+/// Category", ADR 0032). Engine-tier; may be `None` on a tracer.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityCategory {
-    Coding,
-    Research,
+    Creating,
     Communication,
-    Design,
-    Testing,
+    Meetings,
+    Research,
+    Learning,
+    Organizing,
     Personal,
-    Distractions,
+    Entertainment,
 }
 
 /// Per-Activity **Focus Classification** (issue #105): how focused the episode
