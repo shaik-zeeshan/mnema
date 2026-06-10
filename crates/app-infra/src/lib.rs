@@ -5,6 +5,7 @@ mod capture_index_key_store;
 mod capture_retention;
 mod captured_frame_equivalence;
 mod captured_frame_pipeline;
+pub mod conversation;
 mod db;
 pub mod error;
 mod frame_batch_artifact_cleanup;
@@ -85,6 +86,7 @@ pub use search::{
     SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
     SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
 };
+pub use conversation::ConversationStore;
 pub use status::AppInfraStatus;
 pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
 pub use user_context::{
@@ -270,6 +272,7 @@ pub struct AppInfra {
     search: SearchStore,
     usage_charts: UsageChartsStore,
     user_context: UserContextStore,
+    conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
     runtime: JobRuntime,
@@ -331,6 +334,7 @@ impl AppInfra {
         let search = SearchStore::new(database.pool().clone());
         let usage_charts = UsageChartsStore::new(database.pool().clone());
         let user_context = UserContextStore::new(database.pool().clone());
+        let conversation = ConversationStore::new(database.pool().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
@@ -348,6 +352,7 @@ impl AppInfra {
             search,
             usage_charts,
             user_context,
+            conversation,
             captured_frame_equivalence,
             captured_frame_pipeline,
             runtime,
@@ -421,6 +426,10 @@ impl AppInfra {
 
     pub fn user_context(&self) -> &user_context::UserContextStore {
         &self.user_context
+    }
+
+    pub fn conversation(&self) -> &conversation::ConversationStore {
+        &self.conversation
     }
 
     pub fn usage_charts(&self) -> &UsageChartsStore {

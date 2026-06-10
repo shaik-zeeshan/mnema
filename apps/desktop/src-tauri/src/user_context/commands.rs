@@ -450,7 +450,9 @@ pub async fn user_context_delete_authored(
 ///
 /// 1. Clear every `user_context_*` table — all derived **Activity** /
 ///    **Conclusion** data AND **Dismissal State** and the derivation-run ledger
-///    (`wipe_all`). Raw captures and other settings are untouched.
+///    (`wipe_all`). Raw captures and other settings are untouched. This also
+///    clears all persistent Quick Recall / Chat conversations (issue #102), the
+///    single shared store.
 /// 2. Turn the **Reasoning Engine** OFF through the normal AI-runtime settings
 ///    flow (`enabled = false`), so it persists to `recording-settings.json` and
 ///    broadcasts `recording_settings_changed`/`*_domain_changed`. Wiping implies
@@ -467,6 +469,15 @@ pub async fn wipe_user_context(
     // 1. Storage half: clear the whole dossier.
     infra
         .user_context()
+        .wipe_all()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 1b. Wipe User Context also CLEARS all persistent conversations (issue #102):
+    //     the single shared Quick Recall / Chat store. Done before disabling the
+    //     engine so the same control erases every derived/recalled surface.
+    infra
+        .conversation()
         .wipe_all()
         .await
         .map_err(|e| e.to_string())?;

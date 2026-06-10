@@ -5,6 +5,7 @@ mod ask_ai;
 mod audio_transcription_models;
 mod broker_authorization_channel;
 mod cli_access;
+mod conversation;
 mod general_app_log;
 mod keyboard_bindings;
 mod managed_storage_layout;
@@ -504,6 +505,11 @@ pub fn run() {
             user_context::commands::user_context_update_authored,
             user_context::commands::user_context_delete_authored,
             user_context::commands::wipe_user_context,
+            conversation::commands::list_conversations,
+            conversation::commands::get_conversation,
+            conversation::commands::search_conversations,
+            conversation::commands::save_conversation_turn,
+            conversation::commands::delete_conversation,
             usage_charts::get_usage_charts,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
