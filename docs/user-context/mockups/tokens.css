@@ -110,13 +110,14 @@
   --chart-grey-5: #9a9ab0;
 
   /* ---- Chart: engine-tier categorical palette (fixed taxonomy) ---- */
-  --cat-coding: #3dffa0;        /* app accent green — Coding */
-  --cat-research: #60b0ff;      /* info blue — Research */
+  --cat-creating: #3dffa0;      /* app accent green — Creating */
   --cat-communication: #c0b0ff; /* violet — Communication */
-  --cat-design: #ff9fd0;        /* pink — Design */
-  --cat-testing: #b0c080;       /* olive — Testing */
+  --cat-meetings: #ff9fd0;      /* pink — Meetings */
+  --cat-research: #60b0ff;      /* info blue — Research */
+  --cat-learning: #4fd8c8;      /* teal — Learning */
+  --cat-organizing: #b0c080;    /* olive — Organizing */
   --cat-personal: #d6a14a;      /* amber — Personal */
-  --cat-distractions: #ff6b7a;  /* red — Distractions */
+  --cat-entertainment: #ff6b7a; /* red — Entertainment */
 
   /* ---- Focus heat (green → amber → red, gentle) ---- */
   --focus-deep: #3dffa0;
@@ -230,13 +231,14 @@
   --chart-grey-5: #46464e;
 
   /* ---- Chart: engine-tier categorical palette (darkened for legibility on white) ---- */
-  --cat-coding: #1f7a4a;        /* app accent green — Coding */
-  --cat-research: #2b78c5;      /* info blue — Research */
+  --cat-creating: #1f7a4a;      /* app accent green — Creating */
   --cat-communication: #5949b8; /* violet — Communication */
-  --cat-design: #c2407f;        /* pink — Design */
-  --cat-testing: #6f7a2e;       /* olive — Testing */
+  --cat-meetings: #c2407f;      /* pink — Meetings */
+  --cat-research: #2b78c5;      /* info blue — Research */
+  --cat-learning: #1f8579;      /* teal — Learning */
+  --cat-organizing: #6f7a2e;    /* olive — Organizing */
   --cat-personal: #9a5a12;      /* amber — Personal */
-  --cat-distractions: #c43a48;  /* red — Distractions */
+  --cat-entertainment: #c43a48; /* red — Entertainment */
 
   /* ---- Focus heat (green → amber → red, gentle) ---- */
   --focus-deep: #1f7a4a;

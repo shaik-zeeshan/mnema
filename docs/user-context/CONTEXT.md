@@ -206,12 +206,26 @@ focus/distraction judgment; those are the engine tier.
 _Avoid_: categories, focus/distraction coloring, productivity score, dossier, LLM summary
 
 **Activity Category**:
-A label the **Reasoning Engine** assigns to each **Activity** from a **fixed v1 taxonomy** (e.g.
-Coding, Research, Communication, Design, Testing, Personal, Distractions). Engine-tier (judgment, not
-a static app→category catalog, because the same app serves different purposes in context).
-**Correctable** like a **Conclusion**. Powers the categorized charts — per-category treemap,
-category→app Sankey, categorized time-distribution bars.
-_Avoid_: static bundle-id catalog, user-defined custom taxonomy (v1), fixed app mapping
+A label the **Reasoning Engine** assigns to each **Activity** from a **fixed v1 taxonomy** of
+profession-neutral *work modes* (what kind of thing the user was doing), not developer-specific
+domains: **Creating** (producing anything — code, documents, designs, slides, music),
+**Communication** (asynchronous text — email, chat, messages), **Meetings** (real-time
+conversation — calls, video meetings), **Research** (reading/searching in service of a current
+task), **Learning** (deliberate skill-building for its own sake — courses, tutorials),
+**Organizing** (structuring work/time — calendar, task managers, planning, admin paperwork),
+**Personal** (life errands regardless of subject — shopping, banking, health, travel), and
+**Entertainment** (videos, games, social feeds, browsing for fun). Boundary rules: synchronous
+conversation → Meetings, async text → Communication; in service of the task at hand → Research,
+skill-building for its own sake → Learning; life errands → Personal even when work-adjacent
+(buying a work laptop), structuring work → Organizing. Categories describe content type only; the
+focused/derailed judgment belongs exclusively to **Focus Classification** — there is deliberately
+no "Distractions" category ("2h Entertainment" is a fact, "2h Distractions" is a scolding).
+Engine-tier (judgment, not a static app→category catalog, because the same app serves different
+purposes in context). **Correctable** like a **Conclusion**. Powers the categorized charts —
+per-category treemap, category→app Sankey, categorized time-distribution bars.
+_Avoid_: static bundle-id catalog, user-defined custom taxonomy (v1), fixed app mapping,
+distraction-as-category (focus-axis leakage), profession-specific categories (Coding, Testing),
+"Browsing" catch-all (aimless browsing is Entertainment or Research by intent)
 
 **Focus Classification**:
 A focused-vs-distracted judgment the **Reasoning Engine** assigns over **Activity** / time, powering
