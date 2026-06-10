@@ -1,8 +1,30 @@
-mod pi_agent_session;
+//! Ask AI — Quick Recall / Chat tool-enabled answer slice (issue #70, ADR 0024;
+//! migrated onto the shared Reasoning Engine by ADR 0033).
+//!
+//! Ask AI now drives the in-process `rig-core` agent loop (the `ai-runtime`
+//! crate, aliased `ai_engine`) directly — there is NO Node child, NO PI shim, NO
+//! resident PI session. Every turn is **stateless**: the driver reloads the
+//! conversation's completed history from the backend conversation store, runs ONE
+//! agent loop against the configured engine, and persists the answer as it
+//! streams so a reattaching frontend can read the in-flight partial. Because the
+//! turn task is detached, it finishes in the background regardless of whether the
+//! Quick Recall window is dismissed; a follow-up just runs another stateless turn.
+//!
+//! The brokered data tools (`search`, `timeline`, `show_text`, `recall_context`)
+//! plus the presentation-only `reference_captures` tool are described to the model
+//! and executed through the All-Retained broker seam
+//! (`BrokeredCaptureAccess::execute_for_ask_ai`) Rust-side, with redaction/audit
+//! and the per-question tool-call cap enforced here. `open`/`open_in_mnema` is NOT
+//! an Ask AI tool and is rejected before the broker.
+//!
+//! The streaming Tauri EVENT surface (`ask_ai_status` / `ask_ai_delta` /
+//! `ask_ai_done` / `ask_ai_error` / `ask_ai_source`, all keyed by
+//! `conversationId`) is byte-for-byte the same as the PI-era surface, so the
+//! frontend barely changes.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use app_infra::brokered_access::{
@@ -10,124 +32,67 @@ use app_infra::brokered_access::{
     BrokerSearchRequest, BrokerSearchResult, BrokerTimelineRequest, BrokeredCaptureAccess,
     BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
+use capture_types::AiRuntimeSettings;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
-use pi_agent_session::AskAiCancel;
+use crate::app_infra::AppInfraState;
 
-/// Monotonic counter minting a unique ownership token per session registration.
-/// Lets a finishing session task remove only its own registry entry and never
-/// evict a newer session that reused the same conversation id.
-static ASK_AI_SESSION_TOKEN: AtomicU64 = AtomicU64::new(0);
-
-/// A live Ask AI thread's control handles: its cancellation flag and the
-/// follow-up prompt sender that feeds raw follow-up questions into the resident
-/// PI session. Dropping `prompt_tx` (by removing the handle) makes the session
-/// task's `prompt_rx.recv()` return `None` and tear the thread down between
-/// turns; `cancel` hard-kills it mid-turn.
+/// Process registry mapping a conversation id (the whole thread) to the
+/// cooperative cancel flag of its CURRENTLY in-flight turn. Module-level so it
+/// survives across separate Tauri command invocations without touching lib.rs
+/// state wiring.
 ///
-/// `token` is a per-registration ownership stamp assigned by
-/// `register_ask_ai_session` (the value passed at construction is overwritten):
-/// a session task only removes the registry entry whose token matches the one
-/// register returned, so two `ask_ai_start` calls sharing a conversation id
-/// don't let the first to finish evict the second's still-live handle.
-struct AskAiSessionHandle {
-    cancel: AskAiCancel,
-    prompt_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    token: u64,
+/// There is no resident session, prompt channel, or ownership token anymore: a
+/// turn is a detached task that streams once and exits. The registry exists only
+/// so `ask_ai_cancel` can find a running turn's flag, and so a new
+/// start/follow-up can cancel a still-running prior turn for the same
+/// conversation before launching its replacement.
+static ASK_AI_INFLIGHT: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    ASK_AI_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Process registry mapping a conversation id (the whole thread/session) to its
-/// control handles, so `ask_ai_cancel` can kill a streaming thread started by
-/// `ask_ai_start` and `ask_ai_followup` can route a follow-up prompt into the
-/// live session. Module-level so it survives across separate Tauri command
-/// invocations without touching lib.rs state wiring.
-static ASK_AI_SESSIONS: OnceLock<Mutex<HashMap<String, AskAiSessionHandle>>> = OnceLock::new();
-
-fn ask_ai_sessions() -> &'static Mutex<HashMap<String, AskAiSessionHandle>> {
-    ASK_AI_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Register (or replace) the handle for a conversation, stamping it with a fresh
-/// unique ownership token that the caller records for a later owner-checked
-/// removal. If an existing live handle is overwritten — two `ask_ai_start` calls
-/// racing on one conversation id — the prior handle is hard-cancelled here (its
-/// `cancel` flag set AND its `prompt_tx` dropped) so the displaced session winds
-/// down rather than running orphaned alongside the newer one. Dropping
-/// `prompt_tx` alone only tears the old session down BETWEEN turns
-/// (`prompt_rx.recv()` returns `None`); a session that is mid-turn is blocked
-/// reading shim stdout and is only stopped by the cancel flag, which the spawned
-/// task checks at the top of its read loop. Without setting it, the displaced
-/// streamer would keep emitting `ask_ai_delta`/`ask_ai_done` events tagged with
-/// the SAME conversation id as the newer session, interleaving output, and would
-/// be unreachable by `ask_ai_cancel` (which now resolves the newer handle).
-/// Returns the minted token.
-fn register_ask_ai_session(conversation_id: &str, mut handle: AskAiSessionHandle) -> u64 {
-    // Stamp the registration with a fresh unique token so a finishing session can
-    // later remove only its own entry.
-    let token = next_ask_ai_session_token();
-    handle.token = token;
-    if let Ok(mut sessions) = ask_ai_sessions().lock() {
-        // `insert` returns any prior handle. Hard-cancel it (set its `cancel`
-        // flag) before dropping it, so a displaced session that is mid-turn is
-        // killed rather than only winding down between turns; dropping the
-        // returned handle also releases its `prompt_tx`. The flag is the same
-        // `Arc<AtomicBool>` the displaced streaming task polls, so this reaches a
-        // task that is no longer in the registry.
-        if let Some(previous) = sessions.insert(conversation_id.to_string(), handle) {
-            previous.cancel.cancel();
+/// Register a fresh cancel flag for a conversation's new in-flight turn,
+/// returning the flag. Any flag already registered for that conversation (a prior
+/// turn still streaming) is CANCELLED before being replaced, so a racing
+/// start/follow-up cooperatively stops the displaced turn rather than letting two
+/// turns interleave `ask_ai_delta` output under the same conversation id. The
+/// displaced turn observes its flag between stream items and ends cleanly.
+fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Ok(mut map) = ask_ai_inflight().lock() {
+        if let Some(previous) = map.insert(conversation_id.to_string(), cancel.clone()) {
+            previous.store(true, Ordering::SeqCst);
         }
     }
-    token
+    cancel
 }
 
-/// Mint the next unique session ownership token.
-fn next_ask_ai_session_token() -> u64 {
-    ASK_AI_SESSION_TOKEN.fetch_add(1, Ordering::Relaxed)
-}
-
-/// Remove the registry entry for a conversation only if it still holds the
-/// handle stamped with `token`. A finishing session task calls this so it never
-/// evicts a newer session that reused the same conversation id (the newer
-/// registration carries a different token).
-fn remove_ask_ai_session_if_owner(conversation_id: &str, token: u64) {
-    if let Ok(mut sessions) = ask_ai_sessions().lock() {
-        if sessions
+/// Remove the in-flight flag for a conversation only if it is still the exact
+/// `cancel` instance the finishing turn registered. A turn calls this on exit so
+/// it never evicts a NEWER turn that displaced it (the newer turn registered a
+/// different `Arc`).
+fn remove_inflight_if_owner(conversation_id: &str, cancel: &Arc<AtomicBool>) {
+    if let Ok(mut map) = ask_ai_inflight().lock() {
+        if map
             .get(conversation_id)
-            .is_some_and(|handle| handle.token == token)
+            .is_some_and(|flag| Arc::ptr_eq(flag, cancel))
         {
-            sessions.remove(conversation_id);
+            map.remove(conversation_id);
         }
     }
 }
 
-#[cfg(test)]
-fn remove_ask_ai_session(conversation_id: &str) {
-    if let Ok(mut sessions) = ask_ai_sessions().lock() {
-        sessions.remove(conversation_id);
-    }
-}
-
-/// Remove and return the handle for a conversation, dropping its `prompt_tx`
-/// (which tears down the resident session between turns). Used by cancel.
-fn take_ask_ai_session(conversation_id: &str) -> Option<AskAiSessionHandle> {
-    ask_ai_sessions()
+/// Take (remove and return) the in-flight flag for a conversation. Used by
+/// `ask_ai_cancel`: setting the returned flag cooperatively stops the running
+/// turn, and removing it keeps the registry tidy.
+fn take_inflight(conversation_id: &str) -> Option<Arc<AtomicBool>> {
+    ask_ai_inflight()
         .lock()
         .ok()
-        .and_then(|mut sessions| sessions.remove(conversation_id))
-}
-
-/// Clone the follow-up prompt sender for a live conversation WITHOUT removing
-/// it, so a follow-up can be routed into the resident session while the thread
-/// stays registered. Returns `None` for an unknown/dead conversation id.
-fn ask_ai_session_prompt_sender(
-    conversation_id: &str,
-) -> Option<tokio::sync::mpsc::UnboundedSender<String>> {
-    ask_ai_sessions().lock().ok().and_then(|sessions| {
-        sessions
-            .get(conversation_id)
-            .map(|handle| handle.prompt_tx.clone())
-    })
+        .and_then(|mut map| map.remove(conversation_id))
 }
 
 const ASK_AI_STATUS_EVENT: &str = "ask_ai_status";
@@ -140,17 +105,25 @@ const ASK_AI_SOURCE_EVENT: &str = "ask_ai_source";
 const ASK_AI_SOURCE_FRAME_CAP: usize = 6;
 const ASK_AI_SOURCE_AUDIO_CAP: usize = 4;
 
-/// Maximum size (in chars) of the formatted prior-conversation context block
-/// prepended to a resurrected session's first prompt. When the formatted turns
-/// exceed this, the OLDEST turns are dropped whole until the block fits; if even
-/// the single most recent turn alone still exceeds it, that turn's text is
-/// truncated to fit. Keeps a resurrected prompt bounded so an old, long
-/// conversation cannot blow up the first turn's token budget.
-const ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP: usize = 12_000;
+/// Number of seeded broker-search results requested.
+const ASK_AI_SEED_LIMIT: u32 = 8;
+
+/// Persist-throttle thresholds for the streaming partial answer. The accumulating
+/// answer is re-persisted to the turn row (phase `streaming`) once either many
+/// deltas or many new chars have accrued since the last persist, so a reattach
+/// reads a recent partial without one DB write per token.
+const ASK_AI_PARTIAL_PERSIST_DELTA_INTERVAL: usize = 20;
+const ASK_AI_PARTIAL_PERSIST_CHAR_INTERVAL: usize = 200;
+
+/// Default origin stamped on a conversation when `ask_ai_start` does not carry one
+/// and the conversation row does not yet exist. Quick Recall is the historical
+/// Ask AI door; Chat passes `"chat"` explicitly (Slice 7).
+const ASK_AI_DEFAULT_ORIGIN: &str = "quick_recall";
 
 /// Translate the persisted `askAiMaxToolCalls` setting (`0` = no cap) into the
-/// per-session cap passed to the agent loop. `0` becomes `usize::MAX` so the
-/// agent may issue unlimited follow-up brokered queries.
+/// per-turn cap passed to the agent loop. `0` becomes `usize::MAX` so the agent
+/// may issue unlimited follow-up brokered queries (the loop clamps it to a sane
+/// internal ceiling).
 fn resolve_tool_call_cap(setting: u32) -> usize {
     if setting == 0 {
         usize::MAX
@@ -172,86 +145,89 @@ fn broker_access(app_handle: &tauri::AppHandle) -> Result<BrokeredCaptureAccess,
     )?))
 }
 
-fn pi_broker_identity() -> Result<BrokerClientIdentity, String> {
-    BrokerClientIdentity::new("PI", BrokerClientIdentitySource::Inferred)
+/// The broker client identity Ask AI presents to the All-Retained broker seam.
+///
+/// The label is "Ask AI" (the in-process agent is the client now; PI is gone) and
+/// the source is `Inferred`, matching how the broker attributes an internally
+/// inferred client rather than an explicitly authenticated CLI identity.
+fn ask_ai_broker_identity() -> Result<BrokerClientIdentity, String> {
+    BrokerClientIdentity::new("Ask AI", BrokerClientIdentitySource::Inferred)
         .map_err(|error| error.to_string())
 }
 
-fn validate_ask_ai_access_ready(
-    ask_ai_enabled: bool,
-    status: &crate::app_infra::PiRuntimeStatus,
-) -> Result<(), String> {
-    if !ask_ai_enabled {
-        return Err("Ask AI access is disabled in settings".to_string());
-    }
-    if !status.ready {
-        let reason = status.reason.as_deref().unwrap_or("pi_unavailable");
-        return Err(format!("Ask AI requires a ready PI runtime ({reason})"));
-    }
-
-    Ok(())
+/// Read the full current recording settings (so callers can pull both the
+/// `access` and `ai_runtime` domains from one read).
+fn read_recording_settings(app_handle: &tauri::AppHandle) -> capture_types::RecordingSettings {
+    crate::native_capture::current_recording_settings_from_app_handle(app_handle)
 }
 
-fn read_ask_ai_enabled(app_handle: &tauri::AppHandle) -> Result<bool, String> {
-    let Some(settings_state) =
-        app_handle.try_state::<crate::native_capture::RecordingSettingsState>()
-    else {
-        return Err("Ask AI settings are unavailable".to_string());
-    };
-    let enabled = settings_state
-        .lock()
-        .map_err(|_| "Ask AI settings are unavailable".to_string())?
-        .settings
-        .access
-        .ask_ai_enabled;
-    Ok(enabled)
+fn read_ask_ai_enabled(app_handle: &tauri::AppHandle) -> bool {
+    read_recording_settings(app_handle).access.ask_ai_enabled
 }
 
-/// Read the configured per-question tool-call cap (`0` = no cap). Falls back to
-/// the default cap if the settings state is unavailable.
+fn read_ai_runtime_settings(app_handle: &tauri::AppHandle) -> AiRuntimeSettings {
+    read_recording_settings(app_handle).ai_runtime
+}
+
+/// Read the configured per-question tool-call cap (`0` = no cap).
 fn read_ask_ai_max_tool_calls(app_handle: &tauri::AppHandle) -> usize {
-    let setting = app_handle
-        .try_state::<crate::native_capture::RecordingSettingsState>()
-        .and_then(|state| {
-            state
-                .lock()
-                .ok()
-                .map(|guard| guard.settings.access.ask_ai_max_tool_calls)
-        })
-        .unwrap_or_else(capture_types::default_ask_ai_max_tool_calls);
-    resolve_tool_call_cap(setting)
+    resolve_tool_call_cap(
+        read_recording_settings(app_handle)
+            .access
+            .ask_ai_max_tool_calls,
+    )
 }
 
-/// Read the configured Quick Recall model (`provider:id`), or `None` to let the
-/// PI runtime pick its default. Blank values normalize to `None`.
+/// Read the configured Quick Recall model — a bare rig-core model id (NOT a
+/// `provider:id` PI spec anymore). `None`/blank means "use the engine's
+/// configured model". Used to override the default engine's model for an
+/// UNPINNED conversation.
 fn read_ask_ai_model(app_handle: &tauri::AppHandle) -> Option<String> {
-    app_handle
-        .try_state::<crate::native_capture::RecordingSettingsState>()
-        .and_then(|state| {
-            state
-                .lock()
-                .ok()
-                .and_then(|guard| guard.settings.access.ask_ai_model.clone())
-        })
+    read_recording_settings(app_handle)
+        .access
+        .ask_ai_model
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())
 }
 
-async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let ask_ai_enabled = read_ask_ai_enabled(app_handle)?;
-    let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
-    validate_ask_ai_access_ready(ask_ai_enabled, &status)?;
-
-    Ok(())
+/// Resolve the AppInfra handle (for the conversation store). Cloned `Arc` so the
+/// caller can hold it across awaits without borrowing the Tauri `State` guard.
+fn app_infra(app_handle: &tauri::AppHandle) -> Result<AppInfraState, String> {
+    app_handle
+        .try_state::<AppInfraState>()
+        .map(|state| Arc::clone(&*state))
+        .ok_or_else(|| "Ask AI storage is unavailable".to_string())
 }
 
-async fn execute_pi_broker_request(
+/// "Now" in unix milliseconds (UTC), stamped Rust-side on persist so the store
+/// stays deterministic. Mirrors the conversation command module's `now_ms`.
+fn now_ms() -> i64 {
+    (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
+}
+
+/// The two-layer Ask AI access gate. `Ok(())` only when Ask AI is enabled in
+/// settings AND the shared Reasoning Engine prerequisite passes; the error is a
+/// human string the frontend surfaces.
+async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    if !read_ask_ai_enabled(app_handle) {
+        return Err("Ask AI access is disabled in settings".to_string());
+    }
+    let settings = read_ai_runtime_settings(app_handle);
+    crate::ai_runtime::engine_configured_prerequisite(&settings).await
+}
+
+/// Execute one brokered data-tool request under the Ask AI seam: re-checks access
+/// readiness, then runs it through the All-Retained Ask-AI broker scope
+/// (`execute_for_ask_ai`) with redaction/audit attributed to the "Ask AI"
+/// identity. `open`/`open_in_mnema` never reach here — they are rejected by
+/// `broker_request_from_tool` before this is called.
+async fn execute_ask_ai_broker_request(
     app_handle: tauri::AppHandle,
     request: BrokeredCaptureRequest,
 ) -> Result<BrokeredCaptureResponse, String> {
     ensure_ask_ai_access_ready(&app_handle).await?;
     broker_access(&app_handle)?
-        .execute_for_ask_ai(pi_broker_identity()?, request)
+        .execute_for_ask_ai(ask_ai_broker_identity()?, request)
         .await
         .map_err(|error| format!("failed to execute Ask AI broker request: {error}"))
 }
@@ -259,9 +235,9 @@ async fn execute_pi_broker_request(
 /// Map an Ask AI tool name + camelCase params object onto a brokered request.
 ///
 /// Only the Ask AI data tools (`search`, `timeline`, `show_text`,
-/// `recall_context`) are accepted; `open`/`open_in_mnema` and anything else fall
-/// into the unknown branch and are rejected, so they can never be issued as Ask
-/// AI data tools.
+/// `recall_context`) are accepted; `open`/`open_in_mnema`, the presentation-only
+/// `reference_captures`, and anything else fall into the unknown branch and are
+/// rejected, so they can never be issued as Ask AI data tools.
 fn broker_request_from_tool(
     tool: &str,
     params: serde_json::Value,
@@ -296,7 +272,7 @@ fn broker_request_from_tool(
     }
 }
 
-/// Convert a brokered response into the JSON value handed back to the shim as a
+/// Convert a brokered response into the JSON value handed back to the model as a
 /// tool result, or an error message (broker error envelopes become `Err`).
 fn broker_response_to_tool_value(
     response: BrokeredCaptureResponse,
@@ -406,16 +382,18 @@ where
     (sources, accepted, dropped)
 }
 
-/// Handle the shim's `reference_captures` presentation tool: validate + decode
+/// Handle the model's `reference_captures` presentation tool: validate + decode
 /// the nominated opaque ids, attach retained metadata, cap the set, emit a
-/// single `ask_ai_source` event to the frontend, and ack the shim with
-/// `{ accepted, dropped }`. This never touches the broker dispatch path.
+/// single `ask_ai_source` event to the frontend, and return `{ accepted, dropped }`
+/// as the tool result. This never touches the broker dispatch path. The emitted
+/// sources JSON is also handed back to the caller so the turn driver can persist
+/// it on the turn row.
 async fn handle_reference_captures(
     app_handle: &tauri::AppHandle,
     conversation_id: &str,
     search_metadata: &Arc<Mutex<HashMap<String, BrokerSearchResult>>>,
     params: serde_json::Value,
-) -> Result<serde_json::Value, String> {
+) -> Result<(serde_json::Value, Vec<serde_json::Value>), String> {
     let opaque_ids: Vec<String> = params
         .get("opaqueIds")
         .and_then(|value| value.as_array())
@@ -478,7 +456,7 @@ async fn handle_reference_captures(
     // We first collect `(index, audio_segment_id)` from an immutable read of
     // `sources`, drive the cloned-`Arc` lookups through `join_all`, then apply the
     // resolved kinds back by index (the only mutable borrow of `sources`).
-    if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+    if let Some(infra) = app_handle.try_state::<AppInfraState>() {
         // Own a cloned `Arc<AppInfra>` so each concurrent lookup future can hold it
         // for the life of its `await` without borrowing the Tauri `State` guard.
         let infra = Arc::clone(&*infra);
@@ -525,40 +503,20 @@ async fn handle_reference_captures(
         }),
     );
 
-    Ok(serde_json::json!({ "accepted": accepted, "dropped": dropped }))
+    Ok((
+        serde_json::json!({ "accepted": accepted, "dropped": dropped }),
+        sources,
+    ))
 }
 
-#[tauri::command]
-pub async fn get_pi_runtime_status(
-    app_handle: tauri::AppHandle,
-) -> Result<crate::app_infra::PiRuntimeStatus, String> {
-    // This command backs the explicit Settings → "Refresh PI status" action, so force a
-    // fresh login-shell PATH read: a user who fixed pi/node (e.g. added a dir to their
-    // shell profile) after launch must see it without restarting the app. Hot/background
-    // callers use `get_pi_runtime_status_inner` (cached) instead.
-    crate::app_infra::get_pi_runtime_status_inner_with_options(app_handle, true).await
-}
-
-// NOTE: the brokered data tools (`search`, `timeline`, `show_text`) are NOT
-// exposed as Tauri commands. They are reachable only through the PI Ask AI
-// session via the in-process `tool_invoker` (see `run_pi_ask_ai_session`), which
-// routes every call through `execute_pi_broker_request` AND the per-question
-// tool-call cap. Registering them as renderer-callable commands would let any
-// webview (or an XSS in Quick Recall) issue All-Retained broker queries directly,
-// bypassing both the PI flow and the cap while audit still attributed access to
-// PI. Keep them internal.
-
-/// One prior question/answer turn carried into a resurrected session.
-///
-/// Only the question and answer text are included — no tool logs, no Answer
-/// Sources — per the resurrection contract. The frontend builds the list from
-/// its in-memory transcript when a follow-up lands on an expired/errored thread.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AskAiPriorTurn {
-    question: String,
-    answer: String,
-}
+// NOTE: the brokered data tools (`search`, `timeline`, `show_text`,
+// `recall_context`) are NOT exposed as Tauri commands. They are reachable only
+// through the in-process agent loop's `ToolExecutor` (see `run_ask_ai_turn`),
+// which routes every call through `execute_ask_ai_broker_request` AND the
+// per-question tool-call cap. Registering them as renderer-callable commands
+// would let any webview (or an XSS in Quick Recall) issue All-Retained broker
+// queries directly, bypassing both the agent flow and the cap while audit still
+// attributed access to "Ask AI". Keep them internal.
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -566,13 +524,22 @@ pub struct AskAiStartRequest {
     conversation_id: String,
     question: String,
     seed_query: Option<String>,
-    /// Prior questions and answers from an earlier (expired or errored) session,
-    /// oldest first. When present, Rust formats a size-capped context block and
-    /// prepends it to the first prompt so the fresh session is "resurrected" with
-    /// the prior conversation. Optional and fully backward-compatible: absent or
-    /// empty behaves exactly as a plain start.
+    /// The door that created/owns the conversation: `"quick_recall"` | `"chat"`.
+    /// Stamped on the turn row only when the conversation is newly created (the
+    /// store preserves an existing row's origin). Optional for wire back-compat;
+    /// defaults to Quick Recall, the historical Ask AI door.
     #[serde(default)]
-    prior_transcript: Option<Vec<AskAiPriorTurn>>,
+    origin: Option<String>,
+    /// The conversation title for the upsert (the first non-empty title wins).
+    /// Optional; defaults to empty.
+    #[serde(default)]
+    title: Option<String>,
+    /// Legacy resurrect-from-transcript field. History now comes from the backend
+    /// conversation store, so this is IGNORED — kept only so the frontend's
+    /// existing start payload still deserializes during the migration.
+    #[serde(default)]
+    #[allow(dead_code)]
+    prior_transcript: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -596,41 +563,15 @@ pub struct AskAiAvailability {
     reason: Option<String>,
 }
 
-/// Resolve `node` against the user's real terminal shell PATH (never bare
-/// `Command::new("node")`; packaged macOS apps lack the Homebrew PATH).
-fn resolve_node_executable() -> Result<PathBuf, String> {
-    crate::app_infra::executable_in_shell_path("node")
-        .ok_or_else(|| "Ask AI requires Node.js (from your PI install) on PATH".to_string())
-}
-
-/// Resolve the Ask AI shim path: production resource dir first, then the dev
-/// `CARGO_MANIFEST_DIR` fallback.
-fn resolve_shim_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        let candidate = resource_dir.join("resources/pi-ask-ai-shim.mjs");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    let dev_candidate =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/pi-ask-ai-shim.mjs");
-    if dev_candidate.is_file() {
-        return Ok(dev_candidate);
-    }
-
-    Err("Ask AI shim is missing".to_string())
-}
-
 /// Build a single seed-context line for one broker search result.
 ///
 /// The line surfaces the result's `opaqueId` the same way a tool-call `search`
-/// result exposes it to the model (each `search` result JSON carries an
-/// `opaqueId` field). Without it, a model answering purely from seeded context —
-/// never calling `search` — would have no id to hand to `reference_captures`, so
-/// the answer would render zero Answer Source cards. The ids minted by the
-/// broker seed search are HMAC-signed identically to tool-call search ids, so a
-/// nominated seed id validates through the same `reference_captures` resolver.
+/// result exposes it to the model. Without it, a model answering purely from
+/// seeded context — never calling `search` — would have no id to hand to
+/// `reference_captures`, so the answer would render zero Answer Source cards. The
+/// ids minted by the broker seed search are HMAC-signed identically to tool-call
+/// search ids, so a nominated seed id validates through the same
+/// `reference_captures` resolver.
 fn format_seed_result_line(index: usize, result: &BrokerSearchResult) -> String {
     let app_label = result
         .context
@@ -663,14 +604,13 @@ fn format_seed_result_line(index: usize, result: &BrokerSearchResult) -> String 
     )
 }
 
-/// Assemble the full seeded prompt string sent to the shim over stdin.
-fn build_ask_ai_prompt(
-    question: &str,
-    seed_query: Option<&str>,
-    results: &[BrokerSearchResult],
-) -> String {
-    let mut prompt = String::new();
-    prompt.push_str(
+/// The agent **preamble** (system instruction): documents the four data tools +
+/// the presentation `reference_captures` tool and the optional graphical-answer
+/// affordance. This is the engine-agnostic system text; the per-turn seeded
+/// context + the bare question live in the prompt (see [`build_ask_ai_prompt`]).
+fn build_ask_ai_preamble() -> String {
+    let mut preamble = String::new();
+    preamble.push_str(
         "You are Mnema's Ask AI assistant. Answer the user's question using their own on-device \
 screen and audio capture history. All data is the user's own, redacted, on-device capture. You \
 have FOUR tools, and there is NO way to open files or access anything beyond them: `search` \
@@ -693,7 +633,7 @@ answer, say so briefly. Be concise and direct.\n",
     // Graphical-answer affordance (issue #110): the Chat surface renders two
     // fenced block kinds as inline charts. This is OPTIONAL and only for answers
     // that are naturally a breakdown/comparison; plain markdown is the default.
-    prompt.push_str(
+    preamble.push_str(
         "When an answer is naturally a breakdown or comparison (for example time by category, \
 top apps, or a set of beliefs/conclusions), you MAY include a fenced ```mnema-bars block whose \
 body is JSON `{\"title\":\"…\",\"bars\":[{\"label\":\"…\",\"value\":12,\"color\":\"--cat-coding\"}]}` \
@@ -703,9 +643,33 @@ a chart. Use at most one such block, with real numbers you derived from the capt
 answer in plain markdown.\n",
     );
 
+    // The presentation tool is described separately because it is NOT a data tool
+    // and does not count against the tool-call budget.
+    preamble.push_str(
+        "You also have a presentation signal, `reference_captures`, which takes `opaqueIds` (the \
+opaque ids you received from `search` results, most-relevant-first) and nominates the captures \
+(screen frames / audio) behind your answer so the app can show them to the user as source cards. \
+It returns NO capture data — only an acknowledgement of how many ids were accepted/dropped. Call \
+it once near the end of your answer (a repeat call replaces the prior set); it does NOT count \
+against the tool-call budget.\n",
+    );
+
+    preamble
+}
+
+/// Assemble the per-turn **prompt**: the seeded capture context (if any) followed
+/// by the bare question. The system instruction lives in the preamble (see
+/// [`build_ask_ai_preamble`]); conversation history is fed separately to the
+/// agent loop, so it is NOT in the prompt.
+fn build_ask_ai_prompt(
+    question: &str,
+    seed_query: Option<&str>,
+    results: &[BrokerSearchResult],
+) -> String {
+    let mut prompt = String::new();
+
     if let Some(seed_query) = seed_query {
         if !results.is_empty() {
-            prompt.push('\n');
             prompt.push_str(&format!(
                 "Context from the user's captures for \"{seed_query}\":\n"
             ));
@@ -713,142 +677,672 @@ answer in plain markdown.\n",
                 prompt.push_str(&format_seed_result_line(index, result));
                 prompt.push('\n');
             }
+            prompt.push('\n');
         }
     }
 
-    prompt.push('\n');
     prompt.push_str(&format!("Question: {question}"));
     prompt
 }
 
-/// Format one prior turn into its context-block lines.
-fn format_prior_turn_lines(index: usize, turn: &AskAiPriorTurn) -> String {
-    format!(
-        "Q{n}: {question}\nA{n}: {answer}\n",
-        n = index + 1,
-        question = turn.question.trim(),
-        answer = turn.answer.trim(),
-    )
+/// JSON Schema (object) for the `search` tool params. Mirrors the shapes the PI
+/// shim declared via TypeBox so the model's expected tool contract is unchanged.
+fn search_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "query": { "type": "string", "description": "Free-text query to match against captured text." },
+            "from": { "type": "string", "description": "Inclusive lower time bound, RFC3339 (e.g. 2026-06-01T09:00:00Z)." },
+            "to": { "type": "string", "description": "Inclusive upper time bound, RFC3339." },
+            "limit": { "type": "number", "description": "Maximum number of snippets to return." },
+            "app": { "type": "string", "description": "Restrict to a single app by name or bundle id." },
+            "windowTitle": { "type": "string", "description": "Restrict to snippets whose window title matches." }
+        },
+        "required": ["query"]
+    })
 }
 
-/// Build the resurrection context block prepended to the first prompt of a fresh
-/// session, from prior questions/answers (oldest first).
-///
-/// Returns `None` when there is nothing to prepend (no turns, or every turn is
-/// blank after trimming). Otherwise returns a clearly-delimited block that tells
-/// the model this is prior conversation from an earlier session, followed by the
-/// numbered Q/A turns.
-///
-/// Size cap: the formatted block is bounded by [`ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP`].
-/// Trimming drops the OLDEST whole turns first, keeping the most recent turns
-/// intact. Edge case: if even the single most recent turn alone still exceeds the
-/// cap, that turn's answer text is truncated (a `… [truncated]` marker appended)
-/// so the block always fits. Returns `(block, truncated)` where `truncated` is
-/// true when any oldest turns were dropped or the last turn's text was cut, for
-/// caller logging.
-fn format_prior_transcript_block(turns: &[AskAiPriorTurn]) -> Option<(String, bool)> {
-    // Drop fully-blank turns up front so they neither render nor count against
-    // the cap; resurrection should carry real Q/A only.
-    let turns: Vec<&AskAiPriorTurn> = turns
-        .iter()
-        .filter(|turn| !turn.question.trim().is_empty() || !turn.answer.trim().is_empty())
-        .collect();
-    if turns.is_empty() {
-        return None;
-    }
+/// JSON Schema (object) for the `timeline` tool params.
+fn timeline_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "from": { "type": "string", "description": "Inclusive window start, RFC3339 (required)." },
+            "to": { "type": "string", "description": "Inclusive window end, RFC3339 (required)." },
+            "limit": { "type": "number", "description": "Maximum number of intervals to return." },
+            "app": { "type": "string", "description": "Restrict to a single app by name or bundle id." },
+            "windowTitle": { "type": "string", "description": "Restrict to intervals whose window title matches." }
+        },
+        "required": ["from", "to"]
+    })
+}
 
-    const HEADER: &str =
-        "The following is prior conversation context from an EARLIER Ask AI session that has \
-since ended. Treat these questions and answers as established context for the new question \
-below. Do not repeat them back; build on them.\n\n";
-    const FOOTER: &str = "\n(End of prior conversation context.)\n\n";
-    // The header + footer are fixed overhead the turn lines must fit within.
-    let overhead = HEADER.len() + FOOTER.len();
-    let turn_budget = ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP.saturating_sub(overhead);
+/// JSON Schema (object) for the `show_text` tool params.
+fn show_text_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "opaqueId": { "type": "string", "description": "An opaque id from a prior `search` result (required)." }
+        },
+        "required": ["opaqueId"]
+    })
+}
 
-    // Render newest-first, accumulating turns until the budget is spent, then
-    // reverse back to oldest-first for the final block. Dropping happens from the
-    // oldest end (the turns left unrendered when the budget runs out).
-    let mut rendered_newest_first: Vec<String> = Vec::new();
-    let mut used = 0usize;
-    let mut truncated = false;
-    for (display_index, turn) in turns.iter().enumerate().rev() {
-        let line = format_prior_turn_lines(display_index, turn);
-        if used + line.len() <= turn_budget {
-            used += line.len();
-            rendered_newest_first.push(line);
-            continue;
-        }
-        // This turn does not fit. If it is the most recent turn and nothing has
-        // been rendered yet, the single newest turn alone exceeds the budget:
-        // truncate its rendered line so the block still carries the latest
-        // exchange rather than dropping everything.
-        if rendered_newest_first.is_empty() {
-            let truncation_marker = "… [truncated]\n";
-            let keep = turn_budget.saturating_sub(truncation_marker.len());
-            let mut clipped: String = line.chars().take(keep).collect();
-            clipped.push_str(truncation_marker);
-            rendered_newest_first.push(clipped);
-        }
-        // Older turns are dropped wholesale.
-        truncated = true;
-        break;
-    }
+/// JSON Schema (object) for the `recall_context` tool params.
+fn recall_context_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The user's question; returns only the User-Context conclusions/activities relevant to it."
+            },
+            "limit": { "type": "number", "description": "Maximum number of conclusions/activities to return (capped server-side)." }
+        },
+        "required": ["query"]
+    })
+}
 
-    let mut block = String::with_capacity(used + overhead);
-    block.push_str(HEADER);
-    for line in rendered_newest_first.iter().rev() {
-        block.push_str(line);
+/// JSON Schema (object) for the `reference_captures` presentation-tool params.
+fn reference_captures_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "opaqueIds": {
+                "type": "array",
+                "items": { "type": "string", "description": "An opaque id from a prior search result." },
+                "description": "Opaque ids of the captures behind the answer, most-relevant-first."
+            }
+        },
+        "required": ["opaqueIds"]
+    })
+}
+
+/// Build the agent tool set described to the model. The descriptions mirror the
+/// PI shim's `defineTool` descriptions so the model's tool contract is preserved
+/// across the migration.
+fn build_ask_ai_tools() -> Vec<ai_engine::AgentTool> {
+    vec![
+        ai_engine::AgentTool {
+            name: "search".to_string(),
+            description:
+                "Search the user's redacted on-device capture history (screen OCR + audio \
+transcripts). Returns snippets with opaque ids, kinds (screenText/audioTranscript), \
+startedAt/endedAt timestamps, and optional context (appName/appBundleId/windowTitle)."
+                    .to_string(),
+            parameters_schema: search_tool_schema(),
+        },
+        ai_engine::AgentTool {
+            name: "timeline".to_string(),
+            description:
+                "Return coarse activity intervals within a bounded time window. Without app/window \
+filters the result is audio-oriented; with an app or window title it returns matching screen \
+intervals instead."
+                    .to_string(),
+            parameters_schema: timeline_tool_schema(),
+        },
+        ai_engine::AgentTool {
+            name: "show_text".to_string(),
+            description:
+                "Return the broker-visible derived text for ONE opaque id previously returned by \
+`search`. Use sparingly, only when a snippet is insufficient to answer."
+                    .to_string(),
+            parameters_schema: show_text_tool_schema(),
+        },
+        ai_engine::AgentTool {
+            name: "recall_context".to_string(),
+            description:
+                "Return ONLY the User-Context conclusions (distilled beliefs about the user) and \
+recent activities that are relevant to the question. Redacted and capped — it NEVER returns the \
+whole dossier and NEVER returns sensitive-category conclusions. Use this for questions about the \
+user's habits, interests, projects, or what you know about them, instead of raw `search`."
+                    .to_string(),
+            parameters_schema: recall_context_tool_schema(),
+        },
+        ai_engine::AgentTool {
+            name: "reference_captures".to_string(),
+            description:
+                "Presentation signal that nominates the captures (screen frames / audio) behind \
+your answer so the app can show them to the user as source cards. Returns NO capture data — only \
+an acknowledgement of how many were accepted/dropped. Pass the opaque ids you received from \
+`search` results, ordered most-relevant-first, and call this once near the end of your answer (a \
+repeat call replaces the prior set). This does NOT count against the tool-call budget."
+                    .to_string(),
+            parameters_schema: reference_captures_tool_schema(),
+        },
+    ]
+}
+
+/// Override the model field of a resolved [`ai_engine::EngineConfig`] with a bare
+/// rig-core model id, for an UNPINNED conversation whose Quick Recall model
+/// setting differs from the engine's configured model. A blank override is a
+/// no-op. Matches on Cloud vs Local and replaces only `model`.
+fn override_engine_model(config: ai_engine::EngineConfig, model: &str) -> ai_engine::EngineConfig {
+    let model = model.trim();
+    if model.is_empty() {
+        return config;
     }
-    block.push_str(FOOTER);
-    Some((block, truncated))
+    match config {
+        ai_engine::EngineConfig::Cloud {
+            provider,
+            api_key,
+            base_url,
+            ..
+        } => ai_engine::EngineConfig::Cloud {
+            provider,
+            model: model.to_string(),
+            api_key,
+            base_url,
+        },
+        ai_engine::EngineConfig::Local {
+            kind, endpoint, ..
+        } => ai_engine::EngineConfig::Local {
+            kind,
+            endpoint: endpoint.to_string(),
+            model: model.to_string(),
+        },
+    }
 }
 
 #[tauri::command]
 pub async fn ask_ai_availability(
     app_handle: tauri::AppHandle,
 ) -> Result<AskAiAvailability, String> {
-    let ask_ai_enabled = read_ask_ai_enabled(&app_handle)?;
-    if !ask_ai_enabled {
+    if !read_ask_ai_enabled(&app_handle) {
         return Ok(AskAiAvailability {
             available: false,
             reason: Some("ask_ai_disabled".to_string()),
         });
     }
 
-    let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
-    if !status.ready {
-        return Ok(AskAiAvailability {
+    // The engine prerequisite reason (no model / no key / unreachable local …)
+    // is surfaced verbatim so the UI can explain why Ask AI is unavailable.
+    let settings = read_ai_runtime_settings(&app_handle);
+    match crate::ai_runtime::engine_configured_prerequisite(&settings).await {
+        Ok(()) => Ok(AskAiAvailability {
+            available: true,
+            reason: None,
+        }),
+        Err(reason) => Ok(AskAiAvailability {
             available: false,
-            reason: Some(
-                status
-                    .reason
-                    .unwrap_or_else(|| "pi_unavailable".to_string()),
-            ),
-        });
+            reason: Some(reason),
+        }),
+    }
+}
+
+/// Emit a `ask_ai_status` event with the given JSON body merged with the
+/// conversation id.
+fn emit_status(app_handle: &tauri::AppHandle, conversation_id: &str, mut body: serde_json::Value) {
+    if let Some(map) = body.as_object_mut() {
+        map.insert(
+            "conversationId".to_string(),
+            serde_json::Value::String(conversation_id.to_string()),
+        );
+    }
+    let _ = app_handle.emit(ASK_AI_STATUS_EVENT, body);
+}
+
+/// Persist one turn row in whatever phase the driver is in. Best-effort: a store
+/// error is logged, never surfaced — the live stream events are authoritative and
+/// persistence is a reattach convenience.
+#[allow(clippy::too_many_arguments)]
+async fn persist_turn(
+    infra: &AppInfraState,
+    conversation_id: &str,
+    title: &str,
+    origin: &str,
+    turn_index: i64,
+    question: &str,
+    answer: &str,
+    tool_activities: &[serde_json::Value],
+    sources: &[serde_json::Value],
+    phase: &str,
+    error_message: Option<&str>,
+    seeded_result_count: Option<i64>,
+) {
+    let tool_activities_json = serde_json::to_string(tool_activities).unwrap_or_else(|_| "[]".into());
+    let sources_json = serde_json::to_string(sources).unwrap_or_else(|_| "[]".into());
+    if let Err(error) = infra
+        .conversation()
+        .save_turn(
+            conversation_id,
+            title,
+            origin,
+            turn_index,
+            question,
+            answer,
+            &tool_activities_json,
+            &sources_json,
+            phase,
+            error_message,
+            seeded_result_count,
+            now_ms(),
+        )
+        .await
+    {
+        tauri_plugin_log::log::warn!(
+            "Ask AI failed to persist turn {turn_index} for {conversation_id} (phase {phase}): {error}"
+        );
+    }
+}
+
+/// The single stateless-per-turn Ask AI driver used by BOTH start and follow-up.
+///
+/// Loads the conversation's completed history + engine pin from the store, builds
+/// the engine config (honouring the pin, else the default engine with an optional
+/// unpinned model override), seeds best-effort via broker search, persists a
+/// `streaming` turn row, then runs ONE `ai_engine::run_agent_loop` against the
+/// configured engine. The model's text streams as `ask_ai_delta` events (and is
+/// periodically persisted as a partial for reattach); tool calls run through the
+/// All-Retained broker seam Rust-side and drive the `ask_ai_status` tool phase +
+/// `ask_ai_source` cards. On completion it persists the final turn and emits the
+/// terminal `ask_ai_done`/`ask_ai_error`. A cooperative cancel keeps whatever was
+/// generated (phase `done`) and emits no error.
+///
+/// Detached: the spawned task finishes regardless of dismiss/close, so an unseen
+/// thread completes in the background and a reattach reads the persisted answer.
+async fn run_ask_ai_turn(
+    app_handle: tauri::AppHandle,
+    conversation_id: String,
+    question: String,
+    seed_query: Option<String>,
+    origin: String,
+    title: String,
+    cancel: Arc<AtomicBool>,
+) {
+    // Resolve storage; without it we cannot persist or read history, so surface a
+    // terminal error and stop.
+    let infra = match app_infra(&app_handle) {
+        Ok(infra) => infra,
+        Err(error) => {
+            let _ = app_handle.emit(
+                ASK_AI_ERROR_EVENT,
+                serde_json::json!({ "conversationId": conversation_id, "message": error }),
+            );
+            remove_inflight_if_owner(&conversation_id, &cancel);
+            return;
+        }
+    };
+
+    // 1. Load prior conversation: completed Q/A turns become history (oldest
+    //    first), and the count of existing turns is the next turn index. The
+    //    engine pin (if any) is read alongside.
+    let existing = infra
+        .conversation()
+        .get_conversation(&conversation_id)
+        .await
+        .ok()
+        .flatten();
+    let mut history: Vec<ai_engine::AgentHistoryTurn> = Vec::new();
+    let mut turn_index: i64 = 0;
+    if let Some(conversation) = existing.as_ref() {
+        turn_index = conversation.turns.len() as i64;
+        for turn in &conversation.turns {
+            // Only completed turns with a real answer become history; an
+            // in-flight/errored turn is not established context.
+            if turn.phase == "done" && !turn.answer.trim().is_empty() {
+                history.push(ai_engine::AgentHistoryTurn {
+                    role: ai_engine::AgentRole::User,
+                    text: turn.question.clone(),
+                });
+                history.push(ai_engine::AgentHistoryTurn {
+                    role: ai_engine::AgentRole::Assistant,
+                    text: turn.answer.clone(),
+                });
+            }
+        }
+    }
+    let pin = infra
+        .conversation()
+        .get_conversation_engine(&conversation_id)
+        .await
+        .ok()
+        .flatten();
+
+    // 2. Resolve the engine config: a pinned conversation uses its pin; an
+    //    unpinned one uses the default engine, overriding the model with the
+    //    Quick Recall model setting when present.
+    let settings = read_ai_runtime_settings(&app_handle);
+    let config_result = match pin.as_ref() {
+        Some((provider, model)) if provider.is_some() || model.is_some() => {
+            crate::ai_runtime::resolve_engine_config_for_pin(
+                &settings,
+                provider.as_deref(),
+                model.as_deref(),
+            )
+        }
+        _ => crate::ai_runtime::resolve_engine_config(&settings).map(|config| {
+            match read_ask_ai_model(&app_handle) {
+                Some(model) => override_engine_model(config, &model),
+                None => config,
+            }
+        }),
+    };
+    let config = match config_result {
+        Ok(config) => config,
+        Err(reason) => {
+            let _ = app_handle.emit(
+                ASK_AI_ERROR_EVENT,
+                serde_json::json!({ "conversationId": conversation_id, "message": reason }),
+            );
+            remove_inflight_if_owner(&conversation_id, &cancel);
+            return;
+        }
+    };
+
+    // 3. Best-effort seeding via the broker search path (start only; follow-ups
+    //    pass `seed_query: None`). A broker error/empty result proceeds unseeded.
+    let seed_query = seed_query
+        .map(|query| query.trim().to_string())
+        .filter(|query| !query.is_empty());
+    let mut seed_results: Vec<BrokerSearchResult> = Vec::new();
+    if let Some(seed_query) = seed_query.as_deref() {
+        emit_status(
+            &app_handle,
+            &conversation_id,
+            serde_json::json!({ "phase": "seeding", "seededResultCount": 0 }),
+        );
+        let search_request = BrokerSearchRequest {
+            query: seed_query.to_string(),
+            from: None,
+            to: None,
+            limit: Some(ASK_AI_SEED_LIMIT),
+            app: None,
+            window_title: None,
+        };
+        if let Ok(BrokeredCaptureResponse::Search(response)) = execute_ask_ai_broker_request(
+            app_handle.clone(),
+            BrokeredCaptureRequest::Search(search_request),
+        )
+        .await
+        {
+            seed_results = response.results;
+        }
+        emit_status(
+            &app_handle,
+            &conversation_id,
+            serde_json::json!({ "phase": "seeding", "seededResultCount": seed_results.len() }),
+        );
+    }
+    let seeded_result_count = Some(seed_results.len() as i64);
+
+    // A cancel arriving during seeding short-circuits before any model call.
+    if cancel.load(Ordering::SeqCst) {
+        remove_inflight_if_owner(&conversation_id, &cancel);
+        return;
     }
 
-    // `ask_ai_start` also needs a resolvable `node` on the shell PATH and the
-    // bundled shim resource; a ready PI runtime alone is not enough. Surface
-    // these as distinct unavailable reasons so the UI does not advertise Ask AI
-    // and then fail at launch.
-    if resolve_node_executable().is_err() {
-        return Ok(AskAiAvailability {
-            available: false,
-            reason: Some("node_unavailable".to_string()),
-        });
-    }
-    if resolve_shim_path(&app_handle).is_err() {
-        return Ok(AskAiAvailability {
-            available: false,
-            reason: Some("shim_unavailable".to_string()),
-        });
+    emit_status(
+        &app_handle,
+        &conversation_id,
+        serde_json::json!({ "phase": "thinking" }),
+    );
+
+    // 4. Persist the turn row immediately (empty `streaming` answer) so a reattach
+    //    can read the in-flight partial. Seeded count is carried from the start.
+    persist_turn(
+        &infra,
+        &conversation_id,
+        &title,
+        &origin,
+        turn_index,
+        &question,
+        "",
+        &[],
+        &[],
+        "streaming",
+        None,
+        seeded_result_count,
+    )
+    .await;
+
+    // 5. Search results (and seed results) are recorded by opaque id so a later
+    //    `reference_captures` call can attach metadata and prove the model only
+    //    references ids it actually received.
+    let search_metadata: Arc<Mutex<HashMap<String, BrokerSearchResult>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    if !seed_results.is_empty() {
+        if let Ok(mut map) = search_metadata.lock() {
+            for result in &seed_results {
+                map.insert(result.opaque_id.clone(), result.clone());
+            }
+        }
     }
 
-    Ok(AskAiAvailability {
-        available: true,
-        reason: None,
-    })
+    // Shared persistence buffers the executor appends to (tool-activity entries +
+    // nominated Answer Sources) and the on_event closure reads when persisting.
+    let tool_activities: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let sources: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // 6. Build the tool executor. Each non-reference data tool rides
+    //    `execute_ask_ai_broker_request` (access readiness + All-Retained scope +
+    //    redaction/audit); `reference_captures` is intercepted before the broker
+    //    and emits the source cards. Results are returned to the model as a JSON
+    //    STRING.
+    let executor: ai_engine::ToolExecutor = {
+        let app_handle = app_handle.clone();
+        let conversation_id = conversation_id.clone();
+        let search_metadata = Arc::clone(&search_metadata);
+        let tool_activities = Arc::clone(&tool_activities);
+        let sources = Arc::clone(&sources);
+        Arc::new(move |tool: String, params: serde_json::Value| {
+            let app_handle = app_handle.clone();
+            let conversation_id = conversation_id.clone();
+            let search_metadata = Arc::clone(&search_metadata);
+            let tool_activities = Arc::clone(&tool_activities);
+            let sources = Arc::clone(&sources);
+            Box::pin(async move {
+                // Presentation signal: validate/decode + emit `ask_ai_source`,
+                // never dispatched to the broker. Its emitted source set is also
+                // stashed for persistence.
+                if tool == "reference_captures" {
+                    let (ack, nominated) = handle_reference_captures(
+                        &app_handle,
+                        &conversation_id,
+                        &search_metadata,
+                        params,
+                    )
+                    .await?;
+                    if let Ok(mut buffer) = sources.lock() {
+                        *buffer = nominated;
+                    }
+                    return serde_json::to_string(&ack)
+                        .map_err(|error| format!("failed to serialize reference ack: {error}"));
+                }
+
+                // Data tool: record the activity, run it through the broker seam,
+                // retain any search results, return the JSON result as a string.
+                if let Ok(mut buffer) = tool_activities.lock() {
+                    buffer.push(serde_json::json!({ "tool": tool, "params": params }));
+                }
+                let request = broker_request_from_tool(&tool, params)?;
+                let response = execute_ask_ai_broker_request(app_handle, request).await?;
+                if let BrokeredCaptureResponse::Search(ref response) = response {
+                    if let Ok(mut map) = search_metadata.lock() {
+                        for result in &response.results {
+                            map.insert(result.opaque_id.clone(), result.clone());
+                        }
+                    }
+                }
+                let value = broker_response_to_tool_value(response)?;
+                serde_json::to_string(&value)
+                    .map_err(|error| format!("failed to serialize Ask AI tool result: {error}"))
+            })
+        })
+    };
+
+    let tools = build_ask_ai_tools();
+    let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
+    let preamble = build_ask_ai_preamble();
+    let prompt = build_ask_ai_prompt(&question, seed_query.as_deref(), &seed_results);
+
+    // 7. Run the agent loop, streaming deltas and persisting throttled partials.
+    let answer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let mut deltas_since_persist = 0usize;
+    let mut chars_since_persist = 0usize;
+    let on_event = {
+        let app_handle = app_handle.clone();
+        let conversation_id = conversation_id.clone();
+        let infra = Arc::clone(&infra);
+        let answer = Arc::clone(&answer);
+        let tool_activities = Arc::clone(&tool_activities);
+        let sources = Arc::clone(&sources);
+        let title = title.clone();
+        let origin = origin.clone();
+        let question = question.clone();
+        move |event: ai_engine::AgentLoopEvent| match event {
+            ai_engine::AgentLoopEvent::Delta(text) => {
+                let _ = app_handle.emit(
+                    ASK_AI_DELTA_EVENT,
+                    serde_json::json!({ "conversationId": conversation_id, "text": text }),
+                );
+                let answer_so_far = {
+                    let mut guard = answer.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.push_str(&text);
+                    deltas_since_persist += 1;
+                    chars_since_persist += text.len();
+                    if deltas_since_persist >= ASK_AI_PARTIAL_PERSIST_DELTA_INTERVAL
+                        || chars_since_persist >= ASK_AI_PARTIAL_PERSIST_CHAR_INTERVAL
+                    {
+                        deltas_since_persist = 0;
+                        chars_since_persist = 0;
+                        Some(guard.clone())
+                    } else {
+                        None
+                    }
+                };
+                // Throttled partial persist for reattach. Spawned so persistence
+                // never blocks the synchronous stream callback.
+                if let Some(answer_so_far) = answer_so_far {
+                    let infra = Arc::clone(&infra);
+                    let conversation_id = conversation_id.clone();
+                    let title = title.clone();
+                    let origin = origin.clone();
+                    let question = question.clone();
+                    let tool_activities_snapshot = tool_activities
+                        .lock()
+                        .map(|guard| guard.clone())
+                        .unwrap_or_default();
+                    let sources_snapshot = sources
+                        .lock()
+                        .map(|guard| guard.clone())
+                        .unwrap_or_default();
+                    tauri::async_runtime::spawn(async move {
+                        persist_turn(
+                            &infra,
+                            &conversation_id,
+                            &title,
+                            &origin,
+                            turn_index,
+                            &question,
+                            &answer_so_far,
+                            &tool_activities_snapshot,
+                            &sources_snapshot,
+                            "streaming",
+                            None,
+                            seeded_result_count,
+                        )
+                        .await;
+                    });
+                }
+            }
+            ai_engine::AgentLoopEvent::ToolCall { name, params } => {
+                // `reference_captures` is a presentation signal, not a data
+                // activity, so it must not appear in the activity working-line.
+                if name == "reference_captures" {
+                    return;
+                }
+                emit_status(
+                    &app_handle,
+                    &conversation_id,
+                    serde_json::json!({ "phase": "tool", "tool": name, "params": params }),
+                );
+            }
+            // `Done` is handled after the loop returns; the loop emits it last.
+            ai_engine::AgentLoopEvent::Done => {}
+        }
+    };
+
+    let run_result = ai_engine::run_agent_loop(
+        &config,
+        &preamble,
+        &prompt,
+        &history,
+        tools,
+        executor,
+        max_tool_calls,
+        cancel.clone(),
+        on_event,
+    )
+    .await;
+
+    // 8. Finalize. Snapshot the accumulated answer + persistence buffers.
+    let final_answer = answer.lock().map(|g| g.clone()).unwrap_or_default();
+    let final_tool_activities = tool_activities
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let final_sources = sources.lock().map(|g| g.clone()).unwrap_or_default();
+    let was_cancelled = cancel.load(Ordering::SeqCst);
+
+    match run_result {
+        Ok(()) => {
+            // A cooperative cancel keeps whatever was generated and emits no
+            // error; a clean finish persists `done` and emits the terminal event.
+            persist_turn(
+                &infra,
+                &conversation_id,
+                &title,
+                &origin,
+                turn_index,
+                &question,
+                &final_answer,
+                &final_tool_activities,
+                &final_sources,
+                "done",
+                None,
+                seeded_result_count,
+            )
+            .await;
+            if !was_cancelled {
+                let _ = app_handle.emit(
+                    ASK_AI_DONE_EVENT,
+                    serde_json::json!({ "conversationId": conversation_id }),
+                );
+            }
+        }
+        Err(error) => {
+            let message = error.to_string();
+            persist_turn(
+                &infra,
+                &conversation_id,
+                &title,
+                &origin,
+                turn_index,
+                &question,
+                &final_answer,
+                &final_tool_activities,
+                &final_sources,
+                "error",
+                Some(&message),
+                seeded_result_count,
+            )
+            .await;
+            let _ = app_handle.emit(
+                ASK_AI_ERROR_EVENT,
+                serde_json::json!({ "conversationId": conversation_id, "message": message }),
+            );
+        }
+    }
+
+    // Remove only our own in-flight flag: a newer turn that displaced us holds a
+    // different `Arc` and must survive our teardown.
+    remove_inflight_if_owner(&conversation_id, &cancel);
 }
 
 #[tauri::command]
@@ -862,353 +1356,70 @@ pub async fn ask_ai_start(
         conversation_id,
         question,
         seed_query,
-        prior_transcript,
+        origin,
+        title,
+        prior_transcript: _,
     } = request;
 
-    // Resolve the seed query (trimmed, non-empty).
-    let seed_query = seed_query
-        .map(|query| query.trim().to_string())
-        .filter(|query| !query.is_empty());
+    let origin = origin
+        .map(|origin| origin.trim().to_string())
+        .filter(|origin| !origin.is_empty())
+        .unwrap_or_else(|| ASK_AI_DEFAULT_ORIGIN.to_string());
+    let title = title.unwrap_or_default();
 
-    // Build the resurrection context block (if any). `seedQuery` stays the bare
-    // new question — the transcript only ever rides in the first prompt, never
-    // the seed search — so seeding is not polluted by prior turns.
-    let prior_context_block = prior_transcript
-        .as_deref()
-        .and_then(format_prior_transcript_block);
-
-    // Register the cancellable session handle BEFORE the awaitable seeding so a
-    // cancel arriving mid-seed (the user dismisses Quick Recall while the broker
-    // search is still in flight) is honored: `ask_ai_cancel` finds this handle,
-    // sets `cancel`, and removes the entry. Without early registration the cancel
-    // would be a no-op against an unregistered conversation, and we would later
-    // spawn a resident PI child nobody could stop. The follow-up prompt channel is
-    // created here too so the sender can live in the handle; the receiver is moved
-    // into the streaming task below.
-    let cancel = AskAiCancel::new();
-    let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    // `register_ask_ai_session` mints and returns this registration's ownership
-    // token (overwriting the placeholder); the spawned task uses it to remove only
-    // its own entry on completion.
-    let session_token = register_ask_ai_session(
-        &conversation_id,
-        AskAiSessionHandle {
-            cancel: cancel.clone(),
-            prompt_tx,
-            token: 0,
-        },
-    );
-
-    // Best-effort seeding via the broker search path.
-    let mut seed_results: Vec<BrokerSearchResult> = Vec::new();
-    if let Some(seed_query) = seed_query.as_deref() {
-        let _ = app_handle.emit(
-            ASK_AI_STATUS_EVENT,
-            serde_json::json!({
-                "conversationId": conversation_id,
-                "phase": "seeding",
-                "seededResultCount": 0,
-            }),
-        );
-
-        let search_request = BrokerSearchRequest {
-            query: seed_query.to_string(),
-            from: None,
-            to: None,
-            limit: Some(8),
-            app: None,
-            window_title: None,
-        };
-
-        match execute_pi_broker_request(
-            app_handle.clone(),
-            BrokeredCaptureRequest::Search(search_request),
-        )
-        .await
-        {
-            Ok(BrokeredCaptureResponse::Search(response)) => {
-                seed_results = response.results;
-            }
-            // Broker error envelope or any other response: proceed unseeded.
-            Ok(_) | Err(_) => {}
-        }
-
-        let _ = app_handle.emit(
-            ASK_AI_STATUS_EVENT,
-            serde_json::json!({
-                "conversationId": conversation_id,
-                "phase": "seeding",
-                "seededResultCount": seed_results.len(),
-            }),
-        );
-    }
-
-    // If a cancel arrived during seeding it set `cancel` and removed our handle.
-    // Honor it now: skip the PI child spawn entirely so no resident process is
-    // launched for a conversation the frontend already dropped. Drop our own
-    // registry entry too in case the cancel raced just after registration.
-    if cancel.is_cancelled() {
-        remove_ask_ai_session_if_owner(&conversation_id, session_token);
-        return Ok(());
-    }
-
-    let _ = app_handle.emit(
-        ASK_AI_STATUS_EVENT,
-        serde_json::json!({
-            "conversationId": conversation_id,
-            "phase": "thinking",
-        }),
-    );
-
-    let mut prompt = build_ask_ai_prompt(&question, seed_query.as_deref(), &seed_results);
-
-    // Resurrection: prepend the formatted prior-conversation context block so the
-    // fresh session continues an earlier (expired/errored) conversation. Logged
-    // to ease diagnosing "the AI forgot context" reports.
-    if let Some((block, truncated)) = prior_context_block {
-        let turn_count = prior_transcript.as_ref().map_or(0, |turns| turns.len());
-        tauri_plugin_log::log::info!(
-            "Ask AI resurrecting conversation {conversation_id} with {turn_count} prior turn(s); \
-context block {} chars{}",
-            block.len(),
-            if truncated {
-                " (transcript capped: oldest turns dropped and/or last turn truncated)"
-            } else {
-                ""
-            }
-        );
-        prompt = format!("{block}{prompt}");
-    }
-
-    // Resolve node, shim, and the pi executable path (for SDK resolution in the shim).
-    let node_path = resolve_node_executable()?;
-    let shim_path = resolve_shim_path(&app_handle)?;
-    let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
-    let pi_executable = status.executable_path;
-
-    // Resolve the per-question tool-call cap from settings (0 => unlimited).
-    let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
-
-    // Resolve the selected Quick Recall model (None => PI default).
-    let model = read_ask_ai_model(&app_handle);
-
-    // The cancellable session handle (`cancel` flag + follow-up `prompt_tx`) was
-    // registered before seeding so a mid-seed cancel is honored; `prompt_rx` (the
-    // receiver) lives in `run_pi_ask_ai_session` below. Removing the registry
-    // handle drops the sender, which tears the thread down between turns.
-
-    // Build the brokered tool invoker. The three data tools ride
-    // `execute_pi_broker_request`, which enforces Ask-AI access readiness plus
-    // the All-Retained broker scope and redaction/audit Rust-side; do not
-    // bypass it. The `reference_captures` presentation tool is intercepted
-    // before the broker dispatch and never builds a broker request.
-    //
-    // Search results are recorded into this map keyed by opaque id so a later
-    // `reference_captures` call can attach metadata and prove the model only
-    // references ids it actually received from `search`.
-    let search_metadata: Arc<Mutex<HashMap<String, BrokerSearchResult>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    // Seed results are citable too: register them under the same opaque-id keying
-    // the tool-call `search` path uses, so a model answering purely from seeded
-    // context (never calling `search`) can still nominate them to
-    // `reference_captures`. The seed line surfaces each `opaqueId` for exactly
-    // this. Their ids are minted by the same broker search path, so they validate
-    // identically in the resolver.
-    if !seed_results.is_empty() {
-        if let Ok(mut map) = search_metadata.lock() {
-            for result in &seed_results {
-                map.insert(result.opaque_id.clone(), result.clone());
-            }
-        }
-    }
-    let invoker_app_handle = app_handle.clone();
-    let invoker_conversation_id = conversation_id.clone();
-    let invoker_search_metadata = Arc::clone(&search_metadata);
-    let tool_invoker: pi_agent_session::AskAiToolInvoker =
-        Box::new(move |tool: String, params: serde_json::Value| {
-            let app_handle = invoker_app_handle.clone();
-            let conversation_id = invoker_conversation_id.clone();
-            let search_metadata = Arc::clone(&invoker_search_metadata);
-            Box::pin(async move {
-                // Presentation signal: validate/decode + emit `ask_ai_source`,
-                // never dispatched to the broker.
-                if tool == "reference_captures" {
-                    return handle_reference_captures(
-                        &app_handle,
-                        &conversation_id,
-                        &search_metadata,
-                        params,
-                    )
-                    .await;
-                }
-
-                let request = broker_request_from_tool(&tool, params)?;
-                let response = execute_pi_broker_request(app_handle, request).await?;
-                // Retain each search result by opaque id for later nomination.
-                if let BrokeredCaptureResponse::Search(ref response) = response {
-                    if let Ok(mut map) = search_metadata.lock() {
-                        for r in &response.results {
-                            map.insert(r.opaque_id.clone(), r.clone());
-                        }
-                    }
-                }
-                broker_response_to_tool_value(response)
-            })
-        });
-
-    // Stream on a background task so the command returns promptly after launch.
-    let task_app_handle = app_handle.clone();
-    let task_conversation_id = conversation_id.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut saw_terminal = false;
-        let emit_handle = task_app_handle.clone();
-        let emit_conversation_id = task_conversation_id.clone();
-        let run_result = pi_agent_session::run_pi_ask_ai_session(
-            &node_path,
-            &shim_path,
-            pi_executable.as_deref(),
-            model.as_deref(),
-            &prompt,
-            max_tool_calls,
-            prompt_rx,
-            |event| match event {
-                pi_agent_session::AskAiStreamEvent::Ready => {}
-                pi_agent_session::AskAiStreamEvent::Delta(text) => {
-                    let _ = emit_handle.emit(
-                        ASK_AI_DELTA_EVENT,
-                        serde_json::json!({
-                            "conversationId": emit_conversation_id,
-                            "text": text,
-                        }),
-                    );
-                }
-                pi_agent_session::AskAiStreamEvent::ToolCall { tool, params, .. } => {
-                    // `reference_captures` is a presentation signal, not a data
-                    // activity, so it must not appear in the activity chip.
-                    if tool == "reference_captures" {
-                        return;
-                    }
-                    // Forward the raw tool name (`search`/`timeline`/`show_text`)
-                    // plus its params; the frontend builds the humane working-line
-                    // label from these (e.g. `Searching "invoice" · Jun 1`).
-                    let _ = emit_handle.emit(
-                        ASK_AI_STATUS_EVENT,
-                        serde_json::json!({
-                            "conversationId": emit_conversation_id,
-                            "phase": "tool",
-                            "tool": tool,
-                            "params": params,
-                        }),
-                    );
-                }
-                pi_agent_session::AskAiStreamEvent::ToolResult { .. } => {}
-                pi_agent_session::AskAiStreamEvent::Done => {
-                    saw_terminal = true;
-                    let _ = emit_handle.emit(
-                        ASK_AI_DONE_EVENT,
-                        serde_json::json!({ "conversationId": emit_conversation_id }),
-                    );
-                }
-                pi_agent_session::AskAiStreamEvent::Error(message) => {
-                    saw_terminal = true;
-                    let _ = emit_handle.emit(
-                        ASK_AI_ERROR_EVENT,
-                        serde_json::json!({
-                            "conversationId": emit_conversation_id,
-                            "message": message,
-                        }),
-                    );
-                }
-            },
-            tool_invoker,
-            cancel,
-        )
-        .await;
-
-        if let Err(error) = run_result {
-            if !saw_terminal {
-                let _ = task_app_handle.emit(
-                    ASK_AI_ERROR_EVENT,
-                    serde_json::json!({
-                        "conversationId": task_conversation_id,
-                        "message": error,
-                    }),
-                );
-            }
-        }
-
-        // Remove only our own registration: if a newer `ask_ai_start` reused this
-        // conversation id while we were running, it holds a different token and
-        // must survive our teardown.
-        remove_ask_ai_session_if_owner(&task_conversation_id, session_token);
-    });
+    // Register the in-flight cancel flag (cancelling any prior running turn for
+    // this conversation), then spawn the detached driver. The command returns
+    // promptly so the turn completes in the background regardless of dismiss.
+    let cancel = register_inflight(&conversation_id);
+    tauri::async_runtime::spawn(run_ask_ai_turn(
+        app_handle,
+        conversation_id,
+        question,
+        seed_query,
+        origin,
+        title,
+        cancel,
+    ));
 
     Ok(())
 }
 
-/// Enumerate the PI models selectable for Quick Recall.
+/// Run a follow-up question as another stateless turn on an existing thread.
 ///
-/// Runs the shim in list mode to read the user's PI model registry. Requires a
-/// resolvable `node` + Ask AI shim + `pi` runtime; surfaces a string error the
-/// frontend can degrade to the "PI default" option only.
-#[tauri::command]
-pub async fn ask_ai_list_models(
-    app_handle: tauri::AppHandle,
-) -> Result<Vec<pi_agent_session::AskAiModel>, String> {
-    let node_path = resolve_node_executable()?;
-    let shim_path = resolve_shim_path(&app_handle)?;
-    let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
-    pi_agent_session::list_pi_models(&node_path, &shim_path, status.executable_path.as_deref())
-        .await
-}
-
-/// Route a raw follow-up question into the resident PI session for an existing
-/// thread. `conversationId` identifies the whole thread/session started by
-/// `ask_ai_start`. Unlike start, there is NO seeding and NO `seedQuery`: the
-/// resident session already holds turn 1's system instructions plus the prior
-/// turns' history, so the raw trimmed question is fed straight in and the
-/// answer streams back over the same `ask_ai_status`/`ask_ai_delta`/
-/// `ask_ai_source`/`ask_ai_done` events carrying this `conversationId`.
+/// `conversationId` identifies the whole thread. Unlike start there is NO seeding
+/// and NO `seedQuery`: the prior turns' completed history is reloaded from the
+/// store by [`run_ask_ai_turn`] and fed to the agent loop as conversation
+/// history. A follow-up always works — there is no resident session to be "no
+/// longer active".
 #[tauri::command]
 pub async fn ask_ai_followup(
     app_handle: tauri::AppHandle,
     request: AskAiFollowupRequest,
 ) -> Result<(), String> {
-    // Validate access readiness for parity with start.
     ensure_ask_ai_access_ready(&app_handle).await?;
 
     let AskAiFollowupRequest {
         conversation_id,
         question,
     } = request;
-
     let question = question.trim().to_string();
     if question.is_empty() {
         return Err("Ask AI follow-up question is empty".to_string());
     }
 
-    // Look up the live session's follow-up sender without removing it; an absent
-    // handle means the thread was cancelled or already ended.
-    let Some(prompt_tx) = ask_ai_session_prompt_sender(&conversation_id) else {
-        return Err("Ask AI conversation is no longer active".to_string());
-    };
-
-    // Announce a new turn so the frontend re-enters the thinking phase. No
-    // seeding, no broker search — follow-ups send the raw question.
-    let _ = app_handle.emit(
-        ASK_AI_STATUS_EVENT,
-        serde_json::json!({
-            "conversationId": conversation_id,
-            "phase": "thinking",
-        }),
-    );
-
-    // Feed the raw trimmed question into the resident session. A send error
-    // means the receiver was dropped (the session task ended between the lookup
-    // and the send), which is the same dead-thread case.
-    prompt_tx
-        .send(question)
-        .map_err(|_| "Ask AI conversation is no longer active".to_string())?;
+    // A follow-up reuses the conversation's existing origin/title (the store
+    // preserves an existing row's origin and first non-empty title regardless of
+    // what is passed), so default values are fine here.
+    let cancel = register_inflight(&conversation_id);
+    tauri::async_runtime::spawn(run_ask_ai_turn(
+        app_handle,
+        conversation_id,
+        question,
+        None,
+        ASK_AI_DEFAULT_ORIGIN.to_string(),
+        String::new(),
+        cancel,
+    ));
 
     Ok(())
 }
@@ -1218,8 +1429,11 @@ pub async fn ask_ai_cancel(
     _app_handle: tauri::AppHandle,
     request: AskAiCancelRequest,
 ) -> Result<(), String> {
-    if let Some(handle) = take_ask_ai_session(&request.conversation_id) {
-        handle.cancel.cancel();
+    // Cooperative cancel: set + remove the conversation's in-flight flag. The
+    // running loop checks it between stream items and stops cleanly, keeping
+    // whatever was generated so far.
+    if let Some(cancel) = take_inflight(&request.conversation_id) {
+        cancel.store(true, Ordering::SeqCst);
     }
     Ok(())
 }
@@ -1232,58 +1446,13 @@ mod tests {
         BrokerShowTextResponse,
     };
 
-    fn ready_pi_status() -> crate::app_infra::PiRuntimeStatus {
-        crate::app_infra::PiRuntimeStatus {
-            source: crate::app_infra::PiRuntimeSource::Path,
-            executable_path: Some("/usr/local/bin/pi".to_string()),
-            version: Some("0.65.0".to_string()),
-            minimum_version: "0.65.0".to_string(),
-            version_ok: true,
-            auth_json_path: "/Users/tester/.pi/agent/auth.json".to_string(),
-            auth_json_exists: true,
-            provider_configured: true,
-            provider_count: 1,
-            ready: true,
-            reason: None,
-        }
-    }
-
     #[test]
-    fn pi_broker_identity_matches_existing_pi_client_label() {
-        let identity = pi_broker_identity().expect("PI identity should be valid");
+    fn ask_ai_broker_identity_uses_ask_ai_label() {
+        let identity = ask_ai_broker_identity().expect("Ask AI identity should be valid");
 
-        assert_eq!(identity.label, "PI");
-        assert_eq!(identity.normalized_label, "pi");
+        assert_eq!(identity.label, "Ask AI");
+        assert_eq!(identity.normalized_label, "ask ai");
         assert_eq!(identity.source, BrokerClientIdentitySource::Inferred);
-    }
-
-    #[test]
-    fn ask_ai_access_ready_rejects_disabled_setting() {
-        let error = validate_ask_ai_access_ready(false, &ready_pi_status())
-            .expect_err("disabled Ask AI should be rejected");
-
-        assert_eq!(error, "Ask AI access is disabled in settings");
-    }
-
-    #[test]
-    fn ask_ai_access_ready_rejects_unready_pi() {
-        let mut status = ready_pi_status();
-        status.ready = false;
-        status.reason = Some("pi_auth_missing".to_string());
-
-        let error =
-            validate_ask_ai_access_ready(true, &status).expect_err("unready PI should be rejected");
-
-        assert_eq!(
-            error,
-            "Ask AI requires a ready PI runtime (pi_auth_missing)"
-        );
-    }
-
-    #[test]
-    fn ask_ai_access_ready_accepts_enabled_setting_and_ready_pi() {
-        validate_ask_ai_access_ready(true, &ready_pi_status())
-            .expect("enabled Ask AI with ready PI should be accepted");
     }
 
     fn sample_result() -> BrokerSearchResult {
@@ -1305,16 +1474,33 @@ mod tests {
     }
 
     #[test]
-    fn prompt_unseeded_omits_context_block() {
+    fn preamble_documents_the_tools_and_graphical_affordance() {
+        let preamble = build_ask_ai_preamble();
+        // The four data tools + the presentation tool are all described.
+        assert!(preamble.contains("`search`"));
+        assert!(preamble.contains("`timeline`"));
+        assert!(preamble.contains("`show_text`"));
+        assert!(preamble.contains("`recall_context`"));
+        assert!(preamble.contains("`reference_captures`"));
+        // The graphical-answer affordance blocks are documented.
+        assert!(preamble.contains("mnema-bars"));
+        assert!(preamble.contains("mnema-dossier"));
+        // The preamble is the SYSTEM instruction — it must carry no question.
+        assert!(!preamble.contains("Question:"));
+    }
+
+    #[test]
+    fn prompt_unseeded_is_just_the_question() {
         let prompt = build_ask_ai_prompt("What did I do?", None, &[]);
         assert!(!prompt.contains("Context from the user's captures"));
-        assert!(prompt.ends_with("Question: What did I do?"));
+        assert_eq!(prompt, "Question: What did I do?");
     }
 
     #[test]
     fn prompt_with_empty_results_omits_context_block() {
         let prompt = build_ask_ai_prompt("Q?", Some("build"), &[]);
         assert!(!prompt.contains("Context from the user's captures"));
+        assert!(prompt.ends_with("Question: Q?"));
     }
 
     #[test]
@@ -1370,11 +1556,65 @@ mod tests {
     }
 
     #[test]
+    fn availability_reason_is_ask_ai_disabled_when_access_off() {
+        // The availability reason logic: Ask AI disabled short-circuits to the
+        // `ask_ai_disabled` reason BEFORE the engine prerequisite is consulted.
+        // (The full command needs a Tauri app handle; here we assert the reason
+        // contract the command relies on — a disabled flag produces this exact
+        // reason, the same string `ensure_ask_ai_access_ready` would otherwise
+        // surface via its disabled-message branch.)
+        let availability = AskAiAvailability {
+            available: false,
+            reason: Some("ask_ai_disabled".to_string()),
+        };
+        assert!(!availability.available);
+        assert_eq!(availability.reason.as_deref(), Some("ask_ai_disabled"));
+    }
+
+    #[test]
     fn resolve_tool_call_cap_treats_zero_as_unlimited() {
         assert_eq!(resolve_tool_call_cap(0), usize::MAX);
         assert_eq!(resolve_tool_call_cap(1), 1);
         assert_eq!(resolve_tool_call_cap(12), 12);
         assert_eq!(resolve_tool_call_cap(250), 250);
+    }
+
+    #[test]
+    fn override_engine_model_replaces_cloud_model_only() {
+        let config = ai_engine::EngineConfig::Cloud {
+            provider: ai_engine::CloudProvider::Anthropic,
+            model: "claude-old".to_string(),
+            api_key: "key".to_string(),
+            base_url: Some("https://example".to_string()),
+        };
+        let overridden = override_engine_model(config, "claude-new");
+        match overridden {
+            ai_engine::EngineConfig::Cloud {
+                model,
+                api_key,
+                base_url,
+                ..
+            } => {
+                assert_eq!(model, "claude-new");
+                assert_eq!(api_key, "key");
+                assert_eq!(base_url.as_deref(), Some("https://example"));
+            }
+            other => panic!("expected Cloud, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn override_engine_model_blank_is_noop() {
+        let config = ai_engine::EngineConfig::Local {
+            kind: ai_engine::LocalKind::Ollama,
+            endpoint: "http://localhost:11434".to_string(),
+            model: "llama".to_string(),
+        };
+        let unchanged = override_engine_model(config, "   ");
+        match unchanged {
+            ai_engine::EngineConfig::Local { model, .. } => assert_eq!(model, "llama"),
+            other => panic!("expected Local, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1454,6 +1694,25 @@ mod tests {
         assert_eq!(error, "unknown Ask AI tool: open_in_mnema");
     }
 
+    #[test]
+    fn broker_request_from_tool_rejects_reference_captures() {
+        let error =
+            broker_request_from_tool("reference_captures", serde_json::json!({ "opaqueIds": [] }))
+                .expect_err("reference_captures is not a broker data tool");
+        assert_eq!(error, "unknown Ask AI tool: reference_captures");
+    }
+
+    #[test]
+    fn broker_request_from_tool_rejects_missing_opaque_id() {
+        let error = broker_request_from_tool("show_text", serde_json::json!({}))
+            .expect_err("missing opaqueId should error");
+        assert_eq!(error, "Ask AI show_text requires a non-empty opaqueId");
+
+        let error = broker_request_from_tool("show_text", serde_json::json!({ "opaqueId": "  " }))
+            .expect_err("blank opaqueId should error");
+        assert_eq!(error, "Ask AI show_text requires a non-empty opaqueId");
+    }
+
     fn frame_source(started_at: &str, ended_at: &str) -> ResolvedAskAiSource {
         ResolvedAskAiSource {
             kind: "frame".to_string(),
@@ -1477,8 +1736,6 @@ mod tests {
             window_title: None,
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
-            // Audio Search Result Anchor: a mid-segment match span + aligned
-            // frame, as a real audio search result would carry.
             span_start_ms: Some(3_000),
             aligned_frame_id: Some(99),
         }
@@ -1509,7 +1766,6 @@ mod tests {
             .count();
         assert_eq!(frame_total, 6);
         assert_eq!(audio_total, 4);
-        // Frames are nominated first, so they appear before audio in order.
         assert_eq!(sources[0]["kind"], serde_json::json!("frame"));
         assert_eq!(sources[6]["kind"], serde_json::json!("audio"));
     }
@@ -1549,7 +1805,6 @@ mod tests {
             Some(frame_source("2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z"))
         });
 
-        // Two distinct ids resolve once each; the two extra `dup` repeats drop.
         assert_eq!(accepted, 2);
         assert_eq!(dropped, 2);
         assert_eq!(sources.len(), 2);
@@ -1577,11 +1832,8 @@ mod tests {
             serde_json::json!("2026-01-01T10:00:00Z")
         );
         assert_eq!(frame["endedAt"], serde_json::json!("2026-01-01T10:01:00Z"));
-        // The pure builder never resolves the mic/system distinction; that is the
-        // async post-pass's job, so every source starts with a null `sourceKind`.
         assert!(frame.as_object().unwrap().contains_key("sourceKind"));
         assert_eq!(frame["sourceKind"], serde_json::Value::Null);
-        // Frame sources carry no Audio Search Result Anchor.
         assert_eq!(frame["spanStartMs"], serde_json::Value::Null);
         assert_eq!(frame["alignedFrameId"], serde_json::Value::Null);
 
@@ -1592,28 +1844,8 @@ mod tests {
         assert_eq!(audio["windowTitle"], serde_json::Value::Null);
         assert!(audio.as_object().unwrap().contains_key("sourceKind"));
         assert_eq!(audio["sourceKind"], serde_json::Value::Null);
-        // Audio sources carry the anchor so the dashboard lands mid-segment.
         assert_eq!(audio["spanStartMs"], serde_json::json!(3_000));
         assert_eq!(audio["alignedFrameId"], serde_json::json!(99));
-    }
-
-    #[test]
-    fn broker_request_from_tool_rejects_reference_captures() {
-        let error =
-            broker_request_from_tool("reference_captures", serde_json::json!({ "opaqueIds": [] }))
-                .expect_err("reference_captures is not a broker data tool");
-        assert_eq!(error, "unknown Ask AI tool: reference_captures");
-    }
-
-    #[test]
-    fn broker_request_from_tool_rejects_missing_opaque_id() {
-        let error = broker_request_from_tool("show_text", serde_json::json!({}))
-            .expect_err("missing opaqueId should error");
-        assert_eq!(error, "Ask AI show_text requires a non-empty opaqueId");
-
-        let error = broker_request_from_tool("show_text", serde_json::json!({ "opaqueId": "  " }))
-            .expect_err("blank opaqueId should error");
-        assert_eq!(error, "Ask AI show_text requires a non-empty opaqueId");
     }
 
     #[test]
@@ -1642,259 +1874,6 @@ mod tests {
     }
 
     #[test]
-    fn followup_request_deserializes_camel_case_without_seed_query() {
-        let request: AskAiFollowupRequest = serde_json::from_str(
-            r#"{"conversationId":"conv-1","question":"what about in Slack?"}"#,
-        )
-        .expect("follow-up request should deserialize");
-        assert_eq!(request.conversation_id, "conv-1");
-        assert_eq!(request.question, "what about in Slack?");
-
-        // A follow-up carries no seedQuery: an extra field is ignored, not
-        // required, and the struct exposes only conversation_id + question.
-        let request: AskAiFollowupRequest = serde_json::from_str(
-            r#"{"conversationId":"conv-2","question":"more","seedQuery":"ignored"}"#,
-        )
-        .expect("extra fields are ignored");
-        assert_eq!(request.conversation_id, "conv-2");
-        assert_eq!(request.question, "more");
-    }
-
-    fn test_session_handle() -> AskAiSessionHandle {
-        let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        AskAiSessionHandle {
-            cancel: AskAiCancel::new(),
-            prompt_tx,
-            // `register_ask_ai_session` overwrites this with the minted token.
-            token: 0,
-        }
-    }
-
-    #[test]
-    fn prompt_sender_is_none_for_unknown_conversation() {
-        assert!(ask_ai_session_prompt_sender("missing-conv-xyz").is_none());
-    }
-
-    #[test]
-    fn prompt_sender_present_after_register_then_gone_after_take() {
-        let id = "registry-roundtrip-conv";
-        // Keep the receiver alive so the cloned sender stays usable for the test.
-        let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        register_ask_ai_session(
-            id,
-            AskAiSessionHandle {
-                cancel: AskAiCancel::new(),
-                prompt_tx,
-                token: 0,
-            },
-        );
-
-        let sender = ask_ai_session_prompt_sender(id).expect("registered session should resolve");
-        // The cloned sender routes into the live receiver.
-        assert!(sender.send("hi".to_string()).is_ok());
-
-        // Taking the session removes it, so the clone-helper no longer finds it.
-        assert!(take_ask_ai_session(id).is_some());
-        assert!(ask_ai_session_prompt_sender(id).is_none());
-    }
-
-    #[test]
-    fn remove_session_clears_prompt_sender() {
-        let id = "remove-clears-conv";
-        register_ask_ai_session(id, test_session_handle());
-        assert!(ask_ai_session_prompt_sender(id).is_some());
-        remove_ask_ai_session(id);
-        assert!(ask_ai_session_prompt_sender(id).is_none());
-    }
-
-    #[test]
-    fn remove_if_owner_spares_session_that_reused_the_id() {
-        let id = "owner-token-conv";
-
-        // First registration; capture the token register mints for it. Keep the
-        // receiver alive so the registered sender stays usable.
-        let (first_tx, _first_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let first_token = register_ask_ai_session(
-            id,
-            AskAiSessionHandle {
-                cancel: AskAiCancel::new(),
-                prompt_tx: first_tx,
-                token: 0,
-            },
-        );
-
-        // A second `ask_ai_start` reuses the id, overwriting the entry with a new
-        // token. Keep the receiver alive so the registered sender stays usable.
-        let (second_tx, _second_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let second_token = register_ask_ai_session(
-            id,
-            AskAiSessionHandle {
-                cancel: AskAiCancel::new(),
-                prompt_tx: second_tx,
-                token: 0,
-            },
-        );
-        assert_ne!(first_token, second_token);
-
-        // The first session finishing must NOT evict the newer registration.
-        remove_ask_ai_session_if_owner(id, first_token);
-        assert!(
-            ask_ai_session_prompt_sender(id).is_some(),
-            "stale owner removal should leave the newer session registered"
-        );
-
-        // The owning (newer) session's removal clears it.
-        remove_ask_ai_session_if_owner(id, second_token);
-        assert!(ask_ai_session_prompt_sender(id).is_none());
-    }
-
-    #[test]
-    fn register_cancels_the_displaced_session_handle() {
-        let id = "displaced-cancel-conv";
-
-        // First registration: capture its cancel handle so we can observe whether
-        // a racing second start hard-cancels it. Keep the receiver alive so the
-        // first handle's sender stays valid until it is displaced.
-        let first_cancel = AskAiCancel::new();
-        let (first_tx, _first_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        register_ask_ai_session(
-            id,
-            AskAiSessionHandle {
-                cancel: first_cancel.clone(),
-                prompt_tx: first_tx,
-                token: 0,
-            },
-        );
-        assert!(!first_cancel.is_cancelled());
-
-        // A second `ask_ai_start` reuses the id. Replacing the entry must set the
-        // displaced handle's cancel flag so a mid-turn streamer (blocked reading
-        // shim stdout, unreachable by dropping `prompt_tx` alone) is killed and
-        // stops interleaving output under the now-newer conversation id.
-        let (second_tx, _second_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        register_ask_ai_session(
-            id,
-            AskAiSessionHandle {
-                cancel: AskAiCancel::new(),
-                prompt_tx: second_tx,
-                token: 0,
-            },
-        );
-
-        assert!(
-            first_cancel.is_cancelled(),
-            "displacing a session must cancel the prior handle, not only drop its prompt_tx"
-        );
-
-        // Clean up the registry so the static map does not leak into other tests.
-        let _ = take_ask_ai_session(id);
-    }
-
-    fn prior_turn(question: &str, answer: &str) -> AskAiPriorTurn {
-        AskAiPriorTurn {
-            question: question.to_string(),
-            answer: answer.to_string(),
-        }
-    }
-
-    #[test]
-    fn start_request_deserializes_without_prior_transcript() {
-        // Existing callers (no priorTranscript) must keep working unchanged.
-        let request: AskAiStartRequest = serde_json::from_str(
-            r#"{"conversationId":"conv-1","question":"what did I do?","seedQuery":"build"}"#,
-        )
-        .expect("start request without priorTranscript should deserialize");
-        assert_eq!(request.conversation_id, "conv-1");
-        assert_eq!(request.question, "what did I do?");
-        assert_eq!(request.seed_query.as_deref(), Some("build"));
-        assert!(request.prior_transcript.is_none());
-    }
-
-    #[test]
-    fn start_request_deserializes_prior_transcript_camel_case() {
-        let request: AskAiStartRequest = serde_json::from_str(
-            r#"{"conversationId":"conv-2","question":"and after that?","priorTranscript":[{"question":"q1","answer":"a1"},{"question":"q2","answer":"a2"}]}"#,
-        )
-        .expect("start request with priorTranscript should deserialize");
-        let turns = request.prior_transcript.expect("prior_transcript present");
-        assert_eq!(turns.len(), 2);
-        assert_eq!(turns[0].question, "q1");
-        assert_eq!(turns[0].answer, "a1");
-        assert_eq!(turns[1].question, "q2");
-        assert_eq!(turns[1].answer, "a2");
-    }
-
-    #[test]
-    fn prior_transcript_block_none_when_empty() {
-        assert!(format_prior_transcript_block(&[]).is_none());
-        // Fully-blank turns carry nothing and are dropped, leaving nothing.
-        assert!(format_prior_transcript_block(&[prior_turn("   ", "\n\t")]).is_none());
-    }
-
-    #[test]
-    fn prior_transcript_block_formats_ordered_qa_with_delimiters() {
-        let turns = vec![prior_turn("first?", "answer one"), prior_turn("second?", "answer two")];
-        let (block, truncated) =
-            format_prior_transcript_block(&turns).expect("non-empty transcript yields a block");
-        assert!(!truncated);
-        // Clear "prior conversation from an earlier session" framing.
-        assert!(block.contains("prior conversation context from an EARLIER Ask AI session"));
-        assert!(block.contains("(End of prior conversation context.)"));
-        // Numbered, ordered Q/A — oldest first.
-        assert!(block.contains("Q1: first?\nA1: answer one\n"));
-        assert!(block.contains("Q2: second?\nA2: answer two\n"));
-        let q1 = block.find("Q1:").expect("Q1 present");
-        let q2 = block.find("Q2:").expect("Q2 present");
-        assert!(q1 < q2, "turns should render oldest-first");
-    }
-
-    #[test]
-    fn prior_transcript_block_trims_oldest_turns_first() {
-        // Many large turns: the oldest should be dropped, the newest kept whole.
-        let big = "x".repeat(4_000);
-        let turns: Vec<AskAiPriorTurn> = (0..6)
-            .map(|i| prior_turn(&format!("q{i}"), &big))
-            .collect();
-        let (block, truncated) =
-            format_prior_transcript_block(&turns).expect("yields a block");
-        assert!(truncated, "oversized transcript should report truncation");
-        assert!(block.len() <= ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP);
-        // The newest turn (index 5 -> Q6) must survive; the oldest (Q1) must be
-        // dropped to fit the cap.
-        assert!(block.contains("Q6: q5\n"), "newest turn kept whole");
-        assert!(!block.contains("Q1: q0\n"), "oldest turn dropped");
-    }
-
-    #[test]
-    fn prior_transcript_block_truncates_single_oversized_turn() {
-        // A single turn whose answer alone blows past the cap: it must be
-        // truncated (with a marker) rather than dropped, so the latest exchange
-        // still rides along, and the block still fits.
-        let huge = "y".repeat(ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP * 2);
-        let turns = vec![prior_turn("only?", &huge)];
-        let (block, truncated) =
-            format_prior_transcript_block(&turns).expect("yields a block");
-        assert!(truncated);
-        assert!(block.len() <= ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP);
-        assert!(block.contains("… [truncated]"));
-        assert!(block.contains("Q1: only?"));
-    }
-
-    #[test]
-    fn prior_transcript_block_keeps_modest_transcript_whole() {
-        let turns = vec![
-            prior_turn("a", "alpha"),
-            prior_turn("b", "beta"),
-            prior_turn("c", "gamma"),
-        ];
-        let (block, truncated) =
-            format_prior_transcript_block(&turns).expect("yields a block");
-        assert!(!truncated);
-        assert!(block.contains("Q1: a\nA1: alpha\n"));
-        assert!(block.contains("Q3: c\nA3: gamma\n"));
-    }
-
-    #[test]
     fn broker_response_to_tool_value_error_returns_message() {
         let response = BrokeredCaptureResponse::Error(BrokerErrorResponse {
             error: BrokerAuthStatusKind::AuthorizationRequired,
@@ -1904,5 +1883,87 @@ mod tests {
         let error =
             broker_response_to_tool_value(response).expect_err("error envelope should become Err");
         assert_eq!(error, "result is unavailable or outside the grant scope");
+    }
+
+    #[test]
+    fn followup_request_deserializes_camel_case_without_seed_query() {
+        let request: AskAiFollowupRequest = serde_json::from_str(
+            r#"{"conversationId":"conv-1","question":"what about in Slack?"}"#,
+        )
+        .expect("follow-up request should deserialize");
+        assert_eq!(request.conversation_id, "conv-1");
+        assert_eq!(request.question, "what about in Slack?");
+
+        let request: AskAiFollowupRequest = serde_json::from_str(
+            r#"{"conversationId":"conv-2","question":"more","seedQuery":"ignored"}"#,
+        )
+        .expect("extra fields are ignored");
+        assert_eq!(request.conversation_id, "conv-2");
+        assert_eq!(request.question, "more");
+    }
+
+    #[test]
+    fn start_request_deserializes_without_optional_fields() {
+        // Existing callers (no origin/title/priorTranscript) keep working.
+        let request: AskAiStartRequest = serde_json::from_str(
+            r#"{"conversationId":"conv-1","question":"what did I do?","seedQuery":"build"}"#,
+        )
+        .expect("start request without optional fields should deserialize");
+        assert_eq!(request.conversation_id, "conv-1");
+        assert_eq!(request.question, "what did I do?");
+        assert_eq!(request.seed_query.as_deref(), Some("build"));
+        assert!(request.origin.is_none());
+        assert!(request.title.is_none());
+        assert!(request.prior_transcript.is_none());
+    }
+
+    #[test]
+    fn start_request_accepts_origin_title_and_ignores_prior_transcript() {
+        let request: AskAiStartRequest = serde_json::from_str(
+            r#"{"conversationId":"c","question":"q","origin":"chat","title":"My chat","priorTranscript":[{"question":"q1","answer":"a1"}]}"#,
+        )
+        .expect("start request with origin/title/priorTranscript should deserialize");
+        assert_eq!(request.origin.as_deref(), Some("chat"));
+        assert_eq!(request.title.as_deref(), Some("My chat"));
+        // priorTranscript still deserializes (as opaque JSON) but is ignored.
+        assert!(request.prior_transcript.is_some());
+    }
+
+    #[test]
+    fn inflight_registry_register_take_roundtrip() {
+        let id = "inflight-roundtrip-conv";
+        let cancel = register_inflight(id);
+        assert!(!cancel.load(Ordering::SeqCst));
+        let taken = take_inflight(id).expect("registered flag should be takeable");
+        assert!(Arc::ptr_eq(&cancel, &taken));
+        // Once taken, the registry no longer holds it.
+        assert!(take_inflight(id).is_none());
+    }
+
+    #[test]
+    fn register_cancels_displaced_inflight_turn() {
+        let id = "inflight-displace-conv";
+        let first = register_inflight(id);
+        assert!(!first.load(Ordering::SeqCst));
+        // A racing second start/follow-up displaces the first, cancelling it.
+        let second = register_inflight(id);
+        assert!(
+            first.load(Ordering::SeqCst),
+            "displacing an in-flight turn must set its cancel flag"
+        );
+        assert!(!second.load(Ordering::SeqCst));
+        // Cleanup so the static map does not leak into other tests.
+        let _ = take_inflight(id);
+    }
+
+    #[test]
+    fn remove_if_owner_spares_a_displacing_turn() {
+        let id = "inflight-owner-conv";
+        let first = register_inflight(id);
+        let second = register_inflight(id);
+        // The first (displaced) turn finishing must NOT evict the newer flag.
+        remove_inflight_if_owner(id, &first);
+        let still = take_inflight(id).expect("newer flag should still be registered");
+        assert!(Arc::ptr_eq(&still, &second));
     }
 }

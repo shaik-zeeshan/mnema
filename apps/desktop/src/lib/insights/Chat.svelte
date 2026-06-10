@@ -21,11 +21,15 @@
   //                 composer (Enter sends, Shift+Enter newlines). When the engine
   //                 is off the composer is replaced by a quiet "enable" card.
   //
-  // Persistence is two writes per turn (start: phase "streaming" + question;
-  // finish: phase "done"/"error" + answer/sources/toolActivities), never per
-  // delta. A conversation loaded from history with no live PI session RESURRECTS
-  // on the next question (ask_ai_start carrying priorTranscript), keeping the
-  // same conversationId so it persists back into the same stored thread.
+  // Persistence is now owned by the Rust host: `ask_ai_start` upserts the
+  // conversation row (from `title`/`origin`) and `run_ask_ai_turn` persists each
+  // turn (streaming → done/error) keyed by a backend-computed turnIndex. The
+  // frontend renders live from the `ask_ai_*` events and never writes a turn
+  // itself. Reopening a thread HYDRATES from the store (`get_conversation`); a
+  // turn still in phase "streaming" keeps streaming live via the global
+  // delta/done/source listeners (they filter by conversationId). A follow-up
+  // always calls `ask_ai_followup` — the backend reloads history server-side, so
+  // there is no client-side resurrect.
   import { onMount, onDestroy, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -42,7 +46,6 @@
     type ConversationSummary,
     type Conversation,
     type ConversationTurn,
-    type SaveConversationTurnRequest,
     type AskAiAvailability,
     type AskAiStatusEvent,
     type AskAiDeltaEvent,
@@ -52,16 +55,19 @@
     type AskAiSource,
     type AskToolKind,
     type AskToolActivityEntry,
+    type PinnableEngine,
+    configuredPinnableEngines,
   } from "$lib/insights/conversation";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
+  import type { RecordingSettings } from "$lib/types/recording";
 
   // Quick Recall → Chat handoff (issue #111, ADR 0031). When the Insights page
   // receives an `insights_open_conversation` signal it sets `openConversationId`
   // (the handed-off thread) and bumps `openConversationNonce` so the SAME id
   // handed off twice still re-triggers the load. We select + load that
   // conversation via the normal `get_conversation` path; because Quick Recall
-  // persisted it under the same id, the thread continues seamlessly (Chat's
-  // existing resurrect-from-priorTranscript path answers the next question).
+  // persisted it under the same id, the thread continues seamlessly (a follow-up
+  // routes through ask_ai_followup, which reloads history server-side).
   let {
     openConversationId = null,
     openConversationNonce = 0,
@@ -166,17 +172,60 @@
     summaryExpanded: boolean;
   }
 
-  // The active thread id (one live PI session). null when no conversation open.
+  // The active thread id. null when no conversation open.
   let activeConversationId = $state<string | null>(null);
   let activeTitle = $state<string>("");
-  // Whether the active thread has a LIVE PI session (a fresh start/followup this
-  // mount). A conversation loaded from history starts with no live session and
-  // resurrects on the next question.
-  let hasLiveSession = $state(false);
   let turns = $state<ChatTurn[]>([]);
   let loadingConversation = $state(false);
   // True between a turn starting and that turn's terminal done/error event.
   let streaming = $state(false);
+
+  // ── Per-thread engine pin ────────────────────────────────────────────────
+  // The configured engines a thread can be pinned to (default + additional),
+  // derived from the live recording settings. The active thread's pin is
+  // (activePinProvider, activePinModel); null/null means "Default engine".
+  let pinnableEngines = $state<PinnableEngine[]>([]);
+  let activePinProvider = $state<string | null>(null);
+  let activePinModel = $state<string | null>(null);
+  let activeEngineLabel = $derived.by(() => {
+    if (activePinProvider === null || activePinModel === null) {
+      return "Default engine";
+    }
+    const match = pinnableEngines.find(
+      (e) => e.provider === activePinProvider && e.model === activePinModel,
+    );
+    return match?.label ?? `${activePinProvider} · ${activePinModel}`;
+  });
+  let enginePickerOpen = $state(false);
+
+  async function loadPinnableEngines(): Promise<void> {
+    try {
+      const settings = await invoke<RecordingSettings>("get_recording_settings");
+      pinnableEngines = configuredPinnableEngines(settings.aiRuntime);
+    } catch {
+      pinnableEngines = [];
+    }
+  }
+
+  // Pin the active thread to a configured engine (or clear the pin → default).
+  async function selectEngine(engine: PinnableEngine | null): Promise<void> {
+    enginePickerOpen = false;
+    const conversationId = activeConversationId;
+    if (conversationId === null) return;
+    activePinProvider = engine?.provider ?? null;
+    activePinModel = engine?.model ?? null;
+    try {
+      await invoke("set_conversation_engine", {
+        request: {
+          conversationId,
+          provider: engine?.provider ?? null,
+          model: engine?.model ?? null,
+        },
+      });
+    } catch {
+      // Best-effort: the pin will be re-read on the next hydrate.
+    }
+  }
 
   // Per-frame thumbnail cache for Answer Source cards (best-effort).
   let thumbnailCache = $state(new Map<number, string>());
@@ -223,13 +272,16 @@
 
   // ── New chat / select / delete ───────────────────────────────────────────
   function startNewChat(): void {
-    // A brand-new thread is created lazily on the first turn (save upserts the
-    // row), so here we just clear the right pane and arm a fresh id.
+    // A brand-new thread is created lazily on the first turn (ask_ai_start
+    // upserts the row from title/origin), so here we just clear the right pane
+    // and arm a fresh id.
     activeConversationId = crypto.randomUUID();
     activeTitle = "";
-    hasLiveSession = false;
     turns = [];
     streaming = false;
+    activePinProvider = null;
+    activePinModel = null;
+    enginePickerOpen = false;
     composerInput = "";
     void tick().then(() => composerEl?.focus());
   }
@@ -238,14 +290,14 @@
     if (summary.conversationId === activeConversationId && turns.length > 0) {
       return;
     }
-    // Loading a thread from history means there is no live PI session for it —
-    // the next question resurrects via ask_ai_start + priorTranscript.
     loadingConversation = true;
     activeConversationId = summary.conversationId;
     activeTitle = summary.title;
-    hasLiveSession = false;
     turns = [];
     streaming = false;
+    activePinProvider = null;
+    activePinModel = null;
+    enginePickerOpen = false;
     try {
       const convo = await invoke<Conversation | null>("get_conversation", {
         conversationId: summary.conversationId,
@@ -253,10 +305,7 @@
       if (convo === null || activeConversationId !== summary.conversationId) {
         return;
       }
-      activeTitle = convo.title;
-      turns = convo.turns.map(hydrateTurn);
-      // Warm thumbnails for any persisted frame sources.
-      for (const t of turns) void loadSourceThumbnails(t.sources);
+      hydrateConversation(convo);
       await tick();
       scrollTranscriptToBottom();
     } catch {
@@ -270,22 +319,22 @@
 
   // Load + select a conversation by id (Quick Recall → Chat handoff, #111). The
   // id may not be in the (capped/filtered) left-rail list, so we go straight to
-  // get_conversation rather than requiring a ConversationSummary. Mirrors
-  // selectConversation's no-live-session semantics: the next question resurrects
-  // from priorTranscript, keeping the same conversationId. A teardown of any
-  // current live session happens first so we never orphan a resident PI helper.
+  // get_conversation rather than requiring a ConversationSummary. If the latest
+  // turn is still streaming (the backend persisted its in-flight partial), we
+  // keep the global delta/done/source listeners live so ongoing tokens append.
   async function loadConversationById(conversationId: string): Promise<void> {
     const id = conversationId.trim();
     if (id.length === 0) return;
     // Already on this thread with its transcript loaded — nothing to do.
     if (id === activeConversationId && turns.length > 0) return;
-    await cancelLiveSession();
     loadingConversation = true;
     activeConversationId = id;
     activeTitle = "";
-    hasLiveSession = false;
     turns = [];
     streaming = false;
+    activePinProvider = null;
+    activePinModel = null;
+    enginePickerOpen = false;
     try {
       const convo = await invoke<Conversation | null>("get_conversation", {
         conversationId: id,
@@ -296,9 +345,7 @@
         // landed). Arm the id so the next question still threads into it.
         return;
       }
-      activeTitle = convo.title;
-      turns = convo.turns.map(hydrateTurn);
-      for (const t of turns) void loadSourceThumbnails(t.sources);
+      hydrateConversation(convo);
       await tick();
       scrollTranscriptToBottom();
     } catch {
@@ -306,6 +353,22 @@
     } finally {
       if (activeConversationId === id) loadingConversation = false;
     }
+  }
+
+  // Apply a hydrated Conversation to the active pane: title, engine pin, turns,
+  // and reattach to a still-streaming last turn (so the live delta/done/source
+  // listeners keep appending its partial answer). Callers have already set
+  // `activeConversationId` to this convo's id.
+  function hydrateConversation(convo: Conversation): void {
+    activeTitle = convo.title;
+    activePinProvider = convo.provider ?? null;
+    activePinModel = convo.model ?? null;
+    turns = convo.turns.map(hydrateTurn);
+    for (const t of turns) void loadSourceThumbnails(t.sources);
+    // Reattach: a persisted "streaming" last turn is still in flight server-side;
+    // keep `streaming` true so the global delta listener appends ongoing tokens.
+    const last = turns[turns.length - 1];
+    streaming = last?.phase === "streaming";
   }
 
   // React to a handoff from Insights (the prop + nonce bump). Reads the nonce so
@@ -388,35 +451,10 @@
       // The open conversation was deleted — reset the right pane to empty.
       activeConversationId = null;
       activeTitle = "";
-      hasLiveSession = false;
       turns = [];
       streaming = false;
-    }
-  }
-
-  // ── Persistence (two writes per turn) ────────────────────────────────────
-  async function saveTurn(
-    conversationId: string,
-    turnIndex: number,
-    turn: ChatTurn,
-  ): Promise<void> {
-    const request: SaveConversationTurnRequest = {
-      conversationId,
-      title: activeTitle || titleFromQuestion(turn.question),
-      origin: "chat",
-      turnIndex,
-      question: turn.question,
-      answer: turn.answer,
-      toolActivities: turn.toolActivities,
-      sources: turn.sources,
-      phase: turn.phase,
-      errorMessage: turn.errorMessage,
-      seededResultCount: turn.seededResultCount,
-    };
-    try {
-      await invoke("save_conversation_turn", { request });
-    } catch {
-      // Best-effort persistence; the in-memory transcript stays authoritative.
+      activePinProvider = null;
+      activePinModel = null;
     }
   }
 
@@ -428,17 +466,18 @@
     // Lazily arm a conversation id if the pane is empty (e.g. first ever visit).
     if (activeConversationId === null) {
       activeConversationId = crypto.randomUUID();
-      hasLiveSession = false;
     }
     const conversationId = activeConversationId;
     const isFirstTurn = turns.length === 0;
     if (isFirstTurn && activeTitle.length === 0) {
       activeTitle = titleFromQuestion(question);
     }
+    const title = activeTitle || titleFromQuestion(question);
 
     composerInput = "";
-    // Append the turn locally and persist it immediately with phase "streaming"
-    // + the question, so a refresh/restart shows the in-flight question.
+    // Append the turn locally and render live from events. The backend owns
+    // persistence: ask_ai_start upserts the row (from title/origin) and the turn
+    // (streaming → done/error) keyed by a backend-computed turnIndex.
     const turn = makeTurn(question, isFirstTurn ? "seeding" : "thinking");
     turns = [...turns, turn];
     const turnIndex = turns.length - 1;
@@ -446,28 +485,22 @@
     await tick();
     scrollTranscriptToBottom();
 
-    // The persisted streaming-phase write carries no answer yet.
-    const streamingSnapshot = makeTurn(question, "streaming");
-    void saveTurn(conversationId, turnIndex, streamingSnapshot);
-
     try {
-      if (isFirstTurn || !hasLiveSession) {
-        // First turn of a brand-new chat, OR continuing a conversation loaded
-        // from history (no live session): start a fresh PI session. When there
-        // are prior turns we resurrect by feeding them as priorTranscript; the
-        // conversationId stays the same so it persists into the same thread.
-        const priorTranscript = isFirstTurn ? undefined : buildPriorTranscript();
+      if (isFirstTurn) {
+        // First turn of a thread — start (and upsert the conversation row).
         await invoke<void>("ask_ai_start", {
           request: {
             conversationId,
             question,
             seedQuery: question,
-            priorTranscript,
+            origin: "chat",
+            title,
           },
         });
-        hasLiveSession = true;
       } else {
-        // Continuing a live thread — route the raw question into the session.
+        // Continuing a thread — route the raw question into the session. The
+        // backend reloads history from the store, so this always works (even on
+        // a thread reopened from history).
         await invoke<void>("ask_ai_followup", {
           request: { conversationId, question },
         });
@@ -479,17 +512,8 @@
       if (t) {
         t.phase = "error";
         t.errorMessage = error instanceof Error ? error.message : String(error);
-        void saveTurn(conversationId, turnIndex, t);
       }
     }
-  }
-
-  // Build the resurrection transcript: completed Q/A pairs only, oldest first.
-  // Rust owns the 12k-char oldest-first trim (ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP).
-  function buildPriorTranscript(): { question: string; answer: string }[] {
-    return turns
-      .filter((t) => t.phase === "done" && t.answer.trim().length > 0)
-      .map((t) => ({ question: t.question, answer: t.answer }));
   }
 
   function onComposerKeydown(event: KeyboardEvent): void {
@@ -500,11 +524,12 @@
     }
   }
 
-  // ── Cancel the live session (teardown / new chat) ────────────────────────
+  // ── Cancel the active turn (surface teardown) ────────────────────────────
+  // Only meaningful while a turn is streaming; a finished thread has no live
+  // session to cancel and its turns are already persisted server-side.
   async function cancelLiveSession(): Promise<void> {
-    if (activeConversationId === null || !hasLiveSession) return;
+    if (activeConversationId === null || !streaming) return;
     const conversationId = activeConversationId;
-    hasLiveSession = false;
     streaming = false;
     try {
       await invoke<void>("ask_ai_cancel", { request: { conversationId } });
@@ -793,6 +818,7 @@
   onMount(() => {
     void loadAskAvailability();
     void refreshHistory();
+    void loadPinnableEngines();
 
     let destroyed = false;
     let unlistenStatus: (() => void) | undefined;
@@ -845,16 +871,12 @@
 
     listen<AskAiDoneEvent>("ask_ai_done", (event) => {
       if (event.payload.conversationId !== activeConversationId) return;
-      const turnIndex = turns.length - 1;
-      const turn = turns[turnIndex];
+      const turn = turns[turns.length - 1];
       if (!turn) return;
       streaming = false;
       turn.toolActivity = null;
       turn.phase = "done";
-      // Finish write: final answer + sources + tool activities, phase "done".
-      if (activeConversationId !== null) {
-        void saveTurn(activeConversationId, turnIndex, turn);
-      }
+      // Persistence is owned by the backend (run_ask_ai_turn finalized this turn).
       void tick().then(scrollTranscriptToBottom);
     }).then((fn) => {
       if (destroyed) fn();
@@ -863,19 +885,14 @@
 
     listen<AskAiErrorEvent>("ask_ai_error", (event) => {
       if (event.payload.conversationId !== activeConversationId) return;
-      const turnIndex = turns.length - 1;
-      const turn = turns[turnIndex];
+      const turn = turns[turns.length - 1];
       if (!turn) return;
       streaming = false;
-      // The error killed the live PI session Rust-side; the next question must
-      // resurrect rather than follow up.
-      hasLiveSession = false;
       turn.toolActivity = null;
       turn.phase = "error";
       turn.errorMessage = event.payload.message;
-      if (activeConversationId !== null) {
-        void saveTurn(activeConversationId, turnIndex, turn);
-      }
+      // The backend persisted the error turn; a follow-up still works (it reloads
+      // history server-side), so there is no client resurrect.
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenError = fn;
@@ -902,9 +919,11 @@
       else unlistenChanged = fn;
     });
 
-    // Re-probe Ask AI availability when the engine config may have changed.
+    // Re-probe Ask AI availability + the configured engines when the engine
+    // config may have changed.
     listen("user_context_changed", () => {
       void loadAskAvailability();
+      void loadPinnableEngines();
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenCtx = fn;
@@ -1223,6 +1242,64 @@
       <!-- Composer (engine-on) or quiet enable card (engine-off). -->
       {#if askAvailable}
         <div class="composer-wrap">
+          {#if pinnableEngines.length > 0}
+            <!-- Per-thread engine pin: choose which configured engine answers
+                 this thread, or "Default engine" to clear the pin. -->
+            <div class="engine-pick">
+              <span class="engine-pick-label">Engine</span>
+              <div class="engine-pick-menu">
+                <button
+                  type="button"
+                  class="engine-pick-trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded={enginePickerOpen}
+                  onclick={() => (enginePickerOpen = !enginePickerOpen)}
+                >
+                  <span class="engine-pick-current">{activeEngineLabel}</span>
+                  <span class="engine-pick-caret" aria-hidden="true">▾</span>
+                </button>
+                {#if enginePickerOpen}
+                  <ul class="engine-pick-list" role="listbox">
+                    <li role="presentation">
+                      <button
+                        type="button"
+                        class="engine-pick-option"
+                        class:engine-pick-option--active={activePinProvider === null}
+                        role="option"
+                        aria-selected={activePinProvider === null}
+                        onclick={() => void selectEngine(null)}
+                      >
+                        Default engine
+                        {#if activePinProvider === null}
+                          <span class="engine-pick-check" aria-hidden="true">✓</span>
+                        {/if}
+                      </button>
+                    </li>
+                    {#each pinnableEngines as engine (`${engine.provider}-${engine.model}`)}
+                      {@const selected =
+                        engine.provider === activePinProvider &&
+                        engine.model === activePinModel}
+                      <li role="presentation">
+                        <button
+                          type="button"
+                          class="engine-pick-option"
+                          class:engine-pick-option--active={selected}
+                          role="option"
+                          aria-selected={selected}
+                          onclick={() => void selectEngine(engine)}
+                        >
+                          {engine.label}
+                          {#if selected}
+                            <span class="engine-pick-check" aria-hidden="true">✓</span>
+                          {/if}
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </div>
+          {/if}
           <div class="composer">
             <textarea
               bind:this={composerEl}
@@ -1831,6 +1908,89 @@
     background: var(--app-surface-subtle);
     padding: 12px 24px 14px;
   }
+  /* Per-thread engine pin (above the composer, same centered column width). */
+  .engine-pick {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 760px;
+    margin: 0 auto 8px;
+  }
+  .engine-pick-label {
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--app-text-faint);
+  }
+  .engine-pick-menu {
+    position: relative;
+  }
+  .engine-pick-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font: inherit;
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+    padding: 4px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease;
+  }
+  .engine-pick-trigger:hover {
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+  }
+  .engine-pick-caret {
+    font-size: 8px;
+  }
+  .engine-pick-list {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    min-width: 200px;
+    max-height: 240px;
+    overflow-y: auto;
+    list-style: none;
+    margin: 0;
+    padding: 4px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface-raised);
+    box-shadow: 0 8px 24px var(--app-shadow, rgba(0, 0, 0, 0.25));
+    z-index: 20;
+  }
+  .engine-pick-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    font: inherit;
+    font-size: 11px;
+    text-align: left;
+    padding: 6px 9px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--app-text);
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .engine-pick-option:hover {
+    background: var(--app-surface-hover);
+  }
+  .engine-pick-option--active {
+    color: var(--app-accent-strong);
+  }
+  .engine-pick-check {
+    color: var(--app-accent-strong);
+    font-size: 10px;
+  }
+
   .composer {
     display: flex;
     align-items: flex-end;
