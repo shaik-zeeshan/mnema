@@ -76,10 +76,20 @@
   }
 
   // Backdrop click → close. Guarded so a click that started inside the panel
-  // (e.g. dragging a selection out) doesn't close.
+  // (e.g. dragging a selection out) doesn't close, and so a stray click can't
+  // dismiss the modal while a correction is still saving.
   function onBackdropPointerDown(e: PointerEvent): void {
-    if (e.target === e.currentTarget) onClose();
+    if (e.target !== e.currentTarget) return;
+    if (correctingActivity.size > 0) return;
+    onClose();
   }
+
+  // Move keyboard focus into the dialog when it opens, so Escape/Tab act on
+  // the modal immediately (WebKit gives the opener no focus handoff).
+  let panelEl = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    if (open) panelEl?.focus();
+  });
 </script>
 
 <!-- Escape closes the popover first if one is open, else the modal. An outside
@@ -112,6 +122,7 @@
     onpointerdown={onBackdropPointerDown}
   >
     <div
+      bind:this={panelEl}
       class="cat-modal__panel"
       role="dialog"
       aria-modal="true"

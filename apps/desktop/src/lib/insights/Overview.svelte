@@ -708,6 +708,10 @@
     range.endMs;
     void untrack(() => {
       engineLoadedOnce = false;
+      // A new range is new content: stale expansion state would leave groups
+      // open over different (possibly empty) rows.
+      expandedGroups = new Set();
+      expandedDeltaRows = new Set();
       void loadFree();
       void loadEngine();
       scheduleDigestLoad();
