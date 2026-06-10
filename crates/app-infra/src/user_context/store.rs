@@ -114,9 +114,9 @@ pub struct NewConclusionEvidence {
 
 /// Counts from a **Delete Recent Capture** derived-data cascade
 /// ([`UserContextStore::delete_derived_for_capture_subjects`]): how many
-/// **Activity** rows, how many now-ungrounded **Conclusion** rows, and how many
-/// now-stale **Digest** rows were dropped. Used for the warning log + UI
-/// refresh; not persisted.
+/// **Activity** rows, how many now-below-the-formation-bar **Conclusion** rows,
+/// and how many now-stale **Digest** rows were dropped. Used for the warning
+/// log + UI refresh; not persisted.
 #[derive(Debug, Clone, Default)]
 pub struct UserContextCascadeSummary {
     pub deleted_activities: i64,
@@ -1230,10 +1230,12 @@ impl UserContextStore {
     ///    grounded in them, and every such Activity is in this delete set.
     /// 3. DELETE those Activities — their `*_activity_evidence` and
     ///    `*_conclusion_evidence` link rows cascade via FK.
-    /// 4. DROP every Conclusion that now has ZERO remaining
-    ///    `*_conclusion_evidence` rows (no ungrounded Conclusions). A Conclusion
-    ///    still grounded by ≥1 surviving evidence Activity STAYS — the minimal
-    ///    "re-judge or drop" rule: drop ungrounded, keep grounded.
+    /// 4. Re-apply the formation bar: DROP every Conclusion whose surviving
+    ///    support-stance evidence falls below
+    ///    [`confidence::FORMATION_BAR_EVIDENCE`](super::confidence::FORMATION_BAR_EVIDENCE)
+    ///    — evidence loss un-forms a Conclusion the bar would never have let
+    ///    form. A pinned Conclusion is exempt down to one surviving support;
+    ///    zero surviving support always drops (no ungrounded Conclusions).
     ///
     /// **Dismissal State is left untouched**: a dismissal is keyed by
     /// subject/statement (no FK to any capture subject) and must survive capture
@@ -1320,16 +1322,22 @@ impl UserContextStore {
             deleted_activities += query.build().execute(&mut *tx).await?.rows_affected() as i64;
         }
 
-        // 4. Drop every Conclusion now grounded by ZERO evidence Activities (no
-        //    ungrounded Conclusions). A Conclusion with ≥1 surviving evidence row
-        //    stays.
+        // 4. Re-apply the formation bar (#95) to the survivors: drop every
+        //    Conclusion whose remaining SUPPORT-stance evidence no longer meets
+        //    [`confidence::FORMATION_BAR_EVIDENCE`] — losing evidence un-forms a
+        //    Conclusion the same way lacking it would have prevented forming one.
+        //    A *pinned* Conclusion ("this is true, keep it") is exempt down to a
+        //    floor of one support; ZERO surviving support always drops, pinned or
+        //    not (ADR 0029: no ungrounded Conclusions, ever).
         let deleted_conclusions = sqlx::query(
             "DELETE FROM user_context_conclusions \
-             WHERE NOT EXISTS (\
-                 SELECT 1 FROM user_context_conclusion_evidence ce \
-                 WHERE ce.conclusion_id = user_context_conclusions.id\
-             )",
+             WHERE (\
+                 SELECT COUNT(*) FROM user_context_conclusion_evidence ce \
+                 WHERE ce.conclusion_id = user_context_conclusions.id \
+                   AND ce.stance = 'support'\
+             ) < CASE WHEN pinned = 1 THEN 1 ELSE ?1 END",
         )
+        .bind(super::confidence::FORMATION_BAR_EVIDENCE as i64)
         .execute(&mut *tx)
         .await?
         .rows_affected() as i64;
@@ -2160,18 +2168,19 @@ mod tests {
     }
 
     #[test]
-    fn delete_derived_for_capture_subjects_drops_ungrounded_keeps_grounded() {
+    fn delete_derived_for_capture_subjects_reapplies_formation_bar() {
         block_on(async {
         let store = test_store().await;
 
-        // Activity A is grounded in frame 10 (which will be deleted).
-        // Activity B is grounded in frame 20 (which survives).
+        // Activities A and C are grounded in capture subjects that will be
+        // deleted (frame 10, audio 30); B and D are grounded in frame 20,
+        // which survives.
         let activity_a = seed_activity_with_subject(&store, "Worked on the spec", 100, "frame", 10).await;
         let activity_b = seed_activity_with_subject(&store, "Reviewed a PR", 200, "frame", 20).await;
-        // Activity C is grounded in audio segment 30 (which will be deleted).
         let activity_c = seed_activity_with_subject(&store, "Call about the spec", 300, "audio_segment", 30).await;
+        let activity_d = seed_activity_with_subject(&store, "Merged the PR", 400, "frame", 20).await;
 
-        // Conclusion 1: grounded ONLY by A (lost entirely when A goes) -> dropped.
+        // Conclusion 1: grounded ONLY by A -> zero surviving support -> dropped.
         let only_a = store
             .upsert_conclusion(draft("Spec", "Cares about the spec", 0.7))
             .await
@@ -2184,7 +2193,8 @@ mod tests {
             .await
             .expect("evidence only_a");
 
-        // Conclusion 2: grounded by BOTH A and B; A goes but B survives -> stays.
+        // Conclusion 2: grounded by A and B; loses A and keeps ONE support —
+        // below the formation bar (≥2), unpinned -> dropped.
         let a_and_b = store
             .upsert_conclusion(draft("Work", "Active on work", 0.6))
             .await
@@ -2200,7 +2210,7 @@ mod tests {
             .await
             .expect("evidence a_and_b");
 
-        // Conclusion 3: grounded ONLY by C (audio); C goes -> dropped.
+        // Conclusion 3: grounded ONLY by C (audio) -> dropped.
         let only_c = store
             .upsert_conclusion(draft("Calls", "On calls", 0.5))
             .await
@@ -2212,6 +2222,57 @@ mod tests {
             )
             .await
             .expect("evidence only_c");
+
+        // Conclusion 4: grounded by B and D (both survive) -> still meets the
+        // formation bar -> stays.
+        let b_and_d = store
+            .upsert_conclusion(draft("Reviews", "Reviews code carefully", 0.6))
+            .await
+            .expect("b_and_d");
+        store
+            .replace_conclusion_evidence(
+                b_and_d,
+                vec![
+                    NewConclusionEvidence { activity_id: activity_b, stance: EvidenceStance::Support },
+                    NewConclusionEvidence { activity_id: activity_d, stance: EvidenceStance::Support },
+                ],
+            )
+            .await
+            .expect("evidence b_and_d");
+
+        // Conclusion 5: PINNED, grounded by A and B; keeps one support. The pin
+        // ("this is true, keep it") exempts it from the formation-bar re-check
+        // as long as ≥1 support survives -> stays.
+        let pinned = store
+            .upsert_conclusion(draft("Focus", "Works in long focus blocks", 0.8))
+            .await
+            .expect("pinned");
+        store
+            .replace_conclusion_evidence(
+                pinned,
+                vec![
+                    NewConclusionEvidence { activity_id: activity_a, stance: EvidenceStance::Support },
+                    NewConclusionEvidence { activity_id: activity_b, stance: EvidenceStance::Support },
+                ],
+            )
+            .await
+            .expect("evidence pinned");
+        store.set_pinned(pinned, true).await.expect("pin");
+
+        // Conclusion 6: PINNED but grounded ONLY by A — a pin never overrides
+        // the evidence floor; zero surviving support -> dropped.
+        let pinned_ungrounded = store
+            .upsert_conclusion(draft("Specs", "Lives in spec documents", 0.9))
+            .await
+            .expect("pinned_ungrounded");
+        store
+            .replace_conclusion_evidence(
+                pinned_ungrounded,
+                vec![NewConclusionEvidence { activity_id: activity_a, stance: EvidenceStance::Support }],
+            )
+            .await
+            .expect("evidence pinned_ungrounded");
+        store.set_pinned(pinned_ungrounded, true).await.expect("pin ungrounded");
 
         // A dismissal row keyed by subject/statement: must survive the cascade.
         let dismissed = store
@@ -2227,21 +2288,29 @@ mod tests {
             .await
             .expect("cascade");
 
-        // Activities A and C dropped; B survives.
+        // Activities A and C dropped; B and D survive.
         assert_eq!(summary.deleted_activities, 2, "A (frame 10) and C (audio 30)");
         assert!(store.list_recent_activities(100, 0).await.expect("activities")
             .iter().all(|a| a.id != activity_a && a.id != activity_c));
         assert!(store.list_recent_activities(100, 0).await.expect("activities")
             .iter().any(|a| a.id == activity_b), "B (frame 20) survives");
 
-        // Conclusion 1 (only A) and 3 (only C) dropped; Conclusion 2 (A+B) stays
-        // because B's evidence link survives.
-        assert_eq!(summary.deleted_conclusions, 2, "only_a and only_c dropped");
+        // only_a / only_c (no support left) and a_and_b (one support, below the
+        // bar, unpinned) dropped; b_and_d (two supports) and pinned (one
+        // support but pinned) stay.
+        assert_eq!(summary.deleted_conclusions, 4,
+            "only_a, only_c, a_and_b, pinned_ungrounded dropped");
         assert!(store.get_conclusion(only_a).await.expect("get").is_none());
         assert!(store.get_conclusion(only_c).await.expect("get").is_none());
-        let surviving = store.get_conclusion(a_and_b).await.expect("get").expect("a_and_b stays");
-        assert_eq!(surviving.evidence.len(), 1, "only B's evidence link remains");
-        assert_eq!(surviving.evidence[0].activity_id, activity_b);
+        assert!(store.get_conclusion(a_and_b).await.expect("get").is_none(),
+            "one surviving support is below the formation bar");
+        assert!(store.get_conclusion(pinned_ungrounded).await.expect("get").is_none(),
+            "a pin never keeps a Conclusion with zero surviving support");
+        let kept = store.get_conclusion(b_and_d).await.expect("get").expect("b_and_d stays");
+        assert_eq!(kept.evidence.len(), 2, "both surviving evidence links remain");
+        let kept_pinned = store.get_conclusion(pinned).await.expect("get").expect("pinned stays");
+        assert_eq!(kept_pinned.evidence.len(), 1, "only B's evidence link remains");
+        assert_eq!(kept_pinned.evidence[0].activity_id, activity_b);
 
         // Dismissal State is untouched by the capture cascade.
         let dismissals = store.list_dismissals().await.expect("dismissals after");

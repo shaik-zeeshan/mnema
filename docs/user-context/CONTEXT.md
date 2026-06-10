@@ -352,8 +352,10 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   ages out, derived **Activity** summaries survive and become the durable evidence floor, so a
   short-retention user can still accumulate a deep dossier; drilling back to the original frame is
   then best-effort. **Delete Recent Capture** (the privacy panic button) DOES cascade hard: it
-  purges any **Activity** derived from the deleted window and re-judges or drops any **Conclusion**
-  that leaned on it. A **Conclusion** that loses all its evidence is dropped — no ungrounded
+  purges any **Activity** derived from the deleted window and re-judges any **Conclusion** that
+  leaned on it by re-applying the formation bar: a **Conclusion** whose surviving support falls
+  below the bar is dropped, not only one that loses all its evidence. A Pin exempts a Conclusion
+  from that re-check down to one surviving support, but never past zero — no ungrounded
   conclusions.
 - Because the derived dossier deliberately outlives the raw-capture **Retention Policy** window,
   this longer memory must be clearly disclosed and backed by a wipe-my-**User Context** control;
