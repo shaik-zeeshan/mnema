@@ -217,6 +217,17 @@ export interface UserContextDerivationRunResult {
 	message: string;
 }
 
+/** The engine-written narrative lede for an Overview range (story feed). */
+export interface UserContextDigest {
+	rangeKind: string;
+	rangeStartMs: number;
+	rangeEndMs: number;
+	narrative: string;
+	generatedAtMs: number;
+	/** One-line generated headline above the narrative; absent on old cached digests. */
+	headline?: string | null;
+}
+
 export interface RecordingSettings {
 	captureScreen: boolean;
 	captureMicrophone: boolean;

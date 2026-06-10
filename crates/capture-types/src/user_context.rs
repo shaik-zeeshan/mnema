@@ -176,6 +176,28 @@ pub struct UserContextStatus {
     pub budget_tier: DerivationBudgetTier,
 }
 
+/// The engine-written narrative lede for one Insights Overview range (the
+/// **User Context Digest**, issue #89): 2–4 sentences of second-person prose
+/// summarizing what the range's [`Activity`] episodes amount to. Generated
+/// lazily by the Tauri layer (`get_user_context_digest`) and cached per
+/// `(rangeKind, rangeStartMs)` keyed on a fingerprint of the in-range
+/// Activities, so an unchanged range never re-bills the engine.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserContextDigest {
+    /// `"day"` | `"week"` | `"month"`.
+    pub range_kind: String,
+    pub range_start_ms: i64,
+    /// Exclusive: the digest covers `[rangeStartMs, rangeEndMs)`.
+    pub range_end_ms: i64,
+    pub narrative: String,
+    /// Short generated title rendered in large type above the narrative
+    /// (e.g. "A deep week in the editor"); `None` when generation produced no
+    /// usable headline (narrative-only stays a valid digest).
+    pub headline: Option<String>,
+    pub generated_at_ms: i64,
+}
+
 /// A standing, user-authored Context statement (issue #107): something the user
 /// asserted about themselves ("I'm a designer", "I care about X"), stored
 /// verbatim. It is user-asserted rather than derived, so it carries no
