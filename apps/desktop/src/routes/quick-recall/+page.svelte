@@ -10,6 +10,7 @@
   import { closeCurrentWindow } from "$lib/surface-windows";
   import { renderMarkdown } from "$lib/markdown";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import type { SaveConversationTurnRequest } from "$lib/insights/conversation";
   import type {
     SearchCaptureResponse,
     SearchCaptureRefinements,
@@ -708,9 +709,18 @@
   // Ask AI
   //
   // Ask AI pivots from the current Quick Search query into a PI-driven answer
-  // seeded with redacted broker results for that same query. State is fully
-  // ephemeral: a fresh window summon recreates the component, and returning to
-  // search mode resets everything below. Nothing is persisted.
+  // seeded with redacted broker results for that same query. The in-memory
+  // thread is still ephemeral for the live launcher experience — a fresh window
+  // summon recreates the component, and returning to search mode resets the
+  // in-memory state below.
+  //
+  // Conversations are now ALSO persisted to the shared conversation store in the
+  // Encrypted Capture Index (issue #111, ADR 0031): every real turn is written
+  // under the same conversationId with origin "quick_recall", so the same thread
+  // can be opened/continued in the Insights Chat workspace ("Continue in Chat").
+  // This persistence is purely additive to the ephemeral runtime model above;
+  // the stored conversation is governed by Retention Policy and cleared by Wipe
+  // User Context. ADR 0031 supersedes ADR 0027's disk-ephemerality for the thread.
   // ---------------------------------------------------------------------------
 
   type AskAiAvailability = {
@@ -1301,6 +1311,9 @@
     clearAskCopiedTimers();
     askTurns = [makeAskTurn(trimmedQuestion, "seeding")];
     askStreaming = true;
+    // Persist the in-flight first turn immediately (streaming phase, no answer
+    // yet) under this conversation id so the thread is durable from the start.
+    persistTurnStreaming(conversationId, 0, trimmedQuestion);
 
     try {
       await invoke<void>("ask_ai_start", {
@@ -1320,6 +1333,8 @@
       if (last) {
         last.phase = "error";
         last.errorMessage = error instanceof Error ? error.message : String(error);
+        // Persist the terminal (error) state of this first turn.
+        persistTurnFinal(0, conversationId);
       }
     }
   }
@@ -1362,6 +1377,148 @@
       .map((turn) => ({ question: turn.question, answer: turn.answer }));
   }
 
+  // ---------------------------------------------------------------------------
+  // Persistence to the shared conversation store (issue #111, ADR 0031)
+  //
+  // Quick Recall threads are now ALSO durable: every real turn is written to the
+  // Encrypted Capture Index under the SAME `askConversationId`, with origin
+  // "quick_recall", so the same row backs both doors (Quick Recall and the
+  // Insights Chat workspace). This is purely additive — the ephemeral
+  // background-completion / resurrect machinery above is untouched; the thread is
+  // now simply also persisted, governed by Retention Policy and cleared by Wipe
+  // User Context.
+  //
+  // Two writes per turn, mirroring Chat.svelte: a streaming-phase write at turn
+  // start (question only, no answer yet) and a terminal write on done/error
+  // (final answer + sources + tool activities). NEVER on deltas. Persistence is
+  // best-effort: a failed write leaves the in-memory transcript authoritative.
+  // ---------------------------------------------------------------------------
+
+  const CONVERSATION_TITLE_MAX = 80;
+
+  // Trim/truncate a question into a conversation title (matches Chat.svelte).
+  function titleFromQuestion(question: string): string {
+    const t = question.trim().replace(/\s+/g, " ");
+    return t.length > CONVERSATION_TITLE_MAX
+      ? `${t.slice(0, CONVERSATION_TITLE_MAX - 1)}…`
+      : t;
+  }
+
+  // The thread title is the first question (stable across follow-ups), so both
+  // doors show the same row label. Falls back to the turn-1 question when
+  // askFirstQuestion hasn't been recorded yet.
+  function conversationTitle(): string {
+    const first =
+      askFirstQuestion.trim().length > 0
+        ? askFirstQuestion
+        : (askTurns[0]?.question ?? "");
+    return titleFromQuestion(first);
+  }
+
+  // Persist one turn's current state to the shared store. `turnIndex` is the
+  // turn's array index; the conversation id is captured by the caller so a late
+  // write can't bind to a thread that moved on. Guards out empty/seeding-only
+  // states: only a turn carrying a real question is written (matches Chat).
+  async function persistTurn(
+    conversationId: string,
+    turnIndex: number,
+    question: string,
+    phase: AskAiPhase,
+    answer: string,
+    toolActivities: AskToolActivityEntry[],
+    sources: AskAiSource[],
+    errorMessage: string | null,
+    seededResultCount: number | null,
+  ): Promise<void> {
+    if (question.trim().length === 0) {
+      return;
+    }
+    const request: SaveConversationTurnRequest = {
+      conversationId,
+      title: conversationTitle(),
+      origin: "quick_recall",
+      turnIndex,
+      question,
+      answer,
+      toolActivities,
+      sources,
+      phase,
+      errorMessage,
+      seededResultCount,
+    };
+    try {
+      await invoke("save_conversation_turn", { request });
+    } catch {
+      // Best-effort persistence; the in-memory transcript stays authoritative.
+    }
+  }
+
+  // Streaming-phase write at the START of a turn (question only, no answer yet),
+  // so a refresh / Chat hand-off shows the in-flight question immediately.
+  function persistTurnStreaming(
+    conversationId: string,
+    turnIndex: number,
+    question: string,
+  ): void {
+    void persistTurn(
+      conversationId,
+      turnIndex,
+      question,
+      "streaming",
+      "",
+      [],
+      [],
+      null,
+      null,
+    );
+  }
+
+  // Terminal write at done/error: the final answer + sources + tool activities.
+  function persistTurnFinal(turnIndex: number, conversationId: string): void {
+    const turn = askTurns[turnIndex];
+    if (!turn) {
+      return;
+    }
+    void persistTurn(
+      conversationId,
+      turnIndex,
+      turn.question,
+      turn.phase,
+      turn.answer,
+      turn.toolActivities,
+      turn.sources,
+      turn.errorMessage,
+      turn.seededResultCount,
+    );
+  }
+
+  // Whether the current thread has at least one completed (done) turn, gating the
+  // "Open in Chat" affordance — the handoff promotes a real, answered thread.
+  let askCanOpenInChat = $derived(
+    askConversationId !== null && askHasCompletedTurn,
+  );
+
+  // Promote the current Quick Recall thread into the Insights → Chat workspace.
+  // The thread is already persisted under askConversationId (origin
+  // "quick_recall"), so this just shows/navigates the main window to Insights →
+  // Chat and selects this conversation; Chat's get_conversation +
+  // resurrect-from-transcript path continues it seamlessly. Mirrors the Answer
+  // Sources hand-off (open_capture_result_in_main_window), which also dismisses
+  // the Quick Recall window — so we do the same here for consistency.
+  async function openInChat(): Promise<void> {
+    const conversationId = askConversationId;
+    if (conversationId === null || !askHasCompletedTurn) {
+      return;
+    }
+    try {
+      await invoke("open_conversation_in_chat", { conversationId });
+    } catch {
+      // Best-effort hand-off; if it fails, leave the Quick Recall thread open.
+      return;
+    }
+    await closeCurrentWindow();
+  }
+
   // Resurrect a dead (expired or errored) thread from its transcript. Starts a
   // FRESH PI session via ask_ai_start carrying the prior Q/A as priorTranscript,
   // swaps in a new conversation id, and continues streaming into the SAME visible
@@ -1397,6 +1554,10 @@
     askTurns = [...askTurns, makeAskTurn(trimmed, "seeding")];
     const turnIndex = askTurns.length - 1;
     askStreaming = true;
+    // A resurrected thread carries a FRESH conversation id (existing ephemeral
+    // behavior, unchanged), so persist this turn — and the resumed prior turns —
+    // under the new id so the durable row matches the live thread.
+    persistResurrectedTranscript(conversationId);
     // The composer is about to disable — park focus on the transcript region so
     // Escape/scroll keys keep working while the resurrected turn streams.
     await tick();
@@ -1421,8 +1582,29 @@
       if (turn) {
         turn.phase = "error";
         turn.errorMessage = error instanceof Error ? error.message : String(error);
+        persistTurnFinal(turnIndex, conversationId);
       }
     }
+  }
+
+  // Persist the full resumed transcript under a resurrected thread's new id: the
+  // prior completed turns (so the durable row matches what the user sees) plus
+  // the new in-flight turn (streaming phase). Best-effort, fire-and-forget.
+  function persistResurrectedTranscript(conversationId: string): void {
+    askTurns.forEach((turn, index) => {
+      const isLive = index === askTurns.length - 1;
+      void persistTurn(
+        conversationId,
+        index,
+        turn.question,
+        isLive ? "streaming" : turn.phase,
+        isLive ? "" : turn.answer,
+        isLive ? [] : turn.toolActivities,
+        isLive ? [] : turn.sources,
+        isLive ? null : turn.errorMessage,
+        isLive ? null : turn.seededResultCount,
+      );
+    });
   }
 
   // Submit a follow-up question. Normally (live session) this appends a turn and
@@ -1462,6 +1644,8 @@
     askTurns = [...askTurns, makeAskTurn(trimmed, "thinking")];
     const turnIndex = askTurns.length - 1;
     askStreaming = true;
+    // Persist the in-flight follow-up turn (streaming phase) under the same id.
+    persistTurnStreaming(conversationId, turnIndex, trimmed);
     // The composer is about to disable (dimmed) — move focus to the transcript
     // region so Escape (back-to-search) and scroll keys keep working while the
     // follow-up streams. The composer refocuses on done via the effect below.
@@ -1482,6 +1666,7 @@
       if (turn) {
         turn.phase = "error";
         turn.errorMessage = error instanceof Error ? error.message : String(error);
+        persistTurnFinal(turnIndex, conversationId);
       }
     }
   }
@@ -3258,12 +3443,18 @@
 
     listen<AskAiDoneEvent>("ask_ai_done", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
-      const turn = askTurns[askTurns.length - 1];
+      const turnIndex = askTurns.length - 1;
+      const turn = askTurns[turnIndex];
       if (!turn) return;
       // This TURN finished — re-enable the composer (thread-level streaming off).
       askStreaming = false;
       turn.toolActivity = null;
       turn.phase = "done";
+      // Terminal write: final answer + sources + tool activities, phase "done".
+      const conversationId = askConversationId;
+      if (conversationId !== null) {
+        persistTurnFinal(turnIndex, conversationId);
+      }
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenDone = fn;
@@ -3271,12 +3462,18 @@
 
     listen<AskAiErrorEvent>("ask_ai_error", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
-      const turn = askTurns[askTurns.length - 1];
+      const turnIndex = askTurns.length - 1;
+      const turn = askTurns[turnIndex];
       if (!turn) return;
       askStreaming = false;
       turn.toolActivity = null;
       turn.phase = "error";
       turn.errorMessage = event.payload.message;
+      // Terminal write: persist the errored turn so the durable row reflects it.
+      const conversationId = askConversationId;
+      if (conversationId !== null) {
+        persistTurnFinal(turnIndex, conversationId);
+      }
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenError = fn;
@@ -4010,6 +4207,24 @@
             {/each}
           {/if}
         </div>
+
+        <!-- "Open in Chat" / Go deep (issue #111, ADR 0031): promote this thread
+             into the full Insights → Chat workspace. The thread is already
+             persisted under the same conversation id, so Chat continues it
+             seamlessly. Shown once at least one turn has completed. -->
+        {#if askCanOpenInChat}
+          <div class="quick-recall__handoff-row">
+            <button
+              type="button"
+              class="quick-recall__handoff"
+              onclick={() => void openInChat()}
+              title="Continue this thread in the Insights Chat workspace"
+            >
+              Continue in Chat
+              <span class="quick-recall__handoff-arrow" aria-hidden="true">↗</span>
+            </button>
+          </div>
+        {/if}
 
         <!-- Background completion (PLAN.md slice 4): subtle resume hint above the
              composer when the next follow-up will resurrect (helper expired, or
@@ -4998,6 +5213,44 @@
   .quick-recall__copy--copied {
     color: var(--app-accent);
     border-color: var(--app-accent-border);
+  }
+
+  /* "Continue in Chat" hand-off affordance (#111). A subtle, terminal-style
+     button pinned above the composer; quiet by default, accent on hover —
+     consistent with the other Quick Recall answer-action surfaces. */
+  .quick-recall__handoff-row {
+    display: flex;
+    justify-content: flex-end;
+    flex-shrink: 0;
+    padding: 4px 2px 0;
+  }
+
+  .quick-recall__handoff {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: inherit;
+    font-size: 11.5px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    padding: 6px 11px;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  }
+
+  .quick-recall__handoff:hover {
+    color: var(--app-accent-strong);
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+
+  .quick-recall__handoff-arrow {
+    font-size: 12px;
+    line-height: 1;
   }
 
   /* Error "Try again" affordance. */

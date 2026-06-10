@@ -130,6 +130,7 @@
   $effect(() => {
     let destroyed = false;
     let unlistenBrokerOpenCaptureResult: (() => void) | undefined;
+    let unlistenInsightsOpenConversation: (() => void) | undefined;
 
     listen("broker_open_capture_result", () => {
       if (isMainWindow && !isMainRoute) {
@@ -140,9 +141,24 @@
       else unlistenBrokerOpenCaptureResult = fn;
     });
 
+    // Quick Recall → Chat handoff (issue #111, ADR 0031): navigate the main
+    // window to the Insights surface so its Chat tab can select the handed-off
+    // conversation. The Insights page itself owns switching to the Chat tab and
+    // selecting the conversation (live event + a cold-window drain on mount);
+    // here we only ensure the route is on `/insights`.
+    listen("insights_open_conversation", () => {
+      if (isMainWindow && !isInsightsRoute) {
+        void goto("/insights");
+      }
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenInsightsOpenConversation = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenBrokerOpenCaptureResult?.();
+      unlistenInsightsOpenConversation?.();
     };
   });
 
@@ -665,6 +681,7 @@
 
 <div
   class="app-shell"
+  class:app-shell--bounded={isMainSurfaceRoute}
   class:app-shell--dedicated={showDedicatedTitlebar}
   class:app-shell--macos={showDedicatedTitlebar && windowPlatform === "macos"}
   class:app-shell--windows={showDedicatedTitlebar && windowPlatform === "windows"}
@@ -1531,6 +1548,19 @@
     flex-direction: column;
     min-height: 100vh;
     min-height: 100dvh;
+  }
+
+  /* Main window surfaces (Timeline + Insights) own their internal scrolling:
+     the shell is pinned to the viewport so a tall surface (e.g. a long Chat
+     transcript) scrolls inside its own region instead of growing the shell and
+     scrolling the whole window. Without a definite height here the chain is only
+     `min-height: 100vh`, so `.insights`'s `height: 100%` can't resolve and the
+     surface grows to content height. Dedicated/panel windows pin themselves
+     separately; onboarding is not a main-surface route, so it still page-scrolls. */
+  .app-shell--bounded {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
   }
 
   .app-shell--macos {

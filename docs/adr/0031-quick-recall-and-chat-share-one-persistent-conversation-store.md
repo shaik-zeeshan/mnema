@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Quick Recall and the Insights Chat share one engine and one persistent conversation store

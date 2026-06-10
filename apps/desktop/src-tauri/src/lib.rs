@@ -48,6 +48,12 @@ const ALREADY_RUNNING_MESSAGE: &str =
     "Mnema is already running. Close the existing Mnema window before opening it again.";
 const BROKER_OPEN_CAPTURE_RESULT_EVENT: &str = "broker_open_capture_result";
 const BROKER_AUTHORIZATION_REQUEST_FILE_NAME: &str = "broker-authorization-request.json";
+/// Event the main window listens for to switch the Insights surface to the Chat
+/// tab and select a given conversation. Emitted by `open_conversation_in_chat`
+/// when Quick Recall promotes a thread into the full Chat workspace (issue #111,
+/// ADR 0031). The conversation is already persisted under the same id, so Chat's
+/// `get_conversation` + resurrect-from-transcript path continues it seamlessly.
+const INSIGHTS_OPEN_CONVERSATION_EVENT: &str = "insights_open_conversation";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,6 +110,49 @@ fn open_capture_result_in_main_window(
     }
     let _ = windows::open_main_window(&app_handle);
     let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InsightsOpenConversationPayload {
+    conversation_id: String,
+}
+
+/// Pending Insights→Chat conversation handoff(s) for a cold main window. Mirrors
+/// `BrokerOpenCaptureResultState`: the live event drives a warm window, while a
+/// freshly-opened (cold) main window drains this queue on mount so the handoff
+/// still lands when Insights mounts after the event fired.
+#[derive(Default)]
+struct InsightsOpenConversationState {
+    pending: Mutex<VecDeque<InsightsOpenConversationPayload>>,
+}
+
+#[tauri::command]
+fn drain_pending_insights_open_conversations(
+    state: tauri::State<'_, InsightsOpenConversationState>,
+) -> Vec<InsightsOpenConversationPayload> {
+    let Ok(mut pending) = state.pending.lock() else {
+        return Vec::new();
+    };
+    pending.drain(..).collect()
+}
+
+/// Show + focus the main window, navigate it to the Insights → Chat tab, and
+/// select `conversation_id`. Mirrors `open_capture_result_in_main_window`: the
+/// payload is queued for a cold-window drain AND emitted as a live event so a
+/// warm window reacts immediately. Quick Recall calls this for "Open in Chat".
+#[tauri::command]
+fn open_conversation_in_chat(
+    conversation_id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, InsightsOpenConversationState>,
+) {
+    let payload = InsightsOpenConversationPayload { conversation_id };
+    if let Ok(mut pending) = state.pending.lock() {
+        pending.push_back(payload.clone());
+    }
+    let _ = windows::open_main_window(&app_handle);
+    let _ = app_handle.emit(INSIGHTS_OPEN_CONVERSATION_EVENT, payload);
 }
 
 fn is_app_log_target(target: &str) -> bool {
@@ -312,6 +361,7 @@ pub fn run() {
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
         .manage(BrokerOpenCaptureResultState::default())
+        .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if notify_pending_broker_authorization_request_if_onboarded(app) {
@@ -535,6 +585,8 @@ pub fn run() {
             keyboard_bindings::update_keyboard_bindings_settings,
             drain_pending_broker_open_capture_results,
             open_capture_result_in_main_window,
+            drain_pending_insights_open_conversations,
+            open_conversation_in_chat,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
