@@ -7,9 +7,11 @@
 //! capture hot path and asks the configured Reasoning Engine to segment it into
 //! semantic Activities.
 //!
-//! Cheapness when disabled is load-bearing: the Reasoning Engine is **off by
-//! default**, so a tick with `ai_runtime.enabled == false` (or an unresolved
-//! engine) does nothing but sleep the idle interval. No store/LLM work happens.
+//! Cheapness when disabled is load-bearing: continuous derivation is gated on
+//! the **User Context** opt-in (`user_context.enabled`, off by default) AND the
+//! shared engine-configured prerequisite, so a tick with the opt-in off (or an
+//! unresolved/unreachable engine) does nothing but sleep the idle interval. No
+//! store/LLM work happens.
 //!
 //! Conclusion distillation (#94) runs on a slower beat after the Activity window
 //! each tick (see [`WorkerCadence`]); confidence decay (#95) extends the loop on
@@ -923,16 +925,30 @@ async fn worker_tick(
     let ai_runtime = settings.ai_runtime;
     let user_context = settings.user_context;
 
-    // Cheap-when-disabled: the engine is off by default; do nothing but idle.
-    if !ai_runtime.enabled {
+    // Two-layer gate: continuous derivation runs ONLY when User Context's own
+    // opt-in is on (the continuous-derivation opt-in, independent of Ask AI) AND
+    // the shared engine-configured prerequisite is satisfied. Cheap-when-off: the
+    // opt-in is off by default, so a tick on a fresh install does nothing but
+    // idle (this short-circuits before the prerequisite's local reachability
+    // ping).
+    if !user_context.enabled {
+        return IDLE_INTERVAL;
+    }
+
+    if crate::ai_runtime::engine_configured_prerequisite(&ai_runtime)
+        .await
+        .is_err()
+    {
+        // Engine off / not ready (no model / no key / unreachable endpoint).
+        // Stay cheap; do not log the reason at error level on every tick.
         return IDLE_INTERVAL;
     }
 
     let engine = match crate::ai_runtime::resolve_engine_config(&ai_runtime) {
         Ok(engine) => engine,
         Err(_reason) => {
-            // Not ready (no model / no key / no endpoint). Stay cheap; do not log
-            // the reason at error level on every tick.
+            // Defensive: the prerequisite already passed, but a local engine
+            // could become unreachable between the ping and here. Stay cheap.
             return IDLE_INTERVAL;
         }
     };

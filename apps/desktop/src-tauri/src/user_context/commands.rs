@@ -55,13 +55,16 @@ pub async fn get_user_context_status(
     let ai_runtime = settings.ai_runtime;
     let user_context = settings.user_context;
 
-    // Engine availability mirrors `ai_runtime`'s reason-code shape: disabled is
-    // its own reason; otherwise resolve_engine_config tells us ready / why-not.
-    let (engine_available, reason) = if !ai_runtime.enabled {
-        (false, Some("ai_runtime_disabled".to_string()))
+    // Two-layer gate, mirroring the reason-code shape: continuous derivation is
+    // "available" only when User Context's own opt-in is on AND the shared
+    // engine-configured prerequisite is satisfied. The opt-in is checked first so
+    // a user who configured the engine for Ask AI but not User Context sees the
+    // distinct `user_context_disabled` reason rather than an engine reason.
+    let (engine_available, reason) = if !user_context.enabled {
+        (false, Some("user_context_disabled".to_string()))
     } else {
-        match crate::ai_runtime::resolve_engine_config(&ai_runtime) {
-            Ok(_) => (true, None),
+        match crate::ai_runtime::engine_configured_prerequisite(&ai_runtime).await {
+            Ok(()) => (true, None),
             Err(reason) => (false, Some(reason)),
         }
     };
@@ -231,15 +234,34 @@ pub async fn user_context_run_derivation_now(
 ) -> Result<UserContextDerivationRunResult, String> {
     let settings = read_recording_settings(state.inner());
     let ai_runtime = settings.ai_runtime;
+    let user_context = settings.user_context;
 
-    if !ai_runtime.enabled {
+    // Same two-layer gate as the worker: the User Context opt-in must be on, and
+    // the shared engine-configured prerequisite must be satisfied. A manual run
+    // honours the opt-in so it never derives behind a user who has not opted in.
+    if !user_context.enabled {
         return Ok(UserContextDerivationRunResult {
             activities_derived: 0,
             conclusions_derived: 0,
             window_start_ms: 0,
             window_end_ms: 0,
             items_read: 0,
-            message: "The Reasoning Engine is off. Enable it to derive Activities.".to_string(),
+            message: "User Context is off. Turn it on to derive Activities.".to_string(),
+        });
+    }
+
+    if let Err(reason) = crate::ai_runtime::engine_configured_prerequisite(&ai_runtime).await {
+        return Ok(UserContextDerivationRunResult {
+            activities_derived: 0,
+            conclusions_derived: 0,
+            window_start_ms: 0,
+            window_end_ms: 0,
+            items_read: 0,
+            message: if reason == "ai_runtime_disabled" {
+                "The Reasoning Engine is off. Enable it to derive Activities.".to_string()
+            } else {
+                format!("The Reasoning Engine is not ready ({reason}).")
+            },
         });
     }
 
@@ -340,9 +362,9 @@ fn withheld_summary(drops: app_infra::DistillationGateDrops) -> String {
 /// The **User Context Digest** (#89): the engine-written 2–4 sentence narrative
 /// lede the Insights Overview shows for one local-calendar range. Lazy +
 /// fingerprint-cached: an unchanged range returns the stored narrative with no
-/// engine call. `Ok(None)` — never an error — when the engine is off/unready or
-/// the range holds fewer than two Activities, so the frontend silently omits
-/// the lede. `range_kind` is `"day"` | `"week"` | `"month"`; `[start_ms,
+/// engine call. `Ok(None)` — never an error — when User Context is off, the
+/// engine is off/unready, or the range holds fewer than two Activities, so the
+/// frontend silently omits the lede. `range_kind` is `"day"` | `"week"` | `"month"`; `[start_ms,
 /// end_ms)` is the half-open local-calendar window the frontend computed
 /// (invoked as `{ rangeKind, startMs, endMs }`).
 #[tauri::command]
@@ -356,6 +378,7 @@ pub async fn get_user_context_digest(
     let settings = read_recording_settings(state.inner());
     super::digest::get_or_generate_digest(
         &settings.ai_runtime,
+        settings.user_context.enabled,
         infra.user_context(),
         &range_kind,
         start_ms,

@@ -454,9 +454,12 @@ pub struct AccessSettings {
     /// conversation can pull through the broker.
     #[serde(default = "default_ask_ai_max_tool_calls")]
     pub ask_ai_max_tool_calls: u32,
-    /// PI model id Ask AI should use for Quick Recall, in the form
-    /// `provider:modelId` (e.g. `anthropic:claude-opus-4`). `None`/empty lets
-    /// the PI runtime pick its own configured default model.
+    /// rig-core model id Quick Recall should use against the **default**
+    /// Reasoning Engine (e.g. `claude-haiku-4-5` for an Anthropic cloud engine,
+    /// or an Ollama tag for a local one). `None`/empty lets the engine pick its
+    /// own configured default model. NOTE this was historically a PI
+    /// `provider:modelId` pair; on the rig-core Reasoning Engine the provider is
+    /// fixed by the configured default engine, so this is now a bare model id.
     #[serde(default)]
     pub ask_ai_model: Option<String>,
 }
@@ -513,6 +516,24 @@ pub fn default_ai_local_endpoint() -> String {
     "http://localhost:11434".to_string()
 }
 
+/// A fully-specified Reasoning Engine the user has configured. The flat fields
+/// on [`AiRuntimeSettings`] describe the **default/global** engine; an
+/// `AiEngineProfile` is one of the *additional* engines a thread can be pinned
+/// to (per-thread engine pin). It carries the same dimensions as the flat
+/// fields so it can be turned into the same `EngineConfig` (the keychain key is
+/// supplied by the Tauri layer at resolve time, never persisted here).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiEngineProfile {
+    pub engine_kind: AiEngineKind,
+    pub cloud_provider: AiCloudProvider,
+    pub cloud_model: String,
+    pub cloud_base_url: String,
+    pub local_kind: AiLocalKind,
+    pub local_endpoint: String,
+    pub local_model: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeSettings {
@@ -532,6 +553,12 @@ pub struct AiRuntimeSettings {
     pub local_endpoint: String,
     #[serde(default)]
     pub local_model: String,
+    /// Additional engines the user has configured beyond the flat default
+    /// engine, for the per-thread engine pin. Empty by default, so existing
+    /// persisted settings (which never carried this field) deserialize
+    /// unchanged. The flat fields above remain the default/global engine.
+    #[serde(default)]
+    pub additional_engines: Vec<AiEngineProfile>,
 }
 
 impl Default for AiRuntimeSettings {
@@ -545,6 +572,7 @@ impl Default for AiRuntimeSettings {
             local_kind: default_ai_local_kind(),
             local_endpoint: default_ai_local_endpoint(),
             local_model: String::new(),
+            additional_engines: Vec::new(),
         }
     }
 }
@@ -560,6 +588,10 @@ pub struct UpdateAiRuntimeSettingsRequest {
     pub local_kind: Option<AiLocalKind>,
     pub local_endpoint: Option<String>,
     pub local_model: Option<String>,
+    /// Replacement set of additional configured engines (the per-thread engine
+    /// pin catalog). `None` leaves the existing set unchanged; `Some` replaces
+    /// it wholesale.
+    pub additional_engines: Option<Vec<AiEngineProfile>>,
 }
 
 /// The named **Derivation Budget** intensity tier for a cloud Reasoning Engine
@@ -587,6 +619,15 @@ pub fn default_backfill_window_days() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UserContextSettings {
+    /// The **continuous-derivation opt-in**: whether the background User Context
+    /// worker (Activity/Conclusion/digest derivation) runs at all. This is
+    /// independent of the interactive Ask AI opt-in — the shared prerequisite is
+    /// only that a usable Reasoning Engine is configured (the `AiRuntime` master
+    /// toggle + a resolvable engine). Off by default, so an existing user who
+    /// turned on the engine for Ask AI does NOT silently start continuous
+    /// background derivation until they opt in here.
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(default = "default_derivation_budget_tier")]
     pub derivation_budget_tier: DerivationBudgetTier,
     #[serde(default = "default_backfill_window_days")]
@@ -598,6 +639,7 @@ pub struct UserContextSettings {
 impl Default for UserContextSettings {
     fn default() -> Self {
         Self {
+            enabled: false,
             derivation_budget_tier: default_derivation_budget_tier(),
             backfill_window_days: default_backfill_window_days(),
             backfill_go_deeper: false,
@@ -608,6 +650,7 @@ impl Default for UserContextSettings {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateUserContextSettingsRequest {
+    pub enabled: Option<bool>,
     pub derivation_budget_tier: Option<DerivationBudgetTier>,
     pub backfill_window_days: Option<u32>,
     pub backfill_go_deeper: Option<bool>,
@@ -843,8 +886,10 @@ pub struct UpdateAccessSettingsRequest {
     pub ask_ai_enabled: Option<bool>,
     /// New per-question tool-call cap (`0` = no cap). `None` leaves it unchanged.
     pub ask_ai_max_tool_calls: Option<u32>,
-    /// New Ask AI model id (`provider:modelId`). `None` leaves it unchanged; an
-    /// empty string clears the selection back to the PI runtime default.
+    /// New Quick Recall model id — a rig-core model id used against the default
+    /// Reasoning Engine (not a PI `provider:modelId` pair). `None` leaves it
+    /// unchanged; an empty string clears the selection back to the engine's
+    /// default model.
     pub ask_ai_model: Option<String>,
 }
 

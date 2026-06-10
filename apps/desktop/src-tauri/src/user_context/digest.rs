@@ -359,12 +359,19 @@ async fn record_digest_run(
 /// Return the **User Context Digest** for one Insights Overview range,
 /// generating (and caching) it when the range's Activity set changed.
 ///
-/// `Ok(None)` is the silent-omission path (never an error): engine off /
-/// unresolved, or fewer than [`MIN_DIGEST_ACTIVITIES`] Activities in range.
-/// `Err` is reserved for real failures: a malformed request, a store error, or
-/// an engine call that failed / returned an empty narrative.
+/// `Ok(None)` is the silent-omission path (never an error): the User Context
+/// opt-in off, the engine off / unresolved, or fewer than
+/// [`MIN_DIGEST_ACTIVITIES`] Activities in range. `Err` is reserved for real
+/// failures: a malformed request, a store error, or an engine call that failed /
+/// returned an empty narrative.
+///
+/// `user_context_enabled` is User Context's own continuous-derivation opt-in:
+/// the digest is part of the User Context feature, so it honours the same opt-in
+/// as the worker / run-now / status gates (a configured engine alone is not
+/// enough — the user must have turned User Context on).
 pub async fn get_or_generate_digest(
     ai_runtime: &AiRuntimeSettings,
+    user_context_enabled: bool,
     store: &UserContextStore,
     range_kind: &str,
     range_start_ms: i64,
@@ -378,9 +385,16 @@ pub async fn get_or_generate_digest(
         return Err("digest range must be non-empty (endMs > startMs)".to_string());
     }
 
-    // 1. Engine off / unresolved → silently no lede (same gating as the other
-    //    user-context commands: enabled flag, then resolve_engine_config).
-    if !ai_runtime.enabled {
+    // 1. User Context off / engine off / unresolved → silently no lede (same
+    //    two-layer gate as the other user-context commands: the opt-in, then the
+    //    shared engine-configured prerequisite).
+    if !user_context_enabled {
+        return Ok(None);
+    }
+    if crate::ai_runtime::engine_configured_prerequisite(ai_runtime)
+        .await
+        .is_err()
+    {
         return Ok(None);
     }
     let Ok(engine) = crate::ai_runtime::resolve_engine_config(ai_runtime) else {
