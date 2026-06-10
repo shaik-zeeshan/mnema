@@ -6,10 +6,17 @@
 //! Lazy + cached: the `get_user_context_digest` command (in `commands.rs`) calls
 //! [`get_or_generate_digest`] when the user views a range. A stored digest whose
 //! [`app_infra::digest_input_fingerprint`] still matches the range's current
-//! Activity set is returned without any engine call — the common path. Only a
-//! changed (or missing) input set pays for one structured-extraction round trip,
-//! mirroring `derivation.rs`: same engine resolution, same guardrail soft
-//! preamble, same estimated-token `derivation_run` bookkeeping (kind `'digest'`).
+//! Activity set is returned without any engine call — the common path. A stale
+//! fingerprint regenerates only past a per-range **freshness floor**
+//! ([`freshness_floor_ms`]): ranges containing "now" churn on every worker beat
+//! (each new Activity flips the day, week, AND month fingerprints), so a recent
+//! digest is served slightly stale rather than re-billing the engine per visit.
+//! Past ranges are unaffected — their fingerprints simply keep matching. Only a
+//! changed-and-old (or missing) input set pays for one structured-extraction
+//! round trip, mirroring `derivation.rs`: same engine resolution, same guardrail
+//! soft preamble, same estimated-token `derivation_run` bookkeeping (kind
+//! `'digest'`). Delete Recent Capture stays immediate: it purges overlapping
+//! digest rows outright, so there is no stale row for the floor to serve.
 //!
 //! Concurrency: a double-click / range flicker may race two generations for the
 //! same range. That is acceptable — `upsert_digest` is idempotent per
@@ -56,6 +63,28 @@ fn digest_preamble() -> String {
 
 /// A narrative over fewer than this many Activities is silly — return no digest.
 const MIN_DIGEST_ACTIVITIES: usize = 2;
+
+/// Freshness floor per range kind: a cached digest younger than this is served
+/// even when the range's Activity fingerprint changed, rate-limiting how often
+/// a churning current-day/week/month range re-bills the engine. Wider ranges
+/// get wider floors because their prompts are the largest and a few hours of
+/// missing tail matters proportionally less to the narrative.
+fn freshness_floor_ms(range_kind: &str) -> i64 {
+    const HOUR_MS: i64 = 60 * 60 * 1000;
+    match range_kind {
+        "day" => HOUR_MS,
+        "week" => 6 * HOUR_MS,
+        // "month" — the only other kind past the entry validation.
+        _ => 24 * HOUR_MS,
+    }
+}
+
+/// Whether a stored digest generated at `generated_at_ms` is still inside its
+/// range kind's freshness floor at `at_ms`. A clock that moved backwards
+/// (negative age) counts as fresh rather than forcing a regeneration.
+fn within_freshness_floor(range_kind: &str, generated_at_ms: i64, at_ms: i64) -> bool {
+    at_ms.saturating_sub(generated_at_ms) < freshness_floor_ms(range_kind)
+}
 
 /// Per-activity summary cap inside the Digest prompt, so one verbose Activity
 /// cannot dominate the budget. Mirrors `derivation.rs`'s per-item-cap approach
@@ -367,14 +396,19 @@ pub async fn get_or_generate_digest(
     }
 
     // 4. Cache hit (the common path): an unchanged input set never re-bills the
-    //    engine. NOTE a racing second generation is fine — see the module doc.
+    //    engine, and a changed one regenerates only past the per-range
+    //    freshness floor — a current range churns on every worker beat, so a
+    //    recent digest is served slightly stale instead of re-billing per
+    //    visit. NOTE a racing second generation is fine — see the module doc.
     let fingerprint = digest_input_fingerprint(&activities);
     if let Some(stored) = store
         .get_digest(range_kind, range_start_ms)
         .await
         .map_err(|error| error.to_string())?
     {
-        if stored.input_fingerprint == fingerprint {
+        if stored.input_fingerprint == fingerprint
+            || within_freshness_floor(range_kind, stored.generated_at_ms, now_ms())
+        {
             return Ok(Some(digest_dto(
                 &stored.range_kind,
                 stored.range_start_ms,
@@ -616,6 +650,27 @@ mod tests {
         assert!(!prompt.contains("[Thu Jan 1 | 1m] Activity 0 "));
         assert!(prompt.contains("oldest Activities were omitted"));
         assert!(prompt.contains("(200 Activities)"));
+    }
+
+    /// The freshness floor widens with the range: day 1h, week 6h, month 24h.
+    /// A digest inside its floor is served even on fingerprint mismatch; one
+    /// past it regenerates. A backwards clock (negative age) counts as fresh.
+    #[test]
+    fn freshness_floor_widens_with_range_and_gates_on_age() {
+        const HOUR_MS: i64 = 60 * 60 * 1000;
+        assert_eq!(freshness_floor_ms("day"), HOUR_MS);
+        assert_eq!(freshness_floor_ms("week"), 6 * HOUR_MS);
+        assert_eq!(freshness_floor_ms("month"), 24 * HOUR_MS);
+
+        let generated_at = 1_000_000_000_000_i64;
+        // Just inside vs. at the day floor.
+        assert!(within_freshness_floor("day", generated_at, generated_at + HOUR_MS - 1));
+        assert!(!within_freshness_floor("day", generated_at, generated_at + HOUR_MS));
+        // A week-old month digest is still fresh; a day-old week digest is not.
+        assert!(within_freshness_floor("month", generated_at, generated_at + 23 * HOUR_MS));
+        assert!(!within_freshness_floor("week", generated_at, generated_at + 24 * HOUR_MS));
+        // Clock moved backwards: fresh, never a forced regeneration.
+        assert!(within_freshness_floor("day", generated_at, generated_at - HOUR_MS));
     }
 
     #[test]
