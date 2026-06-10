@@ -44,6 +44,13 @@ pub struct Conversation {
     pub origin: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// The pinned engine provider id (e.g. `"anthropic"` | `"openai"`), or
+    /// `None` when unpinned (use the global default engine).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The pinned model id within [`Self::provider`], or `None` when unpinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub turns: Vec<ConversationTurn>,
 }
 

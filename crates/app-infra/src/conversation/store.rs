@@ -153,7 +153,8 @@ impl ConversationStore {
     /// frontend UUID. `None` when absent.
     pub async fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>> {
         let row = sqlx::query(
-            "SELECT id, conversation_id, title, origin, created_at_ms, updated_at_ms \
+            "SELECT id, conversation_id, title, origin, created_at_ms, updated_at_ms, \
+                    provider, model \
              FROM conversations WHERE conversation_id = ?1",
         )
         .bind(conversation_id)
@@ -171,8 +172,64 @@ impl ConversationStore {
             origin: row.get("origin"),
             created_at_ms: row.get("created_at_ms"),
             updated_at_ms: row.get("updated_at_ms"),
+            provider: row.get("provider"),
+            model: row.get("model"),
             turns,
         }))
+    }
+
+    /// Pin (or clear) the engine identity for a conversation. UPDATEs the
+    /// `provider`/`model` columns and bumps `updated_at_ms` / `last_activity_at_ms`
+    /// (a pin is an activity). The conversation row is ensured first (a pin may be
+    /// set before the first turn); a `None` provider/model clears the pin →
+    /// unpinned (use the global default engine).
+    ///
+    /// This is the ONLY writer of `provider`/`model`: [`Self::upsert_conversation`]
+    /// (and `save_turn` through it) deliberately leaves the pin untouched on
+    /// conflict so a later turn never clobbers an earlier pin.
+    pub async fn set_conversation_engine(
+        &self,
+        conversation_id: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+        now_ms: i64,
+    ) -> Result<()> {
+        // Ensure the row exists (and bump its activity stamps). `title`/`origin`
+        // here are upsert defaults that only apply when the row is newly created;
+        // an existing row keeps its first non-empty title and original origin.
+        self.upsert_conversation(conversation_id, "", "quick_recall", now_ms)
+            .await?;
+
+        sqlx::query(
+            "UPDATE conversations SET \
+                provider = ?2, model = ?3, \
+                updated_at_ms = ?4, last_activity_at_ms = ?4 \
+             WHERE conversation_id = ?1",
+        )
+        .bind(conversation_id)
+        .bind(provider)
+        .bind(model)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Read the engine pin `(provider, model)` for a conversation without
+    /// hydrating its turns. `None` when the conversation row does not exist; an
+    /// existing-but-unpinned row returns `Some((None, None))`. The Ask AI slice
+    /// uses this to resolve a thread's engine identity cheaply.
+    pub async fn get_conversation_engine(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<(Option<String>, Option<String>)>> {
+        let row = sqlx::query(
+            "SELECT provider, model FROM conversations WHERE conversation_id = ?1",
+        )
+        .bind(conversation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| (row.get("provider"), row.get("model"))))
     }
 
     async fn list_turns(&self, conversation_row_id: i64) -> Result<Vec<ConversationTurn>> {
@@ -358,7 +415,9 @@ mod tests {
                 origin TEXT NOT NULL DEFAULT 'quick_recall',
                 created_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL,
-                last_activity_at_ms INTEGER NOT NULL
+                last_activity_at_ms INTEGER NOT NULL,
+                provider TEXT,
+                model TEXT
             )",
             "CREATE TABLE conversation_turns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -659,6 +718,94 @@ mod tests {
                 .await
                 .expect("get")
                 .is_some());
+        });
+    }
+
+    #[test]
+    fn engine_pin_round_trips_and_survives_a_later_turn() {
+        block_on(async {
+            let store = test_store().await;
+
+            // A conversation that does not exist yet reads no pin.
+            assert!(store
+                .get_conversation_engine("conv-pin")
+                .await
+                .expect("read engine")
+                .is_none());
+
+            // Pinning before any turn creates the row and stores the identity.
+            store
+                .set_conversation_engine("conv-pin", Some("anthropic"), Some("claude-x"), 1_000)
+                .await
+                .expect("set engine pin");
+
+            assert_eq!(
+                store
+                    .get_conversation_engine("conv-pin")
+                    .await
+                    .expect("read engine"),
+                Some((Some("anthropic".to_string()), Some("claude-x".to_string()))),
+            );
+
+            // The pin is also hydrated onto the full conversation.
+            let pinned = store
+                .get_conversation("conv-pin")
+                .await
+                .expect("get")
+                .expect("exists");
+            assert_eq!(pinned.provider.as_deref(), Some("anthropic"));
+            assert_eq!(pinned.model.as_deref(), Some("claude-x"));
+
+            // A turn saved AFTER pinning must not clobber the pin.
+            store
+                .save_turn(
+                    "conv-pin", "Pinned", "chat", 0, "q", "a", "[]", "[]", "done", None, None,
+                    2_000,
+                )
+                .await
+                .expect("turn saves");
+            assert_eq!(
+                store
+                    .get_conversation_engine("conv-pin")
+                    .await
+                    .expect("read engine"),
+                Some((Some("anthropic".to_string()), Some("claude-x".to_string()))),
+                "save_turn must not clear an existing pin",
+            );
+
+            // Clearing the pin (None/None) leaves the row but unpins it.
+            store
+                .set_conversation_engine("conv-pin", None, None, 3_000)
+                .await
+                .expect("clear engine pin");
+            assert_eq!(
+                store
+                    .get_conversation_engine("conv-pin")
+                    .await
+                    .expect("read engine"),
+                Some((None, None)),
+            );
+        });
+    }
+
+    #[test]
+    fn unpinned_conversation_reads_no_engine() {
+        block_on(async {
+            let store = test_store().await;
+            store
+                .save_turn(
+                    "plain", "Plain", "chat", 0, "q", "a", "[]", "[]", "done", None, None, 1_000,
+                )
+                .await
+                .expect("turn saves");
+            // An existing-but-unpinned conversation returns Some((None, None)).
+            assert_eq!(
+                store
+                    .get_conversation_engine("plain")
+                    .await
+                    .expect("read engine"),
+                Some((None, None)),
+            );
         });
     }
 }
