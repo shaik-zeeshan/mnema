@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by [ADR 0033](0033-ask-ai-migrates-onto-shared-reasoning-engine.md) (background-completion intent retained, reframed onto the persistent conversation store)
 ---
 
 # Ask AI threads complete in the background and resurrect from their transcript

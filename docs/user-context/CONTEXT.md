@@ -295,10 +295,14 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   the **Derivation Budget** tier + tokens-used readout, and **Wipe User Context**. The always-on
   cloud-egress consent lives next to the engine picker where the choice is made, with its plain
   disclosure. The **Sensitive Category Guardrail** is not user-facing (no toggle).
-- The rig-core engine config (provider/model + BYO key) is built to be **shared**: when **Ask AI**
-  migrates onto rig-core, it reuses this same provider/key configuration rather than each feature
-  owning its own. v1 wires only **User Context**, but structures the config as shared "AI runtime
-  settings" that **User Context** is the first consumer of.
+- The rig-core engine config (provider/model + BYO key) is **shared**: **Ask AI** (Quick Recall +
+  Chat) reuses the same keychain key and provider/key configuration rather than each feature owning
+  its own ([ADR 0033](../adr/0033-ask-ai-migrates-onto-shared-reasoning-engine.md)). Model *selection*
+  stays split per workload — background derivation's model in `AiRuntimeSettings`, interactive
+  Ask AI's in `access.askAiModel` — and `AiRuntimeSettings` holds a small *set* of configured engines
+  so a Chat thread can pin `{provider, model}` among them. Availability is two-layer: a shared
+  **engine-configured** prerequisite, then two independent feature opt-ins (the **Ask AI Setting** and
+  the continuous-derivation opt-in below).
 - Onboarding gets a **light optional card** (off by default, choose local or cloud, defers to the
   settings surface), not a heavy onboarding step — onboarding must fit a fixed-height stage. Default
   off, like the **Ask AI Setting**.
@@ -342,10 +346,12 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   background egress. It carries its own disclosure (continuous redacted egress + ongoing token cost)
   and its own model selection. With it off, **User Context** runs on a local **Reasoning Engine** if
   one is selected, otherwise it is unavailable (as **Ask AI** is unavailable without a usable runtime).
-- **User Context** is the first feature built on the **Rust-side `rig-core`** path; migrating the
-  existing **Ask AI** off the PI/Node shim onto rig-core is a separate following track. flue is
-  dropped (it was only needed if the agent loop lived in Node), and rig-core's agent/tool modules
-  cover Ask AI's interactive loop Rust-side later without reintroducing Node.
+- **User Context** was the first feature built on the **Rust-side `rig-core`** path; **Ask AI**
+  (Quick Recall + Chat) then migrated off the PI/Node shim onto the same engine
+  ([ADR 0033](../adr/0033-ask-ai-migrates-onto-shared-reasoning-engine.md)), so there is now one way
+  to interface with AI. flue and the PI/Node shim are dropped; rig-core's agent/tool modules cover
+  Ask AI's interactive, streaming, tool-enabled loop Rust-side (a tool-agnostic capability of the
+  engine crate, with broker tools injected from the Tauri layer) without reintroducing Node.
 
 - Capture deletion interacts with derived data by *type of deletion*. **Retention Policy**
   (time-based housekeeping) does NOT cascade: when raw **Captured Frame** / **Audio Segment** media
