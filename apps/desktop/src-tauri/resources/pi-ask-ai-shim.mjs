@@ -646,7 +646,37 @@ function buildBrokerTools(defineTool, Type) {
     },
   });
 
-  return [searchTool, timelineTool, showTextTool, referenceCapturesTool];
+  // `recall_context` returns ONLY the User-Context conclusions/activities relevant
+  // to the question — never the whole dossier, never sensitive-category
+  // conclusions. It is the fast way to answer "what do you know about me / my
+  // habits / my projects" without raking raw captures.
+  const recallContextTool = defineTool({
+    name: "recall_context",
+    label: "Recall user context",
+    description:
+      "Return ONLY the User-Context conclusions (distilled beliefs about the user) and recent " +
+      "activities that are relevant to the question. Redacted and capped — it NEVER returns the " +
+      "whole dossier and NEVER returns sensitive-category conclusions. Use this for questions " +
+      "about the user's habits, interests, projects, or what you know about them, instead of " +
+      "raw `search`.",
+    parameters: Type.Object(
+      {
+        query: Type.String({
+          description:
+            "The user's question; returns only the User-Context conclusions/activities relevant to it.",
+        }),
+        limit: Type.Optional(
+          Type.Number({ description: "Maximum number of conclusions/activities to return (capped server-side)." }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      return callHost("recall_context", params, signal);
+    },
+  });
+
+  return [searchTool, timelineTool, showTextTool, recallContextTool, referenceCapturesTool];
 }
 
 // ---- model registry helpers -------------------------------------------------

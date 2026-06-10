@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use app_infra::brokered_access::{
-    BrokerClientIdentity, BrokerClientIdentitySource, BrokerSearchRequest, BrokerSearchResult,
-    BrokerTimelineRequest, BrokeredCaptureAccess, BrokeredCaptureRequest, BrokeredCaptureResponse,
+    BrokerClientIdentity, BrokerClientIdentitySource, BrokerRecallContextRequest,
+    BrokerSearchRequest, BrokerSearchResult, BrokerTimelineRequest, BrokeredCaptureAccess,
+    BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -257,9 +258,10 @@ async fn execute_pi_broker_request(
 
 /// Map an Ask AI tool name + camelCase params object onto a brokered request.
 ///
-/// Only the three Ask AI tools (`search`, `timeline`, `show_text`) are
-/// accepted; `open`/`open_in_mnema` and anything else fall into the unknown
-/// branch and are rejected, so they can never be issued as Ask AI data tools.
+/// Only the Ask AI data tools (`search`, `timeline`, `show_text`,
+/// `recall_context`) are accepted; `open`/`open_in_mnema` and anything else fall
+/// into the unknown branch and are rejected, so they can never be issued as Ask
+/// AI data tools.
 fn broker_request_from_tool(
     tool: &str,
     params: serde_json::Value,
@@ -285,6 +287,11 @@ fn broker_request_from_tool(
                 .to_string();
             Ok(BrokeredCaptureRequest::ShowText { opaque_id })
         }
+        "recall_context" => {
+            let request: BrokerRecallContextRequest = serde_json::from_value(params)
+                .map_err(|error| format!("invalid Ask AI recall_context params: {error}"))?;
+            Ok(BrokeredCaptureRequest::RecallContext(request))
+        }
         other => Err(format!("unknown Ask AI tool: {other}")),
     }
 }
@@ -301,6 +308,8 @@ fn broker_response_to_tool_value(
             .map_err(|error| format!("failed to serialize Ask AI timeline result: {error}")),
         BrokeredCaptureResponse::ShowText(response) => serde_json::to_value(response)
             .map_err(|error| format!("failed to serialize Ask AI show_text result: {error}")),
+        BrokeredCaptureResponse::RecallContext(response) => serde_json::to_value(response)
+            .map_err(|error| format!("failed to serialize Ask AI recall_context result: {error}")),
         BrokeredCaptureResponse::Error(error) => Err(error.message),
         BrokeredCaptureResponse::AuthStatus(_) | BrokeredCaptureResponse::OpenInMnema(_) => {
             Err("unexpected Ask AI broker response".to_string())
@@ -664,11 +673,15 @@ fn build_ask_ai_prompt(
     prompt.push_str(
         "You are Mnema's Ask AI assistant. Answer the user's question using their own on-device \
 screen and audio capture history. All data is the user's own, redacted, on-device capture. You \
-have THREE tools, and there is NO way to open files or access anything beyond them: `search` \
+have FOUR tools, and there is NO way to open files or access anything beyond them: `search` \
 finds redacted snippets plus opaque ids across the user's screen OCR and audio transcript \
 history (optionally narrowed by a `from`/`to` RFC3339 time range and `app`/`windowTitle` \
 filters); `timeline` returns coarse activity intervals for a bounded `from`/`to` window; \
-`show_text` returns the full redacted text for one opaque id returned by `search`. When the \
+`show_text` returns the full redacted text for one opaque id returned by `search`; \
+`recall_context` returns ONLY the User-Context conclusions (distilled beliefs about the user) \
+and recent activities relevant to the question — redacted, capped, never the whole dossier, and \
+never sensitive-category conclusions — and is the best first tool for questions about the user's \
+habits, interests, projects, or what you know about them. When the \
 seeded context below is missing or insufficient to answer, ISSUE follow-up tool calls to gather \
 what you need before answering — prefer a concise `search` first, and use `show_text` sparingly \
 for the specific results you need to read in full. Cite times and apps when useful, but never \
@@ -1397,6 +1410,23 @@ mod tests {
         match request {
             BrokeredCaptureRequest::ShowText { opaque_id } => assert_eq!(opaque_id, "op-7"),
             other => panic!("expected ShowText, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn broker_request_from_tool_recall_context_maps_to_recall_context_variant() {
+        let request = broker_request_from_tool(
+            "recall_context",
+            serde_json::json!({ "query": "what am I working on", "limit": 5 }),
+        )
+        .expect("recall_context params should parse");
+
+        match request {
+            BrokeredCaptureRequest::RecallContext(req) => {
+                assert_eq!(req.query, "what am I working on");
+                assert_eq!(req.limit, Some(5));
+            }
+            other => panic!("expected RecallContext, got {other:?}"),
         }
     }
 

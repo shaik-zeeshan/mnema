@@ -301,12 +301,57 @@ pub struct BrokerTimelineResponse {
     pub limit: u32,
 }
 
+/// A `recall_context` request: the user's question, plus an optional cap on how
+/// many recalled items to return. The cap is clamped server-side so it can never
+/// return the whole dossier.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerRecallContextRequest {
+    pub query: String,
+    pub limit: Option<u32>,
+}
+
+/// A single redacted Conclusion returned by `recall_context`. Carries no ids,
+/// evidence refs, or anything pointing at raw frames/audio — only the distilled,
+/// already-redacted English belief.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerRecalledConclusion {
+    pub subject: String,
+    pub statement: String,
+    pub confidence: f64,
+    pub status: String,
+}
+
+/// A single redacted Activity returned by `recall_context`. Carries no ids or
+/// evidence refs; times are RFC3339 strings like the other broker responses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerRecalledActivity {
+    pub title: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    pub started_at: String,
+    pub ended_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerRecallContextResponse {
+    pub conclusions: Vec<BrokerRecalledConclusion>,
+    pub activities: Vec<BrokerRecalledActivity>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrokeredCaptureRequest {
     AuthStatus,
     Search(BrokerSearchRequest),
     ShowText { opaque_id: String },
     Timeline(BrokerTimelineRequest),
+    RecallContext(BrokerRecallContextRequest),
     OpenInMnema { opaque_id: String },
 }
 
@@ -317,18 +362,20 @@ impl BrokeredCaptureRequest {
             Self::Search(_) => Some("search"),
             Self::ShowText { .. } => Some("show_text"),
             Self::Timeline(_) => Some("timeline"),
+            Self::RecallContext(_) => Some("recall_context"),
             Self::OpenInMnema { .. } => Some("open_in_mnema"),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum BrokeredCaptureResponse {
     AuthStatus(BrokerAuthStatus),
     Search(BrokerSearchResponse),
     ShowText(BrokerShowTextResponse),
     Timeline(BrokerTimelineResponse),
+    RecallContext(BrokerRecallContextResponse),
     OpenInMnema(BrokerOpenInMnemaResponse),
     Error(BrokerErrorResponse),
 }
@@ -339,6 +386,9 @@ impl BrokeredCaptureResponse {
             Self::Search(response) => response.results.len() as u32,
             Self::ShowText(_) | Self::OpenInMnema(_) => 1,
             Self::Timeline(response) => response.intervals.len() as u32,
+            Self::RecallContext(response) => {
+                (response.conclusions.len() + response.activities.len()) as u32
+            }
             Self::AuthStatus(_) | Self::Error(_) => 0,
         }
     }
@@ -508,6 +558,13 @@ impl BrokeredCaptureAccess {
                 let infra = self.initialize_infra().await?;
                 match broker_timeline(&infra, grants, request).await? {
                     Ok(response) => Ok(BrokeredCaptureResponse::Timeline(response)),
+                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
+                }
+            }
+            BrokeredCaptureRequest::RecallContext(request) => {
+                let infra = self.initialize_infra().await?;
+                match broker_recall_context(&infra, grants, request).await? {
+                    Ok(response) => Ok(BrokeredCaptureResponse::RecallContext(response)),
                     Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
                 }
             }
@@ -1445,6 +1502,190 @@ async fn broker_frame_timeline(
         .collect()
 }
 
+const DEFAULT_RECALL_CONTEXT_LIMIT: u32 = 8;
+const MAX_RECALL_CONTEXT_LIMIT: u32 = 20;
+
+/// `recall_context`: return ONLY the User-Context Conclusions/Activities relevant
+/// to the question, redacted, capped, and never sensitive. This deliberately never
+/// returns the whole dossier — both lists are token-overlap filtered against the
+/// question and hard-capped at [`MAX_RECALL_CONTEXT_LIMIT`].
+///
+/// Sensitive Conclusions are dropped via the same hard guardrail
+/// (`crate::user_context::guardrail::is_sensitive`) used at derivation time, and
+/// only Visible (not Faded, not Dismissed) Conclusions are eligible. No ids or
+/// evidence refs cross the boundary.
+async fn broker_recall_context(
+    infra: &AppInfra,
+    grants: &[BrokerGrant],
+    request: BrokerRecallContextRequest,
+) -> Result<std::result::Result<BrokerRecallContextResponse, BrokerErrorResponse>> {
+    if grants.is_empty() {
+        return Ok(Err(BrokerErrorResponse::authorization_required()));
+    }
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_RECALL_CONTEXT_LIMIT)
+        .min(MAX_RECALL_CONTEXT_LIMIT)
+        .max(1) as usize;
+
+    let store = infra.user_context();
+    // Non-faded conclusions only; `list_conclusions(false)` already excludes faded.
+    let conclusions = store.list_conclusions(false).await?;
+    // Pull a generous activity window, then relevance-filter + cap below so the
+    // cap, not the query, bounds the result.
+    let activities = store
+        .list_recent_activities(MAX_RECALL_CONTEXT_LIMIT as i64 * 4, 0)
+        .await?;
+
+    let tokens = recall_query_tokens(&request.query);
+
+    let conclusions = select_relevant_conclusions(&conclusions, &tokens, limit);
+    let activities = select_relevant_activities(&activities, &tokens, limit);
+
+    Ok(Ok(BrokerRecallContextResponse {
+        conclusions,
+        activities,
+    }))
+}
+
+/// Trivial stopwords dropped from the question before token-overlap scoring.
+const RECALL_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "was", "were", "that", "this", "with", "what", "when", "where",
+    "who", "why", "how", "did", "does", "have", "has", "had", "you", "your", "they", "them",
+    "from", "about", "into", "over", "been", "being", "she", "her", "his", "him", "their", "our",
+    "can", "could", "would", "should", "will", "shall", "may", "might", "any", "all", "some",
+];
+
+/// Lowercase, tokenize the query into words (length >= 3, punctuation stripped),
+/// dropping trivial stopwords. Empty when the query has no usable tokens.
+fn recall_query_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .map(|word| word.to_lowercase())
+        .filter(|word| word.len() >= 3 && !RECALL_STOPWORDS.contains(&word.as_str()))
+        .collect()
+}
+
+/// Token-overlap score of `tokens` against the lowercased `text`: the number of
+/// query tokens that appear as a substring in the text.
+fn recall_overlap_score(tokens: &[String], text: &str) -> u32 {
+    if tokens.is_empty() {
+        return 0;
+    }
+    let haystack = text.to_lowercase();
+    tokens
+        .iter()
+        .filter(|token| haystack.contains(token.as_str()))
+        .count() as u32
+}
+
+/// Convert a snake_case-serde enum value to its wire string (e.g. `Coding` ->
+/// `"coding"`), so recalled activities carry the same category/focus labels the
+/// rest of the stack uses.
+fn snake_case_enum_string<T: Serialize>(value: &T) -> Option<String> {
+    match serde_json::to_value(value).ok()? {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// Pure relevance + sensitive-filter + cap for Conclusions. Drops sensitive and
+/// non-Visible Conclusions, scores the rest by token overlap of the query against
+/// subject+statement, keeps score>0 (sorted by score desc, confidence desc),
+/// falls back to top-by-confidence when the query has no usable tokens, and
+/// truncates to `limit` so the whole dossier can never be returned.
+fn select_relevant_conclusions(
+    conclusions: &[capture_types::Conclusion],
+    tokens: &[String],
+    limit: usize,
+) -> Vec<BrokerRecalledConclusion> {
+    let mut scored: Vec<(u32, &capture_types::Conclusion)> = conclusions
+        .iter()
+        .filter(|c| matches!(c.status, capture_types::ConclusionStatus::Visible))
+        .filter(|c| !crate::user_context::guardrail::is_sensitive(&c.subject, &c.statement))
+        .map(|c| {
+            let text = format!("{} {}", c.subject, c.statement);
+            (recall_overlap_score(tokens, &text), c)
+        })
+        .collect();
+
+    if tokens.is_empty() {
+        // No usable query tokens: fall back to top-by-confidence, STILL capped.
+        scored.sort_by(|a, b| {
+            b.1.confidence
+                .partial_cmp(&a.1.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else {
+        scored.retain(|(score, _)| *score > 0);
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| {
+                b.1.confidence
+                    .partial_cmp(&a.1.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+    }
+
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, c)| BrokerRecalledConclusion {
+            subject: c.subject.clone(),
+            statement: c.statement.clone(),
+            confidence: c.confidence,
+            status: snake_case_enum_string(&c.status).unwrap_or_else(|| "visible".to_string()),
+        })
+        .collect()
+}
+
+/// Pure relevance + cap for Activities. Scores by token overlap of the query
+/// against title+summary+category, keeps score>0 (sorted by score desc, recency
+/// desc), falls back to most-recent when the query has no usable tokens, and
+/// truncates to `limit`. No ids or evidence refs cross the boundary.
+fn select_relevant_activities(
+    activities: &[capture_types::Activity],
+    tokens: &[String],
+    limit: usize,
+) -> Vec<BrokerRecalledActivity> {
+    let mut scored: Vec<(u32, &capture_types::Activity)> = activities
+        .iter()
+        .map(|a| {
+            let category = a
+                .category
+                .as_ref()
+                .and_then(snake_case_enum_string)
+                .unwrap_or_default();
+            let text = format!("{} {} {}", a.title, a.summary, category);
+            (recall_overlap_score(tokens, &text), a)
+        })
+        .collect();
+
+    if tokens.is_empty() {
+        // No usable query tokens: fall back to most-recent, STILL capped.
+        scored.sort_by(|a, b| b.1.started_at_ms.cmp(&a.1.started_at_ms));
+    } else {
+        scored.retain(|(score, _)| *score > 0);
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.started_at_ms.cmp(&a.1.started_at_ms))
+        });
+    }
+
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, a)| BrokerRecalledActivity {
+            title: a.title.clone(),
+            summary: a.summary.clone(),
+            category: a.category.as_ref().and_then(snake_case_enum_string),
+            focus: a.focus.as_ref().and_then(snake_case_enum_string),
+            started_at: format_unix_ms(a.started_at_ms.max(0) as u64),
+            ended_at: format_unix_ms(a.ended_at_ms.max(0) as u64),
+        })
+        .collect()
+}
+
 fn encode_opaque_id(kind: &str, id: i64) -> String {
     let tag = match kind {
         "frame" => "f",
@@ -1786,6 +2027,149 @@ mod tests {
         runtime
             .block_on(access.execute("mnema-cli", request))
             .unwrap()
+    }
+
+    fn test_conclusion(
+        subject: &str,
+        statement: &str,
+        confidence: f64,
+        status: capture_types::ConclusionStatus,
+    ) -> capture_types::Conclusion {
+        capture_types::Conclusion {
+            id: 0,
+            subject: subject.to_string(),
+            statement: statement.to_string(),
+            confidence,
+            status,
+            pinned: false,
+            formed_at_ms: 0,
+            last_supported_at_ms: 0,
+            updated_at_ms: 0,
+            evidence: Vec::new(),
+        }
+    }
+
+    fn test_activity(title: &str, summary: &str, started_at_ms: i64) -> capture_types::Activity {
+        capture_types::Activity {
+            id: 0,
+            title: title.to_string(),
+            summary: summary.to_string(),
+            category: None,
+            focus: None,
+            started_at_ms,
+            ended_at_ms: started_at_ms + 1000,
+            created_at_ms: started_at_ms,
+            evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recall_context_drops_sensitive_conclusions() {
+        use capture_types::ConclusionStatus::Visible;
+        let conclusions = vec![
+            test_conclusion("Rust", "Is in a Rust learning phase", 0.9, Visible),
+            // Sensitive: must NEVER be returned, even though it matches the query.
+            test_conclusion("health", "user has depression", 0.95, Visible),
+        ];
+        let tokens = recall_query_tokens("tell me about rust and health and depression");
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10);
+        assert!(
+            recalled.iter().all(|c| !c.statement.contains("depression")),
+            "sensitive conclusion leaked: {recalled:?}"
+        );
+        assert!(recalled.iter().any(|c| c.subject == "Rust"));
+    }
+
+    #[test]
+    fn recall_context_drops_non_visible_conclusions() {
+        use capture_types::ConclusionStatus::{Dismissed, Faded, Visible};
+        let conclusions = vec![
+            test_conclusion("Rust", "Likes Rust", 0.9, Visible),
+            test_conclusion("Rust", "Dismissed Rust opinion", 0.9, Dismissed),
+            test_conclusion("Rust", "Faded Rust opinion", 0.9, Faded),
+        ];
+        let tokens = recall_query_tokens("rust");
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10);
+        assert_eq!(recalled.len(), 1);
+        assert_eq!(recalled[0].statement, "Likes Rust");
+    }
+
+    #[test]
+    fn recall_context_caps_relevant_conclusions() {
+        use capture_types::ConclusionStatus::Visible;
+        // 30 relevant, non-sensitive conclusions; the cap must bound the result.
+        let conclusions: Vec<_> = (0..30)
+            .map(|i| {
+                test_conclusion(
+                    "project alpha",
+                    &format!("works on project alpha item {i}"),
+                    0.5,
+                    Visible,
+                )
+            })
+            .collect();
+        let tokens = recall_query_tokens("project alpha");
+        let recalled =
+            select_relevant_conclusions(&conclusions, &tokens, MAX_RECALL_CONTEXT_LIMIT as usize);
+        assert_eq!(recalled.len(), MAX_RECALL_CONTEXT_LIMIT as usize);
+        assert!(recalled.len() < conclusions.len());
+    }
+
+    #[test]
+    fn recall_context_empty_query_falls_back_capped_not_whole_dossier() {
+        use capture_types::ConclusionStatus::Visible;
+        let conclusions: Vec<_> = (0..30)
+            .map(|i| test_conclusion("subj", &format!("statement {i}"), i as f64 / 30.0, Visible))
+            .collect();
+        // Stopwords-only query yields no usable tokens.
+        let tokens = recall_query_tokens("what is the and for");
+        assert!(tokens.is_empty());
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 5);
+        assert_eq!(recalled.len(), 5, "fallback must still be capped");
+        // Highest confidence first.
+        assert!(recalled[0].confidence >= recalled[1].confidence);
+    }
+
+    #[test]
+    fn recall_context_relevance_filters_and_caps_activities() {
+        let activities = vec![
+            test_activity("Code review", "Reviewed the parser pull request", 3000),
+            test_activity("Lunch break", "Ate a sandwich", 2000),
+            test_activity("Parser work", "Wrote a new parser module", 1000),
+        ];
+        let tokens = recall_query_tokens("parser");
+        let recalled = select_relevant_activities(&activities, &tokens, 10);
+        assert_eq!(recalled.len(), 2);
+        // Both relevant; recency tie-break puts the later one first.
+        assert_eq!(recalled[0].title, "Code review");
+        assert!(recalled.iter().all(|a| !a.title.contains("Lunch")));
+    }
+
+    #[test]
+    fn recall_context_command_type_and_result_count() {
+        let request = BrokeredCaptureRequest::RecallContext(BrokerRecallContextRequest {
+            query: "anything".to_string(),
+            limit: None,
+        });
+        assert_eq!(request.command_type(), Some("recall_context"));
+
+        let response = BrokeredCaptureResponse::RecallContext(BrokerRecallContextResponse {
+            conclusions: vec![BrokerRecalledConclusion {
+                subject: "s".to_string(),
+                statement: "t".to_string(),
+                confidence: 0.5,
+                status: "visible".to_string(),
+            }],
+            activities: vec![BrokerRecalledActivity {
+                title: "a".to_string(),
+                summary: "b".to_string(),
+                category: None,
+                focus: None,
+                started_at: "1970-01-01T00:00:00Z".to_string(),
+                ended_at: "1970-01-01T00:00:01Z".to_string(),
+            }],
+        });
+        assert_eq!(response.result_count(), 2);
     }
 
     #[test]
