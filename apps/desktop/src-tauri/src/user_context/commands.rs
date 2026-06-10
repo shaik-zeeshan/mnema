@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use capture_types::{
     Activity, ActivityCategory, AuthoredContext, Conclusion, FocusLevel, SubjectTrajectory,
-    SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest, UserContextStatus,
-    UserContextTokenUsage,
+    SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
+    UserContextDistillationSummary, UserContextStatus, UserContextTokenUsage,
 };
 use serde::Serialize;
 use tauri::Emitter;
@@ -81,6 +81,22 @@ pub async fn get_user_context_status(
             run_count: 0,
         });
 
+    // The most recent completed distillation pass with its per-gate withheld
+    // counts — lets the readout explain a thin dossier instead of staying mute.
+    let last_distillation = store
+        .latest_distillation_summary()
+        .await
+        .ok()
+        .flatten()
+        .map(|(at_ms, conclusions_derived, drops)| UserContextDistillationSummary {
+            at_ms,
+            conclusions_derived,
+            ungrounded: drops.ungrounded,
+            guardrail_suppressed: drops.guardrail_suppressed,
+            below_formation_bar: drops.below_formation_bar,
+            resurface_blocked: drops.resurface_blocked,
+        });
+
     // --- backfilling progress (#98) ---
     // Cheap (two store reads): backfilling is true only when the engine is
     // available AND the background History Backfill still has older history to
@@ -129,6 +145,7 @@ pub async fn get_user_context_status(
         backfilling,
         token_usage,
         budget_tier: user_context.derivation_budget_tier,
+        last_distillation,
     })
 }
 
@@ -258,7 +275,7 @@ pub async fn user_context_run_derivation_now(
     // shares the same engine and stamps its own `derivation_run` (kind
     // `'conclusion'`); distillation no-ops below two Activities.
     let conclusions_before = infra.user_context().count_conclusions().await.unwrap_or(0);
-    let distilled_changed = run_conclusion_distillation(
+    let distillation = run_conclusion_distillation(
         &engine,
         infra.user_context(),
         provider_label,
@@ -268,8 +285,21 @@ pub async fn user_context_run_derivation_now(
     let conclusions_after = infra.user_context().count_conclusions().await.unwrap_or(0);
     let conclusions_derived = (conclusions_after - conclusions_before).max(0);
 
+    let distilled_changed = distillation.is_some_and(|outcome| outcome.upserted > 0);
     if run.changed || distilled_changed {
         let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    }
+
+    // Surface what distillation withheld so a manual run that "produced
+    // nothing" tells the user why instead of looking like a silent no-op.
+    let mut message = run.message;
+    if let Some(summary) = distillation
+        .map(|outcome| outcome.gate_drops)
+        .filter(|drops| drops.total() > 0)
+        .map(withheld_summary)
+    {
+        message.push(' ');
+        message.push_str(&summary);
     }
 
     Ok(UserContextDerivationRunResult {
@@ -278,8 +308,33 @@ pub async fn user_context_run_derivation_now(
         window_start_ms: run.window_start_ms,
         window_end_ms: run.window_end_ms,
         items_read: run.items_read,
-        message: run.message,
+        message,
     })
+}
+
+/// Plain-language sentence for the per-gate withheld counts of one distillation
+/// pass, e.g. "Withheld 3 conclusion drafts: 1 by the privacy guardrail, 2
+/// needing more evidence." Caller guarantees `drops.total() > 0`.
+fn withheld_summary(drops: app_infra::DistillationGateDrops) -> String {
+    let mut reasons: Vec<String> = Vec::new();
+    if drops.guardrail_suppressed > 0 {
+        reasons.push(format!("{} by the privacy guardrail", drops.guardrail_suppressed));
+    }
+    if drops.below_formation_bar > 0 {
+        reasons.push(format!("{} needing more evidence", drops.below_formation_bar));
+    }
+    if drops.resurface_blocked > 0 {
+        reasons.push(format!("{} honoring a dismissal", drops.resurface_blocked));
+    }
+    if drops.ungrounded > 0 {
+        reasons.push(format!("{} without grounding", drops.ungrounded));
+    }
+    let total = drops.total();
+    format!(
+        "Withheld {total} conclusion draft{}: {}.",
+        if total == 1 { "" } else { "s" },
+        reasons.join(", ")
+    )
 }
 
 /// The **User Context Digest** (#89): the engine-written 2–4 sentence narrative

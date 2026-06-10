@@ -489,6 +489,10 @@ pub struct DistilledConclusionBatch {
 pub struct ConclusionDistillationOutcome {
     /// Number of Conclusions inserted/updated in the store.
     pub upserted: usize,
+    /// How many engine drafts each deterministic persist gate withheld, in
+    /// gate order. Recorded on the ledger row so "distillation produced
+    /// nothing" is diagnosable (empty engine output vs policy drops).
+    pub gate_drops: app_infra::DistillationGateDrops,
     /// Best-effort estimated input tokens (preamble + prompt).
     pub input_tokens: i64,
     /// Best-effort estimated output tokens (serialized extracted batch).
@@ -568,6 +572,7 @@ pub async fn distill_conclusions(
     if activities.len() < 2 {
         return Ok(ConclusionDistillationOutcome {
             upserted: 0,
+            gate_drops: Default::default(),
             input_tokens: 0,
             output_tokens: 0,
         });
@@ -628,6 +633,7 @@ pub async fn distill_conclusions(
 
     let now = now_ms();
     let mut upserted = 0usize;
+    let mut gate_drops = app_infra::DistillationGateDrops::default();
     for conclusion in &batch.conclusions {
         let subject = conclusion.subject.trim();
         let statement = conclusion.statement.trim();
@@ -642,6 +648,7 @@ pub async fn distill_conclusions(
         // No resolvable supporting evidence => ungrounded; skip (never store a
         // free-floating Conclusion).
         if support_refs.is_empty() {
+            gate_drops.ungrounded += 1;
             continue;
         }
 
@@ -653,6 +660,7 @@ pub async fn distill_conclusions(
         // deterministic backstop for when the engine ignores the soft instruction;
         // it deliberately errs toward over-suppression.
         if guardrail::is_sensitive(subject, statement) {
+            gate_drops.guardrail_suppressed += 1;
             continue;
         }
 
@@ -660,6 +668,7 @@ pub async fn distill_conclusions(
         // FORMATION_BAR_EVIDENCE (≥2) supporting Activities before it forms — no
         // flimsy one-afternoon conclusions. Below the bar, skip the upsert.
         if !confidence::meets_formation_bar(support_refs.len()) {
+            gate_drops.below_formation_bar += 1;
             continue;
         }
 
@@ -678,6 +687,7 @@ pub async fn distill_conclusions(
         if let Some(dismissal) = matching_dismissal(&dismissals, subject, statement) {
             if fresh_fingerprint == dismissal.evidence_fingerprint {
                 // The exact evidence the user just rejected — never resurface.
+                gate_drops.resurface_blocked += 1;
                 continue;
             }
             if !confidence::meets_resurface_bar(
@@ -686,6 +696,7 @@ pub async fn distill_conclusions(
             ) {
                 // Fresh evidence exists but does not clear the high resurface bar;
                 // honor the correction (a dismissal must never feel ignored).
+                gate_drops.resurface_blocked += 1;
                 continue;
             }
         }
@@ -737,6 +748,7 @@ pub async fn distill_conclusions(
 
     Ok(ConclusionDistillationOutcome {
         upserted,
+        gate_drops,
         input_tokens,
         output_tokens,
     })

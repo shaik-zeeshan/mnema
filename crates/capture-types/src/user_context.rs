@@ -161,6 +161,21 @@ pub struct UserContextTokenUsage {
     pub run_count: i64,
 }
 
+/// The most recent completed Conclusion-distillation pass: when it ran, what it
+/// upserted, and how many drafts each persist gate withheld (ungrounded /
+/// guardrail / formation bar / resurface). Powers the settings readout's
+/// "why is my dossier thin?" line.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserContextDistillationSummary {
+    pub at_ms: i64,
+    pub conclusions_derived: i64,
+    pub ungrounded: i64,
+    pub guardrail_suppressed: i64,
+    pub below_formation_bar: i64,
+    pub resurface_blocked: i64,
+}
+
 /// Availability + progress readout for the User Context settings surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -175,6 +190,8 @@ pub struct UserContextStatus {
     pub backfilling: bool,
     pub token_usage: UserContextTokenUsage,
     pub budget_tier: DerivationBudgetTier,
+    /// `None` until the first Conclusion distillation completes.
+    pub last_distillation: Option<UserContextDistillationSummary>,
 }
 
 /// The engine-written narrative lede for one Insights Overview range (the

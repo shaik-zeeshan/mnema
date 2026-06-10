@@ -70,6 +70,32 @@ pub struct NewActivityEvidence {
     pub captured_at_ms: Option<i64>,
 }
 
+/// Per-gate withheld counters for one Conclusion-distillation pass: how many
+/// engine drafts each deterministic persist gate dropped, in gate order. Always
+/// zero for non-`'conclusion'` run kinds. These make "distillation produced
+/// nothing" diagnosable — without them a pass whose drafts were all withheld by
+/// policy is indistinguishable from one the engine returned empty.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DistillationGateDrops {
+    /// Drafts with no resolvable supporting Activity reference.
+    pub ungrounded: i64,
+    /// Sensitive Category Guardrail hard post-filter drops (#96).
+    pub guardrail_suppressed: i64,
+    /// Drafts below the formation bar's supporting-evidence minimum (#95).
+    pub below_formation_bar: i64,
+    /// Dismissed Conclusions that did not clear the resurface bar (#99).
+    pub resurface_blocked: i64,
+}
+
+impl DistillationGateDrops {
+    pub fn total(&self) -> i64 {
+        self.ungrounded
+            + self.guardrail_suppressed
+            + self.below_formation_bar
+            + self.resurface_blocked
+    }
+}
+
 /// A new derivation-run ledger row. Records which window a derivation pass
 /// covered (newest-first / skip-already-derived), its outcome, and its
 /// (estimated) token usage.
@@ -88,6 +114,8 @@ pub struct NewDerivationRun {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub error: Option<String>,
+    /// Per-gate withheld counts; meaningful only on `'conclusion'` runs.
+    pub gate_drops: DistillationGateDrops,
 }
 
 /// A new (or to-be-updated) **Conclusion** ready to persist via
@@ -376,8 +404,10 @@ impl UserContextStore {
         let id = sqlx::query(
             "INSERT INTO user_context_derivation_runs \
                 (kind, window_start_ms, window_end_ms, status, activities_derived, \
-                 conclusions_derived, input_tokens, output_tokens, provider, model, error, created_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 conclusions_derived, input_tokens, output_tokens, provider, model, error, \
+                 ungrounded, guardrail_suppressed, below_formation_bar, resurface_blocked, \
+                 created_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         )
         .bind(&run.kind)
         .bind(run.window_start_ms)
@@ -390,11 +420,47 @@ impl UserContextStore {
         .bind(run.provider.as_deref())
         .bind(run.model.as_deref())
         .bind(run.error.as_deref())
+        .bind(run.gate_drops.ungrounded)
+        .bind(run.gate_drops.guardrail_suppressed)
+        .bind(run.gate_drops.below_formation_bar)
+        .bind(run.gate_drops.resurface_blocked)
         .bind(created_at_ms)
         .execute(&self.pool)
         .await?
         .last_insert_rowid();
         Ok(id)
+    }
+
+    /// The most recent **completed** Conclusion-distillation run (kind
+    /// `'conclusion'`): when it ran, how many Conclusions it upserted, and how
+    /// many drafts each persist gate withheld. Powers the settings readout's
+    /// "why is my dossier thin?" line. `None` until a distillation completes.
+    pub async fn latest_distillation_summary(
+        &self,
+    ) -> Result<Option<(i64, i64, DistillationGateDrops)>> {
+        let row = sqlx::query(
+            "SELECT created_at_ms, conclusions_derived, ungrounded, guardrail_suppressed, \
+                    below_formation_bar, resurface_blocked \
+             FROM user_context_derivation_runs \
+             WHERE kind = 'conclusion' AND status = 'completed' \
+             ORDER BY created_at_ms DESC, id DESC \
+             LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| {
+            (
+                row.get::<i64, _>("created_at_ms"),
+                row.get::<i64, _>("conclusions_derived"),
+                DistillationGateDrops {
+                    ungrounded: row.get("ungrounded"),
+                    guardrail_suppressed: row.get("guardrail_suppressed"),
+                    below_formation_bar: row.get("below_formation_bar"),
+                    resurface_blocked: row.get("resurface_blocked"),
+                },
+            )
+        }))
     }
 
     /// Records the (estimated) token usage on an existing derivation run, e.g.
@@ -1659,6 +1725,10 @@ mod tests {
                 provider TEXT,
                 model TEXT,
                 error TEXT,
+                ungrounded INTEGER NOT NULL DEFAULT 0,
+                guardrail_suppressed INTEGER NOT NULL DEFAULT 0,
+                below_formation_bar INTEGER NOT NULL DEFAULT 0,
+                resurface_blocked INTEGER NOT NULL DEFAULT 0,
                 created_at_ms INTEGER NOT NULL
             )",
             "CREATE TABLE user_context_activities (
@@ -2371,6 +2441,7 @@ mod tests {
                     provider: None,
                     model: None,
                     error: None,
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await
                 .expect("windowed run");
@@ -2390,6 +2461,7 @@ mod tests {
                 provider: None,
                 model: None,
                 error: None,
+                gate_drops: DistillationGateDrops::default(),
             })
             .await
             .expect("conclusion run");
@@ -2419,6 +2491,88 @@ mod tests {
             Some(expected_ms),
             "MIN across frames/audio_segments, RFC3339 → millis"
         );
+        });
+    }
+
+    /// The settings readout's "why is my dossier thin?" line reads the newest
+    /// COMPLETED `'conclusion'` run's per-gate withheld counts; failed and
+    /// non-conclusion runs never shadow it.
+    #[test]
+    fn latest_distillation_summary_reads_newest_completed_conclusion_run() {
+        block_on(async {
+            let store = test_store().await;
+            assert!(
+                store.latest_distillation_summary().await.expect("empty").is_none(),
+                "no distillation yet => None"
+            );
+
+            let conclusion_run = |status: &str, derived: i64, drops: DistillationGateDrops| {
+                NewDerivationRun {
+                    kind: "conclusion".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: status.to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: derived,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: None,
+                    model: None,
+                    error: None,
+                    gate_drops: drops,
+                }
+            };
+
+            // Older completed run with different counts.
+            store
+                .insert_derivation_run(conclusion_run(
+                    "completed",
+                    5,
+                    DistillationGateDrops { ungrounded: 9, ..Default::default() },
+                ))
+                .await
+                .expect("older run");
+            // The newest completed run: this one must win.
+            let expected = DistillationGateDrops {
+                ungrounded: 1,
+                guardrail_suppressed: 2,
+                below_formation_bar: 3,
+                resurface_blocked: 4,
+            };
+            store
+                .insert_derivation_run(conclusion_run("completed", 2, expected))
+                .await
+                .expect("newest completed run");
+            // A newer FAILED conclusion run and a newer activity run are ignored.
+            store
+                .insert_derivation_run(conclusion_run("failed", 0, Default::default()))
+                .await
+                .expect("failed run");
+            store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "activity".to_string(),
+                    window_start_ms: Some(0),
+                    window_end_ms: Some(1),
+                    status: "completed".to_string(),
+                    activities_derived: 1,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: None,
+                    model: None,
+                    error: None,
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await
+                .expect("activity run");
+
+            let (_, derived, drops) = store
+                .latest_distillation_summary()
+                .await
+                .expect("summary")
+                .expect("a completed conclusion run exists");
+            assert_eq!(derived, 2, "newest completed conclusion run's upsert count");
+            assert_eq!(drops, expected, "its per-gate withheld counts round-trip");
         });
     }
 
@@ -2455,6 +2609,7 @@ mod tests {
                 provider: Some("test".to_string()),
                 model: Some("test".to_string()),
                 error: None,
+                gate_drops: DistillationGateDrops::default(),
             })
             .await
             .expect("derivation run");

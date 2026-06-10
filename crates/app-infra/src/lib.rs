@@ -91,8 +91,8 @@ pub use status::AppInfraStatus;
 pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
 pub use user_context::{
     digest_input_fingerprint, evidence_fingerprint, ActivityCorrection, CaptureWindow,
-    CaptureWindowItem, NewActivity, NewActivityEvidence, NewConclusion, NewConclusionEvidence,
-    NewDerivationRun, StoredDigest, UserContextCascadeSummary, UserContextStore,
+    CaptureWindowItem, DistillationGateDrops, NewActivity, NewActivityEvidence, NewConclusion,
+    NewConclusionEvidence, NewDerivationRun, StoredDigest, UserContextCascadeSummary, UserContextStore,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

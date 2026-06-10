@@ -196,6 +196,19 @@ export interface UserContextTokenUsage {
 	runCount: number;
 }
 
+/**
+ * The most recent completed Conclusion-distillation pass with its per-gate
+ * withheld counts (the "why is my dossier thin?" readout line).
+ */
+export interface UserContextDistillationSummary {
+	atMs: number;
+	conclusionsDerived: number;
+	ungrounded: number;
+	guardrailSuppressed: number;
+	belowFormationBar: number;
+	resurfaceBlocked: number;
+}
+
 /** Availability + counts + token usage for the User Context settings surface. */
 export interface UserContextStatus {
 	engineAvailable: boolean;
@@ -206,6 +219,7 @@ export interface UserContextStatus {
 	backfilling: boolean;
 	tokenUsage: UserContextTokenUsage;
 	budgetTier: DerivationBudgetTier;
+	lastDistillation?: UserContextDistillationSummary | null;
 }
 
 /** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */

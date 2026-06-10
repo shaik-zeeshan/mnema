@@ -351,6 +351,7 @@ async fn record_digest_run(
             provider: provider_label_for(settings),
             model: model_label_for(settings),
             error,
+            gate_drops: app_infra::DistillationGateDrops::default(),
         })
         .await;
 }

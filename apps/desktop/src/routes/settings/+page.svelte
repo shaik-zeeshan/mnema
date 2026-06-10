@@ -70,6 +70,7 @@
     AiRuntimeStatus,
     AiRuntimeTestResult,
     UserContextStatus,
+    UserContextDistillationSummary,
     UserContextDerivationRunResult,
     Activity,
     Conclusion,
@@ -889,6 +890,33 @@
       hour: "numeric",
       minute: "2-digit",
     });
+  }
+
+  // Plain-language line for what the last distillation pass withheld, so a
+  // thin dossier is explainable ("3 held back by the privacy guardrail") and
+  // not a silent no-op. Empty string when nothing was withheld.
+  function distillationWithheldLine(
+    summary: UserContextDistillationSummary | null | undefined,
+  ): string {
+    if (!summary) return "";
+    const reasons: string[] = [];
+    if (summary.guardrailSuppressed > 0)
+      reasons.push(`${summary.guardrailSuppressed} by the privacy guardrail`);
+    if (summary.belowFormationBar > 0)
+      reasons.push(`${summary.belowFormationBar} needing more evidence`);
+    if (summary.resurfaceBlocked > 0)
+      reasons.push(`${summary.resurfaceBlocked} honoring a dismissal`);
+    if (summary.ungrounded > 0)
+      reasons.push(`${summary.ungrounded} without grounding`);
+    if (reasons.length === 0) return "";
+    const total =
+      summary.guardrailSuppressed +
+      summary.belowFormationBar +
+      summary.resurfaceBlocked +
+      summary.ungrounded;
+    return `Last distillation held back ${total} draft ${
+      total === 1 ? "conclusion" : "conclusions"
+    }: ${reasons.join(", ")}.`;
   }
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
@@ -4701,6 +4729,12 @@
               cumulative across {userContextStatus.tokenUsage.runCount}
               derivation {userContextStatus.tokenUsage.runCount === 1 ? "pass" : "passes"}
               (estimated from text length, not a billed count).
+            </p>
+          {/if}
+
+          {#if distillationWithheldLine(userContextStatus?.lastDistillation)}
+            <p class="group-hint">
+              {distillationWithheldLine(userContextStatus?.lastDistillation)}
             </p>
           {/if}
 

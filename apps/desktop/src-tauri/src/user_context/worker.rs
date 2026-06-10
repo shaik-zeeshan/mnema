@@ -22,7 +22,7 @@ use capture_types::{AiEngineKind, DerivationBudgetTier};
 use tauri::{Emitter, Manager};
 
 use app_infra::user_context::confidence;
-use app_infra::{NewDerivationRun, UserContextStore};
+use app_infra::{DistillationGateDrops, NewDerivationRun, UserContextStore};
 
 use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
 use crate::native_capture::{read_recording_settings, RecordingSettingsState};
@@ -241,6 +241,7 @@ pub async fn run_forward_activity_window(
                     provider: provider_label.clone(),
                     model: model_label.clone(),
                     error: Some(error.to_string()),
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
             return ForwardWindowRun {
@@ -273,6 +274,7 @@ pub async fn run_forward_activity_window(
                 provider: provider_label,
                 model: model_label,
                 error: None,
+                gate_drops: DistillationGateDrops::default(),
             })
             .await;
         return ForwardWindowRun {
@@ -312,6 +314,7 @@ pub async fn run_forward_activity_window(
                     provider: provider_label,
                     model: model_label,
                     error: None,
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
             let message = if outcome.inserted == 0 {
@@ -354,6 +357,7 @@ pub async fn run_forward_activity_window(
                     provider: provider_label,
                     model: model_label,
                     error: Some(error.clone()),
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
             ForwardWindowRun {
@@ -427,6 +431,7 @@ async fn run_backfill_window(
                     provider: provider_label,
                     model: model_label,
                     error: Some(error.to_string()),
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
             return BackfillStep::NoChange;
@@ -449,6 +454,7 @@ async fn run_backfill_window(
                 provider: provider_label,
                 model: model_label,
                 error: None,
+                gate_drops: DistillationGateDrops::default(),
             })
             .await;
         return BackfillStep::Advanced;
@@ -477,6 +483,7 @@ async fn run_backfill_window(
                     provider: provider_label,
                     model: model_label,
                     error: None,
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
             if outcome.inserted > 0 {
@@ -499,6 +506,7 @@ async fn run_backfill_window(
                     provider: provider_label,
                     model: model_label,
                     error: Some(error),
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
             BackfillStep::NoChange
@@ -607,9 +615,11 @@ impl WorkerCadence {
 }
 
 /// Run one Conclusion distillation pass over accumulated Activities and stamp a
-/// single `derivation_run` (kind `'conclusion'`) with the outcome. Resilient:
-/// any engine/store error records a `failed` run and returns `false`; it never
-/// panics the worker. Returns whether the dossier changed (≥1 upsert).
+/// single `derivation_run` (kind `'conclusion'`) with the outcome — including
+/// the per-gate withheld counts, so a pass whose drafts were all dropped by
+/// policy stays diagnosable. Resilient: any engine/store error records a
+/// `failed` run and returns `None`; it never panics the worker. Returns the
+/// distillation outcome on success.
 ///
 /// Shared with the run-now command so manual and automatic distillation behave
 /// identically and both stamp the same ledger row.
@@ -618,7 +628,7 @@ pub(crate) async fn run_conclusion_distillation(
     store: &UserContextStore,
     provider_label: Option<String>,
     model_label: Option<String>,
-) -> bool {
+) -> Option<derivation::ConclusionDistillationOutcome> {
     match derivation::distill_conclusions(engine, store).await {
         Ok(outcome) => {
             let _ = store
@@ -634,6 +644,7 @@ pub(crate) async fn run_conclusion_distillation(
                     provider: provider_label,
                     model: model_label,
                     error: None,
+                    gate_drops: outcome.gate_drops,
                 })
                 .await;
             if outcome.upserted > 0 {
@@ -642,7 +653,19 @@ pub(crate) async fn run_conclusion_distillation(
                     outcome.upserted
                 ));
             }
-            outcome.upserted > 0
+            if outcome.gate_drops.total() > 0 {
+                let drops = outcome.gate_drops;
+                crate::native_capture::debug_log::log_info(format!(
+                    "user context distillation withheld {} draft(s): {} ungrounded, \
+                     {} guardrail-suppressed, {} below the formation bar, {} resurface-blocked",
+                    drops.total(),
+                    drops.ungrounded,
+                    drops.guardrail_suppressed,
+                    drops.below_formation_bar,
+                    drops.resurface_blocked,
+                ));
+            }
+            Some(outcome)
         }
         Err(error) => {
             let _ = store
@@ -658,9 +681,10 @@ pub(crate) async fn run_conclusion_distillation(
                     provider: provider_label,
                     model: model_label,
                     error: Some(error),
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
-            false
+            None
         }
     }
 }
@@ -703,6 +727,7 @@ pub(crate) async fn run_confidence_decay(
                     provider: provider_label,
                     model: model_label,
                     error: Some(error.to_string()),
+                    gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
             return false;
@@ -771,6 +796,7 @@ pub(crate) async fn run_confidence_decay(
             provider: provider_label,
             model: model_label,
             error: None,
+            gate_drops: DistillationGateDrops::default(),
         })
         .await;
 
@@ -901,7 +927,8 @@ async fn worker_tick(
             provider_label.clone(),
             model_label.clone(),
         )
-        .await;
+        .await
+        .is_some_and(|outcome| outcome.upserted > 0);
         dossier_changed = dossier_changed || changed;
         cadence.activity_ticks_since_distillation = 0;
         cadence.last_distilled_activity_count = Some(activity_count);
