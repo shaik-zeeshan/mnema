@@ -146,6 +146,10 @@ _Avoid_: a 30-minute unseen expiry window, releasing/killing a resident PI proce
 A brokered capture — a **Captured Frame** or an **Audio Transcription Span** — that the **Ask AI** model explicitly nominated as evidence behind its answer, by declaring it through the `reference_captures` presentation tool. **Answer Sources** are rendered below the finished answer as horizontal Screen/Audio card rows that hand off to the dashboard like a **Quick Search** result.
 _Avoid_: citation, footnote, search result, consulted capture, every frame the agent read
 
+**Answer Prose**:
+The rendered Markdown body of a single assistant turn — the streamed answer text parsed to HTML by the shared `AnswerProse.svelte` renderer (`markdown-it`, `html: false`). It is the prose itself (headings, lists, code blocks, tables, allowlisted links), distinct from the **Answer Source** cards shown below it and from the per-turn tool-activity trace shown around it. Both doors — **Quick Recall** and **Insights Chat** — render **Answer Prose** through the same component; Chat layers its `mnema-bars`/`mnema-dossier` graphical segments as siblings around the prose, not inside it.
+_Avoid_: the answer, message body, chat bubble, separate per-surface renderers
+
 **Quick Recall Filter Chip**:
 The launcher counterpart of a dashboard **Search Refinement** chip: a removable, plain-language pill (such as `Safari`, `Microphone audio`, or `May 1 – May 30`) that a desugared **Field Operator** produces in **Quick Search**. It carries the visible, reversible scope in **Quick Recall** so typed `app:`/`source:`/date operators never persist as hidden inline text.
 _Avoid_: raw operator token, dashboard chip rail, hidden inline scope, operator-syntax label

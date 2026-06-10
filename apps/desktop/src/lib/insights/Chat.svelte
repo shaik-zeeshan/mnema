@@ -34,10 +34,9 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { confirm } from "@tauri-apps/plugin-dialog";
-  import { openUrl } from "@tauri-apps/plugin-opener";
   import { openSettingsWindow } from "$lib/surface-windows";
-  import { renderMarkdown } from "$lib/markdown";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
@@ -248,17 +247,14 @@
     };
   }
 
-  // Render caches live OUTSIDE the reactive `turns` $state so the template-time
-  // memoization below never writes to a $state proxy (which Svelte 5 forbids
-  // mid-render: `state_unsafe_mutation`). Keyed by the turn object (stable proxy
-  // identity); entries are reclaimed when a turn is dropped. Reading `turn.answer`
-  // inside the render functions still tracks reactivity, so a streamed delta or a
-  // freshly-loaded transcript re-renders correctly — only the cache itself is
-  // non-reactive.
-  const plainRenderCache = new WeakMap<
-    ChatTurn,
-    { answer: string; html: string }
-  >();
+  // The segment cache lives OUTSIDE the reactive `turns` $state so the
+  // template-time memoization below never writes to a $state proxy (which Svelte 5
+  // forbids mid-render: `state_unsafe_mutation`). Keyed by the turn object (stable
+  // proxy identity); entries are reclaimed when a turn is dropped. Reading
+  // `turn.answer` inside `answerSegments` still tracks reactivity, so a freshly-
+  // loaded transcript re-renders correctly — only the cache itself is non-reactive.
+  // The Markdown render itself is now memoized inside AnswerProse, so there is no
+  // plain-render cache here anymore.
   const segmentRenderCache = new WeakMap<
     ChatTurn,
     { answer: string; segments: AnswerSegment[] }
@@ -562,7 +558,7 @@
     confidence: number;
   }
   type AnswerSegment =
-    | { kind: "html"; html: string }
+    | { kind: "html"; markdown: string }
     | { kind: "bars"; title: string | null; items: BarsItem[] }
     | { kind: "dossier"; items: DossierItem[] };
 
@@ -627,9 +623,11 @@
   }
 
   // Split the answer into html / graphical segments. Markdown between/around the
-  // recognized fences is rendered with renderMarkdown; a recognized fence with a
-  // valid body becomes a chart segment, an invalid one falls back to plain
-  // markdown (so the original fenced block renders as a code block — never crash).
+  // recognized fences becomes a raw-markdown `html` segment (AnswerProse renders
+  // it); a recognized fence with a valid body becomes a chart segment, an invalid
+  // one falls back to that raw markdown (so the original fenced block renders as a
+  // code block — never crash). The slices stay RAW here; the Markdown→HTML pass
+  // now lives in AnswerProse, which also memoizes it.
   function buildSegments(answer: string): AnswerSegment[] {
     const segments: AnswerSegment[] = [];
     let lastIndex = 0;
@@ -645,7 +643,7 @@
       const preEnd = parsed !== null ? match.index : match.index + full.length;
       const pre = answer.slice(lastIndex, preEnd);
       if (pre.trim().length > 0) {
-        segments.push({ kind: "html", html: renderMarkdown(pre) });
+        segments.push({ kind: "html", markdown: pre });
       }
       if (parsed !== null) {
         segments.push(parsed);
@@ -654,29 +652,22 @@
     }
     const tail = answer.slice(lastIndex);
     if (tail.trim().length > 0) {
-      segments.push({ kind: "html", html: renderMarkdown(tail) });
+      segments.push({ kind: "html", markdown: tail });
     }
     // An all-whitespace answer (or one fully consumed by an unparsed fence with
-    // no surrounding text) yields no segments; render the raw markdown as a
+    // no surrounding text) yields no segments; keep the raw markdown as a
     // safety net so nothing silently disappears.
     if (segments.length === 0 && answer.trim().length > 0) {
-      segments.push({ kind: "html", html: renderMarkdown(answer) });
+      segments.push({ kind: "html", markdown: answer });
     }
     return segments;
   }
 
-  // Render one turn's answer. While streaming (or seeding/thinking) we serve
-  // plain markdown so partial JSON is never parsed; once "done" we upgrade to
-  // graphical segments. Both caches are memoized (in non-reactive WeakMaps) so a
-  // streamed delta re-renders only the live turn (O(n) over the stream).
-  function renderPlainAnswer(turn: ChatTurn): string {
-    const cached = plainRenderCache.get(turn);
-    if (cached !== undefined && cached.answer === turn.answer) return cached.html;
-    const html = turn.answer.length > 0 ? renderMarkdown(turn.answer) : "";
-    plainRenderCache.set(turn, { answer: turn.answer, html });
-    return html;
-  }
-
+  // Split one turn's answer into typed segments. While streaming (or seeding/
+  // thinking) the answer is rendered as plain markdown straight from AnswerProse
+  // (partial JSON is never parsed); once "done" we upgrade to these graphical
+  // segments. Memoized in a non-reactive WeakMap so a freshly-loaded transcript
+  // re-segments only when a turn's answer actually changed.
   function answerSegments(turn: ChatTurn): AnswerSegment[] {
     const cached = segmentRenderCache.get(turn);
     if (cached !== undefined && cached.answer === turn.answer) {
@@ -798,19 +789,6 @@
       });
     } catch {
       // Best-effort hand-off.
-    }
-  }
-
-  // Route link clicks inside a rendered answer through the OS browser.
-  async function handleAnswerClick(event: MouseEvent): Promise<void> {
-    const anchor = (event.target as HTMLElement | null)?.closest(
-      "a[data-external]",
-    ) as HTMLAnchorElement | null;
-    if (anchor === null) return;
-    event.preventDefault();
-    const href = anchor.getAttribute("href");
-    if (href !== null && href.length > 0) {
-      void openUrl(href);
     }
   }
 
@@ -1127,20 +1105,16 @@
                             </div>
                           {/if}
 
-                          <!-- The answer body. While streaming we render plain
-                               markdown; once done we upgrade to graphical segments
-                               (mnema-bars / mnema-dossier). -->
-                          <!-- svelte-ignore a11y_no_static_element_interactions -->
-                          <!-- svelte-ignore a11y_click_events_have_key_events -->
-                          <div
-                            class="answer"
-                            class:answer--streaming={turn.phase === "streaming"}
-                            onclick={handleAnswerClick}
-                          >
+                          <!-- The answer body. While streaming AnswerProse renders
+                               plain markdown (with its own caret); once done we
+                               upgrade to graphical segments (mnema-bars /
+                               mnema-dossier), with prose runs still through
+                               AnswerProse. -->
+                          <div class="answer">
                             {#if turn.phase === "done"}
                               {#each answerSegments(turn) as seg, si (si)}
                                 {#if seg.kind === "html"}
-                                  <div class="answer-md">{@html seg.html}</div>
+                                  <AnswerProse source={seg.markdown} isStreaming={false} />
                                 {:else if seg.kind === "bars"}
                                   <figure class="graphic">
                                     {#if seg.title}
@@ -1173,7 +1147,7 @@
                                 {/if}
                               {/each}
                             {:else}
-                              <div class="answer-md">{@html renderPlainAnswer(turn)}</div>
+                              <AnswerProse source={turn.answer} isStreaming={true} />
                             {/if}
                           </div>
 
@@ -1737,80 +1711,6 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-  }
-  .answer--streaming::after {
-    content: "▍";
-    color: var(--app-accent);
-    animation: chat-caret 1s step-end infinite;
-  }
-  @keyframes chat-caret {
-    50% {
-      opacity: 0;
-    }
-  }
-  .answer-md :global(p) {
-    margin: 0 0 0.6em;
-  }
-  .answer-md :global(p:last-child) {
-    margin-bottom: 0;
-  }
-  .answer-md :global(ul),
-  .answer-md :global(ol) {
-    margin: 0 0 0.6em;
-    padding-left: 1.3em;
-  }
-  .answer-md :global(li) {
-    margin: 0.15em 0;
-  }
-  .answer-md :global(h1),
-  .answer-md :global(h2),
-  .answer-md :global(h3) {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--app-text-strong);
-    margin: 0.6em 0 0.3em;
-  }
-  .answer-md :global(code) {
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 11.5px;
-    padding: 1px 4px;
-    border-radius: 4px;
-    background: var(--app-surface-hover);
-    border: 1px solid var(--app-border);
-  }
-  .answer-md :global(pre) {
-    margin: 0 0 0.6em;
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: var(--app-surface-subtle);
-    border: 1px solid var(--app-border);
-    overflow-x: auto;
-  }
-  .answer-md :global(pre code) {
-    padding: 0;
-    border: none;
-    background: transparent;
-  }
-  .answer-md :global(a) {
-    color: var(--app-accent-strong);
-    text-decoration: underline;
-    text-decoration-color: var(--app-accent-border);
-  }
-  .answer-md :global(blockquote) {
-    margin: 0 0 0.6em;
-    padding-left: 11px;
-    border-left: 2px solid var(--app-border);
-    color: var(--app-text-muted);
-  }
-  .answer-md :global(table) {
-    border-collapse: collapse;
-    font-size: 11.5px;
-  }
-  .answer-md :global(th),
-  .answer-md :global(td) {
-    border: 1px solid var(--app-border);
-    padding: 4px 8px;
-    text-align: left;
   }
 
   /* Inline graphical answer segments. */

@@ -8,7 +8,7 @@
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow } from "$lib/surface-windows";
-  import { renderMarkdown } from "$lib/markdown";
+  import AnswerProse from "$lib/AnswerProse.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { Conversation } from "$lib/insights/conversation";
   import type {
@@ -825,12 +825,6 @@
     summaryExpanded: boolean;
     // Per-turn copy-confirmation flash (icon swaps to a check briefly).
     copied: boolean;
-    // Memoized Markdown render cache (FIX #6): `renderTurnAnswer` re-parses only
-    // when `answer` actually changed, so a streaming delta re-renders just the
-    // live turn and completed turns are never re-parsed. Tied to the turn object,
-    // so the cache is GC'd with the turn (no unbounded cross-turn cache).
-    _renderedAnswer: string | null;
-    _renderedHtml: string;
   };
 
   // The thread id (one live PI session). null when no thread is open.
@@ -909,25 +903,6 @@
     }
   });
 
-  // Render one turn's Markdown answer to HTML, memoized per turn (FIX #6). The
-  // `{@html}` binding re-invokes this for EVERY turn on any reactive update, so a
-  // single streamed delta would otherwise re-parse the whole accumulated Markdown
-  // of every turn (O(n²) over the stream). We cache the last (answer, html) on the
-  // turn object and only re-parse when that turn's `answer` actually changed, so
-  // the live/growing turn re-renders incrementally while completed turns are never
-  // re-parsed. The cache lives on the turn, so it's GC'd with the turn. Incomplete
-  // Markdown (e.g. an unclosed code fence mid-stream) renders gracefully and
-  // resolves once the closing token arrives.
-  function renderTurnAnswer(turn: AskTurn): string {
-    if (turn._renderedAnswer === turn.answer) {
-      return turn._renderedHtml;
-    }
-    const html = turn.answer.length > 0 ? renderMarkdown(turn.answer) : "";
-    turn._renderedAnswer = turn.answer;
-    turn._renderedHtml = html;
-    return html;
-  }
-
   // Split a turn's cited sources into the Screen/Audio strip sections.
   function turnFrameSources(turn: AskTurn): AskAiSource[] {
     return turn.sources.filter((s) => s.kind === "frame");
@@ -936,34 +911,25 @@
     return turn.sources.filter((s) => s.kind === "audio");
   }
 
-  // Route link clicks inside the rendered answer through the OS browser instead
-  // of navigating the webview. Links are tagged with data-external in markdown.ts.
-  async function handleAnswerClick(event: MouseEvent): Promise<void> {
-    const anchor = (event.target as HTMLElement | null)?.closest(
-      "a[data-external]",
-    ) as HTMLAnchorElement | null;
-    if (anchor === null) {
-      return;
+  // Open an external answer link through the OS browser. Passed to AnswerProse as
+  // `onOpenLink`; the component already prevents default and extracts the href, so
+  // this only owns the launcher-specific blur handling and the actual open.
+  async function openAnswerLink(href: string): Promise<void> {
+    // Opening a link activates the OS browser, which blurs this non-activating
+    // panel and fires `Focused(false)`. Suppress the very next blur-dismiss FIRST
+    // so the launcher (and the in-flight Ask AI session being read) survives the
+    // hand-off; the flag is one-shot, so ordinary click-away still dismisses.
+    // AWAIT the suppression before opening: both are separate IPC round-trips,
+    // and if `openUrl` activated the browser before Rust set the one-shot flag,
+    // the resulting `Focused(false)` would reach the blur handler unsuppressed
+    // and dismiss the panel out from under the user. Awaiting orders the flag
+    // strictly before the activation. A failed suppress still opens the link.
+    try {
+      await invoke("quick_recall_suppress_blur_dismiss");
+    } catch {
+      // Best-effort: proceed to open even if the suppression call failed.
     }
-    event.preventDefault();
-    const href = anchor.getAttribute("href");
-    if (href !== null && href.length > 0) {
-      // Opening a link activates the OS browser, which blurs this non-activating
-      // panel and fires `Focused(false)`. Suppress the very next blur-dismiss FIRST
-      // so the launcher (and the in-flight Ask AI session being read) survives the
-      // hand-off; the flag is one-shot, so ordinary click-away still dismisses.
-      // AWAIT the suppression before opening: both are separate IPC round-trips,
-      // and if `openUrl` activated the browser before Rust set the one-shot flag,
-      // the resulting `Focused(false)` would reach the blur handler unsuppressed
-      // and dismiss the panel out from under the user. Awaiting orders the flag
-      // strictly before the activation. A failed suppress still opens the link.
-      try {
-        await invoke("quick_recall_suppress_blur_dismiss");
-      } catch {
-        // Best-effort: proceed to open even if the suppression call failed.
-      }
-      void openUrl(href);
-    }
+    void openUrl(href);
   }
 
   // The scrollable transcript region; focused on entry so Escape (back-to-search)
@@ -1188,8 +1154,6 @@
       seededResultCount: null,
       summaryExpanded: false,
       copied: false,
-      _renderedAnswer: null,
-      _renderedHtml: "",
     };
   }
 
@@ -3857,18 +3821,15 @@
                         </div>
                       {/if}
 
-                      <!-- Click delegation for rendered links; the <a> elements carry
-                           their own keyboard semantics (Enter dispatches a click that
-                           bubbles here). -->
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
-                      <div
-                        class="quick-recall__answer"
-                        class:quick-recall__answer--streaming={turn.phase === "streaming"}
-                        onclick={handleAnswerClick}
-                      >
-                        {@html renderTurnAnswer(turn)}
-                      </div>
+                      <!-- Answer Prose: shared renderer owns the Markdown HTML,
+                           code-block copy buttons, external-link delegation, and the
+                           streaming caret. Links route through openAnswerLink so the
+                           launcher's blur-dismiss suppression still runs. -->
+                      <AnswerProse
+                        source={turn.answer}
+                        isStreaming={turn.phase === "streaming"}
+                        onOpenLink={openAnswerLink}
+                      />
 
                       <!-- Per-turn answer sources: the captures this turn drew on,
                            surfaced only once the turn is done. -->
@@ -5089,177 +5050,6 @@
     }
   }
 
-  .quick-recall__answer {
-    margin: 0;
-    padding: 2px 2px 8px;
-    font-size: 13px;
-    line-height: 1.55;
-    color: var(--app-text);
-    word-break: break-word;
-    overflow-wrap: anywhere;
-  }
-
-  /* Rendered Markdown blocks. The answer is a flow of <p>/<ul>/<pre>/… so we
-     tame default browser margins and tie everything to the app palette. The
-     `:global()` wrappers are required because this HTML is injected via {@html}
-     and would otherwise be stripped by Svelte's scoped-style pruning. */
-  .quick-recall__answer :global(> :first-child) {
-    margin-top: 0;
-  }
-
-  .quick-recall__answer :global(> :last-child) {
-    margin-bottom: 0;
-  }
-
-  .quick-recall__answer :global(p),
-  .quick-recall__answer :global(ul),
-  .quick-recall__answer :global(ol),
-  .quick-recall__answer :global(blockquote),
-  .quick-recall__answer :global(pre),
-  .quick-recall__answer :global(table) {
-    margin: 0 0 0.7em;
-  }
-
-  .quick-recall__answer :global(h1),
-  .quick-recall__answer :global(h2),
-  .quick-recall__answer :global(h3),
-  .quick-recall__answer :global(h4),
-  .quick-recall__answer :global(h5),
-  .quick-recall__answer :global(h6) {
-    margin: 1.1em 0 0.5em;
-    line-height: 1.3;
-    font-weight: 600;
-    color: var(--app-text-strong);
-  }
-
-  .quick-recall__answer :global(h1) {
-    font-size: 1.3em;
-  }
-  .quick-recall__answer :global(h2) {
-    font-size: 1.18em;
-  }
-  .quick-recall__answer :global(h3) {
-    font-size: 1.06em;
-  }
-  .quick-recall__answer :global(h4),
-  .quick-recall__answer :global(h5),
-  .quick-recall__answer :global(h6) {
-    font-size: 1em;
-  }
-
-  .quick-recall__answer :global(strong) {
-    font-weight: 600;
-    color: var(--app-text-strong);
-  }
-
-  .quick-recall__answer :global(a) {
-    color: var(--app-accent);
-    text-decoration: underline;
-    text-underline-offset: 2px;
-    cursor: pointer;
-  }
-
-  .quick-recall__answer :global(ul),
-  .quick-recall__answer :global(ol) {
-    padding-left: 1.4em;
-  }
-
-  .quick-recall__answer :global(li) {
-    margin: 0.2em 0;
-  }
-
-  .quick-recall__answer :global(li::marker) {
-    color: var(--app-text-muted);
-  }
-
-  .quick-recall__answer :global(li > ul),
-  .quick-recall__answer :global(li > ol) {
-    margin: 0.2em 0;
-  }
-
-  /* Inline code. */
-  .quick-recall__answer :global(code) {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-      monospace;
-    font-size: 0.88em;
-    padding: 0.1em 0.35em;
-    border-radius: 4px;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    color: var(--app-text-strong);
-  }
-
-  /* Fenced code blocks: the <pre> owns the chrome, the inner <code> resets. */
-  .quick-recall__answer :global(pre) {
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    overflow-x: auto;
-  }
-
-  .quick-recall__answer :global(pre code) {
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--app-text);
-    font-size: 0.86em;
-    line-height: 1.5;
-  }
-
-  .quick-recall__answer :global(blockquote) {
-    padding: 0.1em 0 0.1em 0.9em;
-    border-left: 2px solid var(--app-accent-border);
-    color: var(--app-text-muted);
-  }
-
-  .quick-recall__answer :global(hr) {
-    margin: 1em 0;
-    border: none;
-    border-top: 1px solid var(--app-border);
-  }
-
-  .quick-recall__answer :global(table) {
-    border-collapse: collapse;
-    font-size: 0.92em;
-  }
-
-  .quick-recall__answer :global(th),
-  .quick-recall__answer :global(td) {
-    padding: 0.35em 0.7em;
-    border: 1px solid var(--app-border);
-    text-align: left;
-  }
-
-  .quick-recall__answer :global(th) {
-    background: var(--app-surface-subtle);
-    color: var(--app-text-strong);
-    font-weight: 600;
-  }
-
-  /* Streaming cursor: a blinking caret tacked onto the last rendered block so it
-     trails the freshest token instead of dropping to its own line. */
-  .quick-recall__answer--streaming :global(> :last-child::after) {
-    content: "";
-    display: inline-block;
-    width: 7px;
-    height: 1.05em;
-    margin-left: 2px;
-    vertical-align: text-bottom;
-    background: var(--app-accent);
-    animation: quick-recall-blink 1s steps(2, start) infinite;
-  }
-
-  @keyframes quick-recall-blink {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0;
-    }
-  }
-
   /* Slice 7: reduced-motion gating for the whole surface. Every animation and
      transition in this file collapses to an instant/static fallback. The hero
      mode-switch cross-fade is JS-driven (modeFadeMs → 0 in the script) and so is
@@ -5268,10 +5058,6 @@
     .quick-recall__dot {
       animation: none;
       opacity: 1;
-    }
-
-    .quick-recall__answer--streaming :global(> :last-child::after) {
-      animation: none;
     }
 
     .quick-recall__skeleton-thumb::after,
