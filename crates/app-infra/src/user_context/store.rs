@@ -1477,13 +1477,14 @@ fn rfc3339_text_to_ms(value: &str) -> Option<i64> {
 /// capture-types serde rename).
 fn category_to_str(category: ActivityCategory) -> &'static str {
     match category {
-        ActivityCategory::Coding => "coding",
-        ActivityCategory::Research => "research",
+        ActivityCategory::Creating => "creating",
         ActivityCategory::Communication => "communication",
-        ActivityCategory::Design => "design",
-        ActivityCategory::Testing => "testing",
+        ActivityCategory::Meetings => "meetings",
+        ActivityCategory::Research => "research",
+        ActivityCategory::Learning => "learning",
+        ActivityCategory::Organizing => "organizing",
         ActivityCategory::Personal => "personal",
-        ActivityCategory::Distractions => "distractions",
+        ActivityCategory::Entertainment => "entertainment",
     }
 }
 
@@ -1491,13 +1492,14 @@ fn category_to_str(category: ActivityCategory) -> &'static str {
 /// NULL values map to `None`.
 fn category_from_str(value: Option<&str>) -> Option<ActivityCategory> {
     match value {
-        Some("coding") => Some(ActivityCategory::Coding),
-        Some("research") => Some(ActivityCategory::Research),
+        Some("creating") => Some(ActivityCategory::Creating),
         Some("communication") => Some(ActivityCategory::Communication),
-        Some("design") => Some(ActivityCategory::Design),
-        Some("testing") => Some(ActivityCategory::Testing),
+        Some("meetings") => Some(ActivityCategory::Meetings),
+        Some("research") => Some(ActivityCategory::Research),
+        Some("learning") => Some(ActivityCategory::Learning),
+        Some("organizing") => Some(ActivityCategory::Organizing),
         Some("personal") => Some(ActivityCategory::Personal),
-        Some("distractions") => Some(ActivityCategory::Distractions),
+        Some("entertainment") => Some(ActivityCategory::Entertainment),
         _ => None,
     }
 }
@@ -2555,7 +2557,7 @@ mod tests {
                 .insert_activity_with_evidence(NewActivity {
                     title: "Wrote the parser".to_string(),
                     summary: "Implemented the tokenizer".to_string(),
-                    category: Some(ActivityCategory::Coding),
+                    category: Some(ActivityCategory::Creating),
                     focus: Some(FocusLevel::Deep),
                     started_at_ms: 100,
                     ended_at_ms: 200,
@@ -2571,13 +2573,13 @@ mod tests {
 
             let activities = store.list_recent_activities(10, 0).await.expect("list");
             let activity = activities.iter().find(|a| a.id == id).expect("present");
-            assert_eq!(activity.category, Some(ActivityCategory::Coding));
+            assert_eq!(activity.category, Some(ActivityCategory::Creating));
             assert_eq!(activity.focus, Some(FocusLevel::Deep));
 
             // Same effective values via the distillation read path.
             let distill = store.activities_for_distillation(10).await.expect("distill");
             let from_distill = distill.iter().find(|a| a.id == id).expect("present");
-            assert_eq!(from_distill.category, Some(ActivityCategory::Coding));
+            assert_eq!(from_distill.category, Some(ActivityCategory::Creating));
             assert_eq!(from_distill.focus, Some(FocusLevel::Deep));
         });
     }
@@ -2610,11 +2612,11 @@ mod tests {
                 .await
                 .expect("insert");
 
-            // Correct Category Research -> Distractions and Focus Mixed -> Distracted.
+            // Correct Category Research -> Entertainment and Focus Mixed -> Distracted.
             store
                 .correct_activity(
                     id,
-                    Some(Some(ActivityCategory::Distractions)),
+                    Some(Some(ActivityCategory::Entertainment)),
                     Some(Some(FocusLevel::Distracted)),
                 )
                 .await
@@ -2629,7 +2631,7 @@ mod tests {
                 .expect("present");
             assert_eq!(
                 activity.category,
-                Some(ActivityCategory::Distractions),
+                Some(ActivityCategory::Entertainment),
                 "corrected category wins over engine Research"
             );
             assert_eq!(
@@ -2644,7 +2646,7 @@ mod tests {
             assert_eq!(corrections.len(), 1);
             assert_eq!(corrections[0].activity_id, id);
             assert_eq!(corrections[0].title, "Scrolled social media");
-            assert_eq!(corrections[0].corrected_category, Some(ActivityCategory::Distractions));
+            assert_eq!(corrections[0].corrected_category, Some(ActivityCategory::Entertainment));
             assert_eq!(corrections[0].corrected_focus, Some(FocusLevel::Distracted));
 
             // Simulate the engine re-deriving the SAME activity into a fresh row
@@ -2675,7 +2677,7 @@ mod tests {
                 .into_iter()
                 .find(|a| a.id == id)
                 .expect("present");
-            assert_eq!(still_corrected.category, Some(ActivityCategory::Distractions));
+            assert_eq!(still_corrected.category, Some(ActivityCategory::Entertainment));
             assert_eq!(still_corrected.focus, Some(FocusLevel::Distracted));
 
             // Correcting Category to None ("unset") wins over the engine label too:
@@ -2708,7 +2710,7 @@ mod tests {
                 .insert_activity_with_evidence(NewActivity {
                     title: "Reviewed a PR".to_string(),
                     summary: "Looked at the diff".to_string(),
-                    category: Some(ActivityCategory::Testing),
+                    category: Some(ActivityCategory::Creating),
                     focus: Some(FocusLevel::Deep),
                     started_at_ms: 100,
                     ended_at_ms: 200,
@@ -2731,13 +2733,67 @@ mod tests {
                 .into_iter()
                 .find(|a| a.id == id)
                 .expect("present");
-            assert_eq!(activity.category, Some(ActivityCategory::Testing));
+            assert_eq!(activity.category, Some(ActivityCategory::Creating));
             assert_eq!(activity.focus, Some(FocusLevel::Deep));
             assert!(
                 store.list_activity_corrections(10).await.expect("corrections").is_empty(),
                 "no correction recorded"
             );
         });
+    }
+
+    /// ADR 0032: the store layer round-trips exactly the eight
+    /// profession-neutral work modes; old v1 labels (relabeled once by
+    /// migration 0031) and unknown strings map to `None`.
+    #[test]
+    fn category_strings_round_trip_the_fixed_taxonomy() {
+        for category in [
+            ActivityCategory::Creating,
+            ActivityCategory::Communication,
+            ActivityCategory::Meetings,
+            ActivityCategory::Research,
+            ActivityCategory::Learning,
+            ActivityCategory::Organizing,
+            ActivityCategory::Personal,
+            ActivityCategory::Entertainment,
+        ] {
+            assert_eq!(category_from_str(Some(category_to_str(category))), Some(category));
+        }
+        for old in ["coding", "testing", "design", "distractions"] {
+            assert_eq!(
+                category_from_str(Some(old)),
+                None,
+                "old v1 label {old:?} is migration-only, not a store alias"
+            );
+        }
+        assert_eq!(category_from_str(None), None);
+    }
+
+    /// Structural guarantee for migration 0031 (ADR 0032): every old v1 label
+    /// that changes meaning is relabeled in BOTH the engine `category` column
+    /// and the #108 `corrected_category` column.
+    #[test]
+    fn generalize_categories_migration_relabels_both_columns() {
+        let migration =
+            include_str!("../../migrations/0031_generalize_activity_categories.sql");
+        let statements: Vec<&str> = migration.split(';').collect();
+        for column in ["category", "corrected_category"] {
+            for (old, new) in [
+                ("coding", "creating"),
+                ("testing", "creating"),
+                ("design", "creating"),
+                ("distractions", "entertainment"),
+            ] {
+                assert!(
+                    statements.iter().any(|statement| {
+                        statement.contains(&format!("SET {column} = '{new}'"))
+                            && statement.contains(&format!("WHERE {column}"))
+                            && statement.contains(&format!("'{old}'"))
+                    }),
+                    "migration 0031 must relabel {column} {old:?} -> {new:?}"
+                );
+            }
+        }
     }
 
     /// A bare [`Activity`] value for the pure [`digest_input_fingerprint`]
@@ -2876,7 +2932,7 @@ mod tests {
 
         // A #108 correction changing the EFFECTIVE Category/Focus moves it.
         let mut corrected = b.clone();
-        corrected.category = Some(ActivityCategory::Distractions);
+        corrected.category = Some(ActivityCategory::Entertainment);
         assert_ne!(baseline, digest_input_fingerprint(&[a.clone(), corrected]));
         let mut refocused = b.clone();
         refocused.focus = Some(FocusLevel::Deep);

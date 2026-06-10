@@ -1579,8 +1579,8 @@ fn recall_overlap_score(tokens: &[String], text: &str) -> u32 {
         .count() as u32
 }
 
-/// Convert a snake_case-serde enum value to its wire string (e.g. `Coding` ->
-/// `"coding"`), so recalled activities carry the same category/focus labels the
+/// Convert a snake_case-serde enum value to its wire string (e.g. `Creating` ->
+/// `"creating"`), so recalled activities carry the same category/focus labels the
 /// rest of the stack uses.
 fn snake_case_enum_string<T: Serialize>(value: &T) -> Option<String> {
     match serde_json::to_value(value).ok()? {
