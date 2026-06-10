@@ -38,6 +38,19 @@
     UserContextStatus,
     AiRuntimeStatus,
   } from "$lib/types/recording";
+  import {
+    CATEGORY_COLOR,
+    CATEGORY_ORDER,
+    UNCATEGORIZED_COLOR,
+    CATEGORY_OPTIONS,
+    categoryLabel,
+    humanizeMs,
+    humanizeHours,
+    startOfDay,
+    buildActivityThreads,
+    type ActivityThread,
+  } from "$lib/insights/activity-helpers";
+  import CategoryDetailModal from "$lib/insights/CategoryDetailModal.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
   import StackedBar from "$lib/insights/charts/StackedBar.svelte";
   import Heatmap from "$lib/insights/charts/Heatmap.svelte";
@@ -81,32 +94,6 @@
     activityHeatmap: HeatmapBucket[];
   }
 
-  // ── Category → colour token mapping (engine tier) ──────────────────────
-  const CATEGORY_COLOR: Record<ActivityCategory, string> = {
-    coding: "--cat-coding",
-    research: "--cat-research",
-    communication: "--cat-communication",
-    design: "--cat-design",
-    testing: "--cat-testing",
-    personal: "--cat-personal",
-    distractions: "--cat-distractions",
-  };
-  // Stable legend ordering.
-  const CATEGORY_ORDER: ActivityCategory[] = [
-    "coding",
-    "research",
-    "communication",
-    "design",
-    "testing",
-    "personal",
-    "distractions",
-  ];
-  const UNCATEGORIZED_COLOR = "--chart-grey-3";
-
-  function categoryLabel(c: ActivityCategory): string {
-    return c.charAt(0).toUpperCase() + c.slice(1);
-  }
-
   // ── Date range ─────────────────────────────────────────────────────────
   type RangeMode = "day" | "week" | "month";
   let rangeMode = $state<RangeMode>("week");
@@ -115,11 +102,6 @@
   // local-calendar.
   let anchor = $state<number>(Date.now());
 
-  function startOfDay(ms: number): number {
-    const d = new Date(ms);
-    d.setHours(0, 0, 0, 0);
-    return d.getTime();
-  }
   // Local-calendar bounds [startMs, endMs) for the active range.
   const range = $derived.by<{ startMs: number; endMs: number }>(() => {
     if (rangeMode === "day") {
@@ -229,21 +211,6 @@
   let correctingActivity = $state<Set<number>>(new Set());
 
   // ── Humanisers ─────────────────────────────────────────────────────────
-  function humanizeMs(ms: number): string {
-    if (!Number.isFinite(ms) || ms <= 0) return "0m";
-    const totalMin = Math.round(ms / 60000);
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
-    if (h <= 0) return `${m}m`;
-    if (m === 0) return `${h}h`;
-    return `${h}h ${m}m`;
-  }
-  function humanizeHours(ms: number): string {
-    if (!Number.isFinite(ms) || ms <= 0) return "0h";
-    const h = ms / 3600000;
-    if (h < 10) return `${(Math.round(h * 10) / 10).toString()}h`;
-    return `${Math.round(h)}h`;
-  }
   function relativeTime(ms: number): string {
     if (!Number.isFinite(ms) || ms <= 0) return "—";
     const diff = Date.now() - ms;
@@ -288,17 +255,6 @@
     })),
   );
 
-  // ── Lede app strip: the range's top apps with real macOS icons ────────
-  // `timePerApp` arrives activeMs-desc from the backend, so a slice IS the top.
-  const LEDE_APP_COUNT = 5;
-  const ledeApps = $derived.by(() =>
-    (usage?.timePerApp ?? []).slice(0, LEDE_APP_COUNT).map((a) => ({
-      app: a.app,
-      bundleId: a.appBundleId,
-      timeLabel: humanizeMs(a.activeMs),
-    })),
-  );
-
   // Icon resolutions are bundle-id-keyed facts, not range-scoped data: a late
   // response from a previous range still maps the right id to the right icon,
   // so the merge map doubles as a cross-range cache — no staleness token.
@@ -337,13 +293,10 @@
     return iconPath ? convertFileSrc(iconPath) : null;
   }
 
-  // Ask for icons whenever the icon-bearing surfaces' apps change (usage
-  // payload / range) — one request unions the lede strip and the Top apps tile.
+  // Ask for icons whenever the Top apps tile's apps change (usage payload /
+  // range).
   $effect(() => {
-    const ids = [
-      ...ledeApps.map((a) => a.bundleId),
-      ...topAppUsage.map((a) => a.appBundleId),
-    ];
+    const ids = topAppUsage.map((a) => a.appBundleId);
     void untrack(() => resolveAppIcons(ids));
   });
 
@@ -594,121 +547,30 @@
   }
 
   // ── Activity threads (#108 corrections) ───────────────────────────────
-  // The range's activities grouped by category — each thread is one line of
-  // "what you worked on" summarising sessions/time/days/focus, expandable to
-  // the raw activities (corrections sit behind a per-row "adjust"). Covers
-  // ALL of the range, not a newest-12 log slice.
-  type ActivityFocus = "deep" | "mixed" | "distracted";
-  interface ActivityThread {
-    key: string; // category id, or "__uncat__"
-    label: string;
-    colorVar: string;
-    totalMs: number;
-    sessionCount: number;
-    dayCount: number; // distinct local-calendar days touched
-    dominantFocus: ActivityFocus | null; // most frequent non-null focus
-    activities: Activity[]; // newest-first
-  }
-  const activityThreads = $derived.by<ActivityThread[]>(() => {
-    const buckets = new Map<string, Activity[]>();
-    for (const a of rangeActivities) {
-      const key = a.category ?? "__uncat__";
-      const list = buckets.get(key);
-      if (list) list.push(a);
-      else buckets.set(key, [a]);
-    }
-    const threads: ActivityThread[] = [];
-    for (const [key, list] of buckets) {
-      let totalMs = 0;
-      const days = new Set<number>();
-      const focusCounts = new Map<ActivityFocus, number>();
-      for (const a of list) {
-        totalMs += Math.max(0, a.endedAtMs - a.startedAtMs);
-        days.add(startOfDay(a.startedAtMs));
-        if (a.focus != null) {
-          focusCounts.set(a.focus, (focusCounts.get(a.focus) ?? 0) + 1);
-        }
-      }
-      // Dominant focus = most frequent non-null focus; ties resolve in
-      // deep → mixed → distracted order so the readout stays stable.
-      let dominantFocus: ActivityFocus | null = null;
-      let dominantCount = 0;
-      for (const f of ["deep", "mixed", "distracted"] as ActivityFocus[]) {
-        const n = focusCounts.get(f) ?? 0;
-        if (n > dominantCount) {
-          dominantFocus = f;
-          dominantCount = n;
-        }
-      }
-      const uncat = key === "__uncat__";
-      threads.push({
-        key,
-        label: uncat ? "Uncategorized" : categoryLabel(key as ActivityCategory),
-        colorVar: uncat ? UNCATEGORIZED_COLOR : CATEGORY_COLOR[key as ActivityCategory],
-        totalMs,
-        sessionCount: list.length,
-        dayCount: days.size,
-        dominantFocus,
-        activities: [...list].sort((a, b) => b.startedAtMs - a.startedAtMs),
-      });
-    }
-    // Most time first; uncategorized ALWAYS sinks to the bottom — it's the
-    // leftover bucket, not a body of work competing with named categories.
-    threads.sort((a, b) => {
-      const aUncat = a.key === "__uncat__" ? 1 : 0;
-      const bUncat = b.key === "__uncat__" ? 1 : 0;
-      return aUncat - bUncat || b.totalMs - a.totalMs;
-    });
-    return threads;
-  });
+  // The range's activities grouped by category. No longer rendered inline in
+  // the feed — they feed the CategoryDetailModal opened from the "Categories"
+  // glance tile, where each thread expands to its raw activities + corrections.
+  // Covers ALL of the range, not a newest-12 log slice.
+  const activityThreads = $derived.by<ActivityThread[]>(() =>
+    buildActivityThreads(rangeActivities),
+  );
 
-  // One-line thread summary: "6 sessions · 4h 20m · across 3 days · mostly deep".
-  function threadStats(t: ActivityThread): string {
-    const parts = [
-      `${t.sessionCount} ${t.sessionCount === 1 ? "session" : "sessions"}`,
-      humanizeMs(t.totalMs),
-    ];
-    // A Day range is trivially "across 1 day" — skip the noise.
-    if (rangeMode !== "day") {
-      parts.push(`across ${t.dayCount} ${t.dayCount === 1 ? "day" : "days"}`);
-    }
-    if (t.dominantFocus !== null) {
-      // "Scattered" is the app's label for distracted.
-      parts.push(
-        t.dominantFocus === "distracted" ? "mostly scattered" : `mostly ${t.dominantFocus}`,
-      );
-    }
-    return parts.join(" · ");
-  }
+  // The "Categories" glance tile opens the per-category breakdown in a modal
+  // (the threads no longer live inline in the feed — Phase 2 redesign). The
+  // per-row "adjust" popover lives in the modal too.
+  let categoryModalOpen = $state(false);
 
-  // Expanded threads, keyed by thread key. All collapsed by default.
-  let expandedThreads = $state<Set<string>>(new Set());
-  function toggleThread(key: string): void {
-    const set = new Set(expandedThreads);
-    if (set.has(key)) set.delete(key);
-    else set.add(key);
-    expandedThreads = set;
-  }
-
-  // Rows in "adjust" mode, keyed by activity id. Corrections are an occasional
-  // act — the selects stay hidden until asked for, and a successful correction
-  // does NOT auto-close (the user may fix both selects in one visit).
-  // The "adjust" affordance is a popover anchored to its row, so at most one is
-  // open at a time — opening one closes any other, and an outside click /
-  // Escape closes it (see the window handlers on the section).
-  let editingActivity = $state<Set<number>>(new Set());
-  function toggleActivityEdit(id: number): void {
-    editingActivity = editingActivity.has(id) ? new Set() : new Set([id]);
-  }
-  function closeActivityEdit(): void {
-    if (editingActivity.size > 0) editingActivity = new Set();
-  }
-
-  // Quiet read-only focus hint for non-editing rows ("Scattered" is the app's
-  // label for distracted). Category needs no hint — the thread already says it.
-  function focusHint(focus: ActivityFocus): string {
-    return focus === "distracted" ? "Scattered" : focus === "deep" ? "Deep" : "Mixed";
-  }
+  // ── Needs attention (#? — tag what the engine missed) ──────────────────
+  // Uncategorized in-range activities, newest first — the one place in the feed
+  // where a quick correction earns its keep.
+  const needsAttention = $derived(
+    rangeActivities
+      .filter((a) => a.category == null)
+      .sort((a, b) => b.startedAtMs - a.startedAtMs),
+  );
+  // Cap the list to keep a busy range one screen; one toggle reveals the rest.
+  const NEEDS_ATTENTION_CAP = 5;
+  let needsAttentionExpanded = $state(false);
 
   // ── Loaders ────────────────────────────────────────────────────────────
   async function loadStatus(): Promise<void> {
@@ -958,20 +820,6 @@
     };
   });
 
-  const CATEGORY_OPTIONS: { value: ActivityCategory | ""; label: string }[] = [
-    { value: "", label: "Uncategorized" },
-    ...CATEGORY_ORDER.map((c) => ({
-      value: c,
-      label: categoryLabel(c),
-    })),
-  ];
-  const FOCUS_OPTIONS: { value: string; label: string }[] = [
-    { value: "", label: "—" },
-    { value: "deep", label: "Deep" },
-    { value: "mixed", label: "Mixed" },
-    { value: "distracted", label: "Scattered" },
-  ];
-
   const engineEmpty = $derived(
     engineOn &&
       !loadingEngine &&
@@ -996,19 +844,6 @@
     !statusLoaded || (engineOn && (loadingEngine || !engineLoadedOnce)),
   );
 </script>
-
-<!-- Close the "adjust" popover on an outside click or Escape. -->
-<svelte:window
-  onpointerdown={(e) => {
-    const target = e.target;
-    if (!(target instanceof Element) || !target.closest(".act-adjust")) {
-      closeActivityEdit();
-    }
-  }}
-  onkeydown={(e) => {
-    if (e.key === "Escape") closeActivityEdit();
-  }}
-/>
 
 <section class="overview" aria-label="Overview">
   <!-- ── Page header ── -->
@@ -1101,7 +936,16 @@
         {:else if categorySegments.length === 0}
           <p class="tile-note">No categorized activity yet.</p>
         {:else}
-          <StackedBar segments={categorySegments} showLegend={true} />
+          <button
+            type="button"
+            class="cat-bar-trigger"
+            aria-haspopup="dialog"
+            aria-label="View category breakdown"
+            onclick={() => (categoryModalOpen = true)}
+          >
+            <StackedBar segments={categorySegments} showLegend={true} />
+          </button>
+          <span class="cat-bar-hint">view breakdown →</span>
         {/if}
       </div>
     </div>
@@ -1218,7 +1062,7 @@
     </div>
     <div class="feed-column" aria-busy="true" aria-label="Loading your story">
       <!-- Mirrors the real feed: lede prose, then "What changed" rows +
-           activity threads. -->
+           "Needs attention". -->
       <article class="entry entry--skeleton">
         <div class="sk-eyebrow">
           <Skeleton variant="text" width="64px" height="10px" />
@@ -1305,11 +1149,11 @@
       </div>
     {:else}
       <div class="feed-column">
-        <!-- Narrative lede — the engine's read of the range, in prose. A lede,
-             not a control surface: no actions, and silently absent when the
-             range is too sparse or the digest call fails. Layout top→bottom:
-             eyebrow → headline (when present) → prose (or shimmer) → app
-             strip. -->
+        <!-- Narrative lede — the engine's read of the range, the feed's hero.
+             A lede, not a control surface: no actions, and silently absent when
+             the range is too sparse or the digest call fails. Layout top→bottom:
+             eyebrow → headline (when present) → prose (or shimmer) → a 3-stat
+             highlight row. -->
         {#if digest || digestLoading}
           <article class="entry entry--lede" aria-busy={!digest && digestLoading}>
             <p class="eyebrow">
@@ -1338,24 +1182,34 @@
                 <Skeleton variant="text" width="64%" height="12px" />
               </div>
             {/if}
-            {#if ledeApps.length > 0}
-              <div class="lede-apps" aria-label="Top apps this {rangeMode}">
-                {#each ledeApps as a (a.app)}
-                  {@const iconSrc = appIconSrc(a.bundleId)}
-                  <span class="lede-app">
-                    <span class="lede-app-icon" aria-hidden="true">
-                      {#if iconSrc}
-                        <img src={iconSrc} alt="" loading="lazy" />
-                      {:else}
-                        <span>{appIconFallback(a.app, a.bundleId)}</span>
-                      {/if}
-                    </span>
-                    <span class="lede-app-name">{a.app}</span>
-                    <span class="lede-app-time">· {a.timeLabel}</span>
-                  </span>
-                {/each}
+            <!-- 3-stat highlight row — the range's headline numbers, sitting
+                 where the app strip used to. Tracked is always present; Deep
+                 and Top category render only when they have a value. -->
+            <div class="lede-stats" aria-label="Highlights this {rangeMode}">
+              <div class="lede-stat">
+                <span class="lede-stat-n">{summary.totalLabel}</span>
+                <span class="lede-stat-cap">tracked</span>
               </div>
-            {/if}
+              {#if summary.deepPct !== null}
+                <div class="lede-stat">
+                  <span class="lede-stat-n">{summary.deepPct}%</span>
+                  <span class="lede-stat-cap">deep focus</span>
+                </div>
+              {/if}
+              {#if categorySegments.length > 0}
+                <div class="lede-stat">
+                  <span class="lede-stat-n lede-stat-n--cat">
+                    <span
+                      class="lede-stat-swatch"
+                      style="background:var({categorySegments[0].colorVar});"
+                      aria-hidden="true"
+                    ></span>
+                    {categorySegments[0].label}
+                  </span>
+                  <span class="lede-stat-cap">top category</span>
+                </div>
+              {/if}
+            </div>
           </article>
         {/if}
 
@@ -1491,133 +1345,71 @@
           </article>
         {/if}
 
-        <!-- Activity threads (#108 corrections, behind each row's "adjust") -->
-        {#if activityThreads.length > 0}
-          <article class="entry entry--activities">
+        <!-- Needs attention — uncategorized in-range activities, with a compact
+             inline category picker so the user can tag what the engine missed. -->
+        {#if needsAttention.length > 0}
+          {@const shown = needsAttentionExpanded
+            ? needsAttention
+            : needsAttention.slice(0, NEEDS_ATTENTION_CAP)}
+          <article class="entry entry--attention">
             <p class="eyebrow">
               <span class="diamond" aria-hidden="true">◆</span>
               <span class="tick" aria-hidden="true"></span>
-              What you worked on
+              Needs attention
               <span class="rule"></span>
-              expand a thread to adjust
+              tag what the engine missed
             </p>
-            <div class="thread-list">
-              {#each activityThreads as t (t.key)}
-                <div class="thread">
-                  <button
-                    type="button"
-                    class="thread-head"
-                    aria-expanded={expandedThreads.has(t.key)}
-                    onclick={() => toggleThread(t.key)}
-                  >
-                    <span
-                      class="thread-dot"
-                      style="background:var({t.colorVar});"
-                      aria-hidden="true"
-                    ></span>
-                    <span class="thread-label">{t.label}</span>
-                    <span class="thread-stats">{threadStats(t)}</span>
-                    <span
-                      class="thread-chevron"
-                      class:open={expandedThreads.has(t.key)}
-                      aria-hidden="true">›</span
+            <div class="attn-list">
+              {#each shown as a (a.id)}
+                <div class="attn-row" class:attn-row--busy={correctingActivity.has(a.id)}>
+                  <div class="attn-main">
+                    <span class="attn-title">{a.title}</span>
+                    <span class="attn-time"
+                      >{clockTime(a.startedAtMs)} · {humanizeMs(
+                        Math.max(0, a.endedAtMs - a.startedAtMs),
+                      )}</span
                     >
-                  </button>
-                  {#if expandedThreads.has(t.key)}
-                    <div class="act-list">
-                      {#each t.activities as a (a.id)}
-                        <div class="act-row" class:act-row--busy={correctingActivity.has(a.id)}>
-                          <div class="act-line">
-                            <div class="act-main">
-                              <span class="act-title">{a.title}</span>
-                              <span class="act-time"
-                                >{clockTime(a.startedAtMs)} · {humanizeMs(
-                                  Math.max(0, a.endedAtMs - a.startedAtMs),
-                                )}</span
-                              >
-                            </div>
-                            {#if a.focus != null}
-                              <span class="act-focus-hint">{focusHint(a.focus)}</span>
-                            {/if}
-                            <!-- "adjust" opens a popover anchored here rather
-                                 than expanding a form into the feed. -->
-                            <div class="act-adjust">
-                              <button
-                                type="button"
-                                class="evidence-link act-adjust-btn"
-                                aria-haspopup="true"
-                                aria-expanded={editingActivity.has(a.id)}
-                                onclick={() => toggleActivityEdit(a.id)}
-                              >
-                                adjust
-                                <span
-                                  class="act-adjust-caret"
-                                  class:open={editingActivity.has(a.id)}
-                                  aria-hidden="true">▾</span
-                                >
-                              </button>
-                              {#if editingActivity.has(a.id)}
-                                <!-- Category moves the row to another thread on
-                                     the next recompute — expected, not fought. -->
-                                <div class="adjust-pop" role="group" aria-label="Adjust activity">
-                                  <label class="corr">
-                                    <span class="corr-label">Category</span>
-                                    <select
-                                      class="corr-select"
-                                      value={a.category ?? ""}
-                                      disabled={correctingActivity.has(a.id)}
-                                      onchange={(e) =>
-                                        void correctCategory(
-                                          a,
-                                          (e.currentTarget.value || null) as ActivityCategory | null,
-                                        )}
-                                    >
-                                      {#each CATEGORY_OPTIONS as opt (opt.value)}
-                                        <option value={opt.value}>{opt.label}</option>
-                                      {/each}
-                                    </select>
-                                  </label>
-                                  <label class="corr">
-                                    <span class="corr-label">Focus</span>
-                                    <select
-                                      class="corr-select"
-                                      value={a.focus ?? ""}
-                                      disabled={correctingActivity.has(a.id)}
-                                      onchange={(e) =>
-                                        void correctFocus(
-                                          a,
-                                          (e.currentTarget.value || null) as
-                                            | "deep"
-                                            | "mixed"
-                                            | "distracted"
-                                            | null,
-                                        )}
-                                    >
-                                      {#each FOCUS_OPTIONS as opt (opt.value)}
-                                        <option value={opt.value}>{opt.label}</option>
-                                      {/each}
-                                    </select>
-                                  </label>
-                                </div>
-                              {/if}
-                            </div>
-                          </div>
-                        </div>
+                  </div>
+                  <label class="attn-pick">
+                    <span class="attn-pick-label">Category</span>
+                    <select
+                      class="corr-select"
+                      value={a.category ?? ""}
+                      disabled={correctingActivity.has(a.id)}
+                      onchange={(e) =>
+                        void correctCategory(
+                          a,
+                          (e.currentTarget.value || null) as ActivityCategory | null,
+                        )}
+                    >
+                      {#each CATEGORY_OPTIONS as opt (opt.value)}
+                        <option value={opt.value}>{opt.label}</option>
                       {/each}
-                    </div>
-                  {/if}
+                    </select>
+                  </label>
                 </div>
               {/each}
             </div>
+            {#if needsAttention.length > NEEDS_ATTENTION_CAP}
+              <button
+                type="button"
+                class="evidence-link attn-more"
+                onclick={() => (needsAttentionExpanded = !needsAttentionExpanded)}
+              >
+                {needsAttentionExpanded
+                  ? "show fewer"
+                  : `+${needsAttention.length - NEEDS_ATTENTION_CAP} more`}
+              </button>
+            {/if}
           </article>
         {/if}
 
-        {#if conclusionDeltas.length === 0 && activityThreads.length === 0}
+        {#if conclusionDeltas.length === 0 && needsAttention.length === 0}
           <div class="state state--empty">
             <p class="state-title">Nothing changed this {rangeMode}.</p>
             <p class="state-detail">
               No conclusions formed, strengthened, or faded in this range, and
-              no activity to show. Step the date range, or keep working — your
+              nothing left to tag. Step the date range, or keep working — your
               standing dossier lives on the Subjects tab.
             </p>
           </div>
@@ -1627,6 +1419,17 @@
       </div>
     {/if}
   {/if}
+
+  <CategoryDetailModal
+    open={categoryModalOpen}
+    threads={activityThreads}
+    {rangeMode}
+    {rangeLabel}
+    {correctingActivity}
+    onClose={() => (categoryModalOpen = false)}
+    onCorrectCategory={correctCategory}
+    onCorrectFocus={correctFocus}
+  />
 </section>
 
 <style>
@@ -1803,6 +1606,35 @@
   .tile-note--locked {
     color: var(--app-text-faint);
     font-style: italic;
+  }
+
+  /* Categories bar is a transparent trigger that opens the breakdown modal —
+     the StackedBar still reads as the bar, with a subtle hover affordance. */
+  .cat-bar-trigger {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: none;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: opacity 0.12s ease;
+  }
+  .cat-bar-trigger:hover {
+    opacity: 0.85;
+  }
+  .cat-bar-trigger:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
+  }
+  .cat-bar-hint {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--app-text-muted);
+    border-bottom: 1px dotted var(--app-border-strong);
+    line-height: 1.3;
   }
 
   /* ---- Tile / feed loading skeletons ---- */
@@ -2039,11 +1871,12 @@
     letter-spacing: 0;
   }
 
-  /* Narrative lede — 2-4 sentences of prose, read not clicked. The card is
-     the feed's hero: a 2px accent edge + a wash that fades into the surface
-     keep it distinct without leaving the terminal/green language. */
+  /* Narrative lede — 2-4 sentences of prose, read not clicked. The feed's
+     hero: a 2px accent edge + a wash that fades into the surface keep it
+     distinct without leaving the terminal/green language, and the headline
+     scale reads as a title above the rest of the feed. */
   .entry--lede {
-    padding: 22px 24px 20px;
+    padding: 24px 26px 22px;
     border-left: 2px solid var(--app-accent);
     background: linear-gradient(
       to right,
@@ -2072,11 +1905,11 @@
     }
   }
   .lede-headline {
-    margin: 0 0 8px;
-    font-size: 19px;
-    line-height: 1.3;
-    font-weight: 600;
-    letter-spacing: -0.015em;
+    margin: 0 0 10px;
+    font-size: 24px;
+    line-height: 1.22;
+    font-weight: 650;
+    letter-spacing: -0.02em;
     color: var(--app-text-strong);
   }
   .lede-text {
@@ -2085,56 +1918,50 @@
     line-height: 1.7;
     color: var(--app-text);
   }
-  /* App icon strip — where the range's hours actually went, at a glance. */
-  .lede-apps {
+  /* 3-stat highlight row — the range's headline numbers, a lighter echo of the
+     "This {range}" tile's .week-stat / .week-sub .cell conventions. */
+  .lede-stats {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 16px;
-    margin-top: 14px;
-    padding-top: 12px;
+    gap: 14px 28px;
+    margin-top: 16px;
+    padding-top: 14px;
     border-top: 1px dashed var(--app-border);
   }
-  .lede-app {
+  .lede-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .lede-stat-n {
+    font-size: 17px;
+    line-height: 1.1;
+    color: var(--app-text-strong);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The top-category "number" is a label, not a figure — it gets a swatch dot
+     and ellipsises rather than wrapping. */
+  .lede-stat-n--cat {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    min-width: 0;
-  }
-  /* Mirrors AppPrivacyExclusion's letter-avatar look, scaled to the strip. */
-  .lede-app-icon {
-    display: grid;
-    width: 22px;
-    height: 22px;
-    flex: 0 0 22px;
-    place-items: center;
-    overflow: hidden;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font-size: 9.5px;
-    font-weight: 800;
-    line-height: 1;
-  }
-  .lede-app-icon img {
-    width: 18px;
-    height: 18px;
-    object-fit: contain;
-  }
-  .lede-app-name {
-    font-size: 11px;
-    color: var(--app-text);
-    white-space: nowrap;
+    max-width: 220px;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 140px;
-  }
-  .lede-app-time {
-    font-size: 10.5px;
-    color: var(--app-text-muted);
-    font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+  .lede-stat-swatch {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+  }
+  .lede-stat-cap {
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
   }
 
   /* "What changed" — grouped conclusion-delta rows */
@@ -2404,172 +2231,61 @@
     font-style: italic;
   }
 
-  /* activity threads / corrections */
-  .entry--activities {
+  /* Needs attention — uncategorized in-range activities + an inline picker. */
+  .entry--attention {
     background: var(--app-surface-subtle);
   }
-  .thread-list {
+  .attn-list {
     display: flex;
     flex-direction: column;
   }
-  .thread + .thread {
-    border-top: 1px dashed var(--app-border);
-  }
-  .thread-head {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    width: 100%;
-    padding: 10px 0;
-    font: inherit;
-    text-align: left;
-    background: transparent;
-    border: none;
-    cursor: pointer;
-    transition: color 0.12s ease;
-  }
-  .thread-dot {
-    flex: 0 0 auto;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
-  .thread-label {
-    flex: 0 0 auto;
-    font-size: 12.5px;
-    color: var(--app-text-strong);
-  }
-  .thread-stats {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 11px;
-    color: var(--app-text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .thread-chevron {
-    flex: 0 0 auto;
-    font-size: 13px;
-    line-height: 1;
-    color: var(--app-text-faint);
-    transition:
-      transform 0.12s ease,
-      color 0.12s ease;
-  }
-  .thread-chevron.open {
-    transform: rotate(90deg);
-  }
-  .thread-head:hover .thread-chevron {
-    color: var(--app-text-strong);
-  }
-  .act-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 0 0 8px 17px; /* indent under the dot+gap of the thread header */
-  }
-  .act-row {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 9px 0;
-    transition: opacity 0.12s ease;
-  }
-  .act-row + .act-row {
-    border-top: 1px dashed var(--app-border);
-  }
-  .act-row--busy {
-    opacity: 0.5;
-  }
-  .act-line {
+  .attn-row {
     display: flex;
     align-items: center;
     gap: 12px;
+    padding: 9px 0;
+    transition: opacity 0.12s ease;
   }
-  .act-main {
+  .attn-row + .attn-row {
+    border-top: 1px dashed var(--app-border);
+  }
+  .attn-row--busy {
+    opacity: 0.5;
+  }
+  .attn-main {
     display: flex;
     flex-direction: column;
     gap: 2px;
     min-width: 0;
     flex: 1 1 auto;
   }
-  .act-title {
+  .attn-title {
     font-size: 12.5px;
     color: var(--app-text-strong);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .act-time {
+  .attn-time {
     font-size: 10.5px;
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
-  /* Quiet read-only focus hint — metadata, not a control. */
-  .act-focus-hint {
-    flex: 0 0 auto;
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-faint);
-  }
-  /* "adjust" button + its anchored popover. */
-  .act-adjust {
-    position: relative;
-    flex: 0 0 auto;
-  }
-  .act-adjust-btn {
+  .attn-pick {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-  }
-  .act-adjust-caret {
-    font-size: 8px;
-    line-height: 1;
-    transition: transform 0.12s ease;
-  }
-  .act-adjust-caret.open {
-    transform: rotate(180deg);
-  }
-  /* Popover panel — the correction controls live here instead of expanding
-     into the feed; anchored to the button's right edge so it never clips the
-     card's right wall. */
-  .adjust-pop {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    z-index: 20;
-    min-width: 220px;
-    display: flex;
-    flex-direction: column;
-    gap: 11px;
-    padding: 11px 12px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
-  }
-  .adjust-pop .corr {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .adjust-pop .corr-select {
+    gap: 6px;
     flex: 0 0 auto;
-    min-width: 120px;
   }
-  .corr {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-  .corr-label {
+  .attn-pick-label {
     font-size: 9px;
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
+  }
+  .attn-more {
+    align-self: flex-start;
+    margin-top: 9px;
   }
   .corr-select {
     font: inherit;
