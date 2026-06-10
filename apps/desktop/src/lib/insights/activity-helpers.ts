@@ -8,23 +8,25 @@ export type { ActivityCategory };
 
 // ── Category → colour token mapping (engine tier) ──────────────────────
 export const CATEGORY_COLOR: Record<ActivityCategory, string> = {
-  coding: "--cat-coding",
-  research: "--cat-research",
+  creating: "--cat-creating",
   communication: "--cat-communication",
-  design: "--cat-design",
-  testing: "--cat-testing",
+  meetings: "--cat-meetings",
+  research: "--cat-research",
+  learning: "--cat-learning",
+  organizing: "--cat-organizing",
   personal: "--cat-personal",
-  distractions: "--cat-distractions",
+  entertainment: "--cat-entertainment",
 };
 // Stable legend ordering.
 export const CATEGORY_ORDER: ActivityCategory[] = [
-  "coding",
-  "research",
+  "creating",
   "communication",
-  "design",
-  "testing",
+  "meetings",
+  "research",
+  "learning",
+  "organizing",
   "personal",
-  "distractions",
+  "entertainment",
 ];
 export const UNCATEGORIZED_COLOR = "--chart-grey-3";
 

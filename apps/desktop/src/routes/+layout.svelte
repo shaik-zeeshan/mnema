@@ -1317,13 +1317,14 @@
     --chart-grey-4: #757589;
     --chart-grey-5: #9a9ab0;
 
-    --cat-coding: #3dffa0;
-    --cat-research: #60b0ff;
+    --cat-creating: #3dffa0;
     --cat-communication: #c0b0ff;
-    --cat-design: #ff9fd0;
-    --cat-testing: #b0c080;
+    --cat-meetings: #ff9fd0;
+    --cat-research: #60b0ff;
+    --cat-learning: #4fd8c8;
+    --cat-organizing: #b0c080;
     --cat-personal: #d6a14a;
-    --cat-distractions: #ff6b7a;
+    --cat-entertainment: #ff6b7a;
 
     --focus-deep: #3dffa0;
     --focus-mid: #d6a14a;
@@ -1466,13 +1467,14 @@
     --chart-grey-4: #6a6a74;
     --chart-grey-5: #46464e;
 
-    --cat-coding: #1f7a4a;
-    --cat-research: #2b78c5;
+    --cat-creating: #1f7a4a;
     --cat-communication: #5949b8;
-    --cat-design: #c2407f;
-    --cat-testing: #6f7a2e;
+    --cat-meetings: #c2407f;
+    --cat-research: #2b78c5;
+    --cat-learning: #1f8579;
+    --cat-organizing: #6f7a2e;
     --cat-personal: #9a5a12;
-    --cat-distractions: #c43a48;
+    --cat-entertainment: #c43a48;
 
     --focus-deep: #1f7a4a;
     --focus-mid: #9a5a12;

@@ -48,13 +48,14 @@
   void _interface;
 
   const CAT_PALETTE = [
-    "--cat-coding",
-    "--cat-research",
+    "--cat-creating",
     "--cat-communication",
-    "--cat-design",
-    "--cat-testing",
+    "--cat-meetings",
+    "--cat-research",
+    "--cat-learning",
+    "--cat-organizing",
     "--cat-personal",
-    "--cat-distractions",
+    "--cat-entertainment",
   ] as const;
 
   type Trend = "up" | "steady" | "down" | "faded";

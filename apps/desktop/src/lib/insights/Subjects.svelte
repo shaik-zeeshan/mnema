@@ -36,13 +36,14 @@
 
   // Category palette cycled to colour each conclusion's sparkline line.
   const CAT_PALETTE = [
-    "--cat-coding",
-    "--cat-research",
+    "--cat-creating",
     "--cat-communication",
-    "--cat-design",
-    "--cat-testing",
+    "--cat-meetings",
+    "--cat-research",
+    "--cat-learning",
+    "--cat-organizing",
     "--cat-personal",
-    "--cat-distractions",
+    "--cat-entertainment",
   ] as const;
 
   const FLOOR = 0.15;

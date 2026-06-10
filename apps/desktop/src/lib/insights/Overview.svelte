@@ -328,7 +328,7 @@
     // proportional even for sub-hour categories; `display` carries the
     // human-readable legend readout. Rounding to whole hours here would
     // collapse every category under ~30min to a 0-width sliver — a single
-    // hour-scale category (e.g. coding) would then claim the whole bar.
+    // hour-scale category (e.g. creating) would then claim the whole bar.
     const segments: {
       label: string;
       value: number;

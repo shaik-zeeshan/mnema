@@ -7,7 +7,7 @@
   // the legend readout when the raw value isn't human-friendly (e.g. ms).
   // Props:
   //   segments: { label: string; value: number; colorVar: string; display?: string }[]
-  //             colorVar is a CSS custom-property NAME, e.g. "--cat-coding".
+  //             colorVar is a CSS custom-property NAME, e.g. "--cat-creating".
   //   showLegend?: boolean   — render the label/value legend below (default true).
 
   interface StackSegment {
