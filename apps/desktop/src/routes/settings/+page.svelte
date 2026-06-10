@@ -37,7 +37,7 @@
     ActivityMode,
     AiRuntimeModel,
     AppearanceSetting,
-    AskAiModel,
+    AiEngineProfile,
     CaptureSupport,
     GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
@@ -139,20 +139,10 @@
     existingTarget: string | null;
   };
 
-  type PiRuntimeStatus = {
-    source: "managed" | "path" | "unmanaged" | "missing";
-    executablePath: string | null;
-    version: string | null;
-    minimumVersion: string;
-    versionOk: boolean;
-    authJsonPath: string;
-    authJsonExists: boolean;
-    ready: boolean;
-    reason: "pi_not_found" | "pi_version_unavailable" | "pi_version_too_old" | "pi_auth_missing" | string | null;
-    providerCount?: number;
-    providerConfigured?: boolean;
-    authJsonProviderCount?: number;
-    authJsonProviderConfigured?: boolean;
+  // Ask AI availability snapshot (mirrors the Rust `ask_ai_availability` shape).
+  type AskAiAvailability = {
+    available: boolean;
+    reason?: string | null;
   };
 
   type RetentionCleanupSummary = {
@@ -314,10 +304,11 @@
       ? Math.max(1, Math.floor(draftAskAiMaxToolCalls || ASK_AI_DEFAULT_TOOL_CALL_LIMIT))
       : 0,
   );
-  // Quick Recall model selection. Empty string means "let PI pick its default".
-  // `askAiModels` is the list discovered from the user's PI runtime.
+  // Quick Recall model selection. Empty string means "let the engine pick its
+  // default model". `askAiModels` is the list discovered from the default
+  // Reasoning Engine's `/models` route (via ai_runtime_list_models).
   let draftAskAiModel = $state("");
-  let askAiModels = $state<AskAiModel[]>([]);
+  let askAiModels = $state<AiRuntimeModel[]>([]);
   let askAiModelsLoading = $state(false);
   let askAiModelsError = $state<string | null>(null);
   // Editable combobox state: the text the user types to filter, whether the
@@ -358,24 +349,22 @@
   });
 
   function askAiModelLabel(value: string): string {
-    if (!value) return "Use PI default";
-    const match = askAiModels.find((model) => model.value === value);
-    if (!match) return value;
-    return match.provider ? `${match.name} (${match.provider})` : match.name;
+    if (!value) return "Engine default model";
+    return value;
   }
 
-  // All selectable entries: the "PI default" sentinel plus every discovered
-  // model. `sublabel` shows the provider:id so ids stay recognizable.
+  // All selectable entries: the "engine default" sentinel plus every model id the
+  // default Reasoning Engine advertises. The value is a bare rig-core model id.
   let askAiModelEntries = $derived([
     {
       value: "",
-      label: "Use PI default",
-      sublabel: "Follows the model configured in your PI runtime",
+      label: "Engine default model",
+      sublabel: "Follows the model configured for the Reasoning Engine",
     },
     ...askAiModels.map((model) => ({
-      value: model.value,
-      label: model.provider ? `${model.name} (${model.provider})` : model.name,
-      sublabel: model.value,
+      value: model.id,
+      label: model.id,
+      sublabel: "",
     })),
   ]);
 
@@ -429,9 +418,9 @@
       if (choice) {
         commitAskAiModel(choice.value);
       } else {
-        // No list match: accept a typed provider:id as a custom model.
+        // No list match: accept any typed model id as a custom model.
         const typed = askAiModelQuery.trim();
-        if (typed.includes(":")) commitAskAiModel(typed);
+        if (typed) commitAskAiModel(typed);
       }
     } else if (event.key === "Escape") {
       askAiModelOpen = false;
@@ -446,12 +435,16 @@
   let brokerGrantSaving = $state(false);
   let brokerGrantError = $state<string | null>(null);
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
-  let piRuntimeStatus = $state<PiRuntimeStatus | null>(null);
   let mnemaCliLoading = $state(false);
-  let piRuntimeLoading = $state(false);
   let mnemaCliInstalling = $state(false);
   let mnemaCliError = $state<string | null>(null);
-  let piRuntimeError = $state<string | null>(null);
+
+  // Ask AI availability (interactive opt-in + shared engine prerequisite),
+  // derived from the `ask_ai_availability` command.
+  let askAiAvailability = $state<AskAiAvailability | null>(null);
+  let askAiAvailabilityLoading = $state(false);
+  let askAiAvailabilityError = $state<string | null>(null);
+  let askAiAvailable = $derived(askAiAvailability?.available === true);
 
   // Reasoning Engine (AI runtime) drafts. Autosaved through the `ai_runtime`
   // domain, EXCEPT the provider API key — that is stored only in the OS keychain
@@ -466,6 +459,89 @@
   let draftAiLocalKind = $state<AiLocalKind>("ollama");
   let draftAiLocalEndpoint = $state(DEFAULT_AI_LOCAL_ENDPOINT);
   let draftAiLocalModel = $state("");
+  // The configured-engine set beyond the default/global engine — the engines a
+  // Chat thread can be pinned to. Round-trips through the ai_runtime domain.
+  let draftAiAdditionalEngines = $state<AiEngineProfile[]>([]);
+
+  // "Add engine" form state. Captures one AiEngineProfile to append to the set;
+  // the shared keychain key per provider is set by the per-provider key UI above
+  // (not duplicated here).
+  let addEngineOpen = $state(false);
+  let addEngineKind = $state<AiEngineKind>("cloud");
+  let addEngineCloudProvider = $state<AiCloudProvider>("anthropic");
+  let addEngineCloudModel = $state("");
+  let addEngineCloudBaseUrl = $state("");
+  let addEngineLocalKind = $state<AiLocalKind>("ollama");
+  let addEngineLocalEndpoint = $state(DEFAULT_AI_LOCAL_ENDPOINT);
+  let addEngineLocalModel = $state("");
+  let addEngineError = $state<string | null>(null);
+
+  // A short, friendly label for one configured engine row.
+  function engineProfileLabel(profile: AiEngineProfile): string {
+    if (profile.engineKind === "cloud") {
+      const providerLabel =
+        profile.cloudProvider === "anthropic"
+          ? "Anthropic"
+          : profile.cloudProvider === "openai"
+            ? "OpenAI"
+            : "OpenAI-compatible";
+      return `${providerLabel} · ${profile.cloudModel || "(no model)"}`;
+    }
+    const kindLabel = profile.localKind === "ollama" ? "Ollama" : "Llamafile";
+    return `${kindLabel} · ${profile.localModel || "(no model)"}`;
+  }
+
+  function resetAddEngineForm(): void {
+    addEngineKind = "cloud";
+    addEngineCloudProvider = "anthropic";
+    addEngineCloudModel = "";
+    addEngineCloudBaseUrl = "";
+    addEngineLocalKind = "ollama";
+    addEngineLocalEndpoint = DEFAULT_AI_LOCAL_ENDPOINT;
+    addEngineLocalModel = "";
+    addEngineError = null;
+  }
+
+  function addConfiguredEngine(): void {
+    addEngineError = null;
+    if (addEngineKind === "cloud") {
+      const model = addEngineCloudModel.trim();
+      if (model.length === 0) {
+        addEngineError = "Enter a model id for the cloud engine.";
+        return;
+      }
+      if (addEngineCloudProvider === "openai_compatible" && addEngineCloudBaseUrl.trim().length === 0) {
+        addEngineError = "OpenAI-compatible engines need a base URL.";
+        return;
+      }
+    } else {
+      const model = addEngineLocalModel.trim();
+      if (model.length === 0) {
+        addEngineError = "Enter a model id for the local engine.";
+        return;
+      }
+      if (addEngineLocalEndpoint.trim().length === 0) {
+        addEngineError = "Enter the local endpoint.";
+        return;
+      }
+    }
+    const profile: AiEngineProfile = {
+      engineKind: addEngineKind,
+      cloudProvider: addEngineCloudProvider,
+      cloudModel: addEngineCloudModel.trim(),
+      cloudBaseUrl: addEngineCloudBaseUrl.trim(),
+      localKind: addEngineLocalKind,
+      localEndpoint: addEngineLocalEndpoint.trim(),
+      localModel: addEngineLocalModel.trim(),
+    };
+    draftAiAdditionalEngines = [...draftAiAdditionalEngines, profile];
+    resetAddEngineForm();
+    addEngineOpen = false;
+  }
+
+  function removeConfiguredEngine(index: number): void {
+    draftAiAdditionalEngines = draftAiAdditionalEngines.filter((_, i) => i !== index);
+  }
 
   // Reasoning Engine model selection — an editable combobox populated from the
   // engine's OpenAI-style `/models` route (OpenAI, OpenAI-compatible, Ollama,
@@ -605,10 +681,14 @@
     DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS
   );
   let draftUserContextBackfillGoDeeper = $state(false);
+  // The high-consent continuous-derivation opt-in: whether the background User
+  // Context worker runs 24/7. Distinct from the Ask AI (interactive) toggle. Off
+  // by default.
+  let draftUserContextEnabled = $state(false);
 
   // Reasoning Engine availability snapshot + the cloud-key entry box. The key is
   // not part of any draft/autosave; it has its own loading/error/saved state and
-  // explicit save/clear invokes mirroring installMnemaCli/loadPiRuntimeStatus.
+  // explicit save/clear invokes (saveAiProviderKey / clearAiProviderKey).
   let aiRuntimeStatus = $state<AiRuntimeStatus | null>(null);
   let aiRuntimeStatusLoading = $state(false);
   let aiRuntimeStatusError = $state<string | null>(null);
@@ -623,6 +703,8 @@
   // Human-facing label for an AiRuntimeStatus.reason code.
   function aiRuntimeReasonLabel(reason: string | null | undefined): string {
     switch (reason) {
+      case "user_context_disabled":
+        return "Continuous derivation is turned off.";
       case "ai_runtime_disabled":
         return "Reasoning Engine is turned off.";
       case "no_model":
@@ -1500,9 +1582,11 @@
     draftAiLocalKind = s.aiRuntime?.localKind ?? "ollama";
     draftAiLocalEndpoint = s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT;
     draftAiLocalModel = s.aiRuntime?.localModel ?? "";
+    draftAiAdditionalEngines = [...(s.aiRuntime?.additionalEngines ?? [])];
   }
 
   function syncUserContextDrafts(s: RecordingSettings) {
+    draftUserContextEnabled = s.userContext?.enabled ?? false;
     draftUserContextBudgetTier =
       s.userContext?.derivationBudgetTier ?? DEFAULT_USER_CONTEXT_BUDGET_TIER;
     draftUserContextBackfillWindowDays =
@@ -1740,9 +1824,11 @@
           localKind: draftAiLocalKind,
           localEndpoint: draftAiLocalEndpoint,
           localModel: draftAiLocalModel,
+          additionalEngines: draftAiAdditionalEngines,
         };
       case "user_context":
         return {
+          enabled: draftUserContextEnabled,
           derivationBudgetTier: draftUserContextBudgetTier,
           backfillWindowDays: draftUserContextBackfillWindowDays,
           backfillGoDeeper: draftUserContextBackfillGoDeeper,
@@ -1796,25 +1882,36 @@
     }
   }
 
-  async function loadPiRuntimeStatus() {
-    piRuntimeLoading = true;
-    piRuntimeError = null;
+  async function loadAskAiAvailability() {
+    askAiAvailabilityLoading = true;
+    askAiAvailabilityError = null;
     try {
-      piRuntimeStatus = await invoke<PiRuntimeStatus>("get_pi_runtime_status");
+      askAiAvailability = await invoke<AskAiAvailability>("ask_ai_availability");
     } catch (err) {
-      piRuntimeError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      askAiAvailability = {
+        available: false,
+        reason: typeof err === "string" ? err : JSON.stringify(err, null, 2),
+      };
+      askAiAvailabilityError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
-      piRuntimeLoading = false;
+      askAiAvailabilityLoading = false;
     }
-    // Refresh the selectable model list whenever PI status is (re)checked.
-    void loadAskAiModels();
   }
 
+  // The Quick Recall model list is the default Reasoning Engine's `/models` —
+  // ai_runtime_list_models, built from the current aiRuntime draft selection.
   async function loadAskAiModels() {
     askAiModelsLoading = true;
     askAiModelsError = null;
     try {
-      askAiModels = await invoke<AskAiModel[]>("ask_ai_list_models");
+      askAiModels = await invoke<AiRuntimeModel[]>("ai_runtime_list_models", {
+        request: {
+          engineKind: draftAiEngineKind,
+          cloudProvider: draftAiCloudProvider,
+          cloudBaseUrl: draftAiCloudBaseUrl,
+          localEndpoint: draftAiLocalEndpoint,
+        },
+      });
     } catch (err) {
       askAiModels = [];
       askAiModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
@@ -2092,45 +2189,37 @@
     return `Expires ${formatGrantTime(grant.expiresAtUnixMs)}`;
   }
 
-  function formatPiRuntimeSource(source: PiRuntimeStatus["source"]): string {
-    if (source === "managed") return "managed";
-    if (source === "path") return "PATH";
-    if (source === "unmanaged") return "configured path";
-    return "not found";
+  // Friendly copy for an Ask AI availability reason code. Covers both the Ask AI
+  // gate (ask_ai_disabled) and the shared Reasoning Engine prerequisite codes
+  // (ai_runtime_disabled / no_cloud_key / no_model / …).
+  function askAiReasonLabel(reason: string | null | undefined): string {
+    switch (reason) {
+      case "ask_ai_disabled":
+        return "Ask AI is turned off.";
+      case "ai_runtime_disabled":
+        return "The Reasoning Engine is off — enable it above.";
+      case "no_cloud_key":
+        return "Add a provider API key for the Reasoning Engine.";
+      case "no_model":
+        return "Choose a model for the Reasoning Engine.";
+      case "no_base_url":
+        return "Add the base URL for the OpenAI-compatible provider.";
+      case "local_no_model":
+        return "No local model is configured.";
+      case "local_endpoint_unreachable":
+        return "The local engine could not be reached.";
+      default:
+        return reason ? reason : "Ask AI is unavailable.";
+    }
   }
 
-  function formatPiRuntimeReason(status: PiRuntimeStatus): string {
-    if (status.ready) return "ready";
-    if (status.reason === "pi_not_found") return "pi was not found in PATH";
-    if (status.reason === "pi_version_unavailable") return "pi --version did not return a usable version";
-    if (status.reason === "pi_version_too_old") return `pi ${status.version ?? "unknown"} is older than ${status.minimumVersion}`;
-    if (status.reason === "pi_auth_missing") return `PI auth is missing at ${status.authJsonPath}`;
-    if (status.reason === "pi_auth_empty") return `PI auth has no providers at ${status.authJsonPath}`;
-    if (status.reason === "pi_auth_malformed") return `PI auth is not valid JSON at ${status.authJsonPath}`;
-    if (status.reason === "pi_auth_misconfigured") return `PI auth has no configured provider at ${status.authJsonPath}`;
-    return "PI is not ready";
-  }
-
-  function piProviderConfigured(status: PiRuntimeStatus | null): boolean {
-    return status?.providerConfigured ?? status?.authJsonProviderConfigured ?? false;
-  }
-
-  function piProviderCount(status: PiRuntimeStatus | null): number {
-    return status?.providerCount ?? status?.authJsonProviderCount ?? 0;
-  }
-
-  function askAiStatusLabel(status: PiRuntimeStatus | null): string {
-    return draftAskAiEnabled && status?.ready ? "Available" : "Unavailable";
-  }
-
-  function askAiStatusDetail(status: PiRuntimeStatus | null): string {
-    if (!draftAskAiEnabled) return "Ask AI is off. Enable it here after PI is set up.";
-    if (status === null) return "Checking PI setup.";
-    if (status.ready) return `PI ready via ${formatPiRuntimeSource(status.source)}${status.executablePath ? ` at ${status.executablePath}` : ""}.`;
-    if (!status.versionOk) return formatPiRuntimeReason(status);
-    if (!piProviderConfigured(status)) return `Set up a PI provider in ${status.authJsonPath}; no credentials are collected by Mnema.`;
-    return formatPiRuntimeReason(status);
-  }
+  let askAiStatusDetail = $derived.by(() => {
+    if (askAiAvailabilityLoading) return "Checking Ask AI availability…";
+    if (askAiAvailable) {
+      return "Ask AI can answer over your redacted capture history.";
+    }
+    return askAiReasonLabel(askAiAvailability?.reason);
+  });
 
   async function setBrowserUrlMode(mode: string) {
     if (mode === draftBrowserUrlMode) return;
@@ -2226,9 +2315,11 @@
           localKind: s.aiRuntime?.localKind ?? "ollama",
           localEndpoint: s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT,
           localModel: s.aiRuntime?.localModel ?? "",
+          additionalEngines: s.aiRuntime?.additionalEngines ?? [],
         };
       case "user_context":
         return {
+          enabled: s.userContext?.enabled ?? false,
           derivationBudgetTier:
             s.userContext?.derivationBudgetTier ?? DEFAULT_USER_CONTEXT_BUDGET_TIER,
           backfillWindowDays:
@@ -3596,7 +3687,8 @@
       void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
       loadBrokerGrants();
       loadMnemaCliStatus();
-      loadPiRuntimeStatus();
+      void loadAskAiAvailability();
+      void loadAskAiModels();
       void loadAiRuntimeStatus();
       void refreshAiProviderKeyPresence();
       void refreshUserContext();
@@ -4215,15 +4307,12 @@
             <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
               {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
             </button>
-            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading || piRuntimeLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); void loadPiRuntimeStatus(); }}>
+            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}>
               Refresh
             </button>
           </div>
           {#if mnemaCliError}
             <p class="error-text">{mnemaCliError}</p>
-          {/if}
-          {#if piRuntimeError}
-            <p class="error-text">{piRuntimeError}</p>
           {/if}
           {#if brokerGrantError}
             <p class="error-text">{brokerGrantError}</p>
@@ -4269,11 +4358,11 @@
           <Switch
             bind:checked={draftAskAiEnabled}
             label="Enable Ask AI"
-            description="Allow Mnema to send your questions plus redacted capture context to your configured PI provider. Off by default."
+            description="Allow Quick Recall and Insights Chat to answer questions over your redacted capture history using the Reasoning Engine. Off by default."
           />
           <div class="privacy-disclosure">
             <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
-            <p>When enabled, questions and the redacted context needed to answer them are sent through PI to your configured provider/cloud. Mnema never asks for or stores provider credentials here.</p>
+            <p>Questions and the redacted context needed to answer them run through the Reasoning Engine configured above — a cloud provider with your own key, or a local model that never leaves this machine.</p>
           </div>
           <Switch
             bind:checked={draftAskAiLimitToolCalls}
@@ -4309,7 +4398,7 @@
               aria-controls="ask-ai-model-list"
               aria-autocomplete="list"
               autocomplete="off"
-              placeholder="Use PI default"
+              placeholder="Engine default model"
               disabled={!draftAskAiEnabled}
               bind:this={askAiModelInputEl}
               bind:value={askAiModelQuery}
@@ -4327,7 +4416,7 @@
                   style={askAiModelPanelStyle}
                 >
                   {#if askAiModelsLoading}
-                    <span class="model-combobox__empty">Loading models from PI…</span>
+                    <span class="model-combobox__empty">Loading models…</span>
                   {:else if askAiModelFiltered.length > 0}
                     {#each askAiModelFiltered as entry, index (entry.value)}
                       <button
@@ -4353,7 +4442,7 @@
                     {/each}
                   {:else}
                     <span class="model-combobox__empty">
-                      {askAiModelQuery.trim().includes(":")
+                      {askAiModelQuery.trim()
                         ? `Press Enter to use "${askAiModelQuery.trim()}"`
                         : "No matching models"}
                     </span>
@@ -4364,41 +4453,26 @@
           </div>
           {#if askAiModelsError}
             <p class="group-hint group-hint--warn">
-              Could not list PI models, so only the PI default is guaranteed. Set up PI and refresh status — you can still type a model id as provider:id.
+              Could not list the engine's models, so only the engine default is guaranteed — configure the Reasoning Engine above (key/base URL or endpoint). You can still type any model id.
             </p>
           {:else}
             <p class="group-hint">
-              Type to filter the models from your PI runtime. "Use PI default" follows the model configured in PI.
+              Type to filter the Reasoning Engine's models, or type any model id. "Engine default model" follows the engine's configured default.
             </p>
           {/if}
-          <div class="model-status" class:model-status--available={draftAskAiEnabled && piRuntimeStatus?.ready}>
+          <div class="model-status" class:model-status--available={askAiAvailable}>
             <div>
-              <div class="model-status__title">Ask AI {askAiStatusLabel(piRuntimeStatus)}</div>
-              <div class="model-status__meta">{askAiStatusDetail(piRuntimeStatus)}</div>
+              <div class="model-status__title">Ask AI {askAiAvailable ? "available" : "unavailable"}</div>
+              <div class="model-status__meta">{askAiStatusDetail}</div>
             </div>
-            <span class="model-status__pill">{draftAskAiEnabled && piRuntimeStatus?.ready ? "available" : "unavailable"}</span>
+            <span class="model-status__pill">{askAiAvailable ? "available" : "unavailable"}</span>
           </div>
-          {#if piRuntimeStatus}
-            <p class="group-hint">
-              PI: {piRuntimeStatus.ready
-                ? `ready via ${formatPiRuntimeSource(piRuntimeStatus.source)}${piRuntimeStatus.executablePath ? ` at ${piRuntimeStatus.executablePath}` : ""}`
-                : formatPiRuntimeReason(piRuntimeStatus)}
-            </p>
-            <p class="group-hint">
-              PI auth: {piRuntimeStatus.authJsonExists ? `found at ${piRuntimeStatus.authJsonPath}` : `not found at ${piRuntimeStatus.authJsonPath}`}.
-              Providers configured: {piProviderCount(piRuntimeStatus)}.
-            </p>
-            {#if draftAskAiEnabled && !piRuntimeStatus.ready}
-              <p class="group-hint group-hint--warn">Set up PI and configure a provider in PI auth, then refresh status. Do not enter provider credentials in Mnema.</p>
-            {/if}
-          {:else if piRuntimeLoading}
-            <p class="group-hint">Checking PI setup…</p>
-          {:else}
-            <p class="group-hint group-hint--warn">Refresh PI status before enabling Ask AI.</p>
+          {#if askAiAvailabilityError}
+            <p class="error-text">{askAiAvailabilityError}</p>
           {/if}
           <div class="row-actions">
-            <button class="btn btn--ghost btn--sm" type="button" disabled={piRuntimeLoading} onclick={loadPiRuntimeStatus}>
-              {piRuntimeLoading ? "Checking" : "Refresh PI status"}
+            <button class="btn btn--ghost btn--sm" type="button" disabled={askAiAvailabilityLoading} onclick={() => { void loadAskAiAvailability(); void loadAskAiModels(); }}>
+              {askAiAvailabilityLoading ? "Checking" : "Refresh"}
             </button>
           </div>
         </div>
@@ -4631,6 +4705,134 @@
       <div class="settings-divider"></div>
 
       <div class="settings-group">
+        <span class="group-label">Configured engines</span>
+        <div class="settings-stack">
+          <p class="group-hint">
+            Additional engines a chat thread can be pinned to, beyond the default
+            engine above. Each thread answers with its pinned engine, or the
+            default when unpinned. Set the provider API key once in the per-provider
+            key field above — it's shared across engines of the same provider.
+          </p>
+
+          {#if draftAiAdditionalEngines.length > 0}
+            <ul class="engine-list">
+              {#each draftAiAdditionalEngines as engine, index (`${index}-${engineProfileLabel(engine)}`)}
+                <li class="engine-row">
+                  <span class="engine-row__name">{engineProfileLabel(engine)}</span>
+                  <button
+                    class="btn btn--ghost btn--sm"
+                    type="button"
+                    onclick={() => removeConfiguredEngine(index)}
+                  >
+                    Remove
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="group-hint">No additional engines yet.</p>
+          {/if}
+
+          {#if addEngineOpen}
+            <div class="settings-stack add-engine-form">
+              <RadioGroup
+                value={addEngineKind}
+                onValueChange={(value) => (addEngineKind = value as AiEngineKind)}
+                label="Engine"
+                options={[
+                  { value: "cloud", label: "Cloud", description: "HTTPS to a provider with your own key." },
+                  { value: "local", label: "Local", description: "Ollama or Llamafile on this machine." },
+                ]}
+              />
+              {#if addEngineKind === "cloud"}
+                <RadioGroup
+                  value={addEngineCloudProvider}
+                  onValueChange={(value) => (addEngineCloudProvider = value as AiCloudProvider)}
+                  label="Provider"
+                  options={[
+                    { value: "anthropic", label: "Anthropic", description: "Claude models" },
+                    { value: "openai", label: "OpenAI", description: "GPT models" },
+                    { value: "openai_compatible", label: "OpenAI-compatible", description: "Custom base URL + key" },
+                  ]}
+                />
+                {#if addEngineCloudProvider === "openai_compatible"}
+                  <label class="field-label" for="add-engine-base-url">Base URL</label>
+                  <input
+                    id="add-engine-base-url"
+                    class="text-input"
+                    autocomplete="off"
+                    placeholder="https://api.fireworks.ai/inference/v1"
+                    bind:value={addEngineCloudBaseUrl}
+                  />
+                {/if}
+                <label class="field-label" for="add-engine-cloud-model">Model</label>
+                <input
+                  id="add-engine-cloud-model"
+                  class="text-input"
+                  autocomplete="off"
+                  placeholder="claude-haiku-4-5"
+                  bind:value={addEngineCloudModel}
+                />
+              {:else}
+                <RadioGroup
+                  value={addEngineLocalKind}
+                  onValueChange={(value) => (addEngineLocalKind = value as AiLocalKind)}
+                  label="Local runtime"
+                  options={[
+                    { value: "ollama", label: "Ollama", description: "Default endpoint http://localhost:11434" },
+                    { value: "llamafile", label: "Llamafile", description: "OpenAI-compatible local server" },
+                  ]}
+                />
+                <label class="field-label" for="add-engine-local-endpoint">Endpoint</label>
+                <input
+                  id="add-engine-local-endpoint"
+                  class="text-input"
+                  autocomplete="off"
+                  placeholder="http://localhost:11434"
+                  bind:value={addEngineLocalEndpoint}
+                />
+                <label class="field-label" for="add-engine-local-model">Model</label>
+                <input
+                  id="add-engine-local-model"
+                  class="text-input"
+                  autocomplete="off"
+                  placeholder="e.g. llama3.1"
+                  bind:value={addEngineLocalModel}
+                />
+              {/if}
+              {#if addEngineError}
+                <p class="error-text">{addEngineError}</p>
+              {/if}
+              <div class="row-actions">
+                <button class="btn btn--ghost btn--sm" type="button" onclick={addConfiguredEngine}>
+                  Add
+                </button>
+                <button
+                  class="btn btn--ghost btn--sm"
+                  type="button"
+                  onclick={() => { addEngineOpen = false; resetAddEngineForm(); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          {:else}
+            <div class="row-actions">
+              <button
+                class="btn btn--ghost btn--sm"
+                type="button"
+                onclick={() => { resetAddEngineForm(); addEngineOpen = true; }}
+              >
+                Add engine
+              </button>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
         <span class="group-label">Status</span>
         <div class="settings-stack">
           <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
@@ -4685,6 +4887,15 @@
       <div class="settings-group">
         <span class="group-label">User Context</span>
         <div class="settings-stack">
+          <Switch
+            bind:checked={draftUserContextEnabled}
+            label="Derive context continuously"
+            description="Let Mnema build a private, on-device understanding of your activity by deriving from your capture history in the background, 24/7. Distinct from Ask AI — this is the high-consent continuous worker, off by default. Needs the Reasoning Engine configured above."
+          />
+          <div class="privacy-disclosure">
+            <p>While on, the Reasoning Engine runs over your redacted screen text and transcripts as a background trickle to derive Activities and Conclusions. With a cloud engine that means continuous outbound egress billed to your key; a local engine keeps everything on this machine.</p>
+            <p>The derived understanding deliberately outlives raw-capture retention. Turning this off pauses derivation; it does not erase what was already learned — use Wipe User Context below for that.</p>
+          </div>
           <div
             class="model-status"
             class:model-status--available={userContextStatus?.engineAvailable}
@@ -9160,6 +9371,40 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  /* Configured-engine set (per-thread pin source). */
+  .engine-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .engine-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+  .engine-row__name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--app-text);
+  }
+  .add-engine-form {
+    padding: 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface-subtle);
   }
 
   .grant-row {

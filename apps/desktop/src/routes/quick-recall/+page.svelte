@@ -10,7 +10,7 @@
   import { closeCurrentWindow } from "$lib/surface-windows";
   import { renderMarkdown } from "$lib/markdown";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import type { SaveConversationTurnRequest } from "$lib/insights/conversation";
+  import type { Conversation } from "$lib/insights/conversation";
   import type {
     SearchCaptureResponse,
     SearchCaptureRefinements,
@@ -74,15 +74,6 @@
   const IDLE_CLEAR_MS = 5000;
   let windowFocused = $state(true);
   let idleClearTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // Background completion (PLAN.md slice 2): a finished-but-unseen Ask AI
-  // conversation keeps its resident PI helper alive only for this long. Past it
-  // the helper is cancelled to reclaim the idle Node/PI process, but the
-  // transcript stays readable and the thread is marked expired (a later slice
-  // resurrects it from the transcript on a follow-up). Fixed, no setting. Shorten
-  // this single constant to exercise expiry by hand.
-  const ASK_UNSEEN_EXPIRY_MS = 30 * 60 * 1000;
-  let askUnseenExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Whether the user prefers reduced motion. Drives the JS-side Svelte mode-switch
   // transition (CSS animations/transitions are gated separately in the style block). Kept
@@ -890,13 +881,6 @@
   // today's ephemeral rules (cleared on dismiss, 5s idle-clear on blur).
   let askOutcomeSeen = $state(false);
 
-  // Background completion (PLAN.md slice 2): the finished-but-unseen 30-minute
-  // window elapsed and the resident PI helper was cancelled to reclaim it. The
-  // transcript stays readable; a follow-up resurrects the thread from the
-  // transcript (wired in a later slice). Thread-level, ephemeral: reset on
-  // teardown (resetAskThreadState) and re-armed false per new thread (startAsk).
-  let askThreadExpired = $state(false);
-
   // The live turn reached a terminal phase (its outcome — answer or error — is
   // fully rendered). Distinct from `askStreaming`: a turn can be terminal while
   // a never-started thread has no live turn at all.
@@ -908,6 +892,9 @@
   // There is a conversation worth preserving across a dismiss/blur: a thread is
   // open (id present) and either still in flight or finished-but-unseen. Once
   // seen, this goes false and the conversation becomes ordinarily ephemeral.
+  // Background completion is now SERVER-side: a dismissed-but-streaming question
+  // finishes and persists regardless, so we never cancel an in-flight or unseen
+  // thread on dismiss/blur — it simply stays preservable until seen.
   let askConversationPending = $derived(
     askConversationId !== null && (askStreaming || !askOutcomeSeen),
   );
@@ -919,66 +906,6 @@
   $effect(() => {
     if (windowFocused && askTerminalPhase) {
       askOutcomeSeen = true;
-    }
-  });
-
-  // Background completion (PLAN.md slice 2): the helper's hybrid lifetime cap. A
-  // turn that finished with `done` while still unseen arms a 30-minute timer;
-  // when it fires the resident PI session is cancelled (process reclaimed) but
-  // the transcript is left intact and the thread is marked expired. We do NOT
-  // arm for `error` — that path already killed the helper Rust-side, so there is
-  // nothing to reclaim. The timer disarms automatically when the conversation
-  // becomes seen, is replaced by a fresh ask, or is reset (any of which flips a
-  // dependency below so this effect re-runs into the else branch).
-  let askExpiryEligible = $derived(
-    askConversationId !== null &&
-      !askStreaming &&
-      !askOutcomeSeen &&
-      !askThreadExpired &&
-      askLiveTurn !== null &&
-      askLiveTurn.phase === "done",
-  );
-
-  function clearUnseenExpiryTimer(): void {
-    if (askUnseenExpiryTimer !== null) {
-      clearTimeout(askUnseenExpiryTimer);
-      askUnseenExpiryTimer = null;
-    }
-  }
-
-  // Cancel the resident PI helper for an expired-but-unseen thread WITHOUT
-  // tearing down the transcript. Distinct from cancelActiveAsk, which nulls
-  // askConversationId (and would drop askConversationPending, letting dismiss/
-  // idle-clear wipe the very transcript we are preserving). Here the thread id
-  // and turns stay put so the answer remains readable and a follow-up can later
-  // resurrect from it; only the backend process is released.
-  async function expireUnseenAskHelper(conversationId: string): Promise<void> {
-    askThreadExpired = true;
-    console.log(
-      `[quick-recall] Ask AI conversation ${conversationId} unseen for ` +
-        `${ASK_UNSEEN_EXPIRY_MS}ms; cancelling resident PI helper, ` +
-        `keeping transcript (thread marked expired).`,
-    );
-    try {
-      await invoke<void>("ask_ai_cancel", { request: { conversationId } });
-    } catch {
-      // Best-effort: the helper may already be gone; the thread is still expired.
-    }
-  }
-
-  $effect(() => {
-    if (askExpiryEligible) {
-      const conversationId = askConversationId;
-      clearUnseenExpiryTimer();
-      askUnseenExpiryTimer = setTimeout(() => {
-        askUnseenExpiryTimer = null;
-        // Guard against a thread swap between arming and firing.
-        if (conversationId !== null && askConversationId === conversationId) {
-          void expireUnseenAskHelper(conversationId);
-        }
-      }, ASK_UNSEEN_EXPIRY_MS);
-    } else {
-      clearUnseenExpiryTimer();
     }
   });
 
@@ -1054,20 +981,20 @@
     switch (reason) {
       case "ask_ai_disabled":
         return "Enable Ask AI in Settings";
-      case "pi_not_found":
-        return "Set up PI to use Ask AI";
-      case "pi_version_too_old":
-        return "Update PI to use Ask AI";
-      case "pi_auth_missing":
-        return "Sign in to PI to use Ask AI";
-      case "pi_no_provider":
-        return "Configure a PI provider to use Ask AI";
-      case "node_unavailable":
-        return "Node.js (from your PI install) isn't on PATH";
-      case "shim_unavailable":
-        return "Ask AI is unavailable on this build";
+      case "ai_runtime_disabled":
+        return "Turn on the Reasoning Engine in Settings";
+      case "no_cloud_key":
+        return "Add a provider API key in Settings";
+      case "no_model":
+        return "Choose a Reasoning Engine model in Settings";
+      case "no_base_url":
+        return "Add the provider base URL in Settings";
+      case "local_no_model":
+        return "Choose a local model in Settings";
+      case "local_endpoint_unreachable":
+        return "Local engine unreachable — check it's running";
       default:
-        return "Set up PI to use Ask AI";
+        return "Set up the Reasoning Engine to use Ask AI";
     }
   }
 
@@ -1274,6 +1201,52 @@
     askCopiedTimers.clear();
   }
 
+  // Narrow an AskTurn phase from a persisted (string) phase.
+  function normalizeAskPhase(phase: string): AskAiPhase {
+    return phase === "done" || phase === "error" || phase === "streaming"
+      ? phase
+      : "done";
+  }
+
+  // Re-summon hydration (background completion is now server-side): when the
+  // panel regains focus on an armed ask thread whose in-memory transcript is
+  // empty (e.g. the window was cleared while a question finished in the
+  // background), reload the persisted turns from the shared store. If the latest
+  // persisted turn is still "streaming", keep `askStreaming` true so the live
+  // delta/done listeners (which filter by conversationId) resume appending.
+  async function hydrateAskFromStore(conversationId: string): Promise<void> {
+    try {
+      const convo = await invoke<Conversation | null>("get_conversation", {
+        conversationId,
+      });
+      // Drop a stale hydrate if the thread moved on or already has a transcript.
+      if (convo === null || askConversationId !== conversationId || askTurns.length > 0) {
+        return;
+      }
+      const hydrated: AskTurn[] = convo.turns.map((turn) => {
+        const t = makeAskTurn(turn.question, normalizeAskPhase(turn.phase));
+        t.answer = turn.answer ?? "";
+        t.toolActivities = Array.isArray(turn.toolActivities)
+          ? (turn.toolActivities as AskToolActivityEntry[])
+          : [];
+        t.sources = Array.isArray(turn.sources)
+          ? (turn.sources as AskAiSource[])
+          : [];
+        t.errorMessage = turn.errorMessage;
+        t.seededResultCount = turn.seededResultCount;
+        return t;
+      });
+      if (hydrated.length === 0) return;
+      askTurns = hydrated;
+      askSubmitted = true;
+      const last = hydrated[hydrated.length - 1];
+      askStreaming = last.phase === "streaming";
+      for (const turn of hydrated) void loadSourceThumbnails(turn.sources);
+    } catch {
+      // Best-effort: leave the (empty) thread as-is on a hydrate failure.
+    }
+  }
+
   // Begin a FRESH Ask AI thread with its first (seeded) turn. `question` is what
   // gets answered; `seedQuery` seeds the broker search (the prior Quick Search
   // query, or null). Cancels any in-flight thread and resets the transcript.
@@ -1304,16 +1277,12 @@
     // outcome has not been seen yet — re-arm so it survives dismiss/blur until
     // the user lays eyes on its terminal turn (one conversation, newest wins).
     askOutcomeSeen = false;
-    // Slice 2: a fresh thread is not expired and disarms any prior expiry timer
-    // (the prior helper was just cancelled by cancelActiveAsk above).
-    askThreadExpired = false;
-    clearUnseenExpiryTimer();
     clearAskCopiedTimers();
     askTurns = [makeAskTurn(trimmedQuestion, "seeding")];
     askStreaming = true;
-    // Persist the in-flight first turn immediately (streaming phase, no answer
-    // yet) under this conversation id so the thread is durable from the start.
-    persistTurnStreaming(conversationId, 0, trimmedQuestion);
+    // The backend OWNS persistence: ask_ai_start upserts the conversation row
+    // (from title/origin) and run_ask_ai_turn persists each turn.
+    const title = conversationTitle();
 
     try {
       await invoke<void>("ask_ai_start", {
@@ -1321,6 +1290,8 @@
           conversationId,
           question: trimmedQuestion,
           seedQuery: normalizedSeed,
+          origin: "quick_recall",
+          title,
         },
       });
     } catch (error) {
@@ -1333,66 +1304,9 @@
       if (last) {
         last.phase = "error";
         last.errorMessage = error instanceof Error ? error.message : String(error);
-        // Persist the terminal (error) state of this first turn.
-        persistTurnFinal(0, conversationId);
       }
     }
   }
-
-  // Background completion (PLAN.md slice 4): whether a follow-up must RESURRECT
-  // rather than ride the live session. The resident PI helper is gone in two
-  // cases: the 30-minute unseen window expired (askThreadExpired), or the last
-  // turn errored (an error kills the helper Rust-side). In either case there is
-  // no session to follow up against, so the next question starts a FRESH session
-  // re-fed with the prior Q/A transcript instead of calling ask_ai_followup.
-  let askThreadDead = $derived(
-    askThreadExpired ||
-      (askLiveTurn !== null && askLiveTurn.phase === "error"),
-  );
-
-  // Background completion (PLAN.md slice 4): the subtle terminal-style hint shown
-  // above the composer when the next follow-up will RESURRECT (the helper expired
-  // or the last turn errored, but there's a transcript to resume from). Distinct
-  // copy for the two paths so the cue reads honestly; null when the live session
-  // is intact (a normal follow-up) or there's nothing to resume. Gated on a
-  // completed turn so a bare turn-1 error (no transcript, "Try again" only) shows
-  // no resume hint. No confirmation — resurrection is transparent.
-  let askResumeHint = $derived(
-    askThreadDead && askHasCompletedTurn && !askStreaming
-      ? askThreadExpired
-        ? "Session paused — your next question resumes from this transcript."
-        : "Session ended — your next question resumes from this transcript."
-      : null,
-  );
-
-  // Build the resurrection transcript from the existing turns: prior questions
-  // and their answers only — Q/A text, oldest first. We include only turns that
-  // actually produced answer text (a `done` turn with a non-empty answer), so a
-  // turn that errored (no usable answer) or never completed is dropped. Rust owns
-  // the 12k-char cap with oldest-first trimming, so we send the full list and let
-  // the host trim — see ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP in ask_ai.rs.
-  function buildPriorTranscript(): { question: string; answer: string }[] {
-    return askTurns
-      .filter((turn) => turn.phase === "done" && turn.answer.trim().length > 0)
-      .map((turn) => ({ question: turn.question, answer: turn.answer }));
-  }
-
-  // ---------------------------------------------------------------------------
-  // Persistence to the shared conversation store (issue #111, ADR 0031)
-  //
-  // Quick Recall threads are now ALSO durable: every real turn is written to the
-  // Encrypted Capture Index under the SAME `askConversationId`, with origin
-  // "quick_recall", so the same row backs both doors (Quick Recall and the
-  // Insights Chat workspace). This is purely additive — the ephemeral
-  // background-completion / resurrect machinery above is untouched; the thread is
-  // now simply also persisted, governed by Retention Policy and cleared by Wipe
-  // User Context.
-  //
-  // Two writes per turn, mirroring Chat.svelte: a streaming-phase write at turn
-  // start (question only, no answer yet) and a terminal write on done/error
-  // (final answer + sources + tool activities). NEVER on deltas. Persistence is
-  // best-effort: a failed write leaves the in-memory transcript authoritative.
-  // ---------------------------------------------------------------------------
 
   const CONVERSATION_TITLE_MAX = 80;
 
@@ -1405,7 +1319,8 @@
   }
 
   // The thread title is the first question (stable across follow-ups), so both
-  // doors show the same row label. Falls back to the turn-1 question when
+  // doors show the same row label. Passed to ask_ai_start so the backend upserts
+  // the conversation row with it. Falls back to the turn-1 question when
   // askFirstQuestion hasn't been recorded yet.
   function conversationTitle(): string {
     const first =
@@ -1413,83 +1328,6 @@
         ? askFirstQuestion
         : (askTurns[0]?.question ?? "");
     return titleFromQuestion(first);
-  }
-
-  // Persist one turn's current state to the shared store. `turnIndex` is the
-  // turn's array index; the conversation id is captured by the caller so a late
-  // write can't bind to a thread that moved on. Guards out empty/seeding-only
-  // states: only a turn carrying a real question is written (matches Chat).
-  async function persistTurn(
-    conversationId: string,
-    turnIndex: number,
-    question: string,
-    phase: AskAiPhase,
-    answer: string,
-    toolActivities: AskToolActivityEntry[],
-    sources: AskAiSource[],
-    errorMessage: string | null,
-    seededResultCount: number | null,
-  ): Promise<void> {
-    if (question.trim().length === 0) {
-      return;
-    }
-    const request: SaveConversationTurnRequest = {
-      conversationId,
-      title: conversationTitle(),
-      origin: "quick_recall",
-      turnIndex,
-      question,
-      answer,
-      toolActivities,
-      sources,
-      phase,
-      errorMessage,
-      seededResultCount,
-    };
-    try {
-      await invoke("save_conversation_turn", { request });
-    } catch {
-      // Best-effort persistence; the in-memory transcript stays authoritative.
-    }
-  }
-
-  // Streaming-phase write at the START of a turn (question only, no answer yet),
-  // so a refresh / Chat hand-off shows the in-flight question immediately.
-  function persistTurnStreaming(
-    conversationId: string,
-    turnIndex: number,
-    question: string,
-  ): void {
-    void persistTurn(
-      conversationId,
-      turnIndex,
-      question,
-      "streaming",
-      "",
-      [],
-      [],
-      null,
-      null,
-    );
-  }
-
-  // Terminal write at done/error: the final answer + sources + tool activities.
-  function persistTurnFinal(turnIndex: number, conversationId: string): void {
-    const turn = askTurns[turnIndex];
-    if (!turn) {
-      return;
-    }
-    void persistTurn(
-      conversationId,
-      turnIndex,
-      turn.question,
-      turn.phase,
-      turn.answer,
-      turn.toolActivities,
-      turn.sources,
-      turn.errorMessage,
-      turn.seededResultCount,
-    );
   }
 
   // Whether the current thread has at least one completed (done) turn, gating the
@@ -1500,11 +1338,11 @@
 
   // Promote the current Quick Recall thread into the Insights → Chat workspace.
   // The thread is already persisted under askConversationId (origin
-  // "quick_recall"), so this just shows/navigates the main window to Insights →
-  // Chat and selects this conversation; Chat's get_conversation +
-  // resurrect-from-transcript path continues it seamlessly. Mirrors the Answer
-  // Sources hand-off (open_capture_result_in_main_window), which also dismisses
-  // the Quick Recall window — so we do the same here for consistency.
+  // "quick_recall", written backend-side), so this just shows/navigates the main
+  // window to Insights → Chat and selects this conversation; Chat hydrates it via
+  // get_conversation and continues it seamlessly. Mirrors the Answer Sources
+  // hand-off (open_capture_result_in_main_window), which also dismisses the Quick
+  // Recall window — so we do the same here for consistency.
   async function openInChat(): Promise<void> {
     const conversationId = askConversationId;
     if (conversationId === null || !askHasCompletedTurn) {
@@ -1519,115 +1357,12 @@
     await closeCurrentWindow();
   }
 
-  // Resurrect a dead (expired or errored) thread from its transcript. Starts a
-  // FRESH PI session via ask_ai_start carrying the prior Q/A as priorTranscript,
-  // swaps in a new conversation id, and continues streaming into the SAME visible
-  // transcript: the prior turns stay rendered above and the new turn appends. The
-  // stale-thread guard (the conversationId check in the stream listeners) keeps
-  // any straggling events from the old thread from touching the new turn. `seed`
-  // is the bare new question (seeding isn't polluted by the prior transcript).
-  async function resurrectThread(question: string): Promise<void> {
-    const trimmed = question.trim();
-    if (trimmed.length === 0) {
-      return;
-    }
-    const priorTranscript = buildPriorTranscript();
-    const conversationId = crypto.randomUUID();
-    console.log(
-      `[quick-recall] Ask AI thread resurrected (${
-        askThreadExpired ? "expired" : "errored"
-      }) into new conversation ${conversationId}; re-feeding ` +
-        `${priorTranscript.length} prior Q/A turn(s) as priorTranscript ` +
-        `(Rust caps to ASK_AI_PRIOR_TRANSCRIPT_CHAR_CAP, oldest-first).`,
-    );
-
-    // Swap the active thread id to the fresh session and re-arm startAsk-style
-    // bookkeeping: a resurrected outcome hasn't been seen yet (so it survives a
-    // dismiss/blur), the thread is no longer expired, and any prior expiry timer
-    // is disarmed. The transcript (askTurns) is intentionally PRESERVED — only a
-    // new turn is appended below.
-    askConversationId = conversationId;
-    askOutcomeSeen = false;
-    askThreadExpired = false;
-    clearUnseenExpiryTimer();
-
-    askTurns = [...askTurns, makeAskTurn(trimmed, "seeding")];
-    const turnIndex = askTurns.length - 1;
-    askStreaming = true;
-    // A resurrected thread carries a FRESH conversation id (existing ephemeral
-    // behavior, unchanged), so persist this turn — and the resumed prior turns —
-    // under the new id so the durable row matches the live thread.
-    persistResurrectedTranscript(conversationId);
-    // The composer is about to disable — park focus on the transcript region so
-    // Escape/scroll keys keep working while the resurrected turn streams.
-    await tick();
-    askAreaEl?.focus();
-
-    try {
-      await invoke<void>("ask_ai_start", {
-        request: {
-          conversationId,
-          question: trimmed,
-          seedQuery: trimmed,
-          priorTranscript,
-        },
-      });
-    } catch (error) {
-      // Drop a stale failure if the thread moved on (Escape / fresh ask).
-      if (askConversationId !== conversationId) {
-        return;
-      }
-      askStreaming = false;
-      const turn = askTurns[turnIndex];
-      if (turn) {
-        turn.phase = "error";
-        turn.errorMessage = error instanceof Error ? error.message : String(error);
-        persistTurnFinal(turnIndex, conversationId);
-      }
-    }
-  }
-
-  // Persist the full resumed transcript under a resurrected thread's new id: the
-  // prior completed turns (so the durable row matches what the user sees) plus
-  // the new in-flight turn (streaming phase). Best-effort, fire-and-forget.
-  function persistResurrectedTranscript(conversationId: string): void {
-    askTurns.forEach((turn, index) => {
-      const isLive = index === askTurns.length - 1;
-      void persistTurn(
-        conversationId,
-        index,
-        turn.question,
-        isLive ? "streaming" : turn.phase,
-        isLive ? "" : turn.answer,
-        isLive ? [] : turn.toolActivities,
-        isLive ? [] : turn.sources,
-        isLive ? null : turn.errorMessage,
-        isLive ? null : turn.seededResultCount,
-      );
-    });
-  }
-
-  // Submit a follow-up question. Normally (live session) this appends a turn and
-  // routes the raw question through ask_ai_followup against the resident PI
-  // session. But when the thread is DEAD — its helper expired (slice 2) or the
-  // last turn errored (helper killed Rust-side) — there is nothing to follow up
-  // against, so we RESURRECT instead: a fresh session re-fed with the prior Q/A
-  // (resurrectThread), continuing into the same transcript. The branch is
-  // transparent; the only cue is the subtle "session resumed" hint in the markup.
+  // Submit a follow-up question. The backend reloads conversation history from
+  // the store server-side, so a follow-up ALWAYS works — even on a thread whose
+  // last turn errored. There is no client-side resurrect.
   async function submitFollowup(): Promise<void> {
     const trimmed = followupInput.trim();
     if (trimmed.length === 0) {
-      return;
-    }
-    // A dead thread keeps its id + transcript for reading, but its session is
-    // gone — resurrect from the transcript rather than ask_ai_followup. Streaming
-    // still gates this (no double-submit while a resurrected turn streams).
-    if (askThreadDead) {
-      if (askStreaming) {
-        return;
-      }
-      followupInput = "";
-      await resurrectThread(trimmed);
       return;
     }
     const conversationId = askConversationId;
@@ -1637,15 +1372,11 @@
 
     followupInput = "";
     // The new follow-up turn's outcome hasn't been seen yet — re-arm so it
-    // survives dismiss/blur until the user lays eyes on its terminal turn
-    // (matches startAsk/resurrectThread; a stale `true` from the prior seen
-    // turn would otherwise let this turn be wiped before it's read).
+    // survives dismiss/blur until the user lays eyes on its terminal turn.
     askOutcomeSeen = false;
     askTurns = [...askTurns, makeAskTurn(trimmed, "thinking")];
     const turnIndex = askTurns.length - 1;
     askStreaming = true;
-    // Persist the in-flight follow-up turn (streaming phase) under the same id.
-    persistTurnStreaming(conversationId, turnIndex, trimmed);
     // The composer is about to disable (dimmed) — move focus to the transcript
     // region so Escape (back-to-search) and scroll keys keep working while the
     // follow-up streams. The composer refocuses on done via the effect below.
@@ -1666,7 +1397,6 @@
       if (turn) {
         turn.phase = "error";
         turn.errorMessage = error instanceof Error ? error.message : String(error);
-        persistTurnFinal(turnIndex, conversationId);
       }
     }
   }
@@ -1846,8 +1576,6 @@
     askFirstQuestion = "";
     askStreaming = false;
     askOutcomeSeen = false;
-    askThreadExpired = false;
-    clearUnseenExpiryTimer();
   }
 
   // Return to search mode, abandoning the whole thread (a single Escape drops
@@ -3388,6 +3116,13 @@
           // and the user may have enabled Ask AI or fixed PI/auth since the last
           // summon. Without this the stale disabled hint would persist forever.
           void loadAskAvailability();
+          // Re-summon hydration: if an ask thread is armed but its in-memory
+          // transcript was cleared, reload it from the store so a finished (or
+          // still-streaming) answer reappears. Background completion is
+          // server-side, so the persisted turn is authoritative.
+          if (mode === "ask" && askConversationId !== null && askTurns.length === 0) {
+            void hydrateAskFromStore(askConversationId);
+          }
           void tick().then(() => focusQuickRecall());
         }
       })
@@ -3443,18 +3178,13 @@
 
     listen<AskAiDoneEvent>("ask_ai_done", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
-      const turnIndex = askTurns.length - 1;
-      const turn = askTurns[turnIndex];
+      const turn = askTurns[askTurns.length - 1];
       if (!turn) return;
       // This TURN finished — re-enable the composer (thread-level streaming off).
       askStreaming = false;
       turn.toolActivity = null;
       turn.phase = "done";
-      // Terminal write: final answer + sources + tool activities, phase "done".
-      const conversationId = askConversationId;
-      if (conversationId !== null) {
-        persistTurnFinal(turnIndex, conversationId);
-      }
+      // Persistence is owned by the backend (run_ask_ai_turn finalized this turn).
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenDone = fn;
@@ -3462,18 +3192,14 @@
 
     listen<AskAiErrorEvent>("ask_ai_error", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
-      const turnIndex = askTurns.length - 1;
-      const turn = askTurns[turnIndex];
+      const turn = askTurns[askTurns.length - 1];
       if (!turn) return;
       askStreaming = false;
       turn.toolActivity = null;
       turn.phase = "error";
       turn.errorMessage = event.payload.message;
-      // Terminal write: persist the errored turn so the durable row reflects it.
-      const conversationId = askConversationId;
-      if (conversationId !== null) {
-        persistTurnFinal(turnIndex, conversationId);
-      }
+      // The backend persisted the error turn; a follow-up still works (it reloads
+      // history server-side).
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenError = fn;
@@ -3501,15 +3227,13 @@
     // the panel is ordered out / hidden. The webview is NOT destroyed on dismiss,
     // so the component `onDestroy` does not run.
     //
-    // Background completion (PLAN.md slice 1): an unseen or in-flight Ask AI
-    // conversation must SURVIVE dismiss so re-summon lands back on it. While the
-    // webview is hidden the stream listeners keep applying deltas, so the answer
-    // finishes in the background. We only tear the thread down (cancel the PI
-    // session + reset to search) once the conversation is seen, or when there is
-    // no conversation at all — restoring today's ephemeral search behavior. A
-    // resident PI session after dismissing an unseen conversation is intentional;
-    // a later slice bounds it with a 30-minute unseen cap, and app exit /
-    // onDestroy still tears it down unconditionally.
+    // Background completion is server-side now: an unseen or in-flight Ask AI
+    // conversation must SURVIVE dismiss so re-summon lands back on it. The backend
+    // finishes and PERSISTS the turn regardless of the window, so we never cancel
+    // an in-flight/unseen thread on dismiss — re-summon hydrates it from the store
+    // if needed. We only tear the thread down (reset to search) once the
+    // conversation is seen, or when there is no conversation at all — restoring
+    // today's ephemeral search behavior. App exit / onDestroy still tears down.
     listen("quick_recall_dismissed", () => {
       if (askConversationPending) {
         return;
@@ -3542,7 +3266,6 @@
   onDestroy(() => {
     clearDebounce();
     clearIdleTimer();
-    clearUnseenExpiryTimer();
     clearAskCopiedTimers();
     // FIX #6: drop any queued bottom-pin scroll frame so it can't fire post-teardown.
     if (pendingScrollFrame !== null) {
@@ -4226,19 +3949,11 @@
           </div>
         {/if}
 
-        <!-- Background completion (PLAN.md slice 4): subtle resume hint above the
-             composer when the next follow-up will resurrect (helper expired, or
-             the last turn errored) but the transcript is resumable. Terminal-style
-             muted line in the existing visual language — no badge, no dialog. -->
-        {#if askResumeHint !== null}
-          <p class="quick-recall__resume-hint">{askResumeHint}</p>
-        {/if}
-
         <!-- Follow-up composer: pinned beneath the transcript, present once the
              first answer completes. Disabled while any turn streams. Enter sends,
              Shift+Enter inserts a newline. Submitting appends a new turn and
-             routes the raw question through ask_ai_followup, OR resurrects a dead
-             thread (expired/errored) from the transcript via ask_ai_start. -->
+             routes the raw question through ask_ai_followup; the backend reloads
+             history server-side, so a follow-up always works. -->
         {#if askComposerVisible}
           <div class="quick-recall__composer">
             <textarea
@@ -5083,21 +4798,6 @@
     color: var(--app-text-strong);
     font-weight: 600;
     overflow-wrap: anywhere;
-  }
-
-  /* Background completion (slice 4): the resume hint sits between the transcript
-     and the composer, sharing the composer's left padding so it reads as a quiet
-     caption on the input below. Subtle/uppercased in the existing terminal-style
-     muted language (mirrors .quick-recall__seeded), never the accent error red. */
-  .quick-recall__resume-hint {
-    flex-shrink: 0;
-    margin: 0;
-    padding: 8px 15px 0;
-    font-size: 11px;
-    line-height: 1.3;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
   }
 
   /* Follow-up composer: pinned beneath the scrolling transcript. Mirrors the
