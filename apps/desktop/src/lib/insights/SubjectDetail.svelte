@@ -1,18 +1,19 @@
 <script lang="ts">
   // SubjectDetail — the drill-in detail surface for a single Subject (#106).
   //
-  // Mirrors `docs/user-context/mockups/subject.html`: a Subject shows its
-  // INDIVIDUAL Conclusions, each with its OWN confidence-over-time trajectory —
-  // NOT a single rolled-up sentiment score. Layout:
+  // A Subject shows its INDIVIDUAL Conclusions — each scored on its OWN
+  // confidence, NOT a single rolled-up sentiment score. Layout:
   //   1. Subject hero (title + meta pills).
-  //   2. Overlay TrajectoryChart — one line per Conclusion (its Confidence
-  //      History), each coloured by cycling the category palette; faded
-  //      conclusions render dimmed, floor 0.15. A 2-col legend follows.
+  //   2. Ranked confidence bars — one compact row per Conclusion (statement +
+  //      a bar filled to its confidence %, bold percentage, trend glyph),
+  //      coloured by cycling the category palette and sorted by confidence;
+  //      faded conclusions (below the display floor) render dimmed. Clicking a
+  //      row selects that Conclusion and drives the inspector.
   //   3. Master-detail grid: left = conclusions list (statement, ConfidenceBar
   //      with trend, Pin/Dismiss, "view evidence"); right = sticky Evidence
   //      Inspector for the selected conclusion (evidence rows + Confidence
-  //      History list). Selecting a conclusion highlights its line + drives the
-  //      inspector. Faded conclusions stay listed with their historical arc.
+  //      History list, which carries the over-time detail). Faded conclusions
+  //      stay listed with their historical arc.
   //
   // The breadcrumb back affordance is rendered by the Insights workspace shell
   // (insights/+page.svelte), so we do NOT duplicate it here. `onBack` is exposed
@@ -32,8 +33,6 @@
     ConclusionEvidenceRef,
     Activity,
   } from "$lib/types/recording";
-  import TrajectoryChart from "$lib/insights/charts/TrajectoryChart.svelte";
-  import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
 
   interface Props {
@@ -57,8 +56,6 @@
     "--cat-personal",
     "--cat-distractions",
   ] as const;
-
-  const FLOOR = 0.15;
 
   type Trend = "up" | "steady" | "down" | "faded";
 
@@ -120,34 +117,6 @@
           ? "⊘ faded"
           : "– steady";
   }
-
-  function confidenceBarTrend(c: Conclusion): "up" | "steady" | "down" | "faded" {
-    const t = trendFor(c);
-    return t;
-  }
-
-  // Feed the overlay chart: one series per trajectory, mapped from Confidence
-  // History (oldest-first), coloured by the conclusion's stable colour, faded if
-  // the conclusion is below the display floor. The selected line is emphasised by
-  // colour parity (the chart itself dims faded series).
-  const chartSeries = $derived.by(() => {
-    if (!view) return [];
-    return view.trajectories
-      .map((t) => {
-        const c = view!.conclusions.find((x) => x.id === t.conclusionId);
-        return {
-          id: t.conclusionId,
-          label: t.statement,
-          colorVar: colorById.get(t.conclusionId) ?? CAT_PALETTE[0],
-          faded: c?.status === "faded",
-          points: t.history.map((h) => ({
-            atMs: h.snapshotAtMs,
-            confidence: h.confidence,
-          })),
-        };
-      })
-      .filter((s) => s.points.length > 0);
-  });
 
   const selectedConclusion = $derived.by<Conclusion | null>(() => {
     if (!view || selectedId === null) return null;
@@ -411,44 +380,17 @@
         </div>
       </div>
 
-      <div class="card traj-card">
-        <div class="traj-head">
-          <Skeleton variant="text" width="180px" height="13px" />
-          <Skeleton variant="text" width="110px" height="11px" />
-        </div>
-        <div class="sk-traj-sub">
-          <Skeleton variant="text" width="70%" height="11px" />
-        </div>
-        <div class="traj-chartwrap">
-          <Skeleton height="160px" radius="8px" />
-        </div>
-        <div class="traj-legend">
-          {#each Array.from({ length: 4 }) as _, i (i)}
-            <div class="sk-legend-item">
-              <Skeleton width="18px" height="8px" radius="3px" />
-              <Skeleton variant="text" width="70%" height="11px" />
-            </div>
-          {/each}
-        </div>
-      </div>
-
       <div class="md-grid">
-        <div class="md-left">
-          <div class="md-head">
-            <Skeleton variant="text" width="150px" height="13px" />
+        <div class="card rank-card">
+          <div class="rank-head">
+            <Skeleton variant="text" width="170px" height="13px" />
+            <Skeleton variant="text" width="120px" height="11px" />
           </div>
-          <div class="concl-list">
-            {#each Array.from({ length: 3 }) as _, i (i)}
-              <div class="card concl-card concl-card--skeleton">
-                <Skeleton variant="text" width="92%" height="13px" />
-                <Skeleton variant="text" width="60%" height="13px" />
-                <div class="sk-concl-conf">
-                  <Skeleton height="8px" radius="999px" />
-                </div>
-                <div class="sk-concl-foot">
-                  <Skeleton variant="text" width="56px" height="22px" radius="6px" />
-                  <Skeleton variant="text" width="64px" height="22px" radius="6px" />
-                </div>
+          <div class="sk-rank-list">
+            {#each Array.from({ length: 5 }) as _, i (i)}
+              <div class="sk-rank-row">
+                <Skeleton variant="text" width="62%" height="13px" />
+                <Skeleton width="150px" height="7px" radius="999px" />
               </div>
             {/each}
           </div>
@@ -500,122 +442,55 @@
       </div>
     </div>
 
-    <!-- Overlay trajectory chart -->
-    <div class="card traj-card">
-      <div class="traj-head">
-        <div class="section-title">Conclusion trajectories</div>
-        <span class="traj-head-note">confidence over time</span>
-      </div>
-      <p class="traj-sub">
-        Each line is one conclusion — they warm and cool independently. Not a
-        single sentiment score.
-      </p>
-
-      {#if chartSeries.length > 0}
-        <div class="traj-chartwrap">
-          <TrajectoryChart series={chartSeries} floor={FLOOR} />
-        </div>
-
-        <!-- Legend: each colored line → its conclusion -->
-        <div class="traj-legend">
-          {#each orderedConclusions as c (c.id)}
-            {@const t = trendFor(c)}
-            <button
-              type="button"
-              class="legend-item"
-              class:legend-item--faded={c.status === "faded"}
-              class:is-selected={selectedId === c.id}
-              onclick={() => selectConclusion(c.id)}
-            >
-              <span
-                class="legend-swatch"
-                class:legend-swatch--faded={c.status === "faded"}
-                style="border-top-color: var({colorById.get(c.id)});"
-              ></span>
-              <span class="legend-label">{c.statement}</span>
-              <span class="legend-trend">{pct(c.confidence)}% {trendLabel(t).split(" ")[0]}</span>
-            </button>
-          {/each}
-        </div>
-      {:else}
-        <p class="traj-empty">No confidence history recorded yet.</p>
-      {/if}
-    </div>
-
-    <!-- Master-detail -->
+    <!-- Master-detail: ranked conclusions (master) + evidence inspector -->
     <div class="md-grid">
-      <!-- LEFT: conclusions list -->
-      <div class="md-left">
-        <div class="md-head">
-          <div class="section-title">Conclusions ({conclusionCount})</div>
-          <span class="md-head-note">
-            click a row to inspect its evidence
-            {#if fadedCount > 0}· {fadedCount} below floor{/if}
+      <!-- LEFT: ranked conclusions, sorted by confidence. Selecting a row
+           drives the inspector + its actions on the right. -->
+      <div class="card rank-card">
+        <div class="rank-head">
+          <div class="section-title">Conclusion confidence</div>
+          <span class="rank-head-note">
+            {conclusionCount} ranked{#if fadedCount > 0} · {fadedCount} below floor{/if}
           </span>
         </div>
 
-        <div class="concl-list">
-          {#each orderedConclusions as c (c.id)}
-            {@const t = trendFor(c)}
-            <div
-              class="card concl-card"
-              class:is-selected={selectedId === c.id}
-              class:concl-card--faded={c.status === "faded"}
-              role="button"
-              tabindex="0"
-              onclick={() => selectConclusion(c.id)}
-              onkeydown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  selectConclusion(c.id);
-                }
-              }}
-            >
-              <div class="concl-main">
-                <p class="concl-statement">{c.statement}</p>
-                <div class="concl-conf">
-                  <ConfidenceBar confidence={c.confidence} trend={confidenceBarTrend(c)} />
-                  <span class="trend trend--{t}">{trendLabel(t)}</span>
-                </div>
-                {#if c.status === "faded"}
-                  <div class="floor-note">
-                    <span class="glyph" aria-hidden="true">⊘</span>
-                    Below display floor — kept for history.
-                  </div>
-                {/if}
-                <div class="concl-footrow">
-                  <button
-                    type="button"
-                    class="btn"
-                    class:btn--accent={c.pinned}
-                    disabled={actionId !== null}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      void togglePinned(c);
-                    }}
-                  >
-                    {c.pinned ? "★ Pinned" : "Pin"}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn"
-                    disabled={actionId !== null}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      void dismiss(c);
-                    }}
-                  >
-                    Dismiss
-                  </button>
-                  <span class="spacer"></span>
-                  <span class="ev-affordance">
-                    view evidence · {c.evidence.length}
+        {#if orderedConclusions.length > 0}
+          <ul class="rank-list">
+            {#each orderedConclusions as c (c.id)}
+              {@const t = trendFor(c)}
+              <li>
+                <button
+                  type="button"
+                  class="rank-row"
+                  class:is-selected={selectedId === c.id}
+                  class:rank-row--faded={c.status === "faded"}
+                  title={c.statement}
+                  onclick={() => selectConclusion(c.id)}
+                >
+                  <span class="rank-statement">
+                    {#if c.pinned}<span class="rank-pin" aria-hidden="true">★</span
+                      >{/if}{c.statement}
                   </span>
-                </div>
-              </div>
-            </div>
-          {/each}
-        </div>
+                  <span class="rank-meter">
+                    <span class="rank-track">
+                      <span
+                        class="rank-fill"
+                        class:rank-fill--faded={c.status === "faded"}
+                        style="width:{pct(c.confidence)}%; background:var({colorById.get(c.id)});"
+                      ></span>
+                    </span>
+                    <span class="rank-pct">{pct(c.confidence)}%</span>
+                    <span class="rank-trend rank-trend--{t}" aria-hidden="true">
+                      {trendLabel(t).split(" ")[0]}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="rank-empty">No conclusions recorded yet.</p>
+        {/if}
       </div>
 
       <!-- RIGHT: evidence inspector (sticky) -->
@@ -640,6 +515,34 @@
               · {pct(selectedConclusion.confidence)}%
               {trendLabel(trendFor(selectedConclusion)).split(" ")[0]}
             </span>
+          </div>
+
+          <div class="insp-actions">
+            {#if selectedConclusion.status === "faded"}
+              <div class="floor-note">
+                <span class="glyph" aria-hidden="true">⊘</span>
+                Below display floor — kept for history.
+              </div>
+            {/if}
+            <div class="insp-action-row">
+              <button
+                type="button"
+                class="btn"
+                class:btn--accent={selectedConclusion.pinned}
+                disabled={actionId !== null}
+                onclick={() => void togglePinned(selectedConclusion)}
+              >
+                {selectedConclusion.pinned ? "★ Pinned" : "Pin"}
+              </button>
+              <button
+                type="button"
+                class="btn"
+                disabled={actionId !== null}
+                onclick={() => void dismiss(selectedConclusion)}
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
 
           <div class="ev-list">
@@ -762,100 +665,131 @@
     white-space: nowrap;
   }
 
-  /* ---- Trajectory chart ---- */
-  .traj-card {
-    margin-bottom: 18px;
-  }
-  .traj-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 4px;
-  }
   .section-title {
     font-size: 13px;
     font-weight: 600;
     color: var(--app-text-strong);
     letter-spacing: -0.01em;
   }
-  .traj-head-note {
-    font-size: 11px;
-    color: var(--app-text-muted);
-  }
-  .traj-sub {
-    font-size: 11px;
-    color: var(--app-text-muted);
-    margin: 2px 0 12px;
-    line-height: 1.5;
-  }
-  .traj-chartwrap {
-    width: 100%;
-  }
-  .traj-empty {
-    font-size: 11.5px;
-    color: var(--app-text-muted);
-    margin: 8px 0 0;
-  }
 
-  /* ---- Legend ---- */
-  .traj-legend {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 7px 22px;
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--app-border);
+  /* ---- Ranked confidence bars (master column) ---- */
+  .rank-card {
+    min-width: 0; /* grid cell — allow rank rows to truncate */
   }
-  .legend-item {
+  .rank-head {
     display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .rank-head-note {
+    font-size: 11px;
+    color: var(--app-text-muted);
+  }
+  .rank-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .rank-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    gap: 16px;
     font: inherit;
-    font-size: 11.5px;
-    color: var(--app-text);
-    min-width: 0;
     text-align: left;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 6px;
-    padding: 3px 5px;
+    border-radius: 7px;
+    padding: 7px 9px;
     cursor: pointer;
     transition:
       background 0.12s ease,
       border-color 0.12s ease;
   }
-  .legend-item:hover {
+  .rank-row:hover {
     background: var(--app-surface-hover);
   }
-  .legend-item.is-selected {
+  .rank-row.is-selected {
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
   }
-  .legend-item--faded {
-    opacity: 0.6;
+  .rank-row--faded {
+    opacity: 0.55;
   }
-  .legend-label {
+  .rank-statement {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: 12.5px;
+    color: var(--app-text);
   }
-  .legend-swatch {
-    width: 18px;
-    height: 0;
-    border-top: 2px solid var(--app-text-faint);
+  .rank-pin {
+    color: var(--app-accent-strong);
+    margin-right: 5px;
+    font-size: 11px;
+  }
+  .rank-meter {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
     flex: 0 0 auto;
   }
-  .legend-swatch--faded {
-    border-top-style: dashed;
+  .rank-track {
+    position: relative;
+    width: 150px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--app-surface-hover);
+    border: 1px solid var(--app-border);
+    overflow: hidden;
+  }
+  .rank-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    height: 100%;
+    min-width: 3px;
+    border-radius: 999px;
+  }
+  .rank-fill--faded {
     opacity: 0.5;
   }
-  .legend-trend {
-    color: var(--app-text-muted);
-    font-size: 10.5px;
-    margin-left: auto;
-    flex: 0 0 auto;
+  .rank-pct {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
+    min-width: 34px;
+    text-align: right;
+  }
+  .rank-trend {
+    font-size: 9px;
+    width: 11px;
+    text-align: center;
+    line-height: 1;
+  }
+  .rank-trend--up {
+    color: var(--app-accent);
+  }
+  .rank-trend--down {
+    color: var(--app-danger);
+  }
+  .rank-trend--steady {
+    color: var(--app-text-subtle);
+  }
+  .rank-trend--faded {
+    color: var(--app-text-faint);
+  }
+  .rank-empty {
+    font-size: 11.5px;
+    color: var(--app-text-muted);
+    margin: 8px 0 0;
   }
 
   /* ---- Master-detail ---- */
@@ -864,73 +798,6 @@
     grid-template-columns: 1.6fr 1fr;
     gap: 16px;
     align-items: start;
-  }
-  .md-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0 0 10px;
-  }
-  .md-head-note {
-    font-size: 11px;
-    color: var(--app-text-muted);
-  }
-
-  /* LEFT: conclusions list */
-  .concl-list {
-    display: flex;
-    flex-direction: column;
-    gap: 11px;
-  }
-  .concl-card {
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      background 0.12s ease;
-  }
-  .concl-card:hover {
-    border-color: var(--app-border-hover);
-  }
-  .concl-card.is-selected {
-    border-color: var(--app-accent);
-    background: var(--app-accent-bg);
-  }
-  .concl-card--faded {
-    opacity: 0.6;
-  }
-  .concl-main {
-    min-width: 0;
-  }
-  .concl-statement {
-    font-size: 13.5px;
-    line-height: 1.45;
-    margin: 0 0 9px;
-    color: var(--app-text-strong);
-  }
-  .concl-conf {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 0 0 10px;
-    flex-wrap: wrap;
-  }
-  .trend {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 11px;
-  }
-  .trend--up {
-    color: var(--app-accent-strong);
-  }
-  .trend--down {
-    color: var(--app-danger);
-  }
-  .trend--steady {
-    color: var(--app-text-muted);
-  }
-  .trend--faded {
-    color: var(--app-text-faint);
   }
 
   .floor-note {
@@ -948,12 +815,6 @@
     color: var(--app-text-faint);
   }
 
-  .concl-footrow {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
   .btn {
     font: inherit;
     font-size: 11.5px;
@@ -980,17 +841,6 @@
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
-  }
-  .spacer {
-    flex: 1 1 auto;
-  }
-  .ev-affordance {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 11px;
-    color: var(--app-accent-strong);
-    border-bottom: 1px dotted var(--app-accent-border);
   }
 
   /* RIGHT: evidence inspector (sticky) */
@@ -1037,6 +887,20 @@
   .insp-conf {
     color: var(--app-text-muted);
     font-size: 10.5px;
+  }
+  .insp-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    padding: 11px 13px;
+    border-bottom: 1px solid var(--app-border);
+  }
+  .insp-actions .floor-note {
+    margin: 0;
+  }
+  .insp-action-row {
+    display: flex;
+    gap: 6px;
   }
 
   .ev-list {
@@ -1180,28 +1044,18 @@
   .sk-hero-title {
     margin: 0 0 10px;
   }
-  .sk-traj-sub {
-    margin: 6px 0 12px;
-  }
-  .sk-legend-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 3px 5px;
-    min-width: 0;
-  }
-  .concl-card--skeleton {
+  .sk-rank-list {
     display: flex;
     flex-direction: column;
-    gap: 9px;
-    cursor: default;
+    gap: 12px;
+    margin-top: 4px;
   }
-  .sk-concl-conf {
-    margin: 2px 0;
-  }
-  .sk-concl-foot {
-    display: flex;
-    gap: 6px;
+  .sk-rank-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 150px;
+    align-items: center;
+    gap: 16px;
+    padding: 4px 9px;
   }
   .inspector--skeleton {
     padding: 0;
@@ -1258,8 +1112,14 @@
     .inspector {
       position: static;
     }
-    .traj-legend {
-      grid-template-columns: 1fr;
+  }
+
+  @media (max-width: 560px) {
+    .rank-track {
+      width: 96px;
+    }
+    .sk-rank-row {
+      grid-template-columns: minmax(0, 1fr) 96px;
     }
   }
 </style>
