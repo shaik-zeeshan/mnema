@@ -59,11 +59,13 @@ dependencies = [
 name = "ai-runtime"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "rig-core",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "url",
 ]
 

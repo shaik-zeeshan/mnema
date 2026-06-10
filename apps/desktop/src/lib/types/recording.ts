@@ -19,8 +19,11 @@ export interface AccessSettings {
 	/** Per-question Ask AI tool-call cap. `0` disables the cap (unlimited). */
 	askAiMaxToolCalls: number;
 	/**
-	 * PI model id (`provider:modelId`) Quick Recall should use. `null`/empty lets
-	 * the PI runtime pick its configured default model.
+	 * rig-core model id Quick Recall should use against the default Reasoning
+	 * Engine (e.g. `claude-haiku-4-5`). `null`/empty lets the engine pick its
+	 * configured default model. (Was historically a PI `provider:modelId` pair;
+	 * on the rig-core engine the provider is fixed by the default engine, so this
+	 * is now a bare model id.)
 	 */
 	askAiModel?: string | null;
 }
@@ -40,6 +43,21 @@ export type AiEngineKind = "cloud" | "local";
 export type AiCloudProvider = "anthropic" | "openai" | "openai_compatible";
 export type AiLocalKind = "ollama" | "llamafile";
 
+/**
+ * A fully-specified Reasoning Engine the user has configured. The flat fields on
+ * `AiRuntimeSettings` describe the default/global engine; an `AiEngineProfile` is
+ * one of the additional engines a thread can be pinned to.
+ */
+export interface AiEngineProfile {
+	engineKind: AiEngineKind;
+	cloudProvider: AiCloudProvider;
+	cloudModel: string;
+	cloudBaseUrl: string;
+	localKind: AiLocalKind;
+	localEndpoint: string;
+	localModel: string;
+}
+
 export interface AiRuntimeSettings {
 	enabled: boolean;
 	engineKind: AiEngineKind;
@@ -49,6 +67,12 @@ export interface AiRuntimeSettings {
 	localKind: AiLocalKind;
 	localEndpoint: string;
 	localModel: string;
+	/**
+	 * Additional configured engines beyond the flat default engine, for the
+	 * per-thread engine pin. Empty by default (the flat fields are the default
+	 * engine).
+	 */
+	additionalEngines: AiEngineProfile[];
 }
 
 export interface UpdateAiRuntimeSettingsRequest {
@@ -60,6 +84,7 @@ export interface UpdateAiRuntimeSettingsRequest {
 	localKind?: AiLocalKind;
 	localEndpoint?: string;
 	localModel?: string;
+	additionalEngines?: AiEngineProfile[];
 }
 
 /** Named Derivation Budget intensity tier for a cloud Reasoning Engine. */
@@ -67,12 +92,19 @@ export type DerivationBudgetTier = "light" | "balanced" | "thorough";
 
 /** Non-secret User Context derivation settings domain. */
 export interface UserContextSettings {
+	/**
+	 * The continuous-derivation opt-in: whether the background User Context
+	 * worker runs at all. Independent of Ask AI; the shared prerequisite is only
+	 * that a usable Reasoning Engine is configured. Off by default.
+	 */
+	enabled: boolean;
 	derivationBudgetTier: DerivationBudgetTier;
 	backfillWindowDays: number;
 	backfillGoDeeper: boolean;
 }
 
 export interface UpdateUserContextSettingsRequest {
+	enabled?: boolean;
 	derivationBudgetTier?: DerivationBudgetTier;
 	backfillWindowDays?: number;
 	backfillGoDeeper?: boolean;
@@ -344,20 +376,16 @@ export type UpdateDeveloperSettingsRequest = Partial<
 export interface UpdateAccessSettingsRequest {
 	askAiEnabled: boolean;
 	askAiMaxToolCalls: number;
-	/** Selected Quick Recall model (`provider:modelId`); empty clears to default. */
+	/**
+	 * Selected Quick Recall model — a rig-core model id used against the default
+	 * Reasoning Engine (not a PI `provider:modelId` pair); empty clears to the
+	 * engine default.
+	 */
 	askAiModel: string;
 }
 
-/** One PI model selectable for Quick Recall, reported by `ask_ai_list_models`. */
-export interface AskAiModel {
-	/** Stable `provider:modelId` value persisted in settings. */
-	value: string;
-	provider: string;
-	id: string;
-	name: string;
-}
-
-/** One model id discovered from the Reasoning Engine's `/models` route. */
+/** One model id discovered from the Reasoning Engine's `/models` route
+ *  (`ai_runtime_list_models`). Also drives the Quick Recall model picker. */
 export interface AiRuntimeModel {
 	id: string;
 }
