@@ -42,7 +42,6 @@
   import StackedBar from "$lib/insights/charts/StackedBar.svelte";
   import Heatmap from "$lib/insights/charts/Heatmap.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
-  import RhythmStrip from "$lib/insights/charts/RhythmStrip.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
 
   interface Props {
@@ -450,140 +449,6 @@
     return out;
   });
 
-  // ── Lede rhythm strip: the range's shape — when work happened, what kind ─
-  // One column per time bucket; each bucket aggregates the CLIPPED overlap of
-  // every range activity by category (an activity spanning buckets contributes
-  // its overlap to each). The StackedBar tile shows the aggregate mix without
-  // a time axis — the rhythm strip's whole point IS the time axis.
-  interface RhythmColumn {
-    label: string;
-    title: string;
-    segments: { colorVar: string; value: number }[];
-  }
-  // "8a" / "12p" / "4p" — compact hour tag for the day-mode sparse labels.
-  function slotHourLabel(hour24: number): string {
-    const h = hour24 % 12 === 0 ? 12 : hour24 % 12;
-    return `${h}${hour24 < 12 ? "a" : "p"}`;
-  }
-  // "8–10 AM" / "10 AM–12 PM" — the day-mode slot title prefix. Meridiem is
-  // merged when both ends share it.
-  function slotRangeTitle(startHour: number, endHour: number): string {
-    const h12 = (h: number) => (h % 12 === 0 ? 12 : h % 12);
-    const mer = (h: number) => (h < 12 ? "AM" : "PM");
-    if (mer(startHour) === mer(endHour)) {
-      return `${h12(startHour)}–${h12(endHour)} ${mer(endHour)}`;
-    }
-    return `${h12(startHour)} ${mer(startHour)}–${h12(endHour)} ${mer(endHour)}`;
-  }
-  const rhythmColumns = $derived.by<RhythmColumn[]>(() => {
-    const { startMs, endMs } = range;
-    // Bucket bounds + label/title shells per mode. Date stepping (not raw ms
-    // arithmetic) keeps bucket edges on local-calendar boundaries across DST.
-    interface RhythmBucket {
-      startMs: number;
-      endMs: number;
-      label: string;
-      titlePrefix: string;
-    }
-    const buckets: RhythmBucket[] = [];
-    if (rangeMode === "day") {
-      // Reuse the 6 focus slots (8a–8p in 2h bands); sparse labels on 0/2/4.
-      const dayStart = startOfDay(startMs);
-      for (let i = 0; i < SLOT_COUNT; i++) {
-        const startHour = SLOT_START_HOUR + i * SLOT_SPAN_HOURS;
-        const s = new Date(dayStart);
-        s.setHours(startHour, 0, 0, 0);
-        const e = new Date(dayStart);
-        e.setHours(startHour + SLOT_SPAN_HOURS, 0, 0, 0);
-        buckets.push({
-          startMs: s.getTime(),
-          endMs: e.getTime(),
-          label: i % 2 === 0 ? slotHourLabel(startHour) : "",
-          titlePrefix: slotRangeTitle(startHour, startHour + SLOT_SPAN_HOURS),
-        });
-      }
-    } else if (rangeMode === "week") {
-      // 7 columns Mon–Sun (the range already starts Monday).
-      for (let i = 0; i < 7; i++) {
-        const s = new Date(startMs);
-        s.setDate(s.getDate() + i);
-        const e = new Date(startMs);
-        e.setDate(e.getDate() + i + 1);
-        buckets.push({
-          startMs: s.getTime(),
-          endMs: e.getTime(),
-          label: s.toLocaleDateString(undefined, { weekday: "narrow" }),
-          titlePrefix: s.toLocaleDateString(undefined, { weekday: "long" }),
-        });
-      }
-    } else {
-      // month — one slim column per calendar day; labels on the 1st + Mondays.
-      const cursor = new Date(startMs);
-      while (cursor.getTime() < endMs) {
-        const s = cursor.getTime();
-        const dayOfMonth = cursor.getDate();
-        const isMonday = cursor.getDay() === 1;
-        const titlePrefix = cursor.toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric",
-        });
-        cursor.setDate(cursor.getDate() + 1);
-        buckets.push({
-          startMs: s,
-          endMs: Math.min(cursor.getTime(), endMs),
-          label: dayOfMonth === 1 || isMonday ? String(dayOfMonth) : "",
-          titlePrefix,
-        });
-      }
-    }
-    // Clipped per-bucket category totals — overlap math, zero/negative spans
-    // skipped (same posture as the other aggregations).
-    const totalsPerBucket = buckets.map(() => new Map<string, number>());
-    for (const a of rangeActivities) {
-      if (a.endedAtMs <= a.startedAtMs) continue;
-      const key = a.category ?? "__uncat__";
-      for (let i = 0; i < buckets.length; i++) {
-        const b = buckets[i];
-        const overlap =
-          Math.min(a.endedAtMs, b.endMs) - Math.max(a.startedAtMs, b.startMs);
-        if (overlap <= 0) continue;
-        const totals = totalsPerBucket[i];
-        totals.set(key, (totals.get(key) ?? 0) + overlap);
-      }
-    }
-    return buckets.map((b, i) => {
-      // Segment order mirrors `categorySegments`: CATEGORY_ORDER, then the
-      // uncategorized grey last.
-      const totals = totalsPerBucket[i];
-      const segments: { colorVar: string; value: number }[] = [];
-      let total = 0;
-      for (const c of CATEGORY_ORDER) {
-        const v = totals.get(c);
-        if (v && v > 0) {
-          segments.push({ colorVar: CATEGORY_COLOR[c], value: v });
-          total += v;
-        }
-      }
-      const uncat = totals.get("__uncat__");
-      if (uncat && uncat > 0) {
-        segments.push({ colorVar: UNCATEGORIZED_COLOR, value: uncat });
-        total += uncat;
-      }
-      return {
-        label: b.label,
-        title:
-          total > 0
-            ? `${b.titlePrefix} · ${humanizeMs(total)}`
-            : `${b.titlePrefix} · no activity`,
-        segments,
-      };
-    });
-  });
-  // All buckets empty → hide the strip entirely (no empty-graphic noise).
-  const rhythmHasActivity = $derived(
-    rhythmColumns.some((c) => c.segments.length > 0),
-  );
-
   // ── FREE TILE 4: this-range summary stats ─────────────────────────────
   const summary = $derived.by(() => {
     const buckets = usage?.activityHeatmap ?? [];
@@ -828,12 +693,15 @@
   // Rows in "adjust" mode, keyed by activity id. Corrections are an occasional
   // act — the selects stay hidden until asked for, and a successful correction
   // does NOT auto-close (the user may fix both selects in one visit).
+  // The "adjust" affordance is a popover anchored to its row, so at most one is
+  // open at a time — opening one closes any other, and an outside click /
+  // Escape closes it (see the window handlers on the section).
   let editingActivity = $state<Set<number>>(new Set());
   function toggleActivityEdit(id: number): void {
-    const set = new Set(editingActivity);
-    if (set.has(id)) set.delete(id);
-    else set.add(id);
-    editingActivity = set;
+    editingActivity = editingActivity.has(id) ? new Set() : new Set([id]);
+  }
+  function closeActivityEdit(): void {
+    if (editingActivity.size > 0) editingActivity = new Set();
   }
 
   // Quiet read-only focus hint for non-editing rows ("Scattered" is the app's
@@ -1128,6 +996,19 @@
     !statusLoaded || (engineOn && (loadingEngine || !engineLoadedOnce)),
   );
 </script>
+
+<!-- Close the "adjust" popover on an outside click or Escape. -->
+<svelte:window
+  onpointerdown={(e) => {
+    const target = e.target;
+    if (!(target instanceof Element) || !target.closest(".act-adjust")) {
+      closeActivityEdit();
+    }
+  }}
+  onkeydown={(e) => {
+    if (e.key === "Escape") closeActivityEdit();
+  }}
+/>
 
 <section class="overview" aria-label="Overview">
   <!-- ── Page header ── -->
@@ -1427,8 +1308,8 @@
         <!-- Narrative lede — the engine's read of the range, in prose. A lede,
              not a control surface: no actions, and silently absent when the
              range is too sparse or the digest call fails. Layout top→bottom:
-             eyebrow → headline (when present) → prose (or shimmer) → rhythm
-             strip (when any bucket has activity) → app strip. -->
+             eyebrow → headline (when present) → prose (or shimmer) → app
+             strip. -->
         {#if digest || digestLoading}
           <article class="entry entry--lede" aria-busy={!digest && digestLoading}>
             <p class="eyebrow">
@@ -1455,13 +1336,6 @@
               </div>
               <div class="sk-row">
                 <Skeleton variant="text" width="64%" height="12px" />
-              </div>
-            {/if}
-            {#if rhythmHasActivity}
-              <!-- Rhythm strip — the range's shape; may render before the
-                   prose lands (it doesn't wait on the digest). -->
-              <div class="lede-rhythm">
-                <RhythmStrip columns={rhythmColumns} />
               </div>
             {/if}
             {#if ledeApps.length > 0}
@@ -1524,22 +1398,27 @@
                     <div class="delta-row" class:delta-row--faded={d.kind === "fading"}>
                       <div class="delta-line">
                         <span class="delta-statement">{c.statement}</span>
-                        <button
-                          type="button"
-                          class="subject-chip"
-                          onclick={() => onOpenSubject?.(c.subject)}
-                        >
-                          {c.subject}
-                        </button>
-                        <span class="delta-when">{relativeTime(c.lastSupportedAtMs)}</span>
-                        <button
-                          type="button"
-                          class="delta-toggle"
-                          class:open
-                          aria-expanded={open}
-                          aria-label={open ? "Hide detail" : "Show detail"}
-                          onclick={() => toggleDeltaRow(c.id)}>›</button
-                        >
+                        <!-- Subject + time sit on their own meta line so a long
+                             subject name can't squeeze and wrap against the
+                             statement. -->
+                        <div class="delta-meta">
+                          <button
+                            type="button"
+                            class="subject-chip"
+                            onclick={() => onOpenSubject?.(c.subject)}
+                          >
+                            <span class="subject-chip-text">{c.subject}</span>
+                          </button>
+                          <span class="delta-when">{relativeTime(c.lastSupportedAtMs)}</span>
+                          <button
+                            type="button"
+                            class="delta-toggle"
+                            class:open
+                            aria-expanded={open}
+                            aria-label={open ? "Hide detail" : "Show detail"}
+                            onclick={() => toggleDeltaRow(c.id)}>›</button
+                          >
+                        </div>
                       </div>
                       {#if open}
                         <div class="delta-detail">
@@ -1657,62 +1536,72 @@
                                 )}</span
                               >
                             </div>
-                            {#if !editingActivity.has(a.id) && a.focus != null}
+                            {#if a.focus != null}
                               <span class="act-focus-hint">{focusHint(a.focus)}</span>
                             {/if}
-                            <button
-                              type="button"
-                              class="evidence-link"
-                              aria-expanded={editingActivity.has(a.id)}
-                              onclick={() => toggleActivityEdit(a.id)}
-                            >
-                              {editingActivity.has(a.id) ? "done" : "adjust"}
-                            </button>
-                          </div>
-                          {#if editingActivity.has(a.id)}
-                            <!-- Category moves the row to another thread on the
-                                 next recompute — expected, not fought. -->
-                            <div class="act-correct">
-                              <label class="corr">
-                                <span class="corr-label">Category</span>
-                                <select
-                                  class="corr-select"
-                                  value={a.category ?? ""}
-                                  disabled={correctingActivity.has(a.id)}
-                                  onchange={(e) =>
-                                    void correctCategory(
-                                      a,
-                                      (e.currentTarget.value || null) as ActivityCategory | null,
-                                    )}
+                            <!-- "adjust" opens a popover anchored here rather
+                                 than expanding a form into the feed. -->
+                            <div class="act-adjust">
+                              <button
+                                type="button"
+                                class="evidence-link act-adjust-btn"
+                                aria-haspopup="true"
+                                aria-expanded={editingActivity.has(a.id)}
+                                onclick={() => toggleActivityEdit(a.id)}
+                              >
+                                adjust
+                                <span
+                                  class="act-adjust-caret"
+                                  class:open={editingActivity.has(a.id)}
+                                  aria-hidden="true">▾</span
                                 >
-                                  {#each CATEGORY_OPTIONS as opt (opt.value)}
-                                    <option value={opt.value}>{opt.label}</option>
-                                  {/each}
-                                </select>
-                              </label>
-                              <label class="corr">
-                                <span class="corr-label">Focus</span>
-                                <select
-                                  class="corr-select"
-                                  value={a.focus ?? ""}
-                                  disabled={correctingActivity.has(a.id)}
-                                  onchange={(e) =>
-                                    void correctFocus(
-                                      a,
-                                      (e.currentTarget.value || null) as
-                                        | "deep"
-                                        | "mixed"
-                                        | "distracted"
-                                        | null,
-                                    )}
-                                >
-                                  {#each FOCUS_OPTIONS as opt (opt.value)}
-                                    <option value={opt.value}>{opt.label}</option>
-                                  {/each}
-                                </select>
-                              </label>
+                              </button>
+                              {#if editingActivity.has(a.id)}
+                                <!-- Category moves the row to another thread on
+                                     the next recompute — expected, not fought. -->
+                                <div class="adjust-pop" role="group" aria-label="Adjust activity">
+                                  <label class="corr">
+                                    <span class="corr-label">Category</span>
+                                    <select
+                                      class="corr-select"
+                                      value={a.category ?? ""}
+                                      disabled={correctingActivity.has(a.id)}
+                                      onchange={(e) =>
+                                        void correctCategory(
+                                          a,
+                                          (e.currentTarget.value || null) as ActivityCategory | null,
+                                        )}
+                                    >
+                                      {#each CATEGORY_OPTIONS as opt (opt.value)}
+                                        <option value={opt.value}>{opt.label}</option>
+                                      {/each}
+                                    </select>
+                                  </label>
+                                  <label class="corr">
+                                    <span class="corr-label">Focus</span>
+                                    <select
+                                      class="corr-select"
+                                      value={a.focus ?? ""}
+                                      disabled={correctingActivity.has(a.id)}
+                                      onchange={(e) =>
+                                        void correctFocus(
+                                          a,
+                                          (e.currentTarget.value || null) as
+                                            | "deep"
+                                            | "mixed"
+                                            | "distracted"
+                                            | null,
+                                        )}
+                                    >
+                                      {#each FOCUS_OPTIONS as opt (opt.value)}
+                                        <option value={opt.value}>{opt.label}</option>
+                                      {/each}
+                                    </select>
+                                  </label>
+                                </div>
+                              {/if}
                             </div>
-                          {/if}
+                          </div>
                         </div>
                       {/each}
                     </div>
@@ -2196,11 +2085,6 @@
     line-height: 1.7;
     color: var(--app-text);
   }
-  /* Rhythm strip — when the range's work happened; sits between the prose
-     and the app strip with the card's usual block spacing. */
-  .lede-rhythm {
-    margin-top: 14px;
-  }
   /* App icon strip — where the range's hours actually went, at a glance. */
   .lede-apps {
     display: flex;
@@ -2315,24 +2199,33 @@
   .delta-row--faded {
     opacity: 0.7;
   }
+  /* Statement stacks above a meta line (subject + time + toggle) — the
+     subject no longer competes with the statement for horizontal room. */
   .delta-line {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    gap: 7px;
   }
   .delta-statement {
-    flex: 1 1 auto;
     min-width: 0;
     font-size: 12.5px;
     line-height: 1.45;
     color: var(--app-text-strong);
     display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  .delta-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
   .delta-when {
+    /* Pushes time + toggle to the right; the chip keeps its content width on
+       the left and only ellipsises if the subject is very long. */
+    margin-left: auto;
     flex: 0 0 auto;
     font-size: 10.5px;
     color: var(--app-text-muted);
@@ -2397,10 +2290,18 @@
     border: 1px solid var(--app-accent-border);
     color: var(--app-accent-strong);
     cursor: pointer;
+    min-width: 0;
+    max-width: 100%;
     transition: border-color 0.12s ease;
   }
   .subject-chip:hover {
     border-color: var(--app-accent);
+  }
+  /* Long subjects ellipsise rather than wrap to several lines. */
+  .subject-chip-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .gentle-actions {
@@ -2614,12 +2515,50 @@
     text-transform: uppercase;
     color: var(--app-text-faint);
   }
-  /* Revealed only while a row is in adjust mode. */
-  .act-correct {
-    display: flex;
+  /* "adjust" button + its anchored popover. */
+  .act-adjust {
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .act-adjust-btn {
+    display: inline-flex;
     align-items: center;
+    gap: 4px;
+  }
+  .act-adjust-caret {
+    font-size: 8px;
+    line-height: 1;
+    transition: transform 0.12s ease;
+  }
+  .act-adjust-caret.open {
+    transform: rotate(180deg);
+  }
+  /* Popover panel — the correction controls live here instead of expanding
+     into the feed; anchored to the button's right edge so it never clips the
+     card's right wall. */
+  .adjust-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    min-width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+    padding: 11px 12px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  }
+  .adjust-pop .corr {
+    display: flex;
+    justify-content: space-between;
     gap: 12px;
-    flex-wrap: wrap;
+  }
+  .adjust-pop .corr-select {
+    flex: 0 0 auto;
+    min-width: 120px;
   }
   .corr {
     display: inline-flex;
