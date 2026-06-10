@@ -458,7 +458,7 @@ mod tests {
             .block_on(async {
                 use tokio::time::{sleep, Duration};
 
-                let mut child = Command::new("ping")
+                let child = Command::new("ping")
                     .arg("-n")
                     .arg("30")
                     .arg("127.0.0.1")

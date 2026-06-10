@@ -39,7 +39,7 @@ use super::emit_audio_segments_changed;
 use super::lifecycle::TickOutcome;
 #[cfg(target_os = "windows")]
 use super::runtime::current_segment_sources_for_runtime;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 use super::runtime::mark_runtime_session_failed;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal, has_any_capture_sources,

@@ -340,7 +340,7 @@ impl InactivityState {
 
     /// Returns true when either microphone or system audio is paused.
     /// This is kept only for crate tests that assert family pause state.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn is_any_audio_paused(&self) -> bool {
         self.is_microphone_paused() || self.is_system_audio_paused()
     }

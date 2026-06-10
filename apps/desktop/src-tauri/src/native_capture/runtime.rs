@@ -558,6 +558,7 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
     runtime.runtime_state = RuntimeState::Idle;
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorResponse) -> bool {
     let is_missing_requested_screen_output =
         capture_writers::single_output_processing_failure_detail(
@@ -713,6 +714,7 @@ fn persist_microphone_source_session(
     source_session
 }
 
+#[cfg(target_os = "macos")]
 fn persist_system_audio_source_session(
     runtime: &mut NativeCaptureRuntime,
     session_id: String,
@@ -775,6 +777,7 @@ pub(super) fn ensure_microphone_planner_for_runtime(
     Ok(Some(planner))
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn ensure_system_audio_planner_for_runtime(
     runtime: &mut NativeCaptureRuntime,
     _context: &str,

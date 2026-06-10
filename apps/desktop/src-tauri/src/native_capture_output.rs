@@ -46,6 +46,7 @@ pub(crate) fn clear_current_system_audio_output_file(output_files: &mut CaptureO
 
 const MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX: &str =
     "screen output missing: expected screen recording file";
+#[cfg(any(test, target_os = "macos"))]
 const MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX: &str =
     "screen output missing: expected screen recording file at ";
 
@@ -298,7 +299,7 @@ fn sync_finalized_microphone_output_files_with_duration_validator(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn sync_finalized_microphone_output_files(
     output_files: &mut CaptureOutputFiles,
     unusable_files: &BTreeSet<String>,
@@ -333,7 +334,7 @@ fn sync_finalized_system_audio_output_files_with_duration_validator(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn sync_finalized_system_audio_output_files(
     output_files: &mut CaptureOutputFiles,
     unusable_files: &BTreeSet<String>,
@@ -363,6 +364,7 @@ fn missing_requested_screen_output_failure(recording_file: Option<&str>) -> Stri
     format!("{MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX}{path_detail}")
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn is_missing_requested_screen_output_failure_detail(detail: &str) -> bool {
     detail == MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX
         || detail.starts_with(MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX)

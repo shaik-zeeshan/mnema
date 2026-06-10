@@ -83,7 +83,7 @@ pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationG
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
-pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<()>>);
+pub struct SystemWakeNotifierState;
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
@@ -91,7 +91,7 @@ pub struct MetadataNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGua
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
-pub struct MetadataNotifierState(std::sync::Mutex<Vec<()>>);
+pub struct MetadataNotifierState;
 
 #[cfg(target_os = "macos")]
 impl MetadataNotifierState {
@@ -100,13 +100,7 @@ impl MetadataNotifierState {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-impl MetadataNotifierState {
-    pub(crate) fn replace(&self, guards: Vec<()>) {
-        *self.0.lock().expect("metadata notifier state poisoned") = guards;
-    }
-}
-
+#[cfg(target_os = "macos")]
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 #[cfg(target_os = "macos")]
 // ScreenCaptureKit can report no displays for several seconds after macOS
@@ -124,6 +118,7 @@ const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcripti
 const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
+#[cfg(target_os = "macos")]
 const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 #[cfg(target_os = "macos")]
@@ -403,6 +398,7 @@ fn running_privacy_app_candidates() -> Vec<PrivacyAppCandidate> {
     candidates
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn mark_running_privacy_app_candidates(
     candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
     running_bundle_ids: &BTreeSet<String>,
@@ -414,6 +410,7 @@ fn mark_running_privacy_app_candidates(
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn merge_running_privacy_app_candidates(
     candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
     running_candidates: impl IntoIterator<Item = PrivacyAppCandidate>,
@@ -764,6 +761,7 @@ fn browser_url_metadata_source(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
 }
@@ -813,6 +811,7 @@ fn push_app_notification(
     emit_app_notifications_changed(app_handle, &notifications);
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn push_privacy_recovery_restart_required_notification(app_handle: &tauri::AppHandle) {
     let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
         debug_log::log_warn(

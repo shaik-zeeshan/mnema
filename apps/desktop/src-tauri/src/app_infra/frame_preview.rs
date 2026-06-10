@@ -29,9 +29,11 @@ pub type FramePreviewCacheState = Mutex<FramePreviewState>;
 
 pub(super) const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
 pub(super) const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
+#[cfg(target_os = "macos")]
 const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
 const FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT: Duration = Duration::from_secs(5);
 const PREVIEW_GENERATION_CANCELLED: &str = "preview generation cancelled";
+#[cfg(target_os = "macos")]
 const PREVIEW_GENERATION_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const SCRUB_PREVIEW_DEFAULT_MAX_PIXEL_SIZE: u32 = 200;
 const SCRUB_PREVIEW_MIN_MAX_PIXEL_SIZE: u32 = 200;

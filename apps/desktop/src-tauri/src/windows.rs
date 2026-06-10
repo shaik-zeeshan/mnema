@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, MutexGuard, OnceLock,
+        Mutex, MutexGuard,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -161,9 +163,11 @@ struct AppWindowConfig {
     min_inner_size: (f64, f64),
     gated_by_dev_options: bool,
     decorations: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     overlay_title_bar: bool,
     transparent: bool,
     shadow: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     macos_corner_radius: Option<f64>,
 }
 
@@ -291,6 +295,7 @@ fn current_onboarding_state(
     state
 }
 
+#[cfg(unix)]
 pub fn current_onboarding_state_for_app(
     app: &tauri::AppHandle,
     store: &OnboardingStateStore,
