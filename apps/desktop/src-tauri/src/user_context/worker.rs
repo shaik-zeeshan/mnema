@@ -373,54 +373,44 @@ pub async fn run_forward_activity_window(
     }
 }
 
-/// The outcome of one backward **History Backfill** window pass.
+/// The outcome of deriving one bounded window (shared by the backward
+/// **History Backfill** pass and the failed-window **Retry** pass, #113).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackfillStep {
     /// Coverage already reaches the floor — nothing left to backfill this pass.
     Complete,
-    /// A window was read but had no captures; a `skipped` `backfill` run advanced
-    /// the cursor backward. Keep going (more windows may have content).
+    /// A window was read but had no captures; a `skipped` run advanced the
+    /// cursor. Keep going (more windows may have content).
     Advanced,
-    /// A window was derived (≥1 Activity), recorded as a completed `backfill` run.
+    /// A window was derived (≥1 Activity), recorded as a completed run.
     Derived,
-    /// A window read empty-of-engine-work or failed; the cursor still advanced via
-    /// a recorded run. Keep going.
+    /// A window read empty-of-engine-work or failed; the outcome was still
+    /// recorded via a run. Keep going.
     NoChange,
 }
 
-/// Run exactly ONE backward **History Backfill** window (#98): extend coverage
-/// older by `[max(floor, oldest_covered - BACKFILL_WINDOW_MS) .. oldest_covered]`.
-/// This walks history newest-first, one bounded window per call — a background
-/// trickle, NOT a synchronous whole-history bill (there is deliberately no
-/// "derive all of history now" path).
-///
-/// Every outcome records a `'backfill'`-kind `derivation_run` so the
-/// oldest-covered cursor advances backward each pass (empty → `skipped`,
-/// derived → `completed`, engine error → `failed`). Resilient: an error records
-/// a `failed` run and returns `BackfillStep::NoChange`; it never panics.
-///
-/// `oldest_covered` is the caller-resolved `oldest_derivation_run_window_start()`;
-/// the caller skips backfill entirely (forward seeds coverage first) when that is
-/// `None`. `floor_ms` is `backfill_floor_ms(...)`.
-async fn run_backfill_window(
+/// Derive ONE explicit `[start, end]` window and stamp a `derivation_run` of
+/// `kind` with the outcome (empty → `skipped`, derived → `completed`, engine
+/// error → `failed`). This is the shared engine-facing half of both the
+/// History Backfill step (#98) and the failed-window Retry step (#113); the
+/// callers own window *selection*. Resilient: an error records a `failed` run
+/// and returns `BackfillStep::NoChange`; it never panics.
+async fn derive_window_and_record(
     engine: &ai_engine::EngineConfig,
     store: &UserContextStore,
-    floor_ms: i64,
-    oldest_covered: i64,
+    kind: &str,
+    start: i64,
+    end: i64,
     provider_label: Option<String>,
     model_label: Option<String>,
 ) -> BackfillStep {
-    let Some((start, end)) = next_backfill_window(floor_ms, oldest_covered) else {
-        return BackfillStep::Complete;
-    };
-
     let window = match store.read_capture_window(start, end, MAX_ITEMS).await {
         Ok(window) => window,
         Err(error) => {
-            // Record a failed backfill run so the cursor still advances backward.
+            // Record a failed run so the outcome stays visible in the ledger.
             let _ = store
                 .insert_derivation_run(NewDerivationRun {
-                    kind: "backfill".to_string(),
+                    kind: kind.to_string(),
                     window_start_ms: Some(start),
                     window_end_ms: Some(end),
                     status: "failed".to_string(),
@@ -438,12 +428,12 @@ async fn run_backfill_window(
         }
     };
 
-    // No captures in this older window: record a `skipped` backfill run to advance
-    // the cursor backward so the next pass picks the next-older window.
+    // No captures in this window: record a `skipped` run to advance the cursor
+    // (and, for a retry, extinguish the hole — the captures are gone).
     if window.items.is_empty() {
         let _ = store
             .insert_derivation_run(NewDerivationRun {
-                kind: "backfill".to_string(),
+                kind: kind.to_string(),
                 window_start_ms: Some(start),
                 window_end_ms: Some(end),
                 status: "skipped".to_string(),
@@ -472,7 +462,7 @@ async fn run_backfill_window(
         Ok(outcome) => {
             let _ = store
                 .insert_derivation_run(NewDerivationRun {
-                    kind: "backfill".to_string(),
+                    kind: kind.to_string(),
                     window_start_ms: Some(start),
                     window_end_ms: Some(end),
                     status: "completed".to_string(),
@@ -495,7 +485,7 @@ async fn run_backfill_window(
         Err(error) => {
             let _ = store
                 .insert_derivation_run(NewDerivationRun {
-                    kind: "backfill".to_string(),
+                    kind: kind.to_string(),
                     window_start_ms: Some(start),
                     window_end_ms: Some(end),
                     status: "failed".to_string(),
@@ -512,6 +502,43 @@ async fn run_backfill_window(
             BackfillStep::NoChange
         }
     }
+}
+
+/// Run exactly ONE backward **History Backfill** window (#98): extend coverage
+/// older by `[max(floor, oldest_covered - BACKFILL_WINDOW_MS) .. oldest_covered]`.
+/// This walks history newest-first, one bounded window per call — a background
+/// trickle, NOT a synchronous whole-history bill (there is deliberately no
+/// "derive all of history now" path).
+///
+/// Every outcome records a `'backfill'`-kind `derivation_run` so the
+/// oldest-covered cursor advances backward each pass (empty → `skipped`,
+/// derived → `completed`, engine error → `failed`). Resilient: an error records
+/// a `failed` run and returns `BackfillStep::NoChange`; it never panics.
+///
+/// `oldest_covered` is the caller-resolved `oldest_derivation_run_window_start()`;
+/// the caller skips backfill entirely (forward seeds coverage first) when that is
+/// `None`. `floor_ms` is `backfill_floor_ms(...)`.
+async fn run_backfill_window(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    floor_ms: i64,
+    oldest_covered: i64,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> BackfillStep {
+    let Some((start, end)) = next_backfill_window(floor_ms, oldest_covered) else {
+        return BackfillStep::Complete;
+    };
+    derive_window_and_record(
+        engine,
+        store,
+        "backfill",
+        start,
+        end,
+        provider_label,
+        model_label,
+    )
+    .await
 }
 
 /// Run the per-tick backward **History Backfill** pass: up to
@@ -554,6 +581,79 @@ async fn run_backfill_pass(
             BackfillStep::Derived => derived_anything = true,
             BackfillStep::Advanced | BackfillStep::NoChange => {}
         }
+    }
+    derived_anything
+}
+
+/// Failed-window **Retry** (#113): how many total failed runs a window may
+/// accumulate before it is left failed for good (the crash-loop backstop,
+/// mirroring `RECLAIM_ATTEMPT_CEILING`'s role in ADR 0020 and the processing
+/// queue's `FailureRetryPolicy` caps). The original failure counts: a window
+/// gets the first attempt plus two retries.
+const MAX_WINDOW_DERIVATION_FAILURES: i64 = 3;
+
+/// Wall-clock spacing between retry attempts on the same window (10 min). A
+/// window whose newest failure is younger than this is skipped, so a poisoned
+/// window cannot eat engine budget on every beat (tick intervals are 2–10 min,
+/// so this spans one to several beats depending on the tier).
+const RETRY_BACKOFF_MS: i64 = 10 * 60 * 1000;
+
+/// At most this many failed windows are retried per tick. Retries are a
+/// low-priority background trickle behind fresh forward work and backfill,
+/// never a burst.
+const RETRY_WINDOWS_PER_TICK: i64 = 1;
+
+/// Run the per-tick failed-window **Retry** pass (#113): re-derive up to
+/// [`RETRY_WINDOWS_PER_TICK`] `failed` windows whose span was never covered by
+/// a later `completed`/`skipped` run, newest-first. Eligibility (the
+/// per-window [`MAX_WINDOW_DERIVATION_FAILURES`] cap and the
+/// [`RETRY_BACKOFF_MS`] spacing) is resolved by the store query; a successful
+/// or `skipped` retry run extinguishes the hole, while another failure counts
+/// toward the cap and re-arms the backoff. Runs AFTER the forward beat (fresh
+/// capture always derives first) so a transient engine hiccup heals itself
+/// within a few beats instead of leaving a permanent Activity gap. Returns
+/// whether any window derived an Activity.
+async fn run_failed_window_retry_pass(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> bool {
+    let eligible = match store
+        .failed_windows_eligible_for_retry(
+            MAX_WINDOW_DERIVATION_FAILURES,
+            now_ms().saturating_sub(RETRY_BACKOFF_MS),
+            RETRY_WINDOWS_PER_TICK,
+        )
+        .await
+    {
+        Ok(eligible) => eligible,
+        Err(_) => return false,
+    };
+
+    let mut derived_anything = false;
+    for window in eligible {
+        let step = derive_window_and_record(
+            engine,
+            store,
+            &window.kind,
+            window.window_start_ms,
+            window.window_end_ms,
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await;
+        if step == BackfillStep::Derived {
+            derived_anything = true;
+        }
+        crate::native_capture::debug_log::log_info(format!(
+            "user context worker retried failed window [{},{}] (attempt {} of {}): {:?}",
+            window.window_start_ms,
+            window.window_end_ms,
+            window.failure_count + 1,
+            MAX_WINDOW_DERIVATION_FAILURES,
+            step
+        ));
     }
     derived_anything
 }
@@ -906,6 +1006,30 @@ async fn worker_tick(
             crate::native_capture::debug_log::log_info(
                 "user context worker backfilled older history (background trickle)",
             );
+        }
+    }
+
+    // --- Failed-window Retry beat (#113, lowest-priority trickle) ---
+    // Re-derive windows whose only coverage is `failed` runs (a transient cloud
+    // hiccup mid-window would otherwise leave a PERMANENT hole in the Activity
+    // history — the cursor advances past failures by design). This runs every
+    // tick AFTER the forward beat (fresh capture always derives first; gating it
+    // on an idle forward beat would starve retries forever during continuous
+    // use), is capped at one window per tick, and the store query enforces the
+    // per-window attempt cap + wall-clock backoff so a deterministically-failing
+    // window stops consuming engine calls.
+    {
+        let retried = run_failed_window_retry_pass(
+            &engine,
+            infra.user_context(),
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await;
+        if retried {
+            dossier_changed = true;
+            cadence.activity_ticks_since_distillation =
+                cadence.activity_ticks_since_distillation.saturating_add(1);
         }
     }
 

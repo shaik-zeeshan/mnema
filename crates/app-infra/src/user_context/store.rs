@@ -118,6 +118,24 @@ pub struct NewDerivationRun {
     pub gate_drops: DistillationGateDrops,
 }
 
+/// A `failed` derivation window eligible for a retry (issue #113): a
+/// `[window_start_ms, window_end_ms]` span whose every windowed run failed —
+/// no later `completed`/`skipped` run ever covered the same span — so the
+/// Activity history has a hole there. Returned by
+/// [`UserContextStore::failed_windows_eligible_for_retry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedDerivationWindow {
+    /// The kind of the most recent failed run over this span (`'activity'` or
+    /// `'backfill'`); a retry records its run under the same kind.
+    pub kind: String,
+    pub window_start_ms: i64,
+    pub window_end_ms: i64,
+    /// How many failed runs cover exactly this span (the retry-cap counter).
+    pub failure_count: i64,
+    /// `created_at_ms` of the newest failed run (the backoff anchor).
+    pub last_failed_at_ms: i64,
+}
+
 /// A new (or to-be-updated) **Conclusion** ready to persist via
 /// [`UserContextStore::upsert_conclusion`]. A Conclusion is open-ended
 /// natural language (a `subject` it is about + a plain-language `statement`),
@@ -541,6 +559,70 @@ impl UserContextStore {
         .await?;
         // MIN over an empty/all-NULL set is SQL NULL → read as an Option column.
         Ok(row.get::<Option<i64>, _>("oldest"))
+    }
+
+    /// `failed` derivation windows that still have a hole in Activity coverage
+    /// and are eligible for a retry (issue #113): windowed (`'activity'` /
+    /// `'backfill'`) spans where every run failed — never covered by a
+    /// `completed`/`skipped` run over the same exact span — with fewer than
+    /// `max_failures` failed runs (the crash-loop backstop) whose newest
+    /// failure is at or before `last_failed_at_or_before_ms` (the wall-clock
+    /// backoff). Newest-first, matching the History Backfill policy, capped at
+    /// `limit`.
+    ///
+    /// Exact-span matching is sound because both the forward beat and backfill
+    /// step the cursor in whole windows: a retried span is re-derived with the
+    /// same bounds, so its success/skip run extinguishes the hole.
+    pub async fn failed_windows_eligible_for_retry(
+        &self,
+        max_failures: i64,
+        last_failed_at_or_before_ms: i64,
+        limit: i64,
+    ) -> Result<Vec<FailedDerivationWindow>> {
+        let rows = sqlx::query(
+            "SELECT f.window_start_ms AS window_start_ms, \
+                    f.window_end_ms AS window_end_ms, \
+                    COUNT(*) AS failure_count, \
+                    MAX(f.created_at_ms) AS last_failed_at_ms, \
+                    (SELECT k.kind FROM user_context_derivation_runs k \
+                      WHERE k.window_start_ms = f.window_start_ms \
+                        AND k.window_end_ms = f.window_end_ms \
+                        AND k.status = 'failed' \
+                        AND k.kind IN ('activity', 'backfill') \
+                      ORDER BY k.created_at_ms DESC, k.id DESC \
+                      LIMIT 1) AS kind \
+             FROM user_context_derivation_runs f \
+             WHERE f.kind IN ('activity', 'backfill') \
+               AND f.status = 'failed' \
+               AND f.window_start_ms IS NOT NULL \
+               AND f.window_end_ms IS NOT NULL \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM user_context_derivation_runs s \
+                   WHERE s.window_start_ms = f.window_start_ms \
+                     AND s.window_end_ms = f.window_end_ms \
+                     AND s.status IN ('completed', 'skipped')\
+               ) \
+             GROUP BY f.window_start_ms, f.window_end_ms \
+             HAVING COUNT(*) < ?1 AND MAX(f.created_at_ms) <= ?2 \
+             ORDER BY f.window_end_ms DESC \
+             LIMIT ?3",
+        )
+        .bind(max_failures)
+        .bind(last_failed_at_or_before_ms)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| FailedDerivationWindow {
+                kind: row.get("kind"),
+                window_start_ms: row.get("window_start_ms"),
+                window_end_ms: row.get("window_end_ms"),
+                failure_count: row.get("failure_count"),
+                last_failed_at_ms: row.get("last_failed_at_ms"),
+            })
+            .collect())
     }
 
     /// The earliest captured-at across all raw captures, in unix millis — the
@@ -2491,6 +2573,158 @@ mod tests {
             Some(expected_ms),
             "MIN across frames/audio_segments, RFC3339 → millis"
         );
+        });
+    }
+
+    /// Insert a minimal derivation run for the #113 retry-eligibility tests.
+    async fn seed_run(
+        store: &UserContextStore,
+        kind: &str,
+        status: &str,
+        window: Option<(i64, i64)>,
+    ) {
+        store
+            .insert_derivation_run(NewDerivationRun {
+                kind: kind.to_string(),
+                window_start_ms: window.map(|w| w.0),
+                window_end_ms: window.map(|w| w.1),
+                status: status.to_string(),
+                activities_derived: 0,
+                conclusions_derived: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                provider: None,
+                model: None,
+                error: None,
+                gate_drops: DistillationGateDrops::default(),
+            })
+            .await
+            .expect("seed run");
+    }
+
+    /// #113 retry-eligibility SQL: a `failed` windowed run is a retryable hole
+    /// until a `completed`/`skipped` run covers the same exact span; NULL-bound
+    /// failed runs (conclusion/confidence kinds) never qualify.
+    #[test]
+    fn failed_window_is_eligible_until_a_success_or_skip_covers_it() {
+        block_on(async {
+            let store = test_store().await;
+            // `insert_derivation_run` stamps created_at_ms = now; querying with a
+            // far-future backoff anchor makes every failure old enough.
+            let no_backoff = i64::MAX;
+
+            seed_run(&store, "activity", "failed", Some((1_000, 2_000))).await;
+            // A NULL-bound failed conclusion run must never appear as a window.
+            seed_run(&store, "conclusion", "failed", None).await;
+
+            let eligible = store
+                .failed_windows_eligible_for_retry(3, no_backoff, 10)
+                .await
+                .expect("eligible");
+            assert_eq!(eligible.len(), 1);
+            assert_eq!(eligible[0].kind, "activity");
+            assert_eq!(
+                (eligible[0].window_start_ms, eligible[0].window_end_ms),
+                (1_000, 2_000)
+            );
+            assert_eq!(eligible[0].failure_count, 1);
+
+            // A completed retry over the same span extinguishes the hole.
+            seed_run(&store, "activity", "completed", Some((1_000, 2_000))).await;
+            assert!(store
+                .failed_windows_eligible_for_retry(3, no_backoff, 10)
+                .await
+                .expect("after success")
+                .is_empty());
+
+            // A `skipped` run covers a span just as well (captures deleted).
+            seed_run(&store, "backfill", "failed", Some((3_000, 4_000))).await;
+            seed_run(&store, "backfill", "skipped", Some((3_000, 4_000))).await;
+            assert!(store
+                .failed_windows_eligible_for_retry(3, no_backoff, 10)
+                .await
+                .expect("after skip")
+                .is_empty());
+        });
+    }
+
+    /// #113 crash-loop backstop: a window with `max_failures` failed runs stops
+    /// being eligible (it stays failed and consumes no more engine calls).
+    #[test]
+    fn failed_window_retry_respects_the_attempt_cap() {
+        block_on(async {
+            let store = test_store().await;
+            let no_backoff = i64::MAX;
+
+            for _ in 0..3 {
+                seed_run(&store, "activity", "failed", Some((1_000, 2_000))).await;
+            }
+            assert!(
+                store
+                    .failed_windows_eligible_for_retry(3, no_backoff, 10)
+                    .await
+                    .expect("at cap")
+                    .is_empty(),
+                "3 failures with a cap of 3 => permanently failed"
+            );
+            // A higher cap still sees it, with the full failure count.
+            let eligible = store
+                .failed_windows_eligible_for_retry(4, no_backoff, 10)
+                .await
+                .expect("below higher cap");
+            assert_eq!(eligible.len(), 1);
+            assert_eq!(eligible[0].failure_count, 3);
+        });
+    }
+
+    /// #113 wall-clock backoff: a window whose newest failure is younger than
+    /// the backoff anchor is skipped this pass.
+    #[test]
+    fn failed_window_retry_respects_the_backoff_anchor() {
+        block_on(async {
+            let store = test_store().await;
+            seed_run(&store, "activity", "failed", Some((1_000, 2_000))).await;
+
+            // Anchor in the past => the just-inserted failure is too fresh.
+            assert!(store
+                .failed_windows_eligible_for_retry(3, now_ms() - 60_000, 10)
+                .await
+                .expect("fresh failure")
+                .is_empty());
+            // Anchor at/after the failure time => eligible.
+            assert_eq!(
+                store
+                    .failed_windows_eligible_for_retry(3, i64::MAX, 10)
+                    .await
+                    .expect("aged failure")
+                    .len(),
+                1
+            );
+        });
+    }
+
+    /// #113 ordering: eligible holes come back newest-first (matching the
+    /// History Backfill policy) and the limit caps the pass.
+    #[test]
+    fn failed_window_retry_is_newest_first_and_limited() {
+        block_on(async {
+            let store = test_store().await;
+            let no_backoff = i64::MAX;
+
+            seed_run(&store, "backfill", "failed", Some((1_000, 2_000))).await;
+            seed_run(&store, "activity", "failed", Some((5_000, 6_000))).await;
+
+            let eligible = store
+                .failed_windows_eligible_for_retry(3, no_backoff, 1)
+                .await
+                .expect("limited");
+            assert_eq!(eligible.len(), 1);
+            assert_eq!(
+                (eligible[0].window_start_ms, eligible[0].window_end_ms),
+                (5_000, 6_000),
+                "the newest hole retries first"
+            );
+            assert_eq!(eligible[0].kind, "activity");
         });
     }
 
