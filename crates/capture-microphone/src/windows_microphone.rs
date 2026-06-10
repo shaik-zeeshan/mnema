@@ -26,7 +26,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
 
@@ -66,42 +66,35 @@ const MAX_AAC_CHANNELS: u16 = 2;
 // Support gate
 // ---------------------------------------------------------------------------
 
-/// True iff a default WASAPI capture endpoint exists.
+/// True iff a default WASAPI capture endpoint exists *right now*.
 pub fn microphone_capture_supported() -> bool {
+    // Audio endpoints hot-plug: a mic connected after launch must flip this gate
+    // to `true` without an app restart (and vice versa), so the probe runs on
+    // every call — never latch the result in a static.
+    default_endpoint_exists_now(Direction::Capture)
+}
+
+/// True iff a default WASAPI render endpoint exists *right now* for
+/// system-audio loopback.
+pub fn system_audio_loopback_capture_supported() -> bool {
+    default_endpoint_exists_now(Direction::Render)
+}
+
+fn default_endpoint_exists_now(direction: Direction) -> bool {
     // The probe touches COM: `initialize_mta` calls `CoInitializeEx(MTA)`, which
     // joins the *calling* thread to a multithreaded apartment. This gate runs on
     // the app's main thread during startup (status-bar setup), and that thread
     // must stay free for `tao` to `OleInitialize` it as a single-threaded
     // apartment when it creates the first window — mixing the two panics with
     // `RPC_E_CHANGED_MODE`. So run the probe on a throwaway thread, never the
-    // caller's, and cache the (process-stable) result.
-    static SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SUPPORTED.get_or_init(|| {
-        std::thread::spawn(|| {
-            // COM must be initialized on this thread before touching the device
-            // enumerator. The throwaway thread's apartment is torn down when it
-            // exits, so the MTA never leaks back to the caller.
-            let _ = initialize_mta();
-            get_default_device(&Direction::Capture).is_ok()
-        })
-        .join()
-        .unwrap_or(false)
+    // caller's. The thread's apartment is torn down when it exits, so the MTA
+    // never leaks back to the caller.
+    std::thread::spawn(move || {
+        let _ = initialize_mta();
+        get_default_device(&direction).is_ok()
     })
-}
-
-/// True iff a default WASAPI render endpoint exists for system-audio loopback.
-pub fn system_audio_loopback_capture_supported() -> bool {
-    // Same COM-apartment constraint as `microphone_capture_supported`: never
-    // initialize MTA on the caller/UI thread.
-    static SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SUPPORTED.get_or_init(|| {
-        std::thread::spawn(|| {
-            let _ = initialize_mta();
-            get_default_device(&Direction::Render).is_ok()
-        })
-        .join()
-        .unwrap_or(false)
-    })
+    .join()
+    .unwrap_or(false)
 }
 
 pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {

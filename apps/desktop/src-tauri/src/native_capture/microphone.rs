@@ -119,6 +119,10 @@ pub fn start_microphone_device_change_notifier(app_handle: tauri::AppHandle) {
 
             maybe_reconnect_waiting_microphone_session(&app_handle, &controller_state);
             emit_microphone_controller_changed(&app_handle, controller_state);
+            // Device hotplug can flip per-source capture support (e.g. the first
+            // microphone appearing after launch), and the tray menu bakes that
+            // support into its source-item enablement — rebuild it.
+            crate::status_bar::refresh(&app_handle);
         }
     });
 

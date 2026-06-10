@@ -128,6 +128,29 @@ harness stops *during* the pause. Pass criteria:
 Useful options: `--idle-timeout-seconds`, `--max-idle-wait-seconds`,
 `--max-state-wait-seconds`, `--audio-tail-tolerance-seconds`, `--save-directory`.
 
+## Scenario 4 — Audio-endpoint hotplug support gate
+
+Regression check for the stale support-gate bug (mic connected after launch
+stayed unusable until restart because the support probe was latched at first
+call).
+
+```powershell
+cargo run -p capture-microphone --example smoke_support_hotplug
+```
+
+Steps: start the harness with the microphone unplugged (or disabled in
+Settings -> System -> Sound), then plug it back in while the loop is running.
+Pass criteria:
+- Initial line reports `microphone supported = false`, permission `Unsupported`.
+- Within ~2s of plugging the mic in, a `CHANGE` line flips to
+  `microphone supported = true`, permission `Unknown` — **inside the same
+  process, no restart**.
+- Optionally unplug again and confirm it flips back to `false`.
+
+Full-app variant: launch the desktop app with no mic, plug one in, and start a
+recording with the microphone source enabled — it must start without an app
+restart, and the tray Sources menu must re-enable Microphone after the plug-in.
+
 ## Recording results
 
 For each run, capture: the command, the final `PASS`/`FAIL` line, the printed

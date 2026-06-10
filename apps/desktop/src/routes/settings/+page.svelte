@@ -2832,6 +2832,15 @@
       micState = event.payload;
       syncMicDrafts(event.payload);
       micError = null;
+      // Hotplugging the first microphone (or losing the last one) flips
+      // per-source capture support, so refresh it in place. Skip the
+      // loadCaptureSupport() helper: its clear-then-reload flashes the
+      // capability-gated UI on every device change.
+      invoke<CaptureSupport>("get_capture_support")
+        .then((support) => {
+          if (!destroyed) captureSupport = support;
+        })
+        .catch(() => {});
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenControllerChanged = fn;
