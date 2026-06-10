@@ -6,8 +6,9 @@
   //            Search Context via `get_usage_charts` (time-per-app + activity
   //            heatmap). Renders for everyone, even with no engine and zero
   //            conclusions.
-  //   ENGINE = the "color": categorized + focus charts from Activities, plus the
-  //            dossier (Conclusions) + the Activity story feed with corrections.
+  //   ENGINE = the "color": categorized + focus charts from Activities, plus
+  //            conclusion DELTAS for the range (what changed — the full dossier
+  //            lives on Subjects) + the Activity story feed with corrections.
   //            Gated on Reasoning Engine availability.
   //
   // Engine-off NEVER shows an empty Overview: the FREE grayscale tiles stay and
@@ -211,8 +212,6 @@
   // Per-conclusion local optimistic overrides (pin / dismiss reflect at once).
   let pinnedOverride = $state<Map<number, boolean>>(new Map());
   let dismissedIds = $state<Set<number>>(new Set());
-  // Expanded "view evidence" conclusions.
-  let expandedConclusions = $state<Set<number>>(new Set());
   // Inline-correction in flight, keyed by activity id.
   let correctingActivity = $state<Set<number>>(new Set());
 
@@ -418,28 +417,55 @@
     };
   });
 
-  // ── Dossier conclusions (engine tier) ─────────────────────────────────
-  // visible first (by confidence), faded below. dismissed dropped.
+  // ── Conclusion deltas (engine tier) ───────────────────────────────────
+  // The story shows only what CHANGED in the active range — formed,
+  // strengthened, or started fading. Standing beliefs with no delta live on
+  // the Subjects tab, not here; otherwise the feed reads identically every
+  // week. Each live conclusion lands in at most one bucket.
+  type ConclusionDeltaKind = "formed" | "strengthened" | "fading";
+  interface ConclusionDelta {
+    c: Conclusion;
+    kind: ConclusionDeltaKind;
+  }
   function isPinned(c: Conclusion): boolean {
     const o = pinnedOverride.get(c.id);
     return o === undefined ? c.pinned : o;
   }
-  const dossier = $derived.by<Conclusion[]>(() => {
+  const conclusionDeltas = $derived.by<ConclusionDelta[]>(() => {
+    const { startMs, endMs } = range;
+    const inRange = (ms: number) => ms >= startMs && ms < endMs;
     const live = conclusions.filter(
       (c) => c.status !== "dismissed" && !dismissedIds.has(c.id),
     );
-    const visible = live
-      .filter((c) => c.status === "visible")
-      .sort(
-        (a, b) =>
-          Number(isPinned(b)) - Number(isPinned(a)) ||
-          b.confidence - a.confidence,
-      );
-    const faded = live
-      .filter((c) => c.status === "faded")
-      .sort((a, b) => b.confidence - a.confidence);
-    return [...visible, ...faded];
+    const formed: ConclusionDelta[] = [];
+    const strengthened: ConclusionDelta[] = [];
+    const fading: ConclusionDelta[] = [];
+    for (const c of live) {
+      if (inRange(c.formedAtMs)) {
+        formed.push({ c, kind: "formed" });
+      } else if (c.status === "visible" && inRange(c.lastSupportedAtMs)) {
+        strengthened.push({ c, kind: "strengthened" });
+      } else if (c.status === "faded" && inRange(c.updatedAtMs)) {
+        // `updatedAtMs` is the best available proxy for when the fade
+        // transition happened.
+        fading.push({ c, kind: "fading" });
+      }
+      // No delta in this range → excluded; the dossier lives on Subjects.
+    }
+    const byPinThenConfidence = (a: ConclusionDelta, b: ConclusionDelta) =>
+      Number(isPinned(b.c)) - Number(isPinned(a.c)) ||
+      b.c.confidence - a.c.confidence;
+    formed.sort(byPinThenConfidence);
+    strengthened.sort(byPinThenConfidence);
+    fading.sort(byPinThenConfidence);
+    return [...formed, ...strengthened, ...fading];
   });
+
+  function deltaLabel(kind: ConclusionDeltaKind): string {
+    if (kind === "formed") return `Formed this ${rangeMode}`;
+    if (kind === "strengthened") return "Strengthened";
+    return "Started fading";
+  }
 
   function conclusionTrend(c: Conclusion): "up" | "steady" | "down" | "faded" {
     if (c.status === "faded") return "faded";
@@ -450,15 +476,153 @@
     return "steady";
   }
 
-  // ── Story activities (#108 corrections) ───────────────────────────────
-  const storyActivities = $derived.by<Activity[]>(() => {
-    return [...rangeActivities]
-      .sort((a, b) => b.startedAtMs - a.startedAtMs)
-      .slice(0, 12);
+  // Deltas grouped by kind for the single "What changed" card — groups render
+  // formed → strengthened → fading; within-group order (pinned first, then
+  // confidence desc) is already settled by `conclusionDeltas`.
+  const DELTA_KIND_ORDER: ConclusionDeltaKind[] = [
+    "formed",
+    "strengthened",
+    "fading",
+  ];
+  const deltaGroups = $derived.by(() =>
+    DELTA_KIND_ORDER.map((kind) => ({
+      kind,
+      deltas: conclusionDeltas.filter((d) => d.kind === kind),
+    })).filter((g) => g.deltas.length > 0),
+  );
+
+  // Per-group default cap — the compression that keeps a busy week one screen.
+  const DELTA_GROUP_CAP = 3;
+  // Groups showing every row past the cap, keyed by kind.
+  let expandedGroups = $state<Set<ConclusionDeltaKind>>(new Set());
+  function toggleGroup(kind: ConclusionDeltaKind): void {
+    const set = new Set(expandedGroups);
+    if (set.has(kind)) set.delete(kind);
+    else set.add(kind);
+    expandedGroups = set;
+  }
+
+  // Expanded delta rows (confidence + actions + evidence), by conclusion id.
+  let expandedDeltaRows = $state<Set<number>>(new Set());
+  function toggleDeltaRow(id: number): void {
+    const set = new Set(expandedDeltaRows);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    expandedDeltaRows = set;
+  }
+
+  // ── Activity threads (#108 corrections) ───────────────────────────────
+  // The range's activities grouped by category — each thread is one line of
+  // "what you worked on" summarising sessions/time/days/focus, expandable to
+  // the raw activities (corrections sit behind a per-row "adjust"). Covers
+  // ALL of the range, not a newest-12 log slice.
+  type ActivityFocus = "deep" | "mixed" | "distracted";
+  interface ActivityThread {
+    key: string; // category id, or "__uncat__"
+    label: string;
+    colorVar: string;
+    totalMs: number;
+    sessionCount: number;
+    dayCount: number; // distinct local-calendar days touched
+    dominantFocus: ActivityFocus | null; // most frequent non-null focus
+    activities: Activity[]; // newest-first
+  }
+  const activityThreads = $derived.by<ActivityThread[]>(() => {
+    const buckets = new Map<string, Activity[]>();
+    for (const a of rangeActivities) {
+      const key = a.category ?? "__uncat__";
+      const list = buckets.get(key);
+      if (list) list.push(a);
+      else buckets.set(key, [a]);
+    }
+    const threads: ActivityThread[] = [];
+    for (const [key, list] of buckets) {
+      let totalMs = 0;
+      const days = new Set<number>();
+      const focusCounts = new Map<ActivityFocus, number>();
+      for (const a of list) {
+        totalMs += Math.max(0, a.endedAtMs - a.startedAtMs);
+        days.add(startOfDay(a.startedAtMs));
+        if (a.focus != null) {
+          focusCounts.set(a.focus, (focusCounts.get(a.focus) ?? 0) + 1);
+        }
+      }
+      // Dominant focus = most frequent non-null focus; ties resolve in
+      // deep → mixed → distracted order so the readout stays stable.
+      let dominantFocus: ActivityFocus | null = null;
+      let dominantCount = 0;
+      for (const f of ["deep", "mixed", "distracted"] as ActivityFocus[]) {
+        const n = focusCounts.get(f) ?? 0;
+        if (n > dominantCount) {
+          dominantFocus = f;
+          dominantCount = n;
+        }
+      }
+      const uncat = key === "__uncat__";
+      threads.push({
+        key,
+        label: uncat ? "Uncategorized" : categoryLabel(key as ActivityCategory),
+        colorVar: uncat ? UNCATEGORIZED_COLOR : CATEGORY_COLOR[key as ActivityCategory],
+        totalMs,
+        sessionCount: list.length,
+        dayCount: days.size,
+        dominantFocus,
+        activities: [...list].sort((a, b) => b.startedAtMs - a.startedAtMs),
+      });
+    }
+    // Most time first; uncategorized ALWAYS sinks to the bottom — it's the
+    // leftover bucket, not a body of work competing with named categories.
+    threads.sort((a, b) => {
+      const aUncat = a.key === "__uncat__" ? 1 : 0;
+      const bUncat = b.key === "__uncat__" ? 1 : 0;
+      return aUncat - bUncat || b.totalMs - a.totalMs;
+    });
+    return threads;
   });
 
-  function activityFocus(a: Activity): string | null {
-    return a.focus ?? null;
+  // One-line thread summary: "6 sessions · 4h 20m · across 3 days · mostly deep".
+  function threadStats(t: ActivityThread): string {
+    const parts = [
+      `${t.sessionCount} ${t.sessionCount === 1 ? "session" : "sessions"}`,
+      humanizeMs(t.totalMs),
+    ];
+    // A Day range is trivially "across 1 day" — skip the noise.
+    if (rangeMode !== "day") {
+      parts.push(`across ${t.dayCount} ${t.dayCount === 1 ? "day" : "days"}`);
+    }
+    if (t.dominantFocus !== null) {
+      // "Scattered" is the app's label for distracted.
+      parts.push(
+        t.dominantFocus === "distracted" ? "mostly scattered" : `mostly ${t.dominantFocus}`,
+      );
+    }
+    return parts.join(" · ");
+  }
+
+  // Expanded threads, keyed by thread key. All collapsed by default.
+  let expandedThreads = $state<Set<string>>(new Set());
+  function toggleThread(key: string): void {
+    const set = new Set(expandedThreads);
+    if (set.has(key)) set.delete(key);
+    else set.add(key);
+    expandedThreads = set;
+  }
+
+  // Rows in "adjust" mode, keyed by activity id. Corrections are an occasional
+  // act — the selects stay hidden until asked for, and a successful correction
+  // does NOT auto-close (the user may fix both selects in one visit).
+  let editingActivity = $state<Set<number>>(new Set());
+  function toggleActivityEdit(id: number): void {
+    const set = new Set(editingActivity);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    editingActivity = set;
+  }
+
+  // Quiet read-only focus hint for non-editing rows ("Scattered" is the app's
+  // label for distracted). Category needs no hint — the thread already says it.
+  function focusHint(focus: ActivityFocus): string {
+    return focus === "distracted" ? "Scattered" : focus === "deep" ? "Deep" : "Mixed";
   }
 
   // ── Loaders ────────────────────────────────────────────────────────────
@@ -626,13 +790,6 @@
     }
   }
 
-  function toggleEvidence(c: Conclusion): void {
-    const set = new Set(expandedConclusions);
-    if (set.has(c.id)) set.delete(c.id);
-    else set.add(c.id);
-    expandedConclusions = set;
-  }
-
   function enableEngine(): void {
     void openSettingsWindow("intelligence");
   }
@@ -694,7 +851,6 @@
   const feedLoading = $derived(
     !statusLoaded || (engineOn && (loadingEngine || !engineLoadedOnce)),
   );
-  const SKELETON_FEED_ROWS = 3;
 </script>
 
 <section class="overview" aria-label="Overview">
@@ -904,18 +1060,19 @@
       <span class="line"></span>The story this {rangeMode}<span class="line"></span>
     </div>
     <div class="feed-column" aria-busy="true" aria-label="Loading your story">
-      {#each Array.from({ length: SKELETON_FEED_ROWS }) as _, i (i)}
+      <!-- Mirrors the two real cards: "What changed" rows + activity threads. -->
+      {#each Array.from({ length: 2 }) as _, card (card)}
         <article class="entry entry--skeleton">
           <div class="sk-eyebrow">
-            <Skeleton variant="text" width="160px" height="10px" />
+            <Skeleton variant="text" width="140px" height="10px" />
             <Skeleton variant="text" width="64px" height="10px" />
           </div>
-          <Skeleton variant="text" width="84%" height="18px" />
-          <Skeleton variant="text" width="62%" height="18px" />
-          <div class="sk-conclusion">
-            <Skeleton variant="text" width="96px" height="18px" radius="4px" />
-            <Skeleton width="120px" height="8px" radius="999px" />
-          </div>
+          {#each Array.from({ length: 3 }) as _, r (r)}
+            <div class="sk-row">
+              <Skeleton variant="text" width={`${74 - r * 12}%`} height="12px" />
+              <Skeleton variant="text" width="56px" height="10px" />
+            </div>
+          {/each}
         </article>
       {/each}
     </div>
@@ -978,165 +1135,234 @@
       </div>
     {:else}
       <div class="feed-column">
-        <!-- Conclusions dossier -->
-        {#if dossier.length > 0}
-          {#each dossier as c (c.id)}
-            <article class="entry" class:entry--faded={c.status === "faded"}>
-              <p class="eyebrow">
-                <span class="diamond" aria-hidden="true">◆</span>
-                <span class="tick" aria-hidden="true"></span>
-                {c.status === "faded" ? "Quietly fading" : "Standing understanding"}
-                <span class="rule"></span>
-                {relativeTime(c.lastSupportedAtMs)}
-              </p>
-              <h2>{c.statement}</h2>
-
-              <div class="conclusion">
-                <span class="conclusion-statement">
-                  <button
-                    type="button"
-                    class="subject-chip"
-                    onclick={() => onOpenSubject?.(c.subject)}
-                  >
-                    {c.subject}
-                  </button>
-                </span>
-                <span class="conf-wrap">
-                  <ConfidenceBar
-                    confidence={c.confidence}
-                    trend={conclusionTrend(c)}
-                  />
-                </span>
-                {#if c.status !== "faded"}
-                  <span class="gentle-actions">
-                    <button
-                      type="button"
-                      class="gentle-btn"
-                      class:is-pinned={isPinned(c)}
-                      onclick={() => void togglePin(c)}
-                    >
-                      {isPinned(c) ? "Pinned ◆" : "Pin"}
-                    </button>
-                    <button
-                      type="button"
-                      class="gentle-btn"
-                      onclick={() => void dismissConclusion(c)}
-                    >
-                      Dismiss
-                    </button>
-                  </span>
-                {/if}
-                <button
-                  type="button"
-                  class="evidence-link"
-                  onclick={() => toggleEvidence(c)}
-                >
-                  {expandedConclusions.has(c.id)
-                    ? "hide evidence"
-                    : "view evidence →"}
-                </button>
-              </div>
-
-              {#if expandedConclusions.has(c.id)}
-                <div class="evidence-list">
-                  {#if c.evidence.length === 0}
-                    <p class="evidence-empty">No grounding activities recorded.</p>
-                  {:else}
-                    {#each c.evidence as ev (ev.activityId + "-" + ev.stance)}
-                      <div class="evidence-row">
-                        <span
-                          class="ev-stance"
-                          class:ev-stance--contradict={ev.stance === "contradict"}
-                          >{ev.stance === "contradict" ? "contradicts" : "supports"}</span
-                        >
-                        <span class="ev-title"
-                          >{ev.activityTitle ?? `Activity #${ev.activityId}`}</span
-                        >
-                        {#if ev.activityStartedAtMs}
-                          <span class="ev-time">{clockTime(ev.activityStartedAtMs)}</span>
-                        {/if}
-                      </div>
-                    {/each}
-                  {/if}
-                </div>
-              {/if}
-
-              {#if c.status === "faded"}
-                <p class="fade-note">Below the line — kept for your history.</p>
-              {/if}
-            </article>
-          {/each}
-        {/if}
-
-        <!-- Activity story with #108 inline corrections -->
-        {#if storyActivities.length > 0}
-          <article class="entry entry--activities">
+        <!-- What changed — one card; conclusion deltas as grouped rows -->
+        {#if conclusionDeltas.length > 0}
+          <article class="entry">
             <p class="eyebrow">
               <span class="diamond" aria-hidden="true">◆</span>
               <span class="tick" aria-hidden="true"></span>
-              Recent activity
+              What changed
               <span class="rule"></span>
-              correct as you go
+              expand a row for detail
             </p>
-            <div class="act-list">
-              {#each storyActivities as a (a.id)}
-                <div class="act-row" class:act-row--busy={correctingActivity.has(a.id)}>
-                  <div class="act-main">
-                    <span class="act-title">{a.title}</span>
-                    <span class="act-time">{clockTime(a.startedAtMs)}</span>
-                  </div>
-                  <div class="act-correct">
-                    <label class="corr">
-                      <span class="corr-label">Category</span>
-                      <select
-                        class="corr-select"
-                        value={a.category ?? ""}
-                        disabled={correctingActivity.has(a.id)}
-                        onchange={(e) =>
-                          void correctCategory(
-                            a,
-                            (e.currentTarget.value || null) as ActivityCategory | null,
-                          )}
-                      >
-                        {#each CATEGORY_OPTIONS as opt (opt.value)}
-                          <option value={opt.value}>{opt.label}</option>
-                        {/each}
-                      </select>
-                    </label>
-                    <label class="corr">
-                      <span class="corr-label">Focus</span>
-                      <select
-                        class="corr-select"
-                        value={activityFocus(a) ?? ""}
-                        disabled={correctingActivity.has(a.id)}
-                        onchange={(e) =>
-                          void correctFocus(
-                            a,
-                            (e.currentTarget.value || null) as
-                              | "deep"
-                              | "mixed"
-                              | "distracted"
-                              | null,
-                          )}
-                      >
-                        {#each FOCUS_OPTIONS as opt (opt.value)}
-                          <option value={opt.value}>{opt.label}</option>
-                        {/each}
-                      </select>
-                    </label>
-                  </div>
+            <div class="delta-groups">
+              {#each deltaGroups as g (g.kind)}
+                <div class="delta-group">
+                  <p class="delta-group-head">{deltaLabel(g.kind)} · {g.deltas.length}</p>
+                  {#each expandedGroups.has(g.kind) ? g.deltas : g.deltas.slice(0, DELTA_GROUP_CAP) as d (d.c.id)}
+                    {@const c = d.c}
+                    {@const open = expandedDeltaRows.has(c.id)}
+                    <div class="delta-row" class:delta-row--faded={d.kind === "fading"}>
+                      <div class="delta-line">
+                        <span class="delta-statement">{c.statement}</span>
+                        <button
+                          type="button"
+                          class="subject-chip"
+                          onclick={() => onOpenSubject?.(c.subject)}
+                        >
+                          {c.subject}
+                        </button>
+                        <span class="delta-when">{relativeTime(c.lastSupportedAtMs)}</span>
+                        <button
+                          type="button"
+                          class="delta-toggle"
+                          class:open
+                          aria-expanded={open}
+                          aria-label={open ? "Hide detail" : "Show detail"}
+                          onclick={() => toggleDeltaRow(c.id)}>›</button
+                        >
+                      </div>
+                      {#if open}
+                        <div class="delta-detail">
+                          <div class="delta-detail-line">
+                            <span class="conf-wrap">
+                              <ConfidenceBar
+                                confidence={c.confidence}
+                                trend={conclusionTrend(c)}
+                              />
+                            </span>
+                            {#if d.kind === "fading"}
+                              <span class="fade-note">Slipping below the line — kept for your history.</span>
+                            {:else}
+                              <span class="gentle-actions">
+                                <button
+                                  type="button"
+                                  class="gentle-btn"
+                                  class:is-pinned={isPinned(c)}
+                                  onclick={() => void togglePin(c)}
+                                >
+                                  {isPinned(c) ? "Pinned ◆" : "Pin"}
+                                </button>
+                                <button
+                                  type="button"
+                                  class="gentle-btn"
+                                  onclick={() => void dismissConclusion(c)}
+                                >
+                                  Dismiss
+                                </button>
+                              </span>
+                            {/if}
+                          </div>
+                          <div class="evidence-list">
+                            {#if c.evidence.length === 0}
+                              <p class="evidence-empty">No grounding activities recorded.</p>
+                            {:else}
+                              {#each c.evidence as ev (ev.activityId + "-" + ev.stance)}
+                                <div class="evidence-row">
+                                  <span
+                                    class="ev-stance"
+                                    class:ev-stance--contradict={ev.stance === "contradict"}
+                                    >{ev.stance === "contradict" ? "contradicts" : "supports"}</span
+                                  >
+                                  <span class="ev-title"
+                                    >{ev.activityTitle ?? `Activity #${ev.activityId}`}</span
+                                  >
+                                  {#if ev.activityStartedAtMs}
+                                    <span class="ev-time">{clockTime(ev.activityStartedAtMs)}</span>
+                                  {/if}
+                                </div>
+                              {/each}
+                            {/if}
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                  {#if g.deltas.length > DELTA_GROUP_CAP}
+                    <button
+                      type="button"
+                      class="evidence-link delta-more"
+                      onclick={() => toggleGroup(g.kind)}
+                    >
+                      {expandedGroups.has(g.kind)
+                        ? "show fewer"
+                        : `+${g.deltas.length - DELTA_GROUP_CAP} more`}
+                    </button>
+                  {/if}
                 </div>
               {/each}
             </div>
           </article>
         {/if}
 
-        {#if dossier.length === 0 && storyActivities.length === 0}
+        <!-- Activity threads (#108 corrections, behind each row's "adjust") -->
+        {#if activityThreads.length > 0}
+          <article class="entry entry--activities">
+            <p class="eyebrow">
+              <span class="diamond" aria-hidden="true">◆</span>
+              <span class="tick" aria-hidden="true"></span>
+              What you worked on
+              <span class="rule"></span>
+              expand a thread to adjust
+            </p>
+            <div class="thread-list">
+              {#each activityThreads as t (t.key)}
+                <div class="thread">
+                  <button
+                    type="button"
+                    class="thread-head"
+                    aria-expanded={expandedThreads.has(t.key)}
+                    onclick={() => toggleThread(t.key)}
+                  >
+                    <span
+                      class="thread-dot"
+                      style="background:var({t.colorVar});"
+                      aria-hidden="true"
+                    ></span>
+                    <span class="thread-label">{t.label}</span>
+                    <span class="thread-stats">{threadStats(t)}</span>
+                    <span
+                      class="thread-chevron"
+                      class:open={expandedThreads.has(t.key)}
+                      aria-hidden="true">›</span
+                    >
+                  </button>
+                  {#if expandedThreads.has(t.key)}
+                    <div class="act-list">
+                      {#each t.activities as a (a.id)}
+                        <div class="act-row" class:act-row--busy={correctingActivity.has(a.id)}>
+                          <div class="act-line">
+                            <div class="act-main">
+                              <span class="act-title">{a.title}</span>
+                              <span class="act-time"
+                                >{clockTime(a.startedAtMs)} · {humanizeMs(
+                                  Math.max(0, a.endedAtMs - a.startedAtMs),
+                                )}</span
+                              >
+                            </div>
+                            {#if !editingActivity.has(a.id) && a.focus != null}
+                              <span class="act-focus-hint">{focusHint(a.focus)}</span>
+                            {/if}
+                            <button
+                              type="button"
+                              class="evidence-link"
+                              aria-expanded={editingActivity.has(a.id)}
+                              onclick={() => toggleActivityEdit(a.id)}
+                            >
+                              {editingActivity.has(a.id) ? "done" : "adjust"}
+                            </button>
+                          </div>
+                          {#if editingActivity.has(a.id)}
+                            <!-- Category moves the row to another thread on the
+                                 next recompute — expected, not fought. -->
+                            <div class="act-correct">
+                              <label class="corr">
+                                <span class="corr-label">Category</span>
+                                <select
+                                  class="corr-select"
+                                  value={a.category ?? ""}
+                                  disabled={correctingActivity.has(a.id)}
+                                  onchange={(e) =>
+                                    void correctCategory(
+                                      a,
+                                      (e.currentTarget.value || null) as ActivityCategory | null,
+                                    )}
+                                >
+                                  {#each CATEGORY_OPTIONS as opt (opt.value)}
+                                    <option value={opt.value}>{opt.label}</option>
+                                  {/each}
+                                </select>
+                              </label>
+                              <label class="corr">
+                                <span class="corr-label">Focus</span>
+                                <select
+                                  class="corr-select"
+                                  value={a.focus ?? ""}
+                                  disabled={correctingActivity.has(a.id)}
+                                  onchange={(e) =>
+                                    void correctFocus(
+                                      a,
+                                      (e.currentTarget.value || null) as
+                                        | "deep"
+                                        | "mixed"
+                                        | "distracted"
+                                        | null,
+                                    )}
+                                >
+                                  {#each FOCUS_OPTIONS as opt (opt.value)}
+                                    <option value={opt.value}>{opt.label}</option>
+                                  {/each}
+                                </select>
+                              </label>
+                            </div>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </article>
+        {/if}
+
+        {#if conclusionDeltas.length === 0 && activityThreads.length === 0}
           <div class="state state--empty">
-            <p class="state-title">Nothing for this {rangeMode} yet.</p>
+            <p class="state-title">Nothing changed this {rangeMode}.</p>
             <p class="state-detail">
-              Step the date range, or keep working — categorized activity and
-              your dossier will fill in.
+              No conclusions formed, strengthened, or faded in this range, and
+              no activity to show. Step the date range, or keep working — your
+              standing dossier lives on the Subjects tab.
             </p>
           </div>
         {:else}
@@ -1368,21 +1594,22 @@
   .entry--skeleton {
     display: flex;
     flex-direction: column;
-    gap: 10px;
   }
   .sk-eyebrow {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 9px;
-    margin-bottom: 1px;
+    margin-bottom: 8px;
   }
-  .sk-conclusion {
+  .sk-row {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 12px;
-    margin-top: 13px;
-    padding-top: 13px;
+    padding: 9px 0;
+  }
+  .sk-row + .sk-row {
     border-top: 1px dashed var(--app-border);
   }
 
@@ -1529,10 +1756,6 @@
     border-radius: 12px;
     background: var(--app-surface);
   }
-  .entry--faded {
-    opacity: 0.7;
-  }
-
   .eyebrow {
     display: flex;
     align-items: center;
@@ -1560,28 +1783,98 @@
     letter-spacing: 0;
   }
 
-  .entry h2 {
-    margin: 0 0 10px;
-    font-size: 18px;
-    line-height: 1.4;
-    font-weight: 600;
-    letter-spacing: -0.01em;
+  /* "What changed" — grouped conclusion-delta rows */
+  .delta-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .delta-group {
+    display: flex;
+    flex-direction: column;
+  }
+  .delta-group-head {
+    margin: 0 0 2px;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--app-text-faint);
+  }
+  .delta-row {
+    display: flex;
+    flex-direction: column;
+    padding: 8px 0;
+  }
+  .delta-row + .delta-row {
+    border-top: 1px dashed var(--app-border);
+  }
+  .delta-row--faded {
+    opacity: 0.7;
+  }
+  .delta-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .delta-statement {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--app-text-strong);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .delta-when {
+    flex: 0 0 auto;
+    font-size: 10.5px;
+    color: var(--app-text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  /* Dedicated expand affordance — the chip stays its own button, so the row
+     itself can't be one (a button inside a button is invalid HTML). */
+  .delta-toggle {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    border: none;
+    background: transparent;
+    color: var(--app-text-faint);
+    cursor: pointer;
+    transition:
+      transform 0.12s ease,
+      color 0.12s ease;
+  }
+  .delta-toggle:hover {
     color: var(--app-text-strong);
   }
-
-  /* conclusion row */
-  .conclusion {
-    margin-top: 15px;
-    padding-top: 13px;
-    border-top: 1px dashed var(--app-border);
+  .delta-toggle.open {
+    transform: rotate(90deg);
+  }
+  .delta-detail {
+    display: flex;
+    flex-direction: column;
+    padding: 10px 0 2px;
+  }
+  .delta-detail-line {
     display: flex;
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
   }
-  .conclusion-statement {
-    flex: 1 1 200px;
-    min-width: 0;
+  .delta-more {
+    align-self: flex-start;
+    margin-top: 7px;
   }
   .conf-wrap {
     flex: 0 0 auto;
@@ -1701,27 +1994,81 @@
   }
 
   .fade-note {
-    margin-top: 12px;
     font-size: 10.5px;
     color: var(--app-text-faint);
     font-style: italic;
   }
 
-  /* activity story / corrections */
+  /* activity threads / corrections */
   .entry--activities {
     background: var(--app-surface-subtle);
+  }
+  .thread-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .thread + .thread {
+    border-top: 1px dashed var(--app-border);
+  }
+  .thread-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 10px 0;
+    font: inherit;
+    text-align: left;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: color 0.12s ease;
+  }
+  .thread-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .thread-label {
+    flex: 0 0 auto;
+    font-size: 12.5px;
+    color: var(--app-text-strong);
+  }
+  .thread-stats {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--app-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .thread-chevron {
+    flex: 0 0 auto;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--app-text-faint);
+    transition:
+      transform 0.12s ease,
+      color 0.12s ease;
+  }
+  .thread-chevron.open {
+    transform: rotate(90deg);
+  }
+  .thread-head:hover .thread-chevron {
+    color: var(--app-text-strong);
   }
   .act-list {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    padding: 0 0 8px 17px; /* indent under the dot+gap of the thread header */
   }
   .act-row {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 8px;
     padding: 9px 0;
     transition: opacity 0.12s ease;
   }
@@ -1731,12 +2078,17 @@
   .act-row--busy {
     opacity: 0.5;
   }
+  .act-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
   .act-main {
     display: flex;
     flex-direction: column;
     gap: 2px;
     min-width: 0;
-    flex: 1 1 200px;
+    flex: 1 1 auto;
   }
   .act-title {
     font-size: 12.5px;
@@ -1750,11 +2102,20 @@
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
-  .act-correct {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
+  /* Quiet read-only focus hint — metadata, not a control. */
+  .act-focus-hint {
     flex: 0 0 auto;
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--app-text-faint);
+  }
+  /* Revealed only while a row is in adjust mode. */
+  .act-correct {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
   }
   .corr {
     display: inline-flex;

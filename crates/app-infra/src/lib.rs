@@ -90,9 +90,9 @@ pub use conversation::ConversationStore;
 pub use status::AppInfraStatus;
 pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
 pub use user_context::{
-    evidence_fingerprint, ActivityCorrection, CaptureWindow, CaptureWindowItem, NewActivity,
-    NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun,
-    UserContextCascadeSummary, UserContextStore,
+    digest_input_fingerprint, evidence_fingerprint, ActivityCorrection, CaptureWindow,
+    CaptureWindowItem, NewActivity, NewActivityEvidence, NewConclusion, NewConclusionEvidence,
+    NewDerivationRun, StoredDigest, UserContextCascadeSummary, UserContextStore,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

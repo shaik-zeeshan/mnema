@@ -114,12 +114,33 @@ pub struct NewConclusionEvidence {
 
 /// Counts from a **Delete Recent Capture** derived-data cascade
 /// ([`UserContextStore::delete_derived_for_capture_subjects`]): how many
-/// **Activity** rows and how many now-ungrounded **Conclusion** rows were
-/// dropped. Used for the warning log + UI refresh; not persisted.
+/// **Activity** rows, how many now-ungrounded **Conclusion** rows, and how many
+/// now-stale **Digest** rows were dropped. Used for the warning log + UI
+/// refresh; not persisted.
 #[derive(Debug, Clone, Default)]
 pub struct UserContextCascadeSummary {
     pub deleted_activities: i64,
     pub deleted_conclusions: i64,
+    pub deleted_digests: i64,
+}
+
+/// A stored **Digest** (migration 0029): the Insights Overview's engine-written
+/// narrative lede for one `(range_kind, range_start_ms)` range, plus the
+/// [`digest_input_fingerprint`] of the Activities it was derived from so the
+/// Tauri layer can detect staleness and regenerate lazily.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDigest {
+    /// `'day'` | `'week'` | `'month'`.
+    pub range_kind: String,
+    pub range_start_ms: i64,
+    /// Exclusive: the digest covers `[range_start_ms, range_end_ms)`.
+    pub range_end_ms: i64,
+    pub narrative: String,
+    /// Short generated title rendered above the narrative; `None` on rows
+    /// written before the headline existed (migration 0030).
+    pub headline: Option<String>,
+    pub input_fingerprint: String,
+    pub generated_at_ms: i64,
 }
 
 /// SQLite-backed storage for the User Context dossier (Activities + evidence +
@@ -200,6 +221,36 @@ impl UserContextStore {
             activities.push(activity);
         }
         Ok(activities)
+    }
+
+    /// Every Activity overlapping the half-open `[range_start_ms, range_end_ms)`
+    /// window, chronological (oldest first) — the **Digest** input set. The
+    /// overlap predicate matches the digest staleness purge in
+    /// [`Self::delete_derived_for_capture_subjects`]:
+    /// `started_at_ms < range_end AND ended_at_ms >= range_start`.
+    ///
+    /// Evidence refs are NOT hydrated (each row's `evidence` is empty): both
+    /// Digest consumers — [`digest_input_fingerprint`] and the narrative
+    /// prompt — read only the Activity's own fields, and a month range can
+    /// hold many Activities (hydration is one extra query per row).
+    pub async fn list_activities_in_range(
+        &self,
+        range_start_ms: i64,
+        range_end_ms: i64,
+    ) -> Result<Vec<Activity>> {
+        let rows = sqlx::query(
+            "SELECT id, title, summary, category, focus, corrected_category, category_corrected, \
+                    corrected_focus, focus_corrected, started_at_ms, ended_at_ms, created_at_ms \
+             FROM user_context_activities \
+             WHERE started_at_ms < ?2 AND ended_at_ms >= ?1 \
+             ORDER BY started_at_ms ASC, id ASC",
+        )
+        .bind(range_start_ms)
+        .bind(range_end_ms)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(map_activity).collect())
     }
 
     async fn list_activity_evidence(&self, activity_id: i64) -> Result<Vec<ActivityEvidenceRef>> {
@@ -1081,6 +1132,78 @@ impl UserContextStore {
             .collect())
     }
 
+    // --- Digests: the Insights Overview narrative lede ----------------------
+
+    /// The stored **Digest** for one `(range_kind, range_start_ms)` range, or
+    /// `None` when nothing has been generated for it yet. The Tauri layer
+    /// compares the stored `input_fingerprint` against a fresh
+    /// [`digest_input_fingerprint`] to decide whether to regenerate.
+    pub async fn get_digest(
+        &self,
+        range_kind: &str,
+        range_start_ms: i64,
+    ) -> Result<Option<StoredDigest>> {
+        let row = sqlx::query(
+            "SELECT range_kind, range_start_ms, range_end_ms, narrative, headline, \
+                    input_fingerprint, generated_at_ms \
+             FROM user_context_digests \
+             WHERE range_kind = ?1 AND range_start_ms = ?2",
+        )
+        .bind(range_kind)
+        .bind(range_start_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| StoredDigest {
+            range_kind: row.get("range_kind"),
+            range_start_ms: row.get("range_start_ms"),
+            range_end_ms: row.get("range_end_ms"),
+            narrative: row.get("narrative"),
+            headline: row.get("headline"),
+            input_fingerprint: row.get("input_fingerprint"),
+            generated_at_ms: row.get("generated_at_ms"),
+        }))
+    }
+
+    /// Insert or replace the **Digest** for one `(range_kind, range_start_ms)`
+    /// range: a fresh generation overwrites the previous narrative, headline,
+    /// fingerprint, `range_end_ms`, and `generated_at_ms` in place (the UNIQUE
+    /// index from migration 0029 is the upsert key). `headline` is `None` when
+    /// generation produced no usable headline — narrative-only stays valid.
+    pub async fn upsert_digest(
+        &self,
+        range_kind: &str,
+        range_start_ms: i64,
+        range_end_ms: i64,
+        narrative: &str,
+        headline: Option<&str>,
+        input_fingerprint: &str,
+        generated_at_ms: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO user_context_digests \
+                (range_kind, range_start_ms, range_end_ms, narrative, headline, \
+                 input_fingerprint, generated_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT (range_kind, range_start_ms) DO UPDATE SET \
+                range_end_ms = excluded.range_end_ms, \
+                narrative = excluded.narrative, \
+                headline = excluded.headline, \
+                input_fingerprint = excluded.input_fingerprint, \
+                generated_at_ms = excluded.generated_at_ms",
+        )
+        .bind(range_kind)
+        .bind(range_start_ms)
+        .bind(range_end_ms)
+        .bind(narrative)
+        .bind(headline)
+        .bind(input_fingerprint)
+        .bind(generated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// The pool handle, for the capture-window reader (`capture_source.rs`).
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
@@ -1098,9 +1221,16 @@ impl UserContextStore {
     ///    (`subject_type='frame' AND subject_id IN frame_ids` OR
     ///    `subject_type='audio_segment' AND subject_id IN audio_ids`), chunked by
     ///    [`SQLITE_BIND_CHUNK_SIZE`].
-    /// 2. DELETE those Activities — their `*_activity_evidence` and
+    /// 2. DELETE every **Digest** whose `[range_start_ms, range_end_ms)` window
+    ///    overlaps a to-be-deleted Activity's `[started_at_ms, ended_at_ms]`
+    ///    span — a stale narrative could otherwise still describe the deleted
+    ///    content. The deleted-capture window is not passed in here; the deleted
+    ///    Activities ARE the proxy for it: a digest narrates only Activities, so
+    ///    a digest can describe deleted captures only through an Activity
+    ///    grounded in them, and every such Activity is in this delete set.
+    /// 3. DELETE those Activities — their `*_activity_evidence` and
     ///    `*_conclusion_evidence` link rows cascade via FK.
-    /// 3. DROP every Conclusion that now has ZERO remaining
+    /// 4. DROP every Conclusion that now has ZERO remaining
     ///    `*_conclusion_evidence` rows (no ungrounded Conclusions). A Conclusion
     ///    still grounded by ≥1 surviving evidence Activity STAYS — the minimal
     ///    "re-judge or drop" rule: drop ungrounded, keep grounded.
@@ -1153,7 +1283,29 @@ impl UserContextStore {
         activity_ids.sort_unstable();
         activity_ids.dedup();
 
-        // 2. DELETE those Activities; activity_evidence + conclusion_evidence rows
+        // 2. Purge Digests overlapping a to-be-deleted Activity's span, BEFORE
+        //    the Activities are deleted (their spans are the overlap source).
+        //    Overlap of digest [range_start_ms, range_end_ms) with activity
+        //    [started_at_ms, ended_at_ms]: started < range_end AND ended >= start.
+        let mut deleted_digests = 0_i64;
+        for chunk in activity_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "DELETE FROM user_context_digests \
+                 WHERE EXISTS (\
+                     SELECT 1 FROM user_context_activities a \
+                     WHERE a.started_at_ms < user_context_digests.range_end_ms \
+                       AND a.ended_at_ms >= user_context_digests.range_start_ms \
+                       AND a.id IN (",
+            );
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(id);
+            }
+            separated.push_unseparated("))");
+            deleted_digests += query.build().execute(&mut *tx).await?.rows_affected() as i64;
+        }
+
+        // 3. DELETE those Activities; activity_evidence + conclusion_evidence rows
         //    cascade via FK.
         let mut deleted_activities = 0_i64;
         for chunk in activity_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
@@ -1168,7 +1320,7 @@ impl UserContextStore {
             deleted_activities += query.build().execute(&mut *tx).await?.rows_affected() as i64;
         }
 
-        // 3. Drop every Conclusion now grounded by ZERO evidence Activities (no
+        // 4. Drop every Conclusion now grounded by ZERO evidence Activities (no
         //    ungrounded Conclusions). A Conclusion with ≥1 surviving evidence row
         //    stays.
         let deleted_conclusions = sqlx::query(
@@ -1186,6 +1338,7 @@ impl UserContextStore {
         Ok(UserContextCascadeSummary {
             deleted_activities,
             deleted_conclusions,
+            deleted_digests,
         })
     }
 
@@ -1209,6 +1362,7 @@ impl UserContextStore {
             "user_context_dismissals",
             "user_context_derivation_runs",
             "user_context_authored",
+            "user_context_digests",
         ] {
             sqlx::query(&format!("DELETE FROM {table}"))
                 .execute(&mut *tx)
@@ -1217,6 +1371,62 @@ impl UserContextStore {
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// Deterministic fingerprint of a **Digest**'s input: the in-range Activity
+/// set the narrative was (or would be) derived from. Plain
+/// `"v{N}:{count}:{max_id}:{max_created_at_ms}:{accumulator}"` formatting — the
+/// accumulator is an order-independent wrapping SUM of one mixed term per
+/// Activity (id, span, effective Category/Focus), so element order never
+/// matters but membership and per-Activity content do. The Tauri layer compares
+/// this against the stored `input_fingerprint` to decide regeneration. The
+/// version tag tracks the generated SHAPE (see the comment in the body).
+///
+/// What invalidates a digest (changes the fingerprint):
+/// - an Activity ADDED to the range (new derivation / backfill): `count`,
+///   `max_id`, and the accumulator all move;
+/// - an Activity REMOVED from the range (Delete Recent Capture cascade —
+///   though overlapping digests are also deleted outright there): `count` and
+///   the accumulator move;
+/// - a Category/Focus CORRECTION (#108) changing an Activity's *effective*
+///   label: that Activity's accumulator term moves.
+///
+/// Honest limitation: `user_context_activities` rows expose no updated-at on
+/// the [`Activity`] DTO (`corrected_at_ms` stays in the row), so a correction
+/// that lands back on the previous effective value (correct → revert) is
+/// invisible — which is fine, because the derivation input is then literally
+/// identical. Title/summary are immutable after insert and are not folded in.
+pub fn digest_input_fingerprint(activities: &[Activity]) -> String {
+    let count = activities.len();
+    let max_id = activities.iter().map(|a| a.id).max().unwrap_or(0);
+    let max_created_at_ms = activities.iter().map(|a| a.created_at_ms).max().unwrap_or(0);
+    let accumulator = activities
+        .iter()
+        .fold(0_u64, |acc, a| acc.wrapping_add(digest_activity_term(a)));
+    // The leading version tag fingerprints the digest's GENERATED SHAPE, not its
+    // input: bumping it mismatches every stored `input_fingerprint` at once, so
+    // every cached digest regenerates on next view. `v2` added the headline
+    // (migration 0030) — pre-headline narratives regenerate WITH one instead of
+    // sitting cached forever. Bump it again whenever the generated shape changes.
+    format!("v2:{count}:{max_id}:{max_created_at_ms}:{accumulator:016x}")
+}
+
+/// One Activity's order-independent accumulator term for
+/// [`digest_input_fingerprint`]: its id/span mixed by odd multipliers (so
+/// swapping fields between Activities changes the sum) plus the bytes of its
+/// effective Category/Focus labels folded in at distinct rotations.
+fn digest_activity_term(activity: &Activity) -> u64 {
+    let mut term = (activity.id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    term ^= (activity.started_at_ms as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    term ^= (activity.ended_at_ms as u64).wrapping_mul(0x94D0_49BB_1331_11EB);
+    let category = activity.category.map(category_to_str).unwrap_or("");
+    let focus = activity.focus.map(focus_to_str).unwrap_or("");
+    for (rotation, label) in [(7_u32, category), (13_u32, focus)] {
+        for byte in label.bytes() {
+            term = term.rotate_left(rotation) ^ u64::from(byte);
+        }
+    }
+    term
 }
 
 /// Deterministic fingerprint of an evidence **Activity**-id set: the sorted,
@@ -1507,6 +1717,18 @@ mod tests {
                 created_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL
             )",
+            "CREATE TABLE user_context_digests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                range_kind TEXT NOT NULL,
+                range_start_ms INTEGER NOT NULL,
+                range_end_ms INTEGER NOT NULL,
+                narrative TEXT NOT NULL,
+                headline TEXT,
+                input_fingerprint TEXT NOT NULL,
+                generated_at_ms INTEGER NOT NULL
+            )",
+            "CREATE UNIQUE INDEX user_context_digests_range_idx
+                ON user_context_digests (range_kind, range_start_ms)",
             // Minimal raw-capture tables so `earliest_capture_at_ms` (#98) can be
             // tested. Only the timestamp columns it reads are modeled.
             "CREATE TABLE frames (
@@ -2174,12 +2396,17 @@ mod tests {
             .add_authored_context("I'm a designer", Some("role"), 1_000)
             .await
             .expect("authored");
+        store
+            .upsert_digest("week", 0, 1_000, "A focused week.", None, "1:1:1:0", 2_000)
+            .await
+            .expect("digest");
 
         // Sanity: everything present before the wipe.
         assert!(store.count_activities().await.expect("count") > 0);
         assert!(store.count_conclusions().await.expect("count") > 0);
         assert!(!store.list_dismissals().await.expect("dismissals").is_empty());
         assert!(!store.list_authored_context().await.expect("authored").is_empty());
+        assert!(store.get_digest("week", 0).await.expect("digest").is_some());
 
         store.wipe_all().await.expect("wipe");
 
@@ -2197,6 +2424,7 @@ mod tests {
             "user_context_dismissals",
             "user_context_derivation_runs",
             "user_context_authored",
+            "user_context_digests",
         ] {
             let count: i64 =
                 sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
@@ -2509,6 +2737,223 @@ mod tests {
                 store.list_activity_corrections(10).await.expect("corrections").is_empty(),
                 "no correction recorded"
             );
+        });
+    }
+
+    /// A bare [`Activity`] value for the pure [`digest_input_fingerprint`]
+    /// tests (the fingerprint never reads title/summary/evidence).
+    fn digest_activity(id: i64, started_at_ms: i64, ended_at_ms: i64) -> Activity {
+        Activity {
+            id,
+            title: format!("activity {id}"),
+            summary: String::new(),
+            category: None,
+            focus: None,
+            started_at_ms,
+            ended_at_ms,
+            created_at_ms: started_at_ms,
+            evidence: Vec::new(),
+        }
+    }
+
+    /// [`UserContextStore::list_activities_in_range`] selects exactly the
+    /// Activities overlapping the half-open range, oldest first, with no
+    /// evidence hydration.
+    #[test]
+    fn list_activities_in_range_uses_half_open_overlap_oldest_first() {
+        block_on(async {
+            let store = test_store().await;
+            // seed_activity spans [started, started + 1].
+            seed_activity(&store, "before", 500).await; // ends 501 < 1_000 → out
+            seed_activity(&store, "touches-start", 999).await; // ends 1_000 → in
+            seed_activity(&store, "inside", 1_500).await; // in
+            seed_activity(&store, "at-end", 2_000).await; // starts AT end → out (half-open)
+
+            let in_range = store
+                .list_activities_in_range(1_000, 2_000)
+                .await
+                .expect("range query");
+            let titles: Vec<&str> = in_range.iter().map(|a| a.title.as_str()).collect();
+            assert_eq!(titles, vec!["touches-start", "inside"], "overlap + order");
+            assert!(
+                in_range.iter().all(|a| a.evidence.is_empty()),
+                "digest input does not hydrate evidence"
+            );
+        });
+    }
+
+    /// Digest round trip: get miss → upsert → get hit → upsert overwrites the
+    /// narrative/headline/fingerprint/range_end/generated_at in place (same
+    /// key, including headline Some → None), and a different `range_kind` with
+    /// the same start is a separate row.
+    #[test]
+    fn digest_round_trip_upsert_overwrites_in_place() {
+        block_on(async {
+            let store = test_store().await;
+
+            assert!(store.get_digest("week", 100).await.expect("miss").is_none());
+
+            store
+                .upsert_digest(
+                    "week",
+                    100,
+                    200,
+                    "A focused week.",
+                    Some("A deep week in the editor"),
+                    "2:7:90:00ab",
+                    1_000,
+                )
+                .await
+                .expect("upsert");
+            let stored = store.get_digest("week", 100).await.expect("get").expect("hit");
+            assert_eq!(
+                stored,
+                StoredDigest {
+                    range_kind: "week".to_string(),
+                    range_start_ms: 100,
+                    range_end_ms: 200,
+                    narrative: "A focused week.".to_string(),
+                    headline: Some("A deep week in the editor".to_string()),
+                    input_fingerprint: "2:7:90:00ab".to_string(),
+                    generated_at_ms: 1_000,
+                }
+            );
+
+            // Same (range_kind, range_start_ms) key → in-place replacement; a
+            // headline-less regeneration clears the previous headline.
+            store
+                .upsert_digest("week", 100, 250, "A scattered week.", None, "3:9:240:00cd", 2_000)
+                .await
+                .expect("overwrite");
+            let replaced = store.get_digest("week", 100).await.expect("get").expect("hit");
+            assert_eq!(replaced.range_end_ms, 250);
+            assert_eq!(replaced.narrative, "A scattered week.");
+            assert_eq!(replaced.headline, None);
+            assert_eq!(replaced.input_fingerprint, "3:9:240:00cd");
+            assert_eq!(replaced.generated_at_ms, 2_000);
+
+            // A different range_kind at the same start is its own row.
+            store
+                .upsert_digest("day", 100, 150, "A quiet day.", None, "1:1:100:0001", 3_000)
+                .await
+                .expect("day digest");
+            assert_eq!(
+                store.get_digest("week", 100).await.expect("get").expect("hit").narrative,
+                "A scattered week."
+            );
+            assert_eq!(
+                store.get_digest("day", 100).await.expect("get").expect("hit").narrative,
+                "A quiet day."
+            );
+        });
+    }
+
+    /// [`digest_input_fingerprint`] is deterministic and order-independent over
+    /// the same Activity set, and moves when the set or any Activity's content
+    /// (membership, timestamps, effective Category/Focus correction) changes.
+    #[test]
+    fn digest_input_fingerprint_is_order_independent_and_change_sensitive() {
+        let a = digest_activity(1, 100, 200);
+        let b = digest_activity(2, 300, 400);
+        let c = digest_activity(3, 500, 600);
+
+        // Deterministic + order-independent.
+        let baseline = digest_input_fingerprint(&[a.clone(), b.clone()]);
+        assert_eq!(baseline, digest_input_fingerprint(&[a.clone(), b.clone()]));
+        assert_eq!(baseline, digest_input_fingerprint(&[b.clone(), a.clone()]));
+
+        // Membership changes move it: added, removed, empty.
+        assert_ne!(baseline, digest_input_fingerprint(&[a.clone(), b.clone(), c]));
+        assert_ne!(baseline, digest_input_fingerprint(&[a.clone()]));
+        // The `v2:` shape-version tag leads every fingerprint (see the body
+        // comment): bumping it invalidates every cached digest at once.
+        assert_eq!(digest_input_fingerprint(&[]), "v2:0:0:0:0000000000000000");
+        assert!(baseline.starts_with("v2:"), "version tag leads: {baseline}");
+
+        // A timestamp shift on one Activity moves it.
+        let shifted = digest_activity(2, 300, 450);
+        assert_ne!(baseline, digest_input_fingerprint(&[a.clone(), shifted]));
+
+        // A #108 correction changing the EFFECTIVE Category/Focus moves it.
+        let mut corrected = b.clone();
+        corrected.category = Some(ActivityCategory::Distractions);
+        assert_ne!(baseline, digest_input_fingerprint(&[a.clone(), corrected]));
+        let mut refocused = b.clone();
+        refocused.focus = Some(FocusLevel::Deep);
+        assert_ne!(baseline, digest_input_fingerprint(&[a, refocused]));
+    }
+
+    /// The Delete Recent Capture cascade purges every Digest whose
+    /// `[range_start_ms, range_end_ms)` window overlaps a deleted Activity's
+    /// span, and spares non-overlapping Digests (including those overlapping
+    /// only SURVIVING Activities).
+    #[test]
+    fn delete_derived_cascade_purges_overlapping_digests_only() {
+        block_on(async {
+            let store = test_store().await;
+
+            // Deleted: grounded in frame 10, span [1_000, 2_000].
+            store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "Sensitive thing".to_string(),
+                    summary: "Sensitive thing summary".to_string(),
+                    category: None,
+                    focus: None,
+                    started_at_ms: 1_000,
+                    ended_at_ms: 2_000,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 10,
+                        captured_at_ms: Some(1_000),
+                    }],
+                })
+                .await
+                .expect("sensitive activity");
+            // Survives: grounded in frame 20, span [10_000, 10_001].
+            seed_activity_with_subject(&store, "Kept work", 10_000, "frame", 20).await;
+
+            // d1 overlaps the deleted span outright.
+            store
+                .upsert_digest("day", 0, 5_000, "Mentions the sensitive thing.", None, "fp1", 1)
+                .await
+                .expect("d1");
+            // d2 touches the deleted span only at its boundary (activity ends at
+            // 2_000 == range_start): still an overlap (ended_at_ms inclusive).
+            store
+                .upsert_digest("week", 2_000, 8_000, "Also mentions it.", None, "fp2", 1)
+                .await
+                .expect("d2");
+            // d3 sits strictly between the two Activities: no overlap, spared.
+            store
+                .upsert_digest("day", 5_000, 9_000, "Quiet stretch.", None, "fp3", 1)
+                .await
+                .expect("d3");
+            // d4 overlaps only the SURVIVING Activity: spared.
+            store
+                .upsert_digest("day", 9_500, 12_000, "About the kept work.", None, "fp4", 1)
+                .await
+                .expect("d4");
+
+            let summary = store
+                .delete_derived_for_capture_subjects(&[10], &[])
+                .await
+                .expect("cascade");
+            assert_eq!(summary.deleted_activities, 1);
+            assert_eq!(summary.deleted_digests, 2, "d1 and d2 purged");
+
+            assert!(store.get_digest("day", 0).await.expect("d1").is_none());
+            assert!(store.get_digest("week", 2_000).await.expect("d2").is_none());
+            assert!(store.get_digest("day", 5_000).await.expect("d3").is_some());
+            assert!(store.get_digest("day", 9_500).await.expect("d4").is_some());
+
+            // An empty-ids cascade never touches digests.
+            let noop = store
+                .delete_derived_for_capture_subjects(&[], &[])
+                .await
+                .expect("noop");
+            assert_eq!(noop.deleted_digests, 0);
+            assert!(store.get_digest("day", 5_000).await.expect("d3").is_some());
         });
     }
 }

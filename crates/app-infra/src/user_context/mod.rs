@@ -18,6 +18,7 @@ pub mod store;
 
 pub use capture_source::{CaptureWindow, CaptureWindowItem};
 pub use store::{
-    evidence_fingerprint, ActivityCorrection, NewActivity, NewActivityEvidence, NewConclusion,
-    NewConclusionEvidence, NewDerivationRun, UserContextCascadeSummary, UserContextStore,
+    digest_input_fingerprint, evidence_fingerprint, ActivityCorrection, NewActivity,
+    NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
+    UserContextCascadeSummary, UserContextStore,
 };
