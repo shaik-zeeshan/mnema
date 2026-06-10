@@ -690,6 +690,19 @@ Markdown link `[label](url)` rather than bare text so the user can open it. If y
 answer, say so briefly. Be concise and direct.\n",
     );
 
+    // Graphical-answer affordance (issue #110): the Chat surface renders two
+    // fenced block kinds as inline charts. This is OPTIONAL and only for answers
+    // that are naturally a breakdown/comparison; plain markdown is the default.
+    prompt.push_str(
+        "When an answer is naturally a breakdown or comparison (for example time by category, \
+top apps, or a set of beliefs/conclusions), you MAY include a fenced ```mnema-bars block whose \
+body is JSON `{\"title\":\"…\",\"bars\":[{\"label\":\"…\",\"value\":12,\"color\":\"--cat-coding\"}]}` \
+or a fenced ```mnema-dossier block whose body is JSON \
+`{\"items\":[{\"subject\":\"…\",\"statement\":\"…\",\"confidence\":0.7}]}`, which the UI renders as \
+a chart. Use at most one such block, with real numbers you derived from the captures; otherwise \
+answer in plain markdown.\n",
+    );
+
     if let Some(seed_query) = seed_query {
         if !results.is_empty() {
             prompt.push('\n');

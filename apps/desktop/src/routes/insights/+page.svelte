@@ -34,6 +34,25 @@
   let view = $state<InsightsTab>("overview");
   let selectedSubject = $state<string | null>(null);
 
+  // Quick Recall → Chat handoff (issue #111, ADR 0031). When a Quick Recall
+  // thread is promoted into Chat, the main window is shown/navigated here and a
+  // conversation id is delivered (a live `insights_open_conversation` event for
+  // a warm window, or the cold-window drain on mount). We switch to the Chat tab
+  // and pass the id down so Chat selects + loads that persisted thread. A
+  // monotonically bumped `nonce` lets Chat re-react when the SAME conversation
+  // is handed off twice in a row (the prop value alone wouldn't change).
+  let openConversationId = $state<string | null>(null);
+  let openConversationNonce = $state(0);
+
+  function handoffConversation(conversationId: string): void {
+    const id = conversationId.trim();
+    if (id.length === 0) return;
+    openConversationId = id;
+    openConversationNonce += 1;
+    view = "chat";
+    selectedSubject = null;
+  }
+
   function openTab(tab: InsightsTab): void {
     view = tab;
     if (tab !== "subjects") selectedSubject = null;
@@ -100,10 +119,31 @@
     void openSettingsWindow("intelligence");
   }
 
+  // Drain any pending Quick Recall → Chat handoff queued before this surface
+  // mounted (cold main window): the event may have fired while the window was
+  // opening, so the latest queued conversation id lands the Chat tab on the
+  // handed-off thread. Best-effort; a transport failure just leaves the default
+  // Overview tab. The newest queued entry wins (handoffConversation is called in
+  // order, so the last call sets the active id).
+  async function drainPendingHandoff(): Promise<void> {
+    try {
+      const pending = await invoke<{ conversationId: string }[]>(
+        "drain_pending_insights_open_conversations",
+      );
+      for (const entry of pending) {
+        handoffConversation(entry.conversationId);
+      }
+    } catch {
+      // Best-effort: no pending handoff, or the command is unavailable.
+    }
+  }
+
   $effect(() => {
     void untrack(() => loadEngineStatus());
+    void untrack(() => drainPendingHandoff());
 
     let unlisten: UnlistenFn | undefined;
+    let unlistenHandoff: UnlistenFn | undefined;
     let disposed = false;
     void listen("user_context_changed", () => {
       void loadEngineStatus();
@@ -112,9 +152,21 @@
       else unlisten = fn;
     });
 
+    // Warm-window handoff: a live event switches to Chat + selects the thread.
+    void listen<{ conversationId: string }>(
+      "insights_open_conversation",
+      (event) => {
+        handoffConversation(event.payload.conversationId);
+      },
+    ).then((fn) => {
+      if (disposed) fn();
+      else unlistenHandoff = fn;
+    });
+
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenHandoff?.();
     };
   });
 </script>
@@ -167,7 +219,7 @@
     </div>
   </nav>
 
-  <main class="insights-main">
+  <main class="insights-main" class:insights-main--chat={view === "chat"}>
     {#if view === "overview"}
       <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
     {:else if view === "subjects"}
@@ -185,7 +237,7 @@
     {:else if view === "context"}
       <Context />
     {:else}
-      <Chat />
+      <Chat {openConversationId} {openConversationNonce} />
     {/if}
   </main>
 </div>
@@ -345,6 +397,20 @@
     min-width: 0;
     overflow-y: auto;
     padding: 18px 20px 28px;
+  }
+  /* Chat owns its own full-height, edge-to-edge layout and internal scrolling,
+     so the shell main drops its padding and outer scroll (mirrors the mockup's
+     `.insights-main` override). The other tabs keep the padded scroll above. */
+  .insights-main--chat {
+    padding: 0;
+    overflow: hidden;
+    /* Become a flex column so the chat surface fills via flex-grow rather than
+       a percentage height. WKWebView (Tauri) does not reliably resolve a child's
+       `height: 100%` against a flex-stretched parent, so `.chat` collapses to its
+       content height; growing it as a flex item instead fills the surface. */
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   /* Drill-in breadcrumb (Subjects / <name>). Mirrors app.css `.breadcrumb`. */
