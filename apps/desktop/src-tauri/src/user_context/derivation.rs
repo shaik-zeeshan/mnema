@@ -34,9 +34,18 @@ Activity is a coherent unit of work or intent — its boundaries are INTENT SHIF
 \"stopped wrestling the deploy, started writing the design doc\"), NOT app switches or fixed time \
 windows. A single Activity may span multiple apps, and a single app may host several Activities. \
 Do not emit one Activity per app or per time slice. For each Activity give a short title, a one \
-or two sentence summary of what the user was doing and how, an optional category from this fixed \
-taxonomy (coding, research, communication, design, testing, personal, distractions) or omit it \
-when unsure, an optional focus level from this fixed taxonomy (deep = sustained single-thread deep \
+or two sentence summary of what the user was doing and how, and an optional category from this \
+fixed taxonomy or omit it when unsure: creating (producing anything — code, documents, designs, \
+slides, music), communication (asynchronous text — email, chat, messages), meetings (real-time \
+conversation — calls, video meetings), research (reading or searching in service of the current \
+task), learning (deliberate skill-building for its own sake — courses, tutorials), organizing \
+(structuring work or time — calendar, task managers, planning, admin paperwork), personal (life \
+errands regardless of subject — shopping, banking, health, travel), entertainment (videos, games, \
+social feeds, browsing for fun). Category boundaries: synchronous conversation is meetings while \
+asynchronous text is communication; reading in service of the current task is research while \
+deliberate skill-building for its own sake is learning; life errands are personal even when \
+work-adjacent while structuring work or time is organizing. Also give an optional focus level \
+from this fixed taxonomy (deep = sustained single-thread deep \
 work, mixed = some focus but context-switching or interleaved, distracted = scattered, interrupted, \
 or off-task) or omit it when unsure, and the list of evidence reference tags (the f<id>/a<id> tags \
 shown on each input item) that belong to that Activity. Only use tags that appear in the input. \
@@ -137,17 +146,22 @@ fn parse_ref(reference: &str) -> Option<(&'static str, i64)> {
 }
 
 /// Map the engine's snake_case category string onto [`ActivityCategory`].
-/// Unknown / empty → `None` (the Activity is still stored, just uncategorized).
+/// Legacy v1 spellings stay accepted as aliases (`coding`/`design`/`testing` →
+/// `Creating`, `distractions` → `Entertainment`; ADR 0032). Unknown / empty →
+/// `None` (the Activity is still stored, just uncategorized).
 fn parse_category(raw: &Option<String>) -> Option<ActivityCategory> {
     let raw = raw.as_deref()?.trim().to_ascii_lowercase();
     match raw.as_str() {
-        "coding" => Some(ActivityCategory::Coding),
-        "research" => Some(ActivityCategory::Research),
+        "creating" => Some(ActivityCategory::Creating),
         "communication" => Some(ActivityCategory::Communication),
-        "design" => Some(ActivityCategory::Design),
-        "testing" => Some(ActivityCategory::Testing),
+        "meetings" => Some(ActivityCategory::Meetings),
+        "research" => Some(ActivityCategory::Research),
+        "learning" => Some(ActivityCategory::Learning),
+        "organizing" => Some(ActivityCategory::Organizing),
         "personal" => Some(ActivityCategory::Personal),
-        "distractions" => Some(ActivityCategory::Distractions),
+        "entertainment" => Some(ActivityCategory::Entertainment),
+        "coding" | "design" | "testing" => Some(ActivityCategory::Creating),
+        "distractions" => Some(ActivityCategory::Entertainment),
         _ => None,
     }
 }
@@ -520,13 +534,14 @@ DistilledConclusionBatch.\n\n",
 /// (`super::digest`).
 pub(crate) fn category_label(category: ActivityCategory) -> &'static str {
     match category {
-        ActivityCategory::Coding => "coding",
-        ActivityCategory::Research => "research",
+        ActivityCategory::Creating => "creating",
         ActivityCategory::Communication => "communication",
-        ActivityCategory::Design => "design",
-        ActivityCategory::Testing => "testing",
+        ActivityCategory::Meetings => "meetings",
+        ActivityCategory::Research => "research",
+        ActivityCategory::Learning => "learning",
+        ActivityCategory::Organizing => "organizing",
         ActivityCategory::Personal => "personal",
-        ActivityCategory::Distractions => "distractions",
+        ActivityCategory::Entertainment => "entertainment",
     }
 }
 
@@ -880,16 +895,34 @@ mod tests {
 
     #[test]
     fn parses_known_categories_only() {
-        assert_eq!(
-            parse_category(&Some("Coding".to_string())),
-            Some(ActivityCategory::Coding)
-        );
-        assert_eq!(
-            parse_category(&Some("distractions".to_string())),
-            Some(ActivityCategory::Distractions)
-        );
+        for (raw, expected) in [
+            ("creating", ActivityCategory::Creating),
+            ("communication", ActivityCategory::Communication),
+            ("meetings", ActivityCategory::Meetings),
+            ("research", ActivityCategory::Research),
+            ("learning", ActivityCategory::Learning),
+            ("organizing", ActivityCategory::Organizing),
+            ("personal", ActivityCategory::Personal),
+            ("entertainment", ActivityCategory::Entertainment),
+        ] {
+            assert_eq!(parse_category(&Some(raw.to_string())), Some(expected), "{raw}");
+        }
         assert_eq!(parse_category(&Some("unknown".to_string())), None);
+        assert_eq!(parse_category(&Some("  ".to_string())), None);
         assert_eq!(parse_category(&None), None);
+    }
+
+    #[test]
+    fn parse_category_aliases_legacy_spellings() {
+        for (raw, expected) in [
+            ("coding", ActivityCategory::Creating),
+            ("Coding", ActivityCategory::Creating),
+            ("design", ActivityCategory::Creating),
+            ("testing", ActivityCategory::Creating),
+            ("distractions", ActivityCategory::Entertainment),
+        ] {
+            assert_eq!(parse_category(&Some(raw.to_string())), Some(expected), "{raw}");
+        }
     }
 
     #[test]
@@ -931,7 +964,7 @@ mod tests {
             correction(
                 1,
                 "Scrolled social media",
-                Some(ActivityCategory::Distractions),
+                Some(ActivityCategory::Entertainment),
                 Some(FocusLevel::Distracted),
             ),
             // A correction that unset both labels renders as "unset".
@@ -940,7 +973,7 @@ mod tests {
         let block = build_corrections_block(&corrections);
         assert!(block.contains("USER CORRECTIONS"));
         assert!(block.contains("never re-assign the label they corrected away"));
-        assert!(block.contains("category=distractions focus=distracted"));
+        assert!(block.contains("category=entertainment focus=distracted"));
         assert!(block.contains("Scrolled social media"));
         assert!(block.contains("category=unset focus=unset"));
     }
@@ -950,7 +983,7 @@ mod tests {
         let long = "x".repeat(200);
         let corrections: Vec<ActivityCorrection> = (0..50)
             .map(|i| {
-                correction(i, &long, Some(ActivityCategory::Coding), Some(FocusLevel::Deep))
+                correction(i, &long, Some(ActivityCategory::Creating), Some(FocusLevel::Deep))
             })
             .collect();
         let block = build_corrections_block(&corrections);

@@ -588,19 +588,19 @@ mod tests {
             90 * 60_000,
             "Billing migration",
             "Moved invoices to the new schema.",
-            Some(ActivityCategory::Coding),
+            Some(ActivityCategory::Creating),
             Some(FocusLevel::Deep),
         );
         let line = format_activity_line(&labeled, 0);
         assert!(line.contains("Thu Jan 1"), "epoch day label: {line}");
         assert!(line.contains("1h 30m"));
-        assert!(line.contains("| coding | deep]"));
+        assert!(line.contains("| creating | deep]"));
         assert!(line.contains("Billing migration — Moved invoices"));
 
         // Unset category/focus and empty summary leave no dangling separators.
         let bare = activity(2, 0, 60_000, "Misc", "  ", None, None);
         let line = format_activity_line(&bare, 0);
-        assert!(!line.contains("| coding"));
+        assert!(!line.contains("| creating"));
         assert!(!line.contains("—"));
         assert!(line.trim_end().ends_with("Misc"));
     }
