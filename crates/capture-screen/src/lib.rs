@@ -121,16 +121,19 @@ pub fn privacy_filter_changed(
     previous.map(PrivacyContentFilter::key).as_ref() != Some(&next.key())
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivacyContentFilterStrategy {
     ExcludingApps,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivacyFilterAvailableApp {
     bundle_id: String,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivacyContentFilterPlan {
     strategy: PrivacyContentFilterStrategy,
@@ -138,6 +141,7 @@ struct PrivacyContentFilterPlan {
     unresolved_bundle_ids: Vec<String>,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivacyFilterAppliedKey {
     display_id: u32,
@@ -145,6 +149,7 @@ struct PrivacyFilterAppliedKey {
     excluded_bundle_ids: Vec<String>,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivacyFilterApplicationState {
     requested_key: capture_metadata::PrivacyFilterKey,
@@ -157,6 +162,7 @@ pub struct PrivacyFilterApplyOutcome {
     pub request_satisfied: bool,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 impl PrivacyFilterApplicationState {
     fn from_plan(privacy_filter: &PrivacyContentFilter, plan: &PrivacyContentFilterPlan) -> Self {
         Self {
@@ -191,6 +197,7 @@ impl PrivacyFilterApplicationState {
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn should_log_privacy_filter_diagnostics(
     previous: Option<&PrivacyFilterApplicationState>,
     next: &PrivacyFilterApplicationState,
@@ -198,6 +205,7 @@ fn should_log_privacy_filter_diagnostics(
     previous.map_or(true, |previous| !previous.diagnostic_state_matches(next))
 }
 
+#[cfg(target_os = "macos")]
 fn log_privacy_filter_diagnostics(state: &PrivacyFilterApplicationState) {
     if !state.unresolved_bundle_ids.is_empty() {
         capture_runtime::debug_log!(
@@ -207,6 +215,7 @@ fn log_privacy_filter_diagnostics(state: &PrivacyFilterApplicationState) {
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn plan_privacy_content_filter(
     requested_bundle_ids: &std::collections::BTreeSet<String>,
     available_apps: &[PrivacyFilterAvailableApp],
@@ -440,6 +449,7 @@ pub struct ScreenCaptureSupport {
     pub system_audio: bool,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn output_files_for_session(
     session_dir: &Path,
     system_audio_output_path: Option<&Path>,

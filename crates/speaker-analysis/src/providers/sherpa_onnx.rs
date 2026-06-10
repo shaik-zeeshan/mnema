@@ -8,7 +8,6 @@ use std::{
 use async_trait::async_trait;
 use serde_json::json;
 
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 use crate::macos_audio_decode::resample_linear;
 #[cfg(target_os = "macos")]
 use crate::macos_audio_decode::{decode_audio_to_mono_with_avassetreader_fallback, DecodedAudio};

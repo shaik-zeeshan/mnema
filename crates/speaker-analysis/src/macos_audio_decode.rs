@@ -422,6 +422,7 @@ fn append_downmixed_f32(
     Ok(())
 }
 
+#[cfg(feature = "sherpa-onnx")]
 pub(crate) fn resample_linear(
     samples: &[f32],
     source_rate_hz: u32,

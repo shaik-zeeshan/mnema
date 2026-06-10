@@ -385,7 +385,7 @@ impl OcrProvider for PaddleOcrProvider {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 const APPLE_VISION_MAX_IMAGE_DIMENSION: u32 = 1800;
 #[cfg(target_os = "macos")]
 const APPLE_VISION_DEFAULT_LANGUAGE: &str = "en-US";
@@ -706,6 +706,12 @@ fn recognized_observations(
         .collect()
 }
 
+#[cfg(any(
+    target_os = "macos",
+    test,
+    feature = "tesseract-embedded",
+    feature = "paddle-rs"
+))]
 fn normalize_candidate_text(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
@@ -715,7 +721,7 @@ fn normalize_candidate_text(text: &str) -> Option<String> {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn join_observation_text(observations: &[OcrObservation]) -> String {
     observations
         .iter()
