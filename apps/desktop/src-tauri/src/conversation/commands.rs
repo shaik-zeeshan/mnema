@@ -133,6 +133,46 @@ pub async fn save_conversation_turn(
     Ok(())
 }
 
+/// Pin (or clear) the Reasoning Engine identity for a conversation. `provider` /
+/// `model` both absent/`null` clears the pin → unpinned (use the global default
+/// engine). The conversation row is ensured first (a pin may be set before the
+/// first turn). Emits [`CONVERSATION_CHANGED_EVENT`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationEngineRequest {
+    /// Frontend-generated UUID (the stable cross-restart identity).
+    pub conversation_id: String,
+    /// The engine provider id to pin, or `None` to clear.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The model id within `provider` to pin, or `None` to clear.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Pin (or clear) the engine identity for a conversation. Emits
+/// [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn set_conversation_engine(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    request: SetConversationEngineRequest,
+) -> Result<(), String> {
+    infra
+        .conversation()
+        .set_conversation_engine(
+            &request.conversation_id,
+            request.provider.as_deref(),
+            request.model.as_deref(),
+            now_ms(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}
+
 /// Delete a conversation (its turns cascade). Emits
 /// [`CONVERSATION_CHANGED_EVENT`].
 #[tauri::command]

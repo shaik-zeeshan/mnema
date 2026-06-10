@@ -329,6 +329,108 @@ mod tests {
     }
 
     #[test]
+    fn ai_runtime_settings_without_additional_engines_deserializes_back_compat() {
+        // An old persisted AiRuntimeSettings (no `additionalEngines`) must
+        // deserialize with an empty additional-engines set.
+        let settings: AiRuntimeSettings = serde_json::from_str(
+            r#"{
+                "enabled": true,
+                "engineKind": "cloud",
+                "cloudProvider": "anthropic",
+                "cloudModel": "claude-haiku-4-5",
+                "cloudBaseUrl": "",
+                "localKind": "ollama",
+                "localEndpoint": "http://localhost:11434",
+                "localModel": ""
+            }"#,
+        )
+        .expect("legacy ai_runtime settings should deserialize");
+
+        assert!(settings.enabled);
+        assert!(settings.additional_engines.is_empty());
+    }
+
+    #[test]
+    fn ai_runtime_settings_round_trips_additional_engines() {
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            additional_engines: vec![AiEngineProfile {
+                engine_kind: AiEngineKind::Local,
+                cloud_provider: AiCloudProvider::Openai,
+                cloud_model: "gpt-4o-mini".to_string(),
+                cloud_base_url: String::new(),
+                local_kind: AiLocalKind::Ollama,
+                local_endpoint: "http://localhost:11434".to_string(),
+                local_model: "llama3.2".to_string(),
+            }],
+            ..AiRuntimeSettings::default()
+        };
+
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["additionalEngines"][0]["engineKind"], "local");
+        assert_eq!(json["additionalEngines"][0]["localModel"], "llama3.2");
+
+        let round: AiRuntimeSettings =
+            serde_json::from_value(json).expect("deserialize round-trip");
+        assert_eq!(round, settings);
+    }
+
+    #[test]
+    fn ai_engine_profile_serializes_camel_case() {
+        let profile = AiEngineProfile {
+            engine_kind: AiEngineKind::Cloud,
+            cloud_provider: AiCloudProvider::OpenaiCompatible,
+            cloud_model: "some-model".to_string(),
+            cloud_base_url: "https://api.example.com/v1".to_string(),
+            local_kind: AiLocalKind::Llamafile,
+            local_endpoint: "http://localhost:8080".to_string(),
+            local_model: String::new(),
+        };
+        let json = serde_json::to_value(&profile).expect("serialize");
+        assert_eq!(json["engineKind"], "cloud");
+        assert_eq!(json["cloudProvider"], "openai_compatible");
+        assert_eq!(json["cloudBaseUrl"], "https://api.example.com/v1");
+        assert_eq!(json["localKind"], "llamafile");
+    }
+
+    #[test]
+    fn user_context_settings_enabled_defaults_false_when_missing() {
+        // Legacy persisted UserContextSettings (no `enabled`) must default the
+        // continuous-derivation opt-in to OFF.
+        let settings: UserContextSettings = serde_json::from_str(
+            r#"{
+                "derivationBudgetTier": "balanced",
+                "backfillWindowDays": 30,
+                "backfillGoDeeper": false
+            }"#,
+        )
+        .expect("legacy user_context settings should deserialize");
+
+        assert!(!settings.enabled);
+        assert!(!UserContextSettings::default().enabled);
+    }
+
+    #[test]
+    fn user_context_settings_round_trips_enabled() {
+        let settings = UserContextSettings {
+            enabled: true,
+            ..UserContextSettings::default()
+        };
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["enabled"], true);
+        let round: UserContextSettings =
+            serde_json::from_value(json).expect("deserialize");
+        assert_eq!(round, settings);
+    }
+
+    #[test]
+    fn update_user_context_settings_request_deserializes_enabled() {
+        let request: UpdateUserContextSettingsRequest =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("request should deserialize");
+        assert_eq!(request.enabled, Some(true));
+    }
+
+    #[test]
     fn recording_settings_domain_response_serializes_domain_as_snake_case() {
         let response = RecordingSettingsDomainUpdateResponse {
             domain: SettingsOwnershipDomain::AppPrivacyExclusion,

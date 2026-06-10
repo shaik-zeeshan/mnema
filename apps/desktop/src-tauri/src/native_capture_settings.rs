@@ -1056,8 +1056,16 @@ fn apply_domain_patch_to_settings(
                 settings.ai_runtime.local_model = value.trim().to_string();
                 touched = true;
             }
+            if let Some(value) = request.additional_engines {
+                settings.ai_runtime.additional_engines = value;
+                touched = true;
+            }
         }
         RecordingSettingsDomainPatch::UserContext(request) => {
+            if let Some(value) = request.enabled {
+                settings.user_context.enabled = value;
+                touched = true;
+            }
             if let Some(value) = request.derivation_budget_tier {
                 settings.user_context.derivation_budget_tier = value;
                 touched = true;
