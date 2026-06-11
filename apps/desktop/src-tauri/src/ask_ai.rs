@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::app_infra::AppInfraState;
+use crate::conversation::commands::CONVERSATION_CHANGED_EVENT;
 
 /// Process registry mapping a conversation id (the whole thread) to the
 /// cooperative cancel flag of its CURRENTLY in-flight turn. Module-level so it
@@ -890,7 +891,9 @@ fn emit_status(app_handle: &tauri::AppHandle, conversation_id: &str, mut body: s
 
 /// Persist one turn row in whatever phase the driver is in. Best-effort: a store
 /// error is logged, never surfaced — the live stream events are authoritative and
-/// persistence is a reattach convenience.
+/// persistence is a reattach convenience. Returns `true` when the row was
+/// written, so the driver can announce the conversation to the history list the
+/// first time the row actually exists.
 #[allow(clippy::too_many_arguments)]
 async fn persist_turn(
     infra: &AppInfraState,
@@ -906,10 +909,10 @@ async fn persist_turn(
     phase: &str,
     error_message: Option<&str>,
     seeded_result_count: Option<i64>,
-) {
+) -> bool {
     let tool_activities_json = serde_json::to_string(tool_activities).unwrap_or_else(|_| "[]".into());
     let sources_json = serde_json::to_string(sources).unwrap_or_else(|_| "[]".into());
-    if let Err(error) = infra
+    match infra
         .conversation()
         .save_turn(
             conversation_id,
@@ -928,9 +931,13 @@ async fn persist_turn(
         )
         .await
     {
-        tauri_plugin_log::log::warn!(
-            "Ask AI failed to persist turn {turn_index} for {conversation_id} (phase {phase}): {error}"
-        );
+        Ok(()) => true,
+        Err(error) => {
+            tauri_plugin_log::log::warn!(
+                "Ask AI failed to persist turn {turn_index} for {conversation_id} (phase {phase}): {error}"
+            );
+            false
+        }
     }
 }
 
@@ -1088,7 +1095,12 @@ async fn run_ask_ai_turn(
 
     // 4. Persist the turn row immediately (empty `streaming` answer) so a reattach
     //    can read the in-flight partial. Seeded count is carried from the start.
-    persist_turn(
+    //    The FIRST successful persist is when the conversation row exists, so it
+    //    announces `conversation_changed` once — a brand-new chat appears in the
+    //    history list while still streaming. The flag guards against re-announcing
+    //    on every throttled partial persist; the terminal persist re-emits anyway.
+    let conversation_announced = Arc::new(AtomicBool::new(false));
+    if persist_turn(
         &infra,
         &conversation_id,
         &title,
@@ -1103,7 +1115,11 @@ async fn run_ask_ai_turn(
         None,
         seeded_result_count,
     )
-    .await;
+    .await
+    {
+        conversation_announced.store(true, Ordering::SeqCst);
+        let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    }
 
     // 5. Search results (and seed results) are recorded by opaque id so a later
     //    `reference_captures` call can attach metadata and prove the model only
@@ -1197,6 +1213,7 @@ async fn run_ask_ai_turn(
         let app_handle = app_handle.clone();
         let conversation_id = conversation_id.clone();
         let infra = Arc::clone(&infra);
+        let conversation_announced = Arc::clone(&conversation_announced);
         let answer = Arc::clone(&answer);
         let reasoning = Arc::clone(&reasoning);
         let tool_activities = Arc::clone(&tool_activities);
@@ -1229,6 +1246,8 @@ async fn run_ask_ai_turn(
                 // never blocks the synchronous stream callback.
                 if let Some(answer_so_far) = answer_so_far {
                     let infra = Arc::clone(&infra);
+                    let app_handle = app_handle.clone();
+                    let conversation_announced = Arc::clone(&conversation_announced);
                     let conversation_id = conversation_id.clone();
                     let title = title.clone();
                     let origin = origin.clone();
@@ -1248,7 +1267,7 @@ async fn run_ask_ai_turn(
                         .map(|guard| guard.clone())
                         .unwrap_or_default();
                     tauri::async_runtime::spawn(async move {
-                        persist_turn(
+                        let persisted = persist_turn(
                             &infra,
                             &conversation_id,
                             &title,
@@ -1268,6 +1287,12 @@ async fn run_ask_ai_turn(
                             seeded_result_count,
                         )
                         .await;
+                        // Announce only the FIRST successful persist of the turn
+                        // (the initial persist normally wins; this covers it
+                        // having failed), never every partial.
+                        if persisted && !conversation_announced.swap(true, Ordering::SeqCst) {
+                            let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+                        }
                     });
                 }
             }
@@ -1346,6 +1371,9 @@ async fn run_ask_ai_turn(
                 seeded_result_count,
             )
             .await;
+            // Terminal persist updated the row (answer/updated-at), so the
+            // history list re-sorts/refreshes its entry.
+            let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
             if !was_cancelled {
                 let _ = app_handle.emit(
                     ASK_AI_DONE_EVENT,
@@ -1371,6 +1399,7 @@ async fn run_ask_ai_turn(
                 seeded_result_count,
             )
             .await;
+            let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
             let _ = app_handle.emit(
                 ASK_AI_ERROR_EVENT,
                 serde_json::json!({ "conversationId": conversation_id, "message": message }),
