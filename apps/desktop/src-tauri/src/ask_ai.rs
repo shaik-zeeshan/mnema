@@ -122,6 +122,12 @@ const ASK_AI_PARTIAL_PERSIST_CHAR_INTERVAL: usize = 200;
 /// Ask AI door; Chat passes `"chat"` explicitly (Slice 7).
 const ASK_AI_DEFAULT_ORIGIN: &str = "quick_recall";
 
+/// Bounds on an accepted generated thread title. The prompt asks for 3–6 words;
+/// anything past these slack limits is treated as a failed generation (the
+/// fallback first-question title stands).
+const GENERATED_TITLE_MAX_WORDS: usize = 8;
+const GENERATED_TITLE_MAX_CHARS: usize = 64;
+
 /// Translate the persisted `askAiMaxToolCalls` setting (`0` = no cap) into the
 /// per-turn cap passed to the agent loop. `0` becomes `usize::MAX` so the agent
 /// may issue unlimited follow-up brokered queries (the loop clamps it to a sane
@@ -178,18 +184,6 @@ fn read_ask_ai_max_tool_calls(app_handle: &tauri::AppHandle) -> usize {
             .access
             .ask_ai_max_tool_calls,
     )
-}
-
-/// Read the configured Quick Recall model — a bare rig-core model id (NOT a
-/// `provider:id` PI spec anymore). `None`/blank means "use the engine's
-/// configured model". Used to override the default engine's model for an
-/// UNPINNED conversation.
-fn read_ask_ai_model(app_handle: &tauri::AppHandle) -> Option<String> {
-    read_recording_settings(app_handle)
-        .access
-        .ask_ai_model
-        .map(|model| model.trim().to_string())
-        .filter(|model| !model.is_empty())
 }
 
 /// Resolve the AppInfra handle (for the conversation store). Cloned `Arc` so the
@@ -638,11 +632,13 @@ answer, say so briefly. Be concise and direct.\n",
     preamble.push_str(
         "When an answer is naturally a breakdown or comparison (for example time by category, \
 top apps, or a set of beliefs/conclusions), you MAY include a fenced ```mnema-bars block whose \
-body is JSON `{\"title\":\"…\",\"bars\":[{\"label\":\"…\",\"value\":12,\"color\":\"--cat-coding\"}]}` \
+body is JSON `{\"title\":\"…\",\"bars\":[{\"label\":\"…\",\"value\":12,\"sublabel\":\"12m\"}]}` \
 or a fenced ```mnema-dossier block whose body is JSON \
 `{\"items\":[{\"subject\":\"…\",\"statement\":\"…\",\"confidence\":0.7}]}`, which the UI renders as \
-a chart. Use at most one such block, with real numbers you derived from the captures; otherwise \
-answer in plain markdown.\n",
+a chart. For bars, ALWAYS set a `sublabel` carrying the number WITH its unit (for example \
+`\"3h 12m\"`, `\"65%\"`, `\"42 frames\"`) so the readout is never an ambiguous bare number; \
+`value` is the bare magnitude that sizes the bar. Use at most one such block, with real numbers \
+you derived from the captures; otherwise answer in plain markdown.\n",
     );
 
     // The presentation tool is described separately because it is NOT a data tool
@@ -820,37 +816,6 @@ repeat call replaces the prior set). This does NOT count against the tool-call b
     ]
 }
 
-/// Override the model field of a resolved [`ai_engine::EngineConfig`] with a bare
-/// rig-core model id, for an UNPINNED conversation whose Quick Recall model
-/// setting differs from the engine's configured model. A blank override is a
-/// no-op. Matches on Cloud vs Local and replaces only `model`.
-fn override_engine_model(config: ai_engine::EngineConfig, model: &str) -> ai_engine::EngineConfig {
-    let model = model.trim();
-    if model.is_empty() {
-        return config;
-    }
-    match config {
-        ai_engine::EngineConfig::Cloud {
-            provider,
-            api_key,
-            base_url,
-            ..
-        } => ai_engine::EngineConfig::Cloud {
-            provider,
-            model: model.to_string(),
-            api_key,
-            base_url,
-        },
-        ai_engine::EngineConfig::Local {
-            kind, endpoint, ..
-        } => ai_engine::EngineConfig::Local {
-            kind,
-            endpoint: endpoint.to_string(),
-            model: model.to_string(),
-        },
-    }
-}
-
 #[tauri::command]
 pub async fn ask_ai_availability(
     app_handle: tauri::AppHandle,
@@ -941,11 +906,135 @@ async fn persist_turn(
     }
 }
 
+/// Structured-extraction target for the generated thread title.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+struct GeneratedConversationTitle {
+    /// A 3–6 word title summarizing the conversation topic.
+    title: String,
+}
+
+/// Generated titles are first-turn-only: a thread is eligible exactly when the
+/// completed turn was its first (`turn_index == 0`). Later turns never
+/// (re)generate; the store-side conditional write additionally guards "no
+/// title exists yet" and "a user rename wins forever".
+fn title_generation_eligible(turn_index: i64) -> bool {
+    turn_index == 0
+}
+
+/// System instruction for the title extraction. The prompt sees ONLY the
+/// user's question text — no capture data, no transcript — so this call adds
+/// no new redaction surface.
+fn build_title_preamble() -> &'static str {
+    "You name chat threads. Produce a short 3-6 word title that captures the topic of the \
+user's question. Use plain words: no quotes, no trailing punctuation, no \"Question about\" \
+prefix, and do not answer the question."
+}
+
+/// Per-call prompt for the title extraction: only the question text.
+fn build_title_prompt(question: &str) -> String {
+    format!("The user's first question to an assistant was:\n{question}\n\nTitle this thread.")
+}
+
+/// Normalize a model-produced title into an acceptable thread title, or `None`
+/// when the result is unusable (empty, over-long) — an unusable result is a
+/// swallowed failure that leaves the fallback first-question title in place.
+fn normalize_generated_title(raw: &str) -> Option<String> {
+    let trimmed = raw
+        .trim()
+        .trim_matches(|ch| matches!(ch, '"' | '\'' | '`' | '\u{201c}' | '\u{201d}'))
+        .trim()
+        .trim_end_matches(['.', '!'])
+        .trim();
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.is_empty() || words.len() > GENERATED_TITLE_MAX_WORDS {
+        return None;
+    }
+    let title = words.join(" ");
+    if title.chars().count() > GENERATED_TITLE_MAX_CHARS {
+        return None;
+    }
+    Some(title)
+}
+
+/// Fire-and-forget generated thread title (PLAN slice 3, ADR 0034 chat rail).
+///
+/// Spawned AFTER a thread's first turn persists as terminal, so it can never
+/// delay or fail the turn: every failure here (engine unresolved, extraction
+/// error, unusable result, store error) is swallowed with at most a log line,
+/// leaving the fallback first-question title in place. One cheap structured
+/// `extract` against the GLOBAL DEFAULT engine (no thread pin, no Ask-AI model
+/// override — titles are cosmetic, not part of the pinned conversation), whose
+/// prompt sees ONLY the user's question text. The persist is the store's
+/// conditional write, so a user rename that raced this generation wins and the
+/// late generated title is dropped; only an actual write announces
+/// `conversation_changed`.
+async fn generate_conversation_title(
+    app_handle: tauri::AppHandle,
+    infra: AppInfraState,
+    conversation_id: String,
+    question: String,
+) {
+    let settings = read_ai_runtime_settings(&app_handle);
+    let config = match crate::ai_runtime::resolve_engine_config(&settings, None, None) {
+        Ok(config) => config,
+        Err(reason) => {
+            tauri_plugin_log::log::debug!(
+                "Ask AI skipped title generation for {conversation_id}: {reason}"
+            );
+            return;
+        }
+    };
+
+    let prompt = build_title_prompt(&question);
+    let extracted = match ai_engine::extract_with_preamble::<GeneratedConversationTitle>(
+        &config,
+        build_title_preamble(),
+        &prompt,
+    )
+    .await
+    {
+        Ok(extracted) => extracted,
+        Err(error) => {
+            tauri_plugin_log::log::warn!(
+                "Ask AI title generation failed for {conversation_id}: {error}"
+            );
+            return;
+        }
+    };
+
+    let Some(title) = normalize_generated_title(&extracted.title) else {
+        tauri_plugin_log::log::warn!(
+            "Ask AI title generation for {conversation_id} returned an unusable title; keeping fallback"
+        );
+        return;
+    };
+
+    match infra
+        .conversation()
+        .set_generated_title_if_unset(&conversation_id, &title)
+        .await
+    {
+        // Written: refresh the history list so the new title appears.
+        Ok(true) => {
+            let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+        }
+        // No longer eligible (user renamed mid-flight, or a title already
+        // exists): the user/earlier title wins silently.
+        Ok(false) => {}
+        Err(error) => {
+            tauri_plugin_log::log::warn!(
+                "Ask AI failed to persist generated title for {conversation_id}: {error}"
+            );
+        }
+    }
+}
+
 /// The single stateless-per-turn Ask AI driver used by BOTH start and follow-up.
 ///
-/// Loads the conversation's completed history + engine pin from the store, builds
-/// the engine config (honouring the pin, else the default engine with an optional
-/// unpinned model override), seeds best-effort via broker search, persists a
+/// Loads the conversation's completed history + engine pin from the store,
+/// resolves the engine through the single precedence chain (ADR 0034: thread pin
+/// → Ask AI model override → global default model), seeds best-effort via broker
+/// search, persists a
 /// `streaming` turn row, then runs ONE `ai_engine::run_agent_loop` against the
 /// configured engine. The model's text streams as `ask_ai_delta` events (and is
 /// periodically persisted as a partial for reattach); tool calls run through the
@@ -1014,25 +1103,22 @@ async fn run_ask_ai_turn(
         .ok()
         .flatten();
 
-    // 2. Resolve the engine config: a pinned conversation uses its pin; an
-    //    unpinned one uses the default engine, overriding the model with the
-    //    Quick Recall model setting when present.
-    let settings = read_ai_runtime_settings(&app_handle);
-    let config_result = match pin.as_ref() {
-        Some((provider, model)) if provider.is_some() || model.is_some() => {
-            crate::ai_runtime::resolve_engine_config_for_pin(
-                &settings,
-                provider.as_deref(),
-                model.as_deref(),
-            )
+    // 2. Resolve the engine through the single precedence chain (ADR 0034):
+    //    thread pin → Ask AI model override (`access.askAiModel`, a bare
+    //    rig-core model id riding on the default model's provider) → global
+    //    default model.
+    let settings = read_recording_settings(&app_handle);
+    let pin_ref = pin.as_ref().and_then(|(provider, model)| {
+        match (provider.as_deref(), model.as_deref()) {
+            (Some(provider), Some(model)) => Some((provider, model)),
+            _ => None,
         }
-        _ => crate::ai_runtime::resolve_engine_config(&settings).map(|config| {
-            match read_ask_ai_model(&app_handle) {
-                Some(model) => override_engine_model(config, &model),
-                None => config,
-            }
-        }),
-    };
+    });
+    let config_result = crate::ai_runtime::resolve_engine_config(
+        &settings.ai_runtime,
+        pin_ref,
+        settings.access.ask_ai_model.as_deref(),
+    );
     let config = match config_result {
         Ok(config) => config,
         Err(reason) => {
@@ -1380,6 +1466,18 @@ async fn run_ask_ai_turn(
                     serde_json::json!({ "conversationId": conversation_id }),
                 );
             }
+            // Fire-and-forget generated thread title: only after the FIRST turn
+            // completes and persists. Spawned detached so it can never delay or
+            // fail the turn; every failure inside is swallowed (the fallback
+            // first-question title stands).
+            if title_generation_eligible(turn_index) {
+                tauri::async_runtime::spawn(generate_conversation_title(
+                    app_handle.clone(),
+                    Arc::clone(&infra),
+                    conversation_id.clone(),
+                    question.clone(),
+                ));
+            }
         }
         Err(error) => {
             let message = error.to_string();
@@ -1644,44 +1742,6 @@ mod tests {
         assert_eq!(resolve_tool_call_cap(1), 1);
         assert_eq!(resolve_tool_call_cap(12), 12);
         assert_eq!(resolve_tool_call_cap(250), 250);
-    }
-
-    #[test]
-    fn override_engine_model_replaces_cloud_model_only() {
-        let config = ai_engine::EngineConfig::Cloud {
-            provider: ai_engine::CloudProvider::Anthropic,
-            model: "claude-old".to_string(),
-            api_key: "key".to_string(),
-            base_url: Some("https://example".to_string()),
-        };
-        let overridden = override_engine_model(config, "claude-new");
-        match overridden {
-            ai_engine::EngineConfig::Cloud {
-                model,
-                api_key,
-                base_url,
-                ..
-            } => {
-                assert_eq!(model, "claude-new");
-                assert_eq!(api_key, "key");
-                assert_eq!(base_url.as_deref(), Some("https://example"));
-            }
-            other => panic!("expected Cloud, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn override_engine_model_blank_is_noop() {
-        let config = ai_engine::EngineConfig::Local {
-            kind: ai_engine::LocalKind::Ollama,
-            endpoint: "http://localhost:11434".to_string(),
-            model: "llama".to_string(),
-        };
-        let unchanged = override_engine_model(config, "   ");
-        match unchanged {
-            ai_engine::EngineConfig::Local { model, .. } => assert_eq!(model, "llama"),
-            other => panic!("expected Local, got {other:?}"),
-        }
     }
 
     #[test]
@@ -1994,6 +2054,62 @@ mod tests {
         assert_eq!(request.title.as_deref(), Some("My chat"));
         // priorTranscript still deserializes (as opaque JSON) but is ignored.
         assert!(request.prior_transcript.is_some());
+    }
+
+    #[test]
+    fn title_generation_is_first_turn_only() {
+        // Eligibility rule: only the FIRST turn of a thread generates a title;
+        // a follow-up (second turn onward) is a no-op.
+        assert!(title_generation_eligible(0));
+        assert!(!title_generation_eligible(1));
+        assert!(!title_generation_eligible(7));
+    }
+
+    #[test]
+    fn title_prompt_sees_only_the_question_text() {
+        let prompt = build_title_prompt("what did I work on yesterday?");
+        assert!(prompt.contains("what did I work on yesterday?"));
+        // No capture data / transcript / tool text leaks into the title call.
+        assert!(!prompt.contains("Context from the user's captures"));
+
+        let preamble = build_title_preamble();
+        assert!(preamble.contains("3-6 word"));
+    }
+
+    #[test]
+    fn normalize_generated_title_accepts_a_clean_short_title() {
+        assert_eq!(
+            normalize_generated_title("Yesterday's coding session"),
+            Some("Yesterday's coding session".to_string())
+        );
+        // Wrapping quotes, trailing punctuation, and ragged whitespace are
+        // stripped/collapsed rather than rejected.
+        assert_eq!(
+            normalize_generated_title("\u{201c}Rust borrow checker help.\u{201d}"),
+            Some("Rust borrow checker help".to_string())
+        );
+        assert_eq!(
+            normalize_generated_title("  Weekly   planning  recap \n"),
+            Some("Weekly planning recap".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_generated_title_rejects_empty_and_overlong() {
+        // Empty / whitespace / quote-only results are failures.
+        assert_eq!(normalize_generated_title(""), None);
+        assert_eq!(normalize_generated_title("   "), None);
+        assert_eq!(normalize_generated_title("\"\""), None);
+        // Too many words (the model ignored the 3–6 word instruction).
+        assert_eq!(
+            normalize_generated_title(
+                "This is a much too long title that rambles on and on about everything"
+            ),
+            None
+        );
+        // Few words but absurdly long characters-wise.
+        let overlong = format!("{} {}", "a".repeat(40), "b".repeat(40));
+        assert_eq!(normalize_generated_title(&overlong), None);
     }
 
     #[test]

@@ -2,15 +2,14 @@
 //!
 //! The actual engine — provider clients, structured extraction, reachability —
 //! lives in the `ai-runtime` crate, aliased here as `ai_engine` so it does not
-//! collide with this `crate::ai_runtime` module. These commands map the wire
-//! [`AiRuntimeSettings`] onto an [`ai_engine::EngineConfig`], read the
+//! collide with this `crate::ai_runtime` module. These commands map the
+//! provider-centric wire [`AiRuntimeSettings`] (ADR 0034: a flat provider list
+//! plus ONE global default model) onto an [`ai_engine::EngineConfig`], read the
 //! bring-your-own provider key from the OS keychain (never from settings), and
-//! expose status/test round trips to the Settings → Access "Reasoning Engine"
-//! card.
+//! expose status/test round trips plus provider-tagged model discovery to the
+//! Settings AI surface.
 
-use capture_types::{
-    AiCloudProvider, AiEngineKind, AiEngineProfile, AiLocalKind, AiRuntimeSettings,
-};
+use capture_types::{AiEngineRef, AiProviderConfig, AiProviderKind, AiRuntimeSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::native_capture::{read_recording_settings, RecordingSettingsState};
@@ -21,10 +20,10 @@ use crate::native_capture::{read_recording_settings, RecordingSettingsState};
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeStatus {
     enabled: bool,
-    engine_kind: String,
     configured: bool,
     available: bool,
-    has_cloud_key: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_model: Option<AiEngineRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
 }
@@ -34,17 +33,20 @@ pub struct AiRuntimeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeTestResult {
     ok: bool,
-    engine_kind: String,
+    provider: String,
     model: String,
     message: String,
     raw_json: String,
 }
 
-/// One model id discovered from the engine's OpenAI-style `/models` route.
+/// One model id discovered from a connected provider's models route, tagged
+/// with the provider it came from so the merged pool stays attributable.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeModel {
     id: String,
+    /// Stable provider id ([`AiProviderKind::id`]).
+    provider: String,
 }
 
 /// Minimal projection of the OpenAI-style `{ "data": [ { "id": … } ] }` model
@@ -95,248 +97,171 @@ pub struct AiRuntimeProviderRequest {
     provider: String,
 }
 
-/// Wire string for an [`AiEngineKind`] (matches the serde snake_case form).
-fn engine_kind_str(kind: AiEngineKind) -> &'static str {
+/// Map a cloud provider kind onto the engine crate's provider enum. `None`
+/// for the local kinds.
+fn cloud_provider_kind(kind: AiProviderKind) -> Option<ai_engine::CloudProvider> {
     match kind {
-        AiEngineKind::Cloud => "cloud",
-        AiEngineKind::Local => "local",
+        AiProviderKind::Anthropic => Some(ai_engine::CloudProvider::Anthropic),
+        AiProviderKind::Openai => Some(ai_engine::CloudProvider::Openai),
+        AiProviderKind::OpenaiCompatible => Some(ai_engine::CloudProvider::OpenAiCompatible),
+        AiProviderKind::Ollama | AiProviderKind::Llamafile => None,
     }
 }
 
-/// Keychain provider id ("anthropic" / "openai") for the configured cloud provider.
-fn cloud_provider_id(provider: AiCloudProvider) -> &'static str {
-    match provider {
-        AiCloudProvider::Anthropic => "anthropic",
-        AiCloudProvider::Openai => "openai",
-        AiCloudProvider::OpenaiCompatible => "openai_compatible",
-    }
-}
-
-/// Map the wire cloud provider onto the engine crate's provider enum.
-fn cloud_provider_kind(provider: AiCloudProvider) -> ai_engine::CloudProvider {
-    match provider {
-        AiCloudProvider::Anthropic => ai_engine::CloudProvider::Anthropic,
-        AiCloudProvider::Openai => ai_engine::CloudProvider::Openai,
-        AiCloudProvider::OpenaiCompatible => ai_engine::CloudProvider::OpenAiCompatible,
-    }
-}
-
-/// Map the wire local kind onto the engine crate's local-kind enum.
-fn local_kind(kind: AiLocalKind) -> ai_engine::LocalKind {
+/// Map a local provider kind onto the engine crate's local-kind enum. `None`
+/// for the cloud kinds.
+fn local_kind(kind: AiProviderKind) -> Option<ai_engine::LocalKind> {
     match kind {
-        AiLocalKind::Ollama => ai_engine::LocalKind::Ollama,
-        AiLocalKind::Llamafile => ai_engine::LocalKind::Llamafile,
+        AiProviderKind::Ollama => Some(ai_engine::LocalKind::Ollama),
+        AiProviderKind::Llamafile => Some(ai_engine::LocalKind::Llamafile),
+        _ => None,
     }
 }
 
-// NOTE: the per-thread engine-pin selection seam below (`*_profile*`,
-// `select_profile_for_pin`, `resolve_engine_config_for_pin`) is the settings
-// contract this slice provides for the later conversation-pin / ask_ai.rs slices
-// to consume. It is exercised by this module's tests but has no production
-// caller yet, so it is `#[allow(dead_code)]` until those slices wire it.
-
-/// The per-thread **engine-pin provider string** for a local kind
-/// ("ollama" / "llamafile"). Cloud engines use [`cloud_provider_id`]; together
-/// these are the stable provider strings the conversation-pin slice + frontend
-/// pass to [`resolve_engine_config_for_pin`].
-#[allow(dead_code)]
-fn local_kind_id(kind: AiLocalKind) -> &'static str {
-    match kind {
-        AiLocalKind::Ollama => "ollama",
-        AiLocalKind::Llamafile => "llamafile",
-    }
-}
-
-/// The per-thread engine-pin provider string for one profile: the keychain
-/// provider id for a cloud engine, the local-kind name for a local engine.
-#[allow(dead_code)]
-fn profile_provider_id(profile: &AiEngineProfile) -> &'static str {
-    match profile.engine_kind {
-        AiEngineKind::Cloud => cloud_provider_id(profile.cloud_provider),
-        AiEngineKind::Local => local_kind_id(profile.local_kind),
-    }
-}
-
-/// The model string a profile resolves to for its engine kind (cloud model /
-/// local model), trimmed. Used for the pin (provider, model) match key.
-#[allow(dead_code)]
-fn profile_model(profile: &AiEngineProfile) -> &str {
-    match profile.engine_kind {
-        AiEngineKind::Cloud => profile.cloud_model.trim(),
-        AiEngineKind::Local => profile.local_model.trim(),
-    }
-}
-
-/// The [`AiEngineProfile`] described by the flat default/global fields of the
-/// settings (the default engine).
-fn default_engine_profile(settings: &AiRuntimeSettings) -> AiEngineProfile {
-    AiEngineProfile {
-        engine_kind: settings.engine_kind,
-        cloud_provider: settings.cloud_provider,
-        cloud_model: settings.cloud_model.clone(),
-        cloud_base_url: settings.cloud_base_url.clone(),
-        local_kind: settings.local_kind,
-        local_endpoint: settings.local_endpoint.clone(),
-        local_model: settings.local_model.clone(),
-    }
-}
-
-/// Every engine the user has configured: the default/global engine (from the
-/// flat fields) first, then the `additional_engines` catalog, de-duplicated by
-/// the pin identity `(engine_kind, provider/kind id, model)` — so the default
-/// engine appearing again in the additional list is not listed twice.
-#[allow(dead_code)]
-pub(crate) fn configured_engine_profiles(settings: &AiRuntimeSettings) -> Vec<AiEngineProfile> {
-    let mut profiles = Vec::with_capacity(1 + settings.additional_engines.len());
-    let mut seen: Vec<(AiEngineKind, &'static str, String)> = Vec::new();
-    for profile in std::iter::once(default_engine_profile(settings))
-        .chain(settings.additional_engines.iter().cloned())
-    {
-        let key = (
-            profile.engine_kind,
-            profile_provider_id(&profile),
-            profile_model(&profile).to_string(),
-        );
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.push(key);
-        profiles.push(profile);
-    }
-    profiles
-}
-
-/// Find the profile a thread is pinned to, matching by the engine-pin
-/// `provider` string ([`cloud_provider_id`] for cloud, `"ollama"`/`"llamafile"`
-/// for local) AND the model id. `None` when either is absent or no profile
-/// matches — the caller then falls back to the default engine. Pure (no
-/// keychain), so it is unit-testable.
-#[allow(dead_code)]
-pub(crate) fn select_profile_for_pin<'a>(
-    profiles: &'a [AiEngineProfile],
-    provider: Option<&str>,
-    model: Option<&str>,
-) -> Option<&'a AiEngineProfile> {
-    let provider = provider?.trim();
-    let model = model?.trim();
-    if provider.is_empty() || model.is_empty() {
-        return None;
-    }
-    profiles
+/// The connected provider config for a kind, if the user connected one.
+fn provider_config(settings: &AiRuntimeSettings, kind: AiProviderKind) -> Option<&AiProviderConfig> {
+    settings
+        .providers
         .iter()
-        .find(|profile| profile_provider_id(profile) == provider && profile_model(profile) == model)
+        .find(|provider| provider.kind == kind)
 }
 
-/// Build an [`ai_engine::EngineConfig`] from one [`AiEngineProfile`], sourcing
-/// the cloud credential from the keychain. Returns a reason-code string on
-/// failure (`no_model` / `no_base_url` / `no_cloud_key` / `local_no_model` /
-/// `local_endpoint_unreachable`). This is the shared engine-building body used
-/// by both the default-engine [`resolve_engine_config`] and the pinned-engine
-/// [`resolve_engine_config_for_pin`].
-pub(crate) fn resolve_engine_config_from_profile(
-    profile: &AiEngineProfile,
-) -> Result<ai_engine::EngineConfig, String> {
-    match profile.engine_kind {
-        AiEngineKind::Cloud => {
-            let model = profile.cloud_model.trim();
-            if model.is_empty() {
-                return Err("no_model".to_string());
-            }
-            let base_url = profile.cloud_base_url.trim();
-            if matches!(profile.cloud_provider, AiCloudProvider::OpenaiCompatible)
-                && base_url.is_empty()
-            {
-                return Err("no_base_url".to_string());
-            }
-            let provider_id = cloud_provider_id(profile.cloud_provider);
-            let api_key = app_infra::load_ai_provider_key(provider_id)
-                .map_err(|error| error.to_string())?
-                .filter(|key| !key.is_empty())
-                .ok_or_else(|| "no_cloud_key".to_string())?;
-            Ok(ai_engine::EngineConfig::Cloud {
-                provider: cloud_provider_kind(profile.cloud_provider),
-                model: model.to_string(),
-                api_key,
-                base_url: if base_url.is_empty() {
-                    None
-                } else {
-                    Some(base_url.to_string())
-                },
-            })
-        }
-        AiEngineKind::Local => {
-            let endpoint = profile.local_endpoint.trim();
-            if endpoint.is_empty() {
-                return Err("local_endpoint_unreachable".to_string());
-            }
-            let model = profile.local_model.trim();
-            if model.is_empty() {
-                return Err("local_no_model".to_string());
-            }
-            Ok(ai_engine::EngineConfig::Local {
-                kind: local_kind(profile.local_kind),
-                endpoint: endpoint.to_string(),
-                model: model.to_string(),
-            })
-        }
+/// The effective endpoint for a local provider config: its `baseUrl`, falling
+/// back to the kind's default localhost endpoint when left empty.
+fn local_endpoint(provider: &AiProviderConfig) -> String {
+    let base_url = provider.base_url.trim();
+    if base_url.is_empty() {
+        provider
+            .kind
+            .default_local_endpoint()
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        base_url.to_string()
     }
 }
 
-/// Build an [`ai_engine::EngineConfig`] from the current settings' **default**
-/// engine, sourcing the cloud credential from the keychain. Returns a
-/// reason-code string on failure (no model, no key, no endpoint). Behaviour is
-/// identical to before the profile refactor — it just delegates to
-/// [`resolve_engine_config_from_profile`] with the default profile.
+/// Build an [`ai_engine::EngineConfig`] for one engine identity
+/// `{provider, model}` against the connected provider list, sourcing the cloud
+/// credential from the keychain. Returns a reason-code string on failure:
+/// `provider_not_connected:<id>`, `no_base_url`, or `no_provider_key:<id>`.
+fn engine_config_for_ref(
+    settings: &AiRuntimeSettings,
+    kind: AiProviderKind,
+    model: &str,
+) -> Result<ai_engine::EngineConfig, String> {
+    let Some(provider) = provider_config(settings, kind) else {
+        return Err(format!("provider_not_connected:{}", kind.id()));
+    };
+    if let Some(local) = local_kind(kind) {
+        return Ok(ai_engine::EngineConfig::Local {
+            kind: local,
+            endpoint: local_endpoint(provider),
+            model: model.to_string(),
+        });
+    }
+    let base_url = provider.base_url.trim();
+    if matches!(kind, AiProviderKind::OpenaiCompatible) && base_url.is_empty() {
+        return Err("no_base_url".to_string());
+    }
+    let api_key = app_infra::load_ai_provider_key(kind.id())
+        .map_err(|error| error.to_string())?
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| format!("no_provider_key:{}", kind.id()))?;
+    Ok(ai_engine::EngineConfig::Cloud {
+        provider: cloud_provider_kind(kind).expect("cloud kind"),
+        model: model.to_string(),
+        api_key,
+        base_url: if base_url.is_empty() {
+            None
+        } else {
+            Some(base_url.to_string())
+        },
+    })
+}
+
+/// THE single model resolver (ADR 0034). Every model decision resolves through
+/// one precedence chain: **thread pin → feature override → global default
+/// model**.
+///
+/// - `pin` is a thread's persisted engine pin `(provider, model)` — the
+///   provider is a stable id string ([`AiProviderKind::id`]), the model a
+///   rig-core model id. A pin whose provider is unknown or no longer connected
+///   falls through to the next layer instead of failing the thread.
+/// - `feature_override_model` is a feature's optional bare model-id override
+///   (e.g. `access.askAiModel` for Ask AI); it rides on the global default
+///   model's provider.
+/// - The global default model anchors the chain; without one the resolution
+///   fails with `no_default_model`.
+///
+/// Returns a reason-code string on failure (`no_default_model`,
+/// `provider_not_connected:<id>`, `no_base_url`, `no_provider_key:<id>`).
 pub(crate) fn resolve_engine_config(
     settings: &AiRuntimeSettings,
+    pin: Option<(&str, &str)>,
+    feature_override_model: Option<&str>,
 ) -> Result<ai_engine::EngineConfig, String> {
-    resolve_engine_config_from_profile(&default_engine_profile(settings))
-}
-
-/// Resolve the engine for a Quick Recall / chat thread, honouring an optional
-/// per-thread **engine pin** `(provider, model)`. The pin `provider` is the
-/// engine-pin provider string: a keychain cloud provider id
-/// (`"anthropic"`/`"openai"`/`"openai_compatible"`) or a local kind name
-/// (`"ollama"`/`"llamafile"`); `model` is the rig-core model id. When both are
-/// present and match one of [`configured_engine_profiles`], that profile's
-/// config is built. Otherwise (no pin, or no match) it falls back to the
-/// default engine via [`resolve_engine_config`]. The same provider-string
-/// convention is shared with the conversation-pin slice and the frontend.
-#[allow(dead_code)]
-pub(crate) fn resolve_engine_config_for_pin(
-    settings: &AiRuntimeSettings,
-    provider: Option<&str>,
-    model: Option<&str>,
-) -> Result<ai_engine::EngineConfig, String> {
-    let profiles = configured_engine_profiles(settings);
-    match select_profile_for_pin(&profiles, provider, model) {
-        Some(profile) => resolve_engine_config_from_profile(profile),
-        None => resolve_engine_config(settings),
+    // 1. Thread pin.
+    if let Some((provider, model)) = pin {
+        let provider = provider.trim();
+        let model = model.trim();
+        if !provider.is_empty() && !model.is_empty() {
+            if let Some(kind) = AiProviderKind::from_id(provider) {
+                if provider_config(settings, kind).is_some() {
+                    return engine_config_for_ref(settings, kind, model);
+                }
+            }
+            // Pinned to a provider that is unknown or no longer connected →
+            // fall back to the override/default layers below.
+        }
     }
+
+    // 2./3. The global default model, with the feature override replacing only
+    // the model id when present.
+    let default_model = settings
+        .default_model
+        .as_ref()
+        .filter(|model| !model.model.trim().is_empty())
+        .ok_or_else(|| "no_default_model".to_string())?;
+    let model = feature_override_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or_else(|| default_model.model.trim());
+    engine_config_for_ref(settings, default_model.provider, model)
 }
 
-/// The shared engine-configured prerequisite beneath BOTH feature opt-ins
-/// (interactive Ask AI and continuous User-Context derivation). `Ok(())` means a
-/// usable engine exists; `Err(reason_code)` is one of the existing reason codes
-/// (`"ai_runtime_disabled"`, `"no_model"`, `"no_base_url"`, `"no_cloud_key"`,
-/// `"local_no_model"`, `"local_endpoint_unreachable"`). For local it does the
-/// same ping reachability check `get_ai_runtime_status` does. The old "Reasoning
-/// Engine master toggle" `AiRuntimeSettings.enabled` IS this prerequisite's
-/// enable bit (`enabled: false → "ai_runtime_disabled"`).
-pub(crate) async fn engine_configured_prerequisite(
+/// The static (no-network) half of the engine-configured prerequisite: master
+/// switch on, at least one connected provider, a default model chosen, and the
+/// default model's engine resolvable (key present / base URL set). Returns the
+/// resolved default engine config so the async half can ping a local endpoint.
+pub(crate) fn engine_prerequisite_static(
     settings: &AiRuntimeSettings,
-) -> Result<(), String> {
+) -> Result<ai_engine::EngineConfig, String> {
     if !settings.enabled {
         return Err("ai_runtime_disabled".to_string());
     }
-    // Static config check (no model / no base url / no key / no endpoint).
-    resolve_engine_config(settings)?;
-    // Local engines additionally need their endpoint to be reachable right now,
-    // matching the availability semantics of `get_ai_runtime_status`.
-    if matches!(settings.engine_kind, AiEngineKind::Local)
-        && !ai_engine::ping_endpoint(&settings.local_endpoint).await
-    {
-        return Err("local_endpoint_unreachable".to_string());
+    if settings.providers.is_empty() {
+        return Err("no_providers".to_string());
+    }
+    resolve_engine_config(settings, None, None)
+}
+
+/// The shared engine-configured prerequisite beneath BOTH feature opt-ins
+/// (interactive Ask AI and continuous User-Context derivation). `Ok(())` means
+/// a usable engine exists; `Err(reason_code)` is one of `"ai_runtime_disabled"`,
+/// `"no_providers"`, `"no_default_model"`, `"provider_not_connected:<id>"`,
+/// `"no_base_url"`, `"no_provider_key:<id>"`, `"local_endpoint_unreachable"`.
+/// Per ADR 0034 this is "master switch on + at least one usable provider + a
+/// default model chosen"; a local default additionally needs its endpoint to be
+/// reachable right now, matching `get_ai_runtime_status`.
+pub(crate) async fn engine_configured_prerequisite(
+    settings: &AiRuntimeSettings,
+) -> Result<(), String> {
+    let config = engine_prerequisite_static(settings)?;
+    if let ai_engine::EngineConfig::Local { endpoint, .. } = &config {
+        if !ai_engine::ping_endpoint(endpoint).await {
+            return Err("local_endpoint_unreachable".to_string());
+        }
     }
     Ok(())
 }
@@ -377,10 +302,6 @@ pub async fn get_ai_runtime_status(
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<AiRuntimeStatus, String> {
     let settings = read_recording_settings(state.inner()).ai_runtime;
-    let engine_kind = engine_kind_str(settings.engine_kind).to_string();
-
-    let has_cloud_key = app_infra::has_ai_provider_key(cloud_provider_id(settings.cloud_provider))
-        .map_err(|error| error.to_string())?;
 
     // Availability + reason flow through the single shared prerequisite so this
     // status surface and the feature gates can never drift on what "ready"
@@ -390,28 +311,20 @@ pub async fn get_ai_runtime_status(
     match engine_configured_prerequisite(&settings).await {
         Ok(()) => Ok(AiRuntimeStatus {
             enabled: settings.enabled,
-            engine_kind,
             configured: true,
             available: true,
-            has_cloud_key,
+            default_model: settings.default_model,
             reason: None,
         }),
-        Err(reason) => {
-            // A local engine that is fully configured but currently unreachable
-            // is `configured: true` (static config is complete) yet not
-            // available; every other failure means the config is incomplete.
-            let configured = reason == "local_endpoint_unreachable"
-                && matches!(settings.engine_kind, AiEngineKind::Local)
-                && !settings.local_model.trim().is_empty();
-            Ok(AiRuntimeStatus {
-                enabled: settings.enabled,
-                engine_kind,
-                configured,
-                available: false,
-                has_cloud_key,
-                reason: Some(reason),
-            })
-        }
+        Err(reason) => Ok(AiRuntimeStatus {
+            enabled: settings.enabled,
+            // Only the reachability ping fails AFTER the static config passed,
+            // so that reason alone means "configured but currently offline".
+            configured: reason == "local_endpoint_unreachable",
+            available: false,
+            default_model: settings.default_model,
+            reason: Some(reason),
+        }),
     }
 }
 
@@ -420,14 +333,16 @@ pub async fn ai_runtime_test_connection(
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<AiRuntimeTestResult, String> {
     let settings = read_recording_settings(state.inner()).ai_runtime;
-    let engine_kind = engine_kind_str(settings.engine_kind).to_string();
 
-    let model = match settings.engine_kind {
-        AiEngineKind::Cloud => settings.cloud_model.trim().to_string(),
-        AiEngineKind::Local => settings.local_model.trim().to_string(),
-    };
-
-    let config = resolve_engine_config(&settings)?;
+    // Test the global default model's engine. Deliberately NOT gated on the
+    // master switch so the Settings card can verify a key/endpoint before the
+    // user turns AI features on.
+    let default_model = settings
+        .default_model
+        .clone()
+        .filter(|model| !model.model.trim().is_empty())
+        .ok_or_else(|| "no_default_model".to_string())?;
+    let config = resolve_engine_config(&settings, None, None)?;
 
     let probe = ai_engine::run_connection_probe(&config)
         .await
@@ -442,75 +357,61 @@ pub async fn ai_runtime_test_connection(
 
     Ok(AiRuntimeTestResult {
         ok: probe.ok.unwrap_or(true),
-        engine_kind,
-        model,
+        provider: default_model.provider.id().to_string(),
+        model: default_model.model.trim().to_string(),
         message,
         raw_json,
     })
 }
 
-/// The live engine selection the Settings combobox is currently editing.
+/// The live provider list the Settings card is currently editing.
 ///
-/// This is the in-progress draft, not the persisted settings: model discovery is
-/// triggered while the user is still editing the card, so reading the autosaved
-/// settings would race the debounce and list models for a stale provider/base
-/// URL. The bring-your-own key still comes from the keychain (by `cloudProvider`),
-/// never over the wire.
-#[derive(Debug, Deserialize)]
+/// `providers` is the in-progress draft, not the persisted settings: model
+/// discovery is triggered while the user is still editing the card, so reading
+/// the autosaved settings would race the debounce and list models for a stale
+/// provider/base URL. When absent (e.g. the Chat picker), the persisted
+/// provider list is used. The bring-your-own key still comes from the keychain
+/// (by provider id), never over the wire.
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeListModelsRequest {
-    engine_kind: AiEngineKind,
-    cloud_provider: AiCloudProvider,
     #[serde(default)]
-    cloud_base_url: String,
-    #[serde(default)]
-    local_endpoint: String,
+    providers: Option<Vec<AiProviderConfig>>,
 }
 
-/// List the models the selected engine advertises via its OpenAI-style `/models`
-/// route, so the Settings model field can be a discovery combobox rather than a
-/// blind text input.
-///
-/// Takes the live draft engine selection (see [`AiRuntimeListModelsRequest`]),
-/// sources the cloud credential from the keychain, and issues a single
-/// `GET …/models`: `Authorization: Bearer` for OpenAI / OpenAI-compatible, the
-/// `x-api-key` + `anthropic-version` pair for Anthropic, and no credential for a
-/// local Ollama/Llamafile endpoint. Returns the sorted, de-duplicated model ids;
-/// the caller may still type a model id that the route does not advertise.
-#[tauri::command]
-pub async fn ai_runtime_list_models(
-    request: AiRuntimeListModelsRequest,
-) -> Result<Vec<AiRuntimeModel>, String> {
-    let client = reqwest::Client::new();
-    let http_request = match request.engine_kind {
-        AiEngineKind::Cloud => {
-            let api_key = app_infra::load_ai_provider_key(cloud_provider_id(request.cloud_provider))
+/// Fetch the model ids one connected provider advertises: `GET …/models` with
+/// `Authorization: Bearer` for OpenAI / OpenAI-compatible, the `x-api-key` +
+/// `anthropic-version` pair for Anthropic, and no credential for a local
+/// Ollama/Llamafile endpoint (which serve the OpenAI-compatible `/v1/models`).
+async fn list_models_for_provider(
+    client: &reqwest::Client,
+    provider: &AiProviderConfig,
+) -> Result<Vec<String>, String> {
+    let base_url = provider.base_url.trim();
+    let http_request = match provider.kind {
+        AiProviderKind::Anthropic | AiProviderKind::Openai | AiProviderKind::OpenaiCompatible => {
+            let api_key = app_infra::load_ai_provider_key(provider.kind.id())
                 .map_err(|error| error.to_string())?
                 .filter(|key| !key.is_empty())
-                .ok_or_else(|| "no_cloud_key".to_string())?;
-            match request.cloud_provider {
-                AiCloudProvider::Anthropic => client
+                .ok_or_else(|| format!("no_provider_key:{}", provider.kind.id()))?;
+            match provider.kind {
+                AiProviderKind::Anthropic => client
                     .get(models_endpoint_url("https://api.anthropic.com/v1"))
                     .header("x-api-key", api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION_HEADER),
-                AiCloudProvider::Openai => client
+                AiProviderKind::Openai => client
                     .get(models_endpoint_url("https://api.openai.com/v1"))
                     .bearer_auth(api_key),
-                AiCloudProvider::OpenaiCompatible => {
-                    let base = request.cloud_base_url.trim();
-                    if base.is_empty() {
+                _ => {
+                    if base_url.is_empty() {
                         return Err("no_base_url".to_string());
                     }
-                    client.get(models_endpoint_url(base)).bearer_auth(api_key)
+                    client.get(models_endpoint_url(base_url)).bearer_auth(api_key)
                 }
             }
         }
-        AiEngineKind::Local => {
-            let endpoint = request.local_endpoint.trim();
-            if endpoint.is_empty() {
-                return Err("local_endpoint_unreachable".to_string());
-            }
-            client.get(models_endpoint_url(endpoint))
+        AiProviderKind::Ollama | AiProviderKind::Llamafile => {
+            client.get(models_endpoint_url(&local_endpoint(provider)))
         }
     };
 
@@ -527,7 +428,7 @@ pub async fn ai_runtime_list_models(
 
     if !status.is_success() {
         // Surface the provider's own error body (e.g. an "invalid_api_key"
-        // message) so the Settings card can explain why listing failed.
+        // message) so the warning log can explain why listing failed.
         let detail = body.trim();
         return Err(if detail.is_empty() {
             format!("model listing request failed with status {status}")
@@ -539,16 +440,47 @@ pub async fn ai_runtime_list_models(
     let parsed: ModelsListResponse =
         serde_json::from_str(&body).map_err(|error| error.to_string())?;
 
-    let mut models: Vec<AiRuntimeModel> = parsed
+    Ok(parsed
         .data
         .into_iter()
-        .map(|entry| AiRuntimeModel {
-            id: entry.id.trim().to_string(),
-        })
-        .filter(|model| !model.id.is_empty())
-        .collect();
-    models.sort_by(|a, b| a.id.cmp(&b.id));
-    models.dedup_by(|a, b| a.id == b.id);
+        .map(|entry| entry.id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect())
+}
+
+/// List the merged, provider-tagged model pool across every connected provider
+/// (ADR 0034: one pool feeding the default-model picker, the Ask AI override
+/// picker, and the Chat thread picker). Best-effort per provider: a provider
+/// that fails to list (missing key, unreachable endpoint) is skipped with a
+/// warning instead of failing the whole pool, and the caller may still type a
+/// model id no provider advertises (free-form entry stays allowed).
+#[tauri::command]
+pub async fn ai_runtime_list_models(
+    state: tauri::State<'_, RecordingSettingsState>,
+    request: Option<AiRuntimeListModelsRequest>,
+) -> Result<Vec<AiRuntimeModel>, String> {
+    let providers = request
+        .and_then(|request| request.providers)
+        .unwrap_or_else(|| read_recording_settings(state.inner()).ai_runtime.providers);
+
+    let client = reqwest::Client::new();
+    let mut models: Vec<AiRuntimeModel> = Vec::new();
+    for provider in &providers {
+        match list_models_for_provider(&client, provider).await {
+            Ok(ids) => models.extend(ids.into_iter().map(|id| AiRuntimeModel {
+                id,
+                provider: provider.kind.id().to_string(),
+            })),
+            Err(error) => {
+                tauri_plugin_log::log::warn!(
+                    "model listing skipped provider {}: {error}",
+                    provider.kind.id()
+                );
+            }
+        }
+    }
+    models.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
+    models.dedup_by(|a, b| a.id == b.id && a.provider == b.provider);
     Ok(models)
 }
 
@@ -556,87 +488,185 @@ pub async fn ai_runtime_list_models(
 mod tests {
     use super::*;
 
-    fn cloud_profile(provider: AiCloudProvider, model: &str) -> AiEngineProfile {
-        AiEngineProfile {
-            engine_kind: AiEngineKind::Cloud,
-            cloud_provider: provider,
-            cloud_model: model.to_string(),
-            cloud_base_url: String::new(),
-            local_kind: AiLocalKind::Ollama,
-            local_endpoint: "http://localhost:11434".to_string(),
-            local_model: String::new(),
-        }
-    }
-
-    fn local_profile(kind: AiLocalKind, model: &str) -> AiEngineProfile {
-        AiEngineProfile {
-            engine_kind: AiEngineKind::Local,
-            cloud_provider: AiCloudProvider::Anthropic,
-            cloud_model: String::new(),
-            cloud_base_url: String::new(),
-            local_kind: kind,
-            local_endpoint: "http://localhost:11434".to_string(),
-            local_model: model.to_string(),
-        }
-    }
-
-    #[test]
-    fn select_profile_for_pin_matches_cloud_by_provider_and_model() {
-        let profiles = vec![
-            cloud_profile(AiCloudProvider::Anthropic, "claude-haiku-4-5"),
-            cloud_profile(AiCloudProvider::Openai, "gpt-4o-mini"),
-        ];
-        let matched = select_profile_for_pin(&profiles, Some("openai"), Some("gpt-4o-mini"))
-            .expect("a matching profile");
-        assert_eq!(matched.cloud_model, "gpt-4o-mini");
-        assert!(matches!(matched.cloud_provider, AiCloudProvider::Openai));
-    }
-
-    #[test]
-    fn select_profile_for_pin_matches_local_by_kind_and_model() {
-        let profiles = vec![local_profile(AiLocalKind::Ollama, "llama3.2")];
-        let matched = select_profile_for_pin(&profiles, Some("ollama"), Some("llama3.2"))
-            .expect("a matching local profile");
-        assert_eq!(matched.local_model, "llama3.2");
-    }
-
-    #[test]
-    fn select_profile_for_pin_falls_back_when_no_pin_or_no_match() {
-        let profiles = vec![cloud_profile(AiCloudProvider::Anthropic, "claude-haiku-4-5")];
-        // No pin at all → None (caller falls back to the default engine).
-        assert!(select_profile_for_pin(&profiles, None, None).is_none());
-        // Provider matches but model does not → None.
-        assert!(select_profile_for_pin(&profiles, Some("anthropic"), Some("other")).is_none());
-        // Model matches but provider does not → None.
-        assert!(
-            select_profile_for_pin(&profiles, Some("openai"), Some("claude-haiku-4-5")).is_none()
-        );
-        // Blank pin strings are treated as no pin.
-        assert!(select_profile_for_pin(&profiles, Some(""), Some("claude-haiku-4-5")).is_none());
-    }
-
-    #[test]
-    fn configured_engine_profiles_lists_default_first_and_dedupes() {
-        let settings = AiRuntimeSettings {
-            engine_kind: AiEngineKind::Cloud,
-            cloud_provider: AiCloudProvider::Anthropic,
-            cloud_model: "claude-haiku-4-5".to_string(),
-            // The default engine is repeated in the additional list (same
-            // provider+model) and should be de-duplicated away.
-            additional_engines: vec![
-                cloud_profile(AiCloudProvider::Anthropic, "claude-haiku-4-5"),
-                cloud_profile(AiCloudProvider::Openai, "gpt-4o-mini"),
+    /// Settings with local-only providers so resolution never touches the OS
+    /// keychain (cloud key loads are exercised by the app-infra store tests).
+    fn local_settings() -> AiRuntimeSettings {
+        AiRuntimeSettings {
+            enabled: true,
+            providers: vec![
+                AiProviderConfig {
+                    kind: AiProviderKind::Ollama,
+                    base_url: String::new(),
+                },
+                AiProviderConfig {
+                    kind: AiProviderKind::Llamafile,
+                    base_url: "http://localhost:9090".to_string(),
+                },
             ],
-            ..AiRuntimeSettings::default()
+            default_model: Some(AiEngineRef {
+                provider: AiProviderKind::Ollama,
+                model: "llama-default".to_string(),
+            }),
+        }
+    }
+
+    fn expect_local(config: ai_engine::EngineConfig) -> (ai_engine::LocalKind, String, String) {
+        match config {
+            ai_engine::EngineConfig::Local {
+                kind,
+                endpoint,
+                model,
+            } => (kind, endpoint, model),
+            other => panic!("expected Local, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolver_pin_beats_override_beats_default() {
+        let settings = local_settings();
+        // Pin wins over both the feature override and the default model.
+        let (kind, endpoint, model) = expect_local(
+            resolve_engine_config(
+                &settings,
+                Some(("llamafile", "pinned-model")),
+                Some("override-model"),
+            )
+            .expect("pin should resolve"),
+        );
+        assert!(matches!(kind, ai_engine::LocalKind::Llamafile));
+        assert_eq!(endpoint, "http://localhost:9090");
+        assert_eq!(model, "pinned-model");
+
+        // No pin: the override rides on the default model's provider.
+        let (kind, endpoint, model) = expect_local(
+            resolve_engine_config(&settings, None, Some("override-model"))
+                .expect("override should resolve"),
+        );
+        assert!(matches!(kind, ai_engine::LocalKind::Ollama));
+        assert_eq!(endpoint, "http://localhost:11434");
+        assert_eq!(model, "override-model");
+
+        // Neither: the global default model.
+        let (_, _, model) = expect_local(
+            resolve_engine_config(&settings, None, None).expect("default should resolve"),
+        );
+        assert_eq!(model, "llama-default");
+    }
+
+    #[test]
+    fn resolver_falls_back_when_pin_provider_is_not_connected() {
+        let mut settings = local_settings();
+        settings.providers.retain(|p| p.kind == AiProviderKind::Ollama);
+        // Pinned to a provider no longer in the list → fall back through the
+        // chain (override layer first).
+        let (kind, _, model) = expect_local(
+            resolve_engine_config(
+                &settings,
+                Some(("llamafile", "pinned-model")),
+                Some("override-model"),
+            )
+            .expect("fallback should resolve"),
+        );
+        assert!(matches!(kind, ai_engine::LocalKind::Ollama));
+        assert_eq!(model, "override-model");
+
+        // An unknown pin provider id behaves the same.
+        let (_, _, model) = expect_local(
+            resolve_engine_config(&settings, Some(("not-a-provider", "x")), None)
+                .expect("fallback should resolve"),
+        );
+        assert_eq!(model, "llama-default");
+
+        // Blank pin halves are treated as no pin.
+        let (_, _, model) = expect_local(
+            resolve_engine_config(&settings, Some(("", "pinned-model")), None)
+                .expect("fallback should resolve"),
+        );
+        assert_eq!(model, "llama-default");
+    }
+
+    #[test]
+    fn resolver_requires_a_default_model_without_pin() {
+        let mut settings = local_settings();
+        settings.default_model = None;
+        // No default → the override has no provider to ride on, and the plain
+        // resolution fails with the dedicated reason.
+        assert_eq!(
+            resolve_engine_config(&settings, None, Some("override-model")).map(|_| ()),
+            Err("no_default_model".to_string())
+        );
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("no_default_model".to_string())
+        );
+        // A pin still resolves on its own (it names its provider explicitly).
+        let (_, _, model) = expect_local(
+            resolve_engine_config(&settings, Some(("ollama", "pinned-model")), None)
+                .expect("pin should resolve without a default"),
+        );
+        assert_eq!(model, "pinned-model");
+    }
+
+    #[test]
+    fn resolver_reports_disconnected_default_provider() {
+        let mut settings = local_settings();
+        settings.default_model = Some(AiEngineRef {
+            provider: AiProviderKind::Anthropic,
+            model: "claude-haiku-4-5".to_string(),
+        });
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("provider_not_connected:anthropic".to_string())
+        );
+    }
+
+    #[test]
+    fn resolver_requires_base_url_for_openai_compatible() {
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                kind: AiProviderKind::OpenaiCompatible,
+                base_url: String::new(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: AiProviderKind::OpenaiCompatible,
+                model: "some-model".to_string(),
+            }),
         };
-        let profiles = configured_engine_profiles(&settings);
-        assert_eq!(profiles.len(), 2);
-        // Default engine is first.
-        assert_eq!(profiles[0].cloud_model, "claude-haiku-4-5");
-        assert!(matches!(
-            profiles[0].cloud_provider,
-            AiCloudProvider::Anthropic
-        ));
-        assert_eq!(profiles[1].cloud_model, "gpt-4o-mini");
+        // The base-URL check fires before any keychain access.
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("no_base_url".to_string())
+        );
+    }
+
+    #[test]
+    fn static_prerequisite_reason_codes() {
+        // Master switch off.
+        let mut settings = local_settings();
+        settings.enabled = false;
+        assert_eq!(
+            engine_prerequisite_static(&settings).map(|_| ()),
+            Err("ai_runtime_disabled".to_string())
+        );
+
+        // No providers connected.
+        let mut settings = local_settings();
+        settings.providers.clear();
+        assert_eq!(
+            engine_prerequisite_static(&settings).map(|_| ()),
+            Err("no_providers".to_string())
+        );
+
+        // No default model chosen.
+        let mut settings = local_settings();
+        settings.default_model = None;
+        assert_eq!(
+            engine_prerequisite_static(&settings).map(|_| ()),
+            Err("no_default_model".to_string())
+        );
+
+        // Fully configured local default passes the static half.
+        assert!(engine_prerequisite_static(&local_settings()).is_ok());
     }
 }

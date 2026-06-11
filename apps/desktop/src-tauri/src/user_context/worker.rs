@@ -20,7 +20,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use capture_types::{AiEngineKind, DerivationBudgetTier};
+use capture_types::{AiProviderKind, DerivationBudgetTier};
 use tauri::{Emitter, Manager};
 
 use app_infra::user_context::confidence;
@@ -79,14 +79,16 @@ const BACKFILL_WINDOW_MS: i64 = 30 * 60 * 1000;
 /// Cloud: Light = 1, Balanced = 2, Thorough = 4 windows/tick (paired with the
 /// tier sleeps `LIGHT_INTERVAL` 600s / `BALANCED_INTERVAL` 300s / `THOROUGH_INTERVAL`
 /// 120s, so the windows-per-hour spread is wide: ~6 / ~24 / ~120). Local = 1.
-fn backfill_windows_per_tick(engine_kind: AiEngineKind, tier: DerivationBudgetTier) -> u32 {
-    match engine_kind {
-        AiEngineKind::Local => 1,
-        AiEngineKind::Cloud => match tier {
+/// The engine is keyed by the global default model's provider (ADR 0034).
+fn backfill_windows_per_tick(provider: AiProviderKind, tier: DerivationBudgetTier) -> u32 {
+    if provider.is_local() {
+        1
+    } else {
+        match tier {
             DerivationBudgetTier::Light => 1,
             DerivationBudgetTier::Balanced => 2,
             DerivationBudgetTier::Thorough => 4,
-        },
+        }
     }
 }
 
@@ -96,15 +98,17 @@ pub(crate) fn now_ms() -> i64 {
     (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
 
-/// The tier-paced sleep between ticks for a resolved engine.
-fn tick_interval(engine_kind: AiEngineKind, tier: DerivationBudgetTier) -> Duration {
-    match engine_kind {
-        AiEngineKind::Local => LOCAL_INTERVAL,
-        AiEngineKind::Cloud => match tier {
+/// The tier-paced sleep between ticks for a resolved engine (keyed by the
+/// global default model's provider: local = fixed pacing, cloud = the tier).
+fn tick_interval(provider: AiProviderKind, tier: DerivationBudgetTier) -> Duration {
+    if provider.is_local() {
+        LOCAL_INTERVAL
+    } else {
+        match tier {
             DerivationBudgetTier::Light => LIGHT_INTERVAL,
             DerivationBudgetTier::Balanced => BALANCED_INTERVAL,
             DerivationBudgetTier::Thorough => THOROUGH_INTERVAL,
-        },
+        }
     }
 }
 
@@ -544,7 +548,7 @@ async fn run_backfill_window(
 }
 
 /// Run the per-tick backward **History Backfill** pass: up to
-/// `backfill_windows_per_tick(engine_kind, tier)` windows, oldest-covered →
+/// `backfill_windows_per_tick(provider, tier)` windows, oldest-covered →
 /// floor. Returns whether any window derived an Activity (so the caller can emit
 /// `user_context_changed`). Stops early when backfill is complete. Re-reads the
 /// oldest-covered cursor between windows so each window steps strictly older.
@@ -944,7 +948,7 @@ async fn worker_tick(
         return IDLE_INTERVAL;
     }
 
-    let engine = match crate::ai_runtime::resolve_engine_config(&ai_runtime) {
+    let engine = match crate::ai_runtime::resolve_engine_config(&ai_runtime, None, None) {
         Ok(engine) => engine,
         Err(_reason) => {
             // Defensive: the prerequisite already passed, but a local engine
@@ -953,6 +957,12 @@ async fn worker_tick(
         }
     };
 
+    // Pacing + run-ledger labels key off the global default model's provider
+    // (the prerequisite guarantees one is chosen; defensive bail otherwise).
+    let Some(default_provider) = ai_runtime.default_model.as_ref().map(|model| model.provider)
+    else {
+        return IDLE_INTERVAL;
+    };
     let provider_label = provider_label_for(&ai_runtime);
     let model_label = model_label_for(&ai_runtime);
 
@@ -1005,7 +1015,7 @@ async fn worker_tick(
             earliest_capture,
         );
         let max_windows =
-            backfill_windows_per_tick(ai_runtime.engine_kind, user_context.derivation_budget_tier);
+            backfill_windows_per_tick(default_provider, user_context.derivation_budget_tier);
         let backfilled = run_backfill_pass(
             &engine,
             infra.user_context(),
@@ -1096,41 +1106,25 @@ async fn worker_tick(
         let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     }
 
-    tick_interval(ai_runtime.engine_kind, user_context.derivation_budget_tier)
+    tick_interval(default_provider, user_context.derivation_budget_tier)
 }
 
-/// Provider label for the run ledger (cloud provider id / local kind name).
+/// Provider label for the run ledger: the global default model's stable
+/// provider id (background derivation always uses the global default model).
 pub(crate) fn provider_label_for(settings: &capture_types::AiRuntimeSettings) -> Option<String> {
-    match settings.engine_kind {
-        AiEngineKind::Cloud => Some(
-            match settings.cloud_provider {
-                capture_types::AiCloudProvider::Anthropic => "anthropic",
-                capture_types::AiCloudProvider::Openai => "openai",
-                capture_types::AiCloudProvider::OpenaiCompatible => "openai_compatible",
-            }
-            .to_string(),
-        ),
-        AiEngineKind::Local => Some(
-            match settings.local_kind {
-                capture_types::AiLocalKind::Ollama => "ollama",
-                capture_types::AiLocalKind::Llamafile => "llamafile",
-            }
-            .to_string(),
-        ),
-    }
+    settings
+        .default_model
+        .as_ref()
+        .map(|model| model.provider.id().to_string())
 }
 
-/// Model label for the run ledger (the cloud/local model id).
+/// Model label for the run ledger (the global default model id).
 pub(crate) fn model_label_for(settings: &capture_types::AiRuntimeSettings) -> Option<String> {
-    let model = match settings.engine_kind {
-        AiEngineKind::Cloud => settings.cloud_model.trim(),
-        AiEngineKind::Local => settings.local_model.trim(),
-    };
-    if model.is_empty() {
-        None
-    } else {
-        Some(model.to_string())
-    }
+    settings
+        .default_model
+        .as_ref()
+        .map(|model| model.model.trim().to_string())
+        .filter(|model| !model.is_empty())
 }
 
 /// Spawn the background User Context derivation worker. Mirrors
@@ -1244,15 +1238,15 @@ mod tests {
     #[test]
     fn tier_paces_cloud_but_not_local() {
         assert_eq!(
-            tick_interval(AiEngineKind::Cloud, DerivationBudgetTier::Light),
+            tick_interval(AiProviderKind::Anthropic, DerivationBudgetTier::Light),
             LIGHT_INTERVAL
         );
         assert_eq!(
-            tick_interval(AiEngineKind::Cloud, DerivationBudgetTier::Thorough),
+            tick_interval(AiProviderKind::Anthropic, DerivationBudgetTier::Thorough),
             THOROUGH_INTERVAL
         );
         assert_eq!(
-            tick_interval(AiEngineKind::Local, DerivationBudgetTier::Thorough),
+            tick_interval(AiProviderKind::Ollama, DerivationBudgetTier::Thorough),
             LOCAL_INTERVAL
         );
     }
@@ -1313,15 +1307,15 @@ mod tests {
         // The named cloud tier is a real intensity knob (windows/tick), not just a
         // sleep: Light < Balanced < Thorough.
         assert_eq!(
-            backfill_windows_per_tick(AiEngineKind::Cloud, DerivationBudgetTier::Light),
+            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Light),
             1
         );
         assert_eq!(
-            backfill_windows_per_tick(AiEngineKind::Cloud, DerivationBudgetTier::Balanced),
+            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Balanced),
             2
         );
         assert_eq!(
-            backfill_windows_per_tick(AiEngineKind::Cloud, DerivationBudgetTier::Thorough),
+            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Thorough),
             4
         );
         // Local ignores the tier entirely (fixed pacing): always one window/tick.
@@ -1330,7 +1324,7 @@ mod tests {
             DerivationBudgetTier::Balanced,
             DerivationBudgetTier::Thorough,
         ] {
-            assert_eq!(backfill_windows_per_tick(AiEngineKind::Local, tier), 1);
+            assert_eq!(backfill_windows_per_tick(AiProviderKind::Ollama, tier), 1);
         }
     }
 }

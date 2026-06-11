@@ -127,14 +127,18 @@ impl ConversationStore {
     }
 
     /// List conversations newest-first (by `updated_at_ms`), each as a summary
-    /// carrying its turn count + a short preview (first turn's question).
+    /// carrying its turn count + a short preview (first turn's question). The
+    /// summary `title` is the EFFECTIVE title (see [`effective_title`]):
+    /// user-set → generated → stored → preview truncation.
     pub async fn list_conversations(
         &self,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<ConversationSummary>> {
         let rows = sqlx::query(
-            "SELECT c.conversation_id AS conversation_id, c.title AS title, c.origin AS origin, \
+            "SELECT c.conversation_id AS conversation_id, c.title AS title, \
+                    c.user_title AS user_title, c.generated_title AS generated_title, \
+                    c.origin AS origin, \
                     c.created_at_ms AS created_at_ms, c.updated_at_ms AS updated_at_ms, \
                     (SELECT COUNT(*) FROM conversation_turns t WHERE t.conversation_row_id = c.id) AS turn_count, \
                     (SELECT t.question FROM conversation_turns t \
@@ -153,11 +157,12 @@ impl ConversationStore {
     }
 
     /// Hydrate one conversation (with its turns in `turn_index` order) by its
-    /// frontend UUID. `None` when absent.
+    /// frontend UUID. `None` when absent. The hydrated `title` is the EFFECTIVE
+    /// title (see [`effective_title`]).
     pub async fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>> {
         let row = sqlx::query(
-            "SELECT id, conversation_id, title, origin, created_at_ms, updated_at_ms, \
-                    provider, model \
+            "SELECT id, conversation_id, title, user_title, generated_title, origin, \
+                    created_at_ms, updated_at_ms, provider, model \
              FROM conversations WHERE conversation_id = ?1",
         )
         .bind(conversation_id)
@@ -169,9 +174,18 @@ impl ConversationStore {
         };
         let row_id: i64 = row.get("id");
         let turns = self.list_turns(row_id).await?;
+        let preview = turns
+            .first()
+            .map(|turn| truncate_preview(&turn.question))
+            .unwrap_or_default();
         Ok(Some(Conversation {
             conversation_id: row.get("conversation_id"),
-            title: row.get("title"),
+            title: effective_title(
+                row.get("user_title"),
+                row.get("generated_title"),
+                row.get("title"),
+                &preview,
+            ),
             origin: row.get("origin"),
             created_at_ms: row.get("created_at_ms"),
             updated_at_ms: row.get("updated_at_ms"),
@@ -235,6 +249,59 @@ impl ConversationStore {
         Ok(row.map(|row| (row.get("provider"), row.get("model"))))
     }
 
+    /// Set the USER-SET title for a conversation (an explicit rename). Once set
+    /// it wins forever: the read path prefers it over any generated title, and
+    /// the generated-title writer ([`Self::set_generated_title_if_unset`]) is
+    /// conditional on `user_title` still being NULL. Bumps `updated_at_ms` /
+    /// `last_activity_at_ms` (a rename is user activity). Returns `false` when
+    /// the conversation does not exist (a rename never creates a row). The
+    /// caller passes a trimmed, non-empty title.
+    pub async fn set_user_title(
+        &self,
+        conversation_id: &str,
+        title: &str,
+        now_ms: i64,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE conversations SET \
+                user_title = ?2, \
+                updated_at_ms = ?3, last_activity_at_ms = ?3 \
+             WHERE conversation_id = ?1",
+        )
+        .bind(conversation_id)
+        .bind(title)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Persist a model-GENERATED title, but only while the conversation is
+    /// still eligible: the row exists AND has neither a user-set title (a
+    /// rename — even one racing the in-flight generation — wins forever) nor an
+    /// earlier generated title (generation is once-per-thread). The guard lives
+    /// in the WHERE clause so the check-and-write is one atomic statement.
+    /// Deliberately does NOT bump the activity stamps: this is a cosmetic
+    /// background write, not user activity, so it never re-sorts the history
+    /// list or extends retention. Returns whether the title was written.
+    pub async fn set_generated_title_if_unset(
+        &self,
+        conversation_id: &str,
+        title: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE conversations SET generated_title = ?2 \
+             WHERE conversation_id = ?1 \
+               AND user_title IS NULL \
+               AND generated_title IS NULL",
+        )
+        .bind(conversation_id)
+        .bind(title)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn list_turns(&self, conversation_row_id: i64) -> Result<Vec<ConversationTurn>> {
         let rows = sqlx::query(
             "SELECT turn_index, question, answer, reasoning, tool_activities, sources, phase, \
@@ -249,9 +316,9 @@ impl ConversationStore {
         Ok(rows.into_iter().map(map_turn).collect())
     }
 
-    /// Case-insensitive search across conversation titles and any turn's
-    /// question/answer. Newest-first (by `updated_at_ms`), deduped per
-    /// conversation, capped at `limit`.
+    /// Case-insensitive search across conversation titles (user-set, generated,
+    /// and stored) and any turn's question/answer. Newest-first (by
+    /// `updated_at_ms`), deduped per conversation, capped at `limit`.
     pub async fn search_conversations(
         &self,
         query: &str,
@@ -260,7 +327,9 @@ impl ConversationStore {
         // Escape LIKE wildcards in the user term so `%`/`_` match literally.
         let pattern = format!("%{}%", escape_like(query));
         let rows = sqlx::query(
-            "SELECT c.conversation_id AS conversation_id, c.title AS title, c.origin AS origin, \
+            "SELECT c.conversation_id AS conversation_id, c.title AS title, \
+                    c.user_title AS user_title, c.generated_title AS generated_title, \
+                    c.origin AS origin, \
                     c.created_at_ms AS created_at_ms, c.updated_at_ms AS updated_at_ms, \
                     (SELECT COUNT(*) FROM conversation_turns t WHERE t.conversation_row_id = c.id) AS turn_count, \
                     (SELECT t.question FROM conversation_turns t \
@@ -268,6 +337,8 @@ impl ConversationStore {
                      ORDER BY t.turn_index ASC LIMIT 1) AS preview \
              FROM conversations c \
              WHERE c.title LIKE ?1 ESCAPE '\\' COLLATE NOCASE \
+                OR c.user_title LIKE ?1 ESCAPE '\\' COLLATE NOCASE \
+                OR c.generated_title LIKE ?1 ESCAPE '\\' COLLATE NOCASE \
                 OR EXISTS (\
                     SELECT 1 FROM conversation_turns t \
                     WHERE t.conversation_row_id = c.id \
@@ -327,6 +398,33 @@ fn parse_json(value: &str) -> serde_json::Value {
     serde_json::from_str(value).unwrap_or(serde_json::Value::Null)
 }
 
+/// Resolve the EFFECTIVE display title for a conversation: the first non-blank
+/// of user-set title → generated title → stored title (the legacy upsert title,
+/// historically the frontend's first-question truncation) → the first-question
+/// preview truncation. "User-set wins forever" is this ordering plus the
+/// conditional generated-title write ([`ConversationStore::set_generated_title_if_unset`]).
+fn effective_title(
+    user_title: Option<String>,
+    generated_title: Option<String>,
+    stored_title: String,
+    preview: &str,
+) -> String {
+    for candidate in [
+        user_title.as_deref(),
+        generated_title.as_deref(),
+        Some(stored_title.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let candidate = candidate.trim();
+        if !candidate.is_empty() {
+            return candidate.to_string();
+        }
+    }
+    preview.to_string()
+}
+
 /// Truncate a preview question to [`PREVIEW_CHAR_CAP`] chars on a char boundary.
 fn truncate_preview(question: &str) -> String {
     if question.chars().count() <= PREVIEW_CHAR_CAP {
@@ -370,17 +468,25 @@ fn map_turn(row: SqliteRow) -> ConversationTurn {
     }
 }
 
-/// Map a history-list row onto a [`ConversationSummary`].
+/// Map a history-list row onto a [`ConversationSummary`]. The summary `title`
+/// is the EFFECTIVE title (see [`effective_title`]), so the frontend list can
+/// render `title` directly.
 fn map_summary(row: SqliteRow) -> ConversationSummary {
     let preview: Option<String> = row.get("preview");
+    let preview = preview.as_deref().map(truncate_preview).unwrap_or_default();
     ConversationSummary {
         conversation_id: row.get("conversation_id"),
-        title: row.get("title"),
+        title: effective_title(
+            row.get("user_title"),
+            row.get("generated_title"),
+            row.get("title"),
+            &preview,
+        ),
         origin: row.get("origin"),
         created_at_ms: row.get("created_at_ms"),
         updated_at_ms: row.get("updated_at_ms"),
         turn_count: row.get("turn_count"),
-        preview: preview.as_deref().map(truncate_preview).unwrap_or_default(),
+        preview,
     }
 }
 
@@ -421,7 +527,9 @@ mod tests {
                 updated_at_ms INTEGER NOT NULL,
                 last_activity_at_ms INTEGER NOT NULL,
                 provider TEXT,
-                model TEXT
+                model TEXT,
+                generated_title TEXT,
+                user_title TEXT
             )",
             "CREATE TABLE conversation_turns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -803,6 +911,218 @@ mod tests {
                     .expect("read engine"),
                 Some((None, None)),
             );
+        });
+    }
+
+    #[test]
+    fn effective_title_prefers_user_then_generated_then_stored_then_preview() {
+        assert_eq!(
+            effective_title(
+                Some("User".into()),
+                Some("Generated".into()),
+                "Stored".into(),
+                "preview"
+            ),
+            "User"
+        );
+        assert_eq!(
+            effective_title(None, Some("Generated".into()), "Stored".into(), "preview"),
+            "Generated"
+        );
+        assert_eq!(
+            effective_title(None, None, "Stored".into(), "preview"),
+            "Stored"
+        );
+        assert_eq!(effective_title(None, None, "".into(), "preview"), "preview");
+        // Blank candidates are skipped, not surfaced.
+        assert_eq!(
+            effective_title(Some("  ".into()), Some("".into()), " ".into(), "preview"),
+            "preview"
+        );
+    }
+
+    #[test]
+    fn generated_title_persists_once_and_surfaces_in_list_and_get() {
+        block_on(async {
+            let store = test_store().await;
+            store
+                .save_turn(
+                    "conv-t",
+                    "what did I do yesterday afternoon exactly?",
+                    "chat",
+                    0,
+                    "what did I do yesterday afternoon exactly?",
+                    "you coded",
+                    None,
+                    "[]",
+                    "[]",
+                    "done",
+                    None,
+                    None,
+                    1_000,
+                )
+                .await
+                .expect("turn saves");
+
+            // First generated write lands…
+            assert!(store
+                .set_generated_title_if_unset("conv-t", "Yesterday afternoon recap")
+                .await
+                .expect("generated title write"));
+            // …and a second one is a no-op (generation is once-per-thread).
+            assert!(!store
+                .set_generated_title_if_unset("conv-t", "Another title")
+                .await
+                .expect("second generated write"));
+
+            let summaries = store.list_conversations(50, 0).await.expect("list");
+            assert_eq!(summaries[0].title, "Yesterday afternoon recap");
+            let conversation = store
+                .get_conversation("conv-t")
+                .await
+                .expect("get")
+                .expect("exists");
+            assert_eq!(conversation.title, "Yesterday afternoon recap");
+        });
+    }
+
+    #[test]
+    fn failed_title_generation_leaves_fallback_title() {
+        block_on(async {
+            let store = test_store().await;
+            // A turn persisted with an EMPTY upsert title and no generated-title
+            // write (the engine call failed / was unavailable): the list and get
+            // paths fall back to the first-question truncation, and the turn row
+            // itself is untouched.
+            store
+                .save_turn(
+                    "conv-fb", "", "chat", 0, "what changed?", "a lot", None, "[]", "[]", "done",
+                    None, None, 1_000,
+                )
+                .await
+                .expect("turn saves");
+
+            let summaries = store.list_conversations(50, 0).await.expect("list");
+            assert_eq!(summaries[0].title, "what changed?");
+            let conversation = store
+                .get_conversation("conv-fb")
+                .await
+                .expect("get")
+                .expect("exists");
+            assert_eq!(conversation.title, "what changed?");
+            assert_eq!(conversation.turns[0].answer, "a lot");
+            assert_eq!(conversation.turns[0].phase, "done");
+        });
+    }
+
+    #[test]
+    fn user_title_persists_and_wins_over_a_later_generated_write() {
+        block_on(async {
+            let store = test_store().await;
+            store
+                .save_turn(
+                    "conv-r", "first question", "chat", 0, "first question", "a", None, "[]",
+                    "[]", "done", None, None, 1_000,
+                )
+                .await
+                .expect("turn saves");
+
+            // The user renames while title generation is still in flight…
+            assert!(store
+                .set_user_title("conv-r", "My renamed thread", 2_000)
+                .await
+                .expect("user title write"));
+            // …so the late generated write is rejected by the WHERE guard.
+            assert!(!store
+                .set_generated_title_if_unset("conv-r", "Late generated title")
+                .await
+                .expect("late generated write"));
+
+            let summaries = store.list_conversations(50, 0).await.expect("list");
+            assert_eq!(summaries[0].title, "My renamed thread");
+        });
+    }
+
+    #[test]
+    fn user_title_overrides_an_earlier_generated_title() {
+        block_on(async {
+            let store = test_store().await;
+            store
+                .save_turn(
+                    "conv-o", "q", "chat", 0, "q", "a", None, "[]", "[]", "done", None, None,
+                    1_000,
+                )
+                .await
+                .expect("turn saves");
+            assert!(store
+                .set_generated_title_if_unset("conv-o", "Generated title")
+                .await
+                .expect("generated write"));
+            assert!(store
+                .set_user_title("conv-o", "User title", 2_000)
+                .await
+                .expect("user write"));
+
+            let summaries = store.list_conversations(50, 0).await.expect("list");
+            assert_eq!(summaries[0].title, "User title");
+        });
+    }
+
+    #[test]
+    fn title_writes_against_missing_conversation_are_rejected() {
+        block_on(async {
+            let store = test_store().await;
+            assert!(!store
+                .set_user_title("ghost", "Title", 1_000)
+                .await
+                .expect("user write"));
+            assert!(!store
+                .set_generated_title_if_unset("ghost", "Title")
+                .await
+                .expect("generated write"));
+        });
+    }
+
+    #[test]
+    fn search_matches_user_and_generated_titles() {
+        block_on(async {
+            let store = test_store().await;
+            store
+                .save_turn(
+                    "c1", "", "chat", 0, "question one", "answer", None, "[]", "[]", "done",
+                    None, None, 1_000,
+                )
+                .await
+                .expect("c1 saves");
+            store
+                .save_turn(
+                    "c2", "", "chat", 0, "question two", "answer", None, "[]", "[]", "done",
+                    None, None, 2_000,
+                )
+                .await
+                .expect("c2 saves");
+            store
+                .set_generated_title_if_unset("c1", "Kubernetes debugging")
+                .await
+                .expect("generated write");
+            store
+                .set_user_title("c2", "Holiday planning", 3_000)
+                .await
+                .expect("user write");
+
+            let by_generated = store
+                .search_conversations("kubernetes", 50)
+                .await
+                .expect("search");
+            assert_eq!(by_generated.len(), 1);
+            assert_eq!(by_generated[0].conversation_id, "c1");
+
+            let by_user = store
+                .search_conversations("holiday", 50)
+                .await
+                .expect("search");
+            assert_eq!(by_user.len(), 1);
+            assert_eq!(by_user[0].conversation_id, "c2");
         });
     }
 

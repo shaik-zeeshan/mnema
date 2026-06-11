@@ -397,7 +397,7 @@ pub async fn get_or_generate_digest(
     {
         return Ok(None);
     }
-    let Ok(engine) = crate::ai_runtime::resolve_engine_config(ai_runtime) else {
+    let Ok(engine) = crate::ai_runtime::resolve_engine_config(ai_runtime, None, None) else {
         return Ok(None);
     };
 

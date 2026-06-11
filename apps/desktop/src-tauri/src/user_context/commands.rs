@@ -265,7 +265,9 @@ pub async fn user_context_run_derivation_now(
         });
     }
 
-    let engine = match crate::ai_runtime::resolve_engine_config(&ai_runtime) {
+    // Background derivation always runs on the global default model (no pin,
+    // no feature override).
+    let engine = match crate::ai_runtime::resolve_engine_config(&ai_runtime, None, None) {
         Ok(engine) => engine,
         Err(reason) => {
             return Ok(UserContextDerivationRunResult {

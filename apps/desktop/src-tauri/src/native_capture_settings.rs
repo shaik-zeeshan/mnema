@@ -636,7 +636,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         metadata: request.metadata,
         privacy,
         access: request.access,
-        ai_runtime: request.ai_runtime,
+        ai_runtime: normalize_ai_runtime_settings(request.ai_runtime),
         user_context: request.user_context,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
@@ -645,6 +645,32 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         microphone_vad_adapter: audio_speech_detection.detector,
         inactivity_activity_mode: capture_types::InactivityActivityMode::SystemInputOrScreenOrAudio,
     })
+}
+
+/// Normalize the provider-centric AI runtime settings (ADR 0034): trim base
+/// URLs, drop duplicate provider kinds (first wins — the keychain key is shared
+/// per provider id anyway), and clear a default model whose model id is blank.
+fn normalize_ai_runtime_settings(mut ai_runtime: AiRuntimeSettings) -> AiRuntimeSettings {
+    let mut seen: Vec<capture_types::AiProviderKind> = Vec::new();
+    ai_runtime.providers.retain(|provider| {
+        if seen.contains(&provider.kind) {
+            return false;
+        }
+        seen.push(provider.kind);
+        true
+    });
+    for provider in &mut ai_runtime.providers {
+        provider.base_url = provider.base_url.trim().to_string();
+    }
+    ai_runtime.default_model = ai_runtime.default_model.and_then(|mut default_model| {
+        default_model.model = default_model.model.trim().to_string();
+        if default_model.model.is_empty() {
+            None
+        } else {
+            Some(default_model)
+        }
+    });
+    ai_runtime
 }
 
 pub(crate) fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
@@ -666,6 +692,20 @@ fn load_recording_settings_from_path_with_resolution_support(
     let raw = std::fs::read_to_string(path).ok()?;
 
     let raw = migrate_legacy_recording_settings_json(&raw);
+
+    // ADR 0034: a legacy engine-centric `aiRuntime` block (engineKind/cloud*/
+    // local* + additionalEngines) migrates into the provider list inside
+    // `AiRuntimeSettings`' deserialization; the next save rewrites only the new
+    // shape. Log once at load so the upgrade is visible.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+        if let Some(ai_runtime) = value.get("aiRuntime").and_then(|value| value.as_object()) {
+            if !ai_runtime.contains_key("providers") && ai_runtime.contains_key("engineKind") {
+                tauri_plugin_log::log::info!(
+                    "migrating legacy engine-centric aiRuntime settings to the provider-centric shape (rewritten on next save)"
+                );
+            }
+        }
+    }
 
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
     validate_recording_settings_with_resolution_support(
@@ -1028,36 +1068,15 @@ fn apply_domain_patch_to_settings(
                 settings.ai_runtime.enabled = value;
                 touched = true;
             }
-            if let Some(value) = request.engine_kind {
-                settings.ai_runtime.engine_kind = value;
+            if let Some(value) = request.providers {
+                // Replacement provider list (wholesale, like additionalEngines
+                // before it); normalization (trim/dedupe) happens in validation.
+                settings.ai_runtime.providers = value;
                 touched = true;
             }
-            if let Some(value) = request.cloud_provider {
-                settings.ai_runtime.cloud_provider = value;
-                touched = true;
-            }
-            if let Some(value) = request.cloud_model {
-                settings.ai_runtime.cloud_model = value.trim().to_string();
-                touched = true;
-            }
-            if let Some(value) = request.cloud_base_url {
-                settings.ai_runtime.cloud_base_url = value.trim().to_string();
-                touched = true;
-            }
-            if let Some(value) = request.local_kind {
-                settings.ai_runtime.local_kind = value;
-                touched = true;
-            }
-            if let Some(value) = request.local_endpoint {
-                settings.ai_runtime.local_endpoint = value.trim().to_string();
-                touched = true;
-            }
-            if let Some(value) = request.local_model {
-                settings.ai_runtime.local_model = value.trim().to_string();
-                touched = true;
-            }
-            if let Some(value) = request.additional_engines {
-                settings.ai_runtime.additional_engines = value;
+            if let Some(value) = request.default_model {
+                // Double-Option: an explicit `null` clears the default model.
+                settings.ai_runtime.default_model = value;
                 touched = true;
             }
         }
@@ -1508,6 +1527,163 @@ mod tests {
         assert_eq!(updated.ocr, base.ocr);
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
+    }
+
+    /// Provider-centric AI runtime settings with the master switch ON, for the
+    /// wipe-flips-switch and AiRuntime patch tests.
+    fn enabled_ai_runtime_settings() -> AiRuntimeSettings {
+        AiRuntimeSettings {
+            enabled: true,
+            providers: vec![capture_types::AiProviderConfig {
+                kind: capture_types::AiProviderKind::Anthropic,
+                base_url: String::new(),
+            }],
+            default_model: Some(capture_types::AiEngineRef {
+                provider: capture_types::AiProviderKind::Anthropic,
+                model: "claude-haiku-4-5".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn ai_runtime_patch_flips_master_switch_off_for_wipe_user_context() {
+        // Wipe User Context turns the master AI switch off through this exact
+        // patch (`UpdateAiRuntimeSettingsRequest { enabled: Some(false), .. }`
+        // in `wipe_user_context`); the flip must only touch `enabled`, leaving
+        // the connected providers and default model intact for a re-opt-in.
+        let mut base = default_recording_settings();
+        base.ai_runtime = enabled_ai_runtime_settings();
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+        )
+        .expect("ai runtime patch should validate");
+
+        assert!(!updated.ai_runtime.enabled);
+        assert_eq!(updated.ai_runtime.providers, base.ai_runtime.providers);
+        assert_eq!(
+            updated.ai_runtime.default_model,
+            base.ai_runtime.default_model
+        );
+    }
+
+    #[test]
+    fn ai_runtime_patch_replaces_providers_and_clears_default_model() {
+        let mut base = default_recording_settings();
+        base.ai_runtime = enabled_ai_runtime_settings();
+
+        let updated = apply_domain_patch_for_test(
+            base,
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                enabled: None,
+                providers: Some(vec![
+                    capture_types::AiProviderConfig {
+                        kind: capture_types::AiProviderKind::Ollama,
+                        base_url: " http://localhost:11434 ".to_string(),
+                    },
+                    // Duplicate kind is dropped by normalization (first wins).
+                    capture_types::AiProviderConfig {
+                        kind: capture_types::AiProviderKind::Ollama,
+                        base_url: "http://other:11434".to_string(),
+                    },
+                ]),
+                // Explicit `null` over the wire clears the default model.
+                default_model: Some(None),
+            }),
+        )
+        .expect("ai runtime patch should validate");
+
+        assert!(updated.ai_runtime.enabled);
+        assert_eq!(
+            updated.ai_runtime.providers,
+            vec![capture_types::AiProviderConfig {
+                kind: capture_types::AiProviderKind::Ollama,
+                base_url: "http://localhost:11434".to_string(),
+            }]
+        );
+        assert_eq!(updated.ai_runtime.default_model, None);
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_migrates_legacy_engine_centric_ai_runtime() {
+        // ADR 0034: an existing recording-settings.json with the old
+        // engine-centric aiRuntime block loads into the provider-centric shape
+        // (deserialization-level migration; the next save writes only the new
+        // shape).
+        let dir = TestDir::new("legacy-ai-runtime");
+        let path = dir.path().join("recording-settings.json");
+
+        fs::write(
+            &path,
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": false,
+                "captureSystemAudio": false,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 1,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "nativeCaptureDebugLoggingEnabled": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
+                "activityMode": "system_input_or_screen",
+                "aiRuntime": {
+                    "enabled": true,
+                    "engineKind": "cloud",
+                    "cloudProvider": "anthropic",
+                    "cloudModel": "claude-haiku-4-5",
+                    "cloudBaseUrl": "",
+                    "localKind": "ollama",
+                    "localEndpoint": "http://localhost:11434",
+                    "localModel": "",
+                    "additionalEngines": [
+                        {
+                            "engineKind": "local",
+                            "cloudProvider": "openai",
+                            "cloudModel": "",
+                            "cloudBaseUrl": "",
+                            "localKind": "ollama",
+                            "localEndpoint": "http://localhost:11434",
+                            "localModel": "llama3.2"
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("settings file should write");
+
+        let loaded =
+            load_recording_settings_from_path(&path).expect("settings should load from disk");
+
+        assert!(loaded.ai_runtime.enabled);
+        assert_eq!(
+            loaded.ai_runtime.providers,
+            vec![
+                capture_types::AiProviderConfig {
+                    kind: capture_types::AiProviderKind::Anthropic,
+                    base_url: String::new(),
+                },
+                capture_types::AiProviderConfig {
+                    kind: capture_types::AiProviderKind::Ollama,
+                    base_url: "http://localhost:11434".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            loaded.ai_runtime.default_model,
+            Some(capture_types::AiEngineRef {
+                provider: capture_types::AiProviderKind::Anthropic,
+                model: "claude-haiku-4-5".to_string(),
+            })
+        );
     }
 
     #[test]
