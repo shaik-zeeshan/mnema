@@ -329,9 +329,11 @@ mod tests {
     }
 
     #[test]
-    fn ai_runtime_settings_without_additional_engines_deserializes_back_compat() {
-        // An old persisted AiRuntimeSettings (no `additionalEngines`) must
-        // deserialize with an empty additional-engines set.
+    fn ai_runtime_settings_legacy_engine_shape_migrates_to_providers() {
+        // A legacy engine-centric file (default engine + additionalEngines)
+        // must deserialize into the provider list, with the old default
+        // engine's {provider, model} becoming the global default model
+        // (ADR 0034 migration is deserialization-level).
         let settings: AiRuntimeSettings = serde_json::from_str(
             r#"{
                 "enabled": true,
@@ -341,34 +343,108 @@ mod tests {
                 "cloudBaseUrl": "",
                 "localKind": "ollama",
                 "localEndpoint": "http://localhost:11434",
-                "localModel": ""
+                "localModel": "",
+                "additionalEngines": [
+                    {
+                        "engineKind": "local",
+                        "cloudProvider": "openai",
+                        "cloudModel": "",
+                        "cloudBaseUrl": "",
+                        "localKind": "ollama",
+                        "localEndpoint": "http://localhost:11434",
+                        "localModel": "llama3.2"
+                    }
+                ]
             }"#,
         )
         .expect("legacy ai_runtime settings should deserialize");
 
         assert!(settings.enabled);
-        assert!(settings.additional_engines.is_empty());
+        assert_eq!(
+            settings.providers,
+            vec![
+                AiProviderConfig {
+                    kind: AiProviderKind::Anthropic,
+                    base_url: String::new(),
+                },
+                AiProviderConfig {
+                    kind: AiProviderKind::Ollama,
+                    base_url: "http://localhost:11434".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            settings.default_model,
+            Some(AiEngineRef {
+                provider: AiProviderKind::Anthropic,
+                model: "claude-haiku-4-5".to_string(),
+            })
+        );
     }
 
     #[test]
-    fn ai_runtime_settings_round_trips_additional_engines() {
+    fn ai_runtime_settings_legacy_local_engine_migrates_to_local_provider() {
+        // A legacy local default engine maps to its local-kind provider, with
+        // the endpoint carried as the provider's baseUrl.
+        let settings: AiRuntimeSettings = serde_json::from_str(
+            r#"{
+                "enabled": true,
+                "engineKind": "local",
+                "cloudProvider": "anthropic",
+                "cloudModel": "claude-haiku-4-5",
+                "cloudBaseUrl": "",
+                "localKind": "ollama",
+                "localEndpoint": "http://localhost:11434",
+                "localModel": "llama3.2"
+            }"#,
+        )
+        .expect("legacy local ai_runtime settings should deserialize");
+
+        assert_eq!(
+            settings.providers,
+            vec![AiProviderConfig {
+                kind: AiProviderKind::Ollama,
+                base_url: "http://localhost:11434".to_string(),
+            }]
+        );
+        assert_eq!(
+            settings.default_model,
+            Some(AiEngineRef {
+                provider: AiProviderKind::Ollama,
+                model: "llama3.2".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn ai_runtime_settings_new_shape_round_trips() {
         let settings = AiRuntimeSettings {
             enabled: true,
-            additional_engines: vec![AiEngineProfile {
-                engine_kind: AiEngineKind::Local,
-                cloud_provider: AiCloudProvider::Openai,
-                cloud_model: "gpt-4o-mini".to_string(),
-                cloud_base_url: String::new(),
-                local_kind: AiLocalKind::Ollama,
-                local_endpoint: "http://localhost:11434".to_string(),
-                local_model: "llama3.2".to_string(),
-            }],
-            ..AiRuntimeSettings::default()
+            providers: vec![
+                AiProviderConfig {
+                    kind: AiProviderKind::Anthropic,
+                    base_url: String::new(),
+                },
+                AiProviderConfig {
+                    kind: AiProviderKind::OpenaiCompatible,
+                    base_url: "https://api.example.com/v1".to_string(),
+                },
+            ],
+            default_model: Some(AiEngineRef {
+                provider: AiProviderKind::Anthropic,
+                model: "claude-haiku-4-5".to_string(),
+            }),
         };
 
         let json = serde_json::to_value(&settings).expect("serialize");
-        assert_eq!(json["additionalEngines"][0]["engineKind"], "local");
-        assert_eq!(json["additionalEngines"][0]["localModel"], "llama3.2");
+        assert_eq!(json["providers"][0]["kind"], "anthropic");
+        assert_eq!(json["providers"][1]["kind"], "openai_compatible");
+        assert_eq!(json["providers"][1]["baseUrl"], "https://api.example.com/v1");
+        assert_eq!(json["defaultModel"]["provider"], "anthropic");
+        assert_eq!(json["defaultModel"]["model"], "claude-haiku-4-5");
+        // Saves write ONLY the new shape — no legacy engine-centric keys.
+        assert!(json.get("engineKind").is_none());
+        assert!(json.get("additionalEngines").is_none());
 
         let round: AiRuntimeSettings =
             serde_json::from_value(json).expect("deserialize round-trip");
@@ -376,21 +452,40 @@ mod tests {
     }
 
     #[test]
-    fn ai_engine_profile_serializes_camel_case() {
-        let profile = AiEngineProfile {
-            engine_kind: AiEngineKind::Cloud,
-            cloud_provider: AiCloudProvider::OpenaiCompatible,
-            cloud_model: "some-model".to_string(),
-            cloud_base_url: "https://api.example.com/v1".to_string(),
-            local_kind: AiLocalKind::Llamafile,
-            local_endpoint: "http://localhost:8080".to_string(),
-            local_model: String::new(),
-        };
-        let json = serde_json::to_value(&profile).expect("serialize");
-        assert_eq!(json["engineKind"], "cloud");
-        assert_eq!(json["cloudProvider"], "openai_compatible");
-        assert_eq!(json["cloudBaseUrl"], "https://api.example.com/v1");
-        assert_eq!(json["localKind"], "llamafile");
+    fn ai_runtime_settings_empty_object_deserializes_to_defaults() {
+        // Neither shape present (e.g. `#[serde(default)]`-adjacent partials):
+        // no providers, no default model.
+        let settings: AiRuntimeSettings =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialize");
+        assert!(settings.enabled);
+        assert!(settings.providers.is_empty());
+        assert!(settings.default_model.is_none());
+    }
+
+    #[test]
+    fn update_ai_runtime_settings_request_default_model_is_double_option() {
+        // Absent → leave unchanged.
+        let request: UpdateAiRuntimeSettingsRequest =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialize");
+        assert_eq!(request.default_model, None);
+
+        // Explicit null → clear.
+        let request: UpdateAiRuntimeSettingsRequest =
+            serde_json::from_str(r#"{ "defaultModel": null }"#).expect("deserialize");
+        assert_eq!(request.default_model, Some(None));
+
+        // Object → set.
+        let request: UpdateAiRuntimeSettingsRequest = serde_json::from_str(
+            r#"{ "defaultModel": { "provider": "ollama", "model": "llama3.2" } }"#,
+        )
+        .expect("deserialize");
+        assert_eq!(
+            request.default_model,
+            Some(Some(AiEngineRef {
+                provider: AiProviderKind::Ollama,
+                model: "llama3.2".to_string(),
+            }))
+        );
     }
 
     #[test]

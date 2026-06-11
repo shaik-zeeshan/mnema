@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by [ADR 0034](0034-ai-settings-are-provider-centric-with-one-global-default-model.md)
 ---
 
 # Ask AI (Quick Recall + Chat) migrates onto the shared Rust-side Reasoning Engine, retiring the PI shim
