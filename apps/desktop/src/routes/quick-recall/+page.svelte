@@ -745,6 +745,13 @@
     text: string;
   };
 
+  // A streamed reasoning ("thinking") chunk, interleaved BEFORE/between the
+  // answer deltas. Provider-native: most models emit none (then no event fires).
+  type AskAiReasoningEvent = {
+    conversationId: string;
+    text: string;
+  };
+
   type AskAiDoneEvent = {
     conversationId: string;
   };
@@ -812,6 +819,14 @@
   type AskTurn = {
     question: string;
     answer: string;
+    // The model's streamed reasoning ("thinking") text, accumulated across the
+    // `ask_ai_reasoning` events. Empty when the model emits no reasoning (most
+    // models) — the Thinking disclosure renders only when this is non-empty.
+    reasoning: string;
+    // Per-turn disclosure toggle for the collapsed "Thought process" chip (the
+    // settled reasoning panel); the live reasoning panel ignores this and is
+    // always shown expanded while it streams.
+    reasoningExpanded: boolean;
     toolActivities: AskToolActivityEntry[];
     // The live working-line label for the in-flight tool call (cleared when the
     // model resumes streaming), shown beneath the answer for the active turn.
@@ -1146,6 +1161,8 @@
     return {
       question,
       answer: "",
+      reasoning: "",
+      reasoningExpanded: false,
       toolActivities: [],
       toolActivity: null,
       sources: [],
@@ -1190,6 +1207,7 @@
       const hydrated: AskTurn[] = convo.turns.map((turn) => {
         const t = makeAskTurn(turn.question, normalizeAskPhase(turn.phase));
         t.answer = turn.answer ?? "";
+        t.reasoning = turn.reasoning ?? "";
         t.toolActivities = Array.isArray(turn.toolActivities)
           ? (turn.toolActivities as AskToolActivityEntry[])
           : [];
@@ -1487,6 +1505,27 @@
     turn.summaryExpanded = !turn.summaryExpanded;
   }
 
+  function toggleTurnReasoning(turn: AskTurn): void {
+    turn.reasoningExpanded = !turn.reasoningExpanded;
+  }
+
+  // The "Thinking" disclosure renders only once reasoning text has arrived. It
+  // is LIVE (an always-expanded streaming panel with a pulsing "Thinking…"
+  // header) while reasoning has streamed but the answer hasn't started and the
+  // turn isn't terminal; otherwise it SETTLES into the collapsed "Thought
+  // process" chip below.
+  function hasReasoning(turn: AskTurn): boolean {
+    return turn.reasoning.trim().length > 0;
+  }
+  function reasoningIsLive(turn: AskTurn): boolean {
+    return (
+      turn.reasoning.trim().length > 0 &&
+      turn.answer.length === 0 &&
+      turn.phase !== "done" &&
+      turn.phase !== "error"
+    );
+  }
+
   // ⌘C / Ctrl+C copies the LIVE (last) turn's answer when the transcript region
   // is focused, that turn is done, and nothing is selected. With a selection,
   // let native copy run.
@@ -1570,7 +1609,10 @@
   $effect(() => {
     const live = askLiveTurn;
     // Touch reactive deps so the effect tracks streaming + turn-append growth.
+    // Reasoning length is tracked too so the live "Thinking…" panel pins to the
+    // bottom as it streams (it streams before any answer text arrives).
     const _len = live?.answer.length ?? 0;
+    const _reasoningLen = live?.reasoning.length ?? 0;
     const _count = askTurns.length;
     if (mode !== "ask" || !askAreaEl || _count === 0) {
       return;
@@ -3062,6 +3104,7 @@
 
     let destroyed = false;
     let unlistenStatus: (() => void) | undefined;
+    let unlistenReasoning: (() => void) | undefined;
     let unlistenDelta: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
     let unlistenError: (() => void) | undefined;
@@ -3138,6 +3181,21 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenDelta = fn;
+    });
+
+    // Streamed reasoning ("thinking") chunks: interleaved before/between the
+    // answer deltas. Mirrors the delta listener (same stale-thread + streaming
+    // guards) but appends to `turn.reasoning`. The bottom-pin $effect tracks the
+    // live turn's reasoning length too, so the panel pins to bottom as it grows.
+    listen<AskAiReasoningEvent>("ask_ai_reasoning", (event) => {
+      if (event.payload.conversationId !== askConversationId) return;
+      if (!askStreaming) return;
+      const turn = askTurns[askTurns.length - 1];
+      if (!turn) return;
+      turn.reasoning += event.payload.text;
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenReasoning = fn;
     });
 
     listen<AskAiDoneEvent>("ask_ai_done", (event) => {
@@ -3218,6 +3276,7 @@
       });
       motionQuery.removeEventListener("change", onMotionChange);
       unlistenStatus?.();
+      unlistenReasoning?.();
       unlistenDelta?.();
       unlistenDone?.();
       unlistenError?.();
@@ -3729,6 +3788,44 @@
                     </div>
                   {/if}
                 {:else}
+                  <!-- Thinking disclosure: the model's reasoning, ABOVE the
+                       answer body. Rendered only when reasoning text arrived.
+                       While reasoning streams but the answer hasn't started
+                       (and the turn isn't terminal) it's a LIVE expanded panel;
+                       otherwise it settles into a collapsed "Thought process"
+                       chip. Reasoning is PLAIN TEXT (Svelte-escaped), never
+                       routed through AnswerProse, so it reads as distinct. -->
+                  {#if hasReasoning(turn)}
+                    {#if reasoningIsLive(turn)}
+                      <div class="quick-recall__thinking quick-recall__thinking--live">
+                        <p class="quick-recall__state quick-recall__state--working">
+                          <span class="quick-recall__dot" aria-hidden="true"></span>
+                          Thinking…
+                        </p>
+                        <div class="quick-recall__thinking-text">{turn.reasoning}</div>
+                      </div>
+                    {:else}
+                      <div class="quick-recall__thinking">
+                        <button
+                          type="button"
+                          class="quick-recall__activity-chip"
+                          aria-expanded={turn.reasoningExpanded}
+                          onclick={() => toggleTurnReasoning(turn)}
+                        >
+                          <span
+                            class="quick-recall__activity-caret"
+                            class:quick-recall__activity-caret--open={turn.reasoningExpanded}
+                            aria-hidden="true">▸</span
+                          >
+                          <span class="quick-recall__activity-summary">Thought process</span>
+                        </button>
+                        {#if turn.reasoningExpanded}
+                          <div class="quick-recall__thinking-text">{turn.reasoning}</div>
+                        {/if}
+                      </div>
+                    {/if}
+                  {/if}
+
                   {#if turn.seededResultCount !== null && turn.seededResultCount > 0}
                     <p class="quick-recall__seeded">
                       Seeded with {turn.seededResultCount}
@@ -4942,6 +5039,30 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+
+  /* Thinking disclosure: the model's reasoning. Quiet/secondary to the answer —
+     reuses the activity-chip styling for its collapsed "Thought process" chip,
+     and a muted inset panel for the streamed reasoning text (live or expanded). */
+  .quick-recall__thinking {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .quick-recall__thinking-text {
+    max-height: 180px;
+    overflow: auto;
+    padding: 8px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .quick-recall__activity-chip {

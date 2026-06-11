@@ -81,6 +81,7 @@ impl ConversationStore {
         turn_index: i64,
         question: &str,
         answer: &str,
+        reasoning: Option<&str>,
         tool_activities_json: &str,
         sources_json: &str,
         phase: &str,
@@ -95,12 +96,13 @@ impl ConversationStore {
 
         sqlx::query(
             "INSERT INTO conversation_turns \
-                (conversation_row_id, turn_index, question, answer, tool_activities, sources, \
+                (conversation_row_id, turn_index, question, answer, reasoning, tool_activities, sources, \
                  phase, error_message, seeded_result_count, created_at_ms, updated_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11) \
              ON CONFLICT(conversation_row_id, turn_index) DO UPDATE SET \
                 question = excluded.question, \
                 answer = excluded.answer, \
+                reasoning = excluded.reasoning, \
                 tool_activities = excluded.tool_activities, \
                 sources = excluded.sources, \
                 phase = excluded.phase, \
@@ -112,6 +114,7 @@ impl ConversationStore {
         .bind(turn_index)
         .bind(question)
         .bind(answer)
+        .bind(reasoning)
         .bind(tool_activities_json)
         .bind(sources_json)
         .bind(phase)
@@ -234,7 +237,7 @@ impl ConversationStore {
 
     async fn list_turns(&self, conversation_row_id: i64) -> Result<Vec<ConversationTurn>> {
         let rows = sqlx::query(
-            "SELECT turn_index, question, answer, tool_activities, sources, phase, \
+            "SELECT turn_index, question, answer, reasoning, tool_activities, sources, phase, \
                     error_message, seeded_result_count, created_at_ms, updated_at_ms \
              FROM conversation_turns \
              WHERE conversation_row_id = ?1 \
@@ -356,6 +359,7 @@ fn map_turn(row: SqliteRow) -> ConversationTurn {
         turn_index: row.get("turn_index"),
         question: row.get("question"),
         answer: row.get("answer"),
+        reasoning: row.get("reasoning"),
         tool_activities: parse_json(&tool_activities),
         sources: parse_json(&sources),
         phase: row.get("phase"),
@@ -425,6 +429,7 @@ mod tests {
                 turn_index INTEGER NOT NULL,
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL DEFAULT '',
+                reasoning TEXT,
                 tool_activities TEXT NOT NULL DEFAULT '[]',
                 sources TEXT NOT NULL DEFAULT '[]',
                 phase TEXT NOT NULL DEFAULT 'streaming',
@@ -455,6 +460,7 @@ mod tests {
                     0,
                     "what did I do?",
                     "you coded",
+                    Some("let me think about what you did"),
                     "[{\"tool\":\"search\"}]",
                     "[{\"id\":1}]",
                     "done",
@@ -472,6 +478,7 @@ mod tests {
                     1,
                     "and then?",
                     "you tested",
+                    None,
                     "[]",
                     "[]",
                     "done",
@@ -503,6 +510,12 @@ mod tests {
                 serde_json::json!([{ "id": 1 }])
             );
             assert_eq!(conversation.turns[0].seeded_result_count, Some(3));
+            // Reasoning round-trips: `Some(...)` is preserved, `None` stays `None`.
+            assert_eq!(
+                conversation.turns[0].reasoning.as_deref(),
+                Some("let me think about what you did")
+            );
+            assert_eq!(conversation.turns[1].reasoning, None);
             assert_eq!(conversation.turns[1].turn_index, 1);
         });
     }
@@ -513,7 +526,8 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "conv-a", "t", "chat", 0, "q", "", "[]", "[]", "streaming", None, None, 1_000,
+                    "conv-a", "t", "chat", 0, "q", "", None, "[]", "[]", "streaming", None, None,
+                    1_000,
                 )
                 .await
                 .expect("initial streaming turn");
@@ -525,6 +539,7 @@ mod tests {
                     0,
                     "q",
                     "final answer",
+                    None,
                     "[]",
                     "[]",
                     "done",
@@ -552,14 +567,14 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "older", "Older", "chat", 0, "old question", "", "[]", "[]", "done", None,
+                    "older", "Older", "chat", 0, "old question", "", None, "[]", "[]", "done", None,
                     None, 1_000,
                 )
                 .await
                 .expect("older saves");
             store
                 .save_turn(
-                    "newer", "Newer", "chat", 0, "new question", "", "[]", "[]", "done", None,
+                    "newer", "Newer", "chat", 0, "new question", "", None, "[]", "[]", "done", None,
                     None, 5_000,
                 )
                 .await
@@ -586,6 +601,7 @@ mod tests {
                     0,
                     "how do I borrow?",
                     "use a reference",
+                    None,
                     "[]",
                     "[]",
                     "done",
@@ -597,8 +613,8 @@ mod tests {
                 .expect("c1 saves");
             store
                 .save_turn(
-                    "c2", "Cooking", "chat", 0, "pasta recipe", "boil water", "[]", "[]", "done",
-                    None, None, 2_000,
+                    "c2", "Cooking", "chat", 0, "pasta recipe", "boil water", None, "[]", "[]",
+                    "done", None, None, 2_000,
                 )
                 .await
                 .expect("c2 saves");
@@ -630,13 +646,15 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "c1", "t", "chat", 0, "alpha one", "", "[]", "[]", "done", None, None, 1_000,
+                    "c1", "t", "chat", 0, "alpha one", "", None, "[]", "[]", "done", None, None,
+                    1_000,
                 )
                 .await
                 .expect("turn 0");
             store
                 .save_turn(
-                    "c1", "t", "chat", 1, "alpha two", "", "[]", "[]", "done", None, None, 2_000,
+                    "c1", "t", "chat", 1, "alpha two", "", None, "[]", "[]", "done", None, None,
+                    2_000,
                 )
                 .await
                 .expect("turn 1");
@@ -652,7 +670,7 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "c1", "t", "chat", 0, "q", "", "[]", "[]", "done", None, None, 1_000,
+                    "c1", "t", "chat", 0, "q", "", None, "[]", "[]", "done", None, None, 1_000,
                 )
                 .await
                 .expect("saves");
@@ -672,7 +690,7 @@ mod tests {
             for id in ["a", "b", "c"] {
                 store
                     .save_turn(
-                        id, "t", "chat", 0, "q", "", "[]", "[]", "done", None, None, 1_000,
+                        id, "t", "chat", 0, "q", "", None, "[]", "[]", "done", None, None, 1_000,
                     )
                     .await
                     .expect("saves");
@@ -693,14 +711,14 @@ mod tests {
             // Old conversation (last activity before cutoff).
             store
                 .save_turn(
-                    "old", "Old", "chat", 0, "q", "", "[]", "[]", "done", None, None, 1_000,
+                    "old", "Old", "chat", 0, "q", "", None, "[]", "[]", "done", None, None, 1_000,
                 )
                 .await
                 .expect("old saves");
             // Recent conversation (last activity after cutoff).
             store
                 .save_turn(
-                    "recent", "Recent", "chat", 0, "q", "", "[]", "[]", "done", None, None,
+                    "recent", "Recent", "chat", 0, "q", "", None, "[]", "[]", "done", None, None,
                     10_000,
                 )
                 .await
@@ -759,7 +777,7 @@ mod tests {
             // A turn saved AFTER pinning must not clobber the pin.
             store
                 .save_turn(
-                    "conv-pin", "Pinned", "chat", 0, "q", "a", "[]", "[]", "done", None, None,
+                    "conv-pin", "Pinned", "chat", 0, "q", "a", None, "[]", "[]", "done", None, None,
                     2_000,
                 )
                 .await
@@ -794,7 +812,8 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "plain", "Plain", "chat", 0, "q", "a", "[]", "[]", "done", None, None, 1_000,
+                    "plain", "Plain", "chat", 0, "q", "a", None, "[]", "[]", "done", None, None,
+                    1_000,
                 )
                 .await
                 .expect("turn saves");

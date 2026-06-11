@@ -37,6 +37,10 @@ pub struct SaveConversationTurnRequest {
     pub question: String,
     #[serde(default)]
     pub answer: String,
+    /// The model's streamed reasoning/thinking for this turn, or `None` when the
+    /// turn produced no thinking. Persisted alongside `answer`.
+    #[serde(default)]
+    pub reasoning: Option<String>,
     #[serde(default = "empty_json_array")]
     pub tool_activities: serde_json::Value,
     #[serde(default = "empty_json_array")]
@@ -119,6 +123,7 @@ pub async fn save_conversation_turn(
             request.turn_index,
             &request.question,
             &request.answer,
+            request.reasoning.as_deref(),
             &tool_activities_json,
             &sources_json,
             &request.phase,

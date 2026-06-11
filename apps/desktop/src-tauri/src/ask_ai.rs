@@ -97,6 +97,7 @@ fn take_inflight(conversation_id: &str) -> Option<Arc<AtomicBool>> {
 
 const ASK_AI_STATUS_EVENT: &str = "ask_ai_status";
 const ASK_AI_DELTA_EVENT: &str = "ask_ai_delta";
+const ASK_AI_REASONING_EVENT: &str = "ask_ai_reasoning";
 const ASK_AI_DONE_EVENT: &str = "ask_ai_done";
 const ASK_AI_ERROR_EVENT: &str = "ask_ai_error";
 const ASK_AI_SOURCE_EVENT: &str = "ask_ai_source";
@@ -899,6 +900,7 @@ async fn persist_turn(
     turn_index: i64,
     question: &str,
     answer: &str,
+    reasoning: Option<&str>,
     tool_activities: &[serde_json::Value],
     sources: &[serde_json::Value],
     phase: &str,
@@ -916,6 +918,7 @@ async fn persist_turn(
             turn_index,
             question,
             answer,
+            reasoning,
             &tool_activities_json,
             &sources_json,
             phase,
@@ -1093,6 +1096,7 @@ async fn run_ask_ai_turn(
         turn_index,
         &question,
         "",
+        None,
         &[],
         &[],
         "streaming",
@@ -1183,6 +1187,10 @@ async fn run_ask_ai_turn(
 
     // 7. Run the agent loop, streaming deltas and persisting throttled partials.
     let answer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    // Reasoning accumulator mirrors `answer`: reasoning chunks stream live as
+    // `ask_ai_reasoning` events and accumulate here so every persist (partial /
+    // done / error) writes the snapshot through `save_turn`'s `reasoning` arg.
+    let reasoning: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let mut deltas_since_persist = 0usize;
     let mut chars_since_persist = 0usize;
     let on_event = {
@@ -1190,6 +1198,7 @@ async fn run_ask_ai_turn(
         let conversation_id = conversation_id.clone();
         let infra = Arc::clone(&infra);
         let answer = Arc::clone(&answer);
+        let reasoning = Arc::clone(&reasoning);
         let tool_activities = Arc::clone(&tool_activities);
         let sources = Arc::clone(&sources);
         let title = title.clone();
@@ -1232,6 +1241,12 @@ async fn run_ask_ai_turn(
                         .lock()
                         .map(|guard| guard.clone())
                         .unwrap_or_default();
+                    // Snapshot the reasoning buffer too so the partial persist
+                    // carries any thinking captured so far (empty → NULL).
+                    let reasoning_snapshot = reasoning
+                        .lock()
+                        .map(|guard| guard.clone())
+                        .unwrap_or_default();
                     tauri::async_runtime::spawn(async move {
                         persist_turn(
                             &infra,
@@ -1241,6 +1256,11 @@ async fn run_ask_ai_turn(
                             turn_index,
                             &question,
                             &answer_so_far,
+                            if reasoning_snapshot.is_empty() {
+                                None
+                            } else {
+                                Some(reasoning_snapshot.as_str())
+                            },
                             &tool_activities_snapshot,
                             &sources_snapshot,
                             "streaming",
@@ -1249,6 +1269,15 @@ async fn run_ask_ai_turn(
                         )
                         .await;
                     });
+                }
+            }
+            ai_engine::AgentLoopEvent::Reasoning(text) => {
+                let _ = app_handle.emit(
+                    ASK_AI_REASONING_EVENT,
+                    serde_json::json!({ "conversationId": conversation_id, "text": text }),
+                );
+                if let Ok(mut guard) = reasoning.lock() {
+                    guard.push_str(&text);
                 }
             }
             ai_engine::AgentLoopEvent::ToolCall { name, params } => {
@@ -1281,8 +1310,15 @@ async fn run_ask_ai_turn(
     )
     .await;
 
-    // 8. Finalize. Snapshot the accumulated answer + persistence buffers.
+    // 8. Finalize. Snapshot the accumulated answer + reasoning + persistence
+    //    buffers. Empty reasoning maps to NULL on persist (turns with no thinking).
     let final_answer = answer.lock().map(|g| g.clone()).unwrap_or_default();
+    let final_reasoning = reasoning.lock().map(|g| g.clone()).unwrap_or_default();
+    let final_reasoning = if final_reasoning.is_empty() {
+        None
+    } else {
+        Some(final_reasoning)
+    };
     let final_tool_activities = tool_activities
         .lock()
         .map(|g| g.clone())
@@ -1302,6 +1338,7 @@ async fn run_ask_ai_turn(
                 turn_index,
                 &question,
                 &final_answer,
+                final_reasoning.as_deref(),
                 &final_tool_activities,
                 &final_sources,
                 "done",
@@ -1326,6 +1363,7 @@ async fn run_ask_ai_turn(
                 turn_index,
                 &question,
                 &final_answer,
+                final_reasoning.as_deref(),
                 &final_tool_activities,
                 &final_sources,
                 "error",

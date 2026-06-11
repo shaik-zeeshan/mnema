@@ -20,6 +20,9 @@ pub struct ConversationTurn {
     pub turn_index: i64,
     pub question: String,
     pub answer: String,
+    /// The model's reasoning ("thinking") text for this turn, or `None` when the
+    /// turn carried none (and for legacy turns predating the column).
+    pub reasoning: Option<String>,
     /// Opaque per-turn tool-activity log the frontend round-trips (JSON array).
     pub tool_activities: serde_json::Value,
     /// Opaque per-turn Answer Sources the frontend round-trips (JSON array).

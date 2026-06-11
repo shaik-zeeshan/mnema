@@ -94,6 +94,10 @@ pub struct AgentHistoryTurn {
 pub enum AgentLoopEvent {
     /// A streamed text chunk from the assistant.
     Delta(String),
+    /// A streamed reasoning/thinking chunk from the assistant (provider-native;
+    /// only emitted when the model/provider yields reasoning). Interleaves before
+    /// and between `Delta` text. The caller decides whether/how to surface it.
+    Reasoning(String),
     /// The model issued a tool call (emitted as it is dispatched to the executor).
     ToolCall {
         name: String,
@@ -368,9 +372,19 @@ where
                     params: tool_call.function.arguments,
                 });
             }
-            // Other assistant items (reasoning, deltas, final per-turn response)
-            // and bookkeeping items (CompletionCall, FinalResponse, user/tool
-            // result items) are not surfaced to the caller.
+            Ok(MultiTurnStreamItem::StreamAssistantItem(
+                StreamedAssistantContent::ReasoningDelta { reasoning, .. },
+            )) => {
+                on_event(AgentLoopEvent::Reasoning(reasoning));
+            }
+            Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Reasoning(
+                reasoning,
+            ))) => {
+                on_event(AgentLoopEvent::Reasoning(reasoning.display_text()));
+            }
+            // Remaining bookkeeping items (CompletionCall, FinalResponse,
+            // ToolCallDelta, Final, user/tool-result items) are not surfaced to
+            // the caller.
             Ok(_) => {}
             Err(err) => {
                 // Hitting the multi-turn bound is the expected effect of the
@@ -574,6 +588,50 @@ mod tests {
         assert!(
             larger > small,
             "a larger cap should allow more tool calls: small={small}, larger={larger}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reasoning_chunks_are_surfaced() {
+        let (executor, _calls) = recording_executor();
+        // Script a reasoning delta and a complete reasoning block interleaved with
+        // text deltas. Real providers emit EITHER deltas OR a full block for the
+        // same content; scripting both here just exercises both new match arms.
+        let model = MockCompletionModel::from_stream_turns([vec![
+            MockStreamEvent::reasoning_delta(Some("rs_1"), "let me think"),
+            MockStreamEvent::text("partial "),
+            MockStreamEvent::reasoning("done thinking"),
+            MockStreamEvent::text("answer"),
+            MockStreamEvent::final_response_with_default_usage(),
+        ]]);
+        let agent = mock_agent(model, vec![], &executor);
+
+        let reasoning = Arc::new(Mutex::new(Vec::new()));
+        let reasoning_sink = reasoning.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        drive_agent_stream(
+            agent,
+            "think",
+            vec![],
+            4,
+            cancel,
+            move |event| {
+                if let AgentLoopEvent::Reasoning(text) = event {
+                    reasoning_sink.lock().unwrap().push(text);
+                }
+            },
+        )
+        .await
+        .expect("loop should complete");
+
+        let reasoning = reasoning.lock().unwrap();
+        // Both the streamed delta and the complete block's display text surface as
+        // `Reasoning` events, in streamed order.
+        assert_eq!(
+            *reasoning,
+            vec!["let me think".to_string(), "done thinking".to_string()],
+            "reasoning delta and full block should both be surfaced as Reasoning events"
         );
     }
 
