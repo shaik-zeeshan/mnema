@@ -267,16 +267,24 @@
   // Snapshot of the aiRuntime settings backing the default `{provider, model}`
   // pin labels. Refreshed on settings changes.
   let aiRuntimeSnapshot = $state<AiRuntimeSettings | null>(null);
+  // The Ask AI model override (access.askAiModel, ADR 0034): a bare model id
+  // that replaces the default model's id for unpinned Ask AI threads. Empty →
+  // use the global default model. Refreshed alongside aiRuntimeSnapshot.
+  let askAiModelOverride = $state<string | null>(null);
   let defaultProvider = $derived(
     aiRuntimeSnapshot === null ? null : defaultEnginePinProvider(aiRuntimeSnapshot),
   );
   let activePinProvider = $state<string | null>(null);
   let activePinModel = $state<string | null>(null);
   // The model the unpinned ("Default") choice resolves to, for the picker label
-  // only — the backend owns actual resolution. `defaultEngineModel` reads the
-  // provider-centric `defaultModel` (ADR 0034).
+  // only. The backend's precedence is pin → Ask AI override (access.askAiModel)
+  // → global default model, so the override wins here when set.
   let resolvedDefaultModel = $derived(
-    aiRuntimeSnapshot === null ? null : defaultEngineModel(aiRuntimeSnapshot),
+    askAiModelOverride !== null
+      ? askAiModelOverride
+      : aiRuntimeSnapshot === null
+        ? null
+        : defaultEngineModel(aiRuntimeSnapshot),
   );
   let activeModelLabel = $derived.by(() => {
     if (activePinProvider === null || activePinModel === null) {
@@ -323,8 +331,11 @@
     try {
       const settings = await invoke<RecordingSettings>("get_recording_settings");
       aiRuntimeSnapshot = settings.aiRuntime;
+      const override = settings.access?.askAiModel?.trim() ?? "";
+      askAiModelOverride = override.length > 0 ? override : null;
     } catch {
       aiRuntimeSnapshot = null;
+      askAiModelOverride = null;
     }
     // The provider list / default model may have changed: drop the cached model
     // pool so the next picker open re-discovers against the current providers.
@@ -393,6 +404,10 @@
     if (conversationId === null) return;
     activePinProvider = engine?.provider ?? null;
     activePinModel = engine?.model ?? null;
+    // A not-yet-started thread has no conversation row. Persisting the pin now
+    // would upsert an empty-title row (a phantom "Untitled chat" in the rail),
+    // so defer: the pin rides into the store on the first turn (see send()).
+    if (turns.length === 0) return;
     try {
       await invoke("set_conversation_engine", {
         request: {
@@ -748,6 +763,22 @@
 
     try {
       if (isFirstTurn) {
+        // Persist any model pin chosen before the thread existed (selectEngine
+        // deferred it to avoid creating a phantom empty-title row). Do this
+        // BEFORE ask_ai_start so the spawned turn reads the pin from the store.
+        if (activePinProvider !== null && activePinModel !== null) {
+          try {
+            await invoke("set_conversation_engine", {
+              request: {
+                conversationId,
+                provider: activePinProvider,
+                model: activePinModel,
+              },
+            });
+          } catch {
+            // Best-effort: the turn falls back to the default engine.
+          }
+        }
         // First turn of a thread — start (and upsert the conversation row).
         await invoke<void>("ask_ai_start", {
           request: {

@@ -140,6 +140,7 @@
     void untrack(() => drainPendingHandoff());
 
     let unlisten: UnlistenFn | undefined;
+    let unlistenSettings: UnlistenFn | undefined;
     let unlistenHandoff: UnlistenFn | undefined;
     let disposed = false;
     void listen("user_context_changed", () => {
@@ -147,6 +148,15 @@
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
+    });
+
+    // Settings saves (default model / engine on-off) emit this, not
+    // `user_context_changed`; refresh the engine pill so it doesn't stay stale.
+    void listen("recording_settings_changed", () => {
+      void loadEngineStatus();
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenSettings = fn;
     });
 
     // Warm-window handoff: a live event switches to Chat + selects the thread.
@@ -163,6 +173,7 @@
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenSettings?.();
       unlistenHandoff?.();
     };
   });

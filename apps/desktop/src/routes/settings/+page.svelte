@@ -619,30 +619,64 @@
     aiModelOpen = false;
   }
 
-  // Commit whatever is typed: an exact pool match keeps its provider tag; a
-  // free-form id is attributed to the current default's provider (when still
-  // connected), else the first connected provider. Empty clears the default.
+  // Commit whatever is typed. The committed display is "<Provider label> · <model
+  // id>", so a re-edit carries that prefix — strip a leading KNOWN provider label
+  // before treating the rest as the model id (otherwise the label compounds into
+  // the id on every commit). An exact pool match keeps its provider tag; a
+  // free-form id is attributed to the stripped prefix's provider when connected,
+  // else the current default's provider, else the first connected provider.
+  // Empty clears the default.
   function commitTypedAiDefaultModel() {
-    const typed = aiModelQuery.trim();
+    let typed = aiModelQuery.trim();
     if (!typed) {
       commitAiDefaultModel(null);
       return;
     }
+    // Exact match against the full labelled pool entries (or a bare model id).
+    const loweredFull = typed.toLowerCase();
+    const fullMatch = aiModelEntries.find(
+      (entry) =>
+        entry.label.toLowerCase() === loweredFull ||
+        entry.model.toLowerCase() === loweredFull,
+    );
+    if (fullMatch) {
+      commitAiDefaultModel(fullMatch);
+      return;
+    }
+    // Strip a leading "<Provider label> · " prefix and remember its provider.
+    let prefixProvider: AiProviderKind | null = null;
+    const sepIndex = typed.indexOf(" · ");
+    if (sepIndex !== -1) {
+      const maybeLabel = typed.slice(0, sepIndex).trim().toLowerCase();
+      const kind = AI_PROVIDER_KINDS.find(
+        (k) => aiProviderKindLabel(k).toLowerCase() === maybeLabel,
+      );
+      if (kind) {
+        prefixProvider = kind;
+        typed = typed.slice(sepIndex + 3).trim();
+      }
+    }
+    if (!typed) {
+      commitAiDefaultModel(null);
+      return;
+    }
+    // Re-check the pool against the now-bare model id.
     const lowered = typed.toLowerCase();
     const match = aiModelEntries.find(
-      (entry) =>
-        entry.label.toLowerCase() === lowered ||
-        entry.model.toLowerCase() === lowered,
+      (entry) => entry.model.toLowerCase() === lowered,
     );
     if (match) {
       commitAiDefaultModel(match);
       return;
     }
     const provider =
-      draftAiDefaultModel !== null &&
-      connectedAiProviderKinds.includes(draftAiDefaultModel.provider)
-        ? draftAiDefaultModel.provider
-        : connectedAiProviderKinds[0];
+      prefixProvider !== null &&
+      connectedAiProviderKinds.includes(prefixProvider)
+        ? prefixProvider
+        : draftAiDefaultModel !== null &&
+            connectedAiProviderKinds.includes(draftAiDefaultModel.provider)
+          ? draftAiDefaultModel.provider
+          : connectedAiProviderKinds[0];
     if (!provider) return;
     commitAiDefaultModel({ provider, model: typed, label: "" });
   }
