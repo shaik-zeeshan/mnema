@@ -15,6 +15,7 @@ mod hidden_segment_workspace;
 pub mod jobs;
 mod ocr_budget;
 pub mod processing;
+pub mod retry_policy;
 mod search;
 pub mod status;
 pub mod usage_charts;

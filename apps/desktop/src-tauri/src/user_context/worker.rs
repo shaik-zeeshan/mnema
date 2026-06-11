@@ -23,6 +23,7 @@ use std::time::Duration;
 use capture_types::{AiProviderKind, DerivationBudgetTier};
 use tauri::{Emitter, Manager};
 
+use app_infra::retry_policy::RetryPolicy;
 use app_infra::user_context::confidence;
 use app_infra::{DistillationGateDrops, NewDerivationRun, UserContextStore};
 
@@ -591,18 +592,14 @@ async fn run_backfill_pass(
     derived_anything
 }
 
-/// Failed-window **Retry** (#113): how many total failed runs a window may
-/// accumulate before it is left failed for good (the crash-loop backstop,
-/// mirroring `RECLAIM_ATTEMPT_CEILING`'s role in ADR 0020 and the processing
-/// queue's `FailureRetryPolicy` caps). The original failure counts: a window
-/// gets the first attempt plus two retries.
-const MAX_WINDOW_DERIVATION_FAILURES: i64 = 3;
-
-/// Wall-clock spacing between retry attempts on the same window (10 min). A
-/// window whose newest failure is younger than this is skipped, so a poisoned
-/// window cannot eat engine budget on every beat (tick intervals are 2–10 min,
-/// so this spans one to several beats depending on the tier).
-const RETRY_BACKOFF_MS: i64 = 10 * 60 * 1000;
+/// Retry policy for failed derivation windows: 3 total attempts (original + 2 retries),
+/// flat 10-minute backoff between attempts. Mirrors the processing-queue caps in
+/// `processing/store.rs`; a single-element `backoff_seconds` slice saturates to the same
+/// value for every failure count, giving flat (non-stepped) spacing.
+const WINDOW_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    max_attempts: 3,
+    backoff_seconds: &[600],
+};
 
 /// At most this many failed windows are retried per tick. Retries are a
 /// low-priority background trickle behind fresh forward work and backfill,
@@ -627,8 +624,8 @@ async fn run_failed_window_retry_pass(
 ) -> bool {
     let eligible = match store
         .failed_windows_eligible_for_retry(
-            MAX_WINDOW_DERIVATION_FAILURES,
-            now_ms().saturating_sub(RETRY_BACKOFF_MS),
+            WINDOW_RETRY_POLICY.max_attempts,
+            now_ms().saturating_sub(WINDOW_RETRY_POLICY.backoff_seconds(1) * 1000),
             RETRY_WINDOWS_PER_TICK,
         )
         .await
@@ -657,7 +654,7 @@ async fn run_failed_window_retry_pass(
             window.window_start_ms,
             window.window_end_ms,
             window.failure_count + 1,
-            MAX_WINDOW_DERIVATION_FAILURES,
+            WINDOW_RETRY_POLICY.max_attempts,
             step
         ));
     }
