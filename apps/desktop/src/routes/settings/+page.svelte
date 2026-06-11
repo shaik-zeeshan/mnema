@@ -71,8 +71,6 @@
     UserContextStatus,
     UserContextDistillationSummary,
     UserContextDerivationRunResult,
-    Activity,
-    Conclusion,
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
@@ -900,10 +898,6 @@
   // runs in the background and emits `user_context_changed` to refresh this.
   let userContextStatus = $state<UserContextStatus | null>(null);
   let userContextStatusError = $state<string | null>(null);
-  let userContextActivities = $state<Activity[]>([]);
-  let userContextActivitiesError = $state<string | null>(null);
-  let userContextConclusions = $state<Conclusion[]>([]);
-  let userContextConclusionsError = $state<string | null>(null);
   let userContextRunNowRunning = $state(false);
   let userContextRunNowMessage = $state<string | null>(null);
 
@@ -916,85 +910,8 @@
     }
   }
 
-  async function loadUserContextActivities() {
-    try {
-      userContextActivities = await invoke<Activity[]>("list_user_context_activities", {
-        limit: 8,
-        offset: 0,
-      });
-      userContextActivitiesError = null;
-    } catch (error) {
-      userContextActivitiesError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  async function loadUserContextConclusions() {
-    try {
-      // Include faded Conclusions so the dossier preview shows the full picture:
-      // a faded Conclusion (below the display floor, #95) leaves the visible
-      // dossier but is dimmed + tagged here, with its confidence % still shown.
-      userContextConclusions = await invoke<Conclusion[]>("list_user_context_conclusions", {
-        includeFaded: true,
-      });
-      userContextConclusionsError = null;
-    } catch (error) {
-      userContextConclusionsError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
   async function refreshUserContext() {
-    await Promise.all([
-      loadUserContextStatus(),
-      loadUserContextActivities(),
-      loadUserContextConclusions(),
-    ]);
-  }
-
-  // Count a Conclusion's supporting/contradicting evidence links for the row.
-  function conclusionEvidenceCount(conclusion: Conclusion): number {
-    return conclusion.evidence.length;
-  }
-
-  // Per-row in-flight guard so a double click cannot fire two Pin/Dismiss calls.
-  let userContextConclusionActionId = $state<number | null>(null);
-
-  // Pin / unpin a Conclusion (#99): a pinned Conclusion is exempt from confidence
-  // decay. Refresh through the shared user-context flow so the pinned tag updates.
-  async function toggleConclusionPinned(conclusion: Conclusion) {
-    if (userContextConclusionActionId !== null) return;
-    userContextConclusionActionId = conclusion.id;
-    try {
-      await invoke("user_context_set_pinned", {
-        id: conclusion.id,
-        pinned: !conclusion.pinned,
-      });
-      await refreshUserContext();
-    } catch (error) {
-      userContextConclusionsError = error instanceof Error ? error.message : String(error);
-    } finally {
-      userContextConclusionActionId = null;
-    }
-  }
-
-  // Dismiss a Conclusion (#99): a reversible correction ("you're wrong") that
-  // removes it AND records Dismissal State. A direct action (no confirm) is fine —
-  // it is not destructive deletion. The row simply disappears after the refresh.
-  async function dismissConclusion(conclusion: Conclusion) {
-    if (userContextConclusionActionId !== null) return;
-    userContextConclusionActionId = conclusion.id;
-    try {
-      await invoke("user_context_dismiss_conclusion", { id: conclusion.id });
-      await refreshUserContext();
-    } catch (error) {
-      userContextConclusionsError = error instanceof Error ? error.message : String(error);
-    } finally {
-      userContextConclusionActionId = null;
-    }
-  }
-
-  // Render a confidence in [0,1] as a whole-number percent.
-  function formatConfidencePercent(confidence: number): string {
-    return `${Math.round(confidence * 100)}%`;
+    await loadUserContextStatus();
   }
 
   async function runUserContextDerivationNow() {
@@ -1041,26 +958,6 @@
     } finally {
       userContextWiping = false;
     }
-  }
-
-  // Compact label for an ActivityCategory (or "—" when uncategorized).
-  function activityCategoryLabel(category: string | null | undefined): string {
-    if (!category) return "—";
-    return category.charAt(0).toUpperCase() + category.slice(1);
-  }
-
-  // "MMM D, h:mm a" range for an Activity row (best-effort; locale formatting).
-  function formatActivityRange(startedAtMs: number, endedAtMs: number): string {
-    const fmt = (ms: number) =>
-      new Date(ms).toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      });
-    const start = fmt(startedAtMs);
-    if (endedAtMs <= startedAtMs) return start;
-    return `${start} – ${fmt(endedAtMs)}`;
   }
 
   function formatLastDerived(ms: number | null | undefined): string {
@@ -5043,89 +4940,6 @@
             <p class="group-hint" aria-live="polite">{userContextRunNowMessage}</p>
           {/if}
 
-          <div class="settings-stack">
-            <span class="field-label">Recent activity</span>
-            {#if userContextActivitiesError}
-              <p class="error-text">{userContextActivitiesError}</p>
-            {:else if userContextActivities.length === 0}
-              <p class="group-hint">No Activities derived yet.</p>
-            {:else}
-              <ul class="user-context-activities">
-                {#each userContextActivities as activity (activity.id)}
-                  <li class="user-context-activity">
-                    <div class="user-context-activity__title">{activity.title}</div>
-                    <div class="user-context-activity__meta">
-                      {#if activity.category}
-                        <span class="user-context-activity__category"
-                          >{activityCategoryLabel(activity.category)}</span
-                        >
-                      {/if}
-                      <span>{formatActivityRange(activity.startedAtMs, activity.endedAtMs)}</span>
-                    </div>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </div>
-
-          <div class="settings-stack">
-            <span class="field-label">Conclusions</span>
-            {#if userContextConclusionsError}
-              <p class="error-text">{userContextConclusionsError}</p>
-            {:else if userContextConclusions.length === 0}
-              <p class="group-hint">No Conclusions distilled yet.</p>
-            {:else}
-              <ul class="user-context-conclusions">
-                {#each userContextConclusions as conclusion (conclusion.id)}
-                  <li
-                    class="user-context-conclusion"
-                    class:user-context-conclusion--faded={conclusion.status === "faded"}
-                    class:user-context-conclusion--pinned={conclusion.pinned}
-                  >
-                    <div class="user-context-conclusion__statement">
-                      {conclusion.statement}
-                      {#if conclusion.pinned}
-                        <span class="user-context-conclusion__tag user-context-conclusion__tag--pinned" title="Pinned; exempt from confidence decay">pinned</span>
-                      {/if}
-                      {#if conclusion.status === "faded"}
-                        <span class="user-context-conclusion__tag" title="Below the display floor; its history is kept">faded</span>
-                      {/if}
-                    </div>
-                    <div class="user-context-conclusion__meta">
-                      <span class="user-context-conclusion__subject">{conclusion.subject}</span>
-                      <span class="user-context-conclusion__confidence"
-                        >{formatConfidencePercent(conclusion.confidence)} confidence</span
-                      >
-                      <span>
-                        {conclusionEvidenceCount(conclusion)}
-                        {conclusionEvidenceCount(conclusion) === 1 ? "Activity" : "Activities"}
-                      </span>
-                      <span class="user-context-conclusion__actions">
-                        <button
-                          class="btn btn--ghost btn--sm"
-                          type="button"
-                          aria-pressed={conclusion.pinned}
-                          disabled={userContextConclusionActionId !== null}
-                          onclick={() => toggleConclusionPinned(conclusion)}
-                        >
-                          {conclusion.pinned ? "Unpin" : "Pin"}
-                        </button>
-                        <button
-                          class="btn btn--ghost btn--sm"
-                          type="button"
-                          disabled={userContextConclusionActionId !== null}
-                          onclick={() => dismissConclusion(conclusion)}
-                        >
-                          Dismiss
-                        </button>
-                      </span>
-                    </div>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </div>
-
           <div class="user-context-wipe">
             <p class="group-hint">
               This derived understanding deliberately outlives your raw-capture
@@ -8308,138 +8122,6 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text-muted);
-  }
-
-  /* User Context recent-Activity preview list (read-only). */
-  .user-context-activities {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .user-context-activity {
-    padding: 8px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--app-accent) 4%, transparent);
-  }
-
-  .user-context-activity__title {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--app-text);
-    line-height: 1.4;
-  }
-
-  .user-context-activity__meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    margin-top: 3px;
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    color: var(--app-text-muted);
-  }
-
-  .user-context-activity__category {
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-accent);
-  }
-
-  /* User Context Conclusion preview list (#94). Row layout matches the Activity
-     preview so the two lists read as one dossier. Each row carries Pin/Dismiss
-     controls (#99): Pin exempts a Conclusion from decay; Dismiss is a reversible
-     correction that removes it and records Dismissal State. */
-  .user-context-conclusions {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .user-context-conclusion {
-    padding: 8px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--app-accent) 4%, transparent);
-  }
-
-  /* A faded Conclusion (#95) is below the display floor: it leaves the bright
-     dossier but is kept (its Confidence History persists), so it reads as dimmed
-     here rather than absent. */
-  .user-context-conclusion--faded {
-    opacity: 0.62;
-    background: transparent;
-    border-style: dashed;
-  }
-
-  .user-context-conclusion__statement {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--app-text);
-    line-height: 1.4;
-  }
-
-  .user-context-conclusion__tag {
-    display: inline-block;
-    margin-left: 6px;
-    padding: 1px 5px;
-    border: 1px solid var(--app-border);
-    border-radius: 3px;
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-muted);
-    vertical-align: middle;
-  }
-
-  /* A pinned Conclusion (#99) is exempt from confidence decay; mark it in the
-     accent color so the protected state reads at a glance. */
-  .user-context-conclusion__tag--pinned {
-    border-color: var(--app-accent);
-    color: var(--app-accent);
-  }
-
-  .user-context-conclusion--pinned {
-    border-color: color-mix(in srgb, var(--app-accent) 40%, var(--app-border));
-  }
-
-  /* Pin/Dismiss controls pushed to the trailing edge of the meta row. */
-  .user-context-conclusion__actions {
-    display: flex;
-    gap: 6px;
-    margin-left: auto;
-  }
-
-  .user-context-conclusion__meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    margin-top: 3px;
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    color: var(--app-text-muted);
-  }
-
-  .user-context-conclusion__subject {
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-accent);
-  }
-
-  .user-context-conclusion__confidence {
-    font-variant-numeric: tabular-nums;
   }
 
   .permission-callout {
