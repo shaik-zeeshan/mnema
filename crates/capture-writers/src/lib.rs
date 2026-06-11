@@ -2707,6 +2707,46 @@ mod windows_aac_m4a {
         }
     }
 
+    /// MF Source Reader duration probe. Opens `path` with
+    /// `MFCreateSourceReaderFromURL`, reads `MF_PD_DURATION` (100ns ticks), and
+    /// returns the duration in milliseconds. Returns `None` if the file cannot be
+    /// opened, the attribute is missing, or the duration is zero.
+    pub fn windows_audio_file_duration_ms(path: &str) -> Option<u64> {
+        let url: Vec<u16> = Path::new(path)
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        unsafe {
+            if MFStartup(MF_VERSION, MFSTARTUP_FULL).is_err() {
+                return None;
+            }
+            let result = probe_duration_ms(&url);
+            MFShutdown().ok();
+            result
+        }
+    }
+
+    unsafe fn probe_duration_ms(url: &[u16]) -> Option<u64> {
+        let reader: IMFSourceReader =
+            MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), None).ok()?;
+
+        let propvariant = reader
+            .GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION)
+            .ok()?;
+
+        // MF_PD_DURATION is a VT_UI8 (100ns ticks). Read the unsigned 64-bit
+        // value directly from the PROPVARIANT union.
+        let duration_100ns: u64 = propvariant.Anonymous.Anonymous.Anonymous.uhVal;
+        if duration_100ns == 0 {
+            return None;
+        }
+
+        // Convert 100ns ticks to milliseconds, rounding to nearest.
+        Some((duration_100ns + 5_000) / 10_000)
+    }
+
     unsafe fn probe_positive_duration(url: &[u16]) -> bool {
         let reader: IMFSourceReader = match MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), None)
         {
@@ -2737,5 +2777,6 @@ mod windows_aac_m4a {
 
 #[cfg(target_os = "windows")]
 pub use windows_aac_m4a::{
-    windows_audio_file_has_positive_duration, WindowsAacM4aSinkWriter, WindowsAudioTailHoldbackSink,
+    windows_audio_file_duration_ms, windows_audio_file_has_positive_duration,
+    WindowsAacM4aSinkWriter, WindowsAudioTailHoldbackSink,
 };

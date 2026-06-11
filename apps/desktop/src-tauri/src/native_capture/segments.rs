@@ -1169,12 +1169,9 @@ fn rfc3339_from_unix_ms(unix_ms: u64) -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-/// Windows has no AVFoundation duration probe; the segment window falls back to
-/// the scheduled segment duration when `None` is returned. The `.m4a` is still
-/// validated for a positive duration separately via the MF Source Reader probe.
 #[cfg(target_os = "windows")]
-fn audio_file_duration_ms(_file_path: &str) -> Option<u64> {
-    None
+fn audio_file_duration_ms(file_path: &str) -> Option<u64> {
+    capture_writers::windows_audio_file_duration_ms(file_path)
 }
 
 #[cfg(target_os = "macos")]
