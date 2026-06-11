@@ -1170,8 +1170,8 @@ fn rfc3339_from_unix_ms(unix_ms: u64) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn audio_file_duration_ms(file_path: &str) -> Option<u64> {
-    capture_writers::windows_audio_file_duration_ms(file_path)
+fn audio_file_duration_ms(_file_path: &str) -> Option<u64> {
+    None
 }
 
 #[cfg(target_os = "macos")]
