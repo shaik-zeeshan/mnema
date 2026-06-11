@@ -379,6 +379,47 @@ pub struct AiRuntimeListModelsRequest {
     providers: Option<Vec<AiProviderConfig>>,
 }
 
+/// Pragmatic id-pattern filter that keeps only chat-capable models out of the
+/// merged pool. This is deliberately a substring deny-list over the model id,
+/// NOT a model-capability metadata pipeline (out of scope per the plan): some
+/// providers advertise image-generation, embedding, TTS/whisper, rerank, and
+/// moderation models alongside chat models, and we only want chat-capable ids
+/// in the pickers. Free-form custom-model entry stays allowed elsewhere, so a
+/// user can still type a hidden (filtered) model id by hand.
+fn is_chat_capable_model(id: &str) -> bool {
+    let lowered = id.to_lowercase();
+    const NON_CHAT_SUBSTRINGS: &[&str] = &[
+        "embed",
+        "embedding",
+        "flux",
+        "stable-diffusion",
+        "sdxl",
+        "dall-e",
+        "dalle",
+        "whisper",
+        "tts",
+        "text-to-speech",
+        "rerank",
+        "reranker",
+        "moderation",
+        "guardrail",
+        "clip-",
+        "bge-",
+        "-image",
+        "image-",
+        "schnell",
+        "flux.1",
+        "imagen",
+        "stable-video",
+        "kontext",
+        "upscale",
+        "inpaint",
+    ];
+    !NON_CHAT_SUBSTRINGS
+        .iter()
+        .any(|needle| lowered.contains(needle))
+}
+
 /// Fetch the model ids one connected provider advertises: `GET …/models` with
 /// `Authorization: Bearer` for OpenAI / OpenAI-compatible, the `x-api-key` +
 /// `anthropic-version` pair for Anthropic, and no credential for a local
@@ -467,10 +508,18 @@ pub async fn ai_runtime_list_models(
     let mut models: Vec<AiRuntimeModel> = Vec::new();
     for provider in &providers {
         match list_models_for_provider(&client, provider).await {
-            Ok(ids) => models.extend(ids.into_iter().map(|id| AiRuntimeModel {
-                id,
-                provider: provider.kind.id().to_string(),
-            })),
+            Ok(ids) => models.extend(
+                ids.into_iter()
+                    // Keep only chat-capable models in the pickers (image-gen,
+                    // embeddings, TTS/whisper, rerank, moderation are filtered);
+                    // free-form custom-model entry still lets a user pick a
+                    // hidden model id by hand.
+                    .filter(|id| is_chat_capable_model(id))
+                    .map(|id| AiRuntimeModel {
+                        id,
+                        provider: provider.kind.id().to_string(),
+                    }),
+            ),
             Err(error) => {
                 tauri_plugin_log::log::warn!(
                     "model listing skipped provider {}: {error}",
@@ -668,5 +717,23 @@ mod tests {
 
         // Fully configured local default passes the static half.
         assert!(engine_prerequisite_static(&local_settings()).is_ok());
+    }
+
+    #[test]
+    fn is_chat_capable_model_filters_non_chat_ids() {
+        // Non-chat ids (image-gen, embeddings, whisper) are excluded.
+        assert!(!is_chat_capable_model("flux-1-schnell"));
+        assert!(!is_chat_capable_model("text-embedding-3-large"));
+        assert!(!is_chat_capable_model("whisper-1"));
+        assert!(!is_chat_capable_model("dall-e-3"));
+
+        // Chat models stay in the pool, including provider-namespaced ids.
+        assert!(is_chat_capable_model("deepseek-v4-pro"));
+        assert!(is_chat_capable_model("claude-haiku-4-5"));
+        assert!(is_chat_capable_model("gpt-4o"));
+        assert!(is_chat_capable_model(
+            "accounts/fireworks/models/deepseek-v4-pro"
+        ));
+        assert!(is_chat_capable_model("llama-3.3-70b"));
     }
 }

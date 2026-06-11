@@ -641,6 +641,23 @@ a chart. For bars, ALWAYS set a `sublabel` carrying the number WITH its unit (fo
 you derived from the captures; otherwise answer in plain markdown.\n",
     );
 
+    // Chronological-answer affordance: a third optional fenced block renders a
+    // time-of-day breakdown of the user's day, fed from the `timeline` tool.
+    preamble.push_str(
+        "When the answer is genuinely chronological — a time-of-day breakdown of the user's day — \
+you MAY include a fenced ```mnema-timeline block whose body is JSON \
+`{\"title\":\"…\",\"intervals\":[{\"label\":\"…\",\"start\":\"9:30 AM\",\"end\":\"11:00 AM\",\
+\"app\":\"Visual Studio Code\",\"category\":\"creating\"}]}`, which the UI renders as a timeline \
+widget. `intervals` is REQUIRED: an array in chronological order where each interval has a \
+`label` (what happened) and a `start` (a human time-of-day string like `\"9:30 AM\"`); `end`, \
+`app`, and `category` are OPTIONAL. When set, `category` MUST be ONE of `creating`, \
+`communication`, `meetings`, `research`, `learning`, `organizing`, `personal`, `entertainment` \
+(it drives the widget's color — omit it if unsure). `title` is OPTIONAL. Emit this block ONLY \
+for genuinely chronological / time-of-day answers, derived from the `timeline` tool's real \
+intervals (which carry kind, startedAt, endedAt, and app context); otherwise answer in plain \
+markdown. Use at most one timeline block.\n",
+    );
+
     // The presentation tool is described separately because it is NOT a data tool
     // and does not count against the tool-call budget.
     preamble.push_str(
@@ -1650,6 +1667,7 @@ mod tests {
         // The graphical-answer affordance blocks are documented.
         assert!(preamble.contains("mnema-bars"));
         assert!(preamble.contains("mnema-dossier"));
+        assert!(preamble.contains("mnema-timeline"));
         // The preamble is the SYSTEM instruction — it must carry no question.
         assert!(!preamble.contains("Question:"));
     }

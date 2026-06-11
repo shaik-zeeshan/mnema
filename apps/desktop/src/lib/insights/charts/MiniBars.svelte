@@ -1,7 +1,9 @@
 <script lang="ts">
-  // MiniBars — horizontal labelled bars for time-per-app (free / grayscale tier).
+  // MiniBars — horizontal labelled bars for time-per-app.
   // Each item gets a labelled track whose fill width is proportional to the
-  // largest value in the set; fills step down the grayscale ramp by rank.
+  // largest value in the set; fills rotate through the app's --cat-* category
+  // palette by rank. The dominant (largest-value) row reads as the focal point:
+  // full-opacity fill + stronger label, while the rest are slightly dimmed.
   // Props:
   //   items: { label: string; value: number; sublabel?: string;
   //            iconSrc?: string | null; fallback?: string }[]
@@ -25,12 +27,15 @@
 
   let { items }: Props = $props();
 
-  const greyRamp = [
-    "--chart-grey-5",
-    "--chart-grey-4",
-    "--chart-grey-3",
-    "--chart-grey-2",
-    "--chart-grey-1",
+  const catPalette = [
+    "--cat-creating",
+    "--cat-research",
+    "--cat-learning",
+    "--cat-communication",
+    "--cat-organizing",
+    "--cat-personal",
+    "--cat-meetings",
+    "--cat-entertainment",
   ];
 
   const max = $derived(items.reduce((acc, it) => Math.max(acc, it.value), 0));
@@ -41,13 +46,19 @@
   }
 
   function colorVarFor(index: number): string {
-    return greyRamp[Math.min(index, greyRamp.length - 1)];
+    return catPalette[index % catPalette.length];
+  }
+
+  // The largest-value row is the focal point. Guard max > 0 so an all-zero set
+  // doesn't mark every row dominant.
+  function isDominant(value: number): boolean {
+    return max > 0 && value === max;
   }
 </script>
 
 <div class="mini-bars">
   {#each items as item, i (item.label + i)}
-    <div class="mini-bar">
+    <div class="mini-bar" class:dominant={isDominant(item.value)}>
       <span class="label" title={item.label}>
         {#if item.iconSrc != null || item.fallback !== undefined}
           <span class="icon" aria-hidden="true">
@@ -88,7 +99,11 @@
     align-items: center;
     gap: 5px;
     min-width: 0;
-    font-size: 11px;
+    font-size: 11.5px;
+    color: var(--app-text-muted);
+  }
+  /* The dominant row reads as the focal point: stronger label, full-opacity fill. */
+  .mini-bar.dominant .label {
     color: var(--app-text);
   }
   .label-text {
@@ -119,7 +134,7 @@
     object-fit: contain;
   }
   .track {
-    height: 8px;
+    height: 10px;
     border-radius: 999px;
     background: var(--app-surface-hover);
     border: 1px solid var(--app-border);
@@ -129,7 +144,13 @@
     display: block;
     height: 100%;
     border-radius: 999px;
-    transition: width 0.18s ease;
+    opacity: 0.72;
+    transition:
+      width 0.18s ease,
+      opacity 0.18s ease;
+  }
+  .mini-bar.dominant .fill {
+    opacity: 1;
   }
   .val {
     font-size: 10px;

@@ -52,6 +52,7 @@
   import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
+  import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import {
@@ -72,6 +73,7 @@
     defaultEngineModel,
     engineProviderLabel,
     pinnableEnginesFromModelPool,
+    shortModelLabel,
   } from "$lib/insights/conversation";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
@@ -286,7 +288,24 @@
         ? null
         : defaultEngineModel(aiRuntimeSnapshot),
   );
+  // The picker trigger shows a SHORT, legible model label (the `/`-tail), so a
+  // long routing path doesn't get cut off mid-id by the pill's ellipsis. The
+  // full, unshortened label rides on the trigger's `title=` (activeModelTitle).
   let activeModelLabel = $derived.by(() => {
+    if (activePinProvider === null || activePinModel === null) {
+      return resolvedDefaultModel === null
+        ? "Default"
+        : `Default · ${shortModelLabel(resolvedDefaultModel)}`;
+    }
+    if (defaultProvider !== null && activePinProvider === defaultProvider) {
+      return shortModelLabel(activePinModel);
+    }
+    // A non-default-provider pin keeps its provider context.
+    return `${engineProviderLabel(activePinProvider)} · ${shortModelLabel(activePinModel)}`;
+  });
+  // The full (unshortened) trigger label, surfaced on hover so the complete id
+  // stays readable even when the short label hides a long routing path.
+  let activeModelTitle = $derived.by(() => {
     if (activePinProvider === null || activePinModel === null) {
       return resolvedDefaultModel === null
         ? "Default"
@@ -295,7 +314,6 @@
     if (defaultProvider !== null && activePinProvider === defaultProvider) {
       return activePinModel;
     }
-    // A non-default-provider pin keeps its provider context.
     return `${engineProviderLabel(activePinProvider)} · ${activePinModel}`;
   });
   let enginePickerOpen = $state(false);
@@ -477,6 +495,20 @@
     activePinModel = null;
     enginePickerOpen = false;
     composerInput = "";
+    void tick().then(() => composerEl?.focus());
+  }
+
+  // Empty-state example questions: tapping one prefills the composer (the user
+  // then reviews/edits and presses Enter) — it does NOT auto-send.
+  const EXAMPLE_QUESTIONS = [
+    "What did I work on today?",
+    "Summarize my afternoon",
+    "Which apps did I spend the most time in?",
+    "Find that article I was reading earlier",
+  ];
+
+  function useExample(text: string): void {
+    composerInput = text;
     void tick().then(() => composerEl?.focus());
   }
 
@@ -854,16 +886,24 @@
     statement: string;
     confidence: number;
   }
+  interface TimelineItem {
+    label: string;
+    start: string;
+    end?: string | null;
+    app?: string | null;
+    category?: string | null;
+  }
   type AnswerSegment =
     | { kind: "html"; markdown: string }
     | { kind: "bars"; title: string | null; items: BarsItem[] }
-    | { kind: "dossier"; items: DossierItem[] };
+    | { kind: "dossier"; items: DossierItem[] }
+    | { kind: "timeline"; title: string | null; items: TimelineItem[] };
 
   // A fenced block of the form ```mnema-bars\n{...}\n``` (or mnema-dossier).
   // Captured greedily-but-bounded; the JSON body is whatever sits between the
   // fences. We only special-case these two info strings; everything else stays
   // ordinary markdown.
-  const GRAPHICAL_FENCE = /```mnema-(bars|dossier)[^\n]*\n([\s\S]*?)```/g;
+  const GRAPHICAL_FENCE = /```mnema-(bars|dossier|timeline)[^\n]*\n([\s\S]*?)```/g;
 
   function parseBarsBlock(body: string): AnswerSegment | null {
     try {
@@ -919,6 +959,38 @@
     }
   }
 
+  function parseTimelineBlock(body: string): AnswerSegment | null {
+    try {
+      const data = JSON.parse(body) as { title?: unknown; intervals?: unknown };
+      const rawIntervals = Array.isArray(data.intervals) ? data.intervals : null;
+      if (rawIntervals === null) return null;
+      const items = rawIntervals
+        .map((it): TimelineItem | null => {
+          if (typeof it !== "object" || it === null) return null;
+          const rec = it as {
+            label?: unknown;
+            start?: unknown;
+            end?: unknown;
+            app?: unknown;
+            category?: unknown;
+          };
+          const label = typeof rec.label === "string" ? rec.label : null;
+          const start = typeof rec.start === "string" ? rec.start : null;
+          if (label === null || start === null) return null;
+          const end = typeof rec.end === "string" ? rec.end : null;
+          const app = typeof rec.app === "string" ? rec.app : null;
+          const category = typeof rec.category === "string" ? rec.category : null;
+          return { label, start, end, app, category };
+        })
+        .filter((x): x is TimelineItem => x !== null);
+      if (items.length === 0) return null;
+      const title = typeof data.title === "string" ? data.title : null;
+      return { kind: "timeline", title, items };
+    } catch {
+      return null;
+    }
+  }
+
   // Split the answer into html / graphical segments. Markdown between/around the
   // recognized fences becomes a raw-markdown `html` segment (AnswerProse renders
   // it); a recognized fence with a valid body becomes a chart segment, an invalid
@@ -934,7 +1006,11 @@
     while ((match = GRAPHICAL_FENCE.exec(answer)) !== null) {
       const [full, variant, body] = match;
       const parsed =
-        variant === "bars" ? parseBarsBlock(body) : parseDossierBlock(body);
+        variant === "bars"
+          ? parseBarsBlock(body)
+          : variant === "timeline"
+            ? parseTimelineBlock(body)
+            : parseDossierBlock(body);
       // Flush the markdown before this fence. If the fence fails to parse we
       // include its raw text in the markdown run so it renders as a code block.
       const preEnd = parsed !== null ? match.index : match.index + full.length;
@@ -1434,31 +1510,33 @@
                   <span class="history-title" title={c.title || c.preview}>
                     {c.title || c.preview || "Untitled chat"}
                   </span>
-                  <span class="history-meta">
-                    <span class="history-time">{relativeTime(c.updatedAtMs)}</span>
-                  </span>
                 </button>
-                <!-- Quiet row actions: hidden until the row is hovered or
-                     holds keyboard focus (`:focus-within`). -->
-                <div class="history-actions">
-                  <button
-                    type="button"
-                    class="history-action"
-                    aria-label="Rename conversation"
-                    title="Rename conversation"
-                    onclick={(e) => startRename(c, e)}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    type="button"
-                    class="history-action history-action--delete"
-                    aria-label="Delete conversation"
-                    title="Delete conversation"
-                    onclick={(e) => void deleteConversationRow(c, e)}
-                  >
-                    ✕
-                  </button>
+                <!-- Second line: timestamp on the left, quiet row actions on
+                     the right. The actions sit in flow on THIS line (not over
+                     the title) and stay hidden until the row is hovered or holds
+                     keyboard focus (`:focus-within`). -->
+                <div class="history-foot">
+                  <span class="history-time">{relativeTime(c.updatedAtMs)}</span>
+                  <div class="history-actions">
+                    <button
+                      type="button"
+                      class="history-action"
+                      aria-label="Rename conversation"
+                      title="Rename conversation"
+                      onclick={(e) => startRename(c, e)}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      type="button"
+                      class="history-action history-action--delete"
+                      aria-label="Delete conversation"
+                      title="Delete conversation"
+                      onclick={(e) => void deleteConversationRow(c, e)}
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
               {/if}
             </div>
@@ -1501,6 +1579,19 @@
                 Type a question below and press Enter. The engine searches your
                 captures through its brokered tools to answer.
               </p>
+              <!-- Quiet example questions: tapping one prefills the composer to
+                   review/edit (it does NOT auto-send). -->
+              <div class="example-row" role="presentation">
+                {#each EXAMPLE_QUESTIONS as example (example)}
+                  <button
+                    type="button"
+                    class="example-q"
+                    onclick={() => useExample(example)}
+                  >
+                    {example}
+                  </button>
+                {/each}
+              </div>
             </div>
           {:else}
             {#each turns as turn, ti (ti)}
@@ -1557,13 +1648,6 @@
                             {/if}
                           </div>
                         {/if}
-                      {/if}
-
-                      {#if turn.seededResultCount !== null && turn.seededResultCount > 0}
-                        <p class="seeded">
-                          Seeded with {turn.seededResultCount}
-                          {turn.seededResultCount === 1 ? "result" : "results"}
-                        </p>
                       {/if}
 
                       {#if turn.phase === "seeding"}
@@ -1650,6 +1734,14 @@
                                       </div>
                                     {/each}
                                   </div>
+                                {:else if seg.kind === "timeline"}
+                                  <!-- Timeline owns its own caption (the same
+                                       uppercase-muted .timeline-title idiom as
+                                       .graphic-title), so the .graphic wrapper
+                                       here doesn't repeat it as a figcaption. -->
+                                  <figure class="graphic">
+                                    <Timeline title={seg.title} intervals={seg.items} />
+                                  </figure>
                                 {/if}
                               {/each}
                             {:else}
@@ -1773,6 +1865,7 @@
                   aria-haspopup="listbox"
                   aria-expanded={enginePickerOpen}
                   aria-label="Model for this thread"
+                  title={activeModelTitle}
                   onclick={toggleModelPicker}
                 >
                   <span class="engine-pick-current">{activeModelLabel}</span>
@@ -1815,6 +1908,7 @@
                           class:engine-pick-option--active={selected}
                           role="option"
                           aria-selected={selected}
+                          title={modelId}
                           onclick={() => {
                             if (defaultProvider !== null) {
                               void selectEngine({
@@ -1824,7 +1918,7 @@
                             }
                           }}
                         >
-                          {modelId}
+                          {shortModelLabel(modelId)}
                           {#if selected}
                             <span class="engine-pick-check" aria-hidden="true">✓</span>
                           {/if}
@@ -1842,9 +1936,10 @@
                           class:engine-pick-option--active={selected}
                           role="option"
                           aria-selected={selected}
+                          title={engine.label}
                           onclick={() => void selectEngine(engine)}
                         >
-                          {engine.label}
+                          {engineProviderLabel(engine.provider)} · {shortModelLabel(engine.model)}
                           {#if selected}
                             <span class="engine-pick-check" aria-hidden="true">✓</span>
                           {/if}
@@ -2040,8 +2135,12 @@
   }
 
   .history-item {
+    /* Two stacked lines: the title fills line 1; the timestamp + row actions
+       share line 2. Stacking (rather than a title/actions row) keeps the
+       actions off the title entirely — they live beside the time, not over it. */
     display: flex;
-    align-items: stretch;
+    flex-direction: column;
+    padding: 7px 6px 6px 9px;
     border: 1px solid transparent;
     border-radius: 7px;
     transition: background 0.12s ease, border-color 0.12s ease;
@@ -2054,12 +2153,10 @@
     border-color: var(--app-accent-border);
   }
   .history-open {
-    flex: 1 1 auto;
+    width: 100%;
     min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    padding: 8px 9px;
+    display: block;
+    padding: 0;
     border: none;
     background: transparent;
     text-align: left;
@@ -2067,22 +2164,36 @@
     font: inherit;
   }
   .history-title {
+    /* Fill the rail's available width so the ellipsis only kicks in at the true
+       right edge of the 260px rail, not early while dead space sits beside it. */
+    display: block;
+    width: 100%;
     font-size: 11.5px;
     color: var(--app-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .history-item:hover .history-title {
+    color: var(--app-text-strong);
+  }
   .history-item.active .history-title {
     color: var(--app-accent-strong);
   }
-  .history-meta {
-    display: inline-flex;
+  /* Second line: timestamp (left) + row actions (right). min-height holds the
+     line steady whether or not the actions are showing, so rows don't jump. */
+  .history-foot {
+    display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
+    min-height: 22px;
+    margin-top: 2px;
+  }
+  .history-time {
     font-size: 9.5px;
     color: var(--app-text-faint);
     letter-spacing: 0.02em;
+    line-height: 1;
   }
   /* Quiet date-section headers (Today / Yesterday / This week / "May 2026"),
      in the same uppercase-faint idiom as .sources-heading. */
@@ -2096,46 +2207,55 @@
   .history-group-label:first-child {
     padding-top: 2px;
   }
-  /* Row actions (rename + delete): hidden until the row is hovered or holds
-     keyboard focus — pure hover-only would lock keyboard users out. */
+  /* Row actions (rename + delete): pinned to the right end of the foot line
+     (margin-left:auto), hidden until the row is hovered or holds keyboard focus
+     — pure hover-only would lock keyboard users out. They sit in flow on the
+     foot line, so they never overlap the title above. */
   .history-actions {
-    flex: 0 0 auto;
+    margin-left: auto;
     display: flex;
     align-items: center;
-    padding-right: 3px;
+    gap: 2px;
     opacity: 0;
+    pointer-events: none;
     transition: opacity 0.12s ease;
   }
   .history-item:hover .history-actions,
   .history-item:focus-within .history-actions {
     opacity: 1;
+    pointer-events: auto;
   }
   .history-action {
-    width: 22px;
+    width: 26px;
     height: 22px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: none;
-    border-radius: 5px;
+    border: 1px solid transparent;
+    border-radius: 6px;
     background: transparent;
-    color: var(--app-text-faint);
-    font-size: 10px;
+    color: var(--app-text-muted);
+    font-size: 13px;
+    line-height: 1;
     cursor: pointer;
-    transition: color 0.12s ease, background 0.12s ease;
+    transition: color 0.12s ease, background 0.12s ease,
+      border-color 0.12s ease;
   }
   .history-action:hover {
     color: var(--app-text-strong);
     background: var(--app-surface-hover);
+    border-color: var(--app-border);
   }
   .history-action--delete:hover {
     color: var(--app-danger);
+    border-color: var(--app-danger);
   }
-  /* Inline rename input: replaces the row content while editing. */
+  /* Inline rename input: replaces the row content while editing. The row is a
+     column flex now, so fill the width and sit flush within the item padding. */
   .history-rename-input {
-    flex: 1 1 auto;
+    width: 100%;
     min-width: 0;
-    margin: 4px 5px;
+    margin: 1px 0;
     padding: 4px 6px;
     font: inherit;
     font-size: 11.5px;
@@ -2217,6 +2337,30 @@
     line-height: 1.6;
     max-width: 460px;
   }
+  /* Quiet example-question chips: the same pill look as .activity-chip. Tapping
+     one prefills the composer (review/edit, not send). */
+  .example-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 4px;
+  }
+  .example-q {
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.01em;
+    padding: 5px 11px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease;
+  }
+  .example-q:hover {
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+  }
 
   /* One transcript turn: a user bubble (right) then the AI answer (left). */
   .turn {
@@ -2254,12 +2398,6 @@
     flex-direction: column;
     gap: 8px;
   }
-  .seeded {
-    font-size: 10px;
-    color: var(--app-text-faint);
-    letter-spacing: 0.02em;
-  }
-
   .state {
     display: inline-flex;
     align-items: center;
