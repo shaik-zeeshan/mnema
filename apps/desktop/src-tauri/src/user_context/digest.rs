@@ -24,13 +24,15 @@
 //! the same input set) — so there is deliberately no in-flight lock here; the
 //! module has no established guard pattern to reuse either.
 
-use capture_types::{Activity, AiRuntimeSettings, FocusLevel, UserContextDigest};
+use capture_types::{Activity, ActivityCategory, AiRuntimeSettings, FocusLevel, UserContextDigest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use std::collections::HashMap;
+
 use app_infra::user_context::guardrail;
-use app_infra::{digest_input_fingerprint, NewDerivationRun, UserContextStore};
+use app_infra::{digest_input_fingerprint, NewDerivationRun, StoredDigest, UserContextStore};
 
 use super::derivation::{category_label, estimate_tokens, truncate_chars};
 use super::worker::{model_label_for, now_ms, provider_label_for};
@@ -96,7 +98,24 @@ const DIGEST_SUMMARY_CHAR_CAP: usize = 240;
 /// `derivation.rs` bounds its prompt inputs (per-item caps + a bounded item
 /// count via `MAX_ITEMS`); expressed here as a char budget because the input is
 /// a whole calendar range rather than a capture window. ~6k estimated tokens.
+///
+/// We do NOT drop the oldest Activities when over budget. Instead the prompt
+/// **degrades by recency** ([`build_digest_prompt`]): the newest episodes stay
+/// at full detail, earlier ones collapse to a one-line compact form, and the
+/// oldest are summarized one line per local day (a cached day-digest narrative
+/// when one exists, else computed stats). The whole range is always
+/// represented, just at decreasing detail going back in time.
 const DIGEST_PROMPT_CHAR_CAP: usize = 24_000;
+
+/// Sample-title char cap inside a computed rollup line: long titles are
+/// shortened so two of them fit on one day line.
+const ROLLUP_TITLE_CHAR_CAP: usize = 40;
+
+/// How many top categories a computed rollup line names before stopping.
+const ROLLUP_TOP_CATEGORIES: usize = 3;
+
+/// How many sample titles a computed rollup line folds in.
+const ROLLUP_SAMPLE_TITLES: usize = 2;
 
 /// The structured result the engine returns for one Digest pass. Flat (two
 /// string fields), so the schema is `$ref`/`$defs`-free without `#[schemars(inline)]`;
@@ -139,6 +158,21 @@ fn recover_local_offset_ms(range_start_ms: i64) -> i64 {
     } else {
         offset
     }
+}
+
+/// Local-midnight (UTC ms) of the local day containing `at_ms`, using the
+/// offset recovered from the range start. The result matches the
+/// `range_start_ms` a DAY-kind [`StoredDigest`] is keyed on (the frontend
+/// computes those starts the same way), so it is the join key for reusing a
+/// cached day-digest narrative in a rollup line.
+///
+/// Same `div_euclid`/`rem_euclid`-flavoured arithmetic the [`day_label`] /
+/// [`recover_local_offset_ms`] pair uses: shift into local time, floor to the
+/// day grid, shift back. Saturating adds keep hostile timestamps from panicking.
+fn local_day_start_ms(at_ms: i64, local_offset_ms: i64) -> i64 {
+    let shifted = at_ms.saturating_add(local_offset_ms);
+    let local_midnight = shifted.div_euclid(DAY_MS).saturating_mul(DAY_MS);
+    local_midnight.saturating_sub(local_offset_ms)
 }
 
 /// Compact local day label ("Tue Jun 9") for one Activity start time, using the
@@ -213,33 +247,284 @@ fn format_activity_line(activity: &Activity, local_offset_ms: i64) -> String {
     }
 }
 
-/// Build the Digest prompt: a header naming the range, then one line per
-/// Activity in chronological order (newest LAST — chronology reads better for a
-/// narrative). When the rendered lines exceed [`DIGEST_PROMPT_CHAR_CAP`], the
-/// OLDEST lines are dropped first (the same newest-matters-most stance the
-/// derivation worker takes) and the omission is stated so the engine does not
-/// mistake a truncated range for the whole story.
+/// Render one Activity as the **compact** middle-tier line:
+/// `- [Tue Jun 9 | 1h 30m] Title` — day + duration + title only, dropping the
+/// summary, category, and focus the full [`format_activity_line`] carries. Used
+/// for earlier episodes once the full-detail prompt would blow the budget.
+fn format_activity_line_compact(activity: &Activity, local_offset_ms: i64) -> String {
+    format!(
+        "- [{} | {}] {}\n",
+        day_label(activity.started_at_ms, local_offset_ms),
+        duration_label(activity.started_at_ms, activity.ended_at_ms),
+        activity.title.trim(),
+    )
+}
+
+/// Render the **rollup** bottom-tier line for one local day's worth of the
+/// oldest activities. `day_narrative` is the cached day-digest prose when one
+/// exists for that local day (the **hybrid** path); when present its prose is
+/// used verbatim and no stats are computed.
+///
+/// The **computed** fallback names: the activity count, the summed duration
+/// (via [`duration_label`] over `0..total_ms`), the top
+/// [`ROLLUP_TOP_CATEGORIES`] categories by summed duration (omitted when no
+/// activity in the day carries a category), and up to [`ROLLUP_SAMPLE_TITLES`]
+/// sample titles — the longest-duration episodes, short-capped at
+/// [`ROLLUP_TITLE_CHAR_CAP`] (omitted when none have a non-empty title). Both
+/// optional clauses collapse cleanly so a label-free day reads as just
+/// `- [Tue Jun 9] 3 activities, 2h 10m`.
+fn format_rollup_line(
+    day_activities: &[&Activity],
+    local_offset_ms: i64,
+    day_narrative: Option<&str>,
+) -> String {
+    // The day label is taken from the first (chronologically earliest)
+    // activity; they all share the same local day by construction.
+    let label = day_activities
+        .first()
+        .map(|a| day_label(a.started_at_ms, local_offset_ms))
+        .unwrap_or_else(|| day_label(0, local_offset_ms));
+
+    // Hybrid path: reuse the day digest's own prose verbatim.
+    if let Some(narrative) = day_narrative {
+        let narrative = narrative.trim();
+        if !narrative.is_empty() {
+            return format!("- [{label}] {narrative}\n");
+        }
+    }
+
+    // Computed path: count + summed duration + top categories + sample titles.
+    let count = day_activities.len();
+    let total_ms: i64 = day_activities
+        .iter()
+        .map(|a| a.ended_at_ms.saturating_sub(a.started_at_ms).max(0))
+        .sum();
+    let plural = if count == 1 { "activity" } else { "activities" };
+    let mut line = format!(
+        "- [{label}] {count} {plural}, {}",
+        duration_label(0, total_ms)
+    );
+
+    // Top categories by summed duration. A stable insertion order keeps ties
+    // deterministic (no `Date::now`/random tie-break).
+    let mut category_ms: Vec<(ActivityCategory, i64)> = Vec::new();
+    for activity in day_activities {
+        let Some(category) = activity.category else {
+            continue;
+        };
+        let span = activity.ended_at_ms.saturating_sub(activity.started_at_ms).max(0);
+        match category_ms.iter_mut().find(|(c, _)| *c == category) {
+            Some((_, ms)) => *ms = ms.saturating_add(span),
+            None => category_ms.push((category, span)),
+        }
+    }
+    if !category_ms.is_empty() {
+        // Stable sort by descending duration preserves first-seen order on ties.
+        category_ms.sort_by(|a, b| b.1.cmp(&a.1));
+        let top: Vec<String> = category_ms
+            .iter()
+            .take(ROLLUP_TOP_CATEGORIES)
+            .map(|(category, ms)| format!("{} ({})", category_label(*category), duration_label(0, *ms)))
+            .collect();
+        line.push_str(" — top categories: ");
+        line.push_str(&top.join(", "));
+    }
+
+    // Sample titles: the longest-duration episodes, short-capped.
+    let mut by_duration: Vec<&&Activity> = day_activities.iter().collect();
+    by_duration.sort_by(|a, b| {
+        let da = a.ended_at_ms.saturating_sub(a.started_at_ms).max(0);
+        let db = b.ended_at_ms.saturating_sub(b.started_at_ms).max(0);
+        db.cmp(&da)
+    });
+    let samples: Vec<String> = by_duration
+        .iter()
+        .filter_map(|a| {
+            let title = a.title.trim();
+            if title.is_empty() {
+                None
+            } else {
+                Some(format!("\"{}\"", truncate_chars(title, ROLLUP_TITLE_CHAR_CAP)))
+            }
+        })
+        .take(ROLLUP_SAMPLE_TITLES)
+        .collect();
+    if !samples.is_empty() {
+        line.push_str("; e.g. ");
+        line.push_str(&samples.join(", "));
+    }
+
+    line.push('\n');
+    line
+}
+
+/// Detail tier each Activity is currently rendered at while degrading the
+/// prompt to fit the budget. `Full` is the richest, `Rollup` the tersest.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    Full,
+    Compact,
+    Rollup,
+}
+
+/// Build the Digest prompt: a header naming the range, then the Activities in
+/// chronological order (newest LAST — chronology reads better for a narrative).
+///
+/// When the full-detail lines would exceed [`DIGEST_PROMPT_CHAR_CAP`] the prompt
+/// **degrades by recency** rather than dropping the oldest: the most recent
+/// episodes stay [`Tier::Full`], earlier ones collapse to a one-line
+/// [`Tier::Compact`] form, and the oldest are summarized one line per local day
+/// ([`Tier::Rollup`]) — using a cached day-digest narrative from `day_digests`
+/// when one exists for that day (the hybrid path), else computed stats. The
+/// whole range is always represented, so the engine never mistakes a degraded
+/// range for a partial one; a tier-explanation note says so when degradation
+/// happened.
+///
+/// `day_digests` are DAY-kind cached digests overlapping the range; the slice is
+/// empty for the "day" range kind (a day never reuses its own digest as input).
+/// They are keyed by their `range_start_ms` — a local midnight in UTC ms — which
+/// [`local_day_start_ms`] reproduces from an activity's `started_at_ms`.
 fn build_digest_prompt(
     range_kind: &str,
     range_start_ms: i64,
     range_end_ms: i64,
     now_ms: i64,
     activities: &[Activity],
+    day_digests: &[StoredDigest],
 ) -> String {
     let local_offset_ms = recover_local_offset_ms(range_start_ms);
 
-    // `activities` arrives chronological (oldest first) from the store query.
-    let mut lines: Vec<String> = activities
+    // Local-day-start (UTC ms) → cached day-digest narrative, for the hybrid
+    // rollup path. Keyed exactly as `local_day_start_ms` computes a day key.
+    let day_narratives: HashMap<i64, &str> = day_digests
         .iter()
-        .map(|activity| format_activity_line(activity, local_offset_ms))
+        .map(|d| (d.range_start_ms, d.narrative.as_str()))
         .collect();
 
-    // Enforce the total budget by dropping the OLDEST lines first.
-    let mut total: usize = lines.iter().map(|line| line.chars().count()).sum();
-    let mut omitted = 0usize;
-    while total > DIGEST_PROMPT_CHAR_CAP && lines.len() > 1 {
-        total -= lines.remove(0).chars().count();
-        omitted += 1;
+    // `activities` arrives chronological (oldest first) from the store query.
+    // Index 0 is the oldest; degradation eats from the front.
+    let n = activities.len();
+
+    // Each activity starts at Full; we recompute the running total as we degrade.
+    let full_lines: Vec<String> = activities
+        .iter()
+        .map(|a| format_activity_line(a, local_offset_ms))
+        .collect();
+    let compact_lines: Vec<String> = activities
+        .iter()
+        .map(|a| format_activity_line_compact(a, local_offset_ms))
+        .collect();
+    let line_cost = |s: &str| s.chars().count();
+
+    let mut tiers = vec![Tier::Full; n];
+    let mut total: usize = full_lines.iter().map(|s| line_cost(s)).sum();
+    let mut degraded = false;
+
+    // The local-day key of each activity, used to group the rollup tier.
+    let day_keys: Vec<i64> = activities
+        .iter()
+        .map(|a| local_day_start_ms(a.started_at_ms, local_offset_ms))
+        .collect();
+
+    // Step 1 (cap-fit): if everything fits at Full, emit unchanged. Else degrade.
+    if total > DIGEST_PROMPT_CHAR_CAP {
+        degraded = true;
+
+        // Step 2: Full → Compact from oldest to newest, one at a time, stopping
+        // as soon as we are under the cap (leaves newest=Full, oldest=Compact).
+        for i in 0..n {
+            if total <= DIGEST_PROMPT_CHAR_CAP {
+                break;
+            }
+            tiers[i] = Tier::Compact;
+            total = total + line_cost(&compact_lines[i]) - line_cost(&full_lines[i]);
+        }
+
+        // Step 3: still over after all-Compact → roll up whole oldest DAYS.
+        // Group the currently-Compact prefix by local day; move the oldest such
+        // day wholesale into a single Rollup line, recomputing, until under the
+        // cap OR only one compact day remains. Full-tier activities are never
+        // rolled up.
+        if total > DIGEST_PROMPT_CHAR_CAP {
+            // Build the rollup-line cost lazily per day as we collapse it.
+            loop {
+                // Indices still in Compact, contiguous from the oldest end.
+                let compact_idx: Vec<usize> =
+                    (0..n).filter(|&i| tiers[i] == Tier::Compact).collect();
+                if compact_idx.is_empty() {
+                    break;
+                }
+                // Distinct local days still represented in the Compact band.
+                let mut compact_days: Vec<i64> = Vec::new();
+                for &i in &compact_idx {
+                    if !compact_days.contains(&day_keys[i]) {
+                        compact_days.push(day_keys[i]);
+                    }
+                }
+                if total <= DIGEST_PROMPT_CHAR_CAP || compact_days.len() <= 1 {
+                    break;
+                }
+
+                // Oldest compact day = the first distinct day key (chronological).
+                let target_day = compact_days[0];
+                let members: Vec<&Activity> = (0..n)
+                    .filter(|&i| tiers[i] == Tier::Compact && day_keys[i] == target_day)
+                    .map(|i| &activities[i])
+                    .collect();
+                let rollup_line = format_rollup_line(
+                    &members,
+                    local_offset_ms,
+                    day_narratives.get(&target_day).copied(),
+                );
+                // The rollup line replaces all that day's compact lines.
+                let removed: usize = (0..n)
+                    .filter(|&i| tiers[i] == Tier::Compact && day_keys[i] == target_day)
+                    .map(|i| line_cost(&compact_lines[i]))
+                    .sum();
+                total = total - removed + line_cost(&rollup_line);
+                for i in 0..n {
+                    if tiers[i] == Tier::Compact && day_keys[i] == target_day {
+                        tiers[i] = Tier::Rollup;
+                    }
+                }
+            }
+        }
+    }
+
+    // Materialize the lines in chronological order, collapsing each rollup DAY
+    // to a single line at the position of its first (oldest) member.
+    let mut body_lines: Vec<String> = Vec::new();
+    let mut emitted_rollup_days: Vec<i64> = Vec::new();
+    for i in 0..n {
+        match tiers[i] {
+            Tier::Full => body_lines.push(full_lines[i].clone()),
+            Tier::Compact => body_lines.push(compact_lines[i].clone()),
+            Tier::Rollup => {
+                let day = day_keys[i];
+                if emitted_rollup_days.contains(&day) {
+                    continue;
+                }
+                emitted_rollup_days.push(day);
+                let members: Vec<&Activity> = (0..n)
+                    .filter(|&j| tiers[j] == Tier::Rollup && day_keys[j] == day)
+                    .map(|j| &activities[j])
+                    .collect();
+                body_lines.push(format_rollup_line(
+                    &members,
+                    local_offset_ms,
+                    day_narratives.get(&day).copied(),
+                ));
+            }
+        }
+    }
+
+    // Step 4 (defensive, effectively unreachable): if even the fully-collapsed
+    // body still exceeds the cap, drop the oldest body lines as a last resort
+    // (the old behaviour) — bounded, never loops forever.
+    let mut body_total: usize = body_lines.iter().map(|s| line_cost(s)).sum();
+    while body_total > DIGEST_PROMPT_CHAR_CAP && body_lines.len() > 1 {
+        body_total -= line_cost(&body_lines.remove(0));
+        degraded = true;
     }
 
     let mut prompt = String::new();
@@ -264,14 +549,15 @@ the user's local days.\n",
         day_label(range_end_ms.saturating_sub(1), local_offset_ms),
         day_label(now_ms, local_offset_ms),
     ));
-    if omitted > 0 {
-        prompt.push_str(&format!(
-            "(The {omitted} oldest Activities were omitted for length; the count above is the \
-true total.)\n"
-        ));
+    if degraded {
+        prompt.push_str(
+            "(Older activity is shown at reduced detail: the most recent episodes appear in full, \
+earlier ones as brief one-line entries, and the oldest are summarized by local day. Nothing is \
+missing — the Activity count above is the true total.)\n",
+        );
     }
     prompt.push('\n');
-    for line in &lines {
+    for line in &body_lines {
         prompt.push_str(line);
     }
     prompt
@@ -448,10 +734,28 @@ pub async fn get_or_generate_digest(
     }
 
     // 5. Generate: guardrail-framed preamble + compact chronological prompt,
-    //    structured extraction into the flat DigestNarrative shape.
+    //    structured extraction into the flat DigestNarrative shape. For week /
+    //    month ranges, the oldest activities can roll up to one line per day,
+    //    reusing any cached DAY-kind digest's narrative as that line's prose
+    //    (the hybrid rollup path). A "day" range never reuses its own digest as
+    //    input, so it passes no day digests.
+    let day_digests = if range_kind == "day" {
+        Vec::new()
+    } else {
+        store
+            .list_day_digests_in_range(range_start_ms, range_end_ms)
+            .await
+            .map_err(|error| error.to_string())?
+    };
     let preamble = digest_preamble();
-    let prompt =
-        build_digest_prompt(range_kind, range_start_ms, range_end_ms, now_ms(), &activities);
+    let prompt = build_digest_prompt(
+        range_kind,
+        range_start_ms,
+        range_end_ms,
+        now_ms(),
+        &activities,
+        &day_digests,
+    );
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
     let extracted =
@@ -512,7 +816,6 @@ pub async fn get_or_generate_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capture_types::ActivityCategory;
 
     fn activity(
         id: i64,
@@ -639,7 +942,7 @@ mod tests {
             activity(1, 1_000, 61_000, "Oldest", "first", None, None),
             activity(2, 100_000, 160_000, "Newest", "last", None, None),
         ];
-        let prompt = build_digest_prompt("week", 0, DAY_MS * 7, DAY_MS * 3, &activities);
+        let prompt = build_digest_prompt("week", 0, DAY_MS * 7, DAY_MS * 3, &activities, &[]);
         assert!(prompt.contains("Range: week [0 .. 604800000) ms (2 Activities)"));
         // The local-calendar anchor names today and the range span in local days.
         assert!(prompt.contains("today is"));
@@ -652,15 +955,27 @@ mod tests {
         assert!(!prompt.contains("omitted"), "no omission note under budget");
     }
 
+    /// Under crushing load (even an all-compact body overflows) the prompt
+    /// degrades by recency rather than dropping the oldest: the newest episode
+    /// survives at the richest tier still affordable (here a compact line, since
+    /// nothing can stay full), the oldest are folded into rollup day lines (NOT
+    /// dropped), the body stays bounded, the true total count is present, and
+    /// the tier-explanation note appears. (The newest-stays-FULL case is
+    /// covered by `prompt_compact_tier_drops_summaries_for_older_episodes`,
+    /// where the all-compact body fits.)
     #[test]
-    fn prompt_drops_oldest_lines_over_the_char_cap_and_says_so() {
+    fn prompt_degrades_by_recency_over_the_char_cap_and_says_so() {
         let long_summary = "x".repeat(DIGEST_SUMMARY_CHAR_CAP);
-        let activities: Vec<Activity> = (0..200)
+        // 1000 activities spread across ~25 local days (UTC offset 0). Even the
+        // all-compact body (~30 chars × 1000 ≈ 30k) overflows the cap, so the
+        // oldest days MUST roll up — exercising all three tiers at once.
+        let activities: Vec<Activity> = (0..1000)
             .map(|i| {
+                let start = i * (DAY_MS / 40); // ~40 episodes per local day
                 activity(
                     i,
-                    i * 60_000,
-                    (i + 1) * 60_000,
+                    start,
+                    start + 60_000,
                     &format!("Activity {i}"),
                     &long_summary,
                     None,
@@ -668,19 +983,196 @@ mod tests {
                 )
             })
             .collect();
-        let prompt = build_digest_prompt("month", 0, DAY_MS * 30, DAY_MS * 15, &activities);
-        // Bounded: the body stays near the cap (header + one-line slack).
+        let prompt = build_digest_prompt("month", 0, DAY_MS * 30, DAY_MS * 15, &activities, &[]);
+        // Bounded: the body stays near the cap (header + a little slack).
         assert!(
-            prompt.chars().count() < DIGEST_PROMPT_CHAR_CAP + 800,
+            prompt.chars().count() < DIGEST_PROMPT_CHAR_CAP + 1000,
             "prompt stays bounded: {} chars",
             prompt.chars().count()
         );
-        // Newest survives, oldest is dropped, and the omission is stated with
-        // the true total.
-        assert!(prompt.contains("Activity 199"));
-        assert!(!prompt.contains("[Thu Jan 1 | 1m] Activity 0 "));
-        assert!(prompt.contains("oldest Activities were omitted"));
-        assert!(prompt.contains("(200 Activities)"));
+        // Newest survives (its title is still present); the oldest are NOT
+        // dropped — they appear, folded into rollup day lines.
+        assert!(prompt.contains("Activity 999"), "newest survives");
+        assert!(prompt.contains("Activity 0"), "oldest activity is not dropped");
+        // Degradation actually occurred: rollup day lines exist.
+        assert!(prompt.contains("activities,"), "the oldest days are rolled up");
+        // The tier-explanation note appears, with the true total.
+        assert!(prompt.contains("summarized by local day"));
+        assert!(prompt.contains("the true total"));
+        assert!(prompt.contains("(1000 Activities)"));
+    }
+
+    /// Compact tier: enough activities to overflow Full but fit as Compact. The
+    /// oldest renders as `- [day | dur] Title` with NO summary separator, while
+    /// the newest keeps its full summary. No rollup ("activities," count) yet.
+    #[test]
+    fn prompt_compact_tier_drops_summaries_for_older_episodes() {
+        // ~120 chars of summary each: full lines (~155 chars) overflow 24k well
+        // before 300 activities; compact lines (~30 chars) stay far under.
+        let summary = "y".repeat(120);
+        let activities: Vec<Activity> = (0..300)
+            .map(|i| {
+                let start = i * 60_000;
+                activity(
+                    i,
+                    start,
+                    start + 60_000,
+                    &format!("Episode {i}"),
+                    &summary,
+                    None,
+                    None,
+                )
+            })
+            .collect();
+        let prompt = build_digest_prompt("week", 0, DAY_MS * 7, DAY_MS * 3, &activities, &[]);
+        // Newest keeps its summary (Full tier).
+        assert!(prompt.contains(&format!("Episode 299 — {summary}")));
+        // Oldest is a compact line: title with no summary separator.
+        assert!(
+            prompt.contains("] Episode 0\n"),
+            "oldest is a compact line without a summary"
+        );
+        assert!(
+            !prompt.contains(&format!("Episode 0 — {summary}")),
+            "oldest dropped its summary"
+        );
+        // Still bounded, total stated, note present.
+        assert!(prompt.chars().count() < DIGEST_PROMPT_CHAR_CAP + 1000);
+        assert!(prompt.contains("(300 Activities)"));
+        assert!(prompt.contains("reduced detail"));
+    }
+
+    /// Rollup computed path: force a rollup and assert a day line carries the
+    /// activity count, a duration, a category label, and the longest titles of
+    /// that day folded in.
+    #[test]
+    fn prompt_rollup_computed_folds_oldest_days_into_one_line() {
+        let long_summary = "z".repeat(DIGEST_SUMMARY_CHAR_CAP);
+        // 1000 activities across ~25 local days at offset 0 so the all-compact
+        // body overflows and the oldest days roll up. The oldest day (i in
+        // 0..40) carries a creating category and a longer span so the rollup
+        // line names a category and folds in that day's longest titles.
+        let activities: Vec<Activity> = (0..1000)
+            .map(|i| {
+                let start = i * (DAY_MS / 40);
+                let (category, end) = if i < 40 {
+                    (Some(ActivityCategory::Creating), start + 30 * 60_000)
+                } else {
+                    (None, start + 60_000)
+                };
+                activity(
+                    i,
+                    start,
+                    end,
+                    &format!("Activity {i}"),
+                    &long_summary,
+                    category,
+                    None,
+                )
+            })
+            .collect();
+        let prompt = build_digest_prompt("month", 0, DAY_MS * 30, DAY_MS * 15, &activities, &[]);
+        // A computed rollup line: count + a duration + a category label.
+        assert!(prompt.contains("activities,"), "a rollup line with a count");
+        assert!(
+            prompt.contains("top categories: creating"),
+            "the oldest day names its category"
+        );
+        // An oldest individual title is folded into a day line ("e.g. ...").
+        assert!(prompt.contains("e.g. \"Activity"), "sample titles folded in");
+        assert!(prompt.contains("(1000 Activities)"));
+        assert!(prompt.contains("summarized by local day"));
+    }
+
+    /// Rollup hybrid path: a cached DAY digest whose `range_start_ms` matches an
+    /// old activity's local day start is reused verbatim — its narrative text
+    /// appears and the computed-stats form is NOT used for that day.
+    #[test]
+    fn prompt_rollup_hybrid_reuses_cached_day_narrative() {
+        let long_summary = "w".repeat(DIGEST_SUMMARY_CHAR_CAP);
+        let local_offset_ms = 0;
+        // The oldest day's local-midnight key (offset 0 → started_at 0 → day 0).
+        let oldest_day_start = local_day_start_ms(0, local_offset_ms);
+        let narrative =
+            "You spent the morning untangling the billing migration and the afternoon on review.";
+        let day_digests = vec![StoredDigest {
+            range_kind: "day".to_string(),
+            range_start_ms: oldest_day_start,
+            range_end_ms: oldest_day_start + DAY_MS,
+            narrative: narrative.to_string(),
+            headline: Some("A billing day".to_string()),
+            input_fingerprint: "fp".to_string(),
+            generated_at_ms: 0,
+        }];
+        // Enough activities to force a rollup; the oldest day (i in 0..40) is the
+        // one the cached digest covers.
+        let activities: Vec<Activity> = (0..1000)
+            .map(|i| {
+                let start = i * (DAY_MS / 40);
+                activity(
+                    i,
+                    start,
+                    start + 60_000,
+                    &format!("Activity {i}"),
+                    &long_summary,
+                    Some(ActivityCategory::Creating),
+                    None,
+                )
+            })
+            .collect();
+        let prompt =
+            build_digest_prompt("month", 0, DAY_MS * 30, DAY_MS * 15, &activities, &day_digests);
+        // The cached narrative appears verbatim on its rollup line.
+        assert!(
+            prompt.contains(narrative),
+            "the cached day narrative is reused verbatim"
+        );
+        // That day's rollup line is the hybrid prose, not the computed form: the
+        // hybrid line is `- [<label>] <narrative>`, so it must not be followed by
+        // a computed " activities," stats clause for the SAME label.
+        let day_lbl = day_label(0, local_offset_ms);
+        let hybrid_line = format!("- [{day_lbl}] {narrative}");
+        assert!(prompt.contains(&hybrid_line), "hybrid line shape: {hybrid_line}");
+        let computed_line = format!("- [{day_lbl}] ");
+        // The only line starting with that label prefix is the hybrid one.
+        let computed_with_stats = format!("- [{day_lbl}] 40 activities,");
+        assert!(
+            !prompt.contains(&computed_with_stats),
+            "the cached day must not use the computed-stats form"
+        );
+        // Sanity: the prefix exists exactly once (the hybrid line).
+        assert_eq!(
+            prompt.matches(&computed_line).count(),
+            1,
+            "exactly one rollup line for the cached day"
+        );
+    }
+
+    /// `local_day_start_ms` returns the day digest's local-midnight (a UTC ms
+    /// instant) for a known offset — mirroring the
+    /// `recovers_local_offset_from_local_midnight_starts` fixtures.
+    #[test]
+    fn local_day_start_ms_matches_a_day_digests_local_midnight() {
+        // 2026-06-08 00:00 local, as a UTC unix-ms instant per zone.
+        let utc_midnight = 1_780_876_800_000_i64;
+        assert_eq!(utc_midnight % DAY_MS, 0);
+        // UTC: an instant during that day floors back to the same UTC midnight.
+        assert_eq!(local_day_start_ms(utc_midnight + 12 * 3_600_000, 0), utc_midnight);
+        // UTC+5:30 (IST): local midnight is 18:30 UTC the previous day. An
+        // instant at local noon recovers that same local-midnight key.
+        let ist_offset = (5 * 60 + 30) * 60_000;
+        let ist_midnight = utc_midnight - ist_offset;
+        let ist_noon = ist_midnight + 12 * 3_600_000;
+        assert_eq!(local_day_start_ms(ist_noon, ist_offset), ist_midnight);
+        // UTC−8 (PST): local midnight is 08:00 UTC the same day.
+        let pst_offset = -8 * 3_600_000;
+        let pst_midnight = utc_midnight + 8 * 3_600_000;
+        let pst_evening = pst_midnight + 20 * 3_600_000;
+        assert_eq!(local_day_start_ms(pst_evening, pst_offset), pst_midnight);
+        // The recovered start round-trips back to the recovered offset, so the
+        // key matches what `list_day_digests_in_range` rows are keyed on.
+        assert_eq!(recover_local_offset_ms(ist_midnight), ist_offset);
+        assert_eq!(recover_local_offset_ms(pst_midnight), pst_offset);
     }
 
     /// The freshness floor widens with the range: day 1h, week 6h, month 24h.

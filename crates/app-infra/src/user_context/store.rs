@@ -1313,6 +1313,46 @@ impl UserContextStore {
         }))
     }
 
+    /// Every stored DAY-kind **Digest** whose `[range_start_ms, range_end_ms)`
+    /// half-open span overlaps the given `[range_start_ms, range_end_ms)`
+    /// window, in chronological order (`range_start_ms ASC`). Two half-open
+    /// ranges overlap exactly when each starts before the other ends, hence
+    /// `range_start_ms < ?2 AND range_end_ms > ?1`.
+    ///
+    /// A wider (week/month) digest reuses these cached day-digest narratives as
+    /// low-detail "rollup" lines — the hybrid path that avoids re-deriving each
+    /// day from raw Activities.
+    pub async fn list_day_digests_in_range(
+        &self,
+        range_start_ms: i64,
+        range_end_ms: i64,
+    ) -> Result<Vec<StoredDigest>> {
+        let rows = sqlx::query(
+            "SELECT range_kind, range_start_ms, range_end_ms, narrative, headline, \
+                    input_fingerprint, generated_at_ms \
+             FROM user_context_digests \
+             WHERE range_kind = 'day' AND range_start_ms < ?2 AND range_end_ms > ?1 \
+             ORDER BY range_start_ms ASC",
+        )
+        .bind(range_start_ms)
+        .bind(range_end_ms)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| StoredDigest {
+                range_kind: row.get("range_kind"),
+                range_start_ms: row.get("range_start_ms"),
+                range_end_ms: row.get("range_end_ms"),
+                narrative: row.get("narrative"),
+                headline: row.get("headline"),
+                input_fingerprint: row.get("input_fingerprint"),
+                generated_at_ms: row.get("generated_at_ms"),
+            })
+            .collect())
+    }
+
     /// Insert or replace the **Digest** for one `(range_kind, range_start_ms)`
     /// range: a fresh generation overwrites the previous narrative, headline,
     /// fingerprint, `range_end_ms`, and `generated_at_ms` in place (the UNIQUE
@@ -3358,6 +3398,46 @@ mod tests {
             assert_eq!(
                 store.get_digest("day", 100).await.expect("get").expect("hit").narrative,
                 "A quiet day."
+            );
+        });
+    }
+
+    /// `list_day_digests_in_range` returns only the DAY digests whose half-open
+    /// span overlaps the query window, chronologically — the day that falls
+    /// entirely outside the window is excluded.
+    #[test]
+    fn list_day_digests_in_range_returns_only_overlapping() {
+        block_on(async {
+            let store = test_store().await;
+
+            // Inside the [1_000, 2_000) window.
+            store
+                .upsert_digest("day", 1_000, 1_500, "An overlapping day.", None, "fp-in", 10)
+                .await
+                .expect("inside digest");
+            // Entirely after the window (starts at its end).
+            store
+                .upsert_digest("day", 2_000, 2_500, "A later day.", None, "fp-out", 20)
+                .await
+                .expect("outside digest");
+
+            let digests = store
+                .list_day_digests_in_range(1_000, 2_000)
+                .await
+                .expect("list");
+
+            assert_eq!(digests.len(), 1);
+            assert_eq!(
+                digests[0],
+                StoredDigest {
+                    range_kind: "day".to_string(),
+                    range_start_ms: 1_000,
+                    range_end_ms: 1_500,
+                    narrative: "An overlapping day.".to_string(),
+                    headline: None,
+                    input_fingerprint: "fp-in".to_string(),
+                    generated_at_ms: 10,
+                }
             );
         });
     }
