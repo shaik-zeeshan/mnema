@@ -178,6 +178,49 @@ pub async fn set_conversation_engine(
     Ok(())
 }
 
+/// Rename a conversation: persist an explicit USER-SET title. A user-set title
+/// permanently wins over the background title generator (the generator's write
+/// is conditional on `user_title` still being absent), so a rename — even one
+/// racing an in-flight generation — sticks.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationTitleRequest {
+    /// Frontend-generated UUID (the stable cross-restart identity).
+    pub conversation_id: String,
+    /// The new title. Trimmed; an empty/whitespace-only title is rejected.
+    pub title: String,
+}
+
+/// Persist the user-set title for an existing conversation. Rejects an empty
+/// (post-trim) title and a missing conversation (a rename never creates a
+/// row). Emits [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn set_conversation_title(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    request: SetConversationTitleRequest,
+) -> Result<(), String> {
+    let title = request.title.trim();
+    if title.is_empty() {
+        return Err("conversation title must not be empty".to_string());
+    }
+
+    let renamed = infra
+        .conversation()
+        .set_user_title(&request.conversation_id, title, now_ms())
+        .await
+        .map_err(|e| e.to_string())?;
+    if !renamed {
+        return Err(format!(
+            "conversation {} not found",
+            request.conversation_id
+        ));
+    }
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}
+
 /// Delete a conversation (its turns cascade). Emits
 /// [`CONVERSATION_CHANGED_EVENT`].
 #[tauri::command]

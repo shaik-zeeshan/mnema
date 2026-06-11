@@ -11,8 +11,13 @@
   //
   // Layout:
   //   LEFT rail   — "+ New chat", a debounced search over conversations, and the
-  //                 newest-first history list (select → load via get_conversation,
-  //                 per-item delete with a Tauri confirm).
+  //                 newest-first history list grouped under date headers
+  //                 (Today / Yesterday / This week / earlier months). Rows show
+  //                 the effective title (user-set → generated → first-question
+  //                 fallback, served by the backend); rename (inline, via
+  //                 set_conversation_title) and delete (Tauri confirm) hide
+  //                 behind hover / focus-within. Select → load via
+  //                 get_conversation.
   //   RIGHT pane  — the active conversation: a vertically-scrolling transcript
   //                 (ONLY the transcript scrolls, not the page) rendered as a
   //                 centered column where the user's question is a right-aligned
@@ -63,9 +68,10 @@
     type AskToolKind,
     type AskToolActivityEntry,
     type PinnableEngine,
-    configuredPinnableEngines,
     defaultEnginePinProvider,
-    defaultEngineModelListRequest,
+    defaultEngineModel,
+    engineProviderLabel,
+    pinnableEnginesFromModelPool,
   } from "$lib/insights/conversation";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
@@ -171,6 +177,50 @@
     return `${Math.floor(day / 365)}y ago`;
   }
 
+  // ── Date grouping (left rail) ────────────────────────────────────────────
+  // The flat history list renders under quiet section headers computed from
+  // each conversation's last-activity timestamp (`updatedAtMs`, the same field
+  // the list is sorted by): Today / Yesterday / This week (the rest of the
+  // last 7 calendar days) / earlier months ("May 2026"). Buckets are keyed by
+  // label in first-seen order, so the existing sort order is preserved within
+  // each group (and search results never produce a duplicated header).
+  interface HistoryGroup {
+    label: string;
+    items: ConversationSummary[];
+  }
+
+  const DAY_MS = 86_400_000;
+
+  function historyGroupLabel(ms: number, todayStartMs: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) return "Earlier";
+    if (ms >= todayStartMs) return "Today";
+    if (ms >= todayStartMs - DAY_MS) return "Yesterday";
+    if (ms >= todayStartMs - 6 * DAY_MS) return "This week";
+    return new Date(ms).toLocaleDateString(undefined, {
+      month: "long",
+      year: "numeric",
+    });
+  }
+
+  let historyGroups = $derived.by((): HistoryGroup[] => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStartMs = todayStart.getTime();
+    const groups: HistoryGroup[] = [];
+    const byLabel = new Map<string, HistoryGroup>();
+    for (const c of conversations) {
+      const label = historyGroupLabel(c.updatedAtMs, todayStartMs);
+      let group = byLabel.get(label);
+      if (group === undefined) {
+        group = { label, items: [] };
+        byLabel.set(label, group);
+        groups.push(group);
+      }
+      group.items.push(c);
+    }
+    return groups;
+  });
+
   // ── Active conversation (right pane) ─────────────────────────────────────
   // One assistant turn in the transcript. Mirrors Quick Recall's AskTurn.
   interface ChatTurn {
@@ -201,52 +251,67 @@
   let loadingConversation = $state(false);
   // True between a turn starting and that turn's terminal done/error event.
   let streaming = $state(false);
+  // The live activity line just above the composer: what the engine is doing
+  // RIGHT NOW for the in-flight turn. Fed by the `ask_ai_status` phases
+  // (seeding → thinking → tool, with the tool's label + optional app chip) plus
+  // the answer deltas ("Writing…"); cleared on done/error and on thread switch.
+  let liveActivity = $state<AskToolActivityEntry | null>(null);
 
   // ── Per-thread model pin ─────────────────────────────────────────────────
-  // A thread can be pinned to a model: either one discovered from the default
-  // engine's `/models` route (ai_runtime_list_models), one of the configured
-  // engines (default + additional, with provider context), or a free-form model
-  // id (allowed per ADR 0033 — never a key-entry surface). The active thread's
-  // pin is (activePinProvider, activePinModel); null/null means the global
-  // default engine. Backend `resolve_engine_config_for_pin` resolves any
-  // (provider, model) pin, falling back to default.
-  let pinnableEngines = $state<PinnableEngine[]>([]);
-  // Snapshot of the aiRuntime settings backing model discovery + the default
-  // provider pin string. Refreshed alongside `pinnableEngines`.
+  // A thread can be pinned to a model from the merged provider-tagged pool
+  // (ai_runtime_list_models, ADR 0034) or a free-form model id (allowed per
+  // ADR 0033 — never a key-entry surface). The active thread's pin is
+  // (activePinProvider, activePinModel); null/null means the global default
+  // model. The backend's single resolver handles any (provider, model) pin,
+  // falling back through feature override to the global default.
+  // Snapshot of the aiRuntime settings backing the default `{provider, model}`
+  // pin labels. Refreshed on settings changes.
   let aiRuntimeSnapshot = $state<AiRuntimeSettings | null>(null);
   let defaultProvider = $derived(
     aiRuntimeSnapshot === null ? null : defaultEnginePinProvider(aiRuntimeSnapshot),
   );
   let activePinProvider = $state<string | null>(null);
   let activePinModel = $state<string | null>(null);
+  // The model the unpinned ("Default") choice resolves to, for the picker label
+  // only — the backend owns actual resolution. `defaultEngineModel` reads the
+  // provider-centric `defaultModel` (ADR 0034).
+  let resolvedDefaultModel = $derived(
+    aiRuntimeSnapshot === null ? null : defaultEngineModel(aiRuntimeSnapshot),
+  );
   let activeModelLabel = $derived.by(() => {
     if (activePinProvider === null || activePinModel === null) {
-      return "Default";
+      return resolvedDefaultModel === null
+        ? "Default"
+        : `Default · ${resolvedDefaultModel}`;
     }
     if (defaultProvider !== null && activePinProvider === defaultProvider) {
       return activePinModel;
     }
     // A non-default-provider pin keeps its provider context.
-    const match = pinnableEngines.find(
-      (e) => e.provider === activePinProvider && e.model === activePinModel,
-    );
-    return match?.label ?? `${activePinProvider} · ${activePinModel}`;
+    return `${engineProviderLabel(activePinProvider)} · ${activePinModel}`;
   });
   let enginePickerOpen = $state(false);
 
-  // Models discovered from the default engine's `/models` route. Loaded lazily
-  // on first picker open, cached until a settings change invalidates it.
-  let discoveredModels = $state<string[]>([]);
+  // The merged provider-tagged model pool from `ai_runtime_list_models` across
+  // every connected provider. Loaded lazily on first picker open, cached until
+  // a settings change invalidates it.
+  let modelPool = $state<AiRuntimeModel[]>([]);
   let modelsLoaded = $state(false);
   let modelsLoading = $state(false);
   let modelsFailed = $state(false);
-  // Configured engines not already covered by the discovered default-provider
-  // models — multi-provider users keep their other engines selectable.
+  let pinnableEngines = $derived(pinnableEnginesFromModelPool(modelPool));
+  // Default-provider models render as bare ids (the common case)…
+  let discoveredModels = $derived(
+    defaultProvider === null
+      ? []
+      : pinnableEngines
+          .filter((e) => e.provider === defaultProvider)
+          .map((e) => e.model),
+  );
+  // …while the rest of the pool keeps its provider-tagged label so
+  // multi-provider users keep their other providers' models selectable.
   let extraConfiguredEngines = $derived(
-    pinnableEngines.filter(
-      (e) =>
-        !(e.provider === defaultProvider && discoveredModels.includes(e.model)),
-    ),
+    pinnableEngines.filter((e) => e.provider !== defaultProvider),
   );
 
   // Free-form "Custom model…" entry at the bottom of the picker.
@@ -258,35 +323,31 @@
     try {
       const settings = await invoke<RecordingSettings>("get_recording_settings");
       aiRuntimeSnapshot = settings.aiRuntime;
-      pinnableEngines = configuredPinnableEngines(settings.aiRuntime);
     } catch {
       aiRuntimeSnapshot = null;
-      pinnableEngines = [];
     }
-    // The engine selection may have changed: drop the cached model list so the
-    // next picker open re-discovers against the current default engine. If the
-    // picker is open right now, refresh it in place.
+    // The provider list / default model may have changed: drop the cached model
+    // pool so the next picker open re-discovers against the current providers.
+    // If the picker is open right now, refresh it in place.
     modelsLoaded = false;
     modelsFailed = false;
-    discoveredModels = [];
+    modelPool = [];
     if (enginePickerOpen) void loadModelList();
   }
 
   async function loadModelList(): Promise<void> {
-    const settings = aiRuntimeSnapshot;
-    if (settings === null || modelsLoading) return;
+    if (modelsLoading) return;
     modelsLoading = true;
     modelsFailed = false;
     try {
-      const models = await invoke<AiRuntimeModel[]>("ai_runtime_list_models", {
-        request: defaultEngineModelListRequest(settings),
-      });
-      discoveredModels = models.map((m) => m.id);
+      // No request body: the backend lists models across the PERSISTED
+      // connected providers (the Settings card's draft list is its concern).
+      modelPool = await invoke<AiRuntimeModel[]>("ai_runtime_list_models");
       modelsLoaded = true;
     } catch {
       // Offline/unlisted providers degrade quietly: the picker still offers
-      // Default + configured engines + the custom-model entry.
-      discoveredModels = [];
+      // Default + the custom-model entry.
+      modelPool = [];
       modelsFailed = true;
     } finally {
       modelsLoading = false;
@@ -396,6 +457,7 @@
     activeTitle = "";
     turns = [];
     streaming = false;
+    liveActivity = null;
     activePinProvider = null;
     activePinModel = null;
     enginePickerOpen = false;
@@ -412,6 +474,7 @@
     activeTitle = summary.title;
     turns = [];
     streaming = false;
+    liveActivity = null;
     activePinProvider = null;
     activePinModel = null;
     enginePickerOpen = false;
@@ -449,6 +512,7 @@
     activeTitle = "";
     turns = [];
     streaming = false;
+    liveActivity = null;
     activePinProvider = null;
     activePinModel = null;
     enginePickerOpen = false;
@@ -486,6 +550,7 @@
     // keep `streaming` true so the global delta listener appends ongoing tokens.
     const last = turns[turns.length - 1];
     streaming = last?.phase === "streaming";
+    liveActivity = streaming ? { kind: "other", label: "Writing…" } : null;
   }
 
   // React to a handoff from Insights (the prop + nonce bump). Reads the nonce so
@@ -553,6 +618,74 @@
     });
   }
 
+  // ── Inline rename (left rail hover action) ───────────────────────────────
+  // Clicking ✎ swaps the row's title for a text input pre-filled with the
+  // current title. Enter commits via `set_conversation_title`, Escape cancels,
+  // and blur commits-if-changed-and-non-empty (else cancels). The commit
+  // optimistically rewrites the local row (and `activeTitle` when it's the
+  // open thread) so the rail doesn't flicker while the backend's
+  // `conversation_changed` refresh catches up.
+  let renamingId = $state<string | null>(null);
+  let renameDraft = $state("");
+
+  // Tauri's WKWebView doesn't hand focus around reliably on click, so the
+  // inline input focuses/selects itself programmatically once it's in the DOM
+  // (a Svelte action runs post-mount; inputs DO focus fine — the quirk is
+  // buttons). Keydown is attached on the input itself for the same reason.
+  function autofocusSelect(node: HTMLInputElement): void {
+    node.focus();
+    node.select();
+  }
+
+  function startRename(summary: ConversationSummary, event: MouseEvent): void {
+    event.stopPropagation();
+    renamingId = summary.conversationId;
+    renameDraft = summary.title || summary.preview || "";
+  }
+
+  function cancelRename(): void {
+    renamingId = null;
+    renameDraft = "";
+  }
+
+  async function commitRename(): Promise<void> {
+    const id = renamingId;
+    if (id === null) return;
+    const title = renameDraft.trim();
+    const row = conversations.find((c) => c.conversationId === id);
+    const current = (row?.title || row?.preview || "").trim();
+    renamingId = null;
+    renameDraft = "";
+    // Empty or unchanged → cancel (the less surprising blur behavior).
+    if (title.length === 0 || title === current) return;
+    // Optimistic: rewrite the row text now; `conversation_changed` re-fetches
+    // the authoritative list right after the backend persists.
+    conversations = conversations.map((c) =>
+      c.conversationId === id ? { ...c, title } : c,
+    );
+    if (id === activeConversationId) activeTitle = title;
+    try {
+      await invoke("set_conversation_title", {
+        request: { conversationId: id, title },
+      });
+    } catch {
+      // The rename didn't land (e.g. the row vanished) — no
+      // conversation_changed will fire, so re-fetch to undo the optimism.
+      void refreshHistory();
+    }
+  }
+
+  function onRenameKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void commitRename();
+    } else if (event.key === "Escape") {
+      event.stopPropagation();
+      cancelRename();
+    }
+  }
+
   async function deleteConversationRow(
     summary: ConversationSummary,
     event: MouseEvent,
@@ -576,6 +709,7 @@
       activeTitle = "";
       turns = [];
       streaming = false;
+      liveActivity = null;
       activePinProvider = null;
       activePinModel = null;
     }
@@ -605,6 +739,10 @@
     turns = [...turns, turn];
     const turnIndex = turns.length - 1;
     streaming = true;
+    liveActivity = {
+      kind: "other",
+      label: isFirstTurn ? "Searching your captures…" : "Thinking…",
+    };
     await tick();
     scrollTranscriptToBottom();
 
@@ -631,6 +769,7 @@
     } catch (error) {
       if (activeConversationId !== conversationId) return;
       streaming = false;
+      liveActivity = null;
       const t = turns[turnIndex];
       if (t) {
         t.phase = "error";
@@ -647,17 +786,17 @@
     }
   }
 
-  // ── Cancel the active turn (surface teardown) ────────────────────────────
-  // Only meaningful while a turn is streaming; a finished thread has no live
-  // session to cancel and its turns are already persisted server-side.
-  async function cancelLiveSession(): Promise<void> {
-    if (activeConversationId === null || !streaming) return;
+  // ── Stop the in-flight turn (composer stop button) ───────────────────────
+  // Asks the backend to cancel and nothing more: the backend emits the turn's
+  // terminal ask_ai_done/ask_ai_error, and the normal listeners settle the UI
+  // (streaming flag, activity line) — no double-handling here.
+  async function stopStreaming(): Promise<void> {
     const conversationId = activeConversationId;
-    streaming = false;
+    if (conversationId === null || !streaming) return;
     try {
       await invoke<void>("ask_ai_cancel", { request: { conversationId } });
     } catch {
-      // Best-effort: the helper may already be gone.
+      // Best-effort: the task may already have finished.
     }
   }
 
@@ -1008,9 +1147,17 @@
         );
         turn.toolActivity = activity;
         turn.toolActivities = [...turn.toolActivities, activity];
+        liveActivity = activity;
         if (activity.app) void resolveToolAppIcons([activity.app]);
         return;
       }
+      liveActivity = {
+        kind: "other",
+        label:
+          event.payload.phase === "seeding"
+            ? "Searching your captures…"
+            : "Thinking…",
+      };
       if (typeof event.payload.seededResultCount === "number") {
         turn.seededResultCount = event.payload.seededResultCount;
       }
@@ -1030,6 +1177,11 @@
       turn.toolActivity = null;
       turn.phase = "streaming";
       turn.answer += event.payload.text;
+      // Answer tokens are arriving — promote the activity line to "Writing…"
+      // (guarded so we don't rewrite the same state on every delta).
+      if (liveActivity?.label !== "Writing…") {
+        liveActivity = { kind: "other", label: "Writing…" };
+      }
       void tick().then(scrollTranscriptToBottom);
     }).then((fn) => {
       if (destroyed) fn();
@@ -1060,6 +1212,7 @@
       const turn = turns[turns.length - 1];
       if (!turn) return;
       streaming = false;
+      liveActivity = null;
       turn.toolActivity = null;
       turn.phase = "done";
       // Persistence is owned by the backend (run_ask_ai_turn finalized this turn).
@@ -1074,6 +1227,7 @@
       const turn = turns[turns.length - 1];
       if (!turn) return;
       streaming = false;
+      liveActivity = null;
       turn.toolActivity = null;
       turn.phase = "error";
       turn.errorMessage = event.payload.message;
@@ -1148,8 +1302,13 @@
 
   onDestroy(() => {
     if (searchDebounce !== null) clearTimeout(searchDebounce);
-    // Never leave a resident PI session outliving the surface.
-    void cancelLiveSession();
+    // Intentionally do NOT cancel the in-flight turn here. Under the
+    // stateless-per-turn-over-persistent-store model (ADR 0033), a streaming
+    // turn outlives this surface: the backend keeps running and persists its
+    // partial, so leaving Chat and returning reattaches via hydrateConversation.
+    // Only an explicit Stop (stopStreaming) or app exit ends a task. The event
+    // listeners are torn down in the onMount cleanup, so no deltas reach this
+    // destroyed component.
   });
 </script>
 
@@ -1207,42 +1366,72 @@
             : "No conversations yet. Start one →"}
         </p>
       {:else}
-        {#each conversations as c (c.conversationId)}
-          <div
-            class="history-item"
-            class:active={c.conversationId === activeConversationId}
-            role="listitem"
-          >
-            <button
-              type="button"
-              class="history-open"
-              onclick={() => void selectConversation(c)}
-              aria-current={c.conversationId === activeConversationId
-                ? "true"
-                : undefined}
-            >
-              <span class="history-title" title={c.title || c.preview}>
-                {c.title || c.preview || "Untitled chat"}
-              </span>
-              <span class="history-meta">
-                <span class="history-time">{relativeTime(c.updatedAtMs)}</span>
-                <span class="history-dot" aria-hidden="true">·</span>
-                <span class="history-count">
-                  {c.turnCount}
-                  {c.turnCount === 1 ? "turn" : "turns"}
-                </span>
-              </span>
-            </button>
-            <button
-              type="button"
-              class="history-delete"
-              aria-label="Delete conversation"
-              title="Delete conversation"
-              onclick={(e) => void deleteConversationRow(c, e)}
-            >
-              ✕
-            </button>
+        {#each historyGroups as group (group.label)}
+          <div class="history-group-label" role="presentation">
+            {group.label}
           </div>
+          {#each group.items as c (c.conversationId)}
+            <div
+              class="history-item"
+              class:active={c.conversationId === activeConversationId}
+              role="listitem"
+            >
+              {#if renamingId === c.conversationId}
+                <!-- Inline rename: Enter commits, Escape cancels, blur
+                     commits-if-changed (else cancels). Focus/select is
+                     programmatic (WKWebView focus quirk). -->
+                <input
+                  type="text"
+                  class="history-rename-input"
+                  aria-label="Rename conversation"
+                  spellcheck="false"
+                  autocomplete="off"
+                  bind:value={renameDraft}
+                  use:autofocusSelect
+                  onkeydown={onRenameKeydown}
+                  onblur={() => void commitRename()}
+                />
+              {:else}
+                <button
+                  type="button"
+                  class="history-open"
+                  onclick={() => void selectConversation(c)}
+                  aria-current={c.conversationId === activeConversationId
+                    ? "true"
+                    : undefined}
+                >
+                  <span class="history-title" title={c.title || c.preview}>
+                    {c.title || c.preview || "Untitled chat"}
+                  </span>
+                  <span class="history-meta">
+                    <span class="history-time">{relativeTime(c.updatedAtMs)}</span>
+                  </span>
+                </button>
+                <!-- Quiet row actions: hidden until the row is hovered or
+                     holds keyboard focus (`:focus-within`). -->
+                <div class="history-actions">
+                  <button
+                    type="button"
+                    class="history-action"
+                    aria-label="Rename conversation"
+                    title="Rename conversation"
+                    onclick={(e) => startRename(c, e)}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    type="button"
+                    class="history-action history-action--delete"
+                    aria-label="Delete conversation"
+                    title="Delete conversation"
+                    onclick={(e) => void deleteConversationRow(c, e)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/each}
         {/each}
       {/if}
     </div>
@@ -1516,12 +1705,36 @@
       <!-- Composer (engine-on) or quiet enable card (engine-off). -->
       {#if askAvailable}
         <div class="composer-wrap">
-          {#if pinnableEngines.length > 0}
-            <!-- Per-thread model pin: choose which model answers this thread —
-                 a model discovered from the default engine, a configured
-                 engine, or a typed custom id — or "Default" to clear the pin. -->
-            <div class="engine-pick">
-              <span class="engine-pick-label">Model</span>
+          <!-- Live activity line: what the engine is doing right now (seeding →
+               thinking → tool → writing). Space is reserved so the composer
+               doesn't jump when it appears/clears. -->
+          <div class="composer-activity" aria-live="polite">
+            {#if liveActivity !== null}
+              <span class="dot" aria-hidden="true"></span>
+              <span class="working-label">{liveActivity.label}</span>
+              {#if liveActivity.app}
+                in {@render toolAppChip(liveActivity.app)}
+              {/if}
+            {/if}
+          </div>
+          <!-- One bordered composer block: the textarea on top and a slim bottom
+               row inside the same border — model picker left, send/stop right. -->
+          <div class="composer">
+            <textarea
+              bind:this={composerEl}
+              bind:value={composerInput}
+              class="composer-input"
+              rows="1"
+              placeholder="Ask about your activity…"
+              aria-label="Ask about your activity"
+              disabled={streaming}
+              onkeydown={onComposerKeydown}
+            ></textarea>
+            <div class="composer-bar">
+              <!-- Per-thread model pin: choose which model answers this thread —
+                   a model discovered from the default engine, a configured
+                   engine, or a typed custom id — or "Default" to clear the pin.
+                   The label shows what "Default" resolves to when unpinned. -->
               <div class="engine-pick-menu">
                 <button
                   type="button"
@@ -1633,38 +1846,30 @@
                   </ul>
                 {/if}
               </div>
+              <!-- Send ⇄ Stop morph: while a turn streams the button becomes a
+                   stop control that asks the backend to cancel; the resulting
+                   done/error event settles the UI. -->
+              <button
+                type="button"
+                class="composer-send"
+                class:composer-send--stop={streaming}
+                disabled={!streaming && composerInput.trim().length === 0}
+                onclick={() => (streaming ? void stopStreaming() : void send())}
+                aria-label={streaming ? "Stop" : "Send"}
+                title={streaming ? "Stop generating" : "Send (Enter)"}
+              >
+                {#if streaming}
+                  ■
+                {:else}
+                  ↑
+                {/if}
+              </button>
             </div>
-          {/if}
-          <div class="composer">
-            <textarea
-              bind:this={composerEl}
-              bind:value={composerInput}
-              class="composer-input"
-              rows="1"
-              placeholder="Ask about your activity…"
-              aria-label="Ask about your activity"
-              disabled={streaming}
-              onkeydown={onComposerKeydown}
-            ></textarea>
-            <button
-              type="button"
-              class="composer-send"
-              disabled={streaming || composerInput.trim().length === 0}
-              onclick={() => void send()}
-              aria-label="Send"
-              title="Send (Enter)"
-            >
-              {#if streaming}
-                <span class="dot" aria-hidden="true"></span>
-              {:else}
-                ↑
-              {/if}
-            </button>
           </div>
         </div>
       {:else}
         <div class="composer-wrap">
-          <div class="composer engine-off">
+          <div class="engine-off">
             <span class="engine-off-dot" aria-hidden="true"></span>
             <span class="engine-off-text">
               The reasoning engine is off. Chat answers over your history once
@@ -1848,22 +2053,69 @@
     color: var(--app-text-faint);
     letter-spacing: 0.02em;
   }
-  .history-delete {
+  /* Quiet date-section headers (Today / Yesterday / This week / "May 2026"),
+     in the same uppercase-faint idiom as .sources-heading. */
+  .history-group-label {
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--app-text-faint);
+    padding: 8px 6px 3px;
+  }
+  .history-group-label:first-child {
+    padding-top: 2px;
+  }
+  /* Row actions (rename + delete): hidden until the row is hovered or holds
+     keyboard focus — pure hover-only would lock keyboard users out. */
+  .history-actions {
     flex: 0 0 auto;
-    width: 26px;
+    display: flex;
+    align-items: center;
+    padding-right: 3px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .history-item:hover .history-actions,
+  .history-item:focus-within .history-actions {
+    opacity: 1;
+  }
+  .history-action {
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border: none;
+    border-radius: 5px;
     background: transparent;
     color: var(--app-text-faint);
     font-size: 10px;
     cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.12s ease, color 0.12s ease;
+    transition: color 0.12s ease, background 0.12s ease;
   }
-  .history-item:hover .history-delete {
-    opacity: 1;
+  .history-action:hover {
+    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
   }
-  .history-delete:hover {
+  .history-action--delete:hover {
     color: var(--app-danger);
+  }
+  /* Inline rename input: replaces the row content while editing. */
+  .history-rename-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 4px 5px;
+    padding: 4px 6px;
+    font: inherit;
+    font-size: 11.5px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 5px;
+    background: var(--app-surface);
+    color: var(--app-text);
+    outline: none;
+  }
+  .history-rename-input:focus {
+    border-color: var(--app-accent);
   }
 
   /* ── RIGHT pane ──────────────────────────────────────────────────────── */
@@ -2225,20 +2477,7 @@
     background: var(--app-surface-subtle);
     padding: 12px 24px 14px;
   }
-  /* Per-thread model pin (above the composer, same centered column width). */
-  .engine-pick {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    max-width: 760px;
-    margin: 0 auto 8px;
-  }
-  .engine-pick-label {
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-faint);
-  }
+  /* Per-thread model pin (inside the composer's bottom bar). */
   .engine-pick-menu {
     position: relative;
   }
@@ -2263,6 +2502,13 @@
   }
   .engine-pick-caret {
     font-size: 8px;
+  }
+  /* Long custom model ids stay on one line inside the pill. */
+  .engine-pick-current {
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .engine-pick-list {
     position: absolute;
@@ -2330,31 +2576,49 @@
     border-color: var(--app-border-hover);
   }
 
+  /* Live activity line above the composer block. Space is reserved (min-height)
+     so the composer doesn't jump when the line appears/clears. */
+  .composer-activity {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    max-width: 760px;
+    min-height: 17px;
+    margin: 0 auto 6px;
+    font-size: 11px;
+    color: var(--app-text-muted);
+  }
+
+  /* One bordered composer block: textarea on top, slim bottom row inside the
+     same border (model picker left, send/stop right). */
   .composer {
     display: flex;
-    align-items: flex-end;
-    gap: 8px;
+    flex-direction: column;
     max-width: 760px;
     margin: 0 auto;
+    border: 1px solid var(--app-border);
+    border-radius: 9px;
+    background: var(--app-surface);
+    transition: border-color 0.12s ease;
+  }
+  .composer:focus-within {
+    border-color: var(--app-accent-border);
   }
   .composer-input {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     min-width: 0;
     resize: none;
     font: inherit;
     font-size: 12.5px;
     line-height: 1.5;
     max-height: 140px;
-    padding: 9px 11px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface);
+    padding: 10px 12px 4px;
+    border: none;
+    border-radius: 9px 9px 0 0;
+    background: transparent;
     color: var(--app-text);
     outline: none;
     field-sizing: content;
-  }
-  .composer-input:focus {
-    border-color: var(--app-accent-border);
   }
   .composer-input::placeholder {
     color: var(--app-text-faint);
@@ -2363,16 +2627,24 @@
     opacity: 0.6;
     cursor: not-allowed;
   }
+  /* Slim bottom row inside the composer block. */
+  .composer-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px 8px 10px;
+  }
   .composer-send {
     flex: 0 0 auto;
-    width: 34px;
-    height: 34px;
+    width: 30px;
+    height: 26px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 15px;
+    font-size: 13px;
     border: 1px solid var(--app-accent-border);
-    border-radius: 8px;
+    border-radius: 7px;
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
     cursor: pointer;
@@ -2385,11 +2657,18 @@
     opacity: 0.45;
     cursor: not-allowed;
   }
+  /* The send glyph morphs into a stop square while a turn streams. */
+  .composer-send--stop {
+    font-size: 10px;
+  }
 
-  /* Engine-off quiet card (replaces the composer row, same centered width). */
+  /* Engine-off quiet card (replaces the composer block, same centered width). */
   .engine-off {
+    display: flex;
     align-items: center;
     gap: 10px;
+    max-width: 760px;
+    margin: 0 auto;
   }
   .engine-off-dot {
     width: 7px;

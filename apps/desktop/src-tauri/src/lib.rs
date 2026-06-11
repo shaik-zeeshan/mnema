@@ -559,6 +559,7 @@ pub fn run() {
             conversation::commands::search_conversations,
             conversation::commands::save_conversation_turn,
             conversation::commands::set_conversation_engine,
+            conversation::commands::set_conversation_title,
             conversation::commands::delete_conversation,
             usage_charts::get_usage_charts,
             privacy_redaction_sources::add_privacy_excluded_app,

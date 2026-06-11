@@ -39,52 +39,56 @@ export interface PrivacySettings {
 	excludedApps: ExcludedAppEntry[];
 }
 
-export type AiEngineKind = "cloud" | "local";
-export type AiCloudProvider = "anthropic" | "openai" | "openai_compatible";
-export type AiLocalKind = "ollama" | "llamafile";
+/** Stable provider id, matching the Rust `AiProviderKind::id` values. */
+export type AiProviderKind =
+	| "anthropic"
+	| "openai"
+	| "openai_compatible"
+	| "ollama"
+	| "llamafile";
 
 /**
- * A fully-specified Reasoning Engine the user has configured. The flat fields on
- * `AiRuntimeSettings` describe the default/global engine; an `AiEngineProfile` is
- * one of the additional engines a thread can be pinned to.
+ * One connected AI provider (ADR 0034): the provider kind plus its non-secret
+ * connection details. The credential (cloud API key) lives ONLY in the OS
+ * keychain keyed by the provider id; it is never part of this shape.
  */
-export interface AiEngineProfile {
-	engineKind: AiEngineKind;
-	cloudProvider: AiCloudProvider;
-	cloudModel: string;
-	cloudBaseUrl: string;
-	localKind: AiLocalKind;
-	localEndpoint: string;
-	localModel: string;
+export interface AiProviderConfig {
+	kind: AiProviderKind;
+	/**
+	 * Custom base URL / endpoint. Required for `openai_compatible`; ignored for
+	 * the first-party cloud providers; the local endpoint for `ollama` /
+	 * `llamafile` (empty = the kind's default localhost endpoint).
+	 */
+	baseUrl: string;
 }
 
+/**
+ * An engine identity `{provider, model}` (ADR 0034) — the same shape the
+ * conversation engine pin uses. The global default model is one of these.
+ */
+export interface AiEngineRef {
+	provider: AiProviderKind;
+	model: string;
+}
+
+/**
+ * The provider-centric AI settings domain (ADR 0034): a master switch, the
+ * flat list of connected providers, and ONE global default model chosen from
+ * the merged pool. Model resolution is thread pin → feature override → this
+ * global default.
+ */
 export interface AiRuntimeSettings {
 	enabled: boolean;
-	engineKind: AiEngineKind;
-	cloudProvider: AiCloudProvider;
-	cloudModel: string;
-	cloudBaseUrl: string;
-	localKind: AiLocalKind;
-	localEndpoint: string;
-	localModel: string;
-	/**
-	 * Additional configured engines beyond the flat default engine, for the
-	 * per-thread engine pin. Empty by default (the flat fields are the default
-	 * engine).
-	 */
-	additionalEngines: AiEngineProfile[];
+	providers: AiProviderConfig[];
+	defaultModel: AiEngineRef | null;
 }
 
 export interface UpdateAiRuntimeSettingsRequest {
 	enabled?: boolean;
-	engineKind?: AiEngineKind;
-	cloudProvider?: AiCloudProvider;
-	cloudModel?: string;
-	cloudBaseUrl?: string;
-	localKind?: AiLocalKind;
-	localEndpoint?: string;
-	localModel?: string;
-	additionalEngines?: AiEngineProfile[];
+	/** Replacement provider list; omitting leaves the list unchanged. */
+	providers?: AiProviderConfig[];
+	/** Tri-state: absent = unchanged, `null` = clear, object = set. */
+	defaultModel?: AiEngineRef | null;
 }
 
 /** Named Derivation Budget intensity tier for a cloud Reasoning Engine. */
@@ -113,17 +117,17 @@ export interface UpdateUserContextSettingsRequest {
 /** Reasoning Engine availability snapshot, mirroring the Rust `AiRuntimeStatus`. */
 export interface AiRuntimeStatus {
 	enabled: boolean;
-	engineKind: string;
 	configured: boolean;
 	available: boolean;
-	hasCloudKey: boolean;
+	defaultModel?: AiEngineRef | null;
 	reason?: string | null;
 }
 
 /** Reasoning Engine test-connection round-trip result, mirroring `AiRuntimeTestResult`. */
 export interface AiRuntimeTestResult {
 	ok: boolean;
-	engineKind: string;
+	/** Stable provider id of the global default model's provider. */
+	provider: string;
 	model: string;
 	message: string;
 	rawJson: string;
@@ -384,10 +388,14 @@ export interface UpdateAccessSettingsRequest {
 	askAiModel: string;
 }
 
-/** One model id discovered from the Reasoning Engine's `/models` route
- *  (`ai_runtime_list_models`). Also drives the Quick Recall model picker. */
+/** One model discovered from a connected provider's models route
+ *  (`ai_runtime_list_models`), tagged with the provider it came from. The
+ *  merged pool feeds the default-model picker, the Ask AI override picker,
+ *  and the Chat thread picker. */
 export interface AiRuntimeModel {
 	id: string;
+	/** Stable provider id (`AiProviderKind`). */
+	provider: string;
 }
 
 export interface KeyboardBindingsSettings {

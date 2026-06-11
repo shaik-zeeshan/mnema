@@ -37,7 +37,6 @@
     ActivityMode,
     AiRuntimeModel,
     AppearanceSetting,
-    AiEngineProfile,
     CaptureSupport,
     GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
@@ -64,9 +63,9 @@
     UpdateAiRuntimeSettingsRequest,
     UpdateUserContextSettingsRequest,
     DerivationBudgetTier,
-    AiEngineKind,
-    AiCloudProvider,
-    AiLocalKind,
+    AiProviderKind,
+    AiProviderConfig,
+    AiEngineRef,
     AiRuntimeStatus,
     AiRuntimeTestResult,
     UserContextStatus,
@@ -304,9 +303,9 @@
       ? Math.max(1, Math.floor(draftAskAiMaxToolCalls || ASK_AI_DEFAULT_TOOL_CALL_LIMIT))
       : 0,
   );
-  // Quick Recall model selection. Empty string means "let the engine pick its
-  // default model". `askAiModels` is the list discovered from the default
-  // Reasoning Engine's `/models` route (via ai_runtime_list_models).
+  // Ask AI model override (`access.askAiModel`) — governs Quick Recall AND
+  // Chat. Empty string means "follow the global default model". `askAiModels`
+  // is the merged provider-tagged pool from ai_runtime_list_models.
   let draftAskAiModel = $state("");
   let askAiModels = $state<AiRuntimeModel[]>([]);
   let askAiModelsLoading = $state(false);
@@ -349,22 +348,23 @@
   });
 
   function askAiModelLabel(value: string): string {
-    if (!value) return "Engine default model";
+    if (!value) return "Global default model";
     return value;
   }
 
-  // All selectable entries: the "engine default" sentinel plus every model id the
-  // default Reasoning Engine advertises. The value is a bare rig-core model id.
+  // All selectable entries: the "global default" sentinel plus every model id
+  // in the merged provider-tagged pool. The value stays a bare rig-core model
+  // id — the override rides on the global default model's provider.
   let askAiModelEntries = $derived([
     {
       value: "",
-      label: "Engine default model",
-      sublabel: "Follows the model configured for the Reasoning Engine",
+      label: "Global default model",
+      sublabel: "Follows the default model chosen in Providers",
     },
     ...askAiModels.map((model) => ({
       value: model.id,
       label: model.id,
-      sublabel: "",
+      sublabel: aiProviderKindLabel(model.provider),
     })),
   ]);
 
@@ -446,108 +446,98 @@
   let askAiAvailabilityError = $state<string | null>(null);
   let askAiAvailable = $derived(askAiAvailability?.available === true);
 
-  // Reasoning Engine (AI runtime) drafts. Autosaved through the `ai_runtime`
-  // domain, EXCEPT the provider API key — that is stored only in the OS keychain
+  // AI provider drafts (ADR 0034). Autosaved through the `ai_runtime` domain,
+  // EXCEPT the per-provider API key — that is stored only in the OS keychain
   // and saved/cleared through explicit invokes (see below), never autosaved.
-  const DEFAULT_AI_CLOUD_MODEL = "claude-haiku-4-5";
-  const DEFAULT_AI_LOCAL_ENDPOINT = "http://localhost:11434";
+  const AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
+    "anthropic",
+    "openai",
+    "openai_compatible",
+    "ollama",
+    "llamafile",
+  ];
+  const CLOUD_AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
+    "anthropic",
+    "openai",
+    "openai_compatible",
+  ];
+  const AI_LOCAL_DEFAULT_ENDPOINTS: Partial<Record<AiProviderKind, string>> = {
+    ollama: "http://localhost:11434",
+    llamafile: "http://localhost:8080",
+  };
+
+  function isCloudAiProviderKind(kind: string): boolean {
+    return (CLOUD_AI_PROVIDER_KINDS as readonly string[]).includes(kind);
+  }
+
+  // A short, friendly label for one provider id (mirrors the Rust kind ids).
+  function aiProviderKindLabel(kind: string): string {
+    switch (kind) {
+      case "anthropic":
+        return "Anthropic";
+      case "openai":
+        return "OpenAI";
+      case "openai_compatible":
+        return "OpenAI-compatible";
+      case "ollama":
+        return "Ollama";
+      case "llamafile":
+        return "Llamafile";
+      default:
+        return kind;
+    }
+  }
+
+  function aiProviderKindDescription(kind: AiProviderKind): string {
+    switch (kind) {
+      case "anthropic":
+        return "Claude models — your own API key";
+      case "openai":
+        return "GPT models — your own API key";
+      case "openai_compatible":
+        return "Fireworks, OpenRouter, Together — custom base URL + key";
+      case "ollama":
+        return "Local runtime, default endpoint http://localhost:11434";
+      case "llamafile":
+        return "Local OpenAI-compatible server, default http://localhost:8080";
+    }
+  }
+
   let draftAiEnabled = $state(false);
-  let draftAiEngineKind = $state<AiEngineKind>("cloud");
-  let draftAiCloudProvider = $state<AiCloudProvider>("anthropic");
-  let draftAiCloudModel = $state(DEFAULT_AI_CLOUD_MODEL);
-  let draftAiCloudBaseUrl = $state("");
-  let draftAiLocalKind = $state<AiLocalKind>("ollama");
-  let draftAiLocalEndpoint = $state(DEFAULT_AI_LOCAL_ENDPOINT);
-  let draftAiLocalModel = $state("");
-  // The configured-engine set beyond the default/global engine — the engines a
-  // Chat thread can be pinned to. Round-trips through the ai_runtime domain.
-  let draftAiAdditionalEngines = $state<AiEngineProfile[]>([]);
+  // The flat connected-provider list (one entry per kind) and the ONE global
+  // default model chosen from the merged pool. Together these are the whole
+  // ai_runtime settings domain.
+  let draftAiProviders = $state<AiProviderConfig[]>([]);
+  let draftAiDefaultModel = $state<AiEngineRef | null>(null);
 
-  // "Add engine" form state. Captures one AiEngineProfile to append to the set;
-  // the shared keychain key per provider is set by the per-provider key UI above
-  // (not duplicated here).
-  let addEngineOpen = $state(false);
-  let addEngineKind = $state<AiEngineKind>("cloud");
-  let addEngineCloudProvider = $state<AiCloudProvider>("anthropic");
-  let addEngineCloudModel = $state("");
-  let addEngineCloudBaseUrl = $state("");
-  let addEngineLocalKind = $state<AiLocalKind>("ollama");
-  let addEngineLocalEndpoint = $state(DEFAULT_AI_LOCAL_ENDPOINT);
-  let addEngineLocalModel = $state("");
-  let addEngineError = $state<string | null>(null);
+  let connectedAiProviderKinds = $derived(draftAiProviders.map((p) => p.kind));
+  let addableAiProviderKinds = $derived(
+    AI_PROVIDER_KINDS.filter((kind) => !connectedAiProviderKinds.includes(kind)),
+  );
+  let anyCloudAiProviderConnected = $derived(
+    draftAiProviders.some((p) => isCloudAiProviderKind(p.kind)),
+  );
 
-  // A short, friendly label for one configured engine row.
-  function engineProfileLabel(profile: AiEngineProfile): string {
-    if (profile.engineKind === "cloud") {
-      const providerLabel =
-        profile.cloudProvider === "anthropic"
-          ? "Anthropic"
-          : profile.cloudProvider === "openai"
-            ? "OpenAI"
-            : "OpenAI-compatible";
-      return `${providerLabel} · ${profile.cloudModel || "(no model)"}`;
+  function addAiProvider(kind: AiProviderKind): void {
+    if (connectedAiProviderKinds.includes(kind)) return;
+    draftAiProviders = [...draftAiProviders, { kind, baseUrl: "" }];
+    void refreshAiProviderKeyPresence();
+  }
+
+  function removeAiProvider(kind: AiProviderKind): void {
+    draftAiProviders = draftAiProviders.filter((p) => p.kind !== kind);
+    // A default model stranded on a disconnected provider can never resolve;
+    // clear it so the status reads "choose a default model" instead.
+    if (draftAiDefaultModel?.provider === kind) {
+      draftAiDefaultModel = null;
     }
-    const kindLabel = profile.localKind === "ollama" ? "Ollama" : "Llamafile";
-    return `${kindLabel} · ${profile.localModel || "(no model)"}`;
   }
 
-  function resetAddEngineForm(): void {
-    addEngineKind = "cloud";
-    addEngineCloudProvider = "anthropic";
-    addEngineCloudModel = "";
-    addEngineCloudBaseUrl = "";
-    addEngineLocalKind = "ollama";
-    addEngineLocalEndpoint = DEFAULT_AI_LOCAL_ENDPOINT;
-    addEngineLocalModel = "";
-    addEngineError = null;
-  }
-
-  function addConfiguredEngine(): void {
-    addEngineError = null;
-    if (addEngineKind === "cloud") {
-      const model = addEngineCloudModel.trim();
-      if (model.length === 0) {
-        addEngineError = "Enter a model id for the cloud engine.";
-        return;
-      }
-      if (addEngineCloudProvider === "openai_compatible" && addEngineCloudBaseUrl.trim().length === 0) {
-        addEngineError = "OpenAI-compatible engines need a base URL.";
-        return;
-      }
-    } else {
-      const model = addEngineLocalModel.trim();
-      if (model.length === 0) {
-        addEngineError = "Enter a model id for the local engine.";
-        return;
-      }
-      if (addEngineLocalEndpoint.trim().length === 0) {
-        addEngineError = "Enter the local endpoint.";
-        return;
-      }
-    }
-    const profile: AiEngineProfile = {
-      engineKind: addEngineKind,
-      cloudProvider: addEngineCloudProvider,
-      cloudModel: addEngineCloudModel.trim(),
-      cloudBaseUrl: addEngineCloudBaseUrl.trim(),
-      localKind: addEngineLocalKind,
-      localEndpoint: addEngineLocalEndpoint.trim(),
-      localModel: addEngineLocalModel.trim(),
-    };
-    draftAiAdditionalEngines = [...draftAiAdditionalEngines, profile];
-    resetAddEngineForm();
-    addEngineOpen = false;
-  }
-
-  function removeConfiguredEngine(index: number): void {
-    draftAiAdditionalEngines = draftAiAdditionalEngines.filter((_, i) => i !== index);
-  }
-
-  // Reasoning Engine model selection — an editable combobox populated from the
-  // engine's OpenAI-style `/models` route (OpenAI, OpenAI-compatible, Ollama,
-  // Llamafile, and Anthropic's models endpoint all expose `data[].id`). The
-  // selected id is the free-form model string written into cloud/local settings,
-  // so a typed id the route does not advertise is still accepted on Enter.
+  // Global default model selection — an editable combobox over the merged
+  // provider-tagged pool from `ai_runtime_list_models` (every connected
+  // provider's models route). A typed id no provider advertises is still
+  // accepted on Enter (free-form entry stays allowed); it rides on the current
+  // default's provider, else the first connected provider.
   let aiModels = $state<AiRuntimeModel[]>([]);
   let aiModelsLoading = $state(false);
   let aiModelsError = $state<string | null>(null);
@@ -557,16 +547,13 @@
   let aiModelInputEl = $state<HTMLInputElement | null>(null);
   let aiModelPanelStyle = $state("");
 
-  // Cloud and local each keep their own model id, but only one engine branch is
-  // on screen at a time, so a single combobox drives whichever is mounted.
-  let aiModelValue = $derived(
-    draftAiEngineKind === "cloud" ? draftAiCloudModel : draftAiLocalModel,
-  );
-
-  function setAiModelValue(value: string) {
-    if (draftAiEngineKind === "cloud") draftAiCloudModel = value;
-    else draftAiLocalModel = value;
+  function aiDefaultModelLabel(ref: AiEngineRef | null): string {
+    if (!ref || ref.model.trim().length === 0) return "";
+    return `${aiProviderKindLabel(ref.provider)} · ${ref.model}`;
   }
+
+  // The committed selection's display text (empty when no default chosen).
+  let aiModelValue = $derived(aiDefaultModelLabel(draftAiDefaultModel));
 
   function updateAiModelPanelPosition() {
     const el = aiModelInputEl;
@@ -592,28 +579,72 @@
     };
   });
 
+  type AiDefaultModelEntry = {
+    provider: AiProviderKind;
+    model: string;
+    label: string;
+  };
+
   let aiModelEntries = $derived(
-    aiModels.map((model) => ({ value: model.id, label: model.id })),
+    aiModels.map((model) => ({
+      provider: model.provider as AiProviderKind,
+      model: model.id,
+      label: `${aiProviderKindLabel(model.provider)} · ${model.id}`,
+    })),
   );
 
   let aiModelFiltered = $derived.by(() => {
     const query = aiModelQuery.trim().toLowerCase();
     if (!query || query === aiModelValue.toLowerCase()) return aiModelEntries;
-    return aiModelEntries.filter((entry) => entry.value.toLowerCase().includes(query));
+    return aiModelEntries.filter(
+      (entry) =>
+        entry.label.toLowerCase().includes(query) ||
+        entry.model.toLowerCase().includes(query),
+    );
   });
 
-  // Keep the input text in sync with the committed model id while the dropdown is
-  // closed (covers settings loads and engine-kind switches that change the value).
+  // Keep the input text in sync with the committed selection while the dropdown
+  // is closed (covers settings loads that change the default model).
   $effect(() => {
     if (!aiModelOpen) {
       aiModelQuery = aiModelValue;
     }
   });
 
-  function commitAiModel(value: string) {
-    setAiModelValue(value);
-    aiModelQuery = value;
+  function commitAiDefaultModel(entry: AiDefaultModelEntry | null) {
+    draftAiDefaultModel = entry
+      ? { provider: entry.provider, model: entry.model }
+      : null;
+    aiModelQuery = aiDefaultModelLabel(draftAiDefaultModel);
     aiModelOpen = false;
+  }
+
+  // Commit whatever is typed: an exact pool match keeps its provider tag; a
+  // free-form id is attributed to the current default's provider (when still
+  // connected), else the first connected provider. Empty clears the default.
+  function commitTypedAiDefaultModel() {
+    const typed = aiModelQuery.trim();
+    if (!typed) {
+      commitAiDefaultModel(null);
+      return;
+    }
+    const lowered = typed.toLowerCase();
+    const match = aiModelEntries.find(
+      (entry) =>
+        entry.label.toLowerCase() === lowered ||
+        entry.model.toLowerCase() === lowered,
+    );
+    if (match) {
+      commitAiDefaultModel(match);
+      return;
+    }
+    const provider =
+      draftAiDefaultModel !== null &&
+      connectedAiProviderKinds.includes(draftAiDefaultModel.provider)
+        ? draftAiDefaultModel.provider
+        : connectedAiProviderKinds[0];
+    if (!provider) return;
+    commitAiDefaultModel({ provider, model: typed, label: "" });
   }
 
   function closeAiModelSoon() {
@@ -636,11 +667,9 @@
       event.preventDefault();
       const choice = aiModelFiltered[aiModelHighlight];
       if (choice) {
-        commitAiModel(choice.value);
+        commitAiDefaultModel(choice);
       } else {
-        // No list match: accept the typed id as a custom model.
-        const typed = aiModelQuery.trim();
-        if (typed) commitAiModel(typed);
+        commitTypedAiDefaultModel();
       }
     } else if (event.key === "Escape") {
       aiModelOpen = false;
@@ -653,13 +682,10 @@
     aiModelsLoading = true;
     aiModelsError = null;
     try {
+      // Send the in-progress draft provider list so discovery reflects what the
+      // card shows right now instead of racing the autosave debounce.
       aiModels = await invoke<AiRuntimeModel[]>("ai_runtime_list_models", {
-        request: {
-          engineKind: draftAiEngineKind,
-          cloudProvider: draftAiCloudProvider,
-          cloudBaseUrl: draftAiCloudBaseUrl,
-          localEndpoint: draftAiLocalEndpoint,
-        },
+        request: { providers: $state.snapshot(draftAiProviders) },
       });
     } catch (err) {
       aiModels = [];
@@ -685,40 +711,56 @@
   // Context worker runs 24/7. Distinct from the Ask AI (interactive) toggle. Off
   // by default.
   let draftUserContextEnabled = $state(false);
+  // The Derivation Budget tier applies only when the global default model is a
+  // cloud provider's; a local default uses fixed background pacing.
+  let userContextCloudDefault = $derived(
+    draftAiDefaultModel !== null && isCloudAiProviderKind(draftAiDefaultModel.provider),
+  );
 
-  // Reasoning Engine availability snapshot + the cloud-key entry box. The key is
-  // not part of any draft/autosave; it has its own loading/error/saved state and
-  // explicit save/clear invokes (saveAiProviderKey / clearAiProviderKey).
+  // Reasoning Engine availability snapshot + the per-provider key entry boxes.
+  // Keys are not part of any draft/autosave; each provider row has its own
+  // input/saved/error state and explicit save/clear invokes
+  // (saveAiProviderKey / clearAiProviderKey), keyed by provider id.
   let aiRuntimeStatus = $state<AiRuntimeStatus | null>(null);
   let aiRuntimeStatusLoading = $state(false);
   let aiRuntimeStatusError = $state<string | null>(null);
-  let aiProviderKeyInput = $state("");
-  let aiProviderKeySaved = $state(false);
-  let aiProviderKeySaving = $state(false);
-  let aiProviderKeyError = $state<string | null>(null);
+  let aiProviderKeyInputs = $state<Record<string, string>>({});
+  let aiProviderKeySavedByProvider = $state<Record<string, boolean>>({});
+  // Provider id whose key save/clear is currently in flight (one at a time).
+  let aiProviderKeySavingProvider = $state<string | null>(null);
+  let aiProviderKeyErrors = $state<Record<string, string>>({});
   let aiRuntimeTestRunning = $state(false);
   let aiRuntimeTestResult = $state<AiRuntimeTestResult | null>(null);
   let aiRuntimeTestError = $state<string | null>(null);
 
-  // Human-facing label for an AiRuntimeStatus.reason code.
+  // Human-facing label for an AiRuntimeStatus.reason code (the shared
+  // engine-configured prerequisite codes, plus user_context_disabled from the
+  // User Context status surface).
   function aiRuntimeReasonLabel(reason: string | null | undefined): string {
+    if (!reason) return "Unavailable";
+    if (reason.startsWith("no_provider_key:")) {
+      const provider = reason.slice("no_provider_key:".length);
+      return `No API key saved for ${aiProviderKindLabel(provider)}.`;
+    }
+    if (reason.startsWith("provider_not_connected:")) {
+      const provider = reason.slice("provider_not_connected:".length);
+      return `The default model's provider (${aiProviderKindLabel(provider)}) is not connected.`;
+    }
     switch (reason) {
       case "user_context_disabled":
         return "Continuous derivation is turned off.";
       case "ai_runtime_disabled":
-        return "Reasoning Engine is turned off.";
-      case "no_model":
-        return "No model is configured.";
-      case "no_cloud_key":
-        return "No API key saved for this provider.";
+        return "AI features are turned off.";
+      case "no_providers":
+        return "No AI providers connected yet.";
+      case "no_default_model":
+        return "Choose a global default model.";
       case "no_base_url":
         return "Add the base URL for the OpenAI-compatible provider.";
-      case "local_no_model":
-        return "No local model is configured.";
       case "local_endpoint_unreachable":
         return "The local endpoint could not be reached.";
       default:
-        return reason ? reason : "Unavailable";
+        return reason;
     }
   }
 
@@ -734,53 +776,74 @@
     }
   }
 
-  // Re-check whether a key is stored for the currently selected cloud provider.
+  // Re-check which connected cloud providers have a key in the keychain.
   async function refreshAiProviderKeyPresence() {
-    try {
-      aiProviderKeySaved = await invoke<boolean>("ai_runtime_has_provider_key", {
-        request: { provider: draftAiCloudProvider },
-      });
-    } catch (error) {
-      aiProviderKeyError = error instanceof Error ? error.message : String(error);
+    const cloudKinds = draftAiProviders
+      .map((p) => p.kind)
+      .filter((kind) => isCloudAiProviderKind(kind));
+    const next: Record<string, boolean> = {};
+    for (const kind of cloudKinds) {
+      try {
+        next[kind] = await invoke<boolean>("ai_runtime_has_provider_key", {
+          request: { provider: kind },
+        });
+      } catch (error) {
+        aiProviderKeyErrors = {
+          ...aiProviderKeyErrors,
+          [kind]: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
+    aiProviderKeySavedByProvider = next;
   }
 
-  async function saveAiProviderKey() {
-    const key = aiProviderKeyInput.trim();
+  async function saveAiProviderKey(provider: string) {
+    const key = (aiProviderKeyInputs[provider] ?? "").trim();
     if (!key) {
-      aiProviderKeyError = "Enter an API key first.";
+      aiProviderKeyErrors = {
+        ...aiProviderKeyErrors,
+        [provider]: "Enter an API key first.",
+      };
       return;
     }
-    aiProviderKeySaving = true;
-    aiProviderKeyError = null;
+    aiProviderKeySavingProvider = provider;
+    const { [provider]: _saveErr, ...restSaveErrors } = aiProviderKeyErrors;
+    aiProviderKeyErrors = restSaveErrors;
     try {
       await invoke("ai_runtime_set_provider_key", {
-        request: { provider: draftAiCloudProvider, key },
+        request: { provider, key },
       });
-      aiProviderKeyInput = "";
+      aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: "" };
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
     } catch (error) {
-      aiProviderKeyError = error instanceof Error ? error.message : String(error);
+      aiProviderKeyErrors = {
+        ...aiProviderKeyErrors,
+        [provider]: error instanceof Error ? error.message : String(error),
+      };
     } finally {
-      aiProviderKeySaving = false;
+      aiProviderKeySavingProvider = null;
     }
   }
 
-  async function clearAiProviderKey() {
-    aiProviderKeySaving = true;
-    aiProviderKeyError = null;
+  async function clearAiProviderKey(provider: string) {
+    aiProviderKeySavingProvider = provider;
+    const { [provider]: _clearErr, ...restClearErrors } = aiProviderKeyErrors;
+    aiProviderKeyErrors = restClearErrors;
     try {
       await invoke("ai_runtime_clear_provider_key", {
-        request: { provider: draftAiCloudProvider },
+        request: { provider },
       });
-      aiProviderKeyInput = "";
+      aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: "" };
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
     } catch (error) {
-      aiProviderKeyError = error instanceof Error ? error.message : String(error);
+      aiProviderKeyErrors = {
+        ...aiProviderKeyErrors,
+        [provider]: error instanceof Error ? error.message : String(error),
+      };
     } finally {
-      aiProviderKeySaving = false;
+      aiProviderKeySavingProvider = null;
     }
   }
 
@@ -919,15 +982,15 @@
   // Wipe User Context (#97, ADR 0029): the explicit, full clear of the derived
   // dossier — the one control that erases the longer-than-retention memory. It
   // clears all derived understanding (Activities, Conclusions, Dismissal State),
-  // keeps raw captures + settings, and turns the Reasoning Engine off (the
-  // recording_settings_changed event flips the engine toggle for us). Disk-
+  // keeps raw captures + settings, and turns the master "AI features" switch
+  // off (the recording_settings_changed event flips the toggle for us). Disk-
   // destructive of derived data, so it goes behind a Tauri confirm dialog.
   let userContextWiping = $state(false);
 
   async function wipeUserContext() {
     if (userContextWiping) return;
     const confirmed = await confirm(
-      "This permanently clears everything Mnema has derived about you — all Activities, Conclusions, and your Dismissal corrections. Your raw recordings and settings are kept. The Reasoning Engine will be turned off; turning it back on starts learning from scratch.",
+      "This permanently clears everything Mnema has derived about you — all Activities, Conclusions, and your Dismissal corrections. Your raw recordings and settings are kept. AI features will be turned off; turning them back on starts learning from scratch.",
       { title: "Wipe User Context?", kind: "warning", okLabel: "Wipe", cancelLabel: "Cancel" }
     );
     if (!confirmed) return;
@@ -935,8 +998,10 @@
     try {
       await invoke("wipe_user_context");
       // The surface is now empty; the recording_settings_changed event turns the
-      // engine toggle off on its own, but refresh status/lists here immediately.
+      // master AI switch off on its own, but refresh status/lists here
+      // immediately so the card reflects the wipe at once.
       await refreshUserContext();
+      void loadAiRuntimeStatus();
     } catch (error) {
       userContextStatusError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -1315,7 +1380,7 @@
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
     { id: "access",     label: "Access",      description: "CLI and local tools" },
-    { id: "intelligence", label: "Reasoning Engine", description: "Engine and User Context" },
+    { id: "intelligence", label: "AI", description: "Providers, Ask AI, User Context" },
     { id: "privacy",    label: "Privacy",     description: "Metadata and exclusions" },
     { id: "shortcuts",  label: "Shortcuts",   description: "View and customize keys" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
@@ -1575,14 +1640,13 @@
 
   function syncAiRuntimeDrafts(s: RecordingSettings) {
     draftAiEnabled = s.aiRuntime?.enabled ?? false;
-    draftAiEngineKind = s.aiRuntime?.engineKind ?? "cloud";
-    draftAiCloudProvider = s.aiRuntime?.cloudProvider ?? "anthropic";
-    draftAiCloudModel = s.aiRuntime?.cloudModel ?? DEFAULT_AI_CLOUD_MODEL;
-    draftAiCloudBaseUrl = s.aiRuntime?.cloudBaseUrl ?? "";
-    draftAiLocalKind = s.aiRuntime?.localKind ?? "ollama";
-    draftAiLocalEndpoint = s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT;
-    draftAiLocalModel = s.aiRuntime?.localModel ?? "";
-    draftAiAdditionalEngines = [...(s.aiRuntime?.additionalEngines ?? [])];
+    draftAiProviders = (s.aiRuntime?.providers ?? []).map((p) => ({
+      kind: p.kind,
+      baseUrl: p.baseUrl ?? "",
+    }));
+    draftAiDefaultModel = s.aiRuntime?.defaultModel
+      ? { provider: s.aiRuntime.defaultModel.provider, model: s.aiRuntime.defaultModel.model }
+      : null;
   }
 
   function syncUserContextDrafts(s: RecordingSettings) {
@@ -1815,16 +1879,20 @@
           askAiModel: draftAskAiModel,
         };
       case "ai_runtime":
+        // `defaultModel` is tri-state on the wire; the card always sends the
+        // full intent (object = set, null = clear), never "leave unchanged".
         return {
           enabled: draftAiEnabled,
-          engineKind: draftAiEngineKind,
-          cloudProvider: draftAiCloudProvider,
-          cloudModel: draftAiCloudModel,
-          cloudBaseUrl: draftAiCloudBaseUrl,
-          localKind: draftAiLocalKind,
-          localEndpoint: draftAiLocalEndpoint,
-          localModel: draftAiLocalModel,
-          additionalEngines: draftAiAdditionalEngines,
+          providers: draftAiProviders.map((p) => ({
+            kind: p.kind,
+            baseUrl: p.baseUrl,
+          })),
+          defaultModel: draftAiDefaultModel
+            ? {
+                provider: draftAiDefaultModel.provider,
+                model: draftAiDefaultModel.model,
+              }
+            : null,
         };
       case "user_context":
         return {
@@ -1898,19 +1966,14 @@
     }
   }
 
-  // The Quick Recall model list is the default Reasoning Engine's `/models` —
-  // ai_runtime_list_models, built from the current aiRuntime draft selection.
+  // The Ask AI override picker consumes the same merged provider-tagged pool
+  // (ai_runtime_list_models), built from the current draft provider list.
   async function loadAskAiModels() {
     askAiModelsLoading = true;
     askAiModelsError = null;
     try {
       askAiModels = await invoke<AiRuntimeModel[]>("ai_runtime_list_models", {
-        request: {
-          engineKind: draftAiEngineKind,
-          cloudProvider: draftAiCloudProvider,
-          cloudBaseUrl: draftAiCloudBaseUrl,
-          localEndpoint: draftAiLocalEndpoint,
-        },
+        request: { providers: $state.snapshot(draftAiProviders) },
       });
     } catch (err) {
       askAiModels = [];
@@ -2190,26 +2253,21 @@
   }
 
   // Friendly copy for an Ask AI availability reason code. Covers both the Ask AI
-  // gate (ask_ai_disabled) and the shared Reasoning Engine prerequisite codes
-  // (ai_runtime_disabled / no_cloud_key / no_model / …).
+  // gate (ask_ai_disabled) and the shared engine-configured prerequisite codes
+  // (ai_runtime_disabled / no_providers / no_default_model / …).
   function askAiReasonLabel(reason: string | null | undefined): string {
+    if (!reason) return "Ask AI is unavailable.";
     switch (reason) {
       case "ask_ai_disabled":
         return "Ask AI is turned off.";
       case "ai_runtime_disabled":
-        return "The Reasoning Engine is off — enable it above.";
-      case "no_cloud_key":
-        return "Add a provider API key for the Reasoning Engine.";
-      case "no_model":
-        return "Choose a model for the Reasoning Engine.";
-      case "no_base_url":
-        return "Add the base URL for the OpenAI-compatible provider.";
-      case "local_no_model":
-        return "No local model is configured.";
-      case "local_endpoint_unreachable":
-        return "The local engine could not be reached.";
+        return "AI features are turned off — enable them in the Providers card above.";
+      case "no_providers":
+        return "Connect an AI provider in the Providers card above.";
+      case "no_default_model":
+        return "Choose a global default model in the Providers card above.";
       default:
-        return reason ? reason : "Ask AI is unavailable.";
+        return aiRuntimeReasonLabel(reason);
     }
   }
 
@@ -2308,14 +2366,16 @@
       case "ai_runtime":
         return {
           enabled: s.aiRuntime?.enabled ?? false,
-          engineKind: s.aiRuntime?.engineKind ?? "cloud",
-          cloudProvider: s.aiRuntime?.cloudProvider ?? "anthropic",
-          cloudModel: s.aiRuntime?.cloudModel ?? DEFAULT_AI_CLOUD_MODEL,
-          cloudBaseUrl: s.aiRuntime?.cloudBaseUrl ?? "",
-          localKind: s.aiRuntime?.localKind ?? "ollama",
-          localEndpoint: s.aiRuntime?.localEndpoint ?? DEFAULT_AI_LOCAL_ENDPOINT,
-          localModel: s.aiRuntime?.localModel ?? "",
-          additionalEngines: s.aiRuntime?.additionalEngines ?? [],
+          providers: (s.aiRuntime?.providers ?? []).map((p) => ({
+            kind: p.kind,
+            baseUrl: p.baseUrl ?? "",
+          })),
+          defaultModel: s.aiRuntime?.defaultModel
+            ? {
+                provider: s.aiRuntime.defaultModel.provider,
+                model: s.aiRuntime.defaultModel.model,
+              }
+            : null,
         };
       case "user_context":
         return {
@@ -3668,7 +3728,7 @@
   $effect(() => {
     // One-time mount init. Wrapped in `untrack` because several of these
     // loaders synchronously read draft `$state` (e.g. refreshAiProviderKeyPresence
-    // reads draftAiCloudProvider). Without untrack the effect would subscribe to
+    // reads draftAiProviders). Without untrack the effect would subscribe to
     // those drafts and re-run on every edit — re-firing loadRecordingSettings and
     // clobbering the in-flight draft back to the persisted value before autosave.
     untrack(() => {
@@ -4350,7 +4410,315 @@
         </div>
       </div>
 
+    </section>
+  </div>
+{/if}
+
+{#if activeTab === "intelligence"}
+  <div role="tabpanel" id="settings-panel-intelligence" aria-labelledby="settings-tab-intelligence" tabindex="0">
+    <!-- ── Card: Providers (master switch, provider list, default model) ──── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">Providers</h2>
+          <p class="card__subtitle">
+            Connect the AI providers Mnema can use and choose one global default model. Every AI
+            feature inherits the default; a chat thread or feature override can refine it.
+          </p>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <span class="group-label">AI features</span>
+        <div class="settings-stack">
+          <Switch
+            bind:checked={draftAiEnabled}
+            label="Enable AI features"
+            description="The master switch for everything AI in Mnema. While off, nothing is sent to any AI model. Off by default."
+          />
+          <div class="privacy-disclosure">
+            <p>A cloud provider receives redacted capture text over HTTPS to reason about it — continuous outbound egress and per-token cost billed to your own key.</p>
+            <p>A local runtime (Ollama or Llamafile) runs entirely on this machine — nothing is sent anywhere and no API key is needed.</p>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Connected providers</span>
+        <div class="settings-stack">
+          {#if draftAiProviders.length === 0}
+            <p class="group-hint">No providers connected yet. Connect one below, then choose a default model.</p>
+          {:else}
+            <ul class="provider-list">
+              {#each draftAiProviders as provider (provider.kind)}
+                <li class="provider-row">
+                  <div class="provider-row__head">
+                    <span class="provider-row__name">{aiProviderKindLabel(provider.kind)}</span>
+                    <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
+                    {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.kind]}
+                      <span class="saved-badge">✓ key in keychain</span>
+                    {/if}
+                    <button
+                      class="btn btn--ghost btn--sm provider-row__remove"
+                      type="button"
+                      onclick={() => removeAiProvider(provider.kind)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  {#if provider.kind === "openai_compatible"}
+                    <label class="field-label" for="ai-provider-base-url-{provider.kind}">Base URL</label>
+                    <input
+                      id="ai-provider-base-url-{provider.kind}"
+                      class="text-input"
+                      autocomplete="off"
+                      placeholder="https://api.fireworks.ai/inference/v1"
+                      bind:value={provider.baseUrl}
+                    />
+                    {#if provider.baseUrl.trim().length === 0}
+                      <p class="group-hint group-hint--warn">OpenAI-compatible providers need a base URL.</p>
+                    {/if}
+                  {:else if !isCloudAiProviderKind(provider.kind)}
+                    <label class="field-label" for="ai-provider-endpoint-{provider.kind}">Endpoint</label>
+                    <input
+                      id="ai-provider-endpoint-{provider.kind}"
+                      class="text-input"
+                      autocomplete="off"
+                      placeholder={AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind] ?? "http://localhost"}
+                      bind:value={provider.baseUrl}
+                    />
+                    <p class="group-hint">Leave empty to use the default endpoint {AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind]}. No key, no egress.</p>
+                  {/if}
+                  {#if isCloudAiProviderKind(provider.kind)}
+                    <label class="field-label" for="ai-provider-key-{provider.kind}">API key</label>
+                    <input
+                      id="ai-provider-key-{provider.kind}"
+                      class="text-input"
+                      type="password"
+                      autocomplete="off"
+                      placeholder={aiProviderKeySavedByProvider[provider.kind] ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
+                      disabled={aiProviderKeySavingProvider === provider.kind}
+                      bind:value={
+                        () => aiProviderKeyInputs[provider.kind] ?? "",
+                        (value) => {
+                          aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider.kind]: value };
+                        }
+                      }
+                    />
+                    <div class="row-actions">
+                      <button
+                        class="btn btn--ghost btn--sm"
+                        type="button"
+                        disabled={aiProviderKeySavingProvider !== null || (aiProviderKeyInputs[provider.kind] ?? "").trim().length === 0}
+                        onclick={() => saveAiProviderKey(provider.kind)}
+                      >
+                        {aiProviderKeySavingProvider === provider.kind ? "Saving" : "Save key"}
+                      </button>
+                      <button
+                        class="btn btn--ghost btn--sm"
+                        type="button"
+                        disabled={aiProviderKeySavingProvider !== null || !aiProviderKeySavedByProvider[provider.kind]}
+                        onclick={() => clearAiProviderKey(provider.kind)}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    {#if aiProviderKeyErrors[provider.kind]}
+                      <p class="error-text">{aiProviderKeyErrors[provider.kind]}</p>
+                    {/if}
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          {#if addableAiProviderKinds.length > 0}
+            <div class="row-actions">
+              {#each addableAiProviderKinds as kind (kind)}
+                <button
+                  class="btn btn--ghost btn--sm"
+                  type="button"
+                  title={aiProviderKindDescription(kind)}
+                  onclick={() => addAiProvider(kind)}
+                >
+                  + {aiProviderKindLabel(kind)}
+                </button>
+              {/each}
+            </div>
+          {/if}
+          <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider, shared by every feature.</p>
+          {#if anyCloudAiProviderConnected}
+            <div class="cloud-egress-disclosure" role="note">
+              <span class="cloud-egress-disclosure__icon" aria-hidden="true">⚠</span>
+              <div class="cloud-egress-disclosure__body">
+                <strong>Cloud egress consent</strong>
+                <p>
+                  With a cloud provider connected and AI features on, <em>redacted</em> OCR and
+                  transcript text is sent to that provider over HTTPS, billed to your own key.
+                  Your on-device data — frames, audio, and the assembled dossier — never leaves
+                  this machine. The master switch above is your explicit opt-in, separate from
+                  the per-feature toggles below.
+                </p>
+              </div>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Default model</span>
+        <div class="settings-stack">
+          <label class="field-label" for="ai-default-model">Global default model</label>
+          <div class="model-combobox">
+            <input
+              id="ai-default-model"
+              class="text-input model-combobox__input"
+              role="combobox"
+              aria-expanded={aiModelOpen}
+              aria-controls="ai-model-list"
+              aria-autocomplete="list"
+              autocomplete="off"
+              placeholder="Choose a default model"
+              disabled={draftAiProviders.length === 0}
+              bind:this={aiModelInputEl}
+              bind:value={aiModelQuery}
+              oninput={() => { openAiModelMenu(); aiModelHighlight = 0; }}
+              onfocus={(event) => { openAiModelMenu(); void loadAiModels(); event.currentTarget.select(); }}
+              onblur={closeAiModelSoon}
+              onkeydown={handleAiModelKeydown}
+            />
+            {#if aiModelOpen && draftAiProviders.length > 0}
+              <Portal>
+                <div
+                  class="model-combobox__panel"
+                  id="ai-model-list"
+                  role="listbox"
+                  style={aiModelPanelStyle}
+                >
+                  {#if aiModelsLoading}
+                    <span class="model-combobox__empty">Loading models…</span>
+                  {:else if aiModelFiltered.length > 0}
+                    {#each aiModelFiltered as entry, index (`${entry.provider}-${entry.model}`)}
+                      {@const selected =
+                        draftAiDefaultModel !== null &&
+                        entry.provider === draftAiDefaultModel.provider &&
+                        entry.model === draftAiDefaultModel.model}
+                      <button
+                        class="model-combobox__option"
+                        class:model-combobox__option--active={index === aiModelHighlight}
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        onmousedown={(event) => event.preventDefault()}
+                        onmouseenter={() => { aiModelHighlight = index; }}
+                        onclick={() => commitAiDefaultModel(entry)}
+                      >
+                        <span class="model-combobox__option-main">
+                          <span class="model-combobox__name">{entry.model}</span>
+                          <span class="model-combobox__sub">{aiProviderKindLabel(entry.provider)}</span>
+                        </span>
+                        {#if selected}
+                          <span class="model-combobox__check" aria-hidden="true">✓</span>
+                        {/if}
+                      </button>
+                    {/each}
+                  {:else}
+                    <span class="model-combobox__empty">
+                      {aiModelQuery.trim()
+                        ? `Press Enter to use "${aiModelQuery.trim()}"`
+                        : "No models found"}
+                    </span>
+                  {/if}
+                </div>
+              </Portal>
+            {/if}
+          </div>
+          {#if aiModelsError}
+            <p class="group-hint group-hint--warn">
+              Could not list every provider's models — check keys/base URLs/endpoints above, then refocus the field to retry. You can still type any model id.
+            </p>
+            <p class="error-text">{aiRuntimeReasonLabel(aiModelsError)}</p>
+          {:else}
+            <p class="group-hint">
+              One merged list across every connected provider. Type to filter, or type any model id — a typed id rides on the current default's provider.
+            </p>
+          {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Status</span>
+        <div class="settings-stack">
+          <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
+            <div>
+              <div class="model-status__title">AI {aiRuntimeStatus?.available ? "ready" : "unavailable"}</div>
+              <div class="model-status__meta">
+                {#if aiRuntimeStatusLoading}
+                  Checking providers…
+                {:else if aiRuntimeStatus?.available}
+                  Default model {aiRuntimeStatus.defaultModel
+                    ? `${aiProviderKindLabel(aiRuntimeStatus.defaultModel.provider)} · ${aiRuntimeStatus.defaultModel.model}`
+                    : "(none)"} is configured and reachable.
+                {:else}
+                  {aiRuntimeReasonLabel(aiRuntimeStatus?.reason)}
+                {/if}
+              </div>
+            </div>
+            <span class="model-status__pill">{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
+          </div>
+          {#if aiRuntimeStatusError}
+            <p class="error-text">{aiRuntimeStatusError}</p>
+          {/if}
+          <div class="row-actions">
+            <button class="btn btn--ghost btn--sm" type="button" disabled={aiRuntimeStatusLoading} onclick={loadAiRuntimeStatus}>
+              {aiRuntimeStatusLoading ? "Refreshing" : "Refresh"}
+            </button>
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              disabled={aiRuntimeTestRunning || draftAiDefaultModel === null}
+              onclick={runAiRuntimeTestConnection}
+            >
+              {aiRuntimeTestRunning ? "Testing" : "Test connection"}
+            </button>
+          </div>
+          <p class="group-hint">
+            Test connection runs one structured round trip against the global default model — it
+            verifies that provider's key/endpoint even while AI features are off.
+          </p>
+          {#if aiRuntimeTestResult}
+            <div class="cleanup-result" aria-live="polite">
+              <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
+              <p>Provider: {aiProviderKindLabel(aiRuntimeTestResult.provider)} · Model: {aiRuntimeTestResult.model || "(none)"}</p>
+              {#if aiRuntimeTestResult.rawJson}
+                <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
+              {/if}
+            </div>
+          {/if}
+          {#if aiRuntimeTestError}
+            <p class="group-hint group-hint--warn">Test connection failed.</p>
+            <p class="error-text">{aiRuntimeTestError}</p>
+          {/if}
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Card: Ask AI (interactive opt-in — Quick Recall + Insights Chat) ── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">Ask AI</h2>
+          <p class="card__subtitle">
+            Let Quick Recall and Insights Chat answer questions over your redacted capture
+            history. Uses the global default model unless overridden below.
+          </p>
+        </div>
+      </div>
 
       <div class="settings-group">
         <span class="group-label">Ask AI</span>
@@ -4358,11 +4726,11 @@
           <Switch
             bind:checked={draftAskAiEnabled}
             label="Enable Ask AI"
-            description="Allow Quick Recall and Insights Chat to answer questions over your redacted capture history using the Reasoning Engine. Off by default."
+            description="Allow Quick Recall and Insights Chat to answer questions over your redacted capture history. Off by default."
           />
           <div class="privacy-disclosure">
             <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
-            <p>Questions and the redacted context needed to answer them run through the Reasoning Engine configured above — a cloud provider with your own key, or a local model that never leaves this machine.</p>
+            <p>Questions and the redacted context needed to answer them run through the providers configured above — a cloud provider with your own key, or a local model that never leaves this machine.</p>
           </div>
           <Switch
             bind:checked={draftAskAiLimitToolCalls}
@@ -4388,7 +4756,7 @@
               No cap: a single question can issue unlimited brokered queries into your retained capture history.
             </p>
           {/if}
-          <label class="field-label" for="ask-ai-model">Quick Recall model</label>
+          <label class="field-label" for="ask-ai-model">Model override</label>
           <div class="model-combobox">
             <input
               id="ask-ai-model"
@@ -4398,12 +4766,12 @@
               aria-controls="ask-ai-model-list"
               aria-autocomplete="list"
               autocomplete="off"
-              placeholder="Engine default model"
+              placeholder="Global default model"
               disabled={!draftAskAiEnabled}
               bind:this={askAiModelInputEl}
               bind:value={askAiModelQuery}
               oninput={() => { openAskAiModelMenu(); askAiModelHighlight = 0; }}
-              onfocus={(event) => { openAskAiModelMenu(); event.currentTarget.select(); }}
+              onfocus={(event) => { openAskAiModelMenu(); if (!askAiModelsLoading && askAiModels.length === 0) void loadAskAiModels(); event.currentTarget.select(); }}
               onblur={closeAskAiModelSoon}
               onkeydown={handleAskAiModelKeydown}
             />
@@ -4453,11 +4821,11 @@
           </div>
           {#if askAiModelsError}
             <p class="group-hint group-hint--warn">
-              Could not list the engine's models, so only the engine default is guaranteed — configure the Reasoning Engine above (key/base URL or endpoint). You can still type any model id.
+              Could not list models — check the providers above (key/base URL or endpoint). You can still type any model id.
             </p>
           {:else}
             <p class="group-hint">
-              Type to filter the Reasoning Engine's models, or type any model id. "Engine default model" follows the engine's configured default.
+              Optional override for Quick Recall and Chat. "Global default model" follows the default chosen in Providers; a pinned chat thread still wins over this.
             </p>
           {/if}
           <div class="model-status" class:model-status--available={askAiAvailable}>
@@ -4478,422 +4846,29 @@
         </div>
       </div>
     </section>
-  </div>
-{/if}
 
-{#if activeTab === "intelligence"}
-  <div role="tabpanel" id="settings-panel-intelligence" aria-labelledby="settings-tab-intelligence" tabindex="0">
-    {#snippet aiModelCombobox(inputId: string, placeholder: string)}
-      <div class="model-combobox">
-        <input
-          id={inputId}
-          class="text-input model-combobox__input"
-          role="combobox"
-          aria-expanded={aiModelOpen}
-          aria-controls="ai-model-list"
-          aria-autocomplete="list"
-          autocomplete="off"
-          {placeholder}
-          disabled={!draftAiEnabled}
-          bind:this={aiModelInputEl}
-          bind:value={aiModelQuery}
-          oninput={() => { openAiModelMenu(); aiModelHighlight = 0; }}
-          onfocus={(event) => { openAiModelMenu(); void loadAiModels(); event.currentTarget.select(); }}
-          onblur={closeAiModelSoon}
-          onkeydown={handleAiModelKeydown}
-        />
-        {#if aiModelOpen && draftAiEnabled}
-          <Portal>
-            <div
-              class="model-combobox__panel"
-              id="ai-model-list"
-              role="listbox"
-              style={aiModelPanelStyle}
-            >
-              {#if aiModelsLoading}
-                <span class="model-combobox__empty">Loading models…</span>
-              {:else if aiModelFiltered.length > 0}
-                {#each aiModelFiltered as entry, index (entry.value)}
-                  <button
-                    class="model-combobox__option"
-                    class:model-combobox__option--active={index === aiModelHighlight}
-                    type="button"
-                    role="option"
-                    aria-selected={entry.value === aiModelValue}
-                    onmousedown={(event) => event.preventDefault()}
-                    onmouseenter={() => { aiModelHighlight = index; }}
-                    onclick={() => commitAiModel(entry.value)}
-                  >
-                    <span class="model-combobox__option-main">
-                      <span class="model-combobox__name">{entry.label}</span>
-                    </span>
-                    {#if entry.value === aiModelValue}
-                      <span class="model-combobox__check" aria-hidden="true">✓</span>
-                    {/if}
-                  </button>
-                {/each}
-              {:else}
-                <span class="model-combobox__empty">
-                  {aiModelQuery.trim()
-                    ? `Press Enter to use "${aiModelQuery.trim()}"`
-                    : "No models found"}
-                </span>
-              {/if}
-            </div>
-          </Portal>
-        {/if}
-      </div>
-      {#if aiModelsError}
-        <p class="group-hint group-hint--warn">
-          Could not list models — check the engine is configured (key/base URL or endpoint), then refocus the field to retry. You can still type any model id.
-        </p>
-        <p class="error-text">{aiRuntimeReasonLabel(aiModelsError)}</p>
-      {:else}
-        <p class="group-hint">Type to filter the engine's available models, or type any model id.</p>
-      {/if}
-    {/snippet}
-
+    <!-- ── Card: User Context (continuous derivation — issue #88) ─────────── -->
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <h2 class="card__title">Reasoning Engine</h2>
+          <h2 class="card__title">User Context</h2>
           <p class="card__subtitle">
-            The model Mnema uses to derive understanding from your capture history. Pick a cloud
-            provider with your own key, or a local model that never leaves your machine.
+            A private, on-device understanding of your activity, derived continuously from your
+            capture history by the default model. High-consent and off by default.
           </p>
         </div>
       </div>
 
       <div class="settings-group">
-        <span class="group-label">Engine</span>
-        <div class="settings-stack">
-          <div class="privacy-disclosure">
-            <p>A cloud engine sends redacted capture text to your chosen provider over HTTPS to reason about it. That means continuous outbound egress and per-token cost billed to your provider account.</p>
-            <p>A local engine runs entirely on this machine through Ollama or Llamafile — nothing is sent anywhere and no API key is needed.</p>
-          </div>
-          <Switch
-            bind:checked={draftAiEnabled}
-            label="Enable Reasoning Engine"
-            description="Allow Mnema to run the selected model. Off by default."
-          />
-          <RadioGroup
-            value={draftAiEngineKind}
-            onValueChange={(value) => (draftAiEngineKind = value as AiEngineKind)}
-            label="Engine"
-            disabled={!draftAiEnabled}
-            options={[
-              { value: "cloud", label: "Cloud", description: "HTTPS to a provider with your own key. Sends redacted text off-device." },
-              { value: "local", label: "Local", description: "Ollama or Llamafile on this machine. No key, no egress." },
-            ]}
-          />
-
-          {#if draftAiEngineKind === "cloud"}
-            <div class="cloud-egress-disclosure" role="note">
-              <span class="cloud-egress-disclosure__icon" aria-hidden="true">⚠</span>
-              <div class="cloud-egress-disclosure__body">
-                <strong>Cloud egress consent</strong>
-                <p>
-                  Enabling a cloud engine sends <em>redacted</em> OCR and transcript text to
-                  {draftAiCloudProvider === "anthropic"
-                    ? "Anthropic"
-                    : draftAiCloudProvider === "openai"
-                      ? "OpenAI"
-                      : "your configured provider"} over HTTPS, billed to your own key.
-                  Your on-device data — frames, audio, and the assembled dossier — never leaves
-                  this machine. The master toggle above is your explicit opt-in, separate from Ask AI.
-                </p>
-              </div>
-            </div>
-          {/if}
-
-          {#if draftAiEngineKind === "cloud"}
-            <div class="settings-divider"></div>
-            <RadioGroup
-              value={draftAiCloudProvider}
-              onValueChange={(value) => {
-                draftAiCloudProvider = value as AiCloudProvider;
-                void refreshAiProviderKeyPresence();
-              }}
-              label="Provider"
-              disabled={!draftAiEnabled}
-              options={[
-                { value: "anthropic", label: "Anthropic", description: "Claude models" },
-                { value: "openai", label: "OpenAI", description: "GPT models" },
-                { value: "openai_compatible", label: "OpenAI-compatible", description: "Fireworks, OpenRouter, Together — custom base URL + key" },
-              ]}
-            />
-            {#if draftAiCloudProvider === "openai_compatible"}
-              <label class="field-label" for="ai-cloud-base-url">Base URL</label>
-              <input
-                id="ai-cloud-base-url"
-                class="text-input"
-                autocomplete="off"
-                placeholder="https://api.fireworks.ai/inference/v1"
-                disabled={!draftAiEnabled}
-                bind:value={draftAiCloudBaseUrl}
-              />
-            {/if}
-            <label class="field-label" for="ai-cloud-model">Model</label>
-            {@render aiModelCombobox(
-              "ai-cloud-model",
-              draftAiCloudProvider === "openai_compatible" ? "accounts/fireworks/models/…" : "claude-haiku-4-5",
-            )}
-            <label class="field-label" for="ai-cloud-key">API key</label>
-            <div class="row-actions">
-              <input
-                id="ai-cloud-key"
-                class="text-input"
-                type="password"
-                autocomplete="off"
-                placeholder={aiProviderKeySaved ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
-                disabled={!draftAiEnabled || aiProviderKeySaving}
-                bind:value={aiProviderKeyInput}
-              />
-              {#if aiProviderKeySaved}
-                <span class="saved-badge">✓ key saved</span>
-              {/if}
-            </div>
-            <div class="row-actions">
-              <button
-                class="btn btn--ghost btn--sm"
-                type="button"
-                disabled={!draftAiEnabled || aiProviderKeySaving || aiProviderKeyInput.trim().length === 0}
-                onclick={saveAiProviderKey}
-              >
-                {aiProviderKeySaving ? "Saving" : "Save key"}
-              </button>
-              <button
-                class="btn btn--ghost btn--sm"
-                type="button"
-                disabled={aiProviderKeySaving || !aiProviderKeySaved}
-                onclick={clearAiProviderKey}
-              >
-                Clear
-              </button>
-            </div>
-            <p class="group-hint">Your key is stored only in the macOS keychain — never in Mnema's settings, config, or save directory.</p>
-            {#if aiProviderKeyError}
-              <p class="error-text">{aiProviderKeyError}</p>
-            {/if}
-          {:else}
-            <div class="settings-divider"></div>
-            <RadioGroup
-              value={draftAiLocalKind}
-              onValueChange={(value) => (draftAiLocalKind = value as AiLocalKind)}
-              label="Local runtime"
-              disabled={!draftAiEnabled}
-              options={[
-                { value: "ollama", label: "Ollama", description: "Default endpoint http://localhost:11434" },
-                { value: "llamafile", label: "Llamafile", description: "OpenAI-compatible local server" },
-              ]}
-            />
-            <label class="field-label" for="ai-local-endpoint">Endpoint</label>
-            <input
-              id="ai-local-endpoint"
-              class="text-input"
-              autocomplete="off"
-              placeholder="http://localhost:11434"
-              disabled={!draftAiEnabled}
-              bind:value={draftAiLocalEndpoint}
-            />
-            <label class="field-label" for="ai-local-model">Model</label>
-            {@render aiModelCombobox("ai-local-model", "e.g. llama3.1")}
-          {/if}
-        </div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-group">
-        <span class="group-label">Configured engines</span>
-        <div class="settings-stack">
-          <p class="group-hint">
-            Additional engines a chat thread can be pinned to, beyond the default
-            engine above. Each thread answers with its pinned engine, or the
-            default when unpinned. Set the provider API key once in the per-provider
-            key field above — it's shared across engines of the same provider.
-          </p>
-
-          {#if draftAiAdditionalEngines.length > 0}
-            <ul class="engine-list">
-              {#each draftAiAdditionalEngines as engine, index (`${index}-${engineProfileLabel(engine)}`)}
-                <li class="engine-row">
-                  <span class="engine-row__name">{engineProfileLabel(engine)}</span>
-                  <button
-                    class="btn btn--ghost btn--sm"
-                    type="button"
-                    onclick={() => removeConfiguredEngine(index)}
-                  >
-                    Remove
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {:else}
-            <p class="group-hint">No additional engines yet.</p>
-          {/if}
-
-          {#if addEngineOpen}
-            <div class="settings-stack add-engine-form">
-              <RadioGroup
-                value={addEngineKind}
-                onValueChange={(value) => (addEngineKind = value as AiEngineKind)}
-                label="Engine"
-                options={[
-                  { value: "cloud", label: "Cloud", description: "HTTPS to a provider with your own key." },
-                  { value: "local", label: "Local", description: "Ollama or Llamafile on this machine." },
-                ]}
-              />
-              {#if addEngineKind === "cloud"}
-                <RadioGroup
-                  value={addEngineCloudProvider}
-                  onValueChange={(value) => (addEngineCloudProvider = value as AiCloudProvider)}
-                  label="Provider"
-                  options={[
-                    { value: "anthropic", label: "Anthropic", description: "Claude models" },
-                    { value: "openai", label: "OpenAI", description: "GPT models" },
-                    { value: "openai_compatible", label: "OpenAI-compatible", description: "Custom base URL + key" },
-                  ]}
-                />
-                {#if addEngineCloudProvider === "openai_compatible"}
-                  <label class="field-label" for="add-engine-base-url">Base URL</label>
-                  <input
-                    id="add-engine-base-url"
-                    class="text-input"
-                    autocomplete="off"
-                    placeholder="https://api.fireworks.ai/inference/v1"
-                    bind:value={addEngineCloudBaseUrl}
-                  />
-                {/if}
-                <label class="field-label" for="add-engine-cloud-model">Model</label>
-                <input
-                  id="add-engine-cloud-model"
-                  class="text-input"
-                  autocomplete="off"
-                  placeholder="claude-haiku-4-5"
-                  bind:value={addEngineCloudModel}
-                />
-              {:else}
-                <RadioGroup
-                  value={addEngineLocalKind}
-                  onValueChange={(value) => (addEngineLocalKind = value as AiLocalKind)}
-                  label="Local runtime"
-                  options={[
-                    { value: "ollama", label: "Ollama", description: "Default endpoint http://localhost:11434" },
-                    { value: "llamafile", label: "Llamafile", description: "OpenAI-compatible local server" },
-                  ]}
-                />
-                <label class="field-label" for="add-engine-local-endpoint">Endpoint</label>
-                <input
-                  id="add-engine-local-endpoint"
-                  class="text-input"
-                  autocomplete="off"
-                  placeholder="http://localhost:11434"
-                  bind:value={addEngineLocalEndpoint}
-                />
-                <label class="field-label" for="add-engine-local-model">Model</label>
-                <input
-                  id="add-engine-local-model"
-                  class="text-input"
-                  autocomplete="off"
-                  placeholder="e.g. llama3.1"
-                  bind:value={addEngineLocalModel}
-                />
-              {/if}
-              {#if addEngineError}
-                <p class="error-text">{addEngineError}</p>
-              {/if}
-              <div class="row-actions">
-                <button class="btn btn--ghost btn--sm" type="button" onclick={addConfiguredEngine}>
-                  Add
-                </button>
-                <button
-                  class="btn btn--ghost btn--sm"
-                  type="button"
-                  onclick={() => { addEngineOpen = false; resetAddEngineForm(); }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          {:else}
-            <div class="row-actions">
-              <button
-                class="btn btn--ghost btn--sm"
-                type="button"
-                onclick={() => { resetAddEngineForm(); addEngineOpen = true; }}
-              >
-                Add engine
-              </button>
-            </div>
-          {/if}
-        </div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-group">
-        <span class="group-label">Status</span>
-        <div class="settings-stack">
-          <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
-            <div>
-              <div class="model-status__title">Reasoning Engine {aiRuntimeStatus?.available ? "ready" : "unavailable"}</div>
-              <div class="model-status__meta">
-                {#if aiRuntimeStatusLoading}
-                  Checking engine…
-                {:else if aiRuntimeStatus?.available}
-                  {aiRuntimeStatus.engineKind === "cloud" ? "Cloud" : "Local"} engine configured and reachable.
-                {:else}
-                  {aiRuntimeReasonLabel(aiRuntimeStatus?.reason)}
-                {/if}
-              </div>
-            </div>
-            <span class="model-status__pill">{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
-          </div>
-          {#if aiRuntimeStatusError}
-            <p class="error-text">{aiRuntimeStatusError}</p>
-          {/if}
-          <div class="row-actions">
-            <button class="btn btn--ghost btn--sm" type="button" disabled={aiRuntimeStatusLoading} onclick={loadAiRuntimeStatus}>
-              {aiRuntimeStatusLoading ? "Refreshing" : "Refresh"}
-            </button>
-            <button
-              class="btn btn--ghost btn--sm"
-              type="button"
-              disabled={!draftAiEnabled || aiRuntimeTestRunning}
-              onclick={runAiRuntimeTestConnection}
-            >
-              {aiRuntimeTestRunning ? "Testing" : "Test connection"}
-            </button>
-          </div>
-          {#if aiRuntimeTestResult}
-            <div class="cleanup-result" aria-live="polite">
-              <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
-              <p>Model: {aiRuntimeTestResult.model || "(none)"}</p>
-              {#if aiRuntimeTestResult.rawJson}
-                <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
-              {/if}
-            </div>
-          {/if}
-          {#if aiRuntimeTestError}
-            <p class="group-hint group-hint--warn">Test connection failed.</p>
-            <p class="error-text">{aiRuntimeTestError}</p>
-          {/if}
-        </div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-group">
-        <span class="group-label">User Context</span>
+        <span class="group-label">Continuous derivation</span>
         <div class="settings-stack">
           <Switch
             bind:checked={draftUserContextEnabled}
             label="Derive context continuously"
-            description="Let Mnema build a private, on-device understanding of your activity by deriving from your capture history in the background, 24/7. Distinct from Ask AI — this is the high-consent continuous worker, off by default. Needs the Reasoning Engine configured above."
+            description="Let Mnema build a private, on-device understanding of your activity by deriving from your capture history in the background, 24/7. Distinct from Ask AI — this is the high-consent continuous worker, off by default. Needs a provider and default model configured above."
           />
           <div class="privacy-disclosure">
-            <p>While on, the Reasoning Engine runs over your redacted screen text and transcripts as a background trickle to derive Activities and Conclusions. With a cloud engine that means continuous outbound egress billed to your key; a local engine keeps everything on this machine.</p>
+            <p>While on, the default model runs over your redacted screen text and transcripts as a background trickle to derive Activities and Conclusions. With a cloud default that means continuous outbound egress billed to your key; a local default keeps everything on this machine.</p>
             <p>The derived understanding deliberately outlives raw-capture retention. Turning this off pauses derivation; it does not erase what was already learned — use Wipe User Context below for that.</p>
           </div>
           <div
@@ -4958,7 +4933,7 @@
           <div class="settings-group">
             <span class="group-label">Derivation Budget</span>
             <div class="settings-stack">
-              {#if draftAiEngineKind === "cloud"}
+              {#if userContextCloudDefault}
                 <RadioGroup
                   value={draftUserContextBudgetTier}
                   onValueChange={(value) =>
@@ -4988,8 +4963,8 @@
                 </p>
               {:else}
                 <p class="group-hint">
-                  Local engine uses fixed background pacing — no token spend, so there is no
-                  intensity knob to choose.
+                  Budget tiers apply to a cloud default model. A local default uses fixed
+                  background pacing — no token spend, so there is no intensity knob to choose.
                 </p>
               {/if}
             </div>
@@ -9373,38 +9348,50 @@
     gap: 8px;
   }
 
-  /* Configured-engine set (per-thread pin source). */
-  .engine-list {
+  /* Connected AI providers (ADR 0034): one bordered row per provider kind,
+     holding its endpoint/base-URL and key controls. */
+  .provider-list {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-  }
-  .engine-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
     gap: 10px;
-    padding: 9px 10px;
+  }
+  .provider-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
     border: 1px solid var(--app-border);
-    border-radius: 6px;
+    border-radius: 8px;
     background: var(--app-surface-subtle);
   }
-  .engine-row__name {
+  .provider-row__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .provider-row__name {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 12px;
+    font-weight: 600;
     color: var(--app-text);
   }
-  .add-engine-form {
-    padding: 10px;
+  .provider-row__tag {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 1px 6px;
     border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-subtle);
+    border-radius: 999px;
+    color: var(--app-text-muted);
+  }
+  .provider-row__remove {
+    margin-left: auto;
   }
 
   .grant-row {
