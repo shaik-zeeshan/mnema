@@ -177,6 +177,17 @@ enum Message {
         output_path: PathBuf,
         reply: Sender<Result<MicrophoneOutputFinalization, CaptureErrorResponse>>,
     },
+    /// Finalize the current segment (discarding the withheld tail) and stop
+    /// writing to disk. WASAPI capture keeps running so activity atomics stay
+    /// live; a subsequent `Resume` reopens a fresh sink.
+    Pause {
+        reply: Sender<Result<MicrophoneOutputFinalization, CaptureErrorResponse>>,
+    },
+    /// Reopen a fresh sink at `new_path` and resume writing captured audio to
+    /// disk. Must be sent after a `Pause` that completed successfully.
+    Resume {
+        new_path: PathBuf,
+    },
     /// Finalize the final segment and tear the session down. `discard_inactivity_tail`
     /// is `true` when the stop is an inactivity pause (drop the withheld tail) and
     /// `false` for a normal stop (flush the withheld tail).
@@ -317,6 +328,27 @@ impl WasapiMicrophoneCaptureSession {
         &mut self,
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         self.send_stop(true)
+    }
+
+    pub fn pause_for_inactivity(
+        &mut self,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.sender
+            .send(Message::Pause { reply: reply_tx })
+            .map_err(|_| capture_thread_gone_error())?;
+        reply_rx
+            .recv()
+            .unwrap_or_else(|_| Err(capture_thread_gone_error()))
+    }
+
+    pub fn resume_from_inactivity(
+        &mut self,
+        new_output_path: &str,
+    ) {
+        let _ = self.sender.send(Message::Resume {
+            new_path: PathBuf::from(new_output_path),
+        });
     }
 }
 
@@ -603,6 +635,15 @@ fn run_capture_loop(
                 let result = engine.rotate(&output_path);
                 let _ = reply.send(result);
             }
+            Ok(Message::Pause { reply }) => {
+                let result = engine.pause_segment();
+                let _ = reply.send(result);
+            }
+            Ok(Message::Resume { new_path }) => {
+                if let Err(error) = engine.resume_to_new_path(&new_path) {
+                    record_stop_error(shared, error);
+                }
+            }
             Ok(Message::DefaultRenderDeviceChanged { endpoint_id }) => {
                 if let Err(error) = engine.handle_default_render_device_changed(endpoint_id) {
                     record_stop_error(shared, error);
@@ -686,6 +727,7 @@ struct CaptureEngine {
     /// speech pulse can be turned into a one-shot "mark tail active" exactly
     /// like the macOS `microphone_tail_activity_override` path.
     observed_vad_tail_speech_sequence: u64,
+    paused: bool,
 }
 
 struct CaptureStream {
@@ -807,6 +849,7 @@ impl CaptureEngine {
             activity_threshold: 0.0,
             tail_activity_mode: MicrophoneInactivityTailTrimActivityMode::PeakLevel,
             observed_vad_tail_speech_sequence: 0,
+            paused: false,
         })
     }
 
@@ -901,7 +944,7 @@ impl CaptureEngine {
 
     /// Drain all queued WASAPI packets and append them to the active segment.
     fn pump(&mut self) -> Result<(), CaptureErrorResponse> {
-        if self.failed || self.sink.is_none() {
+        if self.failed {
             return Ok(());
         }
         loop {
@@ -973,6 +1016,9 @@ impl CaptureEngine {
             crate::note_system_audio_activity_level(peak);
         }
 
+        if self.paused {
+            return Ok(());
+        }
         let output_channels = self.output_channels as usize;
         let frame_count = (pcm.len() / (output_channels * 2)) as u64;
         let sample_time_100ns = frames_to_ticks(self.frames_in_segment, self.sample_rate_hz);
@@ -1154,6 +1200,31 @@ impl CaptureEngine {
     /// Finalize the current segment and tear down capture. `discard_inactivity_tail`
     /// drops the withheld tail (inactivity stop) instead of flushing it (normal
     /// stop).
+    fn pause_segment(
+        &mut self,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        let finalization = self.finalize_segment(true)?;
+        self.paused = true;
+        Ok(finalization)
+    }
+
+    fn resume_to_new_path(
+        &mut self,
+        new_path: &Path,
+    ) -> Result<(), CaptureErrorResponse> {
+        let writer = WindowsAacM4aSinkWriter::create(
+            new_path,
+            self.sample_rate_hz,
+            self.output_channels,
+        )?;
+        self.sink = Some(WindowsAudioTailHoldbackSink::new(writer, self.sample_rate_hz));
+        self.current_path = new_path.to_path_buf();
+        self.frames_in_segment = 0;
+        self.paused = false;
+        self.apply_tail_holdback_to_sink();
+        Ok(())
+    }
+
     fn stop(
         &mut self,
         discard_inactivity_tail: bool,

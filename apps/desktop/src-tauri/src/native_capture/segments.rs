@@ -1956,10 +1956,9 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
     if let Some(session) = runtime.active_microphone_session.as_mut() {
         // Inactivity pause: discard the withheld tail so the committed final
         // microphone segment never carries the dead idle tail.
-        let finalization = stop_windows_audio_session_for_inactivity(session)?;
+        let finalization = pause_windows_audio_session_for_inactivity(session)?;
         apply_windows_microphone_output_finalization(microphone_outputs.as_mut(), &finalization);
     }
-    runtime.active_microphone_session = None;
 
     if let Err(error) = finalize_capture_outputs(
         microphone_outputs.as_mut(),
@@ -2023,13 +2022,12 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
     if let Some(session) = runtime.active_system_audio_session.as_mut() {
         // Inactivity pause: discard the withheld tail so the committed final
         // system-audio segment never carries the dead idle tail.
-        let finalization = stop_windows_audio_session_for_inactivity(session)?;
+        let finalization = pause_windows_audio_session_for_inactivity(session)?;
         apply_windows_system_audio_output_finalization(
             system_audio_outputs.as_mut(),
             &finalization,
         );
     }
-    runtime.active_system_audio_session = None;
 
     if let Err(error) = finalize_capture_outputs(
         system_audio_outputs.as_mut(),
@@ -2112,7 +2110,7 @@ pub(super) fn resume_screen_from_inactivity(
 #[cfg(target_os = "windows")]
 pub(super) fn resume_microphone_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
-    app_handle: Option<&tauri::AppHandle>,
+    _app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     if !runtime.inactivity.is_microphone_paused() {
         return Ok(());
@@ -2128,23 +2126,31 @@ pub(super) fn resume_microphone_from_inactivity(
         return Ok(());
     }
 
-    let resume_sources = active_sources_for_inactivity_paused_state(
-        &requested_sources,
-        runtime.inactivity.screen_paused,
-        false,
-        runtime.inactivity.system_audio_paused,
-    )
-    .unwrap_or(CaptureSources {
-        screen: false,
-        microphone: false,
-        system_audio: false,
-    });
-    start_windows_active_segment(
-        app_handle,
-        runtime,
-        &resume_sources,
-        "resuming Windows microphone from inactivity",
-    )?;
+    let Some(planner) = runtime.microphone_planner.as_ref() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Capture microphone planner missing while resuming Windows microphone from inactivity".to_string(),
+        });
+    };
+    let new_output_path = planner.microphone_reconnect_file(runtime.current_segment_index, now_unix_ms());
+    let new_output_str = new_output_path.to_string_lossy().to_string();
+    if let Some(parent) = new_output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| CaptureErrorResponse {
+            code: "io_error".to_string(),
+            message: format!("Failed to create microphone capture directory: {e}"),
+        })?;
+    }
+    if let Some(session) = runtime.active_microphone_session.as_mut() {
+        resume_windows_audio_session_from_inactivity(session, &new_output_str);
+    }
+    set_current_microphone_output_file(
+        runtime.current_segment_output_files.as_mut().ok_or_else(|| CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Segment output files missing while resuming Windows microphone from inactivity".to_string(),
+        })?,
+        new_output_str.clone(),
+    );
+    runtime.microphone_recording_file = Some(new_output_str);
     runtime
         .inactivity
         .set_audio_family_paused_states(false, runtime.inactivity.system_audio_paused);
@@ -2156,7 +2162,7 @@ pub(super) fn resume_microphone_from_inactivity(
 #[cfg(target_os = "windows")]
 pub(super) fn resume_system_audio_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
-    app_handle: Option<&tauri::AppHandle>,
+    _app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     if !runtime.inactivity.is_system_audio_paused() {
         return Ok(());
@@ -2172,23 +2178,31 @@ pub(super) fn resume_system_audio_from_inactivity(
         return Ok(());
     }
 
-    let resume_sources = active_sources_for_inactivity_paused_state(
-        &requested_sources,
-        runtime.inactivity.screen_paused,
-        runtime.inactivity.microphone_paused,
-        false,
-    )
-    .unwrap_or(CaptureSources {
-        screen: false,
-        microphone: false,
-        system_audio: false,
-    });
-    start_windows_active_segment(
-        app_handle,
-        runtime,
-        &resume_sources,
-        "resuming Windows system audio from inactivity",
-    )?;
+    let Some(planner) = runtime.system_audio_planner.as_ref() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Capture system-audio planner missing while resuming Windows system audio from inactivity".to_string(),
+        });
+    };
+    let new_output_path = planner.system_audio_resume_file(runtime.current_segment_index, now_unix_ms());
+    let new_output_str = new_output_path.to_string_lossy().to_string();
+    if let Some(parent) = new_output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| CaptureErrorResponse {
+            code: "io_error".to_string(),
+            message: format!("Failed to create system audio capture directory: {e}"),
+        })?;
+    }
+    if let Some(session) = runtime.active_system_audio_session.as_mut() {
+        resume_windows_audio_session_from_inactivity(session, &new_output_str);
+    }
+    set_current_system_audio_output_file(
+        runtime.current_segment_output_files.as_mut().ok_or_else(|| CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Segment output files missing while resuming Windows system audio from inactivity".to_string(),
+        })?,
+        new_output_str.clone(),
+    );
+    runtime.system_audio_recording_file = Some(new_output_str);
     runtime
         .inactivity
         .set_audio_family_paused_states(runtime.inactivity.microphone_paused, false);
@@ -4504,6 +4518,33 @@ fn stop_windows_audio_session_for_inactivity(
         session.stop_for_inactivity_returning_finalization()
     } else {
         session.stop_returning_finalization()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn pause_windows_audio_session_for_inactivity(
+    session: &mut Box<dyn microphone_capture::AudioCaptureSession>,
+) -> Result<microphone_capture::MicrophoneOutputFinalization, CaptureErrorResponse> {
+    if let Some(session) = session
+        .as_any_mut()
+        .downcast_mut::<microphone_capture::WasapiMicrophoneCaptureSession>()
+    {
+        session.pause_for_inactivity()
+    } else {
+        session.stop_returning_finalization()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resume_windows_audio_session_from_inactivity(
+    session: &mut Box<dyn microphone_capture::AudioCaptureSession>,
+    new_output_path: &str,
+) {
+    if let Some(session) = session
+        .as_any_mut()
+        .downcast_mut::<microphone_capture::WasapiMicrophoneCaptureSession>()
+    {
+        session.resume_from_inactivity(new_output_path);
     }
 }
 
