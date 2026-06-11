@@ -1610,7 +1610,12 @@ async fn run_ask_ai_turn(
             }
         }
         Err(error) => {
-            let message = error.to_string();
+            // Display a plain-language sentence; keep the raw provider/transport
+            // detail (status codes, JSON body) in the log for debugging.
+            tauri_plugin_log::log::warn!(
+                "Ask AI agent loop failed for {conversation_id}: {error}"
+            );
+            let message = error.user_facing_message();
             persist_turn(
                 &infra,
                 &conversation_id,

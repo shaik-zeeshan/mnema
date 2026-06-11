@@ -97,6 +97,97 @@ pub enum AiRuntimeError {
     AgentLoop(String),
 }
 
+impl AiRuntimeError {
+    /// A short, plain-language description of this error suitable for showing a
+    /// user in the UI.
+    ///
+    /// The `Display` impl (`to_string()`) carries the raw provider/transport
+    /// detail — useful in logs, but unfit for the surface: an `AgentLoop` failure
+    /// is a wall of `CompletionError: ProviderError: Invalid status code 429 ...`
+    /// with a JSON body. This collapses that detail into one human sentence,
+    /// classifying the common provider failures (rate limit, rejected key, out of
+    /// quota, unreachable, provider outage, context overflow). Callers should log
+    /// `to_string()` and display this.
+    pub fn user_facing_message(&self) -> String {
+        match self {
+            AiRuntimeError::MissingModel => {
+                "No model is selected. Choose one in Settings and try again.".to_string()
+            }
+            AiRuntimeError::MissingKey => {
+                "No API key is set for this provider. Add your key in Settings and try again."
+                    .to_string()
+            }
+            AiRuntimeError::MissingBaseUrl => {
+                "This provider needs a base URL. Set it in Settings and try again.".to_string()
+            }
+            AiRuntimeError::Build(_) | AiRuntimeError::ClientBuild(_) => {
+                "Couldn't reach the AI provider. Check your connection and try again.".to_string()
+            }
+            AiRuntimeError::Extraction(error) => classify_provider_failure(&error.to_string()),
+            AiRuntimeError::AgentLoop(message) => classify_provider_failure(message),
+        }
+    }
+}
+
+/// Collapse a raw provider/transport error string into one user-facing sentence.
+///
+/// Matches case-insensitively on the markers the cloud providers and the HTTP
+/// layer surface (status codes, provider error codes, transport phrases). The
+/// order matters: more specific causes (auth, quota) are tested before the
+/// generic 5xx/transport buckets so a "402 insufficient quota" doesn't read as a
+/// plain outage. Anything unrecognised falls back to a neutral retry sentence so
+/// the surface never shows a raw JSON body.
+fn classify_provider_failure(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    let has = |needle: &str| lower.contains(needle);
+
+    if has("429") || has("too many requests") || has("rate_limit") || has("rate limit") {
+        "The AI provider is rate-limiting requests right now. Wait a moment and try again."
+            .to_string()
+    } else if has("insufficient_quota")
+        || (has("quota") && has("exceeded"))
+        || has("billing")
+        || has("insufficient funds")
+        || has("payment required")
+    {
+        "Your AI provider account is out of credit or quota. Check your provider billing, then try again."
+            .to_string()
+    } else if has("401")
+        || has("403")
+        || has("unauthorized")
+        || has("invalid x-api-key")
+        || has("invalid api key")
+        || has("authentication")
+        || has("permission")
+    {
+        "The AI provider rejected your API key. Check it in Settings and try again.".to_string()
+    } else if has("context")
+        && (has("length") || has("maximum") || has("too long") || has("token"))
+    {
+        "This conversation is too long for the selected model. Start a new chat and try again."
+            .to_string()
+    } else if has("timed out")
+        || has("timeout")
+        || has("connection")
+        || has("dns")
+        || has("unreachable")
+        || has("network")
+    {
+        "Couldn't reach the AI provider. Check your connection and try again.".to_string()
+    } else if has("500")
+        || has("502")
+        || has("503")
+        || has("529")
+        || has("overloaded")
+        || has("internal server error")
+        || has("service unavailable")
+    {
+        "The AI provider had a temporary problem. Try again in a moment.".to_string()
+    } else {
+        "The AI engine couldn't complete this request. Try again in a moment.".to_string()
+    }
+}
+
 /// The structured shape proved by [`run_connection_probe`].
 ///
 /// Both fields are optional so the model can always satisfy the schema even if
@@ -300,6 +391,50 @@ mod tests {
         // the connect attempt fails fast without touching the network.
         let reachable = futures_executor_block_on(ping_endpoint("http://127.0.0.1:1"));
         assert!(!reachable);
+    }
+
+    #[test]
+    fn agent_loop_rate_limit_becomes_friendly_message() {
+        // The exact shape rig surfaces for a provider 429, JSON body and all.
+        let raw = "agent loop failed: CompletionError: ProviderError: Invalid status code 429 \
+                   Too Many Requests with message: {\"error\":{\"message\":\"You have exceeded \
+                   your rate limit\",\"code\":\"RATE_LIMIT_EXCEEDED\"}}";
+        let message = AiRuntimeError::AgentLoop(raw.to_string()).user_facing_message();
+        assert!(
+            message.contains("rate-limiting"),
+            "expected a rate-limit sentence, got: {message}"
+        );
+        // The raw JSON / status code never leaks into the user-facing text.
+        assert!(!message.contains("429"));
+        assert!(!message.contains('{'));
+    }
+
+    #[test]
+    fn provider_failures_classify_by_cause() {
+        let cases = [
+            ("Invalid status code 401 Unauthorized", "rejected your API key"),
+            ("insufficient_quota: you have run out", "out of credit or quota"),
+            ("error sending request: connection refused", "Check your connection"),
+            ("Invalid status code 503 Service Unavailable", "temporary problem"),
+            (
+                "maximum context length is 200000 tokens",
+                "too long for the selected model",
+            ),
+        ];
+        for (raw, expected) in cases {
+            let message = classify_provider_failure(raw);
+            assert!(
+                message.contains(expected),
+                "raw {raw:?} should classify to contain {expected:?}, got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrecognised_failure_falls_back_without_leaking_detail() {
+        let message = classify_provider_failure("some entirely novel { json: true } blob");
+        assert!(message.contains("couldn't complete this request"));
+        assert!(!message.contains('{'));
     }
 
     #[test]
