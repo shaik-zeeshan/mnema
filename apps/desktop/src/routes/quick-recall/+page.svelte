@@ -1,9 +1,17 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { fade } from "svelte/transition";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import {
+    appIconFallback,
+    canonicalBundleIdForComparison,
+    iconPathForBundleId,
+    mergeIconResolutions,
+    unresolvedIconBundleIds,
+    type AppIconResolution,
+  } from "$lib/app-privacy-exclusion";
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
@@ -738,6 +746,9 @@
   type AskToolActivityEntry = {
     kind: AskToolKind;
     label: string;
+    // The app the call was scoped to (bundle id or display name); rendered as
+    // an icon + name chip after the label instead of raw ` in <app>` text.
+    app?: string | null;
   };
 
   type AskAiDeltaEvent = {
@@ -828,9 +839,10 @@
     // always shown expanded while it streams.
     reasoningExpanded: boolean;
     toolActivities: AskToolActivityEntry[];
-    // The live working-line label for the in-flight tool call (cleared when the
+    // The live working-line entry for the in-flight tool call (cleared when the
     // model resumes streaming), shown beneath the answer for the active turn.
-    toolActivity: string | null;
+    // Carries the label plus the optional app scope for the icon chip.
+    toolActivity: AskToolActivityEntry | null;
     sources: AskAiSource[];
     phase: AskAiPhase;
     errorMessage: string | null;
@@ -1082,27 +1094,24 @@
   function formatToolActivity(
     tool: string | undefined,
     params: Record<string, unknown> | undefined,
-  ): { kind: AskToolKind; label: string } {
+  ): AskToolActivityEntry {
     const p = params ?? {};
     const now = new Date();
 
     if (tool === "search") {
       const queryText = readString(p, "query");
       let label = queryText ? `Searching “${queryText}”` : "Searching your captures";
-      const app = readString(p, "app");
-      if (app) label += ` in ${app}`;
       const range = formatDateRange(readString(p, "from"), readString(p, "to"), now);
       if (range) label += ` · ${range}`;
-      return { kind: "search", label };
+      // The app scope renders as an icon + name chip, not as label text.
+      return { kind: "search", label, app: readString(p, "app") };
     }
 
     if (tool === "timeline") {
       let label = "Scanning timeline";
       const range = formatDateRange(readString(p, "from"), readString(p, "to"), now);
       if (range) label += ` · ${range}`;
-      const app = readString(p, "app");
-      if (app) label += ` in ${app}`;
-      return { kind: "timeline", label };
+      return { kind: "timeline", label, app: readString(p, "app") };
     }
 
     if (tool === "show_text") {
@@ -1134,6 +1143,44 @@
     if (reads > 0) parts.push(`${reads} ${reads === 1 ? "read" : "reads"}`);
     if (others > 0) parts.push(`${others} ${others === 1 ? "step" : "steps"}`);
     return parts.length > 0 ? parts.join(" · ") : null;
+  }
+
+  // ── Tool-activity app icons (mirrors the App Privacy Exclusion idiom) ─────
+  // The tool's `app` param may be a bundle id (resolvable via
+  // `resolve_app_icons`) or a free-form display name (resolves to no icon →
+  // letter fallback). Resolutions are id-keyed facts merged across turns; a
+  // null resolution stays in the requested set so it is never re-fetched.
+  let toolAppIconPaths = $state<Record<string, string>>({});
+  const requestedToolAppIconIds = new Set<string>();
+
+  async function resolveToolAppIcons(
+    apps: Array<string | null | undefined>,
+  ): Promise<void> {
+    const unresolved = unresolvedIconBundleIds(
+      apps,
+      toolAppIconPaths,
+      requestedToolAppIconIds,
+    );
+    if (unresolved.length === 0) return;
+    for (const id of unresolved) {
+      requestedToolAppIconIds.add(canonicalBundleIdForComparison(id));
+    }
+    try {
+      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
+        request: { bundleIds: unresolved },
+      });
+      const result = mergeIconResolutions(toolAppIconPaths, icons);
+      if (result.changed) toolAppIconPaths = result.iconPathsByBundleId;
+    } catch {
+      // Icons are decorative; the letter fallback keeps working. The ids stay
+      // marked requested so a failing resolver isn't re-polled per event.
+    }
+  }
+
+  function toolAppIconSrc(app: string | null | undefined): string | null {
+    if (!app) return null;
+    const iconPath = iconPathForBundleId(app, toolAppIconPaths);
+    return iconPath ? convertFileSrc(iconPath) : null;
   }
 
   let askAvailable = $derived(askAvailability?.available === true);
@@ -1211,6 +1258,7 @@
         t.toolActivities = Array.isArray(turn.toolActivities)
           ? (turn.toolActivities as AskToolActivityEntry[])
           : [];
+        void resolveToolAppIcons(t.toolActivities.map((a) => a.app));
         t.sources = Array.isArray(turn.sources)
           ? (turn.sources as AskAiSource[])
           : [];
@@ -3150,8 +3198,9 @@
       // stays visible, and record it for the collapsed summary chip.
       if (event.payload.phase === "tool") {
         const activity = formatToolActivity(event.payload.tool, event.payload.params);
-        turn.toolActivity = activity.label;
+        turn.toolActivity = activity;
         turn.toolActivities = [...turn.toolActivities, activity];
+        if (activity.app) void resolveToolAppIcons([activity.app]);
         return;
       }
       if (typeof event.payload.seededResultCount === "number") {
@@ -3299,6 +3348,21 @@
     void cancelActiveAsk();
   });
 </script>
+
+<!-- Inline app chip for tool-activity lines: resolved icon (or letter
+     fallback) + the app name, matching the app-icon look used elsewhere. -->
+{#snippet toolAppChip(app: string)}
+  <span class="quick-recall__tool-app">
+    <span class="quick-recall__tool-app-icon" aria-hidden="true">
+      {#if toolAppIconSrc(app) !== null}
+        <img src={toolAppIconSrc(app)} alt="" />
+      {:else}
+        {appIconFallback(app, app)}
+      {/if}
+    </span>
+    <span class="quick-recall__tool-app-name">{app}</span>
+  </span>
+{/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="quick-recall" onkeydown={handleRootKeydown}>
@@ -3911,7 +3975,12 @@
                           {#if turn.summaryExpanded}
                             <ul class="quick-recall__activity-list">
                               {#each turn.toolActivities as activity, ai (ai)}
-                                <li class="quick-recall__activity-item">{activity.label}</li>
+                                <li class="quick-recall__activity-item">
+                                  {activity.label}
+                                  {#if activity.app}
+                                    in {@render toolAppChip(activity.app)}
+                                  {/if}
+                                </li>
                               {/each}
                             </ul>
                           {/if}
@@ -3979,7 +4048,20 @@
                       <!-- Live animated working line: the real tool filter string. -->
                       <p class="quick-recall__state quick-recall__state--working">
                         <span class="quick-recall__dot" aria-hidden="true"></span>
-                        <span class="quick-recall__working-label">{turn.toolActivity}</span>
+                        <span class="quick-recall__working-label"
+                          >{turn.toolActivity.label}</span
+                        >
+                        {#if turn.toolActivity.app}
+                          in
+                          {@render toolAppChip(turn.toolActivity.app)}
+                        {/if}
+                      </p>
+                    {:else if turn.phase === "streaming"}
+                      <!-- Answer text is arriving: label the phase so the caret
+                           in AnswerProse reads as the insertion point. -->
+                      <p class="quick-recall__state quick-recall__state--working">
+                        <span class="quick-recall__dot" aria-hidden="true"></span>
+                        Writing…
                       </p>
                     {/if}
                   {/if}
@@ -5125,11 +5207,50 @@
   }
 
   /* The live working line's filter string wraps to its full text (the answer
-     area scrolls) rather than truncating, so the user sees exactly what ran. */
+     area scrolls) rather than truncating, so the user sees exactly what ran.
+     (No flex-grow: the optional "in <app>" chip sits right after the label.) */
   .quick-recall__working-label {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+
+  /* Inline app chip in tool-activity lines: the app-icon look at 16px. */
+  .quick-recall__tool-app {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    vertical-align: middle;
+  }
+
+  .quick-recall__tool-app-icon {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .quick-recall__tool-app-icon img {
+    width: 13px;
+    height: 13px;
+    object-fit: contain;
+  }
+
+  .quick-recall__tool-app-name {
+    color: var(--app-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .quick-recall__seeded {

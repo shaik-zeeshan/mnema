@@ -31,11 +31,19 @@
   // always calls `ask_ai_followup` — the backend reloads history server-side, so
   // there is no client-side resurrect.
   import { onMount, onDestroy, tick, untrack } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { openSettingsWindow } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import {
+    appIconFallback,
+    canonicalBundleIdForComparison,
+    iconPathForBundleId,
+    mergeIconResolutions,
+    unresolvedIconBundleIds,
+    type AppIconResolution,
+  } from "$lib/app-privacy-exclusion";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
@@ -56,9 +64,16 @@
     type AskToolActivityEntry,
     type PinnableEngine,
     configuredPinnableEngines,
+    defaultEnginePinProvider,
+    defaultEngineModelListRequest,
   } from "$lib/insights/conversation";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
-  import type { RecordingSettings } from "$lib/types/recording";
+  import type {
+    AiRuntimeModel,
+    AiRuntimeSettings,
+    RecordingSettings,
+    RecordingSettingsDomainUpdateResponse,
+  } from "$lib/types/recording";
 
   // Quick Recall → Chat handoff (issue #111, ADR 0031). When the Insights page
   // receives an `insights_open_conversation` signal it sets `openConversationId`
@@ -169,8 +184,9 @@
     // live reasoning panel ignores this and is always shown while it streams.
     reasoningExpanded: boolean;
     toolActivities: AskToolActivityEntry[];
-    // Live working-line label for the in-flight tool call (cleared on resume).
-    toolActivity: string | null;
+    // Live working-line entry for the in-flight tool call (cleared on resume).
+    // Carries the label plus the optional app scope for the icon chip.
+    toolActivity: AskToolActivityEntry | null;
     sources: AskAiSource[];
     phase: "seeding" | "thinking" | "streaming" | "done" | "error";
     errorMessage: string | null;
@@ -186,17 +202,31 @@
   // True between a turn starting and that turn's terminal done/error event.
   let streaming = $state(false);
 
-  // ── Per-thread engine pin ────────────────────────────────────────────────
-  // The configured engines a thread can be pinned to (default + additional),
-  // derived from the live recording settings. The active thread's pin is
-  // (activePinProvider, activePinModel); null/null means "Default engine".
+  // ── Per-thread model pin ─────────────────────────────────────────────────
+  // A thread can be pinned to a model: either one discovered from the default
+  // engine's `/models` route (ai_runtime_list_models), one of the configured
+  // engines (default + additional, with provider context), or a free-form model
+  // id (allowed per ADR 0033 — never a key-entry surface). The active thread's
+  // pin is (activePinProvider, activePinModel); null/null means the global
+  // default engine. Backend `resolve_engine_config_for_pin` resolves any
+  // (provider, model) pin, falling back to default.
   let pinnableEngines = $state<PinnableEngine[]>([]);
+  // Snapshot of the aiRuntime settings backing model discovery + the default
+  // provider pin string. Refreshed alongside `pinnableEngines`.
+  let aiRuntimeSnapshot = $state<AiRuntimeSettings | null>(null);
+  let defaultProvider = $derived(
+    aiRuntimeSnapshot === null ? null : defaultEnginePinProvider(aiRuntimeSnapshot),
+  );
   let activePinProvider = $state<string | null>(null);
   let activePinModel = $state<string | null>(null);
-  let activeEngineLabel = $derived.by(() => {
+  let activeModelLabel = $derived.by(() => {
     if (activePinProvider === null || activePinModel === null) {
-      return "Default engine";
+      return "Default";
     }
+    if (defaultProvider !== null && activePinProvider === defaultProvider) {
+      return activePinModel;
+    }
+    // A non-default-provider pin keeps its provider context.
     const match = pinnableEngines.find(
       (e) => e.provider === activePinProvider && e.model === activePinModel,
     );
@@ -204,18 +234,100 @@
   });
   let enginePickerOpen = $state(false);
 
+  // Models discovered from the default engine's `/models` route. Loaded lazily
+  // on first picker open, cached until a settings change invalidates it.
+  let discoveredModels = $state<string[]>([]);
+  let modelsLoaded = $state(false);
+  let modelsLoading = $state(false);
+  let modelsFailed = $state(false);
+  // Configured engines not already covered by the discovered default-provider
+  // models — multi-provider users keep their other engines selectable.
+  let extraConfiguredEngines = $derived(
+    pinnableEngines.filter(
+      (e) =>
+        !(e.provider === defaultProvider && discoveredModels.includes(e.model)),
+    ),
+  );
+
+  // Free-form "Custom model…" entry at the bottom of the picker.
+  let customModelOpen = $state(false);
+  let customModelInput = $state("");
+  let customModelEl = $state<HTMLInputElement | null>(null);
+
   async function loadPinnableEngines(): Promise<void> {
     try {
       const settings = await invoke<RecordingSettings>("get_recording_settings");
+      aiRuntimeSnapshot = settings.aiRuntime;
       pinnableEngines = configuredPinnableEngines(settings.aiRuntime);
     } catch {
+      aiRuntimeSnapshot = null;
       pinnableEngines = [];
+    }
+    // The engine selection may have changed: drop the cached model list so the
+    // next picker open re-discovers against the current default engine. If the
+    // picker is open right now, refresh it in place.
+    modelsLoaded = false;
+    modelsFailed = false;
+    discoveredModels = [];
+    if (enginePickerOpen) void loadModelList();
+  }
+
+  async function loadModelList(): Promise<void> {
+    const settings = aiRuntimeSnapshot;
+    if (settings === null || modelsLoading) return;
+    modelsLoading = true;
+    modelsFailed = false;
+    try {
+      const models = await invoke<AiRuntimeModel[]>("ai_runtime_list_models", {
+        request: defaultEngineModelListRequest(settings),
+      });
+      discoveredModels = models.map((m) => m.id);
+      modelsLoaded = true;
+    } catch {
+      // Offline/unlisted providers degrade quietly: the picker still offers
+      // Default + configured engines + the custom-model entry.
+      discoveredModels = [];
+      modelsFailed = true;
+    } finally {
+      modelsLoading = false;
     }
   }
 
-  // Pin the active thread to a configured engine (or clear the pin → default).
-  async function selectEngine(engine: PinnableEngine | null): Promise<void> {
+  function toggleModelPicker(): void {
+    enginePickerOpen = !enginePickerOpen;
+    customModelOpen = false;
+    customModelInput = "";
+    if (enginePickerOpen && !modelsLoaded) void loadModelList();
+  }
+
+  function openCustomModel(): void {
+    customModelOpen = true;
+    void tick().then(() => customModelEl?.focus());
+  }
+
+  function onCustomModelKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const model = customModelInput.trim();
+      if (model.length === 0 || defaultProvider === null) return;
+      customModelOpen = false;
+      customModelInput = "";
+      void selectEngine({ provider: defaultProvider, model });
+    } else if (event.key === "Escape") {
+      event.stopPropagation();
+      customModelOpen = false;
+      customModelInput = "";
+    }
+  }
+
+  // Pin the active thread to a (provider, model) — a discovered model, a
+  // configured engine, or a typed custom id — or clear the pin (null → default).
+  async function selectEngine(
+    engine: { provider: string; model: string } | null,
+  ): Promise<void> {
     enginePickerOpen = false;
+    customModelOpen = false;
+    customModelInput = "";
     const conversationId = activeConversationId;
     if (conversationId === null) return;
     activePinProvider = engine?.provider ?? null;
@@ -393,6 +505,7 @@
     t.answer = turn.answer ?? "";
     t.reasoning = turn.reasoning ?? "";
     t.toolActivities = coerceToolActivities(turn.toolActivities);
+    void resolveToolAppIcons(t.toolActivities.map((a) => a.app));
     t.sources = coerceSources(turn.sources);
     t.errorMessage = turn.errorMessage;
     t.seededResultCount = turn.seededResultCount;
@@ -422,6 +535,10 @@
           ? (e as AskToolActivityEntry).kind
           : "other") as AskToolKind,
         label: (e as AskToolActivityEntry).label,
+        app:
+          typeof (e as AskToolActivityEntry).app === "string"
+            ? ((e as AskToolActivityEntry).app as string)
+            : null,
       }));
   }
 
@@ -706,23 +823,61 @@
     const p = params ?? {};
     if (tool === "search") {
       const queryText = readString(p, "query");
-      let label = queryText
+      const label = queryText
         ? `Searching “${queryText}”`
         : "Searching your captures";
-      const app = readString(p, "app");
-      if (app) label += ` in ${app}`;
-      return { kind: "search", label };
+      // The app scope renders as an icon + name chip, not as label text.
+      return { kind: "search", label, app: readString(p, "app") };
     }
     if (tool === "timeline") {
-      let label = "Scanning timeline";
-      const app = readString(p, "app");
-      if (app) label += ` in ${app}`;
-      return { kind: "timeline", label };
+      return {
+        kind: "timeline",
+        label: "Scanning timeline",
+        app: readString(p, "app"),
+      };
     }
     if (tool === "show_text") {
       return { kind: "show_text", label: "Reading a capture" };
     }
     return { kind: "other", label: tool ? `Running ${tool}` : "Working" };
+  }
+
+  // ── Tool-activity app icons (mirrors the App Privacy Exclusion idiom) ─────
+  // The tool's `app` param may be a bundle id (resolvable via
+  // `resolve_app_icons`) or a free-form display name (resolves to no icon →
+  // letter fallback). Resolutions are id-keyed facts merged across turns; a
+  // null resolution stays in the requested set so it is never re-fetched.
+  let toolAppIconPaths = $state<Record<string, string>>({});
+  const requestedToolAppIconIds = new Set<string>();
+
+  async function resolveToolAppIcons(
+    apps: Array<string | null | undefined>,
+  ): Promise<void> {
+    const unresolved = unresolvedIconBundleIds(
+      apps,
+      toolAppIconPaths,
+      requestedToolAppIconIds,
+    );
+    if (unresolved.length === 0) return;
+    for (const id of unresolved) {
+      requestedToolAppIconIds.add(canonicalBundleIdForComparison(id));
+    }
+    try {
+      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
+        request: { bundleIds: unresolved },
+      });
+      const result = mergeIconResolutions(toolAppIconPaths, icons);
+      if (result.changed) toolAppIconPaths = result.iconPathsByBundleId;
+    } catch {
+      // Icons are decorative; the letter fallback keeps working. The ids stay
+      // marked requested so a failing resolver isn't re-polled per event.
+    }
+  }
+
+  function toolAppIconSrc(app: string | null | undefined): string | null {
+    if (!app) return null;
+    const iconPath = iconPathForBundleId(app, toolAppIconPaths);
+    return iconPath ? convertFileSrc(iconPath) : null;
   }
 
   function activitySummaryFor(
@@ -838,6 +993,7 @@
     let unlistenSource: (() => void) | undefined;
     let unlistenChanged: (() => void) | undefined;
     let unlistenCtx: (() => void) | undefined;
+    let unlistenSettings: (() => void) | undefined;
 
     // All stream events route to the LAST (live) turn, guarded on a matching
     // thread id (stale-thread guard, REQUIRED) and a non-empty transcript.
@@ -850,8 +1006,9 @@
           event.payload.tool,
           event.payload.params,
         );
-        turn.toolActivity = activity.label;
+        turn.toolActivity = activity;
         turn.toolActivities = [...turn.toolActivities, activity];
+        if (activity.app) void resolveToolAppIcons([activity.app]);
         return;
       }
       if (typeof event.payload.seededResultCount === "number") {
@@ -958,6 +1115,23 @@
       else unlistenCtx = fn;
     });
 
+    // Settings saved in the Settings window broadcast
+    // `recording_settings_domain_changed` ({ domain, settings }); the Ask AI
+    // toggle/model live in the `access` domain and the Reasoning Engine config
+    // in `ai_runtime`, so refresh availability + pinnable engines on those.
+    listen<RecordingSettingsDomainUpdateResponse>(
+      "recording_settings_domain_changed",
+      (event) => {
+        const domain = event.payload.domain;
+        if (domain !== "ai_runtime" && domain !== "access") return;
+        void loadAskAvailability();
+        void loadPinnableEngines();
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSettings = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenStatus?.();
@@ -968,6 +1142,7 @@
       unlistenSource?.();
       unlistenChanged?.();
       unlistenCtx?.();
+      unlistenSettings?.();
     };
   });
 
@@ -977,6 +1152,21 @@
     void cancelLiveSession();
   });
 </script>
+
+<!-- Inline app chip for tool-activity lines: resolved icon (or letter
+     fallback) + the app name, matching the app-icon look used elsewhere. -->
+{#snippet toolAppChip(app: string)}
+  <span class="tool-app">
+    <span class="tool-app-icon" aria-hidden="true">
+      {#if toolAppIconSrc(app) !== null}
+        <img src={toolAppIconSrc(app)} alt="" />
+      {:else}
+        {appIconFallback(app, app)}
+      {/if}
+    </span>
+    <span class="tool-app-name">{app}</span>
+  </span>
+{/snippet}
 
 <section class="chat" aria-label="Chat">
   <!-- LEFT rail: new chat + search + history list -->
@@ -1189,7 +1379,12 @@
                               {#if turn.summaryExpanded}
                                 <ul class="activity-list">
                                   {#each turn.toolActivities as activity, ai (ai)}
-                                    <li class="activity-item">{activity.label}</li>
+                                    <li class="activity-item">
+                                      {activity.label}
+                                      {#if activity.app}
+                                        in {@render toolAppChip(activity.app)}
+                                      {/if}
+                                    </li>
                                   {/each}
                                 </ul>
                               {/if}
@@ -1291,7 +1486,21 @@
                         {#if turn.toolActivity !== null}
                           <p class="state state--working">
                             <span class="dot" aria-hidden="true"></span>
-                            <span class="working-label">{turn.toolActivity}</span>
+                            <span class="working-label"
+                              >{turn.toolActivity.label}</span
+                            >
+                            {#if turn.toolActivity.app}
+                              in
+                              {@render toolAppChip(turn.toolActivity.app)}
+                            {/if}
+                          </p>
+                        {:else if turn.phase === "streaming"}
+                          <!-- Answer text is arriving: label the phase so the
+                               caret in AnswerProse reads as the insertion
+                               point, not an unexplained blink. -->
+                          <p class="state state--working">
+                            <span class="dot" aria-hidden="true"></span>
+                            Writing…
                           </p>
                         {/if}
                       {/if}
@@ -1308,23 +1517,25 @@
       {#if askAvailable}
         <div class="composer-wrap">
           {#if pinnableEngines.length > 0}
-            <!-- Per-thread engine pin: choose which configured engine answers
-                 this thread, or "Default engine" to clear the pin. -->
+            <!-- Per-thread model pin: choose which model answers this thread —
+                 a model discovered from the default engine, a configured
+                 engine, or a typed custom id — or "Default" to clear the pin. -->
             <div class="engine-pick">
-              <span class="engine-pick-label">Engine</span>
+              <span class="engine-pick-label">Model</span>
               <div class="engine-pick-menu">
                 <button
                   type="button"
                   class="engine-pick-trigger"
                   aria-haspopup="listbox"
                   aria-expanded={enginePickerOpen}
-                  onclick={() => (enginePickerOpen = !enginePickerOpen)}
+                  aria-label="Model for this thread"
+                  onclick={toggleModelPicker}
                 >
-                  <span class="engine-pick-current">{activeEngineLabel}</span>
+                  <span class="engine-pick-current">{activeModelLabel}</span>
                   <span class="engine-pick-caret" aria-hidden="true">▾</span>
                 </button>
                 {#if enginePickerOpen}
-                  <ul class="engine-pick-list" role="listbox">
+                  <ul class="engine-pick-list" role="listbox" aria-label="Model">
                     <li role="presentation">
                       <button
                         type="button"
@@ -1334,13 +1545,49 @@
                         aria-selected={activePinProvider === null}
                         onclick={() => void selectEngine(null)}
                       >
-                        Default engine
+                        Default
                         {#if activePinProvider === null}
                           <span class="engine-pick-check" aria-hidden="true">✓</span>
                         {/if}
                       </button>
                     </li>
-                    {#each pinnableEngines as engine (`${engine.provider}-${engine.model}`)}
+                    {#if modelsLoading}
+                      <li role="presentation">
+                        <span class="engine-pick-note">Loading models…</span>
+                      </li>
+                    {:else if modelsFailed}
+                      <li role="presentation">
+                        <span class="engine-pick-note">Couldn't load models</span>
+                      </li>
+                    {/if}
+                    {#each discoveredModels as modelId (modelId)}
+                      {@const selected =
+                        defaultProvider === activePinProvider &&
+                        modelId === activePinModel}
+                      <li role="presentation">
+                        <button
+                          type="button"
+                          class="engine-pick-option"
+                          class:engine-pick-option--active={selected}
+                          role="option"
+                          aria-selected={selected}
+                          onclick={() => {
+                            if (defaultProvider !== null) {
+                              void selectEngine({
+                                provider: defaultProvider,
+                                model: modelId,
+                              });
+                            }
+                          }}
+                        >
+                          {modelId}
+                          {#if selected}
+                            <span class="engine-pick-check" aria-hidden="true">✓</span>
+                          {/if}
+                        </button>
+                      </li>
+                    {/each}
+                    {#each extraConfiguredEngines as engine (`${engine.provider}-${engine.model}`)}
                       {@const selected =
                         engine.provider === activePinProvider &&
                         engine.model === activePinModel}
@@ -1360,6 +1607,29 @@
                         </button>
                       </li>
                     {/each}
+                    <li role="presentation">
+                      {#if customModelOpen}
+                        <input
+                          bind:this={customModelEl}
+                          bind:value={customModelInput}
+                          class="engine-pick-custom-input"
+                          type="text"
+                          placeholder="model id"
+                          aria-label="Custom model id"
+                          spellcheck="false"
+                          autocomplete="off"
+                          onkeydown={onCustomModelKeydown}
+                        />
+                      {:else}
+                        <button
+                          type="button"
+                          class="engine-pick-option"
+                          onclick={openCustomModel}
+                        >
+                          Custom model…
+                        </button>
+                      {/if}
+                    </li>
                   </ul>
                 {/if}
               </div>
@@ -1723,6 +1993,40 @@
   .working-label {
     color: var(--app-text);
   }
+  /* Inline app chip in tool-activity lines: the .app-rule-icon look at 16px. */
+  .tool-app {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    vertical-align: middle;
+  }
+  .tool-app-icon {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .tool-app-icon img {
+    width: 13px;
+    height: 13px;
+    object-fit: contain;
+  }
+  .tool-app-name {
+    color: var(--app-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .dot {
     width: 7px;
     height: 7px;
@@ -1921,7 +2225,7 @@
     background: var(--app-surface-subtle);
     padding: 12px 24px 14px;
   }
-  /* Per-thread engine pin (above the composer, same centered column width). */
+  /* Per-thread model pin (above the composer, same centered column width). */
   .engine-pick {
     display: flex;
     align-items: center;
@@ -2002,6 +2306,28 @@
   .engine-pick-check {
     color: var(--app-accent-strong);
     font-size: 10px;
+  }
+  /* Muted one-liner inside the dropdown (loading / discovery failure). */
+  .engine-pick-note {
+    display: block;
+    font-size: 11px;
+    padding: 6px 9px;
+    color: var(--app-text-faint);
+  }
+  /* Free-form "Custom model…" id input, matching the option rows. */
+  .engine-pick-custom-input {
+    width: 100%;
+    font: inherit;
+    font-size: 11px;
+    padding: 6px 9px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text);
+  }
+  .engine-pick-custom-input:focus {
+    outline: none;
+    border-color: var(--app-border-hover);
   }
 
   .composer {
