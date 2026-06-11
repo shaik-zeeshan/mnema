@@ -79,7 +79,7 @@
   }
   .mini-bar {
     display: grid;
-    grid-template-columns: 64px 1fr 56px;
+    grid-template-columns: 110px 1fr 56px;
     align-items: center;
     gap: 8px;
   }

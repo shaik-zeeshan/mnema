@@ -103,10 +103,7 @@
       aiStatus = ai;
       ctxStatus = ctx;
       if (settings?.aiRuntime) {
-        const rt = settings.aiRuntime;
-        modelLabel = shortModel(
-          rt.engineKind === "local" ? rt.localModel : rt.cloudModel,
-        );
+        modelLabel = shortModel(settings.aiRuntime.defaultModel?.model ?? "");
       }
     } catch {
       // Best-effort: leave the pill in its "engine off" default on error.
