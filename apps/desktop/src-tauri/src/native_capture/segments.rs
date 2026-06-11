@@ -1222,6 +1222,7 @@ fn audio_segment_window_for_file(
     segment_index: u64,
     schedule: &SegmentSchedule,
     file_path: &str,
+    known_duration_ms: Option<u64>,
 ) -> (String, String) {
     let started_at_unix_ms = audio_segment_started_at_unix_ms_for_file(
         source_session,
@@ -1233,7 +1234,9 @@ fn audio_segment_window_for_file(
         .segment_duration()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64;
-    let duration_ms = audio_file_duration_ms(file_path).unwrap_or(scheduled_duration_ms);
+    let duration_ms = known_duration_ms
+        .or_else(|| audio_file_duration_ms(file_path))
+        .unwrap_or(scheduled_duration_ms);
 
     audio_segment_window_from_duration_ms(started_at_unix_ms, duration_ms)
 }
@@ -1269,6 +1272,7 @@ pub(super) fn committed_audio_segments_for_output_files(
     schedule: Option<&SegmentSchedule>,
     segment_index: u64,
     output_files: Option<&CaptureOutputFiles>,
+    known_durations: &std::collections::HashMap<String, u64>,
 ) -> Vec<::app_infra::NewAudioSegment> {
     let (Some(source_sessions), Some(schedule), Some(output_files)) =
         (source_sessions, schedule, output_files)
@@ -1294,6 +1298,7 @@ pub(super) fn committed_audio_segments_for_output_files(
                         segment_index,
                         schedule,
                         file_path,
+                        known_durations.get(file_path).copied(),
                     );
                     Some(::app_infra::NewAudioSegment::new(
                         ::app_infra::AudioSegmentSourceKind::Microphone,
@@ -1320,6 +1325,7 @@ pub(super) fn committed_audio_segments_for_output_files(
                         segment_index,
                         schedule,
                         file_path,
+                        known_durations.get(file_path).copied(),
                     );
                     Some(::app_infra::NewAudioSegment::new(
                         ::app_infra::AudioSegmentSourceKind::SystemAudio,
@@ -1596,6 +1602,7 @@ pub(super) fn persist_committed_audio_segments(
         Some(schedule),
         segment_index,
         Some(output_files),
+        &std::collections::HashMap::new(),
     );
 
     if segments.is_empty() {
@@ -1950,10 +1957,14 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
         });
     let microphone_recording_file = runtime.microphone_recording_file.clone();
 
+    let mut microphone_known_durations = std::collections::HashMap::new();
     if let Some(session) = runtime.active_microphone_session.as_mut() {
         // Inactivity pause: discard the withheld tail so the committed final
         // microphone segment never carries the dead idle tail.
         let finalization = pause_windows_audio_session_for_inactivity(session)?;
+        if let (Some(file), Some(ms)) = (finalization.output_file.as_deref(), finalization.duration_ms) {
+            microphone_known_durations.insert(file.to_string(), ms);
+        }
         apply_windows_microphone_output_finalization(microphone_outputs.as_mut(), &finalization);
     }
 
@@ -1981,6 +1992,7 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
         runtime.segment_schedule.as_ref(),
         runtime.current_segment_index,
         microphone_outputs.as_ref(),
+        &microphone_known_durations,
     );
     runtime.microphone_recording_file = None;
     clear_current_microphone_output(runtime.current_segment_output_files.as_mut());
@@ -2016,10 +2028,14 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
             });
     let system_audio_recording_file = runtime.system_audio_recording_file.clone();
 
+    let mut system_audio_known_durations = std::collections::HashMap::new();
     if let Some(session) = runtime.active_system_audio_session.as_mut() {
         // Inactivity pause: discard the withheld tail so the committed final
         // system-audio segment never carries the dead idle tail.
         let finalization = pause_windows_audio_session_for_inactivity(session)?;
+        if let (Some(file), Some(ms)) = (finalization.output_file.as_deref(), finalization.duration_ms) {
+            system_audio_known_durations.insert(file.to_string(), ms);
+        }
         apply_windows_system_audio_output_finalization(
             system_audio_outputs.as_mut(),
             &finalization,
@@ -2050,6 +2066,7 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
         runtime.segment_schedule.as_ref(),
         runtime.current_segment_index,
         system_audio_outputs.as_ref(),
+        &system_audio_known_durations,
     );
     runtime.system_audio_recording_file = None;
     clear_current_system_audio_output(runtime.current_segment_output_files.as_mut());
@@ -2376,6 +2393,7 @@ pub(super) fn persist_committed_audio_segments(
     schedule: Option<&SegmentSchedule>,
     segment_index: u64,
     output_files: Option<&CaptureOutputFiles>,
+    known_durations: &std::collections::HashMap<String, u64>,
 ) {
     let (Some(app_handle), Some(source_sessions), Some(schedule), Some(output_files)) =
         (app_handle, source_sessions, schedule, output_files)
@@ -2387,6 +2405,7 @@ pub(super) fn persist_committed_audio_segments(
         Some(schedule),
         segment_index,
         Some(output_files),
+        known_durations,
     );
 
     if segments.is_empty() {
@@ -3157,6 +3176,7 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
             runtime.segment_schedule.as_ref(),
             runtime.current_segment_index,
             current_segment_output_files.as_ref(),
+            &std::collections::HashMap::new(),
         );
         warm_scrub_previews_for_committed_screen_outputs(
             app_handle,
@@ -5017,6 +5037,10 @@ pub(super) fn start_windows_active_segment(
                 return Err(error);
             }
         };
+        let mut sys_audio_known_durations = std::collections::HashMap::new();
+        if let (Some(file), Some(ms)) = (finalization.output_file.as_deref(), finalization.duration_ms) {
+            sys_audio_known_durations.insert(file.to_string(), ms);
+        }
         apply_windows_system_audio_output_finalization(
             previous_system_audio_outputs.as_mut(),
             &finalization,
@@ -5028,6 +5052,7 @@ pub(super) fn start_windows_active_segment(
             runtime.segment_schedule.as_ref(),
             runtime.current_segment_index,
             previous_system_audio_outputs.as_ref(),
+            &sys_audio_known_durations,
         );
         set_current_system_audio_output_file(&mut segment_outputs, output_file.clone());
         system_audio_recording_file = Some(output_file);
@@ -5061,6 +5086,10 @@ pub(super) fn start_windows_active_segment(
                 return Err(error);
             }
         };
+        let mut mic_known_durations = std::collections::HashMap::new();
+        if let (Some(file), Some(ms)) = (finalization.output_file.as_deref(), finalization.duration_ms) {
+            mic_known_durations.insert(file.to_string(), ms);
+        }
         apply_windows_microphone_output_finalization(
             previous_microphone_outputs.as_mut(),
             &finalization,
@@ -5072,6 +5101,7 @@ pub(super) fn start_windows_active_segment(
             runtime.segment_schedule.as_ref(),
             runtime.current_segment_index,
             previous_microphone_outputs.as_ref(),
+            &mic_known_durations,
         );
         set_current_microphone_output_file(&mut segment_outputs, output_file.clone());
         microphone_recording_file = Some(output_file);
@@ -6208,14 +6238,22 @@ pub(super) fn stop_capture_runtime(
         let system_audio_recording_file = runtime.system_audio_recording_file.clone();
         let requested_sources = runtime.requested_sources.clone();
 
+        let mut stop_known_durations: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+
         // Finalize the in-flight microphone segment so its `.m4a` is openable
         // before the WASAPI/MF capture thread is torn down.
         if let Some(session) = runtime.active_microphone_session.as_mut() {
             match session.stop_returning_finalization() {
-                Ok(finalization) => apply_windows_microphone_output_finalization(
-                    current_segment_output_files.as_mut(),
-                    &finalization,
-                ),
+                Ok(finalization) => {
+                    if let (Some(file), Some(ms)) = (finalization.output_file.as_deref(), finalization.duration_ms) {
+                        stop_known_durations.insert(file.to_string(), ms);
+                    }
+                    apply_windows_microphone_output_finalization(
+                        current_segment_output_files.as_mut(),
+                        &finalization,
+                    );
+                }
                 Err(error) => {
                     super::debug_log::log(format!(
                         "failed to finalize Windows microphone capture on stop: [{}] {}",
@@ -6228,10 +6266,15 @@ pub(super) fn stop_capture_runtime(
 
         if let Some(session) = runtime.active_system_audio_session.as_mut() {
             match session.stop_returning_finalization() {
-                Ok(finalization) => apply_windows_system_audio_output_finalization(
-                    current_segment_output_files.as_mut(),
-                    &finalization,
-                ),
+                Ok(finalization) => {
+                    if let (Some(file), Some(ms)) = (finalization.output_file.as_deref(), finalization.duration_ms) {
+                        stop_known_durations.insert(file.to_string(), ms);
+                    }
+                    apply_windows_system_audio_output_finalization(
+                        current_segment_output_files.as_mut(),
+                        &finalization,
+                    );
+                }
                 Err(error) => {
                     super::debug_log::log(format!(
                         "failed to finalize Windows system-audio capture on stop: [{}] {}",
@@ -6281,6 +6324,7 @@ pub(super) fn stop_capture_runtime(
             runtime.segment_schedule.as_ref(),
             runtime.current_segment_index,
             current_segment_output_files.as_ref(),
+            &stop_known_durations,
         );
 
         // Enqueue scrub-preview generation for the finalized screen segment. The

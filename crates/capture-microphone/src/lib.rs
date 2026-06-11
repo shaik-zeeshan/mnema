@@ -111,6 +111,7 @@ pub struct MicrophoneOutputFinalization {
     pub speech_detected: bool,
     pub trim_start_offset_ms: u64,
     pub discard_reason: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 /// Platform-neutral seam for a running audio capture session (microphone or
@@ -2453,6 +2454,7 @@ fn microphone_output_finalization_for_context(
         speech_detected,
         trim_start_offset_ms,
         discard_reason,
+        duration_ms: None,
     }
 }
 
@@ -2524,6 +2526,7 @@ fn finalize_microphone_vad_boundary_trim(
             speech_detected: false,
             trim_start_offset_ms: 0,
             discard_reason: Some("no_vad_speech".to_string()),
+            duration_ms: None,
         });
     }
 
@@ -2538,6 +2541,7 @@ fn finalize_microphone_vad_boundary_trim(
             speech_detected: true,
             trim_start_offset_ms: 0,
             discard_reason: None,
+            duration_ms: None,
         });
     }
 
@@ -2554,6 +2558,7 @@ fn finalize_microphone_vad_boundary_trim(
                 speech_detected: true,
                 trim_start_offset_ms: (trim_start_secs * 1000.0).round().max(0.0) as u64,
                 discard_reason: None,
+                duration_ms: None,
             })
         }
         Err(error) => {
@@ -2569,6 +2574,7 @@ fn finalize_microphone_vad_boundary_trim(
                 speech_detected: true,
                 trim_start_offset_ms: 0,
                 discard_reason: None,
+                duration_ms: None,
             })
         }
     }

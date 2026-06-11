@@ -683,6 +683,7 @@ fn trimmed_microphone_finalization_keeps_segment_index_in_timestamped_filename()
         speech_detected: true,
         trim_start_offset_ms: 1_000,
         discard_reason: None,
+        duration_ms: None,
     };
     let mut output_files = CaptureOutputFiles {
         screen_file: None,
@@ -734,6 +735,7 @@ fn microphone_finalization_preserves_prior_rotated_outputs() {
         speech_detected: true,
         trim_start_offset_ms: 0,
         discard_reason: None,
+        duration_ms: None,
     };
     let mut output_files = CaptureOutputFiles {
         screen_file: None,
@@ -771,6 +773,7 @@ fn discarded_microphone_finalization_preserves_prior_rotated_outputs() {
         speech_detected: false,
         trim_start_offset_ms: 0,
         discard_reason: Some("no_vad_speech".to_string()),
+        duration_ms: None,
     };
     let mut output_files = CaptureOutputFiles {
         screen_file: None,
@@ -5442,6 +5445,7 @@ impl microphone_capture::AudioCaptureSession for WindowsTestAudioSession {
             speech_detected: true,
             trim_start_offset_ms: 0,
             discard_reason: None,
+            duration_ms: None,
         })
     }
 
@@ -5461,6 +5465,7 @@ impl microphone_capture::AudioCaptureSession for WindowsTestAudioSession {
             speech_detected: true,
             trim_start_offset_ms: 0,
             discard_reason: None,
+            duration_ms: None,
         })
     }
 

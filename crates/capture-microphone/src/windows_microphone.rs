@@ -267,6 +267,7 @@ impl WasapiMicrophoneCaptureSession {
                 speech_detected: false,
                 trim_start_offset_ms: 0,
                 discard_reason: None,
+                duration_ms: None,
             });
         }
         self.stopped = true;
@@ -291,6 +292,7 @@ impl WasapiMicrophoneCaptureSession {
                 speech_detected: false,
                 trim_start_offset_ms: 0,
                 discard_reason: None,
+                duration_ms: None,
             });
         }
         let result = reply_rx
@@ -1084,6 +1086,11 @@ impl CaptureEngine {
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         let closed_path = self.current_path.to_string_lossy().to_string();
         let had_frames = self.frames_in_segment > 0;
+        let duration_ms = if self.sample_rate_hz > 0 && had_frames {
+            Some(self.frames_in_segment * 1000 / self.sample_rate_hz as u64)
+        } else {
+            None
+        };
 
         if let Some(sink) = self.sink.take() {
             if discard_inactivity_tail {
@@ -1100,6 +1107,7 @@ impl CaptureEngine {
                 speech_detected: false,
                 trim_start_offset_ms: 0,
                 discard_reason: None,
+                duration_ms,
             })
         } else {
             Ok(MicrophoneOutputFinalization {
@@ -1108,6 +1116,7 @@ impl CaptureEngine {
                 speech_detected: false,
                 trim_start_offset_ms: 0,
                 discard_reason: Some("no_audio_samples".to_string()),
+                duration_ms: None,
             })
         }
     }
