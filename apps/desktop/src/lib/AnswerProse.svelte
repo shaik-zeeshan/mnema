@@ -187,15 +187,45 @@
     color: var(--app-text-muted);
   }
 
+  /* Tables read as a quiet ledger, not a boxed grid: no per-cell borders, just an
+     uppercase muted header rule and hairline row dividers, full width, tabular
+     figures. The first column (usually a time / key) stays on one line so time
+     ranges never wrap to two cramped rows. */
   .answer-prose :global(table) {
+    width: 100%;
     border-collapse: collapse;
-    font-size: 11.5px;
+    font-size: 12px;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
   }
-  .answer-prose :global(th),
-  .answer-prose :global(td) {
-    border: 1px solid var(--app-border);
-    padding: 4px 8px;
+  .answer-prose :global(thead th) {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
     text-align: left;
+    padding: 0 14px 6px 0;
+    border-bottom: 1px solid var(--app-border-strong);
+    white-space: nowrap;
+  }
+  .answer-prose :global(tbody td) {
+    padding: 6px 14px 6px 0;
+    border-bottom: 1px solid var(--app-border);
+    color: var(--app-text);
+    text-align: left;
+    vertical-align: top;
+  }
+  .answer-prose :global(tbody tr:last-child td) {
+    border-bottom: none;
+  }
+  .answer-prose :global(th:last-child),
+  .answer-prose :global(td:last-child) {
+    padding-right: 0;
+  }
+  .answer-prose :global(tbody td:first-child) {
+    color: var(--app-text-muted);
+    white-space: nowrap;
   }
 
   /* ── Code-block chrome (emitted by markdown.ts) ──────────────────────── */

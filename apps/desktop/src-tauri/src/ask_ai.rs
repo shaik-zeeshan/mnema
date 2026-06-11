@@ -713,7 +713,10 @@ what you need before answering — prefer a concise `search` first, and use `sho
 for the specific results you need to read in full. Cite times and apps when useful, but never \
 invent details. When the captured text you cite already contains a URL, render it as a labeled \
 Markdown link `[label](url)` rather than bare text so the user can open it. If you still cannot \
-answer, say so briefly. Be concise and direct.\n",
+answer, say so briefly. Be concise and direct. Do NOT lay answers out as Markdown tables — they \
+render cramped in the narrow chat column. For a time-of-day breakdown of the user's day, use the \
+timeline block described below; for a comparison or ranking, use a bars block; otherwise use short \
+prose with bullet lists.\n",
     );
 
     // Graphical-answer affordance (issue #110): the Chat surface renders two
@@ -747,7 +750,9 @@ abbreviated, or rebranded (if the captured app name is `\"Zen\"`, write `\"Zen\"
 name ONLY: never a window title, document, tab, URL, or a combined `App / Thing` or `App (Thing)` \
 string; drop the chip entirely if you only have a window title. When set, `category` MUST be ONE of `creating`, \
 `communication`, `meetings`, `research`, `learning`, `organizing`, `personal`, `entertainment` \
-(it drives the widget's color — omit it if unsure). `title` is OPTIONAL. Emit this block ONLY \
+(it drives the widget's color — omit it if unsure). `title` is OPTIONAL and, when set, MUST be \
+short — a few words at most (for example `\"Morning\"` or `\"Today's work\"`), never a full \
+sentence or a date, since the widget shows it as a small uppercase caption. Emit this block ONLY \
 for genuinely chronological / time-of-day answers, derived from the `timeline` tool's real \
 intervals (which carry kind, startedAt, endedAt, and app context); otherwise answer in plain \
 markdown. Use at most one timeline block.\n",

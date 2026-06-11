@@ -120,7 +120,7 @@
       {#each intervals as interval, i (i)}
         <li class="row">
           <span class="spine" aria-hidden="true">
-            <span class="dot" style="background:var({colorVarFor(interval.category)});"></span>
+            <span class="dot" style="color:var({colorVarFor(interval.category)});background:currentColor;"></span>
           </span>
           <span class="body">
             <span class="time">{timeRange(interval)}</span>
@@ -168,8 +168,8 @@
   }
   .row {
     display: grid;
-    grid-template-columns: 14px 1fr;
-    gap: 9px;
+    grid-template-columns: 16px 1fr;
+    gap: 11px;
     align-items: stretch;
   }
   /* The spine is the vertical rail: a thin centred line that the per-row dot
@@ -177,7 +177,7 @@
   .spine {
     position: relative;
     display: block;
-    width: 14px;
+    width: 16px;
   }
   .spine::before {
     content: "";
@@ -192,36 +192,41 @@
   /* Top of the first row and bottom of the last row taper the spine so it reads
      as a contained rail rather than running off the edges. */
   .row:first-child .spine::before {
-    top: 7px;
+    top: 9px;
   }
   .row:last-child .spine::before {
-    bottom: calc(100% - 7px);
+    bottom: calc(100% - 9px);
   }
   .dot {
     position: absolute;
-    top: 6px;
+    top: 5px;
     left: 50%;
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
     border-radius: 999px;
     transform: translateX(-50%);
-    box-shadow: 0 0 0 2px var(--app-surface-subtle);
+    /* Inner surface ring lifts the dot off the spine; the faint outer ring is the
+       dot's own (category) colour, set via `currentColor` from the inline color. */
+    box-shadow:
+      0 0 0 2px var(--app-surface-subtle),
+      0 0 0 4px color-mix(in srgb, currentColor 22%, transparent);
   }
   .body {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 2px;
     min-width: 0;
-    padding-bottom: 12px;
+    padding-bottom: 15px;
   }
   .row:last-child .body {
     padding-bottom: 0;
   }
   .time {
     font-size: 10.5px;
+    font-weight: 500;
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
-    letter-spacing: 0.01em;
+    letter-spacing: 0.02em;
   }
   .label {
     display: flex;
@@ -231,9 +236,9 @@
     flex-wrap: wrap;
   }
   .label-text {
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--app-text);
-    line-height: 1.4;
+    line-height: 1.45;
     min-width: 0;
   }
   .app-chip {
