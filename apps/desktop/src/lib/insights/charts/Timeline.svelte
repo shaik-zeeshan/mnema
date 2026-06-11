@@ -18,7 +18,16 @@
   //     category?: string | null;       — optional category key for the dot colour.
   //   }[]
 
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { CATEGORY_COLOR } from "$lib/insights/activity-helpers";
+  import {
+    appIconFallback,
+    canonicalBundleIdForComparison,
+    iconPathForBundleId,
+    mergeIconResolutions,
+    unresolvedIconBundleIds,
+    type AppIconResolution,
+  } from "$lib/app-privacy-exclusion";
 
   interface TimelineInterval {
     label: string;
@@ -48,6 +57,58 @@
     if (interval.end) return `${interval.start} – ${interval.end}`;
     return interval.start;
   }
+
+  // The model is told to emit a bare application name in `app`, but it sometimes
+  // appends a window title / tab as a trailing parenthetical (e.g. "Zen (Zen)").
+  // Strip that so the chip stays to just the app — conservative: only a single
+  // trailing `(…)` group, leaving names without one untouched.
+  function appLabel(app: string | null | undefined): string | null {
+    if (!app) return null;
+    const cleaned = app.replace(/\s*\([^()]*\)\s*$/, "").trim();
+    return cleaned.length > 0 ? cleaned : app.trim();
+  }
+
+  // App icons beside each interval's app label — mirrors the App Privacy
+  // Exclusion idiom used by the Chat tool chips and the dashboard timeline
+  // tooltip. The interval `app` is usually a human display name; the backend
+  // resolves it (by bundle id, else by display name against the installed-app
+  // catalog) to a real icon, otherwise the letter fallback shows. Resolutions
+  // are id-keyed facts; a null stays in the requested set so it is not re-fetched.
+  let appIconPaths = $state<Record<string, string>>({});
+  const requestedAppIconIds = new Set<string>();
+
+  async function resolveAppIcons(
+    apps: Array<string | null | undefined>,
+  ): Promise<void> {
+    const unresolved = unresolvedIconBundleIds(
+      apps,
+      appIconPaths,
+      requestedAppIconIds,
+    );
+    if (unresolved.length === 0) return;
+    for (const id of unresolved) {
+      requestedAppIconIds.add(canonicalBundleIdForComparison(id));
+    }
+    try {
+      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
+        request: { bundleIds: unresolved },
+      });
+      const result = mergeIconResolutions(appIconPaths, icons);
+      if (result.changed) appIconPaths = result.iconPathsByBundleId;
+    } catch {
+      // Icons are decorative; the letter fallback keeps working.
+    }
+  }
+
+  function appIconSrc(app: string | null | undefined): string | null {
+    if (!app) return null;
+    const iconPath = iconPathForBundleId(app, appIconPaths);
+    return iconPath ? convertFileSrc(iconPath) : null;
+  }
+
+  $effect(() => {
+    void resolveAppIcons(intervals.map((interval) => appLabel(interval.app)));
+  });
 </script>
 
 {#if intervals.length > 0}
@@ -65,8 +126,18 @@
             <span class="time">{timeRange(interval)}</span>
             <span class="label">
               <span class="label-text">{interval.label}</span>
-              {#if interval.app}
-                <span class="app-chip">{interval.app}</span>
+              {#if appLabel(interval.app)}
+                {@const label = appLabel(interval.app)}
+                <span class="app-chip">
+                  <span class="app-chip-icon" aria-hidden="true">
+                    {#if appIconSrc(label) !== null}
+                      <img src={appIconSrc(label)} alt="" />
+                    {:else}
+                      {appIconFallback(label, label)}
+                    {/if}
+                  </span>
+                  <span class="app-chip-name">{label}</span>
+                </span>
               {/if}
             </span>
           </span>
@@ -166,13 +237,42 @@
     min-width: 0;
   }
   .app-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     flex: 0 0 auto;
+    max-width: 100%;
+    min-width: 0;
     font-size: 9.5px;
     color: var(--app-text-muted);
-    padding: 1px 6px;
+    padding: 1px 6px 1px 2px;
     border: 1px solid var(--app-border);
     border-radius: 999px;
     background: var(--app-surface);
     white-space: nowrap;
+  }
+  .app-chip-icon {
+    display: grid;
+    width: 13px;
+    height: 13px;
+    flex: 0 0 13px;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 4px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    font-size: 8px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .app-chip-icon img {
+    width: 13px;
+    height: 13px;
+    object-fit: contain;
+  }
+  .app-chip-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

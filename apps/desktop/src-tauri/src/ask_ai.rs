@@ -740,7 +740,12 @@ you MAY include a fenced ```mnema-timeline block whose body is JSON \
 \"app\":\"Visual Studio Code\",\"category\":\"creating\"}]}`, which the UI renders as a timeline \
 widget. `intervals` is REQUIRED: an array in chronological order where each interval has a \
 `label` (what happened) and a `start` (a human time-of-day string like `\"9:30 AM\"`); `end`, \
-`app`, and `category` are OPTIONAL. When set, `category` MUST be ONE of `creating`, \
+`app`, and `category` are OPTIONAL. `app`, when set, MUST be the application's EXACT name as it \
+appears in the interval's app context, copied VERBATIM — never paraphrased, expanded, \
+abbreviated, or rebranded (if the captured app name is `\"Zen\"`, write `\"Zen\"`, NOT \
+`\"Zen Browser\"`; the exact string is what lets the UI find the app's icon). It is the bare app \
+name ONLY: never a window title, document, tab, URL, or a combined `App / Thing` or `App (Thing)` \
+string; drop the chip entirely if you only have a window title. When set, `category` MUST be ONE of `creating`, \
 `communication`, `meetings`, `research`, `learning`, `organizing`, `personal`, `entertainment` \
 (it drives the widget's color — omit it if unsure). `title` is OPTIONAL. Emit this block ONLY \
 for genuinely chronological / time-of-day answers, derived from the `timeline` tool's real \
