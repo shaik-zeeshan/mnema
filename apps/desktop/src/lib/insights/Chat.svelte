@@ -41,6 +41,7 @@
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { openSettingsWindow } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { askAiClock } from "$lib/askAiClock";
   import {
     appIconFallback,
     canonicalBundleIdForComparison,
@@ -819,6 +820,7 @@
             seedQuery: question,
             origin: "chat",
             title,
+            ...askAiClock(),
           },
         });
       } else {
@@ -826,7 +828,7 @@
         // backend reloads history from the store, so this always works (even on
         // a thread reopened from history).
         await invoke<void>("ask_ai_followup", {
-          request: { conversationId, question },
+          request: { conversationId, question, ...askAiClock() },
         });
       }
     } catch (error) {

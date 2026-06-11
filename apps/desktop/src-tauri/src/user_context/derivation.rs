@@ -189,27 +189,48 @@ pub(crate) fn truncate_chars(text: &str, cap: usize) -> String {
     out
 }
 
+/// Format a unix-millis instant as a compact UTC wall-clock string
+/// (`2026-06-11 16:42 UTC`). The capture store is all UTC, so every time the
+/// model sees here is UTC; labeling it explicitly keeps the model from guessing
+/// a timezone. Done by hand to avoid pulling in a format-description.
+fn format_utc_ms(ms: i64) -> String {
+    let dt = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let date = dt.date();
+    let clock = dt.time();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        date.year(),
+        u8::from(date.month()),
+        date.day(),
+        clock.hour(),
+        clock.minute(),
+    )
+}
+
 /// Render the capture window into the per-call prompt. Each item is tagged
 /// `f<id>`/`a<id>` with its time, optional Search Context app/url, and its
 /// (truncated, already-redacted) text.
 fn build_prompt(window: &CaptureWindow) -> String {
+    let now_ms = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
     let mut prompt = String::new();
     prompt.push_str(
         "Below is a chronological list of capture items from one window of the user's activity. \
 Each item is tagged with an id (f<id> = on-screen text frame, a<id> = audio transcript segment), \
-its capture time in unix milliseconds, and (when known) the app/URL it came from. Segment these \
+its capture time, and (when known) the app/URL it came from. All times are UTC. Segment these \
 items into Activity episodes by intent shift and return DerivedActivityBatch.\n\n",
     );
+    prompt.push_str(&format!("Current time: {}\n", format_utc_ms(now_ms)));
     prompt.push_str(&format!(
-        "Window: [{} .. {}] ms ({} items)\n\n",
-        window.start_ms,
-        window.end_ms,
+        "Window (UTC): [{} .. {}] ({} items)\n\n",
+        format_utc_ms(window.start_ms),
+        format_utc_ms(window.end_ms),
         window.items.len()
     ));
 
     for item in &window.items {
         let tag = item_tag(&item.subject_type, item.subject_id);
-        prompt.push_str(&format!("[{tag}] t={}ms", item.captured_at_ms));
+        prompt.push_str(&format!("[{tag}] t={}", format_utc_ms(item.captured_at_ms)));
         if let Some(app) = item.app_label.as_deref().filter(|s| !s.trim().is_empty()) {
             prompt.push_str(&format!(" app={app}"));
         }
@@ -502,13 +523,15 @@ pub struct ConclusionDistillationOutcome {
 /// Render the distillation prompt: one line per Activity (id, time, category,
 /// title) plus its truncated summary.
 fn build_distillation_prompt(activities: &[capture_types::Activity]) -> String {
+    let now_ms = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
     let mut prompt = String::new();
     prompt.push_str(
         "Below is a list of the user's recent Activity episodes, newest first. Each is tagged with \
-its numeric Activity id. Distill open-ended Conclusion statements about the user and reference the \
-Activity ids that are each Conclusion's supporting (and any contradicting) evidence. Return \
-DistilledConclusionBatch.\n\n",
+its numeric Activity id and its start time. All times are UTC. Distill open-ended Conclusion \
+statements about the user and reference the Activity ids that are each Conclusion's supporting (and \
+any contradicting) evidence. Return DistilledConclusionBatch.\n\n",
     );
+    prompt.push_str(&format!("Current time: {}\n", format_utc_ms(now_ms)));
     prompt.push_str(&format!("Activities ({}):\n\n", activities.len()));
 
     for activity in activities {
@@ -517,9 +540,9 @@ DistilledConclusionBatch.\n\n",
             .map(category_label)
             .unwrap_or("uncategorized");
         prompt.push_str(&format!(
-            "[id={}] t={}ms category={category} title={}\n",
+            "[id={}] t={} category={category} title={}\n",
             activity.id,
-            activity.started_at_ms,
+            format_utc_ms(activity.started_at_ms),
             activity.title.trim()
         ));
         let summary = truncate_chars(activity.summary.trim(), ACTIVITY_SUMMARY_CHAR_CAP);

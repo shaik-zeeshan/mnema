@@ -16,6 +16,7 @@
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow } from "$lib/surface-windows";
+  import { askAiClock } from "$lib/askAiClock";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { Conversation } from "$lib/insights/conversation";
@@ -1322,6 +1323,7 @@
           seedQuery: normalizedSeed,
           origin: "quick_recall",
           title,
+          ...askAiClock(),
         },
       });
     } catch (error) {
@@ -1415,7 +1417,7 @@
 
     try {
       await invoke<void>("ask_ai_followup", {
-        request: { conversationId, question: trimmed },
+        request: { conversationId, question: trimmed, ...askAiClock() },
       });
     } catch (error) {
       // The thread moved on (Escape / fresh ask) — drop a stale failure.

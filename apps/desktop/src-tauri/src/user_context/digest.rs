@@ -223,6 +223,7 @@ fn build_digest_prompt(
     range_kind: &str,
     range_start_ms: i64,
     range_end_ms: i64,
+    now_ms: i64,
     activities: &[Activity],
 ) -> String {
     let local_offset_ms = recover_local_offset_ms(range_start_ms);
@@ -251,6 +252,17 @@ digest and the short headline described in the instructions and return DigestNar
     prompt.push_str(&format!(
         "Range: {range_kind} [{range_start_ms} .. {range_end_ms}) ms ({} Activities)\n",
         activities.len()
+    ));
+    // Anchor the range in the user's LOCAL calendar (the per-line day labels are
+    // already local) and state today, so the narrative speaks in the user's wall
+    // time rather than the raw UTC millis above. `range_end_ms` is exclusive, so
+    // the last covered day is `range_end_ms - 1`.
+    prompt.push_str(&format!(
+        "Local calendar: {} .. {} (the user's local time); today is {}. All day labels below are \
+the user's local days.\n",
+        day_label(range_start_ms, local_offset_ms),
+        day_label(range_end_ms.saturating_sub(1), local_offset_ms),
+        day_label(now_ms, local_offset_ms),
     ));
     if omitted > 0 {
         prompt.push_str(&format!(
@@ -438,7 +450,8 @@ pub async fn get_or_generate_digest(
     // 5. Generate: guardrail-framed preamble + compact chronological prompt,
     //    structured extraction into the flat DigestNarrative shape.
     let preamble = digest_preamble();
-    let prompt = build_digest_prompt(range_kind, range_start_ms, range_end_ms, &activities);
+    let prompt =
+        build_digest_prompt(range_kind, range_start_ms, range_end_ms, now_ms(), &activities);
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
     let extracted =
@@ -626,8 +639,11 @@ mod tests {
             activity(1, 1_000, 61_000, "Oldest", "first", None, None),
             activity(2, 100_000, 160_000, "Newest", "last", None, None),
         ];
-        let prompt = build_digest_prompt("week", 0, DAY_MS * 7, &activities);
+        let prompt = build_digest_prompt("week", 0, DAY_MS * 7, DAY_MS * 3, &activities);
         assert!(prompt.contains("Range: week [0 .. 604800000) ms (2 Activities)"));
+        // The local-calendar anchor names today and the range span in local days.
+        assert!(prompt.contains("today is"));
+        assert!(prompt.contains("Local calendar:"));
         assert!(prompt.contains("one week"));
         assert!(prompt.contains("the short headline"), "prompt asks for the headline");
         let oldest = prompt.find("Oldest").expect("oldest line");
@@ -652,7 +668,7 @@ mod tests {
                 )
             })
             .collect();
-        let prompt = build_digest_prompt("month", 0, DAY_MS * 30, &activities);
+        let prompt = build_digest_prompt("month", 0, DAY_MS * 30, DAY_MS * 15, &activities);
         // Bounded: the body stays near the cap (header + one-line slack).
         assert!(
             prompt.chars().count() < DIGEST_PROMPT_CHAR_CAP + 800,

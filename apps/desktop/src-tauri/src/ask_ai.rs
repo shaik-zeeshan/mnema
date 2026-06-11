@@ -201,6 +201,83 @@ fn now_ms() -> i64 {
     (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
 
+/// The user's wall-clock context for one turn. The user thinks and asks in LOCAL
+/// time ("this morning", "yesterday"), but every capture timestamp and every
+/// `from`/`to` bound the broker speaks is UTC. The frontend supplies the offset +
+/// IANA zone because that is the only SOUND source here: the `time` crate is
+/// built without the `local-offset` feature, and `current_local_offset()` is
+/// unsound under Tauri's multithreading. Absent (older payloads / unknown) → the
+/// grounding falls back to UTC only.
+#[derive(Debug, Clone, Default)]
+struct ClientClock {
+    /// Minutes to ADD to UTC to reach the user's local wall clock (e.g. PST = -480,
+    /// IST = 330). This is `-Date.getTimezoneOffset()` on the JS side.
+    utc_offset_minutes: Option<i32>,
+    /// IANA zone name for display only (e.g. "America/Los_Angeles").
+    time_zone: Option<String>,
+}
+
+/// Format an `OffsetDateTime` as `YYYY-MM-DD HH:MM` (no seconds — the model reasons
+/// in minutes, not instants). Done by hand to avoid pulling in a format-description.
+fn format_ymd_hm(dt: time::OffsetDateTime) -> String {
+    let date = dt.date();
+    let clock = dt.time();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day(),
+        clock.hour(),
+        clock.minute(),
+    )
+}
+
+/// Build the per-turn **temporal grounding** line prepended to the prompt: the
+/// current local date/time + UTC offset, plus the rule that all capture
+/// timestamps and tool `from`/`to` bounds are UTC. Without this the model has no
+/// anchor for "today"/"yesterday" and cannot translate the user's local-time
+/// phrasing into the UTC windows `search`/`timeline` expect.
+fn build_temporal_grounding(now_ms: i64, clock: &ClientClock) -> String {
+    let now_utc = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(now_ms) * 1_000_000)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+
+    let mut grounding = String::from("Temporal grounding: ");
+    match clock.utc_offset_minutes {
+        Some(offset_minutes) => {
+            let local = now_utc + time::Duration::minutes(i64::from(offset_minutes));
+            let sign = if offset_minutes < 0 { '-' } else { '+' };
+            let abs = offset_minutes.abs();
+            let zone = clock
+                .time_zone
+                .as_deref()
+                .map(|zone| format!("{zone}, "))
+                .unwrap_or_default();
+            grounding.push_str(&format!(
+                "the user's current local time is {} ({}UTC{}{:02}:{:02}); in UTC that is {} UTC. ",
+                format_ymd_hm(local),
+                zone,
+                sign,
+                abs / 60,
+                abs % 60,
+                format_ymd_hm(now_utc),
+            ));
+        }
+        None => {
+            grounding.push_str(&format!(
+                "the current time is {} UTC (the user's local offset is unknown). ",
+                format_ymd_hm(now_utc),
+            ));
+        }
+    }
+    grounding.push_str(
+        "Every capture timestamp you see, and every `from`/`to` bound you pass to `search` and \
+`timeline`, is in UTC (RFC3339 `Z`). Resolve the user's relative or local-time phrasing — \
+\"today\", \"yesterday\", \"this morning\", \"last week\" — against the local time above, convert \
+it to UTC for tool calls, and present times back to the user in their local time.\n\n",
+    );
+    grounding
+}
+
 /// The two-layer Ask AI access gate. `Ok(())` only when Ask AI is enabled in
 /// settings AND the shared Reasoning Engine prerequisite passes; the error is a
 /// human string the frontend surfaces.
@@ -536,6 +613,13 @@ pub struct AskAiStartRequest {
     #[serde(default)]
     #[allow(dead_code)]
     prior_transcript: Option<serde_json::Value>,
+    /// Minutes to add to UTC to reach the user's local wall clock, supplied by the
+    /// frontend (`-Date.getTimezoneOffset()`). Optional for wire back-compat.
+    #[serde(default)]
+    utc_offset_minutes: Option<i32>,
+    /// IANA zone name for display in the temporal grounding. Optional.
+    #[serde(default)]
+    time_zone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -543,6 +627,12 @@ pub struct AskAiStartRequest {
 pub struct AskAiFollowupRequest {
     conversation_id: String,
     question: String,
+    /// See [`AskAiStartRequest::utc_offset_minutes`].
+    #[serde(default)]
+    utc_offset_minutes: Option<i32>,
+    /// See [`AskAiStartRequest::time_zone`].
+    #[serde(default)]
+    time_zone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -680,8 +770,14 @@ fn build_ask_ai_prompt(
     question: &str,
     seed_query: Option<&str>,
     results: &[BrokerSearchResult],
+    now_ms: i64,
+    clock: &ClientClock,
 ) -> String {
     let mut prompt = String::new();
+
+    // Temporal grounding leads the prompt so the model anchors relative dates and
+    // knows the local↔UTC relationship before reading any captures.
+    prompt.push_str(&build_temporal_grounding(now_ms, clock));
 
     if let Some(seed_query) = seed_query {
         if !results.is_empty() {
@@ -1069,6 +1165,7 @@ async fn run_ask_ai_turn(
     seed_query: Option<String>,
     origin: String,
     title: String,
+    clock: ClientClock,
     cancel: Arc<AtomicBool>,
 ) {
     // Resolve storage; without it we cannot persist or read history, so surface a
@@ -1302,7 +1399,13 @@ async fn run_ask_ai_turn(
     let tools = build_ask_ai_tools();
     let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
     let preamble = build_ask_ai_preamble();
-    let prompt = build_ask_ai_prompt(&question, seed_query.as_deref(), &seed_results);
+    let prompt = build_ask_ai_prompt(
+        &question,
+        seed_query.as_deref(),
+        &seed_results,
+        now_ms(),
+        &clock,
+    );
 
     // 7. Run the agent loop, streaming deltas and persisting throttled partials.
     let answer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -1541,6 +1644,8 @@ pub async fn ask_ai_start(
         origin,
         title,
         prior_transcript: _,
+        utc_offset_minutes,
+        time_zone,
     } = request;
 
     let origin = origin
@@ -1548,6 +1653,10 @@ pub async fn ask_ai_start(
         .filter(|origin| !origin.is_empty())
         .unwrap_or_else(|| ASK_AI_DEFAULT_ORIGIN.to_string());
     let title = title.unwrap_or_default();
+    let clock = ClientClock {
+        utc_offset_minutes,
+        time_zone,
+    };
 
     // Register the in-flight cancel flag (cancelling any prior running turn for
     // this conversation), then spawn the detached driver. The command returns
@@ -1560,6 +1669,7 @@ pub async fn ask_ai_start(
         seed_query,
         origin,
         title,
+        clock,
         cancel,
     ));
 
@@ -1583,11 +1693,17 @@ pub async fn ask_ai_followup(
     let AskAiFollowupRequest {
         conversation_id,
         question,
+        utc_offset_minutes,
+        time_zone,
     } = request;
     let question = question.trim().to_string();
     if question.is_empty() {
         return Err("Ask AI follow-up question is empty".to_string());
     }
+    let clock = ClientClock {
+        utc_offset_minutes,
+        time_zone,
+    };
 
     // A follow-up reuses the conversation's existing origin/title (the store
     // preserves an existing row's origin and first non-empty title regardless of
@@ -1600,6 +1716,7 @@ pub async fn ask_ai_followup(
         None,
         ASK_AI_DEFAULT_ORIGIN.to_string(),
         String::new(),
+        clock,
         cancel,
     ));
 
@@ -1673,27 +1790,56 @@ mod tests {
     }
 
     #[test]
-    fn prompt_unseeded_is_just_the_question() {
-        let prompt = build_ask_ai_prompt("What did I do?", None, &[]);
+    fn prompt_unseeded_is_grounding_then_question() {
+        let prompt = build_ask_ai_prompt("What did I do?", None, &[], 0, &ClientClock::default());
         assert!(!prompt.contains("Context from the user's captures"));
-        assert_eq!(prompt, "Question: What did I do?");
+        // The temporal grounding leads; the bare question trails.
+        assert!(prompt.starts_with("Temporal grounding: "));
+        assert!(prompt.ends_with("Question: What did I do?"));
     }
 
     #[test]
     fn prompt_with_empty_results_omits_context_block() {
-        let prompt = build_ask_ai_prompt("Q?", Some("build"), &[]);
+        let prompt = build_ask_ai_prompt("Q?", Some("build"), &[], 0, &ClientClock::default());
         assert!(!prompt.contains("Context from the user's captures"));
         assert!(prompt.ends_with("Question: Q?"));
     }
 
     #[test]
     fn prompt_seeded_includes_numbered_context() {
-        let prompt = build_ask_ai_prompt("Did the build pass?", Some("build"), &[sample_result()]);
+        let prompt = build_ask_ai_prompt(
+            "Did the build pass?",
+            Some("build"),
+            &[sample_result()],
+            0,
+            &ClientClock::default(),
+        );
         assert!(prompt.contains("Context from the user's captures for \"build\":"));
         assert!(prompt.contains(
             "1. [frame · Xcode · \"ContentView.swift\" · 2026-01-01T10:00:00Z–2026-01-01T10:01:00Z · opaqueId=op-1] build passed"
         ));
         assert!(prompt.ends_with("Question: Did the build pass?"));
+    }
+
+    #[test]
+    fn temporal_grounding_renders_local_and_utc() {
+        // now_ms = 0 → 1970-01-01 00:00 UTC. PST (UTC-08:00) lands at 1969-12-31 16:00.
+        let clock = ClientClock {
+            utc_offset_minutes: Some(-480),
+            time_zone: Some("America/Los_Angeles".to_string()),
+        };
+        let grounding = build_temporal_grounding(0, &clock);
+        assert!(grounding.contains("1969-12-31 16:00"));
+        assert!(grounding.contains("(America/Los_Angeles, UTC-08:00)"));
+        assert!(grounding.contains("1970-01-01 00:00 UTC"));
+        assert!(grounding.contains("RFC3339 `Z`"));
+    }
+
+    #[test]
+    fn temporal_grounding_falls_back_to_utc_without_offset() {
+        let grounding = build_temporal_grounding(0, &ClientClock::default());
+        assert!(grounding.contains("1970-01-01 00:00 UTC"));
+        assert!(grounding.contains("local offset is unknown"));
     }
 
     #[test]
