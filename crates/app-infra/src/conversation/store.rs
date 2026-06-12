@@ -13,7 +13,7 @@
 
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
-use capture_types::{Conversation, ConversationSummary, ConversationTurn};
+use capture_types::{AnswerBlock, Conversation, ConversationSummary, ConversationTurn};
 
 use crate::Result;
 
@@ -82,6 +82,7 @@ impl ConversationStore {
         question: &str,
         answer: &str,
         reasoning: Option<&str>,
+        blocks: Option<&[AnswerBlock]>,
         tool_activities_json: &str,
         sources_json: &str,
         phase: &str,
@@ -94,15 +95,23 @@ impl ConversationStore {
             .upsert_conversation(conversation_id, title, origin, now_ms)
             .await?;
 
+        // Round-trip the parsed blocks as opaque JSON text (the store does NO
+        // parsing): `Some(slice)` → a JSON array; `None` → SQL NULL (legacy).
+        let blocks_json: Option<String> = match blocks {
+            Some(slice) => Some(serde_json::to_string(slice)?),
+            None => None,
+        };
+
         sqlx::query(
             "INSERT INTO conversation_turns \
-                (conversation_row_id, turn_index, question, answer, reasoning, tool_activities, sources, \
+                (conversation_row_id, turn_index, question, answer, reasoning, blocks, tool_activities, sources, \
                  phase, error_message, seeded_result_count, created_at_ms, updated_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12) \
              ON CONFLICT(conversation_row_id, turn_index) DO UPDATE SET \
                 question = excluded.question, \
                 answer = excluded.answer, \
                 reasoning = excluded.reasoning, \
+                blocks = excluded.blocks, \
                 tool_activities = excluded.tool_activities, \
                 sources = excluded.sources, \
                 phase = excluded.phase, \
@@ -115,6 +124,7 @@ impl ConversationStore {
         .bind(question)
         .bind(answer)
         .bind(reasoning)
+        .bind(blocks_json)
         .bind(tool_activities_json)
         .bind(sources_json)
         .bind(phase)
@@ -304,7 +314,7 @@ impl ConversationStore {
 
     async fn list_turns(&self, conversation_row_id: i64) -> Result<Vec<ConversationTurn>> {
         let rows = sqlx::query(
-            "SELECT turn_index, question, answer, reasoning, tool_activities, sources, phase, \
+            "SELECT turn_index, question, answer, reasoning, blocks, tool_activities, sources, phase, \
                     error_message, seeded_result_count, created_at_ms, updated_at_ms \
              FROM conversation_turns \
              WHERE conversation_row_id = ?1 \
@@ -453,11 +463,19 @@ fn escape_like(term: &str) -> String {
 fn map_turn(row: SqliteRow) -> ConversationTurn {
     let tool_activities: String = row.get("tool_activities");
     let sources: String = row.get("sources");
+    // `blocks` is the opaque round-tripped render model: SQL NULL → `None`
+    // (a LEGACY turn the desktop layer parses from `answer` on read); a stored
+    // JSON array → `Some(vec)`. A corrupt value tolerantly falls back to `None`
+    // (mirroring `parse_json`), which the desktop layer then re-parses.
+    let blocks: Option<String> = row.get("blocks");
+    let blocks =
+        blocks.and_then(|text| serde_json::from_str::<Vec<AnswerBlock>>(&text).ok());
     ConversationTurn {
         turn_index: row.get("turn_index"),
         question: row.get("question"),
         answer: row.get("answer"),
         reasoning: row.get("reasoning"),
+        blocks,
         tool_activities: parse_json(&tool_activities),
         sources: parse_json(&sources),
         phase: row.get("phase"),
@@ -538,6 +556,7 @@ mod tests {
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL DEFAULT '',
                 reasoning TEXT,
+                blocks TEXT,
                 tool_activities TEXT NOT NULL DEFAULT '[]',
                 sources TEXT NOT NULL DEFAULT '[]',
                 phase TEXT NOT NULL DEFAULT 'streaming',
@@ -569,6 +588,7 @@ mod tests {
                     "what did I do?",
                     "you coded",
                     Some("let me think about what you did"),
+                    None,
                     "[{\"tool\":\"search\"}]",
                     "[{\"id\":1}]",
                     "done",
@@ -586,6 +606,7 @@ mod tests {
                     1,
                     "and then?",
                     "you tested",
+                    None,
                     None,
                     "[]",
                     "[]",
@@ -629,12 +650,115 @@ mod tests {
     }
 
     #[test]
+    fn save_turn_round_trips_parsed_blocks() {
+        block_on(async {
+            let store = test_store().await;
+            let blocks = vec![
+                AnswerBlock::Prose {
+                    markdown: "Top apps today.".to_string(),
+                },
+                AnswerBlock::Bars {
+                    title: Some("Top apps".to_string()),
+                    items: vec![capture_types::BarsItem {
+                        label: "Editor".to_string(),
+                        value: 42.0,
+                        sublabel: Some("2h".to_string()),
+                    }],
+                },
+            ];
+            store
+                .save_turn(
+                    "conv-blocks",
+                    "t",
+                    "chat",
+                    0,
+                    "what did I use?",
+                    "Top apps today.\n\n```mnema-bars\n...\n```",
+                    None,
+                    Some(&blocks),
+                    "[]",
+                    "[]",
+                    "done",
+                    None,
+                    None,
+                    1_000,
+                )
+                .await
+                .expect("turn with blocks saves");
+
+            let conversation = store
+                .get_conversation("conv-blocks")
+                .await
+                .expect("get succeeds")
+                .expect("conversation exists");
+            // The render-ready blocks round-trip exactly through the JSON column.
+            assert_eq!(conversation.turns[0].blocks.as_deref(), Some(&blocks[..]));
+        });
+    }
+
+    #[test]
+    fn save_turn_with_none_blocks_hydrates_none_and_stores_sql_null() {
+        block_on(async {
+            let store = test_store().await;
+            // A turn saved with `blocks: None` (the LEGACY shape) leaves the
+            // column SQL NULL, and `map_turn` hydrates it back as `None`.
+            store
+                .save_turn(
+                    "conv-legacy", "t", "chat", 0, "q", "an answer", None, None, "[]", "[]",
+                    "done", None, None, 1_000,
+                )
+                .await
+                .expect("legacy turn saves");
+
+            // The raw column is SQL NULL (no JSON written).
+            let blocks_col: Option<String> =
+                sqlx::query("SELECT blocks FROM conversation_turns WHERE turn_index = 0")
+                    .fetch_one(&store.pool)
+                    .await
+                    .expect("fetch row")
+                    .get("blocks");
+            assert_eq!(blocks_col, None, "None blocks bind SQL NULL");
+
+            // …and `map_turn` distinguishes that NULL as `None` (vs an empty `[]`).
+            let conversation = store
+                .get_conversation("conv-legacy")
+                .await
+                .expect("get succeeds")
+                .expect("conversation exists");
+            assert_eq!(conversation.turns[0].blocks, None);
+        });
+    }
+
+    #[test]
+    fn save_turn_with_empty_blocks_is_some_not_none() {
+        block_on(async {
+            let store = test_store().await;
+            // An EMPTY parsed set (`Some(&[])`) is a NEW turn with no blocks yet —
+            // it must hydrate as `Some(vec![])`, NOT `None` (which means legacy).
+            store
+                .save_turn(
+                    "conv-empty", "t", "chat", 0, "q", "", None, Some(&[]), "[]", "[]",
+                    "streaming", None, None, 1_000,
+                )
+                .await
+                .expect("empty-blocks turn saves");
+
+            let conversation = store
+                .get_conversation("conv-empty")
+                .await
+                .expect("get succeeds")
+                .expect("conversation exists");
+            assert_eq!(conversation.turns[0].blocks.as_deref(), Some(&[][..]));
+        });
+    }
+
+    #[test]
     fn save_turn_upserts_in_place_on_same_index() {
         block_on(async {
             let store = test_store().await;
             store
                 .save_turn(
-                    "conv-a", "t", "chat", 0, "q", "", None, "[]", "[]", "streaming", None, None,
+                    "conv-a", "t", "chat", 0, "q", "", None, None, "[]", "[]", "streaming", None, None,
                     1_000,
                 )
                 .await
@@ -647,6 +771,7 @@ mod tests {
                     0,
                     "q",
                     "final answer",
+                    None,
                     None,
                     "[]",
                     "[]",
@@ -675,14 +800,14 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "older", "Older", "chat", 0, "old question", "", None, "[]", "[]", "done", None,
+                    "older", "Older", "chat", 0, "old question", "", None, None, "[]", "[]", "done", None,
                     None, 1_000,
                 )
                 .await
                 .expect("older saves");
             store
                 .save_turn(
-                    "newer", "Newer", "chat", 0, "new question", "", None, "[]", "[]", "done", None,
+                    "newer", "Newer", "chat", 0, "new question", "", None, None, "[]", "[]", "done", None,
                     None, 5_000,
                 )
                 .await
@@ -710,6 +835,7 @@ mod tests {
                     "how do I borrow?",
                     "use a reference",
                     None,
+                    None,
                     "[]",
                     "[]",
                     "done",
@@ -721,7 +847,7 @@ mod tests {
                 .expect("c1 saves");
             store
                 .save_turn(
-                    "c2", "Cooking", "chat", 0, "pasta recipe", "boil water", None, "[]", "[]",
+                    "c2", "Cooking", "chat", 0, "pasta recipe", "boil water", None, None, "[]", "[]",
                     "done", None, None, 2_000,
                 )
                 .await
@@ -754,14 +880,14 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "c1", "t", "chat", 0, "alpha one", "", None, "[]", "[]", "done", None, None,
+                    "c1", "t", "chat", 0, "alpha one", "", None, None, "[]", "[]", "done", None, None,
                     1_000,
                 )
                 .await
                 .expect("turn 0");
             store
                 .save_turn(
-                    "c1", "t", "chat", 1, "alpha two", "", None, "[]", "[]", "done", None, None,
+                    "c1", "t", "chat", 1, "alpha two", "", None, None, "[]", "[]", "done", None, None,
                     2_000,
                 )
                 .await
@@ -778,7 +904,7 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "c1", "t", "chat", 0, "q", "", None, "[]", "[]", "done", None, None, 1_000,
+                    "c1", "t", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, None, 1_000,
                 )
                 .await
                 .expect("saves");
@@ -798,7 +924,7 @@ mod tests {
             for id in ["a", "b", "c"] {
                 store
                     .save_turn(
-                        id, "t", "chat", 0, "q", "", None, "[]", "[]", "done", None, None, 1_000,
+                        id, "t", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, None, 1_000,
                     )
                     .await
                     .expect("saves");
@@ -819,14 +945,14 @@ mod tests {
             // Old conversation (last activity before cutoff).
             store
                 .save_turn(
-                    "old", "Old", "chat", 0, "q", "", None, "[]", "[]", "done", None, None, 1_000,
+                    "old", "Old", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, None, 1_000,
                 )
                 .await
                 .expect("old saves");
             // Recent conversation (last activity after cutoff).
             store
                 .save_turn(
-                    "recent", "Recent", "chat", 0, "q", "", None, "[]", "[]", "done", None, None,
+                    "recent", "Recent", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, None,
                     10_000,
                 )
                 .await
@@ -885,7 +1011,7 @@ mod tests {
             // A turn saved AFTER pinning must not clobber the pin.
             store
                 .save_turn(
-                    "conv-pin", "Pinned", "chat", 0, "q", "a", None, "[]", "[]", "done", None, None,
+                    "conv-pin", "Pinned", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None, None,
                     2_000,
                 )
                 .await
@@ -954,6 +1080,7 @@ mod tests {
                     "what did I do yesterday afternoon exactly?",
                     "you coded",
                     None,
+                    None,
                     "[]",
                     "[]",
                     "done",
@@ -996,7 +1123,7 @@ mod tests {
             // itself is untouched.
             store
                 .save_turn(
-                    "conv-fb", "", "chat", 0, "what changed?", "a lot", None, "[]", "[]", "done",
+                    "conv-fb", "", "chat", 0, "what changed?", "a lot", None, None, "[]", "[]", "done",
                     None, None, 1_000,
                 )
                 .await
@@ -1021,8 +1148,8 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "conv-r", "first question", "chat", 0, "first question", "a", None, "[]",
-                    "[]", "done", None, None, 1_000,
+                    "conv-r", "first question", "chat", 0, "first question", "a", None, None,
+                    "[]", "[]", "done", None, None, 1_000,
                 )
                 .await
                 .expect("turn saves");
@@ -1049,7 +1176,7 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "conv-o", "q", "chat", 0, "q", "a", None, "[]", "[]", "done", None, None,
+                    "conv-o", "q", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None, None,
                     1_000,
                 )
                 .await
@@ -1089,14 +1216,14 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "c1", "", "chat", 0, "question one", "answer", None, "[]", "[]", "done",
+                    "c1", "", "chat", 0, "question one", "answer", None, None, "[]", "[]", "done",
                     None, None, 1_000,
                 )
                 .await
                 .expect("c1 saves");
             store
                 .save_turn(
-                    "c2", "", "chat", 0, "question two", "answer", None, "[]", "[]", "done",
+                    "c2", "", "chat", 0, "question two", "answer", None, None, "[]", "[]", "done",
                     None, None, 2_000,
                 )
                 .await
@@ -1132,7 +1259,7 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "plain", "Plain", "chat", 0, "q", "a", None, "[]", "[]", "done", None, None,
+                    "plain", "Plain", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None, None,
                     1_000,
                 )
                 .await
