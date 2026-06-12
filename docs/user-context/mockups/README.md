@@ -23,9 +23,11 @@ single `data-theme` flip. There is no server or build step; just open the files.
 
 A synthesis settled during design review:
 
-- **Overview = Bento glance band + Narrative story feed.** A compact band of small
-  at-a-glance tiles (each tagged FREE or ENGINE) sits above an engine-tier story feed that
-  reads as a diary of what you did and what it adds up to.
+- **Overview = a narrative-first Briefing.** One full-width centered column led by **The read**
+  — an engine-tier AI-narrative hero that synthesizes the range *and* owns the headline numbers —
+  with the metric charts demoted below it into a quieter **Exhibits** supporting-evidence strip,
+  then the actionable **What changed / Needs attention** tail, and a docked **Ask** bar. The free
+  tier swaps the AI hero for a deterministic factual read plus an enable-the-engine invite.
 - **Chat is its own dedicated surface**, a Claude/ChatGPT-style conversation workspace — not
   a popover. It shares one engine and one persistent conversation store with Quick Recall.
 - **Top segmented surface-switcher nav, no left rail.** Inside **Main**, a titlebar segmented
@@ -40,7 +42,7 @@ A synthesis settled during design review:
 | --- | --- |
 | `index.html` | Mockup index — links every surface, hosts the theme toggle. Not an app screen. |
 | `main-shell.html` | **#103** — Main window shell: Timeline/Insights surface toggle + a compact Overview preview. |
-| `overview.html` | **#104 + #105** — Overview sub-surface: free grayscale charts + engine charts + dossier story feed. |
+| `overview.html` | **#104 + #105** — Overview sub-surface: AI read-hero (owns headline numbers) + demoted exhibits charts + dossier tail. |
 | `subjects-index.html` | **#106** — browsable grid of Subjects (each card = multiple Conclusions). |
 | `subject.html` | **#106** — single Subject detail: per-Conclusion confidence trajectories + evidence inspector. |
 | `context.html` | **#107** — user-authored Context composer + authored-statement list. |
@@ -62,7 +64,7 @@ A synthesis settled during design review:
 | `subject.html` | #106 Subject detail | Subject, Conclusion, Confidence History, Activity, Pin/Dismiss | ENGINE |
 | `context.html` | #107 user-authored Context | Context (authored), Sensitive Category Guardrail | ENGINE (input) |
 | `chat.html` | Insights Chat sub-surface | Chat, Quick Recall, `recall_context`, Conclusion/Activity | ENGINE |
-| Pin/Dismiss + category/focus correction | #108 Correction UI (lives inside `subject.html` + Overview story feed; not its own page) | Pin, Dismiss, Dismissal State, Activity Category, Focus Classification | ENGINE |
+| Pin/Dismiss + category/focus correction | #108 Correction UI (lives inside `subject.html` + the Overview actionable tail; not its own page) | Pin, Dismiss, Dismissal State, Activity Category, Focus Classification | ENGINE |
 | User Context **settings** | #109 — **NOT MOCKED** (see §8) | master toggle, engine/model picker, BYO key, Derivation Budget, Wipe User Context | — |
 
 ## 4. Per-surface build notes
@@ -93,10 +95,23 @@ A synthesis settled during design review:
   - **ENGINE (#105) — the "color".** Categorized charts driven by **Activity Category** (fixed
     v1 taxonomy: Coding, Research, Communication, Design, Testing, Personal, Distractions…) and
     **Focus Classification** (focused-vs-distracted), **plus the dossier** = **Conclusion** values
-    + the **Activity** story feed. Gated on **Reasoning Engine** opt-in.
-- **Bento glance band** mixes both tiers — each tile is tagged FREE or ENGINE. The **story feed**
-  is engine-tier. **No-engine state:** still render the FREE grayscale tiles plus an enable-the-engine
-  invite — Overview is never empty.
+    + the **Activity** narrative. Gated on **Reasoning Engine** opt-in.
+- **Layout — the Briefing (narrative-first, one centered ~60% column):**
+  - **The read** (top, full-width hero, ENGINE). The engine's synthesis of the range — headline +
+    prose — and the **single source of truth for the range's headline numbers** (Tracked, Daily avg,
+    Deep focus %, Top category, a per-day sparkbar). Owning the numbers here kills the old duplication
+    between a lede and a "This week" tile.
+  - **Exhibits** (demoted below the hero, quieter supporting-evidence strip). The metric charts —
+    Time + Categories on the first row, Focus full-width on the second — with an "open category
+    detail →" affordance. They justify the narrative rather than being a co-equal dashboard. **Tier
+    semantics unchanged:** Time = FREE counting; Categories + Focus = ENGINE color.
+  - **What changed / Needs attention** (actionable tail, ENGINE). Conclusion deltas with Pin/Dismiss
+    + evidence, and uncategorized Activities with inline category correction.
+  - **Ask** (docked, sticky to the bottom). The "Ask about your history → Chat" bar.
+- **FREE / no-engine state:** the hero becomes a **deterministic factual read** (no AI) plus the free
+  headline numbers (Tracked, Daily avg, sparkbar only) and a single enable-the-engine CTA; Exhibits
+  show live Time with Categories/Focus locked. Overview is never empty — the old standalone no-engine
+  card is gone.
 - **Components / reuse.** Charts are **hand-built inline SVG/CSS — no chart library** (on-brand;
   keep it lightweight SVG in the real build). Use `SearchResultCard.svelte` /
   `AnswerSourceCard.svelte` wherever capture references appear.
@@ -174,7 +189,7 @@ A synthesis settled during design review:
 ### Correction UI (#108) — not a separate page
 
 Pin/Dismiss per **Conclusion** and **Activity Category** / **Focus Classification** correction live
-**inside** `subject.html` and the Overview story feed. **Dismiss** removes a Conclusion and feeds
+**inside** `subject.html` and the Overview actionable tail. **Dismiss** removes a Conclusion and feeds
 **Dismissal State** into the next derivation batch (a high-bar resurface, not a permanent veto).
 **Pin** protects a Conclusion from Confidence decay. There are no user-facing "fade rate" sliders —
 Pin/Dismiss and the Derivation Budget tier are the only user controls over confidence behavior.

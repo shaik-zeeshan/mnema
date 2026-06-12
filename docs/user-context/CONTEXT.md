@@ -178,7 +178,19 @@ avoid an Insights-containing-Insights name trap). Two tiers. The **free tier** i
 Engine** opt-in — is the *color*: the categorized/focus charts (driven by **Activity Category** and
 **Focus Classification**) plus the **User Context** dossier (**Conclusion** values + the **Activity**
 story). The engine "lights up" **Overview**; without it, it still works, just grayscale.
-_Avoid_: insights tab, stats page, profile page
+The layout is **narrative-first** (a "Briefing"): one full-width column led by **"The read"** —
+the engine's synthesis of the range, and the single home for the headline numbers (tracked /
+daily avg / deep-focus % / top category / sparkbar) — with the metric charts **demoted** to a
+quieter **"Exhibits"** strip (Time / Categories / Focus) that supports the narrative, then the
+actionable tail (What changed / Needs attention) and a docked Ask bar. FREE swaps the AI hero for
+a deterministic factual read plus an enable-engine invite. This replaced the originally-approved
+"bento glance band + narrative story feed" (a 4-tile at-a-glance grid above a separate centered
+feed): the two-paradigm split read as disorganized and the lede's stat row duplicated the
+"This week" tile, so leading with the engine's read — interpretation first, charts as supporting
+evidence — matches what **Overview** is *for* and gives the headline numbers one source of truth.
+Only the information architecture changed; tier semantics are unchanged (FREE = counting from
+**Search Context**, ENGINE = categorized/focus + dossier).
+_Avoid_: insights tab, stats page, profile page, bento glance band, parallel widget grid + story feed
 
 **Chat** (sub-surface):
 The conversational sub-surface of **Insights**: a persistent, searchable chat workspace (new chat,

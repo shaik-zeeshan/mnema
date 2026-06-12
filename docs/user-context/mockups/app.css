@@ -517,6 +517,659 @@ a { color: inherit; text-decoration: none; }
   box-shadow: 0 0 8px var(--app-accent-glow);
 }
 
+/* ============================================================ OVERVIEW BRIEFING
+ * Shared building blocks for the Overview "Briefing" surface (overview.html):
+ *   THE READ hero (.entry--lede + stats footer)  → the page's lead + headline numbers
+ *   EXHIBITS strip (.exhibits / .exhibit)         → demoted supporting charts
+ *   WHAT CHANGED (.delta-*)                       → grouped conclusion deltas
+ *   NEEDS ATTENTION (.entry--attention / .attn-*) → uncategorized activities + picker
+ *   ASK bar (.ask-entry, docked sticky)           → opens Chat
+ * Eyebrows (.eyebrow), conclusion confidence (.conf-*), subject chips, gentle
+ * actions, and evidence rows are shared between Overview and other surfaces.
+ * All colors are token-driven; both themes reskin from a single data-theme flip. */
+
+/* ---------------------------------------------------------- EYEBROW
+ * Small uppercase section label: ◆ diamond + tick dot + label + a thin rule
+ * that fills remaining width, with an optional trailing note/link on the right. */
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+  margin: 0 0 11px;
+}
+.eyebrow .tick {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--app-text-faint);
+}
+.eyebrow .rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--app-border);
+}
+.eyebrow .diamond {
+  color: var(--app-text-faint);
+  letter-spacing: 0;
+}
+.eyebrow .when {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--app-text-faint);
+}
+
+/* ---------------------------------------------------------- ENTRY
+ * Base reading-feed card; .entry--lede is the accent-edged hero. */
+.entry {
+  position: relative;
+  padding: 20px 22px 18px;
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  background: var(--app-surface);
+}
+.entry h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--app-text-strong);
+}
+
+/* ---- THE READ — full-width AI-narrative hero ----
+ * Keeps the old lede identity: a 2px accent left edge + a wash that fades into
+ * the surface, with the headline scaled up to read as the page's lead. The
+ * stats footer below is the single source of truth for the range's numbers. */
+.entry--lede {
+  padding: 24px 26px 22px;
+  border-left: 2px solid var(--app-accent);
+  background: linear-gradient(
+    to right,
+    var(--app-accent-bg),
+    var(--app-surface) 42%
+  );
+}
+.entry--lede .eyebrow { color: var(--app-accent-strong); }
+.entry--lede .eyebrow .tick {
+  background: var(--app-accent);
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.entry--lede .eyebrow .diamond { color: var(--app-accent); }
+/* Fresh prose lands with a short reveal — the deliberate exception to the
+ * 0.12s house transition. */
+.lede-body { animation: lede-reveal 0.25s ease; }
+@keyframes lede-reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lede-body { animation: none; }
+}
+.lede-headline {
+  margin: 0 0 10px;
+  font-size: 24px;
+  line-height: 1.22;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--app-text-strong);
+}
+.lede-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--app-text);
+}
+.lede-text .cat-word { font-weight: 600; }
+.lede-text .accent-word { color: var(--app-accent-strong); }
+
+/* Stats footer — the range's headline numbers (Tracked, Daily avg, Deep focus %,
+ * Top category, per-day sparkbar). A lighter echo of the old big-stat tile. */
+.lede-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 28px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--app-border);
+}
+.lede-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.lede-stat-n {
+  font-size: 17px;
+  line-height: 1.1;
+  color: var(--app-text-strong);
+  font-variant-numeric: tabular-nums;
+}
+/* The top-category "number" is a label with a swatch dot, not a figure. */
+.lede-stat-n--cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lede-stat-swatch {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.lede-stat-cap {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+/* The per-day sparkbar rides the footer as a final cell, pushed right. */
+.lede-stat--spark {
+  margin-left: auto;
+  min-width: 88px;
+}
+.lede-stat--spark .sparkbar { width: 100%; }
+
+/* Free-tier enable-engine invite — a quiet muted line + the accent CTA. */
+.lede-invite {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.lede-invite-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--app-text-muted);
+}
+
+/* Shared per-day sparkbar primitive (hero footer + anywhere else). */
+.sparkbar {
+  display: flex;
+  gap: 3px;
+  align-items: flex-end;
+  height: 22px;
+}
+.sparkbar span {
+  flex: 1;
+  border-radius: 2px;
+  background: var(--app-accent);
+  opacity: 0.82;
+}
+
+/* ---------------------------------------------------------- EXHIBITS
+ * Demoted supporting-evidence strip below the hero. Quieter than the bento
+ * tiles it descends from: subtler surface, faint header, lower min-height — the
+ * hero must clearly dominate. 2-col grid; the 3rd exhibit (Focus) spans both. */
+.exhibits {
+  display: flex;
+  flex-direction: column;
+}
+.exhibits .eyebrow { color: var(--app-text-faint); }
+.exhibits-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.exhibits-grid .exhibit:last-child { grid-column: 1 / -1; }
+@media (max-width: 720px) {
+  .exhibits-grid { grid-template-columns: 1fr; }
+  .exhibits-grid .exhibit:last-child { grid-column: auto; }
+}
+.exhibit {
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  padding: 11px 12px;
+  background: var(--app-surface-subtle);
+  border: 1px solid var(--app-border);
+  border-radius: 9px;
+  min-width: 0;
+  overflow: hidden;
+  transition: border-color 0.12s ease;
+}
+.exhibit:hover { border-color: var(--app-border-hover); }
+.exhibit-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+}
+.exhibit-title {
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--app-text-faint);
+  white-space: nowrap;
+}
+.exhibit-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.tile-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  line-height: 1.5;
+}
+.tile-note--locked {
+  color: var(--app-text-faint);
+  font-style: italic;
+}
+/* Categories bar reads as a trigger into the category-detail modal. */
+.cat-bar-trigger {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: opacity 0.12s ease;
+}
+.cat-bar-trigger:hover { opacity: 0.85; }
+.cat-bar-hint {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  border-bottom: 1px dotted var(--app-border-strong);
+  line-height: 1.3;
+}
+
+/* ---------------------------------------------------------- STORY FEED
+ * The full-width single-column stack of feed cards (What changed, Needs
+ * attention) below the hero + exhibits. */
+.feed-column {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------------------------------------------------------- WHAT CHANGED
+ * Grouped conclusion-delta rows (new / strengthened / fading), each row
+ * expandable to confidence + Pin/Dismiss + supporting/contradicting evidence. */
+.delta-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.delta-group {
+  display: flex;
+  flex-direction: column;
+}
+.delta-group-head {
+  margin: 0 0 2px;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-text-faint);
+}
+/* Strengthened's head doubles as its expander — same typography, micro hint. */
+.delta-group-head--toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font: inherit;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-text-faint);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.delta-group-head--toggle:hover { color: var(--app-text-muted); }
+.delta-head-hint {
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  color: var(--app-text-muted);
+  border-bottom: 1px dotted var(--app-border-strong);
+  padding-bottom: 1px;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.delta-group-head--toggle:hover .delta-head-hint {
+  color: var(--app-text-strong);
+  border-bottom-color: var(--app-border-hover);
+}
+.delta-row {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+}
+.delta-row + .delta-row { border-top: 1px dashed var(--app-border); }
+.delta-row--faded { opacity: 0.7; }
+.delta-line {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.delta-statement {
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--app-text-strong);
+}
+.delta-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.delta-when {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.delta-toggle {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  color: var(--app-text-faint);
+  cursor: pointer;
+  transition: transform 0.12s ease, color 0.12s ease;
+}
+.delta-toggle:hover { color: var(--app-text-strong); }
+.delta-toggle.open { transform: rotate(90deg); }
+.delta-detail {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 0 2px;
+}
+.delta-detail-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.delta-more {
+  align-self: flex-start;
+  margin-top: 7px;
+}
+
+/* Conclusion confidence read-out (quiet bar + trend glyph). */
+.conf-wrap { flex: 0 0 auto; }
+.conf-quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+.conf-quiet .conf-num { color: var(--app-text-strong); font-weight: 600; }
+.trend-up { color: var(--app-accent-strong); }
+.trend-flat { color: var(--app-text-muted); }
+.trend-down { color: var(--app-danger-text); }
+.conf-track {
+  width: 64px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--app-surface-hover);
+  border: 1px solid var(--app-border);
+  overflow: hidden;
+}
+.conf-track > i {
+  display: block;
+  height: 100%;
+  background: var(--app-accent);
+  opacity: 0.85;
+}
+.delta-row--faded .conf-track > i { background: var(--app-text-subtle); }
+
+/* Subject chip — drills into the Subject surface. */
+.subject-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--app-accent-bg);
+  border: 1px solid var(--app-accent-border);
+  color: var(--app-accent-strong);
+  cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+  transition: border-color 0.12s ease;
+}
+.subject-chip:hover { border-color: var(--app-accent); }
+.subject-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pin / Dismiss gentle inline actions (Correction UI #108). */
+.gentle-actions { display: inline-flex; gap: 4px; }
+.gentle-btn {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.gentle-btn:hover {
+  background: var(--app-surface-hover);
+  color: var(--app-text-strong);
+  border-color: var(--app-border);
+}
+.gentle-btn.is-pinned {
+  color: var(--app-accent-strong);
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-bg);
+}
+
+/* "view evidence →" / "+N more" / "open category detail →" quiet text-links. */
+.evidence-link {
+  font: inherit;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  background: transparent;
+  border: none;
+  border-bottom: 1px dotted var(--app-border-strong);
+  padding: 0 0 1px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.evidence-link:hover {
+  color: var(--app-text-strong);
+  border-bottom-color: var(--app-border-hover);
+}
+
+/* Supporting / contradicting evidence list inside an expanded delta row. */
+.evidence-list {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--app-border);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.evidence-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--app-text);
+}
+.ev-stance {
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--app-accent-border);
+  background: var(--app-accent-bg);
+  color: var(--app-accent-strong);
+  flex: 0 0 auto;
+}
+.ev-stance--contradict {
+  border-color: var(--app-danger-border);
+  background: var(--app-danger-bg);
+  color: var(--app-danger-text);
+}
+.ev-title { color: var(--app-text-strong); }
+.ev-time {
+  font-size: 10.5px;
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.fade-note {
+  font-size: 10.5px;
+  color: var(--app-text-faint);
+  font-style: italic;
+}
+
+/* ---------------------------------------------------------- NEEDS ATTENTION
+ * Uncategorized in-range activities + an inline category picker (#108). */
+.entry--attention { background: var(--app-surface-subtle); }
+.attn-list { display: flex; flex-direction: column; }
+.attn-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  transition: opacity 0.12s ease;
+}
+.attn-row + .attn-row { border-top: 1px dashed var(--app-border); }
+.attn-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.attn-title {
+  font-size: 12.5px;
+  color: var(--app-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attn-time {
+  font-size: 10.5px;
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.attn-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.attn-pick-label {
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+.attn-more { align-self: flex-start; margin-top: 9px; }
+.corr-select {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+.corr-select:hover { border-color: var(--app-border-hover); }
+.corr-select:focus {
+  outline: none;
+  border-color: var(--app-accent-border);
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+
+.feed-end {
+  text-align: center;
+  padding: 6px 0 0;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--app-text-faint);
+}
+
+/* ---------------------------------------------------------- ASK BAR (docked)
+ * The "Ask about your history" entry, docked to the bottom of the surface via
+ * position:sticky so it stays reachable while the briefing scrolls. */
+.ask-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 9px;
+  background: var(--app-surface-subtle);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  /* Mask the scroll container's bottom padding so content doesn't peek below
+     the docked bar. */
+  box-shadow: 0 28px 0 0 var(--app-bg);
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.ask-entry:hover {
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-bg);
+  color: var(--app-accent-strong);
+}
+.ask-entry .glyph { color: var(--app-accent-strong); font-size: 13px; }
+.ask-entry .label { flex: 1 1 auto; font-size: 12.5px; }
+.ask-entry .hint {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--app-text-faint);
+}
+.ask-entry:hover .hint { color: var(--app-accent-strong); }
+
 /* ============================================================ SCROLLBAR */
 .insights-main::-webkit-scrollbar,
 *::-webkit-scrollbar { width: 9px; height: 9px; }
