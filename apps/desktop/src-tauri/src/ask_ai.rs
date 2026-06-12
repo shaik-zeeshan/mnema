@@ -232,6 +232,48 @@ fn format_ymd_hm(dt: time::OffsetDateTime) -> String {
     )
 }
 
+/// Parse a UTC RFC3339 timestamp and return "YYYY-MM-DD HH:MM" in the user's
+/// local time, or `None` if the string cannot be parsed.
+fn utc_rfc3339_to_local_display(utc: &str, offset_minutes: i32) -> Option<String> {
+    let dt = time::OffsetDateTime::parse(utc, &time::format_description::well_known::Rfc3339).ok()?;
+    let local = dt + time::Duration::minutes(i64::from(offset_minutes));
+    Some(format_ymd_hm(local))
+}
+
+/// Walk a JSON value recursively and inject `startedAtLocal`/`endedAtLocal`
+/// siblings next to any `startedAt`/`endedAt` string fields, pre-converting
+/// UTC RFC3339 values to the user's local time. This removes the need for the
+/// model to do timezone arithmetic when presenting times to the user.
+fn annotate_local_times(value: &mut serde_json::Value, offset_minutes: i32) {
+    match value {
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                annotate_local_times(item, offset_minutes);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let mut to_insert: Vec<(String, serde_json::Value)> = Vec::new();
+            for (key, val) in map.iter_mut() {
+                annotate_local_times(val, offset_minutes);
+                if key == "startedAt" || key == "endedAt" {
+                    if let serde_json::Value::String(utc) = val {
+                        if let Some(local) = utc_rfc3339_to_local_display(utc, offset_minutes) {
+                            to_insert.push((
+                                format!("{key}Local"),
+                                serde_json::Value::String(local),
+                            ));
+                        }
+                    }
+                }
+            }
+            for (k, v) in to_insert {
+                map.insert(k, v);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Build the per-turn **temporal grounding** line prepended to the prompt: the
 /// current local date/time + UTC offset, plus the rule that all capture
 /// timestamps and tool `from`/`to` bounds are UTC. Without this the model has no
@@ -273,7 +315,10 @@ fn build_temporal_grounding(now_ms: i64, clock: &ClientClock) -> String {
         "Every capture timestamp you see, and every `from`/`to` bound you pass to `search` and \
 `timeline`, is in UTC (RFC3339 `Z`). Resolve the user's relative or local-time phrasing — \
 \"today\", \"yesterday\", \"this morning\", \"last week\" — against the local time above, convert \
-it to UTC for tool calls, and present times back to the user in their local time.\n\n",
+it to UTC for tool calls, and present times back to the user in their local time. \
+Each search and timeline result also includes pre-converted `startedAtLocal`/`endedAtLocal` \
+fields in the same YYYY-MM-DD HH:MM format — use these directly when citing times to the user \
+instead of converting the UTC fields yourself.\n\n",
     );
     grounding
 }
@@ -658,7 +703,11 @@ pub struct AskAiAvailability {
 /// ids minted by the broker seed search are HMAC-signed identically to tool-call
 /// search ids, so a nominated seed id validates through the same
 /// `reference_captures` resolver.
-fn format_seed_result_line(index: usize, result: &BrokerSearchResult) -> String {
+fn format_seed_result_line(
+    index: usize,
+    result: &BrokerSearchResult,
+    offset_minutes: Option<i32>,
+) -> String {
     let app_label = result
         .context
         .as_ref()
@@ -677,14 +726,27 @@ fn format_seed_result_line(index: usize, result: &BrokerSearchResult) -> String 
         .map(|title| format!(" · \"{title}\""))
         .unwrap_or_default();
 
+    let time_range = match offset_minutes {
+        Some(offset) => {
+            let start_local = utc_rfc3339_to_local_display(&result.started_at, offset);
+            let end_local = utc_rfc3339_to_local_display(&result.ended_at, offset);
+            match (start_local, end_local) {
+                (Some(s), Some(e)) => {
+                    format!("{}–{} ({}–{} local)", result.started_at, result.ended_at, s, e)
+                }
+                _ => format!("{}–{}", result.started_at, result.ended_at),
+            }
+        }
+        None => format!("{}–{}", result.started_at, result.ended_at),
+    };
+
     format!(
-        "{}. [{} · {}{} · {}–{} · opaqueId={}] {}",
+        "{}. [{} · {}{} · {} · opaqueId={}] {}",
         index + 1,
         result.kind,
         app_label,
         window_segment,
-        result.started_at,
-        result.ended_at,
+        time_range,
         result.opaque_id,
         result.snippet
     )
@@ -795,7 +857,11 @@ fn build_ask_ai_prompt(
                 "Context from the user's captures for \"{seed_query}\":\n"
             ));
             for (index, result) in results.iter().enumerate() {
-                prompt.push_str(&format_seed_result_line(index, result));
+                prompt.push_str(&format_seed_result_line(
+                    index,
+                    result,
+                    clock.utc_offset_minutes,
+                ));
                 prompt.push('\n');
             }
             prompt.push('\n');
@@ -1354,6 +1420,7 @@ async fn run_ask_ai_turn(
     //    redaction/audit); `reference_captures` is intercepted before the broker
     //    and emits the source cards. Results are returned to the model as a JSON
     //    STRING.
+    let utc_offset_minutes = clock.utc_offset_minutes;
     let executor: ai_engine::ToolExecutor = {
         let app_handle = app_handle.clone();
         let conversation_id = conversation_id.clone();
@@ -1399,7 +1466,10 @@ async fn run_ask_ai_turn(
                         }
                     }
                 }
-                let value = broker_response_to_tool_value(response)?;
+                let mut value = broker_response_to_tool_value(response)?;
+                if let Some(offset) = utc_offset_minutes {
+                    annotate_local_times(&mut value, offset);
+                }
                 serde_json::to_string(&value)
                     .map_err(|error| format!("failed to serialize Ask AI tool result: {error}"))
             })
@@ -1865,12 +1935,12 @@ mod tests {
             app_name: None,
             window_title: None,
         });
-        let line = format_seed_result_line(0, &result);
+        let line = format_seed_result_line(0, &result, None);
         assert!(line.contains("· com.example.app ·"));
         assert!(!line.contains("\""));
 
         result.context = None;
-        let line = format_seed_result_line(2, &result);
+        let line = format_seed_result_line(2, &result, None);
         assert!(line.starts_with("3. [frame · unknown app ·"));
     }
 
@@ -1878,8 +1948,49 @@ mod tests {
     fn seed_line_surfaces_opaque_id_for_nomination() {
         // The opaque id must appear in the seed line so a model answering from
         // seeded context alone can still nominate it to `reference_captures`.
-        let line = format_seed_result_line(0, &sample_result());
+        let line = format_seed_result_line(0, &sample_result(), None);
         assert!(line.contains("opaqueId=op-1"));
+    }
+
+    #[test]
+    fn seed_line_annotates_local_time_when_offset_provided() {
+        // IST = UTC+05:30 (330 min). 2026-01-01T10:00:00Z → 2026-01-01 15:30 local.
+        let line = format_seed_result_line(0, &sample_result(), Some(330));
+        assert!(line.contains("2026-01-01T10:00:00Z"));
+        assert!(line.contains("2026-01-01 15:30"));
+        assert!(line.contains("local"));
+    }
+
+    #[test]
+    fn utc_rfc3339_to_local_display_converts_correctly() {
+        // IST = UTC+05:30 (330 min). 18:26 UTC on June 12 → 23:56 IST same day.
+        let result = utc_rfc3339_to_local_display("2026-06-12T18:26:00Z", 330);
+        assert_eq!(result.as_deref(), Some("2026-06-12 23:56"));
+
+        // PST = UTC-08:00 (-480 min). 2026-01-01T02:00:00Z → 2025-12-31 18:00.
+        let result = utc_rfc3339_to_local_display("2026-01-01T02:00:00Z", -480);
+        assert_eq!(result.as_deref(), Some("2025-12-31 18:00"));
+
+        // Unparseable string returns None.
+        assert_eq!(utc_rfc3339_to_local_display("not-a-timestamp", 0), None);
+    }
+
+    #[test]
+    fn annotate_local_times_injects_local_fields() {
+        // IST = UTC+05:30 (330 min). 18:26 UTC → 23:56 local.
+        let mut value = serde_json::json!({
+            "results": [{
+                "startedAt": "2026-06-12T18:26:00Z",
+                "endedAt": "2026-06-12T18:30:00Z",
+                "snippet": "hello"
+            }]
+        });
+        annotate_local_times(&mut value, 330);
+        let result = &value["results"][0];
+        assert_eq!(result["startedAtLocal"], "2026-06-12 23:56");
+        assert_eq!(result["endedAtLocal"], "2026-06-13 00:00");
+        // Original UTC fields must still be present.
+        assert_eq!(result["startedAt"], "2026-06-12T18:26:00Z");
     }
 
     #[test]
