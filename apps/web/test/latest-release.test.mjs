@@ -6,8 +6,9 @@
 //
 // These tests run the REAL inline <script> extracted from Base.astro inside a
 // vm sandbox with mocked DOM/fetch/sessionStorage, so they exercise the
-// shipped code rather than a copy. No test framework needed (node --test).
-import { test } from "node:test";
+// shipped code rather than a copy. Runs under `bun test` (the repo's standard
+// JS test runner); assertions use node:assert, which throws on failure.
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
