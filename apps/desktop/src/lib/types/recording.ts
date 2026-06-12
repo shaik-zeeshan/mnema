@@ -48,12 +48,25 @@ export type AiProviderKind =
 	| "llamafile";
 
 /**
- * One connected AI provider (ADR 0034): the provider kind plus its non-secret
- * connection details. The credential (cloud API key) lives ONLY in the OS
- * keychain keyed by the provider id; it is never part of this shape.
+ * One connected AI provider (ADR 0034, amended by ADR 0035): the provider kind
+ * plus its non-secret connection details. The credential (cloud API key) lives
+ * ONLY in the OS keychain keyed by the provider **instance id**; never here.
  */
 export interface AiProviderConfig {
+	/**
+	 * Stable per-instance id — the identity used everywhere a provider is
+	 * referenced (keychain account, model-pool `provider` tag, engine pin, and
+	 * default-model `provider`). Multiple instances of one `kind` coexist by
+	 * carrying distinct ids; the first instance of a kind keeps `id === kind`
+	 * so keys/pins recorded before instance ids existed still resolve.
+	 */
+	id: string;
 	kind: AiProviderKind;
+	/**
+	 * Optional user-facing display name distinguishing same-kind instances
+	 * (e.g. "llama-swap box"). Empty falls back to a kind+host label.
+	 */
+	label: string;
 	/**
 	 * Custom base URL / endpoint. Required for `openai_compatible`; ignored for
 	 * the first-party cloud providers; the local endpoint for `ollama` /
@@ -65,9 +78,10 @@ export interface AiProviderConfig {
 /**
  * An engine identity `{provider, model}` (ADR 0034) — the same shape the
  * conversation engine pin uses. The global default model is one of these.
+ * `provider` is the connected provider **instance id** (`AiProviderConfig.id`).
  */
 export interface AiEngineRef {
-	provider: AiProviderKind;
+	provider: string;
 	model: string;
 }
 

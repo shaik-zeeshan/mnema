@@ -529,19 +529,46 @@ impl AiProviderKind {
     }
 }
 
-/// One connected AI provider (ADR 0034): the provider kind plus its non-secret
-/// connection details. The credential (cloud API key) lives ONLY in the OS
-/// keychain keyed by [`AiProviderKind::id`]; it is never persisted here.
+/// One connected AI provider (ADR 0034, amended by ADR 0035): the provider kind
+/// plus its non-secret connection details. The credential (cloud API key) lives
+/// ONLY in the OS keychain keyed by [`AiProviderConfig::id`]; never persisted here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiProviderConfig {
+    /// Stable per-instance id — the identity used everywhere a provider is
+    /// referenced: the OS-keychain account, the `provider` tag on discovered
+    /// models, the conversation engine-pin `provider`, and the default-model
+    /// `provider`. Multiple instances of one [`kind`](Self::kind) coexist by
+    /// carrying distinct ids; the first instance of a kind keeps `id ==
+    /// kind.id()` so keys and pins recorded before instance ids existed still
+    /// resolve. An empty id on a legacy settings file is backfilled to
+    /// `kind.id()` at load.
+    #[serde(default)]
+    pub id: String,
     pub kind: AiProviderKind,
+    /// Optional user-facing display name distinguishing same-kind instances
+    /// (e.g. "llama-swap box"). Empty falls back to a kind+host label in the UI.
+    #[serde(default)]
+    pub label: String,
     /// Custom base URL / endpoint. Required for `openai_compatible`; ignored
     /// for the first-party cloud providers (which use their default endpoint);
     /// the local endpoint for `ollama`/`llamafile` (empty = the kind's default
     /// localhost endpoint).
     #[serde(default)]
     pub base_url: String,
+}
+
+impl AiProviderConfig {
+    /// Backfill an empty [`id`](Self::id) to the kind id. A legacy settings file
+    /// (saved before instance ids existed, at most one provider per kind) leaves
+    /// `id` empty; `kind.id()` is exactly the identity its keychain key and pins
+    /// were recorded under, so this keeps them resolving.
+    fn with_backfilled_id(mut self) -> Self {
+        if self.id.trim().is_empty() {
+            self.id = self.kind.id().to_string();
+        }
+        self
+    }
 }
 
 /// An engine identity `{provider, model}` (ADR 0034) — the same shape the
@@ -551,7 +578,11 @@ pub struct AiProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiEngineRef {
-    pub provider: AiProviderKind,
+    /// The connected provider **instance id** ([`AiProviderConfig::id`]). This
+    /// was the provider kind before instance ids existed; a legacy value equal
+    /// to a kind id still resolves because the first instance of a kind keeps
+    /// that id.
+    pub provider: String,
     pub model: String,
 }
 
@@ -712,7 +743,10 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
         if let Some(providers) = wire.providers {
             return Self {
                 enabled: wire.enabled,
-                providers,
+                providers: providers
+                    .into_iter()
+                    .map(AiProviderConfig::with_backfilled_id)
+                    .collect(),
                 default_model: wire
                     .default_model
                     .filter(|model| !model.model.trim().is_empty()),
@@ -757,7 +791,11 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
                 continue;
             }
             providers.push(AiProviderConfig {
+                // Pre-instance-id data had one provider per kind, so the kind id
+                // is the instance id (and the account its keychain key lives at).
+                id: kind.id().to_string(),
                 kind,
+                label: String::new(),
                 base_url: profile.base_url(),
             });
         }
@@ -765,7 +803,7 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
         let default_model = {
             let model = default_engine.model();
             (!model.is_empty()).then(|| AiEngineRef {
-                provider: default_engine.provider_kind(),
+                provider: default_engine.provider_kind().id().to_string(),
                 model,
             })
         };

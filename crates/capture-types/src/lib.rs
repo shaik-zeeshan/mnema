@@ -364,11 +364,15 @@ mod tests {
             settings.providers,
             vec![
                 AiProviderConfig {
+                    id: "anthropic".to_string(),
                     kind: AiProviderKind::Anthropic,
+                    label: String::new(),
                     base_url: String::new(),
                 },
                 AiProviderConfig {
+                    id: "ollama".to_string(),
                     kind: AiProviderKind::Ollama,
+                    label: String::new(),
                     base_url: "http://localhost:11434".to_string(),
                 },
             ]
@@ -376,7 +380,7 @@ mod tests {
         assert_eq!(
             settings.default_model,
             Some(AiEngineRef {
-                provider: AiProviderKind::Anthropic,
+                provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             })
         );
@@ -403,14 +407,16 @@ mod tests {
         assert_eq!(
             settings.providers,
             vec![AiProviderConfig {
+                id: "ollama".to_string(),
                 kind: AiProviderKind::Ollama,
+                label: String::new(),
                 base_url: "http://localhost:11434".to_string(),
             }]
         );
         assert_eq!(
             settings.default_model,
             Some(AiEngineRef {
-                provider: AiProviderKind::Ollama,
+                provider: "ollama".to_string(),
                 model: "llama3.2".to_string(),
             })
         );
@@ -422,22 +428,29 @@ mod tests {
             enabled: true,
             providers: vec![
                 AiProviderConfig {
+                    id: "anthropic".to_string(),
                     kind: AiProviderKind::Anthropic,
+                    label: String::new(),
                     base_url: String::new(),
                 },
                 AiProviderConfig {
+                    id: "openai_compatible".to_string(),
                     kind: AiProviderKind::OpenaiCompatible,
+                    label: "Fireworks".to_string(),
                     base_url: "https://api.example.com/v1".to_string(),
                 },
             ],
             default_model: Some(AiEngineRef {
-                provider: AiProviderKind::Anthropic,
+                provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             }),
         };
 
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(json["providers"][0]["kind"], "anthropic");
+        assert_eq!(json["providers"][0]["id"], "anthropic");
+        assert_eq!(json["providers"][1]["id"], "openai_compatible");
+        assert_eq!(json["providers"][1]["label"], "Fireworks");
         assert_eq!(json["providers"][1]["kind"], "openai_compatible");
         assert_eq!(json["providers"][1]["baseUrl"], "https://api.example.com/v1");
         assert_eq!(json["defaultModel"]["provider"], "anthropic");
@@ -482,7 +495,7 @@ mod tests {
         assert_eq!(
             request.default_model,
             Some(Some(AiEngineRef {
-                provider: AiProviderKind::Ollama,
+                provider: "ollama".to_string(),
                 model: "llama3.2".to_string(),
             }))
         );

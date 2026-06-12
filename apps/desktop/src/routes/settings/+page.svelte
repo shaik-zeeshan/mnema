@@ -362,7 +362,7 @@
     ...askAiModels.map((model) => ({
       value: model.id,
       label: model.id,
-      sublabel: aiProviderKindLabel(model.provider),
+      sublabel: aiProviderLabelById(model.provider),
     })),
   ]);
 
@@ -502,31 +502,92 @@
   }
 
   let draftAiEnabled = $state(false);
-  // The flat connected-provider list (one entry per kind) and the ONE global
-  // default model chosen from the merged pool. Together these are the whole
-  // ai_runtime settings domain.
+  // The flat connected-provider list (multiple instances per kind allowed,
+  // each with a stable instance id) and the ONE global default model chosen
+  // from the merged pool. Together these are the whole ai_runtime domain.
   let draftAiProviders = $state<AiProviderConfig[]>([]);
   let draftAiDefaultModel = $state<AiEngineRef | null>(null);
 
-  let connectedAiProviderKinds = $derived(draftAiProviders.map((p) => p.kind));
-  let addableAiProviderKinds = $derived(
-    AI_PROVIDER_KINDS.filter((kind) => !connectedAiProviderKinds.includes(kind)),
-  );
+  // Identity is the per-instance id; the kind is just the type tag. Every kind
+  // is always addable (same-kind instances coexist).
+  let connectedAiProviderIds = $derived(draftAiProviders.map((p) => p.id));
   let anyCloudAiProviderConnected = $derived(
     draftAiProviders.some((p) => isCloudAiProviderKind(p.kind)),
   );
 
+  // The connected provider instance for an id, if any.
+  function aiProviderById(id: string): AiProviderConfig | undefined {
+    return draftAiProviders.find((p) => p.id === id);
+  }
+  // The kind backing a provider instance id (for cloud-vs-local decisions).
+  function aiProviderKindById(id: string): AiProviderKind | undefined {
+    return aiProviderById(id)?.kind;
+  }
+  function isCloudAiProviderInstance(id: string): boolean {
+    const kind = aiProviderKindById(id);
+    return kind !== undefined && isCloudAiProviderKind(kind);
+  }
+  // Host component of a base URL, for the auto-derived instance label.
+  function baseUrlHost(baseUrl: string): string {
+    const trimmed = baseUrl.trim();
+    if (!trimmed) return "";
+    try {
+      return new URL(trimmed).host || trimmed;
+    } catch {
+      return trimmed;
+    }
+  }
+  // Display name for a provider instance: its label, else kind + host, else
+  // kind + instance number. Two same-kind instances stay distinguishable even
+  // with no label typed — including first-party cloud (anthropic/openai), which
+  // has no base URL host to disambiguate on.
+  function aiProviderInstanceLabel(provider: AiProviderConfig): string {
+    const label = provider.label.trim();
+    if (label) return label;
+    const kindLabel = aiProviderKindLabel(provider.kind);
+    const host = baseUrlHost(provider.baseUrl);
+    if (host) return `${kindLabel} · ${host}`;
+    // The first instance of a kind has `id === kind`; extras are `kind-N`.
+    // Surface that N so two unlabeled same-kind instances never collide.
+    const suffix = provider.id.startsWith(`${provider.kind}-`)
+      ? provider.id.slice(provider.kind.length + 1)
+      : "";
+    return suffix ? `${kindLabel} (${suffix})` : kindLabel;
+  }
+  // Display name for a bare provider instance id (used by the model pickers and
+  // status reasons). Falls back to the raw id for an unknown/removed instance.
+  function aiProviderLabelById(id: string): string {
+    const provider = aiProviderById(id);
+    return provider ? aiProviderInstanceLabel(provider) : aiProviderKindLabel(id);
+  }
+
+  // A fresh instance id: the first instance of a kind keeps `id === kind` (so
+  // keys/pins recorded before instance ids existed still resolve); subsequent
+  // instances get a unique suffixed id.
+  function newAiProviderId(kind: AiProviderKind): string {
+    if (!connectedAiProviderIds.includes(kind)) return kind;
+    let suffix = 2;
+    let candidate = `${kind}-${suffix}`;
+    while (connectedAiProviderIds.includes(candidate)) {
+      suffix += 1;
+      candidate = `${kind}-${suffix}`;
+    }
+    return candidate;
+  }
+
   function addAiProvider(kind: AiProviderKind): void {
-    if (connectedAiProviderKinds.includes(kind)) return;
-    draftAiProviders = [...draftAiProviders, { kind, baseUrl: "" }];
+    draftAiProviders = [
+      ...draftAiProviders,
+      { id: newAiProviderId(kind), kind, label: "", baseUrl: "" },
+    ];
     void refreshAiProviderKeyPresence();
   }
 
-  function removeAiProvider(kind: AiProviderKind): void {
-    draftAiProviders = draftAiProviders.filter((p) => p.kind !== kind);
+  function removeAiProvider(id: string): void {
+    draftAiProviders = draftAiProviders.filter((p) => p.id !== id);
     // A default model stranded on a disconnected provider can never resolve;
     // clear it so the status reads "choose a default model" instead.
-    if (draftAiDefaultModel?.provider === kind) {
+    if (draftAiDefaultModel?.provider === id) {
       draftAiDefaultModel = null;
     }
   }
@@ -547,7 +608,7 @@
 
   function aiDefaultModelLabel(ref: AiEngineRef | null): string {
     if (!ref || ref.model.trim().length === 0) return "";
-    return `${aiProviderKindLabel(ref.provider)} · ${ref.model}`;
+    return `${aiProviderLabelById(ref.provider)} · ${ref.model}`;
   }
 
   // The committed selection's display text (empty when no default chosen).
@@ -578,16 +639,17 @@
   });
 
   type AiDefaultModelEntry = {
-    provider: AiProviderKind;
+    /** The provider instance id this model is tagged with. */
+    provider: string;
     model: string;
     label: string;
   };
 
   let aiModelEntries = $derived(
     aiModels.map((model) => ({
-      provider: model.provider as AiProviderKind,
+      provider: model.provider,
       model: model.id,
-      label: `${aiProviderKindLabel(model.provider)} · ${model.id}`,
+      label: `${aiProviderLabelById(model.provider)} · ${model.id}`,
     })),
   );
 
@@ -618,12 +680,12 @@
   }
 
   // Commit whatever is typed. The committed display is "<Provider label> · <model
-  // id>", so a re-edit carries that prefix — strip a leading KNOWN provider label
-  // before treating the rest as the model id (otherwise the label compounds into
-  // the id on every commit). An exact pool match keeps its provider tag; a
-  // free-form id is attributed to the stripped prefix's provider when connected,
-  // else the current default's provider, else the first connected provider.
-  // Empty clears the default.
+  // id>", so a re-edit carries that prefix — strip a leading KNOWN provider
+  // instance label before treating the rest as the model id (otherwise the label
+  // compounds into the id on every commit). An exact pool match keeps its
+  // provider tag; a free-form id is attributed to the stripped prefix's provider
+  // instance when connected, else the current default's provider, else the first
+  // connected provider. Empty clears the default.
   function commitTypedAiDefaultModel() {
     let typed = aiModelQuery.trim();
     if (!typed) {
@@ -641,18 +703,24 @@
       commitAiDefaultModel(fullMatch);
       return;
     }
-    // Strip a leading "<Provider label> · " prefix and remember its provider.
-    let prefixProvider: AiProviderKind | null = null;
-    const sepIndex = typed.indexOf(" · ");
-    if (sepIndex !== -1) {
-      const maybeLabel = typed.slice(0, sepIndex).trim().toLowerCase();
-      const kind = AI_PROVIDER_KINDS.find(
-        (k) => aiProviderKindLabel(k).toLowerCase() === maybeLabel,
-      );
-      if (kind) {
-        prefixProvider = kind;
-        typed = typed.slice(sepIndex + 3).trim();
+    // Strip a leading "<Provider instance label> · " prefix and remember its
+    // instance id. Instance labels can themselves contain " · " (kind · host),
+    // so match the LONGEST connected-instance label the text starts with rather
+    // than splitting on the first separator.
+    let prefixProvider: string | null = null;
+    let bestPrefixLen = 0;
+    for (const provider of draftAiProviders) {
+      const prefix = `${aiProviderInstanceLabel(provider)} · `.toLowerCase();
+      if (
+        typed.toLowerCase().startsWith(prefix) &&
+        prefix.length > bestPrefixLen
+      ) {
+        bestPrefixLen = prefix.length;
+        prefixProvider = provider.id;
       }
+    }
+    if (prefixProvider !== null) {
+      typed = typed.slice(bestPrefixLen).trim();
     }
     if (!typed) {
       commitAiDefaultModel(null);
@@ -668,13 +736,12 @@
       return;
     }
     const provider =
-      prefixProvider !== null &&
-      connectedAiProviderKinds.includes(prefixProvider)
+      prefixProvider !== null && connectedAiProviderIds.includes(prefixProvider)
         ? prefixProvider
         : draftAiDefaultModel !== null &&
-            connectedAiProviderKinds.includes(draftAiDefaultModel.provider)
+            connectedAiProviderIds.includes(draftAiDefaultModel.provider)
           ? draftAiDefaultModel.provider
-          : connectedAiProviderKinds[0];
+          : connectedAiProviderIds[0];
     if (!provider) return;
     commitAiDefaultModel({ provider, model: typed, label: "" });
   }
@@ -746,7 +813,7 @@
   // The Derivation Budget tier applies only when the global default model is a
   // cloud provider's; a local default uses fixed background pacing.
   let userContextCloudDefault = $derived(
-    draftAiDefaultModel !== null && isCloudAiProviderKind(draftAiDefaultModel.provider),
+    draftAiDefaultModel !== null && isCloudAiProviderInstance(draftAiDefaultModel.provider),
   );
 
   // Reasoning Engine availability snapshot + the per-provider key entry boxes.
@@ -772,11 +839,11 @@
     if (!reason) return "Unavailable";
     if (reason.startsWith("no_provider_key:")) {
       const provider = reason.slice("no_provider_key:".length);
-      return `No API key saved for ${aiProviderKindLabel(provider)}.`;
+      return `No API key saved for ${aiProviderLabelById(provider)}.`;
     }
     if (reason.startsWith("provider_not_connected:")) {
       const provider = reason.slice("provider_not_connected:".length);
-      return `The default model's provider (${aiProviderKindLabel(provider)}) is not connected.`;
+      return `The default model's provider (${aiProviderLabelById(provider)}) is not connected.`;
     }
     switch (reason) {
       case "user_context_disabled":
@@ -808,21 +875,22 @@
     }
   }
 
-  // Re-check which connected cloud providers have a key in the keychain.
+  // Re-check which connected cloud provider instances have a key in the
+  // keychain. Keyed by instance id (the keychain account).
   async function refreshAiProviderKeyPresence() {
-    const cloudKinds = draftAiProviders
-      .map((p) => p.kind)
-      .filter((kind) => isCloudAiProviderKind(kind));
+    const cloudProviderIds = draftAiProviders
+      .filter((p) => isCloudAiProviderKind(p.kind))
+      .map((p) => p.id);
     const next: Record<string, boolean> = {};
-    for (const kind of cloudKinds) {
+    for (const id of cloudProviderIds) {
       try {
-        next[kind] = await invoke<boolean>("ai_runtime_has_provider_key", {
-          request: { provider: kind },
+        next[id] = await invoke<boolean>("ai_runtime_has_provider_key", {
+          request: { provider: id },
         });
       } catch (error) {
         aiProviderKeyErrors = {
           ...aiProviderKeyErrors,
-          [kind]: error instanceof Error ? error.message : String(error),
+          [id]: error instanceof Error ? error.message : String(error),
         };
       }
     }
@@ -1572,7 +1640,10 @@
   function syncAiRuntimeDrafts(s: RecordingSettings) {
     draftAiEnabled = s.aiRuntime?.enabled ?? false;
     draftAiProviders = (s.aiRuntime?.providers ?? []).map((p) => ({
+      // Backfill a legacy provider (saved before instance ids) to id === kind.
+      id: (p.id ?? "").trim() || p.kind,
       kind: p.kind,
+      label: p.label ?? "",
       baseUrl: p.baseUrl ?? "",
     }));
     draftAiDefaultModel = s.aiRuntime?.defaultModel
@@ -1815,7 +1886,9 @@
         return {
           enabled: draftAiEnabled,
           providers: draftAiProviders.map((p) => ({
+            id: p.id,
             kind: p.kind,
+            label: p.label,
             baseUrl: p.baseUrl,
           })),
           defaultModel: draftAiDefaultModel
@@ -2298,7 +2371,9 @@
         return {
           enabled: s.aiRuntime?.enabled ?? false,
           providers: (s.aiRuntime?.providers ?? []).map((p) => ({
+            id: (p.id ?? "").trim() || p.kind,
             kind: p.kind,
+            label: p.label ?? "",
             baseUrl: p.baseUrl ?? "",
           })),
           defaultModel: s.aiRuntime?.defaultModel
@@ -4385,26 +4460,34 @@
             <p class="group-hint">No providers connected yet. Connect one below, then choose a default model.</p>
           {:else}
             <ul class="provider-list">
-              {#each draftAiProviders as provider (provider.kind)}
+              {#each draftAiProviders as provider (provider.id)}
                 <li class="provider-row">
                   <div class="provider-row__head">
-                    <span class="provider-row__name">{aiProviderKindLabel(provider.kind)}</span>
+                    <span class="provider-row__name">{aiProviderInstanceLabel(provider)}</span>
                     <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
-                    {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.kind]}
+                    {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.id]}
                       <span class="saved-badge">✓ key in keychain</span>
                     {/if}
                     <button
                       class="btn btn--ghost btn--sm provider-row__remove"
                       type="button"
-                      onclick={() => removeAiProvider(provider.kind)}
+                      onclick={() => removeAiProvider(provider.id)}
                     >
                       Remove
                     </button>
                   </div>
+                  <label class="field-label" for="ai-provider-label-{provider.id}">Label</label>
+                  <input
+                    id="ai-provider-label-{provider.id}"
+                    class="text-input"
+                    autocomplete="off"
+                    placeholder={aiProviderKindLabel(provider.kind)}
+                    bind:value={provider.label}
+                  />
                   {#if provider.kind === "openai_compatible"}
-                    <label class="field-label" for="ai-provider-base-url-{provider.kind}">Base URL</label>
+                    <label class="field-label" for="ai-provider-base-url-{provider.id}">Base URL</label>
                     <input
-                      id="ai-provider-base-url-{provider.kind}"
+                      id="ai-provider-base-url-{provider.id}"
                       class="text-input"
                       autocomplete="off"
                       placeholder="https://api.fireworks.ai/inference/v1"
@@ -4414,9 +4497,9 @@
                       <p class="group-hint group-hint--warn">OpenAI-compatible providers need a base URL.</p>
                     {/if}
                   {:else if !isCloudAiProviderKind(provider.kind)}
-                    <label class="field-label" for="ai-provider-endpoint-{provider.kind}">Endpoint</label>
+                    <label class="field-label" for="ai-provider-endpoint-{provider.id}">Endpoint</label>
                     <input
-                      id="ai-provider-endpoint-{provider.kind}"
+                      id="ai-provider-endpoint-{provider.id}"
                       class="text-input"
                       autocomplete="off"
                       placeholder={AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind] ?? "http://localhost"}
@@ -4425,18 +4508,18 @@
                     <p class="group-hint">Leave empty to use the default endpoint {AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind]}. No key, no egress.</p>
                   {/if}
                   {#if isCloudAiProviderKind(provider.kind)}
-                    <label class="field-label" for="ai-provider-key-{provider.kind}">API key</label>
+                    <label class="field-label" for="ai-provider-key-{provider.id}">API key</label>
                     <input
-                      id="ai-provider-key-{provider.kind}"
+                      id="ai-provider-key-{provider.id}"
                       class="text-input"
                       type="password"
                       autocomplete="off"
-                      placeholder={aiProviderKeySavedByProvider[provider.kind] ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
-                      disabled={aiProviderKeySavingProvider === provider.kind}
+                      placeholder={aiProviderKeySavedByProvider[provider.id] ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
+                      disabled={aiProviderKeySavingProvider === provider.id}
                       bind:value={
-                        () => aiProviderKeyInputs[provider.kind] ?? "",
+                        () => aiProviderKeyInputs[provider.id] ?? "",
                         (value) => {
-                          aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider.kind]: value };
+                          aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider.id]: value };
                         }
                       }
                     />
@@ -4444,43 +4527,41 @@
                       <button
                         class="btn btn--ghost btn--sm"
                         type="button"
-                        disabled={aiProviderKeySavingProvider !== null || (aiProviderKeyInputs[provider.kind] ?? "").trim().length === 0}
-                        onclick={() => saveAiProviderKey(provider.kind)}
+                        disabled={aiProviderKeySavingProvider !== null || (aiProviderKeyInputs[provider.id] ?? "").trim().length === 0}
+                        onclick={() => saveAiProviderKey(provider.id)}
                       >
-                        {aiProviderKeySavingProvider === provider.kind ? "Saving" : "Save key"}
+                        {aiProviderKeySavingProvider === provider.id ? "Saving" : "Save key"}
                       </button>
                       <button
                         class="btn btn--ghost btn--sm"
                         type="button"
-                        disabled={aiProviderKeySavingProvider !== null || !aiProviderKeySavedByProvider[provider.kind]}
-                        onclick={() => clearAiProviderKey(provider.kind)}
+                        disabled={aiProviderKeySavingProvider !== null || !aiProviderKeySavedByProvider[provider.id]}
+                        onclick={() => clearAiProviderKey(provider.id)}
                       >
                         Clear
                       </button>
                     </div>
-                    {#if aiProviderKeyErrors[provider.kind]}
-                      <p class="error-text">{aiProviderKeyErrors[provider.kind]}</p>
+                    {#if aiProviderKeyErrors[provider.id]}
+                      <p class="error-text">{aiProviderKeyErrors[provider.id]}</p>
                     {/if}
                   {/if}
                 </li>
               {/each}
             </ul>
           {/if}
-          {#if addableAiProviderKinds.length > 0}
-            <div class="row-actions">
-              {#each addableAiProviderKinds as kind (kind)}
-                <button
-                  class="btn btn--ghost btn--sm"
-                  type="button"
-                  title={aiProviderKindDescription(kind)}
-                  onclick={() => addAiProvider(kind)}
-                >
-                  + {aiProviderKindLabel(kind)}
-                </button>
-              {/each}
-            </div>
-          {/if}
-          <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider, shared by every feature.</p>
+          <div class="row-actions">
+            {#each AI_PROVIDER_KINDS as kind (kind)}
+              <button
+                class="btn btn--ghost btn--sm"
+                type="button"
+                title={aiProviderKindDescription(kind)}
+                onclick={() => addAiProvider(kind)}
+              >
+                + {aiProviderKindLabel(kind)}
+              </button>
+            {/each}
+          </div>
+          <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider instance, shared by every feature. Add a kind more than once to connect several instances (e.g. two OpenAI-compatible servers).</p>
           {#if anyCloudAiProviderConnected}
             <div class="cloud-egress-disclosure" role="note">
               <span class="cloud-egress-disclosure__icon" aria-hidden="true">⚠</span>
@@ -4551,7 +4632,7 @@
                       >
                         <span class="model-combobox__option-main">
                           <span class="model-combobox__name">{entry.model}</span>
-                          <span class="model-combobox__sub">{aiProviderKindLabel(entry.provider)}</span>
+                          <span class="model-combobox__sub">{aiProviderLabelById(entry.provider)}</span>
                         </span>
                         {#if selected}
                           <span class="model-combobox__check" aria-hidden="true">✓</span>

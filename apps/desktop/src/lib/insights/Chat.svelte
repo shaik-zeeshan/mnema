@@ -72,7 +72,7 @@
     type PinnableEngine,
     defaultEnginePinProvider,
     defaultEngineModel,
-    engineProviderLabel,
+    providerLabelById,
     pinnableEnginesFromModelPool,
     shortModelLabel,
   } from "$lib/insights/conversation";
@@ -302,7 +302,7 @@
       return shortModelLabel(activePinModel);
     }
     // A non-default-provider pin keeps its provider context.
-    return `${engineProviderLabel(activePinProvider)} · ${shortModelLabel(activePinModel)}`;
+    return `${providerLabelById(aiRuntimeSnapshot?.providers, activePinProvider)} · ${shortModelLabel(activePinModel)}`;
   });
   // The full (unshortened) trigger label, surfaced on hover so the complete id
   // stays readable even when the short label hides a long routing path.
@@ -315,7 +315,7 @@
     if (defaultProvider !== null && activePinProvider === defaultProvider) {
       return activePinModel;
     }
-    return `${engineProviderLabel(activePinProvider)} · ${activePinModel}`;
+    return `${providerLabelById(aiRuntimeSnapshot?.providers, activePinProvider)} · ${activePinModel}`;
   });
   let enginePickerOpen = $state(false);
 
@@ -326,7 +326,9 @@
   let modelsLoaded = $state(false);
   let modelsLoading = $state(false);
   let modelsFailed = $state(false);
-  let pinnableEngines = $derived(pinnableEnginesFromModelPool(modelPool));
+  let pinnableEngines = $derived(
+    pinnableEnginesFromModelPool(modelPool, aiRuntimeSnapshot?.providers),
+  );
   // Default-provider models render as bare ids (the common case)…
   let discoveredModels = $derived(
     defaultProvider === null
@@ -1941,7 +1943,7 @@
                           title={engine.label}
                           onclick={() => void selectEngine(engine)}
                         >
-                          {engineProviderLabel(engine.provider)} · {shortModelLabel(engine.model)}
+                          {providerLabelById(aiRuntimeSnapshot?.providers, engine.provider)} · {shortModelLabel(engine.model)}
                           {#if selected}
                             <span class="engine-pick-check" aria-hidden="true">✓</span>
                           {/if}

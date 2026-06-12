@@ -118,12 +118,17 @@ fn local_kind(kind: AiProviderKind) -> Option<ai_engine::LocalKind> {
     }
 }
 
-/// The connected provider config for a kind, if the user connected one.
-fn provider_config(settings: &AiRuntimeSettings, kind: AiProviderKind) -> Option<&AiProviderConfig> {
+/// The connected provider config for an instance id, if the user connected one.
+/// Identity is the per-instance [`AiProviderConfig::id`] (not the kind), so
+/// multiple providers of the same kind resolve independently.
+fn provider_config<'a>(
+    settings: &'a AiRuntimeSettings,
+    provider_id: &str,
+) -> Option<&'a AiProviderConfig> {
     settings
         .providers
         .iter()
-        .find(|provider| provider.kind == kind)
+        .find(|provider| provider.id == provider_id)
 }
 
 /// The effective endpoint for a local provider config: its `baseUrl`, falling
@@ -143,16 +148,20 @@ fn local_endpoint(provider: &AiProviderConfig) -> String {
 
 /// Build an [`ai_engine::EngineConfig`] for one engine identity
 /// `{provider, model}` against the connected provider list, sourcing the cloud
-/// credential from the keychain. Returns a reason-code string on failure:
-/// `provider_not_connected:<id>`, `no_base_url`, or `no_provider_key:<id>`.
+/// credential from the keychain. `provider_id` is the per-instance
+/// [`AiProviderConfig::id`]; the kind (cloud vs local, which client) is read off
+/// the looked-up instance, and the keychain key lives at that same instance id.
+/// Returns a reason-code string on failure: `provider_not_connected:<id>`,
+/// `no_base_url`, or `no_provider_key:<id>`.
 fn engine_config_for_ref(
     settings: &AiRuntimeSettings,
-    kind: AiProviderKind,
+    provider_id: &str,
     model: &str,
 ) -> Result<ai_engine::EngineConfig, String> {
-    let Some(provider) = provider_config(settings, kind) else {
-        return Err(format!("provider_not_connected:{}", kind.id()));
+    let Some(provider) = provider_config(settings, provider_id) else {
+        return Err(format!("provider_not_connected:{provider_id}"));
     };
+    let kind = provider.kind;
     if let Some(local) = local_kind(kind) {
         return Ok(ai_engine::EngineConfig::Local {
             kind: local,
@@ -164,10 +173,10 @@ fn engine_config_for_ref(
     if matches!(kind, AiProviderKind::OpenaiCompatible) && base_url.is_empty() {
         return Err("no_base_url".to_string());
     }
-    let api_key = app_infra::load_ai_provider_key(kind.id())
+    let api_key = app_infra::load_ai_provider_key(provider_id)
         .map_err(|error| error.to_string())?
         .filter(|key| !key.is_empty())
-        .ok_or_else(|| format!("no_provider_key:{}", kind.id()))?;
+        .ok_or_else(|| format!("no_provider_key:{provider_id}"))?;
     Ok(ai_engine::EngineConfig::Cloud {
         provider: cloud_provider_kind(kind).expect("cloud kind"),
         model: model.to_string(),
@@ -206,13 +215,13 @@ pub(crate) fn resolve_engine_config(
         let provider = provider.trim();
         let model = model.trim();
         if !provider.is_empty() && !model.is_empty() {
-            if let Some(kind) = AiProviderKind::from_id(provider) {
-                if provider_config(settings, kind).is_some() {
-                    return engine_config_for_ref(settings, kind, model);
-                }
+            // The pin's provider is an instance id ([`AiProviderConfig::id`]).
+            // Resolve only when that instance is still connected; a pin to an
+            // unknown or removed provider falls through to the override/default
+            // layers below instead of failing the thread.
+            if provider_config(settings, provider).is_some() {
+                return engine_config_for_ref(settings, provider, model);
             }
-            // Pinned to a provider that is unknown or no longer connected →
-            // fall back to the override/default layers below.
         }
     }
 
@@ -227,7 +236,7 @@ pub(crate) fn resolve_engine_config(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .unwrap_or_else(|| default_model.model.trim());
-    engine_config_for_ref(settings, default_model.provider, model)
+    engine_config_for_ref(settings, default_model.provider.trim(), model)
 }
 
 /// The static (no-network) half of the engine-configured prerequisite: master
@@ -357,7 +366,7 @@ pub async fn ai_runtime_test_connection(
 
     Ok(AiRuntimeTestResult {
         ok: probe.ok.unwrap_or(true),
-        provider: default_model.provider.id().to_string(),
+        provider: default_model.provider.trim().to_string(),
         model: default_model.model.trim().to_string(),
         message,
         raw_json,
@@ -431,10 +440,11 @@ async fn list_models_for_provider(
     let base_url = provider.base_url.trim();
     let http_request = match provider.kind {
         AiProviderKind::Anthropic | AiProviderKind::Openai | AiProviderKind::OpenaiCompatible => {
-            let api_key = app_infra::load_ai_provider_key(provider.kind.id())
+            // The key lives in the keychain at the provider's instance id.
+            let api_key = app_infra::load_ai_provider_key(&provider.id)
                 .map_err(|error| error.to_string())?
                 .filter(|key| !key.is_empty())
-                .ok_or_else(|| format!("no_provider_key:{}", provider.kind.id()))?;
+                .ok_or_else(|| format!("no_provider_key:{}", provider.id))?;
             match provider.kind {
                 AiProviderKind::Anthropic => client
                     .get(models_endpoint_url("https://api.anthropic.com/v1"))
@@ -517,13 +527,15 @@ pub async fn ai_runtime_list_models(
                     .filter(|id| is_chat_capable_model(id))
                     .map(|id| AiRuntimeModel {
                         id,
-                        provider: provider.kind.id().to_string(),
+                        // Tag with the provider instance id so same-kind
+                        // instances stay attributable in the merged pool.
+                        provider: provider.id.clone(),
                     }),
             ),
             Err(error) => {
                 tauri_plugin_log::log::warn!(
                     "model listing skipped provider {}: {error}",
-                    provider.kind.id()
+                    provider.id
                 );
             }
         }
@@ -544,16 +556,20 @@ mod tests {
             enabled: true,
             providers: vec![
                 AiProviderConfig {
+                    id: "ollama".to_string(),
                     kind: AiProviderKind::Ollama,
+                    label: String::new(),
                     base_url: String::new(),
                 },
                 AiProviderConfig {
+                    id: "llamafile".to_string(),
                     kind: AiProviderKind::Llamafile,
+                    label: String::new(),
                     base_url: "http://localhost:9090".to_string(),
                 },
             ],
             default_model: Some(AiEngineRef {
-                provider: AiProviderKind::Ollama,
+                provider: "ollama".to_string(),
                 model: "llama-default".to_string(),
             }),
         }
@@ -660,7 +676,7 @@ mod tests {
     fn resolver_reports_disconnected_default_provider() {
         let mut settings = local_settings();
         settings.default_model = Some(AiEngineRef {
-            provider: AiProviderKind::Anthropic,
+            provider: "anthropic".to_string(),
             model: "claude-haiku-4-5".to_string(),
         });
         assert_eq!(
@@ -670,15 +686,59 @@ mod tests {
     }
 
     #[test]
+    fn resolver_distinguishes_two_instances_of_the_same_kind() {
+        // Two Ollama instances with distinct ids and endpoints coexist; a pin
+        // to each resolves to that instance's endpoint, and the default model
+        // resolves to its own instance — identity is the instance id, not kind.
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![
+                AiProviderConfig {
+                    id: "ollama".to_string(),
+                    kind: AiProviderKind::Ollama,
+                    label: String::new(),
+                    base_url: "http://box-a:11434".to_string(),
+                },
+                AiProviderConfig {
+                    id: "ollama-2".to_string(),
+                    kind: AiProviderKind::Ollama,
+                    label: "Box B".to_string(),
+                    base_url: "http://box-b:11434".to_string(),
+                },
+            ],
+            default_model: Some(AiEngineRef {
+                provider: "ollama".to_string(),
+                model: "default-model".to_string(),
+            }),
+        };
+
+        // Pin to the second instance resolves to ITS endpoint.
+        let (_, endpoint, model) = expect_local(
+            resolve_engine_config(&settings, Some(("ollama-2", "pinned")), None)
+                .expect("second-instance pin should resolve"),
+        );
+        assert_eq!(endpoint, "http://box-b:11434");
+        assert_eq!(model, "pinned");
+
+        // The default model resolves to the first instance's endpoint.
+        let (_, endpoint, _) = expect_local(
+            resolve_engine_config(&settings, None, None).expect("default should resolve"),
+        );
+        assert_eq!(endpoint, "http://box-a:11434");
+    }
+
+    #[test]
     fn resolver_requires_base_url_for_openai_compatible() {
         let settings = AiRuntimeSettings {
             enabled: true,
             providers: vec![AiProviderConfig {
+                id: "openai_compatible".to_string(),
                 kind: AiProviderKind::OpenaiCompatible,
+                label: String::new(),
                 base_url: String::new(),
             }],
             default_model: Some(AiEngineRef {
-                provider: AiProviderKind::OpenaiCompatible,
+                provider: "openai_compatible".to_string(),
                 model: "some-model".to_string(),
             }),
         };

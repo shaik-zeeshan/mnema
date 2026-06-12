@@ -4,6 +4,11 @@ status: accepted
 
 # AI settings are provider-centric: a flat provider list, one global default model, one resolution chain
 
+> **Amended by [ADR 0035](0035-provider-identity-is-a-per-instance-id-not-the-kind.md)** — point 1's
+> "one provider per kind" identity (the kind id doubling as the keychain account, model `provider`
+> tag, and pin `provider`) is replaced by a stable **per-instance id**, so multiple providers of the
+> same kind can coexist. Everything else below stands.
+
 [ADR 0033](0033-ask-ai-migrates-onto-shared-reasoning-engine.md) put every AI feature on the shared
 Rust-side **Reasoning Engine**, and in doing so grew `AiRuntimeSettings` "from a single engine
 selection into a small *set* of configured engines": one privileged **default engine** (the

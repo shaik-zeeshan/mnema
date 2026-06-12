@@ -647,21 +647,29 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     })
 }
 
-/// Normalize the provider-centric AI runtime settings (ADR 0034): trim base
-/// URLs, drop duplicate provider kinds (first wins — the keychain key is shared
-/// per provider id anyway), and clear a default model whose model id is blank.
+/// Normalize the provider-centric AI runtime settings (ADR 0034, amended):
+/// trim ids/labels/base URLs, backfill an empty provider id to its kind id (a
+/// legacy single-per-kind file), drop duplicate provider *instance ids* (first
+/// wins — the keychain key lives at the instance id), and clear a default model
+/// whose model id is blank. Multiple instances of one kind are kept as long as
+/// their ids differ, so same-kind providers can coexist.
 fn normalize_ai_runtime_settings(mut ai_runtime: AiRuntimeSettings) -> AiRuntimeSettings {
-    let mut seen: Vec<capture_types::AiProviderKind> = Vec::new();
-    ai_runtime.providers.retain(|provider| {
-        if seen.contains(&provider.kind) {
-            return false;
-        }
-        seen.push(provider.kind);
-        true
-    });
     for provider in &mut ai_runtime.providers {
+        provider.id = provider.id.trim().to_string();
+        if provider.id.is_empty() {
+            provider.id = provider.kind.id().to_string();
+        }
+        provider.label = provider.label.trim().to_string();
         provider.base_url = provider.base_url.trim().to_string();
     }
+    let mut seen: Vec<String> = Vec::new();
+    ai_runtime.providers.retain(|provider| {
+        if seen.contains(&provider.id) {
+            return false;
+        }
+        seen.push(provider.id.clone());
+        true
+    });
     ai_runtime.default_model = ai_runtime.default_model.and_then(|mut default_model| {
         default_model.model = default_model.model.trim().to_string();
         if default_model.model.is_empty() {
@@ -1535,11 +1543,13 @@ mod tests {
         AiRuntimeSettings {
             enabled: true,
             providers: vec![capture_types::AiProviderConfig {
+                id: "anthropic".to_string(),
                 kind: capture_types::AiProviderKind::Anthropic,
+                label: String::new(),
                 base_url: String::new(),
             }],
             default_model: Some(capture_types::AiEngineRef {
-                provider: capture_types::AiProviderKind::Anthropic,
+                provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             }),
         }
@@ -1582,13 +1592,25 @@ mod tests {
                 enabled: None,
                 providers: Some(vec![
                     capture_types::AiProviderConfig {
+                        id: "ollama".to_string(),
                         kind: capture_types::AiProviderKind::Ollama,
+                        label: String::new(),
                         base_url: " http://localhost:11434 ".to_string(),
                     },
-                    // Duplicate kind is dropped by normalization (first wins).
+                    // A second instance of the SAME kind with a distinct id is
+                    // kept — same-kind providers coexist (e.g. two local boxes).
                     capture_types::AiProviderConfig {
+                        id: "ollama-2".to_string(),
                         kind: capture_types::AiProviderKind::Ollama,
+                        label: "Other box".to_string(),
                         base_url: "http://other:11434".to_string(),
+                    },
+                    // A duplicate *instance id* is dropped (first wins).
+                    capture_types::AiProviderConfig {
+                        id: "ollama".to_string(),
+                        kind: capture_types::AiProviderKind::Ollama,
+                        label: String::new(),
+                        base_url: "http://dupe:11434".to_string(),
                     },
                 ]),
                 // Explicit `null` over the wire clears the default model.
@@ -1600,10 +1622,20 @@ mod tests {
         assert!(updated.ai_runtime.enabled);
         assert_eq!(
             updated.ai_runtime.providers,
-            vec![capture_types::AiProviderConfig {
-                kind: capture_types::AiProviderKind::Ollama,
-                base_url: "http://localhost:11434".to_string(),
-            }]
+            vec![
+                capture_types::AiProviderConfig {
+                    id: "ollama".to_string(),
+                    kind: capture_types::AiProviderKind::Ollama,
+                    label: String::new(),
+                    base_url: "http://localhost:11434".to_string(),
+                },
+                capture_types::AiProviderConfig {
+                    id: "ollama-2".to_string(),
+                    kind: capture_types::AiProviderKind::Ollama,
+                    label: "Other box".to_string(),
+                    base_url: "http://other:11434".to_string(),
+                },
+            ]
         );
         assert_eq!(updated.ai_runtime.default_model, None);
     }
@@ -1668,11 +1700,15 @@ mod tests {
             loaded.ai_runtime.providers,
             vec![
                 capture_types::AiProviderConfig {
+                    id: "anthropic".to_string(),
                     kind: capture_types::AiProviderKind::Anthropic,
+                    label: String::new(),
                     base_url: String::new(),
                 },
                 capture_types::AiProviderConfig {
+                    id: "ollama".to_string(),
                     kind: capture_types::AiProviderKind::Ollama,
+                    label: String::new(),
                     base_url: "http://localhost:11434".to_string(),
                 },
             ]
@@ -1680,7 +1716,7 @@ mod tests {
         assert_eq!(
             loaded.ai_runtime.default_model,
             Some(capture_types::AiEngineRef {
-                provider: capture_types::AiProviderKind::Anthropic,
+                provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             })
         );
