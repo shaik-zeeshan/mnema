@@ -6,5 +6,7 @@
   <string>Microphone access is required to capture audio input during recording.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>Speech recognition access is required to transcribe microphone audio with Apple Speech.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Local network access is required to connect to AI model servers running on your local network.</string>
 </dict>
 </plist>
