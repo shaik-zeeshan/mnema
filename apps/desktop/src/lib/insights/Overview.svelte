@@ -898,141 +898,74 @@
     </div>
   </div>
 
-  <!-- ── Bento glance band ── -->
-  <section class="glance-band" aria-label="At-a-glance summary">
-    <!-- Time (FREE) -->
-    <div class="glance-tile">
-      <div class="glance-head">
-        <span class="glance-title">Time</span>
-        <span class="spacer"></span>
-        <span class="tier-badge tier-badge--free">Free</span>
-      </div>
-      <div class="glance-body">
-        {#if freeLoading}
-          <div class="tile-skeleton tile-skeleton--bars" aria-busy="true">
-            {#each Array.from({ length: 4 }) as _, i (i)}
-              <div class="sk-bar-row">
-                <Skeleton variant="text" width="34%" height="10px" />
-                <Skeleton height="9px" radius="999px" />
-              </div>
-            {/each}
-          </div>
-        {:else if topApps.length === 0}
-          <p class="tile-note">No tracked app time in this range.</p>
-        {:else}
-          <MiniBars items={topApps} />
-        {/if}
-      </div>
-    </div>
-
-    <!-- Categories (ENGINE) -->
-    <div class="glance-tile">
-      <div class="glance-head">
-        <span class="glance-title">Categories</span>
-        <span class="spacer"></span>
-        <span class="tier-badge tier-badge--engine">Engine</span>
-      </div>
-      <div class="glance-body">
-        {#if engineTilesLoading}
-          <div class="tile-skeleton" aria-busy="true">
-            <Skeleton height="14px" radius="6px" />
-            <div class="sk-legend-rows">
-              {#each Array.from({ length: 3 }) as _, i (i)}
-                <Skeleton variant="text" width={`${70 - i * 12}%`} height="10px" />
-              {/each}
-            </div>
-          </div>
-        {:else if !engineOn}
-          <p class="tile-note tile-note--locked">Enable the engine to light up categories.</p>
-        {:else if categorySegments.length === 0}
-          <p class="tile-note">No categorized activity yet.</p>
-        {:else}
-          <button
-            type="button"
-            class="cat-bar-trigger"
-            aria-haspopup="dialog"
-            aria-label="View category breakdown"
-            onclick={() => (categoryModalOpen = true)}
-          >
-            <StackedBar segments={categorySegments} showLegend={true} />
-          </button>
-          <span class="cat-bar-hint">view breakdown →</span>
-        {/if}
-      </div>
-    </div>
-
-    <!-- Focus (ENGINE) -->
-    <div class="glance-tile">
-      <div class="glance-head">
-        <span class="glance-title">Focus</span>
-        <span class="spacer"></span>
-        <span class="tier-badge tier-badge--engine">Engine</span>
-      </div>
-      <div class="glance-body">
-        {#if engineTilesLoading}
-          <div class="tile-skeleton tile-skeleton--heat" aria-busy="true">
-            {#each Array.from({ length: 3 }) as _, r (r)}
-              <div class="sk-heat-row">
-                <Skeleton variant="text" width="22px" height="9px" />
-                <div class="sk-heat-cells">
-                  {#each Array.from({ length: 6 }) as _, c (c)}
-                    <Skeleton height="10px" radius="2px" />
-                  {/each}
-                </div>
-              </div>
-            {/each}
-          </div>
-        {:else if !engineOn}
-          <p class="tile-note tile-note--locked">Enable the engine to see focus.</p>
-        {:else if focusRows.length === 0}
-          <p class="tile-note">No focus signal yet.</p>
-        {:else}
-          <Heatmap
-            rows={focusRows}
-            colorMode="focus"
-            legend="deep · mixed · scattered"
-          />
-        {/if}
-      </div>
-    </div>
-
-    <!-- This range (FREE) -->
-    <div class="glance-tile">
-      <div class="glance-head">
-        <span class="glance-title">This {rangeMode}</span>
-        <span class="spacer"></span>
-        <span class="tier-badge tier-badge--free">Free</span>
-      </div>
-      <div class="glance-body">
-        {#if freeLoading}
-          <div class="tile-skeleton tile-skeleton--stat" aria-busy="true">
-            <Skeleton variant="text" width="58%" height="27px" />
-            <Skeleton variant="text" width="78%" height="10px" />
-            <div class="sk-stat-row">
-              <Skeleton variant="text" width="44px" height="13px" />
-              <Skeleton variant="text" width="44px" height="13px" />
-            </div>
-            <Skeleton height="22px" radius="3px" />
-          </div>
-        {:else}
-        <div class="week-stat">
-          <div class="week-big">
-            <span class="n">{summary.totalLabel}</span>
-            <div class="u">tracked · {summary.days} active {summary.days === 1 ? "day" : "days"}</div>
-          </div>
-          <div class="week-sub">
-            <div class="cell">
-              <div class="n">{summary.avgLabel}</div>
-              <div class="l">Daily avg</div>
-            </div>
-            {#if engineOn && summary.deepPct !== null}
-              <div class="cell">
-                <div class="n">{summary.deepPct}%</div>
-                <div class="l">Deep focus</div>
-              </div>
+  <!-- ── THE READ — full-width AI narrative hero ──
+       The engine's read of the range, promoted to the top of the page and the
+       single home for the range's headline numbers. On the engine path it
+       ALWAYS renders, so the stats footer is always present: prose/headline
+       and the skeleton only appear when there's a digest or one is loading;
+       the eyebrow + stats footer stand alone otherwise. -->
+  {#if engineOn}
+    <article class="entry entry--lede" aria-busy={!digest && digestLoading}>
+      <p class="eyebrow">
+        <span class="diamond" aria-hidden="true">◆</span>
+        <span class="tick" aria-hidden="true"></span>
+        The read
+        <span class="rule"></span>
+        {#if digest}{relativeTime(digest.generatedAtMs)}{/if}
+      </p>
+      {#if digest}
+        <!-- Keyed on generation time: fresh prose replays the reveal,
+             a same-range cache hit does not. -->
+        {#key digest.generatedAtMs}
+          <div class="lede-body">
+            {#if digest.headline}
+              <h2 class="lede-headline">{digest.headline}</h2>
             {/if}
+            <p class="lede-text">{digest.narrative}</p>
           </div>
-          {#if summary.spark.length > 0}
+        {/key}
+      {:else if digestLoading}
+        <div class="sk-row">
+          <Skeleton variant="text" width="92%" height="12px" />
+        </div>
+        <div class="sk-row">
+          <Skeleton variant="text" width="64%" height="12px" />
+        </div>
+      {/if}
+      <!-- Stats footer — the single source of truth for the range's headline
+           numbers. Tracked is always present; deep focus %, top category, the
+           daily average, and the per-day sparkbar render only when they have a
+           value. -->
+      <div class="lede-stats" aria-label="Highlights this {rangeMode}">
+        <div class="lede-stat">
+          <span class="lede-stat-n">{summary.totalLabel}</span>
+          <span class="lede-stat-cap">tracked</span>
+        </div>
+        <div class="lede-stat">
+          <span class="lede-stat-n">{summary.avgLabel}</span>
+          <span class="lede-stat-cap">daily avg</span>
+        </div>
+        {#if summary.deepPct !== null}
+          <div class="lede-stat">
+            <span class="lede-stat-n">{summary.deepPct}%</span>
+            <span class="lede-stat-cap">deep focus</span>
+          </div>
+        {/if}
+        {#if topCategory}
+          <div class="lede-stat">
+            <span class="lede-stat-n lede-stat-n--cat">
+              <span
+                class="lede-stat-swatch"
+                style="background:var({topCategory.colorVar});"
+                aria-hidden="true"
+              ></span>
+              {topCategory.label}
+            </span>
+            <span class="lede-stat-cap">top category</span>
+          </div>
+        {/if}
+        {#if summary.spark.length > 0}
+          <div class="lede-stat lede-stat--spark">
             <div class="sparkbar" aria-hidden="true">
               {#each summary.spark as v (v)}
                 <span
@@ -1042,19 +975,201 @@
                 ></span>
               {/each}
             </div>
+            <span class="lede-stat-cap">per day</span>
+          </div>
+        {/if}
+      </div>
+    </article>
+  {:else}
+    <!-- ── Free-tier hero ──
+         No AI narrative on free, so the hero slot becomes a deterministic
+         factual read of the range + the free headline numbers + an
+         enable-engine invite. Reuses the lede shell for visual continuity. -->
+    <article class="entry entry--lede" aria-busy={freeLoading}>
+      <p class="eyebrow">
+        <span class="diamond" aria-hidden="true">◆</span>
+        <span class="tick" aria-hidden="true"></span>
+        This {rangeMode}
+        <span class="rule"></span>
+      </p>
+      {#if freeLoading}
+        <div class="sk-row">
+          <Skeleton variant="text" width="86%" height="12px" />
+        </div>
+        <div class="sk-row">
+          <Skeleton variant="text" width="52%" height="12px" />
+        </div>
+      {:else}
+        <div class="lede-body">
+          <p class="lede-text">
+            {summary.totalLabel} tracked{#if topApps.length > 0} across {topApps.length}
+              {topApps.length === 1 ? "app" : "apps"}{/if}.{#if topApps[0]}
+              Most of it in {topApps[0].label}.{/if}
+          </p>
+        </div>
+      {/if}
+      <!-- Stats footer — the free headline numbers. Tracked + daily avg always;
+           the per-day sparkbar when there's any day-level signal. Deep focus %
+           and top category are engine-only and intentionally omitted here. -->
+      <div class="lede-stats" aria-label="Highlights this {rangeMode}">
+        {#if freeLoading}
+          <div class="tile-skeleton tile-skeleton--stat" aria-busy="true">
+            <div class="sk-stat-row">
+              <Skeleton variant="text" width="64px" height="16px" />
+              <Skeleton variant="text" width="64px" height="16px" />
+            </div>
+          </div>
+        {:else}
+          <div class="lede-stat">
+            <span class="lede-stat-n">{summary.totalLabel}</span>
+            <span class="lede-stat-cap">tracked</span>
+          </div>
+          <div class="lede-stat">
+            <span class="lede-stat-n">{summary.avgLabel}</span>
+            <span class="lede-stat-cap">daily avg</span>
+          </div>
+          {#if summary.spark.length > 0}
+            <div class="lede-stat lede-stat--spark">
+              <div class="sparkbar" aria-hidden="true">
+                {#each summary.spark as v (v)}
+                  <span
+                    style="height:{summary.sparkMax > 0
+                      ? Math.max(8, (v / summary.sparkMax) * 100)
+                      : 0}%;"
+                  ></span>
+                {/each}
+              </div>
+              <span class="lede-stat-cap">per day</span>
+            </div>
+          {/if}
+        {/if}
+      </div>
+      <!-- Enable-engine invite — the single CTA for the free tier. -->
+      <div class="lede-invite">
+        <p class="lede-invite-text">
+          Turn on the Engine for the story behind these hours — categories,
+          focus, and what changed.
+        </p>
+        <button type="button" class="btn btn--accent" onclick={enableEngine}>
+          Enable engine
+        </button>
+      </div>
+    </article>
+  {/if}
+
+  <!-- ── Exhibits — demoted supporting evidence strip ──
+       The metric charts (Time / Categories / Focus), demoted below THE READ
+       hero into a quieter full-width strip: supporting evidence for the
+       narrative, not a co-equal dashboard. The big-number "This {range}" tile
+       was removed — its numbers now live in the hero's stats footer. Tiles
+       render for both tiers; tier is communicated structurally now, so the
+       per-tile Free/Engine badges are dropped for calm. -->
+  <section class="exhibits" aria-label="Supporting charts">
+    <p class="eyebrow">
+      <span class="diamond" aria-hidden="true">◆</span>
+      <span class="tick" aria-hidden="true"></span>
+      Exhibits
+      <span class="rule"></span>
+      {#if engineOn && categorySegments.length > 0}
+        <button
+          type="button"
+          class="evidence-link"
+          onclick={() => (categoryModalOpen = true)}>open category detail →</button
+        >
+      {/if}
+    </p>
+    <div class="exhibits-grid">
+      <!-- Time -->
+      <div class="exhibit">
+        <div class="exhibit-head">
+          <span class="exhibit-title">Time</span>
+        </div>
+        <div class="exhibit-body">
+          {#if freeLoading}
+            <div class="tile-skeleton tile-skeleton--bars" aria-busy="true">
+              {#each Array.from({ length: 4 }) as _, i (i)}
+                <div class="sk-bar-row">
+                  <Skeleton variant="text" width="34%" height="10px" />
+                  <Skeleton height="9px" radius="999px" />
+                </div>
+              {/each}
+            </div>
+          {:else if topApps.length === 0}
+            <p class="tile-note">No tracked app time in this range.</p>
+          {:else}
+            <MiniBars items={topApps} />
           {/if}
         </div>
-        {/if}
+      </div>
+
+      <!-- Categories -->
+      <div class="exhibit">
+        <div class="exhibit-head">
+          <span class="exhibit-title">Categories</span>
+        </div>
+        <div class="exhibit-body">
+          {#if engineTilesLoading}
+            <div class="tile-skeleton" aria-busy="true">
+              <Skeleton height="14px" radius="6px" />
+              <div class="sk-legend-rows">
+                {#each Array.from({ length: 3 }) as _, i (i)}
+                  <Skeleton variant="text" width={`${70 - i * 12}%`} height="10px" />
+                {/each}
+              </div>
+            </div>
+          {:else if !engineOn}
+            <p class="tile-note tile-note--locked">Enable the engine to light up categories.</p>
+          {:else if categorySegments.length === 0}
+            <p class="tile-note">No categorized activity yet.</p>
+          {:else}
+            <button
+              type="button"
+              class="cat-bar-trigger"
+              aria-haspopup="dialog"
+              aria-label="View category breakdown"
+              onclick={() => (categoryModalOpen = true)}
+            >
+              <StackedBar segments={categorySegments} showLegend={true} />
+            </button>
+            <span class="cat-bar-hint">view breakdown →</span>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Focus -->
+      <div class="exhibit">
+        <div class="exhibit-head">
+          <span class="exhibit-title">Focus</span>
+        </div>
+        <div class="exhibit-body">
+          {#if engineTilesLoading}
+            <div class="tile-skeleton tile-skeleton--heat" aria-busy="true">
+              {#each Array.from({ length: 3 }) as _, r (r)}
+                <div class="sk-heat-row">
+                  <Skeleton variant="text" width="22px" height="9px" />
+                  <div class="sk-heat-cells">
+                    {#each Array.from({ length: 6 }) as _, c (c)}
+                      <Skeleton height="10px" radius="2px" />
+                    {/each}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {:else if !engineOn}
+            <p class="tile-note tile-note--locked">Enable the engine to see focus.</p>
+          {:else if focusRows.length === 0}
+            <p class="tile-note">No focus signal yet.</p>
+          {:else}
+            <Heatmap
+              rows={focusRows}
+              colorMode="focus"
+              legend="deep · mixed · scattered"
+            />
+          {/if}
+        </div>
       </div>
     </div>
   </section>
-
-  <!-- ── Ask entry bar ── -->
-  <button class="ask-entry" type="button" onclick={() => onOpenTab?.("chat")}>
-    <span class="glyph" aria-hidden="true">◇</span>
-    <span class="label">Ask about your history</span>
-    <span class="hint">Opens Chat →</span>
-  </button>
 
   {#if freeError}
     <div class="state state--error">
@@ -1068,24 +1183,9 @@
     <!-- Shown until status resolves (and, when the engine is on, until the
          range's engine data lands) so we never flash the "enable the engine"
          invite or the "still learning" empty state before we actually know. -->
-    <div class="story-rule">
-      <span class="line"></span>The story this {rangeMode}<span class="line"></span>
-    </div>
     <div class="feed-column" aria-busy="true" aria-label="Loading your story">
-      <!-- Mirrors the real feed: lede prose, then "What changed" rows +
-           "Needs attention". -->
-      <article class="entry entry--skeleton">
-        <div class="sk-eyebrow">
-          <Skeleton variant="text" width="64px" height="10px" />
-          <Skeleton variant="text" width="48px" height="10px" />
-        </div>
-        <div class="sk-row">
-          <Skeleton variant="text" width="92%" height="12px" />
-        </div>
-        <div class="sk-row">
-          <Skeleton variant="text" width="64%" height="12px" />
-        </div>
-      </article>
+      <!-- Mirrors the real feed: "What changed" rows + "Needs attention".
+           The lede skeleton is handled by THE READ hero above. -->
       {#each Array.from({ length: 2 }) as _, card (card)}
         <article class="entry entry--skeleton">
           <div class="sk-eyebrow">
@@ -1102,47 +1202,11 @@
       {/each}
     </div>
   {:else if !engineOn}
-    <!-- ── No-engine invite (FREE tiles already shown above) ── -->
-    <div class="card no-engine">
-      <div class="ne-head">
-        <span class="section-title">
-          Without a reasoning engine
-          <span class="tier-badge tier-badge--free">Free</span>
-        </span>
-      </div>
-      <div class="ne-grid">
-        <div class="ne-mini">
-          <div class="cap">Glance band — free tiles only</div>
-          {#if topApps.length > 0}
-            <MiniBars items={topApps.slice(0, 3)} />
-          {:else}
-            <p class="tile-note">No tracked app time yet.</p>
-          {/if}
-        </div>
-        <div class="ne-invite">
-          <p>
-            The grayscale <span class="strong">Time</span> and
-            <span class="strong">This {rangeMode}</span> tiles stay. Categories, Focus,
-            and your story feed go dark until a reasoning engine is on.
-          </p>
-          <p>
-            Enable a reasoning engine to light up categories, focus, and your
-            dossier.
-          </p>
-          <div>
-            <button type="button" class="btn btn--accent" onclick={enableEngine}>
-              Enable engine
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- Free tier: the free hero + Exhibits above cover everything; the story
+         feed (What changed / Needs attention) is engine-only, so nothing
+         renders here. -->
   {:else}
     <!-- ── Story / dossier feed (ENGINE) ── -->
-    <div class="story-rule">
-      <span class="line"></span>The story this {rangeMode}<span class="line"></span>
-    </div>
-
     {#if engineEmpty}
       <div class="feed-column">
         <div class="state state--empty">
@@ -1160,70 +1224,6 @@
       </div>
     {:else}
       <div class="feed-column">
-        <!-- Narrative lede — the engine's read of the range, the feed's hero.
-             A lede, not a control surface: no actions, and silently absent when
-             the range is too sparse or the digest call fails. Layout top→bottom:
-             eyebrow → headline (when present) → prose (or shimmer) → a 3-stat
-             highlight row. -->
-        {#if digest || digestLoading}
-          <article class="entry entry--lede" aria-busy={!digest && digestLoading}>
-            <p class="eyebrow">
-              <span class="diamond" aria-hidden="true">◆</span>
-              <span class="tick" aria-hidden="true"></span>
-              In short
-              <span class="rule"></span>
-              {#if digest}{relativeTime(digest.generatedAtMs)}{/if}
-            </p>
-            {#if digest}
-              <!-- Keyed on generation time: fresh prose replays the reveal,
-                   a same-range cache hit does not. -->
-              {#key digest.generatedAtMs}
-                <div class="lede-body">
-                  {#if digest.headline}
-                    <h2 class="lede-headline">{digest.headline}</h2>
-                  {/if}
-                  <p class="lede-text">{digest.narrative}</p>
-                </div>
-              {/key}
-            {:else}
-              <div class="sk-row">
-                <Skeleton variant="text" width="92%" height="12px" />
-              </div>
-              <div class="sk-row">
-                <Skeleton variant="text" width="64%" height="12px" />
-              </div>
-            {/if}
-            <!-- 3-stat highlight row — the range's headline numbers, sitting
-                 where the app strip used to. Tracked is always present; Deep
-                 and Top category render only when they have a value. -->
-            <div class="lede-stats" aria-label="Highlights this {rangeMode}">
-              <div class="lede-stat">
-                <span class="lede-stat-n">{summary.totalLabel}</span>
-                <span class="lede-stat-cap">tracked</span>
-              </div>
-              {#if summary.deepPct !== null}
-                <div class="lede-stat">
-                  <span class="lede-stat-n">{summary.deepPct}%</span>
-                  <span class="lede-stat-cap">deep focus</span>
-                </div>
-              {/if}
-              {#if topCategory}
-                <div class="lede-stat">
-                  <span class="lede-stat-n lede-stat-n--cat">
-                    <span
-                      class="lede-stat-swatch"
-                      style="background:var({topCategory.colorVar});"
-                      aria-hidden="true"
-                    ></span>
-                    {topCategory.label}
-                  </span>
-                  <span class="lede-stat-cap">top category</span>
-                </div>
-              {/if}
-            </div>
-          </article>
-        {/if}
-
         <!-- What changed — one card; conclusion deltas as grouped rows -->
         {#if conclusionDeltas.length > 0}
           <article class="entry">
@@ -1431,6 +1431,13 @@
     {/if}
   {/if}
 
+  <!-- ── Ask entry bar — last child of the overview, both tiers ── -->
+  <button class="ask-entry" type="button" onclick={() => onOpenTab?.("chat")}>
+    <span class="glyph" aria-hidden="true">◇</span>
+    <span class="label">Ask about your history</span>
+    <span class="hint">Opens Chat →</span>
+  </button>
+
   <CategoryDetailModal
     open={categoryModalOpen}
     threads={activityThreads}
@@ -1448,6 +1455,8 @@
     display: flex;
     flex-direction: column;
     gap: 20px;
+    max-width: 60%;
+    margin: 0 auto;
   }
 
   /* ---- Page header ---- */
@@ -1557,57 +1566,53 @@
   }
 
   /* ---- Bento glance band ---- */
-  .glance-band {
+  /* Exhibits — demoted supporting-evidence strip. Derived from the bento
+     .glance-tile styles but lighter: subtler surface/border, less padding,
+     lower min-height, thinner headers. The hero must clearly dominate this. */
+  .exhibits-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
   }
-  @media (max-width: 920px) {
-    .glance-band {
-      grid-template-columns: repeat(2, 1fr);
-    }
+  .exhibits-grid .exhibit:last-child {
+    grid-column: 1 / -1;
   }
-  .glance-tile {
+  .exhibit {
     display: flex;
     flex-direction: column;
-    min-height: 156px;
-    padding: 12px 13px;
-    background: var(--app-surface);
+    min-height: 120px;
+    padding: 11px 12px;
+    background: var(--app-surface-subtle);
     border: 1px solid var(--app-border);
     border-radius: 9px;
     min-width: 0;
     overflow: hidden;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
+    transition: border-color 0.12s ease;
   }
-  .glance-tile:hover {
+  .exhibit:hover {
     border-color: var(--app-border-hover);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
   }
-  .glance-head {
+  .exhibit-head {
     display: flex;
     align-items: center;
     gap: 7px;
-    margin-bottom: 11px;
+    margin-bottom: 9px;
   }
-  .glance-title {
+  .exhibit-title {
     font-size: 10.5px;
     letter-spacing: 0.07em;
     text-transform: uppercase;
-    color: var(--app-text-muted);
+    color: var(--app-text-faint);
     white-space: nowrap;
   }
-  .glance-head .spacer {
-    flex: 1 1 auto;
-  }
-  .glance-body {
+  .exhibit-body {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;
     justify-content: center;
   }
+
   .tile-note {
     margin: 0;
     font-size: 11px;
@@ -1712,61 +1717,6 @@
     border-top: 1px dashed var(--app-border);
   }
 
-  /* tier-badge (mirrors app.css) */
-  .tier-badge {
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
-    padding: 1px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--app-neutral-border);
-    background: var(--app-neutral-bg);
-    color: var(--app-neutral-text);
-    text-transform: uppercase;
-  }
-  .tier-badge--free {
-    border-color: var(--app-neutral-border);
-    background: var(--app-neutral-bg);
-    color: var(--app-neutral-text);
-  }
-  .tier-badge--engine {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-
-  /* This-range stat tile */
-  .week-stat {
-    display: flex;
-    flex-direction: column;
-    gap: 9px;
-  }
-  .week-big .n {
-    font-size: 27px;
-    line-height: 1;
-    color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
-  }
-  .week-big .u {
-    font-size: 10px;
-    color: var(--app-text-muted);
-    letter-spacing: 0.03em;
-    margin-top: 4px;
-  }
-  .week-sub {
-    display: flex;
-    gap: 14px;
-  }
-  .week-sub .cell .n {
-    font-size: 13px;
-    color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
-  }
-  .week-sub .cell .l {
-    font-size: 9px;
-    color: var(--app-text-muted);
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-  }
   .sparkbar {
     display: flex;
     gap: 3px;
@@ -1797,6 +1747,14 @@
       border-color 0.12s ease,
       background 0.12s ease,
       color 0.12s ease;
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    /* Mask the scroll container's 28px bottom padding so scrolling content
+       doesn't peek through below the docked bar (the bar pins 28px above the
+       scrollport's bottom edge). The downward solid shadow paints page-bg over
+       that gap; it's clipped by the scroll container's overflow. */
+    box-shadow: 0 28px 0 0 var(--app-bg);
   }
   .ask-entry:hover {
     border-color: var(--app-accent-border);
@@ -1822,27 +1780,8 @@
   }
 
   /* ---- Story feed ---- */
-  .story-rule {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    max-width: 720px;
-    margin: 4px auto -2px;
-    font-size: 10px;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--app-text-faint);
-  }
-  .story-rule .line {
-    flex: 1 1 auto;
-    height: 1px;
-    background: var(--app-border);
-  }
-
   .feed-column {
     width: 100%;
-    max-width: 720px;
-    margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -1972,6 +1911,32 @@
     font-size: 9px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+  /* The per-day sparkbar rides the stats footer as a final cell, pushed to the
+     right so the figures read first. Reuses the shared .sparkbar primitive. */
+  .lede-stat--spark {
+    margin-left: auto;
+    min-width: 88px;
+  }
+  .lede-stat--spark .sparkbar {
+    width: 100%;
+  }
+  /* Free-tier enable-engine invite — a quiet muted line + the accent CTA,
+     sitting below the stats footer in the same hero shell. */
+  .lede-invite {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 16px;
+  }
+  .lede-invite-text {
+    flex: 1 1 240px;
+    min-width: 0;
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.6;
     color: var(--app-text-muted);
   }
 
@@ -2331,72 +2296,7 @@
     color: var(--app-text-faint);
   }
 
-  /* ---- No-engine card ---- */
-  .card {
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
-    padding: 14px;
-  }
-  .section-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-  .no-engine {
-    max-width: 720px;
-    margin: 8px auto 0;
-    background: var(--app-surface-subtle);
-  }
-  .no-engine .ne-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 10px;
-  }
-  .no-engine .ne-grid {
-    display: grid;
-    grid-template-columns: 1.1fr 1fr;
-    gap: 14px;
-    align-items: start;
-  }
-  @media (max-width: 720px) {
-    .no-engine .ne-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-  .no-engine .ne-mini {
-    border: 1px dashed var(--app-border);
-    border-radius: 8px;
-    padding: 10px 11px;
-    background: var(--app-surface);
-  }
-  .no-engine .ne-mini .cap {
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-faint);
-    margin-bottom: 8px;
-  }
-  .no-engine .ne-invite {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .no-engine .ne-invite p {
-    margin: 0;
-    font-size: 12.5px;
-    line-height: 1.6;
-    color: var(--app-text-muted);
-  }
-  .no-engine .ne-invite .strong {
-    color: var(--app-text);
-  }
-
+  /* ---- Free-tier enable-engine CTA button ---- */
   .btn {
     font: inherit;
     font-size: 11.5px;
