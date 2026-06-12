@@ -660,6 +660,16 @@
     // Append the turn locally and render live from events. The backend owns
     // persistence: ask_ai_start upserts the row (from title/origin) and the turn
     // (streaming → done/error) keyed by a backend-computed turnIndex.
+    // Defensive: settle any prior turn still flagged "streaming" in memory. A
+    // cancelled/displaced turn that never received a terminal event would
+    // otherwise keep showing its inline "Writing…" beneath a finished answer
+    // once a new turn is appended below it.
+    for (const t of turns) {
+      if (t.phase === "streaming") {
+        t.toolActivity = null;
+        t.phase = "done";
+      }
+    }
     const turn = makeTurn(question, isFirstTurn ? "seeding" : "thinking");
     turns = [...turns, turn];
     const turnIndex = turns.length - 1;
@@ -730,9 +740,12 @@
   }
 
   // ── Stop the in-flight turn (composer stop button) ───────────────────────
-  // Asks the backend to cancel and nothing more: the backend emits the turn's
-  // terminal ask_ai_done/ask_ai_error, and the normal listeners settle the UI
-  // (streaming flag, activity line) — no double-handling here.
+  // Asks the backend to cancel, then settles the UI LOCALLY. A cancelled turn
+  // is persisted "done" server-side but emits NO terminal ask_ai_done — that
+  // event is reserved for clean finishes so a displaced turn can't settle a
+  // newer one (and a cancel during seeding returns silently). Without a local
+  // settle the streaming flag + "Writing…" line would hang forever, so we drop
+  // them here and mark the live turn done.
   async function stopStreaming(): Promise<void> {
     const conversationId = activeConversationId;
     if (conversationId === null || !streaming) return;
@@ -740,6 +753,14 @@
       await invoke<void>("ask_ai_cancel", { request: { conversationId } });
     } catch {
       // Best-effort: the task may already have finished.
+    }
+    if (activeConversationId !== conversationId) return;
+    streaming = false;
+    liveActivity = null;
+    const turn = turns[turns.length - 1];
+    if (turn && turn.phase === "streaming") {
+      turn.toolActivity = null;
+      turn.phase = "done";
     }
   }
 
@@ -916,11 +937,12 @@
     return segments;
   }
 
-  // Split one turn's answer into typed segments. While streaming (or seeding/
-  // thinking) the answer is rendered as plain markdown straight from AnswerProse
-  // (partial JSON is never parsed); once "done" we upgrade to these graphical
-  // segments. Memoized in a non-reactive WeakMap so a freshly-loaded transcript
-  // re-segments only when a turn's answer actually changed.
+  // Split one turn's answer into typed segments — used BOTH while streaming and
+  // once done. Only fully-closed fences match the regex, so partial JSON inside
+  // an in-progress fence is never parsed (it stays raw markdown until its closing
+  // fence streams in, then upgrades to a chart). Memoized in a non-reactive
+  // WeakMap so a freshly-loaded transcript re-segments only when a turn's answer
+  // actually changed (and a live turn re-segments once per delta).
   function answerSegments(turn: ChatTurn): AnswerSegment[] {
     const cached = segmentRenderCache.get(turn);
     if (cached !== undefined && cached.answer === turn.answer) {
@@ -1125,6 +1147,10 @@
     // thread id (stale-thread guard, REQUIRED) and a non-empty transcript.
     listen<AskAiStatusEvent>("ask_ai_status", (event) => {
       if (event.payload.conversationId !== activeConversationId) return;
+      // Terminal guard (mirrors the delta/reasoning listeners): once the turn
+      // has settled (`streaming` is false) a late, out-of-order status MUST NOT
+      // revive the working line or revert `turn.phase` back to a working phase.
+      if (!streaming) return;
       const turn = turns[turns.length - 1];
       if (!turn) return;
       if (event.payload.phase === "tool") {
@@ -1542,6 +1568,7 @@
                         </p>
                       {:else}
                         {#if turn.phase === "streaming" || turn.phase === "done"}
+                          {@const segs = answerSegments(turn)}
                           <!-- Collapsed, expandable tool-activity summary chip. -->
                           {#if activitySummaryFor(turn.toolActivities) !== null}
                             <div class="activity">
@@ -1575,16 +1602,22 @@
                             </div>
                           {/if}
 
-                          <!-- The answer body. While streaming AnswerProse renders
-                               plain markdown (with its own caret); once done we
-                               upgrade to graphical segments (mnema-bars /
-                               mnema-dossier), with prose runs still through
-                               AnswerProse. -->
+                          <!-- The answer body, rendered as typed segments while
+                               streaming AND once done. Completed graphical fences
+                               (mnema-bars / mnema-dossier / mnema-timeline) upgrade
+                               to charts the instant their closing fence streams in;
+                               an in-progress (unclosed) fence has no match yet, so
+                               it stays raw markdown until it closes. The streaming
+                               caret rides only the LAST prose segment, and only
+                               until the turn settles. -->
                           <div class="answer">
-                            {#if turn.phase === "done"}
-                              {#each answerSegments(turn) as seg, si (si)}
+                            {#each segs as seg, si (si)}
                                 {#if seg.kind === "html"}
-                                  <AnswerProse source={seg.markdown} isStreaming={false} />
+                                  <AnswerProse
+                                    source={seg.markdown}
+                                    isStreaming={turn.phase !== "done" &&
+                                      si === segs.length - 1}
+                                  />
                                 {:else if seg.kind === "bars"}
                                   <figure class="graphic">
                                     {#if seg.title}
@@ -1623,10 +1656,7 @@
                                     <Timeline title={seg.title} intervals={seg.items} />
                                   </figure>
                                 {/if}
-                              {/each}
-                            {:else}
-                              <AnswerProse source={turn.answer} isStreaming={true} />
-                            {/if}
+                            {/each}
                           </div>
 
                           <!-- Answer Sources: the captures this turn drew on. -->
