@@ -412,6 +412,23 @@ export interface AiRuntimeModel {
 	provider: string;
 }
 
+/** One connected provider that failed to list its models, surfaced so the
+ *  picker can show it (with a Retry) instead of silently showing fewer models. */
+export interface AiRuntimeProviderFailure {
+	/** The provider instance id that failed. */
+	provider: string;
+	/** Short, human-readable reason (`unreachable`, `missing API key`, …). */
+	reason: string;
+}
+
+/** The result of `ai_runtime_list_models`: the discovered models plus the
+ *  providers that failed to list (best-effort listing never drops a provider
+ *  silently — a transiently-down endpoint rides back here). */
+export interface AiRuntimeModelsResult {
+	models: AiRuntimeModel[];
+	failures: AiRuntimeProviderFailure[];
+}
+
 export interface KeyboardBindingsSettings {
 	schemaVersion: number;
 	globalShortcuts: GlobalShortcutsSettings;

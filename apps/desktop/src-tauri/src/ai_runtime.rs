@@ -49,6 +49,67 @@ pub struct AiRuntimeModel {
     provider: String,
 }
 
+/// One connected provider that failed to list its models, so the picker can
+/// surface it (with a Retry) instead of silently showing a smaller pool.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRuntimeProviderFailure {
+    /// The provider instance id that failed ([`AiProviderConfig::id`]).
+    provider: String,
+    /// A short, human-readable reason (`unreachable`, `missing API key`, …).
+    reason: String,
+}
+
+/// The result of listing the merged model pool: the discovered models plus the
+/// providers that failed to list. Best-effort listing means a failed provider
+/// no longer just vanishes from the pool — it rides back here so the UI can
+/// show it and offer a retry.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRuntimeModelsResult {
+    models: Vec<AiRuntimeModel>,
+    failures: Vec<AiRuntimeProviderFailure>,
+}
+
+/// Flatten an error and its whole `source()` chain into one string. `reqwest`'s
+/// top-level `Display` is just "error sending request for url (…)"; the useful
+/// cause ("tcp connect error: Connection refused (os error 61)", a DNS failure,
+/// a TLS error) lives in the source chain, so we append each link.
+fn describe_error(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
+/// Condense a raw listing error into a short reason for the picker. The raw
+/// error still rides the warning log for debugging; this is the at-a-glance
+/// label a user sees next to the provider.
+fn classify_listing_failure(error: &str) -> String {
+    if error.starts_with("no_provider_key") {
+        "missing API key".to_string()
+    } else if error.starts_with("no_base_url") {
+        "no base URL set".to_string()
+    } else if error.contains("error sending request")
+        || error.contains("connect")
+        || error.contains("dns")
+        || error.contains("timed out")
+    {
+        "unreachable".to_string()
+    } else if error.contains("status 401")
+        || error.contains("status 403")
+        || error.contains("invalid_api_key")
+    {
+        "authentication failed".to_string()
+    } else {
+        "couldn't list models".to_string()
+    }
+}
+
 /// Minimal projection of the OpenAI-style `{ "data": [ { "id": … } ] }` model
 /// list. Anthropic's `/v1/models` shares this `data[].id` shape, so the same
 /// parse covers every provider/runtime we list.
@@ -61,6 +122,52 @@ struct ModelsListResponse {
 #[derive(Debug, Deserialize)]
 struct ModelsListEntry {
     id: String,
+}
+
+/// One page of Fireworks' proprietary Gateway catalog
+/// (`/v1/accounts/{account}/models`). Unlike the OpenAI-compatible
+/// `/inference/v1/models` route — which advertises only a small curated set —
+/// this lists the full catalog, paginated via `nextPageToken`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksCatalogResponse {
+    #[serde(default)]
+    models: Vec<FireworksCatalogModel>,
+    #[serde(default)]
+    next_page_token: Option<String>,
+}
+
+/// One catalog entry. `name` is the fully-qualified id the inference API
+/// expects (e.g. `accounts/fireworks/models/deepseek-v4-flash`).
+/// `supportsServerless` marks the models actually callable without a dedicated
+/// deployment — the only ones worth surfacing in the picker.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksCatalogModel {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    supports_serverless: bool,
+}
+
+/// One page of `GET /v1/accounts` — the accounts the API key belongs to. Used
+/// to discover the caller's own account so their fine-tunes get listed
+/// alongside the public `fireworks` catalog.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksAccountsResponse {
+    #[serde(default)]
+    accounts: Vec<FireworksAccount>,
+    #[serde(default)]
+    next_page_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FireworksAccount {
+    /// Fully-qualified resource name, e.g. `accounts/shaikzeeshan999-yo15`.
+    #[serde(default)]
+    name: String,
 }
 
 /// How long the `/models` request waits before giving up.
@@ -82,6 +189,31 @@ fn models_endpoint_url(base: &str) -> String {
     } else {
         format!("{trimmed}/v1/models")
     }
+}
+
+/// The lowercased host of an OpenAI-style base URL, with scheme, userinfo,
+/// port, and path stripped. `https://api.fireworks.ai/inference/v1` →
+/// `api.fireworks.ai`.
+fn base_host(base: &str) -> String {
+    let after_scheme = base.trim().split("://").nth(1).unwrap_or(base.trim());
+    after_scheme
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// Whether an OpenAI-compatible base URL points at Fireworks, whose
+/// `/inference/v1/models` route is curated down to a handful — see
+/// [`list_fireworks_serverless_models`].
+fn is_fireworks_host(base: &str) -> bool {
+    base_host(base) == "api.fireworks.ai"
 }
 
 #[derive(Debug, Deserialize)]
@@ -438,6 +570,21 @@ async fn list_models_for_provider(
     provider: &AiProviderConfig,
 ) -> Result<Vec<String>, String> {
     let base_url = provider.base_url.trim();
+
+    // Fireworks special-case: its OpenAI-compatible `/inference/v1/models`
+    // route advertises only a small curated set (≈6), so page the proprietary
+    // Gateway catalog instead to surface the full serverless model list. Every
+    // other OpenAI-compatible provider (llama-swap, OpenRouter, …) keeps the
+    // generic `/v1/models` path below — their `/models` already returns the
+    // full catalog.
+    if provider.kind == AiProviderKind::OpenaiCompatible && is_fireworks_host(base_url) {
+        let api_key = app_infra::load_ai_provider_key(&provider.id)
+            .map_err(|error| error.to_string())?
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| format!("no_provider_key:{}", provider.id))?;
+        return list_fireworks_models(client, &base_host(base_url), &api_key).await;
+    }
+
     let http_request = match provider.kind {
         AiProviderKind::Anthropic | AiProviderKind::Openai | AiProviderKind::OpenaiCompatible => {
             // The key lives in the keychain at the provider's instance id.
@@ -470,7 +617,7 @@ async fn list_models_for_provider(
         .timeout(MODELS_REQUEST_TIMEOUT)
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| describe_error(&error))?;
 
     let status = response.status();
     // reqwest is built without the `json` feature here, so read the body and
@@ -499,23 +646,180 @@ async fn list_models_for_provider(
         .collect())
 }
 
+/// List the Fireworks models worth surfacing in the picker: the public
+/// `fireworks` serverless catalog (the models callable without a dedicated
+/// deployment) PLUS every model in the API key's own account(s) (the caller's
+/// fine-tunes — kept unfiltered since those are rarely "serverless"). The
+/// public catalog is the source of truth, so its failure propagates; personal
+/// account discovery is best-effort and merely adds to the list. The shared
+/// [`is_chat_capable_model`] filter downstream still strips embedding/rerank
+/// ids, so the picker ends up with the chat models.
+///
+/// `host` is the provider's own host (always `api.fireworks.ai` here).
+async fn list_fireworks_models(
+    client: &reqwest::Client,
+    host: &str,
+    api_key: &str,
+) -> Result<Vec<String>, String> {
+    // Public serverless catalog first — this is the failure that should mark
+    // the provider unlisted (e.g. an invalid key surfaces here).
+    let mut ids = list_fireworks_account_models(client, host, api_key, "fireworks", true).await?;
+
+    // The caller's own account(s): their fine-tunes, listed unfiltered. Purely
+    // additive — a discovery/list failure just means no personal models, never
+    // a failed pool.
+    for account in discover_fireworks_accounts(client, host, api_key).await {
+        if account == "fireworks" {
+            continue;
+        }
+        match list_fireworks_account_models(client, host, api_key, &account, false).await {
+            Ok(personal) => ids.extend(personal),
+            Err(error) => tauri_plugin_log::log::warn!(
+                "fireworks personal account {account} model listing skipped: {error}"
+            ),
+        }
+    }
+
+    Ok(ids)
+}
+
+/// The account segments (`accounts/<segment>` → `<segment>`) the API key
+/// belongs to, via `GET /v1/accounts`. Best-effort: any error yields an empty
+/// list so the public catalog still stands on its own.
+async fn discover_fireworks_accounts(
+    client: &reqwest::Client,
+    host: &str,
+    api_key: &str,
+) -> Vec<String> {
+    let url = format!("https://{host}/v1/accounts");
+    let mut accounts: Vec<String> = Vec::new();
+    let mut page_token: Option<String> = None;
+
+    loop {
+        let mut request = client
+            .get(&url)
+            .query(&[("pageSize", "200")])
+            .bearer_auth(api_key)
+            .timeout(MODELS_REQUEST_TIMEOUT);
+        if let Some(token) = &page_token {
+            request = request.query(&[("pageToken", token.as_str())]);
+        }
+
+        let Ok(response) = request.send().await else {
+            break;
+        };
+        if !response.status().is_success() {
+            break;
+        }
+        let Ok(body) = response.text().await else {
+            break;
+        };
+        let Ok(parsed) = serde_json::from_str::<FireworksAccountsResponse>(&body) else {
+            break;
+        };
+
+        accounts.extend(
+            parsed
+                .accounts
+                .into_iter()
+                .filter_map(|account| {
+                    account
+                        .name
+                        .trim()
+                        .strip_prefix("accounts/")
+                        .map(str::to_string)
+                })
+                .filter(|segment| !segment.is_empty()),
+        );
+
+        match parsed.next_page_token {
+            Some(token) if !token.is_empty() => page_token = Some(token),
+            _ => break,
+        }
+    }
+
+    accounts
+}
+
+/// Page one Fireworks account's catalog (`GET …/v1/accounts/<account>/models`)
+/// and return the model ids. When `serverless_only` is set, only models
+/// callable without a dedicated deployment are kept (used for the public
+/// `fireworks` catalog, where the vast majority are non-serverless addons).
+async fn list_fireworks_account_models(
+    client: &reqwest::Client,
+    host: &str,
+    api_key: &str,
+    account: &str,
+    serverless_only: bool,
+) -> Result<Vec<String>, String> {
+    let catalog_url = format!("https://{host}/v1/accounts/{account}/models");
+    let mut ids: Vec<String> = Vec::new();
+    let mut page_token: Option<String> = None;
+
+    loop {
+        let mut request = client
+            .get(&catalog_url)
+            .query(&[("pageSize", "200")])
+            .bearer_auth(api_key)
+            .timeout(MODELS_REQUEST_TIMEOUT);
+        if let Some(token) = &page_token {
+            request = request.query(&[("pageToken", token.as_str())]);
+        }
+
+        let response = request.send().await.map_err(|error| describe_error(&error))?;
+        let status = response.status();
+        let body = response.text().await.map_err(|error| describe_error(&error))?;
+
+        if !status.is_success() {
+            let detail = body.trim();
+            return Err(if detail.is_empty() {
+                format!("fireworks catalog request failed with status {status}")
+            } else {
+                format!("fireworks catalog request failed with status {status}: {detail}")
+            });
+        }
+
+        let parsed: FireworksCatalogResponse =
+            serde_json::from_str(&body).map_err(|error| error.to_string())?;
+
+        ids.extend(
+            parsed
+                .models
+                .into_iter()
+                .filter(|model| !serverless_only || model.supports_serverless)
+                .map(|model| model.name.trim().to_string())
+                .filter(|id| !id.is_empty()),
+        );
+
+        match parsed.next_page_token {
+            Some(token) if !token.is_empty() => page_token = Some(token),
+            _ => break,
+        }
+    }
+
+    Ok(ids)
+}
+
 /// List the merged, provider-tagged model pool across every connected provider
 /// (ADR 0034: one pool feeding the default-model picker, the Ask AI override
 /// picker, and the Chat thread picker). Best-effort per provider: a provider
-/// that fails to list (missing key, unreachable endpoint) is skipped with a
-/// warning instead of failing the whole pool, and the caller may still type a
-/// model id no provider advertises (free-form entry stays allowed).
+/// that fails to list (missing key, unreachable endpoint) does NOT fail the
+/// whole pool — its successful peers still list, and the failure rides back in
+/// `failures` so the UI can surface it and offer a retry (a transiently-down
+/// LAN endpoint shouldn't silently vanish from the picker). Free-form entry of
+/// a model id no provider advertises stays allowed.
 #[tauri::command]
 pub async fn ai_runtime_list_models(
     state: tauri::State<'_, RecordingSettingsState>,
     request: Option<AiRuntimeListModelsRequest>,
-) -> Result<Vec<AiRuntimeModel>, String> {
+) -> Result<AiRuntimeModelsResult, String> {
     let providers = request
         .and_then(|request| request.providers)
         .unwrap_or_else(|| read_recording_settings(state.inner()).ai_runtime.providers);
 
     let client = reqwest::Client::new();
     let mut models: Vec<AiRuntimeModel> = Vec::new();
+    let mut failures: Vec<AiRuntimeProviderFailure> = Vec::new();
     for provider in &providers {
         match list_models_for_provider(&client, provider).await {
             Ok(ids) => models.extend(
@@ -537,12 +841,16 @@ pub async fn ai_runtime_list_models(
                     "model listing skipped provider {}: {error}",
                     provider.id
                 );
+                failures.push(AiRuntimeProviderFailure {
+                    provider: provider.id.clone(),
+                    reason: classify_listing_failure(&error),
+                });
             }
         }
     }
     models.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
     models.dedup_by(|a, b| a.id == b.id && a.provider == b.provider);
-    Ok(models)
+    Ok(AiRuntimeModelsResult { models, failures })
 }
 
 #[cfg(test)]
@@ -795,5 +1103,48 @@ mod tests {
             "accounts/fireworks/models/deepseek-v4-pro"
         ));
         assert!(is_chat_capable_model("llama-3.3-70b"));
+    }
+
+    #[test]
+    fn base_host_strips_scheme_path_and_port() {
+        assert_eq!(
+            base_host("https://api.fireworks.ai/inference/v1"),
+            "api.fireworks.ai"
+        );
+        assert_eq!(base_host("http://192.168.0.9:8080/v1"), "192.168.0.9");
+        assert_eq!(base_host("https://API.Fireworks.AI/v1"), "api.fireworks.ai");
+        assert_eq!(base_host("https://user@host.example/v1"), "host.example");
+    }
+
+    #[test]
+    fn classify_listing_failure_maps_common_errors() {
+        assert_eq!(
+            classify_listing_failure("no_provider_key:openai_compatible-2"),
+            "missing API key"
+        );
+        assert_eq!(classify_listing_failure("no_base_url"), "no base URL set");
+        assert_eq!(
+            classify_listing_failure("error sending request for url (http://192.168.0.9:8080/v1/models)"),
+            "unreachable"
+        );
+        assert_eq!(
+            classify_listing_failure("model listing request failed with status 401: invalid_api_key"),
+            "authentication failed"
+        );
+        assert_eq!(
+            classify_listing_failure("model listing request failed with status 500"),
+            "couldn't list models"
+        );
+    }
+
+    #[test]
+    fn is_fireworks_host_matches_only_fireworks() {
+        // Fireworks' OpenAI-compatible base routes to the Gateway catalog.
+        assert!(is_fireworks_host("https://api.fireworks.ai/inference/v1"));
+        // Other OpenAI-compatible providers keep the generic /v1/models path.
+        assert!(!is_fireworks_host("http://192.168.0.9:8080/v1"));
+        assert!(!is_fireworks_host("https://openrouter.ai/api/v1"));
+        // A path that merely mentions the host must not match (host-anchored).
+        assert!(!is_fireworks_host("https://evil.test/api.fireworks.ai/v1"));
     }
 }

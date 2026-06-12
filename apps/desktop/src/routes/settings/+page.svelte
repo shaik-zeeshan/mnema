@@ -36,6 +36,7 @@
   import type {
     ActivityMode,
     AiRuntimeModel,
+    AiRuntimeModelsResult,
     AppearanceSetting,
     CaptureSupport,
     GeneralAppLogStatus,
@@ -783,9 +784,18 @@
     try {
       // Send the in-progress draft provider list so discovery reflects what the
       // card shows right now instead of racing the autosave debounce.
-      aiModels = await invoke<AiRuntimeModel[]>("ai_runtime_list_models", {
+      const result = await invoke<AiRuntimeModelsResult>("ai_runtime_list_models", {
         request: { providers: $state.snapshot(draftAiProviders) },
       });
+      aiModels = result.models;
+      // A provider that failed to list (unreachable, missing key) no longer
+      // vanishes silently — name it so the picker's smaller pool is explained.
+      aiModelsError =
+        result.failures.length > 0
+          ? result.failures
+              .map((f) => `${aiProviderLabelById(f.provider)}: ${f.reason}`)
+              .join("; ")
+          : null;
     } catch (err) {
       aiModels = [];
       aiModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
@@ -1976,9 +1986,16 @@
     askAiModelsLoading = true;
     askAiModelsError = null;
     try {
-      askAiModels = await invoke<AiRuntimeModel[]>("ai_runtime_list_models", {
+      const result = await invoke<AiRuntimeModelsResult>("ai_runtime_list_models", {
         request: { providers: $state.snapshot(draftAiProviders) },
       });
+      askAiModels = result.models;
+      askAiModelsError =
+        result.failures.length > 0
+          ? result.failures
+              .map((f) => `${aiProviderLabelById(f.provider)}: ${f.reason}`)
+              .join("; ")
+          : null;
     } catch (err) {
       askAiModels = [];
       askAiModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);

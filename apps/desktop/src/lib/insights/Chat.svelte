@@ -69,16 +69,10 @@
     type AskAiSource,
     type AskToolKind,
     type AskToolActivityEntry,
-    type PinnableEngine,
-    defaultEnginePinProvider,
-    defaultEngineModel,
-    providerLabelById,
-    pinnableEnginesFromModelPool,
-    shortModelLabel,
   } from "$lib/insights/conversation";
+  import ModelPicker from "$lib/insights/ModelPicker.svelte";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
-    AiRuntimeModel,
     AiRuntimeSettings,
     RecordingSettings,
     RecordingSettingsDomainUpdateResponse,
@@ -266,7 +260,9 @@
   // ADR 0033 — never a key-entry surface). The active thread's pin is
   // (activePinProvider, activePinModel); null/null means the global default
   // model. The backend's single resolver handles any (provider, model) pin,
-  // falling back through feature override to the global default.
+  // falling back through feature override to the global default. The picker UI
+  // (trigger + searchable dropdown) lives in <ModelPicker>; this owns the pin
+  // and the settings snapshot it feeds down.
   // Snapshot of the aiRuntime settings backing the default `{provider, model}`
   // pin labels. Refreshed on settings changes.
   let aiRuntimeSnapshot = $state<AiRuntimeSettings | null>(null);
@@ -274,79 +270,11 @@
   // that replaces the default model's id for unpinned Ask AI threads. Empty →
   // use the global default model. Refreshed alongside aiRuntimeSnapshot.
   let askAiModelOverride = $state<string | null>(null);
-  let defaultProvider = $derived(
-    aiRuntimeSnapshot === null ? null : defaultEnginePinProvider(aiRuntimeSnapshot),
-  );
   let activePinProvider = $state<string | null>(null);
   let activePinModel = $state<string | null>(null);
-  // The model the unpinned ("Default") choice resolves to, for the picker label
-  // only. The backend's precedence is pin → Ask AI override (access.askAiModel)
-  // → global default model, so the override wins here when set.
-  let resolvedDefaultModel = $derived(
-    askAiModelOverride !== null
-      ? askAiModelOverride
-      : aiRuntimeSnapshot === null
-        ? null
-        : defaultEngineModel(aiRuntimeSnapshot),
-  );
-  // The picker trigger shows a SHORT, legible model label (the `/`-tail), so a
-  // long routing path doesn't get cut off mid-id by the pill's ellipsis. The
-  // full, unshortened label rides on the trigger's `title=` (activeModelTitle).
-  let activeModelLabel = $derived.by(() => {
-    if (activePinProvider === null || activePinModel === null) {
-      return resolvedDefaultModel === null
-        ? "Default"
-        : `Default · ${shortModelLabel(resolvedDefaultModel)}`;
-    }
-    if (defaultProvider !== null && activePinProvider === defaultProvider) {
-      return shortModelLabel(activePinModel);
-    }
-    // A non-default-provider pin keeps its provider context.
-    return `${providerLabelById(aiRuntimeSnapshot?.providers, activePinProvider)} · ${shortModelLabel(activePinModel)}`;
-  });
-  // The full (unshortened) trigger label, surfaced on hover so the complete id
-  // stays readable even when the short label hides a long routing path.
-  let activeModelTitle = $derived.by(() => {
-    if (activePinProvider === null || activePinModel === null) {
-      return resolvedDefaultModel === null
-        ? "Default"
-        : `Default · ${resolvedDefaultModel}`;
-    }
-    if (defaultProvider !== null && activePinProvider === defaultProvider) {
-      return activePinModel;
-    }
-    return `${providerLabelById(aiRuntimeSnapshot?.providers, activePinProvider)} · ${activePinModel}`;
-  });
+  // Open state for the model picker pill, bound to <ModelPicker>; reset on
+  // thread switch so a stale dropdown never lingers across conversations.
   let enginePickerOpen = $state(false);
-
-  // The merged provider-tagged model pool from `ai_runtime_list_models` across
-  // every connected provider. Loaded lazily on first picker open, cached until
-  // a settings change invalidates it.
-  let modelPool = $state<AiRuntimeModel[]>([]);
-  let modelsLoaded = $state(false);
-  let modelsLoading = $state(false);
-  let modelsFailed = $state(false);
-  let pinnableEngines = $derived(
-    pinnableEnginesFromModelPool(modelPool, aiRuntimeSnapshot?.providers),
-  );
-  // Default-provider models render as bare ids (the common case)…
-  let discoveredModels = $derived(
-    defaultProvider === null
-      ? []
-      : pinnableEngines
-          .filter((e) => e.provider === defaultProvider)
-          .map((e) => e.model),
-  );
-  // …while the rest of the pool keeps its provider-tagged label so
-  // multi-provider users keep their other providers' models selectable.
-  let extraConfiguredEngines = $derived(
-    pinnableEngines.filter((e) => e.provider !== defaultProvider),
-  );
-
-  // Free-form "Custom model…" entry at the bottom of the picker.
-  let customModelOpen = $state(false);
-  let customModelInput = $state("");
-  let customModelEl = $state<HTMLInputElement | null>(null);
 
   async function loadPinnableEngines(): Promise<void> {
     try {
@@ -358,69 +286,16 @@
       aiRuntimeSnapshot = null;
       askAiModelOverride = null;
     }
-    // The provider list / default model may have changed: drop the cached model
-    // pool so the next picker open re-discovers against the current providers.
-    // If the picker is open right now, refresh it in place.
-    modelsLoaded = false;
-    modelsFailed = false;
-    modelPool = [];
-    if (enginePickerOpen) void loadModelList();
+    // <ModelPicker> watches the connected-provider set and invalidates its own
+    // model pool, so there is nothing to reset here beyond the snapshot it reads.
   }
 
-  async function loadModelList(): Promise<void> {
-    if (modelsLoading) return;
-    modelsLoading = true;
-    modelsFailed = false;
-    try {
-      // No request body: the backend lists models across the PERSISTED
-      // connected providers (the Settings card's draft list is its concern).
-      modelPool = await invoke<AiRuntimeModel[]>("ai_runtime_list_models");
-      modelsLoaded = true;
-    } catch {
-      // Offline/unlisted providers degrade quietly: the picker still offers
-      // Default + the custom-model entry.
-      modelPool = [];
-      modelsFailed = true;
-    } finally {
-      modelsLoading = false;
-    }
-  }
-
-  function toggleModelPicker(): void {
-    enginePickerOpen = !enginePickerOpen;
-    customModelOpen = false;
-    customModelInput = "";
-    if (enginePickerOpen && !modelsLoaded) void loadModelList();
-  }
-
-  function openCustomModel(): void {
-    customModelOpen = true;
-    void tick().then(() => customModelEl?.focus());
-  }
-
-  function onCustomModelKeydown(event: KeyboardEvent): void {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      const model = customModelInput.trim();
-      if (model.length === 0 || defaultProvider === null) return;
-      customModelOpen = false;
-      customModelInput = "";
-      void selectEngine({ provider: defaultProvider, model });
-    } else if (event.key === "Escape") {
-      event.stopPropagation();
-      customModelOpen = false;
-      customModelInput = "";
-    }
-  }
-
-  // Pin the active thread to a (provider, model) — a discovered model, a
-  // configured engine, or a typed custom id — or clear the pin (null → default).
-  async function selectEngine(
+  // Commit the model chosen in <ModelPicker> — a pooled model or a typed id
+  // attributed to a provider — or clear the pin (null → default). The picker
+  // closes itself; here we just record the pin and persist it.
+  async function handleModelSelect(
     engine: { provider: string; model: string } | null,
   ): Promise<void> {
-    enginePickerOpen = false;
-    customModelOpen = false;
-    customModelInput = "";
     const conversationId = activeConversationId;
     if (conversationId === null) return;
     activePinProvider = engine?.provider ?? null;
@@ -798,8 +673,9 @@
 
     try {
       if (isFirstTurn) {
-        // Persist any model pin chosen before the thread existed (selectEngine
-        // deferred it to avoid creating a phantom empty-title row). Do this
+        // Persist any model pin chosen before the thread existed
+        // (handleModelSelect deferred it to avoid creating a phantom empty-title
+        // row). Do this
         // BEFORE ask_ai_start so the spawned turn reads the pin from the store.
         if (activePinProvider !== null && activePinModel !== null) {
           try {
@@ -1858,124 +1734,16 @@
               onkeydown={onComposerKeydown}
             ></textarea>
             <div class="composer-bar">
-              <!-- Per-thread model pin: choose which model answers this thread —
-                   a model discovered from the default engine, a configured
-                   engine, or a typed custom id — or "Default" to clear the pin.
-                   The label shows what "Default" resolves to when unpinned. -->
-              <div class="engine-pick-menu">
-                <button
-                  type="button"
-                  class="engine-pick-trigger"
-                  aria-haspopup="listbox"
-                  aria-expanded={enginePickerOpen}
-                  aria-label="Model for this thread"
-                  title={activeModelTitle}
-                  onclick={toggleModelPicker}
-                >
-                  <span class="engine-pick-current">{activeModelLabel}</span>
-                  <span class="engine-pick-caret" aria-hidden="true">▾</span>
-                </button>
-                {#if enginePickerOpen}
-                  <ul class="engine-pick-list" role="listbox" aria-label="Model">
-                    <li role="presentation">
-                      <button
-                        type="button"
-                        class="engine-pick-option"
-                        class:engine-pick-option--active={activePinProvider === null}
-                        role="option"
-                        aria-selected={activePinProvider === null}
-                        onclick={() => void selectEngine(null)}
-                      >
-                        Default
-                        {#if activePinProvider === null}
-                          <span class="engine-pick-check" aria-hidden="true">✓</span>
-                        {/if}
-                      </button>
-                    </li>
-                    {#if modelsLoading}
-                      <li role="presentation">
-                        <span class="engine-pick-note">Loading models…</span>
-                      </li>
-                    {:else if modelsFailed}
-                      <li role="presentation">
-                        <span class="engine-pick-note">Couldn't load models</span>
-                      </li>
-                    {/if}
-                    {#each discoveredModels as modelId (modelId)}
-                      {@const selected =
-                        defaultProvider === activePinProvider &&
-                        modelId === activePinModel}
-                      <li role="presentation">
-                        <button
-                          type="button"
-                          class="engine-pick-option"
-                          class:engine-pick-option--active={selected}
-                          role="option"
-                          aria-selected={selected}
-                          title={modelId}
-                          onclick={() => {
-                            if (defaultProvider !== null) {
-                              void selectEngine({
-                                provider: defaultProvider,
-                                model: modelId,
-                              });
-                            }
-                          }}
-                        >
-                          {shortModelLabel(modelId)}
-                          {#if selected}
-                            <span class="engine-pick-check" aria-hidden="true">✓</span>
-                          {/if}
-                        </button>
-                      </li>
-                    {/each}
-                    {#each extraConfiguredEngines as engine (`${engine.provider}-${engine.model}`)}
-                      {@const selected =
-                        engine.provider === activePinProvider &&
-                        engine.model === activePinModel}
-                      <li role="presentation">
-                        <button
-                          type="button"
-                          class="engine-pick-option"
-                          class:engine-pick-option--active={selected}
-                          role="option"
-                          aria-selected={selected}
-                          title={engine.label}
-                          onclick={() => void selectEngine(engine)}
-                        >
-                          {providerLabelById(aiRuntimeSnapshot?.providers, engine.provider)} · {shortModelLabel(engine.model)}
-                          {#if selected}
-                            <span class="engine-pick-check" aria-hidden="true">✓</span>
-                          {/if}
-                        </button>
-                      </li>
-                    {/each}
-                    <li role="presentation">
-                      {#if customModelOpen}
-                        <input
-                          bind:this={customModelEl}
-                          bind:value={customModelInput}
-                          class="engine-pick-custom-input"
-                          type="text"
-                          placeholder="model id"
-                          aria-label="Custom model id"
-                          spellcheck="false"
-                          autocomplete="off"
-                          onkeydown={onCustomModelKeydown}
-                        />
-                      {:else}
-                        <button
-                          type="button"
-                          class="engine-pick-option"
-                          onclick={openCustomModel}
-                        >
-                          Custom model…
-                        </button>
-                      {/if}
-                    </li>
-                  </ul>
-                {/if}
-              </div>
+              <!-- Per-thread model pin (searchable, provider-grouped picker).
+                   Owns its own UI + model pool; reports the chosen engine up. -->
+              <ModelPicker
+                aiRuntime={aiRuntimeSnapshot}
+                {askAiModelOverride}
+                pinProvider={activePinProvider}
+                pinModel={activePinModel}
+                bind:open={enginePickerOpen}
+                onselect={handleModelSelect}
+              />
               <!-- Send ⇄ Stop morph: while a turn streams the button becomes a
                    stop control that asks the backend to cancel; the resulting
                    done/error event settles the UI. -->
@@ -2649,104 +2417,6 @@
     border-top: 1px solid var(--app-border);
     background: var(--app-surface-subtle);
     padding: 12px 24px 14px;
-  }
-  /* Per-thread model pin (inside the composer's bottom bar). */
-  .engine-pick-menu {
-    position: relative;
-  }
-  .engine-pick-trigger {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font: inherit;
-    font-size: 10.5px;
-    letter-spacing: 0.02em;
-    padding: 4px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    background: var(--app-surface-subtle);
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: border-color 0.12s ease, color 0.12s ease;
-  }
-  .engine-pick-trigger:hover {
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .engine-pick-caret {
-    font-size: 8px;
-  }
-  /* Long custom model ids stay on one line inside the pill. */
-  .engine-pick-current {
-    max-width: 280px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .engine-pick-list {
-    position: absolute;
-    bottom: calc(100% + 4px);
-    left: 0;
-    min-width: 200px;
-    max-height: 240px;
-    overflow-y: auto;
-    list-style: none;
-    margin: 0;
-    padding: 4px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-raised);
-    box-shadow: 0 8px 24px var(--app-shadow, rgba(0, 0, 0, 0.25));
-    z-index: 20;
-  }
-  .engine-pick-option {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    width: 100%;
-    font: inherit;
-    font-size: 11px;
-    text-align: left;
-    padding: 6px 9px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text);
-    cursor: pointer;
-    transition: background 0.12s ease;
-  }
-  .engine-pick-option:hover {
-    background: var(--app-surface-hover);
-  }
-  .engine-pick-option--active {
-    color: var(--app-accent-strong);
-  }
-  .engine-pick-check {
-    color: var(--app-accent-strong);
-    font-size: 10px;
-  }
-  /* Muted one-liner inside the dropdown (loading / discovery failure). */
-  .engine-pick-note {
-    display: block;
-    font-size: 11px;
-    padding: 6px 9px;
-    color: var(--app-text-faint);
-  }
-  /* Free-form "Custom model…" id input, matching the option rows. */
-  .engine-pick-custom-input {
-    width: 100%;
-    font: inherit;
-    font-size: 11px;
-    padding: 6px 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-subtle);
-    color: var(--app-text);
-  }
-  .engine-pick-custom-input:focus {
-    outline: none;
-    border-color: var(--app-border-hover);
   }
 
   /* Live activity line above the composer block. Space is reserved (min-height)
