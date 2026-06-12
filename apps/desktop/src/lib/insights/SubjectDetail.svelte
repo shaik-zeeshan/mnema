@@ -33,6 +33,8 @@
     ConclusionEvidenceRef,
     Activity,
   } from "$lib/types/recording";
+  import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
+  import { framePreviewAssetUrl } from "$lib/frame-preview";
   import Skeleton from "$lib/insights/Skeleton.svelte";
 
   interface Props {
@@ -69,6 +71,10 @@
   // Activities resolved lazily for richer evidence rows + Timeline handoff. Maps
   // activityId → Activity (title/time/category + raw evidence refs).
   let activities = $state<Map<number, Activity>>(new Map());
+
+  // Frame previews for screen-sourced evidence rows. Maps frameId → asset URL.
+  // Best-effort; rows without a resolved preview keep the colored placeholder.
+  let thumbnailCache = $state<Map<number, string>>(new Map());
 
   function colorVarFor(index: number): string {
     return CAT_PALETTE[index % CAT_PALETTE.length];
@@ -191,6 +197,9 @@
     atMs: number | null;
     category: string | null;
     sourceType: "screen" | "audio" | null;
+    // Raw frame id backing a screen-sourced row, used to load a thumbnail. Null
+    // for audio rows or rows whose Activity hasn't resolved yet.
+    frameId: number | null;
   }
 
   const evidenceRows = $derived.by<EvidenceRow[]>(() => {
@@ -204,6 +213,8 @@
           ? "audio"
           : "screen"
         : null;
+      const frameId =
+        firstRef && firstRef.subjectType === "frame" ? firstRef.subjectId : null;
       return {
         activityId: e.activityId,
         stance: e.stance,
@@ -211,8 +222,40 @@
         atMs: activity?.startedAtMs ?? e.activityStartedAtMs ?? null,
         category: activity?.category ?? null,
         sourceType,
+        frameId,
       };
     });
+  });
+
+  // Load frame previews for the visible screen evidence rows. Best-effort and
+  // batched; mirrors Chat.svelte's source-thumbnail loader. Skips ids already
+  // cached so re-selecting a conclusion is free.
+  async function loadEvidenceThumbnails(rows: EvidenceRow[]): Promise<void> {
+    const wanted = rows
+      .map((r) => r.frameId)
+      .filter((id): id is number => id != null && !thumbnailCache.has(id));
+    const uniqueIds = Array.from(new Set(wanted));
+    if (uniqueIds.length === 0) return;
+    try {
+      const response = await invoke<FrameScrubPreviewsDto>(
+        "get_frame_scrub_previews",
+        { request: { frameIds: uniqueIds } },
+      );
+      const next = new Map(thumbnailCache);
+      for (const entry of response.previews) {
+        if (entry.preview) {
+          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
+        }
+      }
+      thumbnailCache = next;
+    } catch {
+      // Thumbnails are best-effort; rows fall back to the colored placeholder.
+    }
+  }
+
+  $effect(() => {
+    // Re-run whenever the selected conclusion's evidence rows change.
+    void loadEvidenceThumbnails(evidenceRows);
   });
 
   async function loadSubject(): Promise<void> {
@@ -551,12 +594,19 @@
               <p class="ev-empty">No grounding evidence linked.</p>
             {:else}
               {#each evidenceRows as ev (ev.activityId)}
+                {@const thumbUrl =
+                  ev.frameId != null
+                    ? (thumbnailCache.get(ev.frameId) ?? null)
+                    : null}
                 <div class="ev-item">
                   <div
                     class="ev-thumb"
                     class:is-screen={ev.sourceType !== "audio"}
                     class:is-audio={ev.sourceType === "audio"}
                   >
+                    {#if thumbUrl}
+                      <img class="ev-thumb-img" src={thumbUrl} alt="" />
+                    {/if}
                     <span
                       class="ev-src-tag"
                       class:is-screen={ev.sourceType !== "audio"}
@@ -941,6 +991,14 @@
   }
   .ev-thumb.is-audio {
     background: var(--app-source-mic-bg);
+  }
+  .ev-thumb-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
   }
   .ev-src-tag {
     position: absolute;
