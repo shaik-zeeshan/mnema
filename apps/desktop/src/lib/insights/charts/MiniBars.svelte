@@ -1,9 +1,12 @@
 <script lang="ts">
   // MiniBars — horizontal labelled bars for time-per-app.
   // Each item gets a labelled track whose fill width is proportional to the
-  // largest value in the set; fills rotate through the app's --cat-* category
-  // palette by rank. The dominant (largest-value) row reads as the focal point:
-  // full-opacity fill + stronger label, while the rest are slightly dimmed.
+  // largest value in the set. Fills are a single-hue ramp keyed to rank: the
+  // top app is pure accent and each lower rank blends further toward the track
+  // background. This deliberately does NOT use the --cat-* category palette —
+  // these bars encode magnitude (rank), not category, so they never collide
+  // with category colours elsewhere in the UI. The dominant (largest-value)
+  // row reads as the focal point: brightest fill + stronger label.
   // Props:
   //   items: { label: string; value: number; sublabel?: string;
   //            iconSrc?: string | null; fallback?: string }[]
@@ -27,17 +30,6 @@
 
   let { items }: Props = $props();
 
-  const catPalette = [
-    "--cat-creating",
-    "--cat-research",
-    "--cat-learning",
-    "--cat-communication",
-    "--cat-organizing",
-    "--cat-personal",
-    "--cat-meetings",
-    "--cat-entertainment",
-  ];
-
   const max = $derived(items.reduce((acc, it) => Math.max(acc, it.value), 0));
 
   function widthFor(value: number): number {
@@ -45,8 +37,13 @@
     return Math.max(0, Math.min(100, (value / max) * 100));
   }
 
-  function colorVarFor(index: number): string {
-    return catPalette[index % catPalette.length];
+  // Single-hue ramp keyed to rank: rank 0 is pure accent; each lower rank
+  // blends further toward the track surface. Encodes magnitude, not category.
+  function fillFor(index: number): string {
+    const steps = Math.max(items.length - 1, 1);
+    const t = index / steps; // 0 at the top of the ranking → 1 at the bottom
+    const fade = Math.round(t * 58); // blend up to 58% into the track surface
+    return `color-mix(in oklab, var(--app-accent) ${100 - fade}%, var(--app-surface-hover))`;
   }
 
   // The largest-value row is the focal point. Guard max > 0 so an all-zero set
@@ -74,7 +71,7 @@
       <span class="track">
         <span
           class="fill"
-          style="width:{widthFor(item.value)}%; background:var({colorVarFor(i)});"
+          style="width:{widthFor(item.value)}%; background:{fillFor(i)};"
         ></span>
       </span>
       <span class="val">{item.sublabel ?? item.value}</span>
@@ -140,17 +137,14 @@
     border: 1px solid var(--app-border);
     overflow: hidden;
   }
+  /* The ramp itself carries rank (rank 0 = brightest), so the fill needs no
+     per-row opacity dimming — only a subtle global softening. */
   .fill {
     display: block;
     height: 100%;
     border-radius: 999px;
-    opacity: 0.72;
-    transition:
-      width 0.18s ease,
-      opacity 0.18s ease;
-  }
-  .mini-bar.dominant .fill {
-    opacity: 1;
+    opacity: 0.92;
+    transition: width 0.18s ease;
   }
   .val {
     font-size: 10px;
