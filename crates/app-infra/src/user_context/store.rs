@@ -656,6 +656,48 @@ impl UserContextStore {
         })
     }
 
+    /// The earliest RAW capture timestamp **at or after** `after_ms`, in unix
+    /// millis — the MIN of `frames.captured_at` and `audio_segments.started_at`
+    /// (both legacy RFC3339 TEXT) constrained to `>= after_ms`. `None` when no
+    /// capture exists at or after that instant.
+    ///
+    /// The forward derivation worker uses this to O(1)-jump its cursor across an
+    /// empty (no-capture) gap in one step instead of crawling 30-minute windows.
+    /// This is deliberately RAW capture *existence* — it is NOT filtered on OCR
+    /// / transcription completeness — so the worker never jumps its cursor past
+    /// frames whose OCR is still pending.
+    pub async fn next_raw_capture_at_ms(&self, after_ms: i64) -> Result<Option<i64>> {
+        // Convert the lower bound at the boundary exactly as `read_capture_window`
+        // does, so the lexicographic TEXT `>=` compare matches that hot path's own
+        // `captured_at >= start_rfc3339` filter. Read the MIN TEXT from each table
+        // independently, parse each to millis, and take the smaller; parse
+        // failures fall through to the other source.
+        let after_rfc3339 = super::capture_source::ms_to_rfc3339(after_ms);
+
+        let frame_min: Option<String> =
+            sqlx::query("SELECT MIN(captured_at) AS m FROM frames WHERE captured_at >= ?1")
+                .bind(&after_rfc3339)
+                .fetch_one(&self.pool)
+                .await?
+                .get::<Option<String>, _>("m");
+        let audio_min: Option<String> =
+            sqlx::query("SELECT MIN(started_at) AS m FROM audio_segments WHERE started_at >= ?1")
+                .bind(&after_rfc3339)
+                .fetch_one(&self.pool)
+                .await?
+                .get::<Option<String>, _>("m");
+
+        let frame_ms = frame_min.as_deref().and_then(rfc3339_text_to_ms);
+        let audio_ms = audio_min.as_deref().and_then(rfc3339_text_to_ms);
+
+        Ok(match (frame_ms, audio_ms) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        })
+    }
+
     // --- Token-usage / last-derived readouts ------------------------------
 
     /// Aggregated (estimated) token usage across every derivation run.
@@ -2612,6 +2654,66 @@ mod tests {
             store.earliest_capture_at_ms().await.expect("earliest"),
             Some(expected_ms),
             "MIN across frames/audio_segments, RFC3339 → millis"
+        );
+        });
+    }
+
+    /// `next_raw_capture_at_ms` returns the earliest RAW frame at-or-after the
+    /// given instant: the frame whose `captured_at >= after_ms`, inclusive at the
+    /// exact boundary, and `None` once `after_ms` is past every capture.
+    #[test]
+    fn next_raw_capture_at_ms_jumps_to_earliest_at_or_after() {
+        block_on(async {
+        let store = test_store().await;
+
+        // No captures yet → None for any cursor.
+        assert_eq!(
+            store.next_raw_capture_at_ms(0).await.expect("next"),
+            None
+        );
+
+        // Two frames at known times.
+        let early = "2020-01-01T00:00:10Z";
+        let late = "2020-01-01T00:01:00Z";
+        for captured_at in [early, late] {
+            sqlx::query("INSERT INTO frames (captured_at) VALUES (?1)")
+                .bind(captured_at)
+                .execute(store.pool())
+                .await
+                .expect("frame");
+        }
+
+        let early_ms = rfc3339_text_to_ms(early).expect("parse early");
+        let late_ms = rfc3339_text_to_ms(late).expect("parse late");
+
+        // A cursor before both captures jumps to the earliest frame.
+        assert_eq!(
+            store.next_raw_capture_at_ms(0).await.expect("next"),
+            Some(early_ms),
+            "earliest frame at-or-after an early cursor"
+        );
+
+        // At-or-after is inclusive: a cursor exactly on the early frame returns it.
+        assert_eq!(
+            store.next_raw_capture_at_ms(early_ms).await.expect("next"),
+            Some(early_ms),
+            "inclusive at the exact boundary"
+        );
+
+        // A cursor strictly between the two frames skips to the later one.
+        let between_ms = rfc3339_text_to_ms("2020-01-01T00:00:30Z").expect("parse between");
+        assert_eq!(
+            store.next_raw_capture_at_ms(between_ms).await.expect("next"),
+            Some(late_ms),
+            "skips past the consumed early frame to the next one"
+        );
+
+        // A cursor past all captures returns None.
+        let after_all_ms = rfc3339_text_to_ms("2020-01-01T00:02:00Z").expect("parse after");
+        assert_eq!(
+            store.next_raw_capture_at_ms(after_all_ms).await.expect("next"),
+            None,
+            "no capture at-or-after a cursor past the last frame"
         );
         });
     }

@@ -16,6 +16,21 @@
 //! Conclusion distillation (#94) runs on a slower beat after the Activity window
 //! each tick (see [`WorkerCadence`]); confidence decay (#95) extends the loop on
 //! a slower beat still — see the cadence note near [`run_forward_activity_window`].
+//!
+//! GAP CATCH-UP. The forward beat covers at most one `MAX_WINDOW_MS` window per
+//! tick, so a long time behind realtime would otherwise drain one window per
+//! tick-interval — hours of crawl after the worker (or the engine) was idle.
+//! Two mechanisms keep catch-up fast:
+//!   - **Empty-gap jump (A):** an *empty* forward window (no captures — e.g. an
+//!     away-from-keyboard gap) jumps the cursor straight to the next raw capture
+//!     (or to `now` if there is none) in a SINGLE tick instead of stepping one
+//!     30-minute window. See [`empty_window_jump_target`] and the empty-window
+//!     branch of [`run_forward_activity_window`].
+//!   - **Catch-up cadence (C):** when the forward beat actually covered a window
+//!     this tick AND the cursor is still more than one window behind `now`, the
+//!     tick sleeps [`CATCHUP_INTERVAL`] (a few seconds) instead of the full tier
+//!     interval, so windows-with-captures drain back-to-back until within one
+//!     window of realtime. See [`is_catching_up`] and `worker_tick`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,6 +63,16 @@ const THOROUGH_INTERVAL: Duration = Duration::from_secs(120);
 /// Local engine pacing is fixed (resource pacing only; the tier knob is
 /// cloud-only because it is about token spend).
 const LOCAL_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Catch-up sleep: when the forward beat did real work but the cursor is still
+/// more than one window behind `now`, the worker ticks again after this short
+/// interval instead of the full tier interval, draining the backlog back-to-back
+/// until it is within one window of realtime. (Empty gaps are already collapsed
+/// in one tick by the cursor jump; this drains a backlog of windows that have captures.)
+const CATCHUP_INTERVAL: Duration = Duration::from_secs(5);
+/// Forward-backlog threshold for entering catch-up cadence: more than one full
+/// window (`MAX_WINDOW_MS`) of un-derived time still ahead of the cursor.
+const CATCHUP_BACKLOG_MS: i64 = MAX_WINDOW_MS;
 
 /// How far back the very first forward window reaches when nothing has been
 /// derived yet (6h). Older history is the job of History Backfill (#98); this
@@ -126,6 +151,41 @@ fn next_forward_window(now: i64, last_covered_end: Option<i64>) -> Option<(i64, 
     Some((start, end))
 }
 
+/// Where to advance the forward cursor when a window read empty (A). Rather than
+/// stepping one `MAX_WINDOW_MS` window across a multi-hour away-from-keyboard gap
+/// (one tick per 30 min), jump in O(1) to the next raw capture — or straight to
+/// `now` when nothing has been captured since `end`.
+///
+/// `next_raw_capture` is `store.next_raw_capture_at_ms(end)`: the earliest RAW
+/// (NOT OCR-completeness-filtered, on purpose) frame/audio timestamp at-or-after
+/// `end`, or `None` if there is none. The RAW-ness matters: if a capture sits
+/// *within* the just-read window its OCR may still be pending, so we must NOT
+/// leap past it — we advance one window as before and re-derive it next tick.
+///
+/// Invariant: the result is always `>= end` (the cursor never goes backward)
+/// and `<= now`.
+fn empty_window_jump_target(end: i64, now: i64, next_raw_capture: Option<i64>) -> i64 {
+    let target = match next_raw_capture {
+        // Empty gap [end, next): jump past it (clamped to `now`).
+        Some(next) if next > end => next.min(now),
+        // A raw capture sits within the just-read window (OCR pending): do NOT
+        // leap past it — advance one window as before.
+        Some(_) => end,
+        // No raw captures at/after `end`: safe to jump straight to `now`.
+        None => now,
+    };
+    // Defensive clamp: `end <= result <= now` (note `end <= now` always holds here).
+    target.max(end).min(now)
+}
+
+/// Whether the worker should use the short catch-up cadence after this tick (C):
+/// only when the forward beat actually covered a window this tick
+/// (`derived_window`) AND the cursor is still more than `CATCHUP_BACKLOG_MS`
+/// behind `now`.
+fn is_catching_up(derived_window: bool, forward_backlog_ms: i64) -> bool {
+    derived_window && forward_backlog_ms > CATCHUP_BACKLOG_MS
+}
+
 /// The **History Backfill** floor (#98): how far back backfill is allowed to
 /// reach, newest-first. When **go-deeper** is on, the floor is the true earliest
 /// capture (`earliest_capture_at_ms`, all of history); otherwise it is the
@@ -193,6 +253,14 @@ pub struct ForwardWindowRun {
 /// the Activities, and stamp a single `derivation_run` ledger row (which also
 /// advances the newest-covered cursor). Never panics; an engine error records a
 /// `failed` run so the cursor still advances and the loop/caller continues.
+///
+/// EMPTY-GAP JUMP (A): when the window reads empty (no captures — an
+/// away-from-keyboard gap), the recorded `skipped` run advances the cursor in
+/// O(1) to the next raw capture (or to `now` if there is none) via
+/// [`empty_window_jump_target`], instead of stepping a single `MAX_WINDOW_MS`.
+/// This collapses a multi-hour zero-capture gap into one tick rather than one
+/// tick per 30 minutes. A capture sitting *within* the just-read window (OCR
+/// still pending) is never leapt past — the cursor advances one window as before.
 ///
 /// `provider_label` / `model_label` are recorded on the run row for the
 /// tokens-used readout. The engine is already resolved (key sourced from the
@@ -266,13 +334,20 @@ pub async fn run_forward_activity_window(
     let items_read = window.items.len() as i64;
 
     // No captures in range: record a `skipped` run to ADVANCE the cursor so the
-    // worker does not re-pick the same empty window forever.
+    // worker does not re-pick the same empty window forever. Rather than stepping
+    // a single window, jump the cursor in O(1) past the empty gap to the next raw
+    // capture (A) — see `empty_window_jump_target`. The `Err` fallback stays here
+    // as `end` (a failed jump query degrades to the old one-window step).
     if window.items.is_empty() {
+        let jump_to = match store.next_raw_capture_at_ms(end).await {
+            Ok(next) => empty_window_jump_target(end, now, next),
+            Err(_) => end, // query failed: fall back to the current 30-min step
+        };
         let _ = store
             .insert_derivation_run(NewDerivationRun {
                 kind: "activity".to_string(),
                 window_start_ms: Some(start),
-                window_end_ms: Some(end),
+                window_end_ms: Some(jump_to),
                 status: "skipped".to_string(),
                 activities_derived: 0,
                 conclusions_derived: 0,
@@ -284,12 +359,17 @@ pub async fn run_forward_activity_window(
                 gate_drops: DistillationGateDrops::default(),
             })
             .await;
+        let message = if jump_to > end {
+            "No captures in range; jumped the derivation cursor past the empty gap.".to_string()
+        } else {
+            "No captures in range; advanced the derivation cursor.".to_string()
+        };
         return ForwardWindowRun {
             activities_derived: 0,
             window_start_ms: start,
-            window_end_ms: end,
+            window_end_ms: jump_to,
             items_read: 0,
-            message: "No captures in range; advanced the derivation cursor.".to_string(),
+            message,
             changed: false,
             derived_window: true,
         };
@@ -972,6 +1052,13 @@ async fn worker_tick(
     )
     .await;
 
+    // Catch-up signal (C): if this tick covered a forward window and the cursor
+    // is still more than one window behind realtime, we have a backlog of
+    // windows-with-captures to drain — sleep the short catch-up interval (below)
+    // and defer the expensive Conclusion distillation until caught up.
+    let forward_backlog_ms = now_ms().saturating_sub(run.window_end_ms);
+    let catching_up = is_catching_up(run.derived_window, forward_backlog_ms);
+
     let mut dossier_changed = run.changed;
     if run.activities_derived > 0 {
         crate::native_capture::debug_log::log_info(format!(
@@ -1067,7 +1154,12 @@ async fn worker_tick(
         .count_activities()
         .await
         .unwrap_or(0);
-    if cadence.should_distill(activity_count) {
+    // While draining a forward backlog (catch-up cadence) we derive many
+    // Activities fast; deferring distillation until caught up avoids an LLM
+    // distillation call on every catch-up tick — it runs once on the first normal
+    // tick afterward (the Activity count will have grown by then, so
+    // `should_distill` fires immediately).
+    if !catching_up && cadence.should_distill(activity_count) {
         let changed = run_conclusion_distillation(
             &engine,
             infra.user_context(),
@@ -1103,7 +1195,13 @@ async fn worker_tick(
         let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     }
 
-    tick_interval(default_provider, user_context.derivation_budget_tier)
+    // Catch-up cadence (C): drain a remaining forward backlog of
+    // windows-with-captures back-to-back; otherwise sleep the tier-paced interval.
+    if catching_up {
+        CATCHUP_INTERVAL
+    } else {
+        tick_interval(default_provider, user_context.derivation_budget_tier)
+    }
 }
 
 /// Provider label for the run ledger: the global default model's stable
@@ -1193,6 +1291,83 @@ mod tests {
         let last_end = now - (5 * MAX_WINDOW_MS);
         let window = next_forward_window(now, Some(last_end)).expect("clamped window");
         assert_eq!(window.1 - window.0, MAX_WINDOW_MS);
+    }
+
+    // --- A: empty-window cursor jump -------------------------------------------
+
+    #[test]
+    fn empty_window_jump_target_leaps_gap_to_next_capture() {
+        let end = 1_000;
+        let now = 10_000;
+        // A raw capture sits in the gap ahead: jump straight to it.
+        let next = 5_000;
+        assert_eq!(empty_window_jump_target(end, now, Some(next)), next);
+    }
+
+    #[test]
+    fn empty_window_jump_target_clamps_next_to_now() {
+        let end = 1_000;
+        let now = 4_000;
+        // The next raw capture is beyond `now` (clock skew / racing capture):
+        // clamp to `now`, never overshoot realtime.
+        assert_eq!(empty_window_jump_target(end, now, Some(9_000)), now);
+    }
+
+    #[test]
+    fn empty_window_jump_target_holds_when_capture_inside_window() {
+        let end = 5_000;
+        let now = 10_000;
+        // A raw capture sits within the just-read window (OCR pending): do NOT
+        // leap past it — advance one window (stay at `end`).
+        assert_eq!(empty_window_jump_target(end, now, Some(end)), end);
+        assert_eq!(empty_window_jump_target(end, now, Some(end - 1)), end);
+    }
+
+    #[test]
+    fn empty_window_jump_target_none_jumps_to_now() {
+        let end = 1_000;
+        let now = 10_000;
+        // No raw captures at/after `end`: safe to jump straight to `now`.
+        assert_eq!(empty_window_jump_target(end, now, None), now);
+    }
+
+    #[test]
+    fn empty_window_jump_target_always_within_end_and_now() {
+        let end = 2_000;
+        let now = 8_000;
+        for next in [None, Some(0), Some(2_000), Some(5_000), Some(99_999)] {
+            let result = empty_window_jump_target(end, now, next);
+            assert!(result >= end, "result {result} went backward before end {end}");
+            assert!(result <= now, "result {result} overshot now {now}");
+        }
+    }
+
+    // --- C: catch-up cadence ---------------------------------------------------
+
+    #[test]
+    fn is_catching_up_false_when_caught_up() {
+        // Small backlog (within one window) => no catch-up cadence.
+        assert!(!is_catching_up(true, MIN_WINDOW_MS));
+        assert!(!is_catching_up(true, 0));
+    }
+
+    #[test]
+    fn is_catching_up_true_with_large_backlog_and_derived_window() {
+        assert!(is_catching_up(true, CATCHUP_BACKLOG_MS + 1));
+        assert!(is_catching_up(true, 10 * CATCHUP_BACKLOG_MS));
+    }
+
+    #[test]
+    fn is_catching_up_false_without_a_derived_window() {
+        // Even a huge backlog does not trigger catch-up if the forward beat did
+        // not actually cover a window this tick (e.g. it was idle/not-enough-yet).
+        assert!(!is_catching_up(false, 10 * CATCHUP_BACKLOG_MS));
+    }
+
+    #[test]
+    fn is_catching_up_strictly_greater_than_threshold() {
+        // Exactly at the threshold => not catching up (strictly greater).
+        assert!(!is_catching_up(true, CATCHUP_BACKLOG_MS));
     }
 
     #[test]

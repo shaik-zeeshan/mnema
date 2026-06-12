@@ -210,7 +210,7 @@ fn search_context_from_snapshot(
 
 /// Converts unix milliseconds to an RFC3339 string for comparison against the
 /// legacy RFC3339 TEXT columns (`frames.captured_at`, `audio_segments.*`).
-fn ms_to_rfc3339(ms: i64) -> String {
+pub(crate) fn ms_to_rfc3339(ms: i64) -> String {
     let nanos = (ms as i128) * 1_000_000;
     OffsetDateTime::from_unix_timestamp_nanos(nanos)
         .ok()
