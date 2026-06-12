@@ -358,6 +358,13 @@
     return segments;
   });
 
+  // `categorySegments` is ordered by CATEGORY_ORDER for a stable bar layout,
+  // so its first element is NOT the busiest category. Rank by actual time
+  // (`value` is raw ms) to surface the real top category in the lede.
+  const topCategory = $derived(
+    [...categorySegments].sort((a, b) => b.value - a.value)[0],
+  );
+
   // ── ENGINE TILE 3: focus heatmap (day rows × time-of-day slots) ───────
   // Six slots roughly 8a-8p in 2h bands; cell value = avg focus weight.
   const FOCUS_WEIGHT: Record<string, number> = {
@@ -1200,15 +1207,15 @@
                   <span class="lede-stat-cap">deep focus</span>
                 </div>
               {/if}
-              {#if categorySegments.length > 0}
+              {#if topCategory}
                 <div class="lede-stat">
                   <span class="lede-stat-n lede-stat-n--cat">
                     <span
                       class="lede-stat-swatch"
-                      style="background:var({categorySegments[0].colorVar});"
+                      style="background:var({topCategory.colorVar});"
                       aria-hidden="true"
                     ></span>
-                    {categorySegments[0].label}
+                    {topCategory.label}
                   </span>
                   <span class="lede-stat-cap">top category</span>
                 </div>
