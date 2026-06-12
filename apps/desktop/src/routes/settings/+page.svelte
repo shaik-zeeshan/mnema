@@ -3664,7 +3664,10 @@
     // clobbering the in-flight draft back to the persisted value before autosave.
     untrack(() => {
       loadCaptureSupport();
-      loadRecordingSettings();
+      // refreshAiProviderKeyPresence reads draftAiProviders, which loadRecordingSettings
+      // only populates after its async fetch resolves. Chain it so the "key in keychain"
+      // badge reflects saved keys on load instead of seeing a still-empty provider list.
+      void loadRecordingSettings().then(() => refreshAiProviderKeyPresence());
       loadKeyboardBindingsSettings();
       loadMicState();
       loadOcrModelStatus();
@@ -3681,7 +3684,6 @@
       void loadAskAiAvailability();
       void loadAskAiModels();
       void loadAiRuntimeStatus();
-      void refreshAiProviderKeyPresence();
       void refreshUserContext();
     });
 
