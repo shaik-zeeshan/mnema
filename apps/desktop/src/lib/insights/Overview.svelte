@@ -561,34 +561,37 @@
     return "steady";
   }
 
-  // Deltas grouped by kind for the single "What changed" card — groups render
-  // formed → strengthened → fading; within-group order (pinned first, then
-  // confidence desc) is already settled by `conclusionDeltas`.
+  // The "What changed" card splits in two: a Pinned section (pinned conclusions
+  // pulled out so they stay put) and the changes proper, grouped formed →
+  // strengthened → fading. Within-group order (confidence desc) is already
+  // settled by `conclusionDeltas`.
   const DELTA_KIND_ORDER: ConclusionDeltaKind[] = [
     "formed",
     "strengthened",
     "fading",
   ];
-  const deltaGroups = $derived.by(() =>
-    DELTA_KIND_ORDER.map((kind) => ({
-      kind,
-      deltas: conclusionDeltas.filter((d) => d.kind === kind),
-    })).filter((g) => g.deltas.length > 0),
+
+  // Pinned deltas live in their own section and never appear in the change
+  // groups; the rest flow through the capped "What changed" list.
+  const pinnedDeltas = $derived(conclusionDeltas.filter((d) => isPinned(d.c)));
+  const unpinnedDeltas = $derived(
+    conclusionDeltas.filter((d) => !isPinned(d.c)),
   );
 
-  // Per-group default cap — the compression that keeps a busy week one screen.
-  // Applies to formed/fading only; strengthened is the quiet group and shows
-  // ZERO rows by default — its header doubles as the expander, and one click
-  // reveals everything (no inner cap: the user asked for it).
-  const DELTA_GROUP_CAP = 2;
-  // Groups showing every row, keyed by kind.
-  let expandedGroups = $state<Set<ConclusionDeltaKind>>(new Set());
-  function toggleGroup(kind: ConclusionDeltaKind): void {
-    const set = new Set(expandedGroups);
-    if (set.has(kind)) set.delete(kind);
-    else set.add(kind);
-    expandedGroups = set;
-  }
+  // A single hard cap across the whole "What changed" list (all groups
+  // combined) — the main page stays a glance; the rest live on Subjects, with
+  // no inline expander to dump everything here.
+  const WHAT_CHANGED_CAP = 10;
+  const visibleDeltas = $derived(unpinnedDeltas.slice(0, WHAT_CHANGED_CAP));
+  // Re-group the capped slice for rendering. Each head shows the full group size
+  // so the totals stay honest even when the global cap hides some rows.
+  const visibleDeltaGroups = $derived.by(() =>
+    DELTA_KIND_ORDER.map((kind) => ({
+      kind,
+      deltas: visibleDeltas.filter((d) => d.kind === kind),
+      total: unpinnedDeltas.filter((d) => d.kind === kind).length,
+    })).filter((g) => g.deltas.length > 0),
+  );
 
   // Expanded delta rows (confidence + actions + evidence), by conclusion id.
   let expandedDeltaRows = $state<Set<number>>(new Set());
@@ -751,9 +754,8 @@
     range.endMs;
     void untrack(() => {
       engineLoadedOnce = false;
-      // A new range is new content: stale expansion state would leave groups
-      // open over different (possibly empty) rows.
-      expandedGroups = new Set();
+      // A new range is new content: stale expansion state would leave rows
+      // open over different (possibly empty) content.
       expandedDeltaRows = new Set();
       void loadFree();
       void loadEngine();
@@ -1335,8 +1337,117 @@
       </div>
     {:else}
       <div class="feed-column">
-        <!-- What changed — one card; conclusion deltas as grouped rows -->
-        {#if conclusionDeltas.length > 0}
+        <!-- One row of the "What changed"/"Pinned" lists; shared by both
+             sections so a pinned delta renders identically to a changing one. -->
+        {#snippet deltaRow(d: ConclusionDelta)}
+          {@const c = d.c}
+          {@const open = expandedDeltaRows.has(c.id)}
+          <div class="delta-row" class:delta-row--faded={d.kind === "fading"}>
+            <div class="delta-line">
+              <span class="delta-statement">{c.statement}</span>
+              <!-- Subject + time sit on their own meta line so a long
+                   subject name can't squeeze and wrap against the
+                   statement. -->
+              <div class="delta-meta">
+                <button
+                  type="button"
+                  class="subject-chip"
+                  onclick={() => onOpenSubject?.(c.subject)}
+                >
+                  <span class="subject-chip-text">{c.subject}</span>
+                </button>
+                <span class="delta-when">{relativeTime(c.lastSupportedAtMs)}</span>
+                <button
+                  type="button"
+                  class="delta-toggle"
+                  class:open
+                  aria-expanded={open}
+                  aria-label={open ? "Hide detail" : "Show detail"}
+                  onclick={() => toggleDeltaRow(c.id)}>›</button
+                >
+              </div>
+            </div>
+            {#if open}
+              <div class="delta-detail">
+                <div class="delta-detail-line">
+                  <span class="conf-wrap">
+                    <ConfidenceBar
+                      confidence={c.confidence}
+                      trend={conclusionTrend(c)}
+                    />
+                  </span>
+                  {#if d.kind === "fading"}
+                    <span class="fade-note">Slipping below the line — kept for your history.</span>
+                  {:else}
+                    <span class="gentle-actions">
+                      <button
+                        type="button"
+                        class="gentle-btn"
+                        class:is-pinned={isPinned(c)}
+                        onclick={() => void togglePin(c)}
+                      >
+                        {isPinned(c) ? "Pinned ◆" : "Pin"}
+                      </button>
+                      <button
+                        type="button"
+                        class="gentle-btn"
+                        onclick={() => void dismissConclusion(c)}
+                      >
+                        Dismiss
+                      </button>
+                    </span>
+                  {/if}
+                </div>
+                <div class="evidence-list">
+                  {#if c.evidence.length === 0}
+                    <p class="evidence-empty">No grounding activities recorded.</p>
+                  {:else}
+                    {#each c.evidence as ev (ev.activityId + "-" + ev.stance)}
+                      <div class="evidence-row">
+                        <span
+                          class="ev-stance"
+                          class:ev-stance--contradict={ev.stance === "contradict"}
+                          >{ev.stance === "contradict" ? "contradicts" : "supports"}</span
+                        >
+                        <span class="ev-title"
+                          >{ev.activityTitle ?? `Activity #${ev.activityId}`}</span
+                        >
+                        {#if ev.activityStartedAtMs}
+                          <span class="ev-time">{clockTime(ev.activityStartedAtMs)}</span>
+                        {/if}
+                      </div>
+                    {/each}
+                  {/if}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/snippet}
+
+        <!-- Pinned — conclusions the user pinned, kept in view and out of the
+             change groups so they never scroll off behind the cap. -->
+        {#if pinnedDeltas.length > 0}
+          <article class="entry">
+            <p class="eyebrow">
+              <span class="diamond" aria-hidden="true">◆</span>
+              <span class="tick" aria-hidden="true"></span>
+              Pinned
+              <span class="rule"></span>
+              kept in view
+            </p>
+            <div class="delta-groups">
+              <div class="delta-group">
+                {#each pinnedDeltas as d (d.c.id)}
+                  {@render deltaRow(d)}
+                {/each}
+              </div>
+            </div>
+          </article>
+        {/if}
+
+        <!-- What changed — conclusion deltas as grouped rows, capped to the
+             newest 10 across all groups with one expander for the rest. -->
+        {#if visibleDeltaGroups.length > 0}
           <article class="entry">
             <p class="eyebrow">
               <span class="diamond" aria-hidden="true">◆</span>
@@ -1346,121 +1457,12 @@
               expand a row for detail
             </p>
             <div class="delta-groups">
-              {#each deltaGroups as g (g.kind)}
-                {@const groupOpen = expandedGroups.has(g.kind)}
+              {#each visibleDeltaGroups as g (g.kind)}
                 <div class="delta-group">
-                  {#if g.kind === "strengthened"}
-                    <!-- Strengthened collapses to its header: the head is the
-                         expander, identical typography, micro show/hide hint. -->
-                    <button
-                      type="button"
-                      class="delta-group-head delta-group-head--toggle"
-                      aria-expanded={groupOpen}
-                      onclick={() => toggleGroup(g.kind)}
-                    >
-                      {deltaLabel(g.kind)} · {g.deltas.length}
-                      <span class="delta-head-hint">{groupOpen ? "hide" : "show"}</span>
-                    </button>
-                  {:else}
-                    <p class="delta-group-head">{deltaLabel(g.kind)} · {g.deltas.length}</p>
-                  {/if}
-                  {#each groupOpen
-                    ? g.deltas
-                    : g.kind === "strengthened"
-                      ? []
-                      : g.deltas.slice(0, DELTA_GROUP_CAP) as d (d.c.id)}
-                    {@const c = d.c}
-                    {@const open = expandedDeltaRows.has(c.id)}
-                    <div class="delta-row" class:delta-row--faded={d.kind === "fading"}>
-                      <div class="delta-line">
-                        <span class="delta-statement">{c.statement}</span>
-                        <!-- Subject + time sit on their own meta line so a long
-                             subject name can't squeeze and wrap against the
-                             statement. -->
-                        <div class="delta-meta">
-                          <button
-                            type="button"
-                            class="subject-chip"
-                            onclick={() => onOpenSubject?.(c.subject)}
-                          >
-                            <span class="subject-chip-text">{c.subject}</span>
-                          </button>
-                          <span class="delta-when">{relativeTime(c.lastSupportedAtMs)}</span>
-                          <button
-                            type="button"
-                            class="delta-toggle"
-                            class:open
-                            aria-expanded={open}
-                            aria-label={open ? "Hide detail" : "Show detail"}
-                            onclick={() => toggleDeltaRow(c.id)}>›</button
-                          >
-                        </div>
-                      </div>
-                      {#if open}
-                        <div class="delta-detail">
-                          <div class="delta-detail-line">
-                            <span class="conf-wrap">
-                              <ConfidenceBar
-                                confidence={c.confidence}
-                                trend={conclusionTrend(c)}
-                              />
-                            </span>
-                            {#if d.kind === "fading"}
-                              <span class="fade-note">Slipping below the line — kept for your history.</span>
-                            {:else}
-                              <span class="gentle-actions">
-                                <button
-                                  type="button"
-                                  class="gentle-btn"
-                                  class:is-pinned={isPinned(c)}
-                                  onclick={() => void togglePin(c)}
-                                >
-                                  {isPinned(c) ? "Pinned ◆" : "Pin"}
-                                </button>
-                                <button
-                                  type="button"
-                                  class="gentle-btn"
-                                  onclick={() => void dismissConclusion(c)}
-                                >
-                                  Dismiss
-                                </button>
-                              </span>
-                            {/if}
-                          </div>
-                          <div class="evidence-list">
-                            {#if c.evidence.length === 0}
-                              <p class="evidence-empty">No grounding activities recorded.</p>
-                            {:else}
-                              {#each c.evidence as ev (ev.activityId + "-" + ev.stance)}
-                                <div class="evidence-row">
-                                  <span
-                                    class="ev-stance"
-                                    class:ev-stance--contradict={ev.stance === "contradict"}
-                                    >{ev.stance === "contradict" ? "contradicts" : "supports"}</span
-                                  >
-                                  <span class="ev-title"
-                                    >{ev.activityTitle ?? `Activity #${ev.activityId}`}</span
-                                  >
-                                  {#if ev.activityStartedAtMs}
-                                    <span class="ev-time">{clockTime(ev.activityStartedAtMs)}</span>
-                                  {/if}
-                                </div>
-                              {/each}
-                            {/if}
-                          </div>
-                        </div>
-                      {/if}
-                    </div>
+                  <p class="delta-group-head">{deltaLabel(g.kind)} · {g.total}</p>
+                  {#each g.deltas as d (d.c.id)}
+                    {@render deltaRow(d)}
                   {/each}
-                  {#if g.kind !== "strengthened" && g.deltas.length > DELTA_GROUP_CAP}
-                    <button
-                      type="button"
-                      class="evidence-link delta-more"
-                      onclick={() => toggleGroup(g.kind)}
-                    >
-                      {groupOpen ? "show fewer" : `+${g.deltas.length - DELTA_GROUP_CAP} more`}
-                    </button>
-                  {/if}
                 </div>
               {/each}
             </div>
@@ -2097,40 +2099,6 @@
     text-transform: uppercase;
     color: var(--app-text-faint);
   }
-  /* Strengthened's head doubles as its expander — button reset keeps the
-     typography identical to the plain heads; the hint is the only tell. */
-  .delta-group-head--toggle {
-    align-self: flex-start;
-    display: inline-flex;
-    align-items: baseline;
-    gap: 7px;
-    font: inherit;
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
-    background: transparent;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    transition: color 0.12s ease;
-  }
-  .delta-group-head--toggle:hover {
-    color: var(--app-text-muted);
-  }
-  .delta-head-hint {
-    font-size: 9.5px;
-    letter-spacing: 0.02em;
-    text-transform: lowercase;
-    color: var(--app-text-muted);
-    border-bottom: 1px dotted var(--app-border-strong);
-    padding-bottom: 1px;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .delta-group-head--toggle:hover .delta-head-hint {
-    color: var(--app-text-strong);
-    border-bottom-color: var(--app-border-hover);
-  }
   .delta-row {
     display: flex;
     flex-direction: column;
@@ -2211,10 +2179,6 @@
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
-  }
-  .delta-more {
-    align-self: flex-start;
-    margin-top: 7px;
   }
   .conf-wrap {
     flex: 0 0 auto;
