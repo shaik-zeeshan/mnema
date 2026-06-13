@@ -2026,6 +2026,46 @@ async fn run_ask_ai_turn(
     };
 
     match run_result {
+        Ok(()) if !cancel.load(Ordering::SeqCst) && final_answer.trim().is_empty() => {
+            // Clean finish that produced no answer. A reasoning model can spend
+            // its entire token budget on chain-of-thought and stop
+            // (`finish_reason=length`) before emitting any answer — the turn
+            // would otherwise persist as `done` with an empty answer and render
+            // as only a "Thought process". rig's stream items don't surface
+            // `finish_reason`, so we detect the equivalent signal: a clean,
+            // non-cancelled finish with an empty answer. (A user cancel
+            // legitimately leaves an empty answer and is excluded by the guard.)
+            // Surface it as an error rather than a silent blank turn.
+            let message = if final_reasoning.is_some() {
+                "The model used its whole response budget on reasoning and never reached an answer. Ask again, or pick a different model in Settings."
+            } else {
+                "The model returned an empty response. Ask again, or pick a different model in Settings."
+            }
+            .to_string();
+            tauri_plugin_log::log::warn!(
+                "Ask AI turn for {conversation_id} finished cleanly with an empty answer (reasoning present: {})",
+                final_reasoning.is_some()
+            );
+            persist_turn(
+                &infra,
+                &conversation_id,
+                &title,
+                &origin,
+                turn_index,
+                &question,
+                &final_answer,
+                final_reasoning.as_deref(),
+                Some(&final_blocks),
+                &final_tool_activities,
+                &final_sources,
+                "error",
+                Some(&message),
+                seeded_result_count,
+            )
+            .await;
+            let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+            emit_terminal(TurnUpdate::Error { message }, &mut last_version);
+        }
         Ok(()) => {
             // A cooperative cancel keeps whatever was generated and emits no
             // error; a clean finish persists `done` and emits the terminal update.

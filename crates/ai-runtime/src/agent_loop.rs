@@ -29,11 +29,26 @@ use rig_core::wasm_compat::{WasmBoxedFuture, WasmCompatSend};
 
 use crate::{AiRuntimeError, CloudProvider, EngineConfig, LocalKind};
 
-/// Default `max_tokens` requested from every provider.
+/// Default `max_tokens` requested from the strict-validation cloud providers
+/// (Anthropic, OpenAI).
 ///
-/// Anthropic streaming *requires* `max_tokens`, so we set a sane default for all
-/// providers rather than special-casing one family.
+/// Anthropic streaming *requires* `max_tokens`. Both Anthropic and OpenAI reject
+/// a `max_tokens` that exceeds the chosen model's maximum output (e.g. legacy
+/// `gpt-4-turbo` caps at 4096), so this stays at a value every offered model
+/// accepts rather than reaching for headroom we can't guarantee.
 const DEFAULT_MAX_TOKENS: u64 = 4096;
+
+/// `max_tokens` for the lenient endpoints that host reasoning models —
+/// OpenAI-compatible gateways (Fireworks, etc.), Ollama, and Llamafile.
+///
+/// Reasoning models (Kimi "thinking"/"code", DeepSeek-R1, qwq, …) stream their
+/// chain-of-thought as output tokens *before* the answer. Under the 4096 ceiling
+/// a verbose model can spend the entire budget thinking, hit `finish_reason=length`
+/// mid-thought, and emit no answer at all — the turn then renders as only a
+/// "Thought process". These endpoints clamp an oversized `max_tokens` to the
+/// context window instead of erroring, so we give reasoning room to land the
+/// answer. `ask_ai` still guards the residual truncation case.
+const REASONING_MAX_TOKENS: u64 = 32768;
 
 /// Upper bound on the multi-turn depth handed to rig.
 ///
@@ -263,7 +278,7 @@ pub async fn run_agent_loop(
                     let agent = client
                         .agent(model.as_str())
                         .preamble(preamble)
-                        .max_tokens(DEFAULT_MAX_TOKENS)
+                        .max_tokens(REASONING_MAX_TOKENS)
                         .tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
@@ -289,7 +304,7 @@ pub async fn run_agent_loop(
                     let agent = client
                         .agent(model.as_str())
                         .preamble(preamble)
-                        .max_tokens(DEFAULT_MAX_TOKENS)
+                        .max_tokens(REASONING_MAX_TOKENS)
                         .tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
@@ -300,7 +315,7 @@ pub async fn run_agent_loop(
                     let agent = client
                         .agent(model.as_str())
                         .preamble(preamble)
-                        .max_tokens(DEFAULT_MAX_TOKENS)
+                        .max_tokens(REASONING_MAX_TOKENS)
                         .tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
