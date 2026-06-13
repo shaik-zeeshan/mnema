@@ -4,22 +4,28 @@
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import {
-    appIconFallback,
-    canonicalBundleIdForComparison,
-    iconPathForBundleId,
-    mergeIconResolutions,
-    unresolvedIconBundleIds,
-    type AppIconResolution,
-  } from "$lib/app-privacy-exclusion";
+  import { appIconFallback } from "$lib/app-privacy-exclusion";
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow } from "$lib/surface-windows";
   import { askAiClock } from "$lib/askAiClock";
   import AnswerProse from "$lib/AnswerProse.svelte";
+  import MiniBars from "$lib/insights/charts/MiniBars.svelte";
+  import Timeline from "$lib/insights/charts/Timeline.svelte";
+  import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import type { Conversation } from "$lib/insights/conversation";
+  import type {
+    Conversation,
+    ConversationTurn,
+    AskAiSource,
+    AnswerBlock,
+    ToolActivityEntry,
+    TurnView,
+    TurnSnapshot,
+    TurnUpdate,
+    AskAiUpdateEvent,
+  } from "$lib/insights/conversation";
   import type {
     SearchCaptureResponse,
     SearchCaptureRefinements,
@@ -728,74 +734,15 @@
     reason: string | null;
   };
 
-  type AskAiStatusEvent = {
-    conversationId: string;
-    phase: "seeding" | "thinking" | "tool";
-    seededResultCount?: number;
-    tool?: string;
-    // Raw camelCase tool params the agent passed (per the slice-1 backend
-    // contract). Shape varies by tool; treated opaquely and narrowed in the
-    // formatting helpers below.
-    params?: Record<string, unknown>;
-  };
-
-  // One recorded brokered tool call: the tool kind plus a humane filter label
-  // (e.g. `Searching "invoice" in Safari · Jun 1`). Accumulated as `phase:"tool"`
-  // events arrive so the collapsed summary can count kinds and the disclosure
-  // can list the individual activities. Fully ephemeral, reset per ask.
-  type AskToolKind = "search" | "timeline" | "show_text" | "other";
-  type AskToolActivityEntry = {
-    kind: AskToolKind;
-    label: string;
-    // The app the call was scoped to (bundle id or display name); rendered as
-    // an icon + name chip after the label instead of raw ` in <app>` text.
-    app?: string | null;
-  };
-
-  type AskAiDeltaEvent = {
-    conversationId: string;
-    text: string;
-  };
-
-  // A streamed reasoning ("thinking") chunk, interleaved BEFORE/between the
-  // answer deltas. Provider-native: most models emit none (then no event fires).
-  type AskAiReasoningEvent = {
-    conversationId: string;
-    text: string;
-  };
-
-  type AskAiDoneEvent = {
-    conversationId: string;
-  };
-
-  type AskAiErrorEvent = {
-    conversationId: string;
-    message: string;
-  };
-
-  // One cited answer source — a captured frame or audio segment the agent drew
-  // on. Arrives already ordered and capped (6 frame / 4 audio) by the host. The
-  // event may fire more than once per conversation; the LAST set replaces prior.
-  type AskAiSource = {
-    kind: "frame" | "audio";
-    frameId: number | null;
-    audioSegmentId: number | null;
-    appName: string | null;
-    windowTitle: string | null;
-    startedAt: string;
-    endedAt: string;
-    sourceKind: "microphone" | "system" | null;
-    // Audio Search Result Anchor: present only for audio sources, so the
-    // dashboard can land on the cited transcript moment (mirrors
-    // AudioSearchResultDto.spanStartMs / alignedFrame.id).
-    spanStartMs?: number | null;
-    alignedFrameId?: number | null;
-  };
-
-  type AskAiSourceEvent = {
-    conversationId: string;
-    sources: AskAiSource[];
-  };
+  // The backend now OWNS the render model and streams it via the single
+  // `ask_ai_update` transport (issue #110, ADR 0031), exactly as Chat.svelte
+  // consumes. The legacy per-token `ask_ai_*` event shapes
+  // (status/delta/reasoning/done/error/source) and their local tool-label /
+  // icon-cache machinery are gone — the frontend ONLY applies versioned
+  // `TurnUpdate` ops, snapshots on attach, and re-snapshots on a version gap.
+  // The shared render types (`AnswerBlock`, `ToolActivityEntry`, `TurnView`,
+  // `TurnSnapshot`, `TurnUpdate`, `AskAiUpdateEvent`, `AskAiSource`) are imported
+  // from `$lib/insights/conversation`.
 
   type AskAiPhase = "seeding" | "thinking" | "streaming" | "done" | "error";
 
@@ -824,26 +771,33 @@
   // turn 1 is seeded (via ask_ai_start); follow-ups go raw to ask_ai_followup.
   // ---------------------------------------------------------------------------
 
-  // One assistant turn in the transcript: its read-only question header, the
-  // streamed Markdown answer, the brokered tool calls it ran, its cited sources
-  // (last ask_ai_source replaces), its phase, and per-turn UI flags. Fully
-  // ephemeral, recreated per thread.
+  // One assistant turn in the transcript. This is the backend-owned `TurnView`
+  // render model (issue #110, ADR 0031) plus QR's UI-only flags. The frontend
+  // ONLY renders: it applies versioned `TurnUpdate` ops from `ask_ai_update`,
+  // snapshots on attach, and re-snapshots on a version gap. It does NO fence
+  // parsing, NO tool-label formatting, NO icon-cache batching, NO local phase
+  // machine — those all moved server-side.
   type AskTurn = {
+    // The 0-based turn index within the thread — the key the `ask_ai_update`
+    // event addresses (event.turnIndex), so updates route to the right turn.
+    turnIndex: number;
     question: string;
-    answer: string;
-    // The model's streamed reasoning ("thinking") text, accumulated across the
-    // `ask_ai_reasoning` events. Empty when the model emits no reasoning (most
-    // models) — the Thinking disclosure renders only when this is non-empty.
-    reasoning: string;
+    // Render-ready answer blocks (prose markdown stays rendered on the frontend
+    // via AnswerProse; the graphical variants carry already-parsed data).
+    blocks: AnswerBlock[];
+    // The model's reasoning ("thinking") text, or null when none — the Thinking
+    // disclosure renders only when this is non-empty.
+    reasoning: string | null;
     // Per-turn disclosure toggle for the collapsed "Thought process" chip (the
     // settled reasoning panel); the live reasoning panel ignores this and is
     // always shown expanded while it streams.
     reasoningExpanded: boolean;
-    toolActivities: AskToolActivityEntry[];
-    // The live working-line entry for the in-flight tool call (cleared when the
-    // model resumes streaming), shown beneath the answer for the active turn.
-    // Carries the label plus the optional app scope for the icon chip.
-    toolActivity: AskToolActivityEntry | null;
+    // Render-ready tool-activity log (label + optional app + resolved icon path,
+    // all computed server-side).
+    toolActivities: ToolActivityEntry[];
+    // The live working-line entry for the in-flight tool call (cleared on done),
+    // shown beneath the answer for the active turn.
+    liveActivity: ToolActivityEntry | null;
     sources: AskAiSource[];
     phase: AskAiPhase;
     errorMessage: string | null;
@@ -853,6 +807,9 @@
     summaryExpanded: boolean;
     // Per-turn copy-confirmation flash (icon swaps to a check briefly).
     copied: boolean;
+    // Last applied `ask_ai_update` version for this turn (0 if none — e.g. a
+    // hydrated past turn that isn't live).
+    version: number;
   };
 
   // The thread id (one live PI session). null when no thread is open.
@@ -993,18 +950,14 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Tool-activity formatting (pure helpers)
+  // Date formatting (pure helpers, shared by search-mode scope chips)
   //
-  // Turn the raw camelCase tool params from a `phase:"tool"` status event into a
-  // single humane line. Dates are short ("Jun 1", "Jun 1–2", "today"/"yesterday")
-  // and times only appear for a sub-day (same calendar day) window. These are
-  // pure aside from `new Date()` (acceptable for a live UI per the plan).
+  // Tool-activity formatting moved server-side: the backend now supplies the
+  // render-ready label + app icon path on each `ToolActivityEntry`, so the
+  // Quick Recall frontend no longer parses raw tool params into humane lines.
+  // The date helpers below remain because search-mode (filter chips / scope
+  // summary) still calls them.
   // ---------------------------------------------------------------------------
-
-  function readString(params: Record<string, unknown>, key: string): string | null {
-    const value = params[key];
-    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-  }
 
   // Parse a backend date/datetime string. Tolerates "YYYY-MM-DD HH:MM:SS" (space
   // separator) by normalizing to ISO-ish form, matching SearchResultCard.
@@ -1022,110 +975,14 @@
     );
   }
 
-  // "today" / "yesterday" relative to `now`, else null.
-  function relativeDayWord(d: Date, now: Date): string | null {
-    if (isSameCalendarDay(d, now)) return "today";
-    const yesterday = new Date(now);
-    yesterday.setDate(now.getDate() - 1);
-    if (isSameCalendarDay(d, yesterday)) return "yesterday";
-    return null;
-  }
-
   function shortDate(d: Date): string {
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  }
-
-  function shortTime(d: Date): string {
-    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  }
-
-  // A spoken time span on a single day, collapsing a shared meridiem so the
-  // AM/PM is written once: "5:50 to 6:30 AM" rather than "5:50 AM to 6:30 AM".
-  // Falls back to the full both-sided form when the meridiems differ
-  // ("11:50 AM to 1:30 PM") or the locale has no trailing token (24-hour).
-  function formatTimeSpan(start: Date, end: Date): string {
-    const s = shortTime(start);
-    const e = shortTime(end);
-    const sParts = s.split(" ");
-    const eParts = e.split(" ");
-    if (sParts.length === 2 && eParts.length === 2 && sParts[1] === eParts[1]) {
-      return `${sParts[0]} to ${e}`;
-    }
-    return `${s} to ${e}`;
-  }
-
-  // Humane label for a from/to window. Handles either bound missing, a single
-  // instant, a same-day (sub-day) window with times, or a multi-day range.
-  function formatDateRange(
-    fromRaw: string | null,
-    toRaw: string | null,
-    now: Date,
-  ): string | null {
-    const from = fromRaw ? parseToolDate(fromRaw) : null;
-    const to = toRaw ? parseToolDate(toRaw) : null;
-
-    if (from && to) {
-      if (isSameCalendarDay(from, to)) {
-        // Sub-day window: the day, then a time span (times only when sub-day).
-        const day = relativeDayWord(from, now) ?? shortDate(from);
-        const start = shortTime(from);
-        const end = shortTime(to);
-        if (start === end) {
-          return `${day} ${start}`;
-        }
-        return `${day}, ${formatTimeSpan(from, to)}`;
-      }
-      // Multi-day range: spoken "from X to Y" so mixed relative/absolute tokens
-      // ("from today to Jun 3") read as a human range, not a hyphenated word.
-      const fromLabel = relativeDayWord(from, now) ?? shortDate(from);
-      const toLabel = relativeDayWord(to, now) ?? shortDate(to);
-      return `from ${fromLabel} to ${toLabel}`;
-    }
-
-    const single = from ?? to;
-    if (single) {
-      // Relative words read bare ("today"); an absolute day takes "on 3 Jun".
-      const word = relativeDayWord(single, now);
-      return word ?? `on ${shortDate(single)}`;
-    }
-    return null;
-  }
-
-  // Build the live working-line label for one tool call from its raw params.
-  function formatToolActivity(
-    tool: string | undefined,
-    params: Record<string, unknown> | undefined,
-  ): AskToolActivityEntry {
-    const p = params ?? {};
-    const now = new Date();
-
-    if (tool === "search") {
-      const queryText = readString(p, "query");
-      let label = queryText ? `Searching “${queryText}”` : "Searching your captures";
-      const range = formatDateRange(readString(p, "from"), readString(p, "to"), now);
-      if (range) label += ` · ${range}`;
-      // The app scope renders as an icon + name chip, not as label text.
-      return { kind: "search", label, app: readString(p, "app") };
-    }
-
-    if (tool === "timeline") {
-      let label = "Scanning timeline";
-      const range = formatDateRange(readString(p, "from"), readString(p, "to"), now);
-      if (range) label += ` · ${range}`;
-      return { kind: "timeline", label, app: readString(p, "app") };
-    }
-
-    if (tool === "show_text") {
-      return { kind: "show_text", label: "Reading a capture" };
-    }
-
-    return { kind: "other", label: tool ? `Running ${tool}` : "Working" };
   }
 
   // Collapsed summary chip text for ONE turn: counts of each tool kind that ran,
   // e.g. `3 searches · timeline · 1 read`. Null when no tools ran. Pure helper
   // (per-turn) so each transcript turn renders its own activity summary.
-  function activitySummaryFor(toolActivities: AskToolActivityEntry[]): string | null {
+  function activitySummaryFor(toolActivities: ToolActivityEntry[]): string | null {
     if (toolActivities.length === 0) return null;
     let searches = 0;
     let timelines = 0;
@@ -1146,43 +1003,10 @@
     return parts.length > 0 ? parts.join(" · ") : null;
   }
 
-  // ── Tool-activity app icons (mirrors the App Privacy Exclusion idiom) ─────
-  // The tool's `app` param may be a bundle id (resolvable via
-  // `resolve_app_icons`) or a free-form display name (resolves to no icon →
-  // letter fallback). Resolutions are id-keyed facts merged across turns; a
-  // null resolution stays in the requested set so it is never re-fetched.
-  let toolAppIconPaths = $state<Record<string, string>>({});
-  const requestedToolAppIconIds = new Set<string>();
-
-  async function resolveToolAppIcons(
-    apps: Array<string | null | undefined>,
-  ): Promise<void> {
-    const unresolved = unresolvedIconBundleIds(
-      apps,
-      toolAppIconPaths,
-      requestedToolAppIconIds,
-    );
-    if (unresolved.length === 0) return;
-    for (const id of unresolved) {
-      requestedToolAppIconIds.add(canonicalBundleIdForComparison(id));
-    }
-    try {
-      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
-        request: { bundleIds: unresolved },
-      });
-      const result = mergeIconResolutions(toolAppIconPaths, icons);
-      if (result.changed) toolAppIconPaths = result.iconPathsByBundleId;
-    } catch {
-      // Icons are decorative; the letter fallback keeps working. The ids stay
-      // marked requested so a failing resolver isn't re-polled per event.
-    }
-  }
-
-  function toolAppIconSrc(app: string | null | undefined): string | null {
-    if (!app) return null;
-    const iconPath = iconPathForBundleId(app, toolAppIconPaths);
-    return iconPath ? convertFileSrc(iconPath) : null;
-  }
+  // Tool-activity app icons are now resolved server-side: each
+  // `ToolActivityEntry` carries an `appIconPath`, so the chip is a pure
+  // path→URL conversion (no client resolve/batch). The icon-cache machinery and
+  // its `resolve_app_icons` round-trip were removed in this migration.
 
   let askAvailable = $derived(askAvailability?.available === true);
   let askUnavailableHint = $derived(
@@ -1204,21 +1028,29 @@
   }
 
   // Build a fresh, empty turn for a new question. `seeding` for turn 1 (the seed
-  // broker search runs first); `thinking` for follow-ups (no seed phase).
-  function makeAskTurn(question: string, phase: AskAiPhase): AskTurn {
+  // broker search runs first); `thinking` for follow-ups (no seed phase). The
+  // backend drives the render fields via versioned `ask_ai_update` ops starting
+  // at version 0.
+  function makeAskTurn(
+    turnIndex: number,
+    question: string,
+    phase: AskAiPhase,
+  ): AskTurn {
     return {
+      turnIndex,
       question,
-      answer: "",
-      reasoning: "",
+      blocks: [],
+      reasoning: null,
       reasoningExpanded: false,
       toolActivities: [],
-      toolActivity: null,
+      liveActivity: null,
       sources: [],
       phase,
       errorMessage: null,
       seededResultCount: null,
       summaryExpanded: false,
       copied: false,
+      version: 0,
     };
   }
 
@@ -1230,19 +1062,85 @@
     askCopiedTimers.clear();
   }
 
-  // Narrow an AskTurn phase from a persisted (string) phase.
+  // Narrow an AskTurn phase from a persisted/streamed (string) phase. The full
+  // lifecycle (seeding | thinking | streaming | done | error) round-trips now
+  // that the backend owns the render model, so all five are accepted.
   function normalizeAskPhase(phase: string): AskAiPhase {
-    return phase === "done" || phase === "error" || phase === "streaming"
+    return phase === "done" ||
+      phase === "error" ||
+      phase === "streaming" ||
+      phase === "thinking" ||
+      phase === "seeding"
       ? phase
       : "done";
+  }
+
+  // Hydrate a persisted ConversationTurn into an AskTurn. The backend's
+  // get_conversation populates `turn.blocks` for EVERY turn (new + legacy
+  // parsed-on-read), so blocks are taken DIRECTLY with no frontend parsing.
+  //
+  // Tool activities: the persisted `tool_activities` JSON is still the raw
+  // `{tool, params}` shape on cold history. We map each raw `{tool}` to a
+  // minimal render-ready `ToolActivityEntry` (kind + generic label) JUST for the
+  // collapsed activity summary on a reloaded thread's past turns — the live
+  // reattach replaces them via the snapshot's render-ready toolActivities.
+  function hydrateAskTurn(turn: ConversationTurn): AskTurn {
+    const t = makeAskTurn(
+      turn.turnIndex,
+      turn.question,
+      normalizeAskPhase(turn.phase),
+    );
+    t.blocks = turn.blocks ?? [];
+    t.reasoning = turn.reasoning;
+    t.toolActivities = coerceToolActivities(turn.toolActivities);
+    t.sources = coerceSources(turn.sources);
+    t.errorMessage = turn.errorMessage;
+    t.seededResultCount = turn.seededResultCount;
+    return t;
+  }
+
+  // Map the persisted raw `{tool, params}` per-turn log to minimal render-ready
+  // entries (kind + generic label) so a reloaded thread's collapsed activity
+  // summary still counts correctly (activitySummaryFor reads `kind`). Streaming
+  // and snapshot views deliver fully render-ready entries instead.
+  function coerceToolActivities(value: unknown): ToolActivityEntry[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((e): ToolActivityEntry | null => {
+        if (typeof e !== "object" || e === null) return null;
+        const rec = e as { tool?: unknown; kind?: unknown; label?: unknown };
+        // Already render-ready (a snapshot/live entry round-tripped to the DB).
+        if (typeof rec.label === "string" && typeof rec.kind === "string") {
+          return { kind: rec.kind, label: rec.label };
+        }
+        const tool = typeof rec.tool === "string" ? rec.tool : null;
+        if (tool === "search")
+          return { kind: "search", label: "Searched your captures" };
+        if (tool === "timeline")
+          return { kind: "timeline", label: "Scanned timeline" };
+        if (tool === "show_text")
+          return { kind: "show_text", label: "Read a capture" };
+        return { kind: "other", label: tool ? `Ran ${tool}` : "Working" };
+      })
+      .filter((x): x is ToolActivityEntry => x !== null);
+  }
+
+  function coerceSources(value: unknown): AskAiSource[] {
+    if (!Array.isArray(value)) return [];
+    return value.filter((s): s is AskAiSource => {
+      return (
+        typeof s === "object" &&
+        s !== null &&
+        ((s as AskAiSource).kind === "frame" || (s as AskAiSource).kind === "audio")
+      );
+    });
   }
 
   // Re-summon hydration (background completion is now server-side): when the
   // panel regains focus on an armed ask thread whose in-memory transcript is
   // empty (e.g. the window was cleared while a question finished in the
-  // background), reload the persisted turns from the shared store. If the latest
-  // persisted turn is still "streaming", keep `askStreaming` true so the live
-  // delta/done listeners (which filter by conversationId) resume appending.
+  // background), reload the persisted turns from the shared store, then adopt
+  // any in-flight live snapshot so a reattach to a streaming turn is race-free.
   async function hydrateAskFromStore(conversationId: string): Promise<void> {
     try {
       const convo = await invoke<Conversation | null>("get_conversation", {
@@ -1252,30 +1150,169 @@
       if (convo === null || askConversationId !== conversationId || askTurns.length > 0) {
         return;
       }
-      const hydrated: AskTurn[] = convo.turns.map((turn) => {
-        const t = makeAskTurn(turn.question, normalizeAskPhase(turn.phase));
-        t.answer = turn.answer ?? "";
-        t.reasoning = turn.reasoning ?? "";
-        t.toolActivities = Array.isArray(turn.toolActivities)
-          ? (turn.toolActivities as AskToolActivityEntry[])
-          : [];
-        void resolveToolAppIcons(t.toolActivities.map((a) => a.app));
-        t.sources = Array.isArray(turn.sources)
-          ? (turn.sources as AskAiSource[])
-          : [];
-        t.errorMessage = turn.errorMessage;
-        t.seededResultCount = turn.seededResultCount;
-        return t;
-      });
+      const hydrated = convo.turns.map(hydrateAskTurn);
       if (hydrated.length === 0) return;
       askTurns = hydrated;
       askSubmitted = true;
       const last = hydrated[hydrated.length - 1];
+      // A persisted "streaming" last turn is still in flight server-side; the
+      // snapshot below replaces it with the authoritative live view + version.
       askStreaming = last.phase === "streaming";
       for (const turn of hydrated) void loadSourceThumbnails(turn.sources);
+      await adoptLiveSnapshot(conversationId);
     } catch {
       // Best-effort: leave the (empty) thread as-is on a hydrate failure.
     }
+  }
+
+  // Snapshot-on-attach: fetch the conversation's in-flight LiveTurn (if any) and
+  // adopt it onto the matching turn, bootstrapping a reattach to a streaming turn
+  // race-free. `ask_ai_update` events at/below the adopted version are then
+  // ignored, and a version gap re-snapshots. A null snapshot means no live turn
+  // (all from DB) — nothing to do.
+  async function adoptLiveSnapshot(conversationId: string): Promise<void> {
+    let snapshot: TurnSnapshot | null;
+    try {
+      snapshot = await invoke<TurnSnapshot | null>("ask_ai_snapshot", {
+        request: { conversationId },
+      });
+    } catch {
+      return;
+    }
+    if (snapshot === null || askConversationId !== conversationId) return;
+    const turn = askTurns.find((t) => t.turnIndex === snapshot.view.turnIndex);
+    if (!turn) return;
+    adoptView(turn, snapshot.view, snapshot.version);
+    askStreaming = turn.phase !== "done" && turn.phase !== "error";
+  }
+
+  // Replace a turn's render fields from a backend `TurnView` and stamp its
+  // version. Used by snapshot-on-attach and version-gap re-snapshot.
+  function adoptView(turn: AskTurn, view: TurnView, version: number): void {
+    turn.phase = normalizeAskPhase(view.phase);
+    turn.blocks = view.blocks;
+    turn.reasoning = view.reasoning;
+    turn.toolActivities = view.toolActivities;
+    turn.liveActivity = view.liveActivity;
+    turn.sources = coerceSources(view.sources);
+    turn.errorMessage = view.errorMessage;
+    turn.seededResultCount = view.seededResultCount;
+    turn.version = version;
+    void loadSourceThumbnails(turn.sources);
+  }
+
+  // ── Versioned update transport (the SOLE Ask AI stream listener) ─────────
+  // The backend owns the render model and streams versioned `TurnUpdate` ops via
+  // `ask_ai_update`. The frontend applies each op in order; a version gap (we
+  // were detached, e.g. backgrounded) self-heals from `ask_ai_snapshot`.
+  //
+  // `applyUpdate` mirrors the Rust `apply_update_to_view` reducer EXACTLY so a
+  // live stream and a snapshot/reload can never diverge. Mutating the $state turn
+  // object here is safe (it runs in an event callback, not during render — unlike
+  // the Svelte 5 render-memo gotcha that bans writes-from-template).
+  function applyUpdate(turn: AskTurn, update: TurnUpdate): void {
+    switch (update.op) {
+      case "phase":
+        turn.phase = normalizeAskPhase(update.phase);
+        break;
+      case "appendProse": {
+        const last = turn.blocks[turn.blocks.length - 1];
+        if (last && last.kind === "prose") {
+          // Replace the last block so the $state array notices the change.
+          turn.blocks = [
+            ...turn.blocks.slice(0, -1),
+            { kind: "prose", markdown: last.markdown + update.text },
+          ];
+        } else {
+          turn.blocks = [...turn.blocks, { kind: "prose", markdown: update.text }];
+        }
+        break;
+      }
+      case "openBlock":
+        turn.blocks = [...turn.blocks, update.block];
+        break;
+      case "reasoning":
+        turn.reasoning = (turn.reasoning ?? "") + update.text;
+        break;
+      case "toolActivity":
+        turn.toolActivities = [...turn.toolActivities, update.entry];
+        break;
+      case "liveActivity":
+        turn.liveActivity = update.entry;
+        break;
+      case "sources":
+        turn.sources = coerceSources(update.sources);
+        void loadSourceThumbnails(turn.sources);
+        break;
+      case "error":
+        turn.errorMessage = update.message;
+        turn.phase = "error";
+        break;
+      case "done":
+        turn.phase = "done";
+        turn.liveActivity = null;
+        break;
+    }
+  }
+
+  // Apply one `ask_ai_update` event to the active thread, honouring the version
+  // contract: exactly-next applies the op; a gap re-snapshots (or re-hydrates if
+  // the turn already finalized); stale/duplicate is ignored. The thread id is the
+  // stale-thread guard, and `event.turnIndex` keys the live turn.
+  async function handleAskUpdateEvent(event: AskAiUpdateEvent): Promise<void> {
+    if (event.conversationId !== askConversationId) return;
+    const turn = askTurns.find((t) => t.turnIndex === event.turnIndex);
+    if (!turn) return; // start/followup appends the in-flight turn locally.
+
+    if (event.version === turn.version + 1) {
+      applyUpdate(turn, event.update);
+      turn.version = event.version;
+      reconcileAskStreaming(turn);
+      return;
+    }
+    if (event.version <= turn.version) return; // already applied / stale.
+
+    // Gap: we missed updates (detached). Self-heal from the live snapshot.
+    const conversationId = event.conversationId;
+    let snapshot: TurnSnapshot | null;
+    try {
+      snapshot = await invoke<TurnSnapshot | null>("ask_ai_snapshot", {
+        request: { conversationId },
+      });
+    } catch {
+      return;
+    }
+    if (askConversationId !== conversationId) return;
+    if (snapshot !== null && snapshot.view.turnIndex === turn.turnIndex) {
+      adoptView(turn, snapshot.view, snapshot.version);
+      reconcileAskStreaming(turn);
+      return;
+    }
+    // Snapshot is null (turn already finalized/removed server-side) — fall back
+    // to get_conversation and re-hydrate the matching turn.
+    try {
+      const convo = await invoke<Conversation | null>("get_conversation", {
+        conversationId,
+      });
+      if (convo === null || askConversationId !== conversationId) return;
+      const fresh = convo.turns.find((t) => t.turnIndex === turn.turnIndex);
+      if (fresh) {
+        const hydrated = hydrateAskTurn(fresh);
+        askTurns = askTurns.map((t) =>
+          t.turnIndex === turn.turnIndex ? hydrated : t,
+        );
+        reconcileAskStreaming(hydrated);
+      }
+    } catch {
+      // Best-effort: leave the turn as-is.
+    }
+  }
+
+  // Keep the thread-level streaming flag in sync with the active (last) turn
+  // after an update settles it. Only the live (last) turn drives the composer.
+  function reconcileAskStreaming(turn: AskTurn): void {
+    if (turn.turnIndex !== askTurns.length - 1) return;
+    askStreaming = turn.phase !== "done" && turn.phase !== "error";
   }
 
   // Begin a FRESH Ask AI thread with its first (seeded) turn. `question` is what
@@ -1309,7 +1346,7 @@
     // the user lays eyes on its terminal turn (one conversation, newest wins).
     askOutcomeSeen = false;
     clearAskCopiedTimers();
-    askTurns = [makeAskTurn(trimmedQuestion, "seeding")];
+    askTurns = [makeAskTurn(0, trimmedQuestion, "seeding")];
     askStreaming = true;
     // The backend OWNS persistence: ask_ai_start upserts the conversation row
     // (from title/origin) and run_ask_ai_turn persists each turn.
@@ -1406,8 +1443,8 @@
     // The new follow-up turn's outcome hasn't been seen yet — re-arm so it
     // survives dismiss/blur until the user lays eyes on its terminal turn.
     askOutcomeSeen = false;
-    askTurns = [...askTurns, makeAskTurn(trimmed, "thinking")];
-    const turnIndex = askTurns.length - 1;
+    const turnIndex = askTurns.length;
+    askTurns = [...askTurns, makeAskTurn(turnIndex, trimmed, "thinking")];
     askStreaming = true;
     // The composer is about to disable (dimmed) — move focus to the transcript
     // region so Escape (back-to-search) and scroll keys keep working while the
@@ -1439,10 +1476,9 @@
       return;
     }
     askStreaming = false;
-    // Drop the thread id so any buffered ask_ai_* events that arrive AFTER cancel
-    // (deltas the backend already queued) no longer match the id guard and stop
-    // appending to the cancelled turn. The delta listener also bails on
-    // !askStreaming, covering the instant between this line and the await below.
+    // Drop the thread id so any buffered ask_ai_update events that arrive AFTER
+    // cancel (updates the backend already queued) no longer match the id guard in
+    // handleAskUpdateEvent and stop applying to the cancelled turn.
     askConversationId = null;
     try {
       await invoke<void>("ask_ai_cancel", { request: { conversationId } });
@@ -1520,16 +1556,29 @@
     askAreaEl?.focus();
   }
 
+  // A turn's copyable raw Markdown: the concatenation of its prose blocks (the
+  // graphical blocks have no useful clipboard form), joined with blank lines.
+  // The backend's render model carries answer text as `prose` AnswerBlocks now,
+  // so there is no single `answer` string to copy.
+  function turnAnswerText(turn: AskTurn): string {
+    return turn.blocks
+      .filter((b): b is { kind: "prose"; markdown: string } => b.kind === "prose")
+      .map((b) => b.markdown)
+      .join("\n\n")
+      .trim();
+  }
+
   // Copy ONE turn's raw Markdown answer (not rendered HTML) to the clipboard,
   // flashing that turn's copy button. Keyed by the turn's array index so the
   // flash stays scoped to the copied turn.
   async function copyTurnAnswer(turnIndex: number): Promise<void> {
     const turn = askTurns[turnIndex];
-    if (!turn || turn.answer.length === 0) {
+    const text = turn ? turnAnswerText(turn) : "";
+    if (!turn || text.length === 0) {
       return;
     }
     try {
-      await navigator.clipboard.writeText(turn.answer);
+      await navigator.clipboard.writeText(text);
     } catch {
       // Clipboard write is best-effort; swallow (no toast surface here).
       return;
@@ -1565,12 +1614,12 @@
   // turn isn't terminal; otherwise it SETTLES into the collapsed "Thought
   // process" chip below.
   function hasReasoning(turn: AskTurn): boolean {
-    return turn.reasoning.trim().length > 0;
+    return (turn.reasoning ?? "").trim().length > 0;
   }
   function reasoningIsLive(turn: AskTurn): boolean {
     return (
-      turn.reasoning.trim().length > 0 &&
-      turn.answer.length === 0 &&
+      (turn.reasoning ?? "").trim().length > 0 &&
+      turn.blocks.length === 0 &&
       turn.phase !== "done" &&
       turn.phase !== "error"
     );
@@ -1586,7 +1635,7 @@
       (event.key === "c" || event.key === "C") &&
       last &&
       last.phase === "done" &&
-      last.answer.length > 0
+      turnAnswerText(last).length > 0
     ) {
       const selection = window.getSelection()?.toString() ?? "";
       if (selection.length === 0) {
@@ -1659,10 +1708,15 @@
   $effect(() => {
     const live = askLiveTurn;
     // Touch reactive deps so the effect tracks streaming + turn-append growth.
-    // Reasoning length is tracked too so the live "Thinking…" panel pins to the
-    // bottom as it streams (it streams before any answer text arrives).
-    const _len = live?.answer.length ?? 0;
-    const _reasoningLen = live?.reasoning.length ?? 0;
+    // appendProse replaces the blocks array (and its last prose block) on every
+    // delta, so tracking the block count + the last prose block's length pins the
+    // panel as the answer streams. Reasoning length is tracked too so the live
+    // "Thinking…" panel pins as it streams (it streams before any answer text).
+    const _blockCount = live?.blocks.length ?? 0;
+    const _lastBlock = live?.blocks[_blockCount - 1];
+    const _len =
+      _lastBlock && _lastBlock.kind === "prose" ? _lastBlock.markdown.length : 0;
+    const _reasoningLen = live?.reasoning?.length ?? 0;
     const _count = askTurns.length;
     if (mode !== "ask" || !askAreaEl || _count === 0) {
       return;
@@ -3153,12 +3207,7 @@
     motionQuery.addEventListener("change", onMotionChange);
 
     let destroyed = false;
-    let unlistenStatus: (() => void) | undefined;
-    let unlistenReasoning: (() => void) | undefined;
-    let unlistenDelta: (() => void) | undefined;
-    let unlistenDone: (() => void) | undefined;
-    let unlistenError: (() => void) | undefined;
-    let unlistenSource: (() => void) | undefined;
+    let unlistenUpdate: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
     let unlistenDismiss: (() => void) | undefined;
 
@@ -3188,112 +3237,16 @@
         else unlistenFocus = fn;
       });
 
-    // All stream events route to the LAST (live) turn, guarded on a non-empty
-    // transcript and a matching thread id (stale-thread guard, REQUIRED). The
-    // id is the THREAD id; ask_ai_done now means THIS TURN finished.
-    listen<AskAiStatusEvent>("ask_ai_status", (event) => {
-      if (event.payload.conversationId !== askConversationId) return;
-      const turn = askTurns[askTurns.length - 1];
-      if (!turn) return;
-      // A "tool" status is mid-answer activity: surface the real filter label
-      // without touching the turn phase, so any already-streamed answer text
-      // stays visible, and record it for the collapsed summary chip.
-      if (event.payload.phase === "tool") {
-        const activity = formatToolActivity(event.payload.tool, event.payload.params);
-        turn.toolActivity = activity;
-        turn.toolActivities = [...turn.toolActivities, activity];
-        if (activity.app) void resolveToolAppIcons([activity.app]);
-        return;
-      }
-      if (typeof event.payload.seededResultCount === "number") {
-        turn.seededResultCount = event.payload.seededResultCount;
-      }
-      // Don't regress out of streaming once tokens have started arriving.
-      if (turn.phase !== "streaming") {
-        turn.phase = event.payload.phase;
-      }
+    // The SOLE Ask AI stream listener: versioned render-model updates for the
+    // active thread (issue #110, ADR 0031). Stale-thread + version guards live in
+    // handleAskUpdateEvent — exactly-next applies the op, a gap self-heals from
+    // ask_ai_snapshot, stale/duplicate is dropped. This replaces the six legacy
+    // per-token listeners (status/delta/reasoning/done/error/source).
+    listen<AskAiUpdateEvent>("ask_ai_update", (event) => {
+      void handleAskUpdateEvent(event.payload);
     }).then((fn) => {
       if (destroyed) fn();
-      else unlistenStatus = fn;
-    });
-
-    listen<AskAiDeltaEvent>("ask_ai_delta", (event) => {
-      if (event.payload.conversationId !== askConversationId) return;
-      // Defensive: a delta the backend already queued can arrive in the window
-      // between a cancel (askStreaming → false) and askConversationId clearing.
-      // Ignore it so a cancelled turn never keeps growing after the user left.
-      if (!askStreaming) return;
-      const turn = askTurns[askTurns.length - 1];
-      if (!turn) return;
-      // The model resumed answering: clear any in-progress tool activity.
-      turn.toolActivity = null;
-      turn.phase = "streaming";
-      turn.answer += event.payload.text;
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenDelta = fn;
-    });
-
-    // Streamed reasoning ("thinking") chunks: interleaved before/between the
-    // answer deltas. Mirrors the delta listener (same stale-thread + streaming
-    // guards) but appends to `turn.reasoning`. The bottom-pin $effect tracks the
-    // live turn's reasoning length too, so the panel pins to bottom as it grows.
-    listen<AskAiReasoningEvent>("ask_ai_reasoning", (event) => {
-      if (event.payload.conversationId !== askConversationId) return;
-      if (!askStreaming) return;
-      const turn = askTurns[askTurns.length - 1];
-      if (!turn) return;
-      turn.reasoning += event.payload.text;
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenReasoning = fn;
-    });
-
-    listen<AskAiDoneEvent>("ask_ai_done", (event) => {
-      if (event.payload.conversationId !== askConversationId) return;
-      const turn = askTurns[askTurns.length - 1];
-      if (!turn) return;
-      // This TURN finished — re-enable the composer (thread-level streaming off).
-      askStreaming = false;
-      turn.toolActivity = null;
-      turn.phase = "done";
-      // Persistence is owned by the backend (run_ask_ai_turn finalized this turn).
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenDone = fn;
-    });
-
-    listen<AskAiErrorEvent>("ask_ai_error", (event) => {
-      if (event.payload.conversationId !== askConversationId) return;
-      const turn = askTurns[askTurns.length - 1];
-      if (!turn) return;
-      askStreaming = false;
-      turn.toolActivity = null;
-      turn.phase = "error";
-      turn.errorMessage = event.payload.message;
-      // The backend persisted the error turn; a follow-up still works (it reloads
-      // history server-side).
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenError = fn;
-    });
-
-    listen<AskAiSourceEvent>("ask_ai_source", (event) => {
-      if (event.payload.conversationId !== askConversationId) return;
-      const turn = askTurns[askTurns.length - 1];
-      if (!turn) return;
-      // The last non-empty event for this turn replaces the prior set. The
-      // reference_captures tool is repeatable, and a later call can resolve to an
-      // empty list; that empty resolution must NOT blank already-cited source
-      // cards — sources only accumulate/refine, never clear. The markup gates
-      // rendering on the turn being done, so a mid-stream set still buffers now.
-      if (event.payload.sources.length > 0) {
-        turn.sources = event.payload.sources;
-        void loadSourceThumbnails(event.payload.sources);
-      }
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenSource = fn;
+      else unlistenUpdate = fn;
     });
 
     // The Rust dismiss chokepoint (`dismiss_quick_recall_window`) emits this when
@@ -3326,12 +3279,7 @@
         capture: true,
       });
       motionQuery.removeEventListener("change", onMotionChange);
-      unlistenStatus?.();
-      unlistenReasoning?.();
-      unlistenDelta?.();
-      unlistenDone?.();
-      unlistenError?.();
-      unlistenSource?.();
+      unlistenUpdate?.();
       unlistenFocus?.();
       unlistenDismiss?.();
     };
@@ -3351,13 +3299,16 @@
   });
 </script>
 
-<!-- Inline app chip for tool-activity lines: resolved icon (or letter
-     fallback) + the app name, matching the app-icon look used elsewhere. -->
-{#snippet toolAppChip(app: string)}
+<!-- Inline app chip for tool-activity lines: the backend-resolved icon (or a
+     letter fallback) + the app name, matching the app-icon look used elsewhere.
+     The icon path is resolved server-side (entry.appIconPath); here it is a pure
+     path→URL conversion — no client resolve/batch. -->
+{#snippet toolAppChip(entry: ToolActivityEntry)}
+  {@const app = entry.app ?? ""}
   <span class="quick-recall__tool-app">
     <span class="quick-recall__tool-app-icon" aria-hidden="true">
-      {#if toolAppIconSrc(app) !== null}
-        <img src={toolAppIconSrc(app)} alt="" />
+      {#if entry.appIconPath}
+        <img src={convertFileSrc(entry.appIconPath)} alt="" />
       {:else}
         {appIconFallback(app, app)}
       {/if}
@@ -3904,7 +3855,7 @@
                       <span class="quick-recall__dot" aria-hidden="true"></span>
                       Searching your captures…
                     </p>
-                  {:else if turn.phase === "thinking" && turn.toolActivity === null}
+                  {:else if turn.phase === "thinking" && turn.liveActivity === null}
                     <p class="quick-recall__state quick-recall__state--working">
                       <span class="quick-recall__dot" aria-hidden="true"></span>
                       Thinking…
@@ -3912,7 +3863,7 @@
                   {:else}
                     {#if turn.phase === "streaming" || turn.phase === "done"}
                       <!-- Per-turn copy: only on done, never while streaming. -->
-                      {#if turn.phase === "done" && turn.answer.length > 0}
+                      {#if turn.phase === "done" && turnAnswerText(turn).length > 0}
                         <button
                           type="button"
                           class="quick-recall__copy"
@@ -3980,7 +3931,7 @@
                                 <li class="quick-recall__activity-item">
                                   {activity.label}
                                   {#if activity.app}
-                                    in {@render toolAppChip(activity.app)}
+                                    in {@render toolAppChip(activity)}
                                   {/if}
                                 </li>
                               {/each}
@@ -3989,15 +3940,63 @@
                         </div>
                       {/if}
 
-                      <!-- Answer Prose: shared renderer owns the Markdown HTML,
-                           code-block copy buttons, external-link delegation, and the
-                           streaming caret. Links route through openAnswerLink so the
-                           launcher's blur-dismiss suppression still runs. -->
-                      <AnswerProse
-                        source={turn.answer}
-                        isStreaming={turn.phase === "streaming"}
-                        onOpenLink={openAnswerLink}
-                      />
+                      <!-- The answer body: render-ready blocks streamed from the
+                           backend, switched on `kind`. Prose carries raw markdown
+                           (AnswerProse renders + hardens it, owns the code-block
+                           copy buttons, external-link delegation through
+                           openAnswerLink, and the streaming caret); the graphical
+                           blocks carry already-parsed data. The streaming caret
+                           rides only the LAST prose block, and only until the turn
+                           settles. -->
+                      <div class="quick-recall__answer">
+                        {#each turn.blocks as block, bi (bi)}
+                          {#if block.kind === "prose"}
+                            <AnswerProse
+                              source={block.markdown}
+                              isStreaming={turn.phase !== "done" &&
+                                bi === turn.blocks.length - 1}
+                              onOpenLink={openAnswerLink}
+                            />
+                          {:else if block.kind === "bars"}
+                            <figure class="quick-recall__graphic">
+                              {#if block.title}
+                                <figcaption class="quick-recall__graphic-title">
+                                  {block.title}
+                                </figcaption>
+                              {/if}
+                              <MiniBars items={block.items} />
+                            </figure>
+                          {:else if block.kind === "dossier"}
+                            <div
+                              class="quick-recall__graphic quick-recall__graphic--dossier"
+                            >
+                              {#each block.items as item, di (di)}
+                                <div class="quick-recall__dossier-card">
+                                  <p class="quick-recall__dossier-statement">
+                                    {item.statement}
+                                  </p>
+                                  <div class="quick-recall__dossier-foot">
+                                    {#if item.subject}
+                                      <span class="quick-recall__subject-chip">
+                                        {item.subject}
+                                      </span>
+                                    {/if}
+                                    <span class="quick-recall__conf-wrap">
+                                      <ConfidenceBar confidence={item.confidence} />
+                                    </span>
+                                  </div>
+                                </div>
+                              {/each}
+                            </div>
+                          {:else if block.kind === "timeline"}
+                            <!-- Timeline owns its own caption, so the .graphic
+                                 wrapper here doesn't repeat it as a figcaption. -->
+                            <figure class="quick-recall__graphic">
+                              <Timeline title={block.title} intervals={block.items} />
+                            </figure>
+                          {/if}
+                        {/each}
+                      </div>
 
                       <!-- Per-turn answer sources: the captures this turn drew on,
                            surfaced only once the turn is done. -->
@@ -4046,16 +4045,16 @@
                         </div>
                       {/if}
                     {/if}
-                    {#if turn.toolActivity !== null}
+                    {#if turn.liveActivity !== null}
                       <!-- Live animated working line: the real tool filter string. -->
                       <p class="quick-recall__state quick-recall__state--working">
                         <span class="quick-recall__dot" aria-hidden="true"></span>
                         <span class="quick-recall__working-label"
-                          >{turn.toolActivity.label}</span
+                          >{turn.liveActivity.label}</span
                         >
-                        {#if turn.toolActivity.app}
+                        {#if turn.liveActivity.app}
                           in
-                          {@render toolAppChip(turn.toolActivity.app)}
+                          {@render toolAppChip(turn.liveActivity)}
                         {/if}
                       </p>
                     {:else if turn.phase === "streaming"}
@@ -4975,6 +4974,71 @@
   .quick-recall__composer-input:disabled {
     color: var(--app-text-muted);
     cursor: default;
+  }
+
+  /* The answer body: a column of render-ready blocks (prose + inline graphics).
+     The prose blocks render via AnswerProse; the graphical blocks (bars /
+     timeline / dossier) sit in a quiet bordered card, mirroring the Insights
+     Chat surface so the two doors render answers identically. */
+  .quick-recall__answer {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .quick-recall__graphic {
+    margin: 0;
+    padding: 12px 13px;
+    border: 1px solid var(--app-border);
+    border-radius: 9px;
+    background: var(--app-surface-subtle);
+  }
+  .quick-recall__graphic-title {
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+    margin: 0 0 10px;
+  }
+  .quick-recall__graphic--dossier {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .quick-recall__dossier-card {
+    padding: 11px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface);
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .quick-recall__dossier-statement {
+    font-size: 12.5px;
+    color: var(--app-text-strong);
+    line-height: 1.5;
+    margin: 0;
+  }
+  .quick-recall__dossier-foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .quick-recall__subject-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--app-accent-bg);
+    border: 1px solid var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
+  .quick-recall__conf-wrap {
+    flex: 0 0 auto;
   }
 
   /* Answer sources strip: sectioned Screen/Audio rows beneath the answer prose.

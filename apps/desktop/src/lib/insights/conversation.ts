@@ -184,10 +184,10 @@ export interface AskAiUpdateEvent {
 
 // ── Ask AI availability + Answer Sources ─────────────────────────────────────
 // The legacy per-token `ask_ai_*` event shapes (status/delta/reasoning/done/
-// error/source) are gone from Chat — it now consumes the versioned
-// `ask_ai_update` transport (AskAiUpdateEvent above). Quick Recall still listens
-// to the legacy events but declares those shapes locally, so they no longer live
-// here. Availability + the cited Answer Source shape remain, shared across doors.
+// error/source) are gone: BOTH doors (Chat and Quick Recall) now consume the
+// single versioned `ask_ai_update` transport (AskAiUpdateEvent above), and the
+// backend no longer emits the legacy events. Availability + the cited Answer
+// Source shape remain, shared across doors.
 
 export interface AskAiAvailability {
   available: boolean;

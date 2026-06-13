@@ -17,10 +17,11 @@
 //! and the per-question tool-call cap enforced here. `open`/`open_in_mnema` is NOT
 //! an Ask AI tool and is rejected before the broker.
 //!
-//! The streaming Tauri EVENT surface (`ask_ai_status` / `ask_ai_delta` /
-//! `ask_ai_done` / `ask_ai_error` / `ask_ai_source`, all keyed by
-//! `conversationId`) is byte-for-byte the same as the PI-era surface, so the
-//! frontend barely changes.
+//! The streaming Tauri EVENT surface is the single versioned `ask_ai_update`
+//! event (one [`TurnUpdate`] per emit, keyed by `conversationId` + `turnIndex`),
+//! self-healable via the `ask_ai_snapshot` command. The legacy per-kind events
+//! (`ask_ai_status`/`ask_ai_delta`/`ask_ai_reasoning`/`ask_ai_done`/
+//! `ask_ai_error`/`ask_ai_source`) were removed once both frontends migrated.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -63,7 +64,7 @@ fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 /// returning the flag. Any flag already registered for that conversation (a prior
 /// turn still streaming) is CANCELLED before being replaced, so a racing
 /// start/follow-up cooperatively stops the displaced turn rather than letting two
-/// turns interleave `ask_ai_delta` output under the same conversation id. The
+/// turns interleave `ask_ai_update` output under the same conversation id. The
 /// displaced turn observes its flag between stream items and ends cleanly.
 fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
     let cancel = Arc::new(AtomicBool::new(false));
@@ -233,16 +234,10 @@ fn snapshot_live_turn(conversation_id: &str) -> Option<TurnSnapshot> {
     })
 }
 
-const ASK_AI_STATUS_EVENT: &str = "ask_ai_status";
-const ASK_AI_DELTA_EVENT: &str = "ask_ai_delta";
-const ASK_AI_REASONING_EVENT: &str = "ask_ai_reasoning";
-const ASK_AI_DONE_EVENT: &str = "ask_ai_done";
-const ASK_AI_ERROR_EVENT: &str = "ask_ai_error";
-const ASK_AI_SOURCE_EVENT: &str = "ask_ai_source";
-
-/// The NEW unified view-model transport event (issue #110, Slice 4). Carries one
-/// versioned [`TurnUpdate`] keyed by `conversationId` + `turnIndex`. Emitted
-/// ALONGSIDE the legacy `ask_ai_*` events during the Phase-1 double-emit window.
+/// The unified view-model transport event (issue #110). Carries one versioned
+/// [`TurnUpdate`] keyed by `conversationId` + `turnIndex`. This is the SOLE Ask AI
+/// streaming surface — the legacy `ask_ai_status`/`ask_ai_delta`/`ask_ai_reasoning`
+/// /`ask_ai_done`/`ask_ai_error`/`ask_ai_source` events were removed in Phase 2.
 const ASK_AI_UPDATE_EVENT: &str = "ask_ai_update";
 
 /// Per-kind caps on the nominated Answer Source set emitted to the frontend.
@@ -598,14 +593,12 @@ where
 }
 
 /// Handle the model's `reference_captures` presentation tool: validate + decode
-/// the nominated opaque ids, attach retained metadata, cap the set, emit a
-/// single `ask_ai_source` event to the frontend, and return `{ accepted, dropped }`
-/// as the tool result. This never touches the broker dispatch path. The emitted
-/// sources JSON is also handed back to the caller so the turn driver can persist
-/// it on the turn row.
+/// the nominated opaque ids, attach retained metadata, cap the set, and return
+/// `{ accepted, dropped }` as the tool result. This never touches the broker
+/// dispatch path. The resolved sources JSON is handed back to the caller so the
+/// turn driver can emit the `Sources` view update and persist it on the turn row.
 async fn handle_reference_captures(
     app_handle: &tauri::AppHandle,
-    conversation_id: &str,
     search_metadata: &Arc<Mutex<HashMap<String, BrokerSearchResult>>>,
     params: serde_json::Value,
 ) -> Result<(serde_json::Value, Vec<serde_json::Value>), String> {
@@ -709,14 +702,6 @@ async fn handle_reference_captures(
             sources[index]["sourceKind"] = serde_json::json!(source_kind);
         }
     }
-
-    let _ = app_handle.emit(
-        ASK_AI_SOURCE_EVENT,
-        serde_json::json!({
-            "conversationId": conversation_id,
-            "sources": sources,
-        }),
-    );
 
     Ok((
         serde_json::json!({ "accepted": accepted, "dropped": dropped }),
@@ -1107,18 +1092,6 @@ pub async fn ask_ai_availability(
     }
 }
 
-/// Emit a `ask_ai_status` event with the given JSON body merged with the
-/// conversation id.
-fn emit_status(app_handle: &tauri::AppHandle, conversation_id: &str, mut body: serde_json::Value) {
-    if let Some(map) = body.as_object_mut() {
-        map.insert(
-            "conversationId".to_string(),
-            serde_json::Value::String(conversation_id.to_string()),
-        );
-    }
-    let _ = app_handle.emit(ASK_AI_STATUS_EVENT, body);
-}
-
 /// Apply `update` to the conversation's LiveTurn and, when this turn still owns
 /// it, emit the versioned [`ASK_AI_UPDATE_EVENT`]. Returns the version emitted (so
 /// the driver can track `last_version` for the displaced-terminal path), or `None`
@@ -1327,12 +1300,13 @@ async fn generate_conversation_title(
 /// → Ask AI model override → global default model), seeds best-effort via broker
 /// search, persists a
 /// `streaming` turn row, then runs ONE `ai_engine::run_agent_loop` against the
-/// configured engine. The model's text streams as `ask_ai_delta` events (and is
-/// periodically persisted as a partial for reattach); tool calls run through the
-/// All-Retained broker seam Rust-side and drive the `ask_ai_status` tool phase +
-/// `ask_ai_source` cards. On completion it persists the final turn and emits the
-/// terminal `ask_ai_done`/`ask_ai_error`. A cooperative cancel keeps whatever was
-/// generated (phase `done`) and emits no error.
+/// configured engine. The model's text streams as versioned `ask_ai_update`
+/// view updates (and is periodically persisted as a partial for reattach); tool
+/// calls run through the All-Retained broker seam Rust-side and drive the live
+/// tool-activity line + source cards via the same update stream. On completion it
+/// persists the final turn and emits the terminal `Done`/`Error` update. A
+/// cooperative cancel keeps whatever was generated (phase `done`) and still
+/// settles the view with a terminal `Done`.
 ///
 /// Detached: the spawned task finishes regardless of dismiss/close, so an unseen
 /// thread completes in the background and a reattach reads the persisted answer.
@@ -1353,13 +1327,22 @@ async fn run_ask_ai_turn(
     let turn_token = next_turn_token();
 
     // Resolve storage; without it we cannot persist or read history, so surface a
-    // terminal error and stop.
+    // terminal error and stop. This is BEFORE any LiveTurn is registered, so
+    // `emit_live_update` would be a no-op — emit a DIRECT terminal `ask_ai_update`
+    // error so the frontend (which only listens to `ask_ai_update`) settles the
+    // turn instead of hanging. `turn_index` is unknown here (infra is what loads
+    // it), so use 0.
     let infra = match app_infra(&app_handle) {
         Ok(infra) => infra,
         Err(error) => {
             let _ = app_handle.emit(
-                ASK_AI_ERROR_EVENT,
-                serde_json::json!({ "conversationId": conversation_id, "message": error }),
+                ASK_AI_UPDATE_EVENT,
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "version": 1u64,
+                    "turnIndex": 0i64,
+                    "update": TurnUpdate::Error { message: error },
+                }),
             );
             remove_inflight_if_owner(&conversation_id, &cancel);
             return;
@@ -1420,9 +1403,17 @@ async fn run_ask_ai_turn(
     let config = match config_result {
         Ok(config) => config,
         Err(reason) => {
+            // Still BEFORE the LiveTurn is registered, so emit a DIRECT terminal
+            // `ask_ai_update` error (no live view exists for `emit_live_update` to
+            // mutate). Here `turn_index` is known (history was loaded above).
             let _ = app_handle.emit(
-                ASK_AI_ERROR_EVENT,
-                serde_json::json!({ "conversationId": conversation_id, "message": reason }),
+                ASK_AI_UPDATE_EVENT,
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "version": 1u64,
+                    "turnIndex": turn_index,
+                    "update": TurnUpdate::Error { message: reason },
+                }),
             );
             remove_inflight_if_owner(&conversation_id, &cancel);
             return;
@@ -1434,13 +1425,13 @@ async fn run_ask_ai_turn(
     let seed_query = seed_query
         .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
+    // The live seeding progress is no longer streamed: the seeded result count is
+    // carried by the registered LiveTurn view (and the persisted row) once seeding
+    // finishes, which is what the snapshot/update stream surfaces. The frontend
+    // only listens to `ask_ai_update`, so a transient seeding status would be
+    // unobserved.
     let mut seed_results: Vec<BrokerSearchResult> = Vec::new();
     if let Some(seed_query) = seed_query.as_deref() {
-        emit_status(
-            &app_handle,
-            &conversation_id,
-            serde_json::json!({ "phase": "seeding", "seededResultCount": 0 }),
-        );
         let search_request = BrokerSearchRequest {
             query: seed_query.to_string(),
             from: None,
@@ -1457,11 +1448,6 @@ async fn run_ask_ai_turn(
         {
             seed_results = response.results;
         }
-        emit_status(
-            &app_handle,
-            &conversation_id,
-            serde_json::json!({ "phase": "seeding", "seededResultCount": seed_results.len() }),
-        );
     }
     let seeded_result_count = Some(seed_results.len() as i64);
 
@@ -1482,12 +1468,6 @@ async fn run_ask_ai_turn(
         remove_inflight_if_owner(&conversation_id, &cancel);
         return;
     }
-
-    emit_status(
-        &app_handle,
-        &conversation_id,
-        serde_json::json!({ "phase": "thinking" }),
-    );
 
     // 4. Persist the turn row immediately (empty `streaming` answer) so a reattach
     //    can read the in-flight partial. Seeded count is carried from the start.
@@ -1577,22 +1557,16 @@ async fn run_ask_ai_turn(
             let tool_activities = Arc::clone(&tool_activities);
             let sources = Arc::clone(&sources);
             Box::pin(async move {
-                // Presentation signal: validate/decode + emit `ask_ai_source`,
-                // never dispatched to the broker. Its emitted source set is also
-                // stashed for persistence.
+                // Presentation signal: validate/decode the nominated sources,
+                // never dispatched to the broker. Its resolved source set is
+                // stashed for persistence and emitted as a `Sources` view update.
                 if tool == "reference_captures" {
-                    let (ack, nominated) = handle_reference_captures(
-                        &app_handle,
-                        &conversation_id,
-                        &search_metadata,
-                        params,
-                    )
-                    .await?;
+                    let (ack, nominated) =
+                        handle_reference_captures(&app_handle, &search_metadata, params).await?;
                     if let Ok(mut buffer) = sources.lock() {
                         *buffer = nominated.clone();
                     }
-                    // NEW transport: mirror the legacy `ask_ai_source` event with a
-                    // `Sources` view update carrying the SAME json array.
+                    // Emit the resolved source set as a `Sources` view update.
                     emit_live_update(
                         &app_handle,
                         &conversation_id,
@@ -1665,12 +1639,8 @@ async fn run_ask_ai_turn(
         let question = question.clone();
         move |event: ai_engine::AgentLoopEvent| match event {
             ai_engine::AgentLoopEvent::Delta(text) => {
-                let _ = app_handle.emit(
-                    ASK_AI_DELTA_EVENT,
-                    serde_json::json!({ "conversationId": conversation_id, "text": text }),
-                );
-                // NEW transport: on the FIRST delta advance the phase to
-                // "streaming" and clear any live tool-activity line. Reading the
+                // On the FIRST delta advance the phase to "streaming" and clear any
+                // live tool-activity line. Reading the
                 // current live_activity first avoids a no-op version bump when
                 // there is nothing to clear.
                 {
@@ -1791,14 +1761,10 @@ async fn run_ask_ai_turn(
                 }
             }
             ai_engine::AgentLoopEvent::Reasoning(text) => {
-                let _ = app_handle.emit(
-                    ASK_AI_REASONING_EVENT,
-                    serde_json::json!({ "conversationId": conversation_id, "text": text }),
-                );
                 if let Ok(mut guard) = reasoning.lock() {
                     guard.push_str(&text);
                 }
-                // NEW transport: append reasoning to the view model too.
+                // Append reasoning to the view model.
                 emit_live_update(
                     &app_handle,
                     &conversation_id,
@@ -1812,12 +1778,7 @@ async fn run_ask_ai_turn(
                 if name == "reference_captures" {
                     return;
                 }
-                emit_status(
-                    &app_handle,
-                    &conversation_id,
-                    serde_json::json!({ "phase": "tool", "tool": name, "params": params }),
-                );
-                // NEW transport: build the render-ready entry SYNCHRONOUSLY (this
+                // Build the render-ready entry SYNCHRONOUSLY (this
                 // callback is sync) without the icon, record it in the rail, and
                 // set it as the live activity line. Icon resolution is async, so it
                 // is spawned and re-emits an enriched live line if/when it resolves.
@@ -1894,9 +1855,8 @@ async fn run_ask_ai_turn(
         .map(|g| g.clone())
         .unwrap_or_default();
     let final_sources = sources.lock().map(|g| g.clone()).unwrap_or_default();
-    let was_cancelled = cancel.load(Ordering::SeqCst);
 
-    // NEW transport — flush the streaming parser so any unterminated `mnema-*`
+    // Flush the streaming parser so any unterminated `mnema-*`
     // fence degrades to prose, completing the view's blocks. Done for BOTH arms so
     // the terminal view matches the persisted answer. Emitting each flush op bumps
     // the version, which `apply_live_update` returns; track the highest so the
@@ -1951,7 +1911,7 @@ async fn run_ask_ai_turn(
     match run_result {
         Ok(()) => {
             // A cooperative cancel keeps whatever was generated and emits no
-            // error; a clean finish persists `done` and emits the terminal event.
+            // error; a clean finish persists `done` and emits the terminal update.
             persist_turn(
                 &infra,
                 &conversation_id,
@@ -1972,15 +1932,8 @@ async fn run_ask_ai_turn(
             // Terminal persist updated the row (answer/updated-at), so the
             // history list re-sorts/refreshes its entry.
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
-            if !was_cancelled {
-                let _ = app_handle.emit(
-                    ASK_AI_DONE_EVENT,
-                    serde_json::json!({ "conversationId": conversation_id }),
-                );
-            }
-            // NEW transport: ALWAYS emit the terminal `Done` view update, even on a
-            // user cancel (the legacy `ask_ai_done` stays suppressed on cancel, but
-            // the new view must settle so "Writing…" resolves).
+            // ALWAYS emit the terminal `Done` view update, even on a user cancel,
+            // so the view settles ("Writing…" resolves).
             emit_terminal(TurnUpdate::Done, &mut last_version);
             // Fire-and-forget generated thread title: only after the FIRST turn
             // completes and persists. Spawned detached so it can never delay or
@@ -2020,11 +1973,7 @@ async fn run_ask_ai_turn(
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
-            let _ = app_handle.emit(
-                ASK_AI_ERROR_EVENT,
-                serde_json::json!({ "conversationId": conversation_id, "message": message }),
-            );
-            // NEW transport: terminal `Error` view update.
+            // Terminal `Error` view update.
             emit_terminal(
                 TurnUpdate::Error {
                     message: message.clone(),
