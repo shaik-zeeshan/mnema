@@ -74,16 +74,36 @@ pub async fn list_conversations(
 }
 
 /// Hydrate one conversation (with its turns in order) by its frontend UUID.
+///
+/// Cold-reattach legacy backfill: a LEGACY turn (persisted before the `blocks`
+/// column existed, so `blocks == None`) carries no render-ready blocks. Here —
+/// in the DESKTOP layer, which CAN reach the [`AnswerView`] parser (app-infra is
+/// a pure store) — we parse such a turn's `answer` into blocks ONCE on read, the
+/// same parse the live stream produced. New turns already carry their persisted
+/// blocks, so this only touches legacy rows. The result: the frontend receives
+/// populated `blocks` for EVERY turn and never re-parses fenced JSON.
 #[tauri::command]
 pub async fn get_conversation(
     infra: tauri::State<'_, AppInfraState>,
     conversation_id: String,
 ) -> Result<Option<Conversation>, String> {
-    infra
+    let mut conversation = infra
         .conversation()
         .get_conversation(&conversation_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if let Some(conversation) = conversation.as_mut() {
+        for turn in conversation.turns.iter_mut() {
+            if turn.blocks.is_none() && !turn.answer.trim().is_empty() {
+                turn.blocks = Some(crate::ask_ai::answer_view::parse_answer_to_blocks(
+                    &turn.answer,
+                ));
+            }
+        }
+    }
+
+    Ok(conversation)
 }
 
 /// Case-insensitive search across conversation titles and turn
@@ -124,6 +144,9 @@ pub async fn save_conversation_turn(
             &request.question,
             &request.answer,
             request.reasoning.as_deref(),
+            // This legacy frontend save path carries no parsed blocks; pass NULL
+            // so the get_conversation command parses them from `answer` on read.
+            None,
             &tool_activities_json,
             &sources_json,
             &request.phase,

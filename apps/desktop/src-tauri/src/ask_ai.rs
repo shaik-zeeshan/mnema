@@ -17,14 +17,15 @@
 //! and the per-question tool-call cap enforced here. `open`/`open_in_mnema` is NOT
 //! an Ask AI tool and is rejected before the broker.
 //!
-//! The streaming Tauri EVENT surface (`ask_ai_status` / `ask_ai_delta` /
-//! `ask_ai_done` / `ask_ai_error` / `ask_ai_source`, all keyed by
-//! `conversationId`) is byte-for-byte the same as the PI-era surface, so the
-//! frontend barely changes.
+//! The streaming Tauri EVENT surface is the single versioned `ask_ai_update`
+//! event (one [`TurnUpdate`] per emit, keyed by `conversationId` + `turnIndex`),
+//! self-healable via the `ask_ai_snapshot` command. The legacy per-kind events
+//! (`ask_ai_status`/`ask_ai_delta`/`ask_ai_reasoning`/`ask_ai_done`/
+//! `ask_ai_error`/`ask_ai_source`) were removed once both frontends migrated.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use app_infra::brokered_access::{
@@ -32,12 +33,16 @@ use app_infra::brokered_access::{
     BrokerSearchRequest, BrokerSearchResult, BrokerTimelineRequest, BrokeredCaptureAccess,
     BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
-use capture_types::AiRuntimeSettings;
+use capture_types::{AiRuntimeSettings, TurnSnapshot, TurnUpdate, TurnView};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::app_infra::AppInfraState;
+use crate::ask_ai::answer_view::AnswerView;
 use crate::conversation::commands::CONVERSATION_CHANGED_EVENT;
+
+pub(crate) mod answer_view;
+pub(crate) mod tool_activity;
 
 /// Process registry mapping a conversation id (the whole thread) to the
 /// cooperative cancel flag of its CURRENTLY in-flight turn. Module-level so it
@@ -55,14 +60,45 @@ fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     ASK_AI_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Conversations whose cancel arrived BEFORE their turn registered its in-flight
+/// flag — the "cancel at the very start of a request" race. The frontend reveals
+/// the Stop button the instant a turn is sent, but the backend registers the
+/// cancel flag only after an async access-readiness check (`ask_ai_start` /
+/// `ask_ai_followup`). A cancel landing in that window finds no flag via
+/// `take_inflight`; rather than drop it, `ask_ai_cancel` records the id here and
+/// the imminent `register_inflight` consumes it, bringing the turn up already
+/// cancelled so it short-circuits before any model call.
+static ASK_AI_PENDING_CANCEL: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+fn ask_ai_pending_cancel() -> &'static Mutex<std::collections::HashSet<String>> {
+    ASK_AI_PENDING_CANCEL.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Record a cancel that arrived before the conversation's turn registered. The
+/// next `register_inflight` for this id will consume the entry and start its flag
+/// already set. Used by `ask_ai_cancel` only when `take_inflight` found no flag.
+fn record_cancel_before_register(conversation_id: &str) {
+    if let Ok(mut pending) = ask_ai_pending_cancel().lock() {
+        pending.insert(conversation_id.to_string());
+    }
+}
+
 /// Register a fresh cancel flag for a conversation's new in-flight turn,
 /// returning the flag. Any flag already registered for that conversation (a prior
 /// turn still streaming) is CANCELLED before being replaced, so a racing
 /// start/follow-up cooperatively stops the displaced turn rather than letting two
-/// turns interleave `ask_ai_delta` output under the same conversation id. The
+/// turns interleave `ask_ai_update` output under the same conversation id. The
 /// displaced turn observes its flag between stream items and ends cleanly.
 fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
-    let cancel = Arc::new(AtomicBool::new(false));
+    // Consume a cancel that raced ahead of this registration (see
+    // ASK_AI_PENDING_CANCEL): the turn comes up already cancelled and stops at its
+    // first check, before any model call. Consume exactly once so the pending entry
+    // never poisons a later, legitimate turn for the same conversation.
+    let pre_cancelled = ask_ai_pending_cancel()
+        .lock()
+        .map(|mut pending| pending.remove(conversation_id))
+        .unwrap_or(false);
+    let cancel = Arc::new(AtomicBool::new(pre_cancelled));
     if let Ok(mut map) = ask_ai_inflight().lock() {
         if let Some(previous) = map.insert(conversation_id.to_string(), cancel.clone()) {
             previous.store(true, Ordering::SeqCst);
@@ -96,12 +132,144 @@ fn take_inflight(conversation_id: &str) -> Option<Arc<AtomicBool>> {
         .and_then(|mut map| map.remove(conversation_id))
 }
 
-const ASK_AI_STATUS_EVENT: &str = "ask_ai_status";
-const ASK_AI_DELTA_EVENT: &str = "ask_ai_delta";
-const ASK_AI_REASONING_EVENT: &str = "ask_ai_reasoning";
-const ASK_AI_DONE_EVENT: &str = "ask_ai_done";
-const ASK_AI_ERROR_EVENT: &str = "ask_ai_error";
-const ASK_AI_SOURCE_EVENT: &str = "ask_ai_source";
+// ── In-memory LiveTurn store (issue #110, Slice 4) ───────────────────────────
+//
+// The backend-owned, render-ready view model for the CURRENTLY in-flight turn of
+// each conversation. Mirrors the `ASK_AI_INFLIGHT` registry: module-level static
+// keyed by conversation id, so it survives across separate Tauri command
+// invocations without touching lib.rs state wiring.
+//
+// Each entry carries a monotonic `version` (bumped under the map lock per applied
+// update) and a unique `turn_token`. The token is the LiveTurn analogue of the
+// `cancel` Arc ownership in the inflight registry: a newer turn for the same
+// conversation OVERWRITES the map entry with a fresh token, and the displaced
+// older turn — which still holds its own (now-stale) token — must NOT mutate or
+// evict the newer turn's LiveTurn. Ownership checks key off the token.
+
+/// The render-ready view of one in-flight turn plus its monotonic version and the
+/// owning turn's unique token.
+struct LiveTurn {
+    view: TurnView,
+    version: u64,
+    turn_token: u64,
+}
+
+static ASK_AI_LIVE_TURNS: OnceLock<Mutex<HashMap<String, LiveTurn>>> = OnceLock::new();
+
+fn ask_ai_live_turns() -> &'static Mutex<HashMap<String, LiveTurn>> {
+    ASK_AI_LIVE_TURNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Process-global monotonic counter minting a unique `turn_token` per turn.
+static ASK_AI_TURN_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+/// Mint a fresh, process-unique turn token.
+fn next_turn_token() -> u64 {
+    ASK_AI_TURN_TOKEN.fetch_add(1, Ordering::SeqCst)
+}
+
+/// The canonical reducer: the ONE place that mutates a [`TurnView`] from a
+/// [`TurnUpdate`]. Reused by (a) the live map mutation, (b) the replay-equivalence
+/// test, and (c) Slice 5's DB→view build, so streaming and reload can never
+/// diverge. The `AppendProse` arm MUST match [`AnswerView`]'s prose-coalescing.
+fn apply_update_to_view(view: &mut TurnView, update: &TurnUpdate) {
+    match update {
+        TurnUpdate::Phase { phase } => view.phase = phase.clone(),
+        TurnUpdate::AppendProse { text } => match view.blocks.last_mut() {
+            Some(capture_types::AnswerBlock::Prose { markdown }) => markdown.push_str(text),
+            _ => view.blocks.push(capture_types::AnswerBlock::Prose {
+                markdown: text.clone(),
+            }),
+        },
+        TurnUpdate::OpenBlock { block } => view.blocks.push(block.clone()),
+        TurnUpdate::Reasoning { text } => match view.reasoning.as_mut() {
+            Some(existing) => existing.push_str(text),
+            None => view.reasoning = Some(text.clone()),
+        },
+        TurnUpdate::ToolActivity { entry } => view.tool_activities.push(entry.clone()),
+        TurnUpdate::LiveActivity { entry } => view.live_activity = entry.clone(),
+        TurnUpdate::Sources { sources } => view.sources = sources.clone(),
+        TurnUpdate::Error { message } => {
+            view.error_message = Some(message.clone());
+            view.phase = "error".to_string();
+        }
+        TurnUpdate::Done => {
+            view.phase = "done".to_string();
+            view.live_activity = None;
+        }
+    }
+}
+
+/// Register a fresh [`LiveTurn`] for a conversation (overwriting any prior entry —
+/// a newer turn displacing an older one). Version starts at 0; the first applied
+/// update becomes version 1.
+fn register_live_turn(conversation_id: &str, turn_token: u64, view: TurnView) {
+    if let Ok(mut map) = ask_ai_live_turns().lock() {
+        map.insert(
+            conversation_id.to_string(),
+            LiveTurn {
+                view,
+                version: 0,
+                turn_token,
+            },
+        );
+    }
+}
+
+/// Pure state core: apply `update` to the conversation's LiveTurn IF this turn
+/// (identified by `turn_token`) still owns the conversation. Returns
+/// `Some((version, turn_index, update))` on success (so the caller can emit), or
+/// `None` when this turn was displaced (a newer turn overwrote the entry) — the
+/// caller MUST NOT emit on `None`. Versions are assigned strictly monotonically
+/// under the map lock.
+fn apply_live_update(
+    conversation_id: &str,
+    turn_token: u64,
+    update: TurnUpdate,
+) -> Option<(u64, i64, TurnUpdate)> {
+    let mut map = ask_ai_live_turns().lock().ok()?;
+    let live = map.get_mut(conversation_id)?;
+    if live.turn_token != turn_token {
+        // Displaced: a newer turn owns this conversation now.
+        return None;
+    }
+    apply_update_to_view(&mut live.view, &update);
+    live.version += 1;
+    Some((live.version, live.view.turn_index, update))
+}
+
+/// Remove the LiveTurn for a conversation only if `turn_token` still owns it.
+/// Mirrors [`remove_inflight_if_owner`]: a displaced turn's teardown must never
+/// evict the newer turn that replaced it.
+fn remove_live_turn_if_owner(conversation_id: &str, turn_token: u64) {
+    if let Ok(mut map) = ask_ai_live_turns().lock() {
+        if map
+            .get(conversation_id)
+            .is_some_and(|live| live.turn_token == turn_token)
+        {
+            map.remove(conversation_id);
+        }
+    }
+}
+
+/// Clone the conversation's current LiveTurn into a versioned [`TurnSnapshot`],
+/// or `None` when no turn is in flight. Backs the `ask_ai_snapshot` command so a
+/// reattaching frontend can self-heal to the exact current view + version.
+fn snapshot_live_turn(conversation_id: &str) -> Option<TurnSnapshot> {
+    let map = ask_ai_live_turns().lock().ok()?;
+    let live = map.get(conversation_id)?;
+    Some(TurnSnapshot {
+        conversation_id: conversation_id.to_string(),
+        version: live.version,
+        view: live.view.clone(),
+    })
+}
+
+/// The unified view-model transport event (issue #110). Carries one versioned
+/// [`TurnUpdate`] keyed by `conversationId` + `turnIndex`. This is the SOLE Ask AI
+/// streaming surface — the legacy `ask_ai_status`/`ask_ai_delta`/`ask_ai_reasoning`
+/// /`ask_ai_done`/`ask_ai_error`/`ask_ai_source` events were removed in Phase 2.
+const ASK_AI_UPDATE_EVENT: &str = "ask_ai_update";
 
 /// Per-kind caps on the nominated Answer Source set emitted to the frontend.
 const ASK_AI_SOURCE_FRAME_CAP: usize = 6;
@@ -501,14 +669,12 @@ where
 }
 
 /// Handle the model's `reference_captures` presentation tool: validate + decode
-/// the nominated opaque ids, attach retained metadata, cap the set, emit a
-/// single `ask_ai_source` event to the frontend, and return `{ accepted, dropped }`
-/// as the tool result. This never touches the broker dispatch path. The emitted
-/// sources JSON is also handed back to the caller so the turn driver can persist
-/// it on the turn row.
+/// the nominated opaque ids, attach retained metadata, cap the set, and return
+/// `{ accepted, dropped }` as the tool result. This never touches the broker
+/// dispatch path. The resolved sources JSON is handed back to the caller so the
+/// turn driver can emit the `Sources` view update and persist it on the turn row.
 async fn handle_reference_captures(
     app_handle: &tauri::AppHandle,
-    conversation_id: &str,
     search_metadata: &Arc<Mutex<HashMap<String, BrokerSearchResult>>>,
     params: serde_json::Value,
 ) -> Result<(serde_json::Value, Vec<serde_json::Value>), String> {
@@ -612,14 +778,6 @@ async fn handle_reference_captures(
             sources[index]["sourceKind"] = serde_json::json!(source_kind);
         }
     }
-
-    let _ = app_handle.emit(
-        ASK_AI_SOURCE_EVENT,
-        serde_json::json!({
-            "conversationId": conversation_id,
-            "sources": sources,
-        }),
-    );
 
     Ok((
         serde_json::json!({ "accepted": accepted, "dropped": dropped }),
@@ -1031,16 +1189,28 @@ pub async fn ask_ai_availability(
     }
 }
 
-/// Emit a `ask_ai_status` event with the given JSON body merged with the
-/// conversation id.
-fn emit_status(app_handle: &tauri::AppHandle, conversation_id: &str, mut body: serde_json::Value) {
-    if let Some(map) = body.as_object_mut() {
-        map.insert(
-            "conversationId".to_string(),
-            serde_json::Value::String(conversation_id.to_string()),
-        );
-    }
-    let _ = app_handle.emit(ASK_AI_STATUS_EVENT, body);
+/// Apply `update` to the conversation's LiveTurn and, when this turn still owns
+/// it, emit the versioned [`ASK_AI_UPDATE_EVENT`]. Returns the version emitted (so
+/// the driver can track `last_version` for the displaced-terminal path), or `None`
+/// when this turn was displaced — in which case NOTHING is emitted (the newer turn
+/// owns the conversation's update stream).
+fn emit_live_update(
+    app_handle: &tauri::AppHandle,
+    conversation_id: &str,
+    turn_token: u64,
+    update: TurnUpdate,
+) -> Option<u64> {
+    let (version, turn_index, update) = apply_live_update(conversation_id, turn_token, update)?;
+    let _ = app_handle.emit(
+        ASK_AI_UPDATE_EVENT,
+        serde_json::json!({
+            "conversationId": conversation_id,
+            "version": version,
+            "turnIndex": turn_index,
+            "update": update,
+        }),
+    );
+    Some(version)
 }
 
 /// Persist one turn row in whatever phase the driver is in. Best-effort: a store
@@ -1058,6 +1228,7 @@ async fn persist_turn(
     question: &str,
     answer: &str,
     reasoning: Option<&str>,
+    blocks: Option<&[capture_types::AnswerBlock]>,
     tool_activities: &[serde_json::Value],
     sources: &[serde_json::Value],
     phase: &str,
@@ -1076,6 +1247,7 @@ async fn persist_turn(
             question,
             answer,
             reasoning,
+            blocks,
             &tool_activities_json,
             &sources_json,
             phase,
@@ -1225,12 +1397,13 @@ async fn generate_conversation_title(
 /// → Ask AI model override → global default model), seeds best-effort via broker
 /// search, persists a
 /// `streaming` turn row, then runs ONE `ai_engine::run_agent_loop` against the
-/// configured engine. The model's text streams as `ask_ai_delta` events (and is
-/// periodically persisted as a partial for reattach); tool calls run through the
-/// All-Retained broker seam Rust-side and drive the `ask_ai_status` tool phase +
-/// `ask_ai_source` cards. On completion it persists the final turn and emits the
-/// terminal `ask_ai_done`/`ask_ai_error`. A cooperative cancel keeps whatever was
-/// generated (phase `done`) and emits no error.
+/// configured engine. The model's text streams as versioned `ask_ai_update`
+/// view updates (and is periodically persisted as a partial for reattach); tool
+/// calls run through the All-Retained broker seam Rust-side and drive the live
+/// tool-activity line + source cards via the same update stream. On completion it
+/// persists the final turn and emits the terminal `Done`/`Error` update. A
+/// cooperative cancel keeps whatever was generated (phase `done`) and still
+/// settles the view with a terminal `Done`.
 ///
 /// Detached: the spawned task finishes regardless of dismiss/close, so an unseen
 /// thread completes in the background and a reattach reads the persisted answer.
@@ -1244,14 +1417,29 @@ async fn run_ask_ai_turn(
     clock: ClientClock,
     cancel: Arc<AtomicBool>,
 ) {
+    // Mint this turn's unique LiveTurn ownership token. Held for the turn's life so
+    // ownership checks (apply/remove) can tell THIS turn apart from a newer turn
+    // that displaces it for the same conversation. The LiveTurn analogue of the
+    // `cancel` Arc identity in the inflight registry.
+    let turn_token = next_turn_token();
+
     // Resolve storage; without it we cannot persist or read history, so surface a
-    // terminal error and stop.
+    // terminal error and stop. This is BEFORE any LiveTurn is registered, so
+    // `emit_live_update` would be a no-op — emit a DIRECT terminal `ask_ai_update`
+    // error so the frontend (which only listens to `ask_ai_update`) settles the
+    // turn instead of hanging. `turn_index` is unknown here (infra is what loads
+    // it), so use 0.
     let infra = match app_infra(&app_handle) {
         Ok(infra) => infra,
         Err(error) => {
             let _ = app_handle.emit(
-                ASK_AI_ERROR_EVENT,
-                serde_json::json!({ "conversationId": conversation_id, "message": error }),
+                ASK_AI_UPDATE_EVENT,
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "version": 1u64,
+                    "turnIndex": 0i64,
+                    "update": TurnUpdate::Error { message: error },
+                }),
             );
             remove_inflight_if_owner(&conversation_id, &cancel);
             return;
@@ -1312,9 +1500,17 @@ async fn run_ask_ai_turn(
     let config = match config_result {
         Ok(config) => config,
         Err(reason) => {
+            // Still BEFORE the LiveTurn is registered, so emit a DIRECT terminal
+            // `ask_ai_update` error (no live view exists for `emit_live_update` to
+            // mutate). Here `turn_index` is known (history was loaded above).
             let _ = app_handle.emit(
-                ASK_AI_ERROR_EVENT,
-                serde_json::json!({ "conversationId": conversation_id, "message": reason }),
+                ASK_AI_UPDATE_EVENT,
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "version": 1u64,
+                    "turnIndex": turn_index,
+                    "update": TurnUpdate::Error { message: reason },
+                }),
             );
             remove_inflight_if_owner(&conversation_id, &cancel);
             return;
@@ -1326,13 +1522,13 @@ async fn run_ask_ai_turn(
     let seed_query = seed_query
         .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
+    // The live seeding progress is no longer streamed: the seeded result count is
+    // carried by the registered LiveTurn view (and the persisted row) once seeding
+    // finishes, which is what the snapshot/update stream surfaces. The frontend
+    // only listens to `ask_ai_update`, so a transient seeding status would be
+    // unobserved.
     let mut seed_results: Vec<BrokerSearchResult> = Vec::new();
     if let Some(seed_query) = seed_query.as_deref() {
-        emit_status(
-            &app_handle,
-            &conversation_id,
-            serde_json::json!({ "phase": "seeding", "seededResultCount": 0 }),
-        );
         let search_request = BrokerSearchRequest {
             query: seed_query.to_string(),
             from: None,
@@ -1349,25 +1545,26 @@ async fn run_ask_ai_turn(
         {
             seed_results = response.results;
         }
-        emit_status(
-            &app_handle,
-            &conversation_id,
-            serde_json::json!({ "phase": "seeding", "seededResultCount": seed_results.len() }),
-        );
     }
     let seeded_result_count = Some(seed_results.len() as i64);
 
-    // A cancel arriving during seeding short-circuits before any model call.
+    // A cancel arriving during seeding short-circuits before any model call. No
+    // LiveTurn is registered yet (that happens at step 4), so emit a direct
+    // terminal `ask_ai_update` Done — version 1, this turn's index — so any
+    // already-attached frontend view for this turn settles instead of hanging.
     if cancel.load(Ordering::SeqCst) {
+        let _ = app_handle.emit(
+            ASK_AI_UPDATE_EVENT,
+            serde_json::json!({
+                "conversationId": conversation_id,
+                "version": 1u64,
+                "turnIndex": turn_index,
+                "update": TurnUpdate::Done,
+            }),
+        );
         remove_inflight_if_owner(&conversation_id, &cancel);
         return;
     }
-
-    emit_status(
-        &app_handle,
-        &conversation_id,
-        serde_json::json!({ "phase": "thinking" }),
-    );
 
     // 4. Persist the turn row immediately (empty `streaming` answer) so a reattach
     //    can read the in-flight partial. Seeded count is carried from the start.
@@ -1385,6 +1582,8 @@ async fn run_ask_ai_turn(
         &question,
         "",
         None,
+        // A brand-new turn is never "legacy NULL" — an EMPTY parsed set.
+        Some(&[]),
         &[],
         &[],
         "streaming",
@@ -1396,6 +1595,28 @@ async fn run_ask_ai_turn(
         conversation_announced.store(true, Ordering::SeqCst);
         let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
     }
+
+    // Register the in-memory LiveTurn alongside the initial streaming row, at the
+    // point both `turn_index` and the seeded count are known. This view is what
+    // `ask_ai_snapshot` returns to a (re)attaching frontend, and what the live
+    // update stream mutates. The registered view already carries phase "thinking",
+    // so an initial Phase emit is unnecessary — the snapshot covers a fresh attach.
+    register_live_turn(
+        &conversation_id,
+        turn_token,
+        TurnView {
+            turn_index,
+            question: question.clone(),
+            phase: "thinking".to_string(),
+            blocks: vec![],
+            reasoning: None,
+            tool_activities: vec![],
+            live_activity: None,
+            sources: serde_json::json!([]),
+            error_message: None,
+            seeded_result_count,
+        },
+    );
 
     // 5. Search results (and seed results) are recorded by opaque id so a later
     //    `reference_captures` call can attach metadata and prove the model only
@@ -1434,20 +1655,24 @@ async fn run_ask_ai_turn(
             let tool_activities = Arc::clone(&tool_activities);
             let sources = Arc::clone(&sources);
             Box::pin(async move {
-                // Presentation signal: validate/decode + emit `ask_ai_source`,
-                // never dispatched to the broker. Its emitted source set is also
-                // stashed for persistence.
+                // Presentation signal: validate/decode the nominated sources,
+                // never dispatched to the broker. Its resolved source set is
+                // stashed for persistence and emitted as a `Sources` view update.
                 if tool == "reference_captures" {
-                    let (ack, nominated) = handle_reference_captures(
+                    let (ack, nominated) =
+                        handle_reference_captures(&app_handle, &search_metadata, params).await?;
+                    if let Ok(mut buffer) = sources.lock() {
+                        *buffer = nominated.clone();
+                    }
+                    // Emit the resolved source set as a `Sources` view update.
+                    emit_live_update(
                         &app_handle,
                         &conversation_id,
-                        &search_metadata,
-                        params,
-                    )
-                    .await?;
-                    if let Ok(mut buffer) = sources.lock() {
-                        *buffer = nominated;
-                    }
+                        turn_token,
+                        TurnUpdate::Sources {
+                            sources: serde_json::Value::Array(nominated),
+                        },
+                    );
                     return serde_json::to_string(&ack)
                         .map_err(|error| format!("failed to serialize reference ack: {error}"));
                 }
@@ -1489,6 +1714,11 @@ async fn run_ask_ai_turn(
 
     // 7. Run the agent loop, streaming deltas and persisting throttled partials.
     let answer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    // Streaming answer parser (Slice 2) shared between the `on_event` Delta arm
+    // (which pushes deltas → `AppendProse`/`OpenBlock` ops) and the post-loop
+    // finalize (which flushes any unterminated fence to prose). The same parser
+    // instance must back both so its committed/mode state is continuous.
+    let answer_view: Arc<Mutex<AnswerView>> = Arc::new(Mutex::new(AnswerView::new()));
     // Reasoning accumulator mirrors `answer`: reasoning chunks stream live as
     // `ask_ai_reasoning` events and accumulate here so every persist (partial /
     // done / error) writes the snapshot through `save_turn`'s `reasoning` arg.
@@ -1501,6 +1731,7 @@ async fn run_ask_ai_turn(
         let infra = Arc::clone(&infra);
         let conversation_announced = Arc::clone(&conversation_announced);
         let answer = Arc::clone(&answer);
+        let answer_view = Arc::clone(&answer_view);
         let reasoning = Arc::clone(&reasoning);
         let tool_activities = Arc::clone(&tool_activities);
         let sources = Arc::clone(&sources);
@@ -1509,10 +1740,50 @@ async fn run_ask_ai_turn(
         let question = question.clone();
         move |event: ai_engine::AgentLoopEvent| match event {
             ai_engine::AgentLoopEvent::Delta(text) => {
-                let _ = app_handle.emit(
-                    ASK_AI_DELTA_EVENT,
-                    serde_json::json!({ "conversationId": conversation_id, "text": text }),
-                );
+                // On the FIRST delta advance the phase to "streaming" and clear any
+                // live tool-activity line. Reading the
+                // current live_activity first avoids a no-op version bump when
+                // there is nothing to clear.
+                {
+                    let (was_thinking, had_live) = ask_ai_live_turns()
+                        .lock()
+                        .ok()
+                        .and_then(|map| {
+                            map.get(&conversation_id).map(|live| {
+                                (live.view.phase == "thinking", live.view.live_activity.is_some())
+                            })
+                        })
+                        .unwrap_or((false, false));
+                    if was_thinking {
+                        emit_live_update(
+                            &app_handle,
+                            &conversation_id,
+                            turn_token,
+                            TurnUpdate::Phase {
+                                phase: "streaming".to_string(),
+                            },
+                        );
+                        if had_live {
+                            emit_live_update(
+                                &app_handle,
+                                &conversation_id,
+                                turn_token,
+                                TurnUpdate::LiveActivity { entry: None },
+                            );
+                        }
+                    }
+                }
+                // Parse the delta into render-ready ops and emit each as a view
+                // update (AppendProse / OpenBlock). The lock is released before the
+                // emit loop so `emit_live_update`'s own map lock never nests under
+                // the parser lock.
+                let ops = {
+                    let mut parser = answer_view.lock().unwrap_or_else(|e| e.into_inner());
+                    parser.push_delta(&text)
+                };
+                for op in ops {
+                    emit_live_update(&app_handle, &conversation_id, turn_token, op);
+                }
                 let answer_so_far = {
                     let mut guard = answer.lock().unwrap_or_else(|e| e.into_inner());
                     guard.push_str(&text);
@@ -1552,6 +1823,13 @@ async fn run_ask_ai_turn(
                         .lock()
                         .map(|guard| guard.clone())
                         .unwrap_or_default();
+                    // Snapshot the parser's render-ready blocks so the persisted
+                    // row matches the live view; `Some(..)` keeps the turn
+                    // non-legacy even before any block has been committed.
+                    let blocks_snapshot = answer_view
+                        .lock()
+                        .map(|v| v.blocks().to_vec())
+                        .unwrap_or_default();
                     tauri::async_runtime::spawn(async move {
                         let persisted = persist_turn(
                             &infra,
@@ -1566,6 +1844,7 @@ async fn run_ask_ai_turn(
                             } else {
                                 Some(reasoning_snapshot.as_str())
                             },
+                            Some(&blocks_snapshot),
                             &tool_activities_snapshot,
                             &sources_snapshot,
                             "streaming",
@@ -1583,13 +1862,16 @@ async fn run_ask_ai_turn(
                 }
             }
             ai_engine::AgentLoopEvent::Reasoning(text) => {
-                let _ = app_handle.emit(
-                    ASK_AI_REASONING_EVENT,
-                    serde_json::json!({ "conversationId": conversation_id, "text": text }),
-                );
                 if let Ok(mut guard) = reasoning.lock() {
                     guard.push_str(&text);
                 }
+                // Append reasoning to the view model.
+                emit_live_update(
+                    &app_handle,
+                    &conversation_id,
+                    turn_token,
+                    TurnUpdate::Reasoning { text },
+                );
             }
             ai_engine::AgentLoopEvent::ToolCall { name, params } => {
                 // `reference_captures` is a presentation signal, not a data
@@ -1597,11 +1879,50 @@ async fn run_ask_ai_turn(
                 if name == "reference_captures" {
                     return;
                 }
-                emit_status(
+                // Build the render-ready entry SYNCHRONOUSLY (this
+                // callback is sync) without the icon, record it in the rail, and
+                // set it as the live activity line. Icon resolution is async, so it
+                // is spawned and re-emits an enriched live line if/when it resolves.
+                let entry = tool_activity::format_tool_activity(&name, &params);
+                emit_live_update(
                     &app_handle,
                     &conversation_id,
-                    serde_json::json!({ "phase": "tool", "tool": name, "params": params }),
+                    turn_token,
+                    TurnUpdate::ToolActivity {
+                        entry: entry.clone(),
+                    },
                 );
+                emit_live_update(
+                    &app_handle,
+                    &conversation_id,
+                    turn_token,
+                    TurnUpdate::LiveActivity {
+                        entry: Some(entry.clone()),
+                    },
+                );
+                if let Some(app) = entry.app.clone() {
+                    let app_handle = app_handle.clone();
+                    let conversation_id = conversation_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(icon_path) =
+                            tool_activity::resolve_app_icon_path(&app_handle, &app).await
+                        {
+                            let mut enriched = entry;
+                            enriched.app_icon_path = Some(icon_path);
+                            // Goes through `apply_live_update` under the lock, so the
+                            // version stays monotonic even though this is a later
+                            // spawned task.
+                            emit_live_update(
+                                &app_handle,
+                                &conversation_id,
+                                turn_token,
+                                TurnUpdate::LiveActivity {
+                                    entry: Some(enriched),
+                                },
+                            );
+                        }
+                    });
+                }
             }
             // `Done` is handled after the loop returns; the loop emits it last.
             ai_engine::AgentLoopEvent::Done => {}
@@ -1635,12 +1956,63 @@ async fn run_ask_ai_turn(
         .map(|g| g.clone())
         .unwrap_or_default();
     let final_sources = sources.lock().map(|g| g.clone()).unwrap_or_default();
-    let was_cancelled = cancel.load(Ordering::SeqCst);
+
+    // Flush the streaming parser so any unterminated `mnema-*`
+    // fence degrades to prose, completing the view's blocks. Done for BOTH arms so
+    // the terminal view matches the persisted answer. Emitting each flush op bumps
+    // the version, which `apply_live_update` returns; track the highest so the
+    // displaced-terminal path can continue THIS turn's own version sequence
+    // without a gap.
+    let mut last_version: u64 = 0;
+    {
+        let finalize_ops = {
+            let mut parser = answer_view.lock().unwrap_or_else(|e| e.into_inner());
+            parser.finalize()
+        };
+        for op in finalize_ops {
+            if let Some(version) = emit_live_update(&app_handle, &conversation_id, turn_token, op) {
+                last_version = version;
+            }
+        }
+    }
+
+    // The parser is now finalized (any unterminated fence flushed to prose), so
+    // its blocks are the render-ready terminal set persisted on BOTH arms. A
+    // non-empty `Some(..)` keeps the terminal row non-legacy (never re-parsed).
+    let final_blocks = answer_view
+        .lock()
+        .map(|v| v.blocks().to_vec())
+        .unwrap_or_default();
+
+    // Emit the terminal view update on EVERY exit path. If the live apply succeeds
+    // (this turn still owns the conversation), it emits through the normal path and
+    // we advance `last_version`. If it returns `None` we were DISPLACED by a newer
+    // turn; emit the terminal DIRECTLY anyway — continuing THIS turn's own version
+    // sequence (`last_version + 1`) so the frontend view for this `turn_index`
+    // settles ("Writing…" resolves) with no version gap.
+    let emit_terminal = |update: TurnUpdate, last_version: &mut u64| {
+        match emit_live_update(&app_handle, &conversation_id, turn_token, update.clone()) {
+            Some(version) => *last_version = version,
+            None => {
+                let version = *last_version + 1;
+                let _ = app_handle.emit(
+                    ASK_AI_UPDATE_EVENT,
+                    serde_json::json!({
+                        "conversationId": conversation_id,
+                        "version": version,
+                        "turnIndex": turn_index,
+                        "update": update,
+                    }),
+                );
+                *last_version = version;
+            }
+        }
+    };
 
     match run_result {
         Ok(()) => {
             // A cooperative cancel keeps whatever was generated and emits no
-            // error; a clean finish persists `done` and emits the terminal event.
+            // error; a clean finish persists `done` and emits the terminal update.
             persist_turn(
                 &infra,
                 &conversation_id,
@@ -1650,6 +2022,7 @@ async fn run_ask_ai_turn(
                 &question,
                 &final_answer,
                 final_reasoning.as_deref(),
+                Some(&final_blocks),
                 &final_tool_activities,
                 &final_sources,
                 "done",
@@ -1660,12 +2033,9 @@ async fn run_ask_ai_turn(
             // Terminal persist updated the row (answer/updated-at), so the
             // history list re-sorts/refreshes its entry.
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
-            if !was_cancelled {
-                let _ = app_handle.emit(
-                    ASK_AI_DONE_EVENT,
-                    serde_json::json!({ "conversationId": conversation_id }),
-                );
-            }
+            // ALWAYS emit the terminal `Done` view update, even on a user cancel,
+            // so the view settles ("Writing…" resolves).
+            emit_terminal(TurnUpdate::Done, &mut last_version);
             // Fire-and-forget generated thread title: only after the FIRST turn
             // completes and persists. Spawned detached so it can never delay or
             // fail the turn; every failure inside is swallowed (the fallback
@@ -1695,6 +2065,7 @@ async fn run_ask_ai_turn(
                 &question,
                 &final_answer,
                 final_reasoning.as_deref(),
+                Some(&final_blocks),
                 &final_tool_activities,
                 &final_sources,
                 "error",
@@ -1703,9 +2074,12 @@ async fn run_ask_ai_turn(
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
-            let _ = app_handle.emit(
-                ASK_AI_ERROR_EVENT,
-                serde_json::json!({ "conversationId": conversation_id, "message": message }),
+            // Terminal `Error` view update.
+            emit_terminal(
+                TurnUpdate::Error {
+                    message: message.clone(),
+                },
+                &mut last_version,
             );
         }
     }
@@ -1713,6 +2087,9 @@ async fn run_ask_ai_turn(
     // Remove only our own in-flight flag: a newer turn that displaced us holds a
     // different `Arc` and must survive our teardown.
     remove_inflight_if_owner(&conversation_id, &cancel);
+    // Likewise remove our LiveTurn ONLY if we still own it — a displacing newer
+    // turn registered a different token and its entry must survive our teardown.
+    remove_live_turn_if_owner(&conversation_id, turn_token);
 }
 
 #[tauri::command]
@@ -1720,8 +2097,6 @@ pub async fn ask_ai_start(
     app_handle: tauri::AppHandle,
     request: AskAiStartRequest,
 ) -> Result<(), String> {
-    ensure_ask_ai_access_ready(&app_handle).await?;
-
     let AskAiStartRequest {
         conversation_id,
         question,
@@ -1733,6 +2108,18 @@ pub async fn ask_ai_start(
         time_zone,
     } = request;
 
+    // Register the in-flight cancel flag FIRST — before the async readiness check —
+    // so a Stop that races the request start is captured (consumed from the
+    // pending-cancel set) rather than dropped, and so a pending entry can never
+    // leak past a failed readiness check. If readiness fails no turn is spawned, so
+    // clean the flag back up. Registering also cancels any prior running turn for
+    // this conversation, which is the intended displacement on a new start.
+    let cancel = register_inflight(&conversation_id);
+    if let Err(err) = ensure_ask_ai_access_ready(&app_handle).await {
+        remove_inflight_if_owner(&conversation_id, &cancel);
+        return Err(err);
+    }
+
     let origin = origin
         .map(|origin| origin.trim().to_string())
         .filter(|origin| !origin.is_empty())
@@ -1743,10 +2130,8 @@ pub async fn ask_ai_start(
         time_zone,
     };
 
-    // Register the in-flight cancel flag (cancelling any prior running turn for
-    // this conversation), then spawn the detached driver. The command returns
-    // promptly so the turn completes in the background regardless of dismiss.
-    let cancel = register_inflight(&conversation_id);
+    // Spawn the detached driver. The command returns promptly so the turn completes
+    // in the background regardless of dismiss.
     tauri::async_runtime::spawn(run_ask_ai_turn(
         app_handle,
         conversation_id,
@@ -1773,8 +2158,6 @@ pub async fn ask_ai_followup(
     app_handle: tauri::AppHandle,
     request: AskAiFollowupRequest,
 ) -> Result<(), String> {
-    ensure_ask_ai_access_ready(&app_handle).await?;
-
     let AskAiFollowupRequest {
         conversation_id,
         question,
@@ -1790,10 +2173,17 @@ pub async fn ask_ai_followup(
         time_zone,
     };
 
-    // A follow-up reuses the conversation's existing origin/title (the store
-    // preserves an existing row's origin and first non-empty title regardless of
-    // what is passed), so default values are fine here.
+    // Register the in-flight cancel flag before the async readiness check so a Stop
+    // racing the request start is honored, not dropped (see `ask_ai_start`). Clean
+    // up if readiness fails, since no turn is spawned. A follow-up reuses the
+    // conversation's existing origin/title (the store preserves an existing row's
+    // origin and first non-empty title regardless of what is passed), so default
+    // values are fine here.
     let cancel = register_inflight(&conversation_id);
+    if let Err(err) = ensure_ask_ai_access_ready(&app_handle).await {
+        remove_inflight_if_owner(&conversation_id, &cancel);
+        return Err(err);
+    }
     tauri::async_runtime::spawn(run_ask_ai_turn(
         app_handle,
         conversation_id,
@@ -1816,10 +2206,34 @@ pub async fn ask_ai_cancel(
     // Cooperative cancel: set + remove the conversation's in-flight flag. The
     // running loop checks it between stream items and stops cleanly, keeping
     // whatever was generated so far.
-    if let Some(cancel) = take_inflight(&request.conversation_id) {
-        cancel.store(true, Ordering::SeqCst);
+    //
+    // If no flag is registered yet, the cancel raced ahead of the turn's
+    // registration (the Stop button is live before `register_inflight` runs, which
+    // sits behind an async access-readiness check). Record it as pending so the
+    // imminent registration brings the turn up already cancelled instead of
+    // dropping the cancel and letting the turn run to completion.
+    match take_inflight(&request.conversation_id) {
+        Some(cancel) => cancel.store(true, Ordering::SeqCst),
+        None => record_cancel_before_register(&request.conversation_id),
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAiSnapshotRequest {
+    conversation_id: String,
+}
+
+/// Return the current versioned [`TurnSnapshot`] for a conversation's in-flight
+/// turn, or `None` when no turn is live. A reattaching frontend calls this to
+/// self-heal to the exact current view + version, then ignores any live
+/// `ask_ai_update` it had already applied at or below that version.
+#[tauri::command]
+pub async fn ask_ai_snapshot(
+    request: AskAiSnapshotRequest,
+) -> Result<Option<TurnSnapshot>, String> {
+    Ok(snapshot_live_turn(&request.conversation_id))
 }
 
 #[cfg(test)]
@@ -2430,6 +2844,54 @@ mod tests {
     }
 
     #[test]
+    fn cancel_before_register_is_honored_by_next_register() {
+        // The "cancel at the very start of a request" race: the frontend shows the
+        // Stop button the instant a turn is sent, but the backend registers the
+        // turn's cancel flag only after an async access-readiness check. A cancel
+        // landing in that window finds no flag — it must NOT be dropped. Instead it
+        // is recorded as pending, and the imminent registration must start its flag
+        // already cancelled so the turn short-circuits before any model call.
+        let id = "inflight-cancel-before-register-conv";
+        // No flag registered yet — this is what `ask_ai_cancel` does in the race.
+        record_cancel_before_register(id);
+        // The turn finally registers; it must come up already cancelled.
+        let cancel = register_inflight(id);
+        assert!(
+            cancel.load(Ordering::SeqCst),
+            "a cancel that arrived before registration must carry over to the turn's flag"
+        );
+        // The pending cancel is consumed exactly once: a *subsequent* fresh turn for
+        // the same conversation must start uncancelled.
+        let _ = take_inflight(id);
+        let next = register_inflight(id);
+        assert!(
+            !next.load(Ordering::SeqCst),
+            "a pending cancel must apply to one registration only, not future turns"
+        );
+        let _ = take_inflight(id);
+    }
+
+    #[test]
+    fn cancel_with_live_turn_takes_flag_and_skips_pending() {
+        // When a flag IS registered, cancel takes + sets it (existing behavior) and
+        // must NOT leave a pending entry that would poison the next turn.
+        let id = "inflight-cancel-live-conv";
+        let cancel = register_inflight(id);
+        // Mirror `ask_ai_cancel`'s body: take wins, so no pending recorded.
+        let taken = take_inflight(id);
+        if let Some(flag) = taken {
+            flag.store(true, Ordering::SeqCst);
+        } else {
+            record_cancel_before_register(id);
+        }
+        assert!(cancel.load(Ordering::SeqCst));
+        // Next turn must be clean — no leaked pending cancel.
+        let next = register_inflight(id);
+        assert!(!next.load(Ordering::SeqCst));
+        let _ = take_inflight(id);
+    }
+
+    #[test]
     fn remove_if_owner_spares_a_displacing_turn() {
         let id = "inflight-owner-conv";
         let first = register_inflight(id);
@@ -2438,5 +2900,263 @@ mod tests {
         remove_inflight_if_owner(id, &first);
         let still = take_inflight(id).expect("newer flag should still be registered");
         assert!(Arc::ptr_eq(&still, &second));
+    }
+
+    // ── LiveTurn store / versioned transport (Slice 4) ───────────────────────
+    // The static LiveTurn map persists across tests, so each test uses a UNIQUE
+    // conversation id and cleans up after itself with `remove_live_turn_if_owner`.
+
+    use capture_types::{AnswerBlock, BarsItem, ToolActivityEntry};
+
+    /// A fresh thinking-phase view for a turn, matching the shape `run_ask_ai_turn`
+    /// registers at step 4.
+    fn fresh_view(turn_index: i64) -> TurnView {
+        TurnView {
+            turn_index,
+            question: "q".to_string(),
+            phase: "thinking".to_string(),
+            blocks: vec![],
+            reasoning: None,
+            tool_activities: vec![],
+            live_activity: None,
+            sources: serde_json::json!([]),
+            error_message: None,
+            seeded_result_count: None,
+        }
+    }
+
+    #[test]
+    fn live_update_versions_are_monotonic() {
+        let conv = "live-monotonic-conv";
+        let token = next_turn_token();
+        register_live_turn(conv, token, fresh_view(0));
+
+        let v1 = apply_live_update(
+            conv,
+            token,
+            TurnUpdate::Phase {
+                phase: "streaming".to_string(),
+            },
+        )
+        .expect("owned apply succeeds");
+        let v2 = apply_live_update(
+            conv,
+            token,
+            TurnUpdate::AppendProse {
+                text: "hi".to_string(),
+            },
+        )
+        .expect("owned apply succeeds");
+        let v3 = apply_live_update(
+            conv,
+            token,
+            TurnUpdate::AppendProse {
+                text: " there".to_string(),
+            },
+        )
+        .expect("owned apply succeeds");
+
+        assert_eq!(v1.0, 1);
+        assert_eq!(v2.0, 2);
+        assert_eq!(v3.0, 3);
+
+        let snapshot = snapshot_live_turn(conv).expect("snapshot present");
+        assert_eq!(snapshot.version, 3);
+        assert_eq!(snapshot.conversation_id, conv);
+
+        remove_live_turn_if_owner(conv, token);
+        assert!(snapshot_live_turn(conv).is_none(), "cleaned up");
+    }
+
+    #[test]
+    fn displaced_turn_cannot_apply_or_evict() {
+        let conv = "live-displace-conv";
+        let token_a = next_turn_token();
+        register_live_turn(conv, token_a, fresh_view(0));
+
+        // A newer turn for the SAME conversation overwrites the entry.
+        let token_b = next_turn_token();
+        register_live_turn(conv, token_b, fresh_view(1));
+
+        // The displaced turn A can no longer apply (returns None, emits nothing).
+        assert!(
+            apply_live_update(
+                conv,
+                token_a,
+                TurnUpdate::AppendProse {
+                    text: "stale".to_string()
+                },
+            )
+            .is_none(),
+            "displaced turn must not apply"
+        );
+
+        // The owning turn B still applies.
+        let applied = apply_live_update(
+            conv,
+            token_b,
+            TurnUpdate::AppendProse {
+                text: "fresh".to_string(),
+            },
+        );
+        assert!(applied.is_some(), "owning turn applies");
+        assert_eq!(applied.unwrap().0, 1, "B's first applied update is version 1");
+
+        // The displaced turn A removing must NOT evict B's entry.
+        remove_live_turn_if_owner(conv, token_a);
+        let snapshot = snapshot_live_turn(conv).expect("B's entry survives A's teardown");
+        assert_eq!(snapshot.view.turn_index, 1, "the surviving entry is B's");
+
+        // B tears down its own entry cleanly.
+        remove_live_turn_if_owner(conv, token_b);
+        assert!(snapshot_live_turn(conv).is_none(), "cleaned up");
+    }
+
+    #[test]
+    fn snapshot_reflects_applied_ops() {
+        let conv = "live-snapshot-ops-conv";
+        let token = next_turn_token();
+        register_live_turn(conv, token, fresh_view(0));
+
+        apply_live_update(
+            conv,
+            token,
+            TurnUpdate::AppendProse {
+                text: "Top apps:".to_string(),
+            },
+        );
+        let bars = AnswerBlock::Bars {
+            title: Some("Top apps".to_string()),
+            items: vec![BarsItem {
+                label: "Editor".to_string(),
+                value: 42.0,
+                sublabel: None,
+            }],
+        };
+        apply_live_update(
+            conv,
+            token,
+            TurnUpdate::OpenBlock {
+                block: bars.clone(),
+            },
+        );
+        apply_live_update(
+            conv,
+            token,
+            TurnUpdate::Reasoning {
+                text: "thinking…".to_string(),
+            },
+        );
+
+        let snapshot = snapshot_live_turn(conv).expect("snapshot present");
+        assert_eq!(snapshot.view.blocks.len(), 2);
+        assert!(matches!(snapshot.view.blocks[0], AnswerBlock::Prose { .. }));
+        assert_eq!(snapshot.view.blocks[1], bars);
+        assert_eq!(snapshot.view.reasoning.as_deref(), Some("thinking…"));
+
+        remove_live_turn_if_owner(conv, token);
+    }
+
+    #[test]
+    fn snapshot_equals_op_replay_onto_fresh_view() {
+        let conv = "live-replay-equiv-conv";
+        let token = next_turn_token();
+        register_live_turn(conv, token, fresh_view(0));
+
+        // A representative op sequence covering every reducer arm relevant to a
+        // streaming turn.
+        let updates = vec![
+            TurnUpdate::Phase {
+                phase: "streaming".to_string(),
+            },
+            TurnUpdate::AppendProse {
+                text: "Hello ".to_string(),
+            },
+            TurnUpdate::AppendProse {
+                text: "world.".to_string(),
+            },
+            TurnUpdate::OpenBlock {
+                block: AnswerBlock::Bars {
+                    title: None,
+                    items: vec![BarsItem {
+                        label: "x".to_string(),
+                        value: 1.0,
+                        sublabel: None,
+                    }],
+                },
+            },
+            TurnUpdate::AppendProse {
+                text: "After.".to_string(),
+            },
+            TurnUpdate::Reasoning {
+                text: "hmm".to_string(),
+            },
+            TurnUpdate::ToolActivity {
+                entry: ToolActivityEntry {
+                    kind: "search".to_string(),
+                    label: "Searching".to_string(),
+                    app: None,
+                    app_icon_path: None,
+                },
+            },
+            TurnUpdate::LiveActivity {
+                entry: Some(ToolActivityEntry {
+                    kind: "search".to_string(),
+                    label: "Searching".to_string(),
+                    app: None,
+                    app_icon_path: None,
+                }),
+            },
+            TurnUpdate::Sources {
+                sources: serde_json::json!([{ "kind": "frame" }]),
+            },
+            TurnUpdate::Done,
+        ];
+
+        // Collect the `update`s returned by applying each through the live map.
+        let mut returned_ops: Vec<TurnUpdate> = Vec::new();
+        for update in updates {
+            let (_, _, applied) = apply_live_update(conv, token, update).expect("owned apply");
+            returned_ops.push(applied);
+        }
+
+        // Fold the returned op stream onto a FRESH view (same initial shape) via
+        // the pure reducer.
+        let mut folded = fresh_view(0);
+        for op in &returned_ops {
+            apply_update_to_view(&mut folded, op);
+        }
+
+        let snapshot = snapshot_live_turn(conv).expect("snapshot present");
+        // Applying the op stream from version 0 == the snapshot at that version.
+        assert_eq!(folded, snapshot.view);
+
+        remove_live_turn_if_owner(conv, token);
+    }
+
+    #[test]
+    fn append_prose_reducer_matches_parser_coalescing() {
+        // Feed the SAME text through `AnswerView::push_delta` (the parser) and
+        // through `apply_update_to_view` (the reducer): both must coalesce prose
+        // the same way — appending to a trailing prose block vs. starting a new one
+        // after a typed block.
+        let text = "Before.\n\n```mnema-bars\n{\"bars\":[{\"label\":\"x\",\"value\":1}]}\n```\n\nAfter.";
+
+        let mut parser = AnswerView::new();
+        let mut ops = parser.push_delta(text);
+        ops.extend(parser.finalize());
+
+        let mut view = fresh_view(0);
+        for op in &ops {
+            apply_update_to_view(&mut view, op);
+        }
+
+        // The reducer-folded blocks match the parser's own blocks.
+        assert_eq!(view.blocks, parser.blocks());
+        // Prose · Bars · Prose.
+        assert_eq!(view.blocks.len(), 3);
+        assert!(matches!(view.blocks[0], AnswerBlock::Prose { .. }));
+        assert!(matches!(view.blocks[1], AnswerBlock::Bars { .. }));
+        assert!(matches!(view.blocks[2], AnswerBlock::Prose { .. }));
     }
 }

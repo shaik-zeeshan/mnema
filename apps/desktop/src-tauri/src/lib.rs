@@ -436,6 +436,7 @@ pub fn run() {
             ask_ai::ask_ai_start,
             ask_ai::ask_ai_followup,
             ask_ai::ask_ai_cancel,
+            ask_ai::ask_ai_snapshot,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,

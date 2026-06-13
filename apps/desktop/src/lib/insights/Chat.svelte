@@ -42,14 +42,7 @@
   import { openSettingsWindow } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { askAiClock } from "$lib/askAiClock";
-  import {
-    appIconFallback,
-    canonicalBundleIdForComparison,
-    iconPathForBundleId,
-    mergeIconResolutions,
-    unresolvedIconBundleIds,
-    type AppIconResolution,
-  } from "$lib/app-privacy-exclusion";
+  import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
@@ -61,14 +54,13 @@
     type Conversation,
     type ConversationTurn,
     type AskAiAvailability,
-    type AskAiStatusEvent,
-    type AskAiDeltaEvent,
-    type AskAiDoneEvent,
-    type AskAiErrorEvent,
-    type AskAiSourceEvent,
     type AskAiSource,
-    type AskToolKind,
-    type AskToolActivityEntry,
+    type AnswerBlock,
+    type ToolActivityEntry,
+    type TurnView,
+    type TurnSnapshot,
+    type TurnUpdate,
+    type AskAiUpdateEvent,
   } from "$lib/insights/conversation";
   import ModelPicker from "$lib/insights/ModelPicker.svelte";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
@@ -219,25 +211,37 @@
   });
 
   // ── Active conversation (right pane) ─────────────────────────────────────
-  // One assistant turn in the transcript. Mirrors Quick Recall's AskTurn.
+  // One assistant turn in the transcript. This is the backend-owned `TurnView`
+  // render model (issue #110, ADR 0031) plus two UI-only toggles. The frontend
+  // ONLY renders: it applies versioned `TurnUpdate` ops from `ask_ai_update`,
+  // snapshots on attach, and re-snapshots on a version gap. It does NO fence
+  // parsing, NO tool-label formatting, NO icon-cache batching, NO local phase
+  // machine — those all moved server-side.
   interface ChatTurn {
+    turnIndex: number;
     question: string;
-    answer: string;
-    // The model's streamed reasoning ("thinking") text, accumulated across the
-    // `ask_ai_reasoning` events. Empty when the model emits none (most models) —
-    // the Thinking disclosure renders only when this is non-empty.
-    reasoning: string;
-    // Per-turn disclosure toggle for the collapsed "Thought process" chip; the
-    // live reasoning panel ignores this and is always shown while it streams.
-    reasoningExpanded: boolean;
-    toolActivities: AskToolActivityEntry[];
-    // Live working-line entry for the in-flight tool call (cleared on resume).
-    // Carries the label plus the optional app scope for the icon chip.
-    toolActivity: AskToolActivityEntry | null;
-    sources: AskAiSource[];
     phase: "seeding" | "thinking" | "streaming" | "done" | "error";
+    // Render-ready answer blocks (prose markdown stays rendered on the frontend
+    // via AnswerProse; the graphical variants carry already-parsed data).
+    blocks: AnswerBlock[];
+    // The model's reasoning ("thinking") text, or null when none — the Thinking
+    // disclosure renders only when this is non-empty.
+    reasoning: string | null;
+    // Render-ready tool-activity log (label + optional app + resolved icon path,
+    // all computed server-side).
+    toolActivities: ToolActivityEntry[];
+    // Live working-line entry for the in-flight tool call (cleared on done).
+    liveActivity: ToolActivityEntry | null;
+    // Sources stay opaque AskAiSource[]: the card renderer + thumbnail/open logic
+    // depend on its fields. The backend's `Sources` update carries the same JSON.
+    sources: AskAiSource[];
     errorMessage: string | null;
     seededResultCount: number | null;
+    // Last applied `ask_ai_update` version for this turn (0 if none — e.g. a
+    // hydrated past turn that isn't live).
+    version: number;
+    // UI-only disclosure toggles.
+    reasoningExpanded: boolean;
     summaryExpanded: boolean;
   }
 
@@ -249,10 +253,10 @@
   // True between a turn starting and that turn's terminal done/error event.
   let streaming = $state(false);
   // The live activity line just above the composer: what the engine is doing
-  // RIGHT NOW for the in-flight turn. Fed by the `ask_ai_status` phases
-  // (seeding → thinking → tool, with the tool's label + optional app chip) plus
-  // the answer deltas ("Writing…"); cleared on done/error and on thread switch.
-  let liveActivity = $state<AskToolActivityEntry | null>(null);
+  // RIGHT NOW for the in-flight turn. Mirrors the active turn's `liveActivity`
+  // (driven by the backend `LiveActivity` updates); cleared on done/error and on
+  // thread switch.
+  let liveActivity = $state<ToolActivityEntry | null>(null);
 
   // ── Per-thread model pin ─────────────────────────────────────────────────
   // A thread can be pinned to a model from the merged provider-tagged pool
@@ -324,34 +328,27 @@
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let transcriptEl = $state<HTMLDivElement | null>(null);
 
-  function makeTurn(question: string, phase: ChatTurn["phase"]): ChatTurn {
+  function makeTurn(
+    turnIndex: number,
+    question: string,
+    phase: ChatTurn["phase"],
+  ): ChatTurn {
     return {
+      turnIndex,
       question,
-      answer: "",
-      reasoning: "",
-      reasoningExpanded: false,
-      toolActivities: [],
-      toolActivity: null,
-      sources: [],
       phase,
+      blocks: [],
+      reasoning: null,
+      toolActivities: [],
+      liveActivity: null,
+      sources: [],
       errorMessage: null,
       seededResultCount: null,
+      version: 0,
+      reasoningExpanded: false,
       summaryExpanded: false,
     };
   }
-
-  // The segment cache lives OUTSIDE the reactive `turns` $state so the
-  // template-time memoization below never writes to a $state proxy (which Svelte 5
-  // forbids mid-render: `state_unsafe_mutation`). Keyed by the turn object (stable
-  // proxy identity); entries are reclaimed when a turn is dropped. Reading
-  // `turn.answer` inside `answerSegments` still tracks reactivity, so a freshly-
-  // loaded transcript re-renders correctly — only the cache itself is non-reactive.
-  // The Markdown render itself is now memoized inside AnswerProse, so there is no
-  // plain-render cache here anymore.
-  const segmentRenderCache = new WeakMap<
-    ChatTurn,
-    { answer: string; segments: AnswerSegment[] }
-  >();
 
   // Trim/truncate the first question into a conversation title.
   function titleFromQuestion(question: string): string {
@@ -410,7 +407,8 @@
       if (convo === null || activeConversationId !== summary.conversationId) {
         return;
       }
-      hydrateConversation(convo);
+      await hydrateConversation(convo);
+      if (activeConversationId !== summary.conversationId) return;
       await tick();
       scrollTranscriptToBottom();
     } catch {
@@ -451,7 +449,8 @@
         // landed). Arm the id so the next question still threads into it.
         return;
       }
-      hydrateConversation(convo);
+      await hydrateConversation(convo);
+      if (activeConversationId !== id) return;
       await tick();
       scrollTranscriptToBottom();
     } catch {
@@ -462,20 +461,59 @@
   }
 
   // Apply a hydrated Conversation to the active pane: title, engine pin, turns,
-  // and reattach to a still-streaming last turn (so the live delta/done/source
-  // listeners keep appending its partial answer). Callers have already set
-  // `activeConversationId` to this convo's id.
-  function hydrateConversation(convo: Conversation): void {
+  // then adopt any live snapshot so a reattach to an in-flight turn is race-free.
+  // Callers have already set `activeConversationId` to this convo's id.
+  async function hydrateConversation(convo: Conversation): Promise<void> {
+    const conversationId = convo.conversationId;
     activeTitle = convo.title;
     activePinProvider = convo.provider ?? null;
     activePinModel = convo.model ?? null;
     turns = convo.turns.map(hydrateTurn);
     for (const t of turns) void loadSourceThumbnails(t.sources);
-    // Reattach: a persisted "streaming" last turn is still in flight server-side;
-    // keep `streaming` true so the global delta listener appends ongoing tokens.
+    // A persisted "streaming" last turn is still in flight server-side; the
+    // snapshot below replaces it with the authoritative live view + version.
     const last = turns[turns.length - 1];
     streaming = last?.phase === "streaming";
-    liveActivity = streaming ? { kind: "other", label: "Writing…" } : null;
+    liveActivity = null;
+    await adoptLiveSnapshot(conversationId);
+  }
+
+  // Snapshot-on-attach: fetch the conversation's in-flight LiveTurn (if any) and
+  // adopt it onto the matching turn, bootstrapping a reattach to a streaming turn
+  // race-free. `ask_ai_update` events at/below the adopted version are then
+  // ignored, and a version gap re-snapshots. A null snapshot means no live turn
+  // (all from DB) — nothing to do.
+  async function adoptLiveSnapshot(conversationId: string): Promise<void> {
+    let snapshot: TurnSnapshot | null;
+    try {
+      snapshot = await invoke<TurnSnapshot | null>("ask_ai_snapshot", {
+        request: { conversationId },
+      });
+    } catch {
+      return;
+    }
+    if (snapshot === null || activeConversationId !== conversationId) return;
+    const turn = turns.find((t) => t.turnIndex === snapshot.view.turnIndex);
+    if (!turn) return;
+    adoptView(turn, snapshot.view, snapshot.version);
+    const live = turn.phase !== "done" && turn.phase !== "error";
+    streaming = live;
+    liveActivity = live ? turn.liveActivity : null;
+  }
+
+  // Replace a turn's render fields from a backend `TurnView` and stamp its
+  // version. Used by snapshot-on-attach and version-gap re-snapshot.
+  function adoptView(turn: ChatTurn, view: TurnView, version: number): void {
+    turn.phase = normalizePhase(view.phase);
+    turn.blocks = view.blocks;
+    turn.reasoning = view.reasoning;
+    turn.toolActivities = view.toolActivities;
+    turn.liveActivity = view.liveActivity;
+    turn.sources = coerceSources(view.sources);
+    turn.errorMessage = view.errorMessage;
+    turn.seededResultCount = view.seededResultCount;
+    turn.version = version;
+    void loadSourceThumbnails(turn.sources);
   }
 
   // React to a handoff from Insights (the prop + nonce bump). Reads the nonce so
@@ -488,14 +526,23 @@
     void untrack(() => loadConversationById(id));
   });
 
-  // Hydrate a persisted ConversationTurn into a ChatTurn (the opaque JSON
-  // tool-activities / sources are narrowed defensively).
+  // Hydrate a persisted ConversationTurn into a ChatTurn. The backend's
+  // get_conversation populates `turn.blocks` for EVERY turn (new + legacy
+  // parsed-on-read), so blocks are taken DIRECTLY with no frontend parsing.
+  //
+  // Tool activities: the persisted `tool_activities` JSON on the turn row is
+  // still the raw `{tool, params}` shape (Slices 4/5 did not migrate it). The
+  // live render-ready path (label + icon) only exists on streaming/snapshot
+  // views, not on cold history. So we map each raw `{tool}` to a minimal
+  // render-ready `ToolActivityEntry` (kind + generic label) JUST for the
+  // collapsed activity summary on a reloaded thread's past turns — we do NOT
+  // re-introduce the streaming icon/label resolution path. A live turn that
+  // reattaches replaces these via the snapshot's render-ready toolActivities.
   function hydrateTurn(turn: ConversationTurn): ChatTurn {
-    const t = makeTurn(turn.question, normalizePhase(turn.phase));
-    t.answer = turn.answer ?? "";
-    t.reasoning = turn.reasoning ?? "";
+    const t = makeTurn(turn.turnIndex, turn.question, normalizePhase(turn.phase));
+    t.blocks = turn.blocks ?? [];
+    t.reasoning = turn.reasoning;
     t.toolActivities = coerceToolActivities(turn.toolActivities);
-    void resolveToolAppIcons(t.toolActivities.map((a) => a.app));
     t.sources = coerceSources(turn.sources);
     t.errorMessage = turn.errorMessage;
     t.seededResultCount = turn.seededResultCount;
@@ -503,33 +550,41 @@
   }
 
   function normalizePhase(phase: string): ChatTurn["phase"] {
-    return phase === "done" || phase === "error" || phase === "streaming"
+    return phase === "done" ||
+      phase === "error" ||
+      phase === "streaming" ||
+      phase === "thinking" ||
+      phase === "seeding"
       ? phase
       : "done";
   }
 
-  function coerceToolActivities(value: unknown): AskToolActivityEntry[] {
+  // Map the persisted raw `{tool, params}` per-turn log to minimal render-ready
+  // entries (kind + generic label) so a reloaded thread's collapsed activity
+  // summary still counts correctly (activitySummaryFor reads `kind`). Streaming
+  // and snapshot views deliver fully render-ready entries instead.
+  function coerceToolActivities(value: unknown): ToolActivityEntry[] {
     if (!Array.isArray(value)) return [];
     return value
-      .filter((e): e is AskToolActivityEntry => {
-        return (
-          typeof e === "object" &&
-          e !== null &&
-          typeof (e as { label?: unknown }).label === "string"
-        );
+      .map((e): ToolActivityEntry | null => {
+        if (typeof e !== "object" || e === null) return null;
+        const rec = e as { tool?: unknown; kind?: unknown; label?: unknown };
+        // Already render-ready (a snapshot/live entry round-tripped to the DB).
+        if (typeof rec.label === "string" && typeof rec.kind === "string") {
+          return { kind: rec.kind, label: rec.label };
+        }
+        const tool = typeof rec.tool === "string" ? rec.tool : null;
+        if (tool === "search")
+          return { kind: "search", label: "Searched your captures" };
+        if (tool === "timeline")
+          return { kind: "timeline", label: "Scanned timeline" };
+        if (tool === "show_text")
+          return { kind: "show_text", label: "Read a capture" };
+        if (tool === "recall_context")
+          return { kind: "recall_context", label: "Recalled what I know about you" };
+        return { kind: "other", label: tool ? `Ran ${tool}` : "Working" };
       })
-      .map((e) => ({
-        kind: (["search", "timeline", "show_text", "other"].includes(
-          (e as AskToolActivityEntry).kind,
-        )
-          ? (e as AskToolActivityEntry).kind
-          : "other") as AskToolKind,
-        label: (e as AskToolActivityEntry).label,
-        app:
-          typeof (e as AskToolActivityEntry).app === "string"
-            ? ((e as AskToolActivityEntry).app as string)
-            : null,
-      }));
+      .filter((x): x is ToolActivityEntry => x !== null);
   }
 
   function coerceSources(value: unknown): AskAiSource[] {
@@ -657,22 +712,22 @@
     const title = activeTitle || titleFromQuestion(question);
 
     composerInput = "";
-    // Append the turn locally and render live from events. The backend owns
-    // persistence: ask_ai_start upserts the row (from title/origin) and the turn
-    // (streaming → done/error) keyed by a backend-computed turnIndex.
-    // Defensive: settle any prior turn still flagged "streaming" in memory. A
-    // cancelled/displaced turn that never received a terminal event would
-    // otherwise keep showing its inline "Writing…" beneath a finished answer
+    // Append the turn locally and render live from `ask_ai_update` events. The
+    // backend owns persistence AND the render model: ask_ai_start upserts the row
+    // and drives this turn's view via versioned updates (version starts at 0).
+    // Defensive: settle any prior turn still flagged working in memory. A
+    // cancelled/displaced turn that never received a terminal update would
+    // otherwise keep showing its inline working line beneath a finished answer
     // once a new turn is appended below it.
     for (const t of turns) {
-      if (t.phase === "streaming") {
-        t.toolActivity = null;
+      if (t.phase === "streaming" || t.phase === "thinking" || t.phase === "seeding") {
+        t.liveActivity = null;
         t.phase = "done";
       }
     }
-    const turn = makeTurn(question, isFirstTurn ? "seeding" : "thinking");
+    const turnIndex = turns.length;
+    const turn = makeTurn(turnIndex, question, isFirstTurn ? "seeding" : "thinking");
     turns = [...turns, turn];
-    const turnIndex = turns.length - 1;
     streaming = true;
     liveActivity = {
       kind: "other",
@@ -740,12 +795,9 @@
   }
 
   // ── Stop the in-flight turn (composer stop button) ───────────────────────
-  // Asks the backend to cancel, then settles the UI LOCALLY. A cancelled turn
-  // is persisted "done" server-side but emits NO terminal ask_ai_done — that
-  // event is reserved for clean finishes so a displaced turn can't settle a
-  // newer one (and a cancel during seeding returns silently). Without a local
-  // settle the streaming flag + "Writing…" line would hang forever, so we drop
-  // them here and mark the live turn done.
+  // Asks the backend to cancel. The backend now ALWAYS emits a terminal `done`
+  // update on cancel (Slice 4), so the `ask_ai_update` `done` settles the UI
+  // (streaming flag + working line); there is no local settle hack.
   async function stopStreaming(): Promise<void> {
     const conversationId = activeConversationId;
     if (conversationId === null || !streaming) return;
@@ -753,14 +805,6 @@
       await invoke<void>("ask_ai_cancel", { request: { conversationId } });
     } catch {
       // Best-effort: the task may already have finished.
-    }
-    if (activeConversationId !== conversationId) return;
-    streaming = false;
-    liveActivity = null;
-    const turn = turns[turns.length - 1];
-    if (turn && turn.phase === "streaming") {
-      turn.toolActivity = null;
-      turn.phase = "done";
     }
   }
 
@@ -771,275 +815,20 @@
     el.scrollTop = el.scrollHeight;
   }
 
-  // ── Answer rendering: markdown + inline graphical segments ───────────────
-  // A turn's answer is split into typed segments: markdown HTML spans, and
-  // recognized fenced blocks (```mnema-bars / ```mnema-dossier) parsed to chart
-  // data. While streaming we render plain markdown (partial JSON shouldn't be
-  // parsed); once the turn is "done" we upgrade to graphical segments. A parse
-  // failure or unknown block degrades gracefully to a normal code block.
-  interface BarsItem {
-    label: string;
-    value: number;
-    sublabel?: string;
-  }
-  interface DossierItem {
-    subject: string | null;
-    statement: string;
-    confidence: number;
-  }
-  interface TimelineItem {
-    label: string;
-    start: string;
-    end?: string | null;
-    app?: string | null;
-    category?: string | null;
-  }
-  type AnswerSegment =
-    | { kind: "html"; markdown: string }
-    | { kind: "bars"; title: string | null; items: BarsItem[] }
-    | { kind: "dossier"; items: DossierItem[] }
-    | { kind: "timeline"; title: string | null; items: TimelineItem[] };
-
-  // A fenced block of the form ```mnema-bars\n{...}\n``` (or mnema-dossier).
-  // Captured greedily-but-bounded; the JSON body is whatever sits between the
-  // fences. We only special-case these two info strings; everything else stays
-  // ordinary markdown.
-  const GRAPHICAL_FENCE = /```mnema-(bars|dossier|timeline)[^\n]*\n([\s\S]*?)```/g;
-
-  function parseBarsBlock(body: string): AnswerSegment | null {
-    try {
-      const data = JSON.parse(body) as {
-        title?: unknown;
-        bars?: unknown;
-      };
-      const rawBars = Array.isArray(data.bars) ? data.bars : null;
-      if (rawBars === null) return null;
-      const items = rawBars
-        .map((b): BarsItem | null => {
-          if (typeof b !== "object" || b === null) return null;
-          const rec = b as { label?: unknown; value?: unknown; sublabel?: unknown };
-          const label = typeof rec.label === "string" ? rec.label : null;
-          const value = typeof rec.value === "number" ? rec.value : Number(rec.value);
-          if (label === null || !Number.isFinite(value)) return null;
-          const sublabel = typeof rec.sublabel === "string" ? rec.sublabel : undefined;
-          return { label, value, sublabel };
-        })
-        .filter((x): x is BarsItem => x !== null);
-      if (items.length === 0) return null;
-      const title = typeof data.title === "string" ? data.title : null;
-      return { kind: "bars", title, items };
-    } catch {
-      return null;
-    }
-  }
-
-  function parseDossierBlock(body: string): AnswerSegment | null {
-    try {
-      const data = JSON.parse(body) as { items?: unknown };
-      const rawItems = Array.isArray(data.items) ? data.items : null;
-      if (rawItems === null) return null;
-      const items = rawItems
-        .map((it): DossierItem | null => {
-          if (typeof it !== "object" || it === null) return null;
-          const rec = it as { subject?: unknown; statement?: unknown; confidence?: unknown };
-          const statement = typeof rec.statement === "string" ? rec.statement : null;
-          if (statement === null || statement.trim().length === 0) return null;
-          const subject = typeof rec.subject === "string" ? rec.subject : null;
-          const confidenceRaw =
-            typeof rec.confidence === "number" ? rec.confidence : Number(rec.confidence);
-          const confidence = Number.isFinite(confidenceRaw)
-            ? Math.max(0, Math.min(1, confidenceRaw))
-            : 0;
-          return { subject, statement, confidence };
-        })
-        .filter((x): x is DossierItem => x !== null);
-      if (items.length === 0) return null;
-      return { kind: "dossier", items };
-    } catch {
-      return null;
-    }
-  }
-
-  function parseTimelineBlock(body: string): AnswerSegment | null {
-    try {
-      const data = JSON.parse(body) as { title?: unknown; intervals?: unknown };
-      const rawIntervals = Array.isArray(data.intervals) ? data.intervals : null;
-      if (rawIntervals === null) return null;
-      const items = rawIntervals
-        .map((it): TimelineItem | null => {
-          if (typeof it !== "object" || it === null) return null;
-          const rec = it as {
-            label?: unknown;
-            start?: unknown;
-            end?: unknown;
-            app?: unknown;
-            category?: unknown;
-          };
-          const label = typeof rec.label === "string" ? rec.label : null;
-          const start = typeof rec.start === "string" ? rec.start : null;
-          if (label === null || start === null) return null;
-          const end = typeof rec.end === "string" ? rec.end : null;
-          const app = typeof rec.app === "string" ? rec.app : null;
-          const category = typeof rec.category === "string" ? rec.category : null;
-          return { label, start, end, app, category };
-        })
-        .filter((x): x is TimelineItem => x !== null);
-      if (items.length === 0) return null;
-      const title = typeof data.title === "string" ? data.title : null;
-      return { kind: "timeline", title, items };
-    } catch {
-      return null;
-    }
-  }
-
-  // Split the answer into html / graphical segments. Markdown between/around the
-  // recognized fences becomes a raw-markdown `html` segment (AnswerProse renders
-  // it); a recognized fence with a valid body becomes a chart segment, an invalid
-  // one falls back to that raw markdown (so the original fenced block renders as a
-  // code block — never crash). The slices stay RAW here; the Markdown→HTML pass
-  // now lives in AnswerProse, which also memoizes it.
-  function buildSegments(answer: string): AnswerSegment[] {
-    const segments: AnswerSegment[] = [];
-    let lastIndex = 0;
-    // Reset the shared regex's lastIndex (it is global/stateful).
-    GRAPHICAL_FENCE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = GRAPHICAL_FENCE.exec(answer)) !== null) {
-      const [full, variant, body] = match;
-      const parsed =
-        variant === "bars"
-          ? parseBarsBlock(body)
-          : variant === "timeline"
-            ? parseTimelineBlock(body)
-            : parseDossierBlock(body);
-      // Flush the markdown before this fence. If the fence fails to parse we
-      // include its raw text in the markdown run so it renders as a code block.
-      const preEnd = parsed !== null ? match.index : match.index + full.length;
-      const pre = answer.slice(lastIndex, preEnd);
-      if (pre.trim().length > 0) {
-        segments.push({ kind: "html", markdown: pre });
-      }
-      if (parsed !== null) {
-        segments.push(parsed);
-      }
-      lastIndex = match.index + full.length;
-    }
-    const tail = answer.slice(lastIndex);
-    if (tail.trim().length > 0) {
-      segments.push({ kind: "html", markdown: tail });
-    }
-    // An all-whitespace answer (or one fully consumed by an unparsed fence with
-    // no surrounding text) yields no segments; keep the raw markdown as a
-    // safety net so nothing silently disappears.
-    if (segments.length === 0 && answer.trim().length > 0) {
-      segments.push({ kind: "html", markdown: answer });
-    }
-    return segments;
-  }
-
-  // Split one turn's answer into typed segments — used BOTH while streaming and
-  // once done. Only fully-closed fences match the regex, so partial JSON inside
-  // an in-progress fence is never parsed (it stays raw markdown until its closing
-  // fence streams in, then upgrades to a chart). Memoized in a non-reactive
-  // WeakMap so a freshly-loaded transcript re-segments only when a turn's answer
-  // actually changed (and a live turn re-segments once per delta).
-  function answerSegments(turn: ChatTurn): AnswerSegment[] {
-    const cached = segmentRenderCache.get(turn);
-    if (cached !== undefined && cached.answer === turn.answer) {
-      return cached.segments;
-    }
-    const segments = buildSegments(turn.answer);
-    segmentRenderCache.set(turn, { answer: turn.answer, segments });
-    return segments;
-  }
-
-  // ── Tool-activity formatting (mirrors Quick Recall's pure helpers) ────────
-  function readString(
-    params: Record<string, unknown>,
-    key: string,
-  ): string | null {
-    const value = params[key];
-    return typeof value === "string" && value.trim().length > 0
-      ? value.trim()
-      : null;
-  }
-
-  function formatToolActivity(
-    tool: string | undefined,
-    params: Record<string, unknown> | undefined,
-  ): AskToolActivityEntry {
-    const p = params ?? {};
-    if (tool === "search") {
-      const queryText = readString(p, "query");
-      const label = queryText
-        ? `Searching “${queryText}”`
-        : "Searching your captures";
-      // The app scope renders as an icon + name chip, not as label text.
-      return { kind: "search", label, app: readString(p, "app") };
-    }
-    if (tool === "timeline") {
-      return {
-        kind: "timeline",
-        label: "Scanning timeline",
-        app: readString(p, "app"),
-      };
-    }
-    if (tool === "show_text") {
-      return { kind: "show_text", label: "Reading a capture" };
-    }
-    return { kind: "other", label: tool ? `Running ${tool}` : "Working" };
-  }
-
-  // ── Tool-activity app icons (mirrors the App Privacy Exclusion idiom) ─────
-  // The tool's `app` param may be a bundle id (resolvable via
-  // `resolve_app_icons`) or a free-form display name (resolves to no icon →
-  // letter fallback). Resolutions are id-keyed facts merged across turns; a
-  // null resolution stays in the requested set so it is never re-fetched.
-  let toolAppIconPaths = $state<Record<string, string>>({});
-  const requestedToolAppIconIds = new Set<string>();
-
-  async function resolveToolAppIcons(
-    apps: Array<string | null | undefined>,
-  ): Promise<void> {
-    const unresolved = unresolvedIconBundleIds(
-      apps,
-      toolAppIconPaths,
-      requestedToolAppIconIds,
-    );
-    if (unresolved.length === 0) return;
-    for (const id of unresolved) {
-      requestedToolAppIconIds.add(canonicalBundleIdForComparison(id));
-    }
-    try {
-      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
-        request: { bundleIds: unresolved },
-      });
-      const result = mergeIconResolutions(toolAppIconPaths, icons);
-      if (result.changed) toolAppIconPaths = result.iconPathsByBundleId;
-    } catch {
-      // Icons are decorative; the letter fallback keeps working. The ids stay
-      // marked requested so a failing resolver isn't re-polled per event.
-    }
-  }
-
-  function toolAppIconSrc(app: string | null | undefined): string | null {
-    if (!app) return null;
-    const iconPath = iconPathForBundleId(app, toolAppIconPaths);
-    return iconPath ? convertFileSrc(iconPath) : null;
-  }
-
   function activitySummaryFor(
-    toolActivities: AskToolActivityEntry[],
+    toolActivities: ToolActivityEntry[],
   ): string | null {
     if (toolActivities.length === 0) return null;
     let searches = 0;
     let timelines = 0;
     let reads = 0;
+    let recalls = 0;
     let others = 0;
     for (const entry of toolActivities) {
       if (entry.kind === "search") searches += 1;
       else if (entry.kind === "timeline") timelines += 1;
       else if (entry.kind === "show_text") reads += 1;
+      else if (entry.kind === "recall_context") recalls += 1;
       else others += 1;
     }
     const parts: string[] = [];
@@ -1050,6 +839,8 @@
         `${timelines} ${timelines === 1 ? "timeline scan" : "timeline scans"}`,
       );
     if (reads > 0) parts.push(`${reads} ${reads === 1 ? "read" : "reads"}`);
+    if (recalls > 0)
+      parts.push(`${recalls} ${recalls === 1 ? "recall" : "recalls"}`);
     if (others > 0) parts.push(`${others} ${others === 1 ? "step" : "steps"}`);
     return parts.length > 0 ? parts.join(" · ") : null;
   }
@@ -1068,12 +859,12 @@
   // turn isn't terminal; otherwise it SETTLES into the collapsed "Thought
   // process" chip.
   function hasReasoning(turn: ChatTurn): boolean {
-    return turn.reasoning.trim().length > 0;
+    return (turn.reasoning ?? "").trim().length > 0;
   }
   function reasoningIsLive(turn: ChatTurn): boolean {
     return (
-      turn.reasoning.trim().length > 0 &&
-      turn.answer.length === 0 &&
+      (turn.reasoning ?? "").trim().length > 0 &&
+      turn.blocks.length === 0 &&
       turn.phase !== "done" &&
       turn.phase !== "error"
     );
@@ -1126,6 +917,141 @@
     }
   }
 
+  // ── Versioned update transport (the SOLE Ask AI stream listener) ─────────
+  // The backend owns the render model and streams versioned `TurnUpdate` ops via
+  // `ask_ai_update`. The frontend applies each op in order; a version gap (we
+  // were detached, e.g. backgrounded) self-heals from `ask_ai_snapshot`.
+  //
+  // `applyUpdate` mirrors the Rust `apply_update_to_view` reducer EXACTLY so a
+  // live stream and a snapshot/reload can never diverge. Mutating the $state turn
+  // object here is safe (it runs in an event callback, not during render — unlike
+  // the Svelte 5 render-memo gotcha that bans writes-from-template).
+  function applyUpdate(turn: ChatTurn, update: TurnUpdate): void {
+    switch (update.op) {
+      case "phase":
+        turn.phase = normalizePhase(update.phase);
+        break;
+      case "appendProse": {
+        const last = turn.blocks[turn.blocks.length - 1];
+        if (last && last.kind === "prose") {
+          // Replace the last block so the $state array notices the change.
+          turn.blocks = [
+            ...turn.blocks.slice(0, -1),
+            { kind: "prose", markdown: last.markdown + update.text },
+          ];
+        } else {
+          turn.blocks = [
+            ...turn.blocks,
+            { kind: "prose", markdown: update.text },
+          ];
+        }
+        break;
+      }
+      case "openBlock":
+        turn.blocks = [...turn.blocks, update.block];
+        break;
+      case "reasoning":
+        turn.reasoning = (turn.reasoning ?? "") + update.text;
+        break;
+      case "toolActivity":
+        turn.toolActivities = [...turn.toolActivities, update.entry];
+        break;
+      case "liveActivity":
+        turn.liveActivity = update.entry;
+        break;
+      case "sources":
+        turn.sources = coerceSources(update.sources);
+        void loadSourceThumbnails(turn.sources);
+        break;
+      case "error":
+        turn.errorMessage = update.message;
+        turn.phase = "error";
+        break;
+      case "done":
+        turn.phase = "done";
+        turn.liveActivity = null;
+        break;
+    }
+  }
+
+  // Apply one `ask_ai_update` event to the active conversation, honouring the
+  // version contract: exactly-next applies the op; a gap re-snapshots (or
+  // re-hydrates if the turn already finalized); stale/duplicate is ignored.
+  async function handleUpdateEvent(event: AskAiUpdateEvent): Promise<void> {
+    if (event.conversationId !== activeConversationId) return;
+    const turn = turns.find((t) => t.turnIndex === event.turnIndex);
+    if (!turn) return; // send() appends the in-flight turn locally; nothing else expected.
+
+    if (event.version === turn.version + 1) {
+      applyUpdate(turn, event.update);
+      turn.version = event.version;
+      reconcileComposer(turn);
+      void tick().then(scrollTranscriptToBottom);
+      return;
+    }
+    if (event.version <= turn.version) return; // already applied / stale.
+
+    // Gap: we missed updates (detached). Self-heal from the live snapshot.
+    const conversationId = event.conversationId;
+    let snapshot: TurnSnapshot | null;
+    try {
+      snapshot = await invoke<TurnSnapshot | null>("ask_ai_snapshot", {
+        request: { conversationId },
+      });
+    } catch {
+      return;
+    }
+    if (activeConversationId !== conversationId) return;
+    if (snapshot !== null && snapshot.view.turnIndex === turn.turnIndex) {
+      adoptView(turn, snapshot.view, snapshot.version);
+      reconcileComposer(turn);
+      void tick().then(scrollTranscriptToBottom);
+      return;
+    }
+    // Snapshot is null (turn already finalized/removed server-side) — fall back
+    // to get_conversation and re-hydrate the matching turn.
+    try {
+      const convo = await invoke<Conversation | null>("get_conversation", {
+        conversationId,
+      });
+      if (convo === null || activeConversationId !== conversationId) return;
+      const fresh = convo.turns.find((t) => t.turnIndex === turn.turnIndex);
+      if (fresh) {
+        const hydrated = hydrateTurn(fresh);
+        turns = turns.map((t) => (t.turnIndex === turn.turnIndex ? hydrated : t));
+        reconcileComposer(hydrated);
+      }
+    } catch {
+      // Best-effort: leave the turn as-is.
+    }
+  }
+
+  // Keep the composer-level streaming flag + live activity line in sync with the
+  // active (last) turn after an update settles it. When the turn is working but
+  // has no explicit live-activity line (plain seeding/thinking, before a tool
+  // call or the first answer token), synthesize the phase label so the composer
+  // working line never goes blank mid-turn — mirroring the in-transcript states.
+  function reconcileComposer(turn: ChatTurn): void {
+    if (turn.turnIndex !== turns.length - 1) return;
+    const live = turn.phase !== "done" && turn.phase !== "error";
+    streaming = live;
+    if (!live) {
+      liveActivity = null;
+    } else if (turn.liveActivity !== null) {
+      liveActivity = turn.liveActivity;
+    } else {
+      liveActivity = {
+        kind: "other",
+        label:
+          turn.phase === "seeding"
+            ? "Searching your captures…"
+            : turn.phase === "streaming"
+              ? "Writing…"
+              : "Thinking…",
+      };
+    }
+  }
+
   // ── Stream event wiring ──────────────────────────────────────────────────
   onMount(() => {
     void loadAskAvailability();
@@ -1133,135 +1059,18 @@
     void loadPinnableEngines();
 
     let destroyed = false;
-    let unlistenStatus: (() => void) | undefined;
-    let unlistenReasoning: (() => void) | undefined;
-    let unlistenDelta: (() => void) | undefined;
-    let unlistenDone: (() => void) | undefined;
-    let unlistenError: (() => void) | undefined;
-    let unlistenSource: (() => void) | undefined;
+    let unlistenUpdate: (() => void) | undefined;
     let unlistenChanged: (() => void) | undefined;
     let unlistenCtx: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
 
-    // All stream events route to the LAST (live) turn, guarded on a matching
-    // thread id (stale-thread guard, REQUIRED) and a non-empty transcript.
-    listen<AskAiStatusEvent>("ask_ai_status", (event) => {
-      if (event.payload.conversationId !== activeConversationId) return;
-      // Terminal guard (mirrors the delta/reasoning listeners): once the turn
-      // has settled (`streaming` is false) a late, out-of-order status MUST NOT
-      // revive the working line or revert `turn.phase` back to a working phase.
-      if (!streaming) return;
-      const turn = turns[turns.length - 1];
-      if (!turn) return;
-      if (event.payload.phase === "tool") {
-        const activity = formatToolActivity(
-          event.payload.tool,
-          event.payload.params,
-        );
-        turn.toolActivity = activity;
-        turn.toolActivities = [...turn.toolActivities, activity];
-        liveActivity = activity;
-        if (activity.app) void resolveToolAppIcons([activity.app]);
-        return;
-      }
-      liveActivity = {
-        kind: "other",
-        label:
-          event.payload.phase === "seeding"
-            ? "Searching your captures…"
-            : "Thinking…",
-      };
-      if (typeof event.payload.seededResultCount === "number") {
-        turn.seededResultCount = event.payload.seededResultCount;
-      }
-      if (turn.phase !== "streaming") {
-        turn.phase = event.payload.phase;
-      }
+    // The SOLE Ask AI stream listener: versioned render-model updates for the
+    // active conversation. Stale-thread + version guards live in handleUpdateEvent.
+    listen<AskAiUpdateEvent>("ask_ai_update", (event) => {
+      void handleUpdateEvent(event.payload);
     }).then((fn) => {
       if (destroyed) fn();
-      else unlistenStatus = fn;
-    });
-
-    listen<AskAiDeltaEvent>("ask_ai_delta", (event) => {
-      if (event.payload.conversationId !== activeConversationId) return;
-      if (!streaming) return;
-      const turn = turns[turns.length - 1];
-      if (!turn) return;
-      turn.toolActivity = null;
-      turn.phase = "streaming";
-      turn.answer += event.payload.text;
-      // Answer tokens are arriving — promote the activity line to "Writing…"
-      // (guarded so we don't rewrite the same state on every delta).
-      if (liveActivity?.label !== "Writing…") {
-        liveActivity = { kind: "other", label: "Writing…" };
-      }
-      void tick().then(scrollTranscriptToBottom);
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenDelta = fn;
-    });
-
-    // Streamed reasoning ("thinking") chunks: interleaved before/between the
-    // answer deltas. Mirrors the delta listener (same stale-thread guard +
-    // non-empty transcript) but appends to `turn.reasoning`, then pins the
-    // transcript to the bottom as the live Thinking panel grows.
-    listen<{ conversationId: string; text: string }>(
-      "ask_ai_reasoning",
-      (event) => {
-        if (event.payload.conversationId !== activeConversationId) return;
-        if (!streaming) return;
-        const turn = turns[turns.length - 1];
-        if (!turn) return;
-        turn.reasoning += event.payload.text;
-        void tick().then(scrollTranscriptToBottom);
-      },
-    ).then((fn) => {
-      if (destroyed) fn();
-      else unlistenReasoning = fn;
-    });
-
-    listen<AskAiDoneEvent>("ask_ai_done", (event) => {
-      if (event.payload.conversationId !== activeConversationId) return;
-      const turn = turns[turns.length - 1];
-      if (!turn) return;
-      streaming = false;
-      liveActivity = null;
-      turn.toolActivity = null;
-      turn.phase = "done";
-      // Persistence is owned by the backend (run_ask_ai_turn finalized this turn).
-      void tick().then(scrollTranscriptToBottom);
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenDone = fn;
-    });
-
-    listen<AskAiErrorEvent>("ask_ai_error", (event) => {
-      if (event.payload.conversationId !== activeConversationId) return;
-      const turn = turns[turns.length - 1];
-      if (!turn) return;
-      streaming = false;
-      liveActivity = null;
-      turn.toolActivity = null;
-      turn.phase = "error";
-      turn.errorMessage = event.payload.message;
-      // The backend persisted the error turn; a follow-up still works (it reloads
-      // history server-side), so there is no client resurrect.
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenError = fn;
-    });
-
-    listen<AskAiSourceEvent>("ask_ai_source", (event) => {
-      if (event.payload.conversationId !== activeConversationId) return;
-      const turn = turns[turns.length - 1];
-      if (!turn) return;
-      if (event.payload.sources.length > 0) {
-        turn.sources = event.payload.sources;
-        void loadSourceThumbnails(event.payload.sources);
-      }
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenSource = fn;
+      else unlistenUpdate = fn;
     });
 
     // Refresh the history list whenever any conversation surface saves/deletes.
@@ -1301,12 +1110,7 @@
 
     return () => {
       destroyed = true;
-      unlistenStatus?.();
-      unlistenReasoning?.();
-      unlistenDelta?.();
-      unlistenDone?.();
-      unlistenError?.();
-      unlistenSource?.();
+      unlistenUpdate?.();
       unlistenChanged?.();
       unlistenCtx?.();
       unlistenSettings?.();
@@ -1325,13 +1129,16 @@
   });
 </script>
 
-<!-- Inline app chip for tool-activity lines: resolved icon (or letter
-     fallback) + the app name, matching the app-icon look used elsewhere. -->
-{#snippet toolAppChip(app: string)}
+<!-- Inline app chip for tool-activity lines: the backend-resolved icon (or a
+     letter fallback) + the app name, matching the app-icon look used elsewhere.
+     The icon path is resolved server-side (entry.appIconPath); here it is a pure
+     path→URL conversion — no client resolve/batch. -->
+{#snippet toolAppChip(entry: ToolActivityEntry)}
+  {@const app = entry.app ?? ""}
   <span class="tool-app">
     <span class="tool-app-icon" aria-hidden="true">
-      {#if toolAppIconSrc(app) !== null}
-        <img src={toolAppIconSrc(app)} alt="" />
+      {#if entry.appIconPath}
+        <img src={convertFileSrc(entry.appIconPath)} alt="" />
       {:else}
         {appIconFallback(app, app)}
       {/if}
@@ -1561,14 +1368,13 @@
                           <span class="dot" aria-hidden="true"></span>
                           Searching your captures…
                         </p>
-                      {:else if turn.phase === "thinking" && turn.toolActivity === null}
+                      {:else if turn.phase === "thinking" && turn.liveActivity === null}
                         <p class="state state--working">
                           <span class="dot" aria-hidden="true"></span>
                           Thinking…
                         </p>
                       {:else}
                         {#if turn.phase === "streaming" || turn.phase === "done"}
-                          {@const segs = answerSegments(turn)}
                           <!-- Collapsed, expandable tool-activity summary chip. -->
                           {#if activitySummaryFor(turn.toolActivities) !== null}
                             <div class="activity">
@@ -1593,7 +1399,7 @@
                                     <li class="activity-item">
                                       {activity.label}
                                       {#if activity.app}
-                                        in {@render toolAppChip(activity.app)}
+                                        in {@render toolAppChip(activity)}
                                       {/if}
                                     </li>
                                   {/each}
@@ -1602,34 +1408,32 @@
                             </div>
                           {/if}
 
-                          <!-- The answer body, rendered as typed segments while
-                               streaming AND once done. Completed graphical fences
-                               (mnema-bars / mnema-dossier / mnema-timeline) upgrade
-                               to charts the instant their closing fence streams in;
-                               an in-progress (unclosed) fence has no match yet, so
-                               it stays raw markdown until it closes. The streaming
-                               caret rides only the LAST prose segment, and only
-                               until the turn settles. -->
+                          <!-- The answer body: render-ready blocks streamed from
+                               the backend, switched on `kind`. Prose carries raw
+                               markdown (AnswerProse renders + hardens it); the
+                               graphical blocks carry already-parsed data. The
+                               streaming caret rides only the LAST prose block, and
+                               only until the turn settles. -->
                           <div class="answer">
-                            {#each segs as seg, si (si)}
-                                {#if seg.kind === "html"}
+                            {#each turn.blocks as block, bi (bi)}
+                                {#if block.kind === "prose"}
                                   <AnswerProse
-                                    source={seg.markdown}
+                                    source={block.markdown}
                                     isStreaming={turn.phase !== "done" &&
-                                      si === segs.length - 1}
+                                      bi === turn.blocks.length - 1}
                                   />
-                                {:else if seg.kind === "bars"}
+                                {:else if block.kind === "bars"}
                                   <figure class="graphic">
-                                    {#if seg.title}
+                                    {#if block.title}
                                       <figcaption class="graphic-title">
-                                        {seg.title}
+                                        {block.title}
                                       </figcaption>
                                     {/if}
-                                    <MiniBars items={seg.items} />
+                                    <MiniBars items={block.items} />
                                   </figure>
-                                {:else if seg.kind === "dossier"}
+                                {:else if block.kind === "dossier"}
                                   <div class="graphic graphic--dossier">
-                                    {#each seg.items as item, di (di)}
+                                    {#each block.items as item, di (di)}
                                       <div class="dossier-card">
                                         <p class="dossier-statement">
                                           {item.statement}
@@ -1647,13 +1451,13 @@
                                       </div>
                                     {/each}
                                   </div>
-                                {:else if seg.kind === "timeline"}
+                                {:else if block.kind === "timeline"}
                                   <!-- Timeline owns its own caption (the same
                                        uppercase-muted .timeline-title idiom as
                                        .graphic-title), so the .graphic wrapper
                                        here doesn't repeat it as a figcaption. -->
                                   <figure class="graphic">
-                                    <Timeline title={seg.title} intervals={seg.items} />
+                                    <Timeline title={block.title} intervals={block.items} />
                                   </figure>
                                 {/if}
                             {/each}
@@ -1705,15 +1509,15 @@
                           {/if}
                         {/if}
 
-                        {#if turn.toolActivity !== null}
+                        {#if turn.liveActivity !== null}
                           <p class="state state--working">
                             <span class="dot" aria-hidden="true"></span>
                             <span class="working-label"
-                              >{turn.toolActivity.label}</span
+                              >{turn.liveActivity.label}</span
                             >
-                            {#if turn.toolActivity.app}
+                            {#if turn.liveActivity.app}
                               in
-                              {@render toolAppChip(turn.toolActivity.app)}
+                              {@render toolAppChip(turn.liveActivity)}
                             {/if}
                           </p>
                         {:else if turn.phase === "streaming"}
@@ -1746,7 +1550,7 @@
               <span class="dot" aria-hidden="true"></span>
               <span class="working-label">{liveActivity.label}</span>
               {#if liveActivity.app}
-                in {@render toolAppChip(liveActivity.app)}
+                in {@render toolAppChip(liveActivity)}
               {/if}
             {/if}
           </div>
