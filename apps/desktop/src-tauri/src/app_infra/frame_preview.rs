@@ -2265,6 +2265,11 @@ pub(super) async fn get_frame_preview_inner(
 
     let video_metadata = fs::metadata(&segment_paths.video_path)?;
     if video_metadata.len() == 0 {
+        // A 0-byte segment video is a broken artifact left by a failed or empty
+        // MFSinkWriter.Finalize(). Remove it so subsequent accesses take the
+        // "video does not exist" path and the hidden-workspace cleanup policy
+        // correctly preserves the non-empty fallback workspace.
+        let _ = fs::remove_file(&segment_paths.video_path);
         return read_segment_frame_preview_or_return_video_error(
             &frame,
             infra,

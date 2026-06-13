@@ -55,9 +55,17 @@ const TICKS_PER_SECOND: i64 = 10_000_000;
 /// Poll cadence for draining WASAPI packets.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// Shared-mode device buffer duration request (100ns units); 0 lets the engine
-/// pick its default period.
-const SHARED_BUFFER_DURATION_HNS: i64 = 0;
+/// Shared-mode device buffer duration request (100ns units).
+///
+/// `0` would let the engine allocate the minimum buffer — one engine period
+/// (~10ms). With our ~10ms polling cadence and a *synchronous* AAC encode on
+/// the same capture thread, that tiny buffer overflows almost every cycle under
+/// real recording load (concurrent screen capture / H.264 encoding steal CPU),
+/// so WASAPI drops the overflowed frames and flags `DATA_DISCONTINUITY` —
+/// audible as continuous crackling. Request a 1s buffer so scheduling jitter of
+/// up to ~1s can never overflow it. The buffer is plain memory (~350KB at
+/// 44.1kHz stereo float); the engine period (drain cadence) is unchanged.
+const SHARED_BUFFER_DURATION_HNS: i64 = 10_000_000;
 
 /// AAC supports up to 2 channels; clamp wider endpoints down to stereo.
 const MAX_AAC_CHANNELS: u16 = 2;

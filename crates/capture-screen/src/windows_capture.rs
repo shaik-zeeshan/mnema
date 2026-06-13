@@ -1241,6 +1241,20 @@ impl CaptureEngine {
                     .map_err(|e| win_error("IMFSinkWriter.Finalize (rotate) failed", &e))?;
             }
             self.persist_segment_frame_index();
+            // Mirror the stop() validation: remove the segment artifact if it is
+            // invalid (0 bytes or unreadable). Unlike stop(), we do not propagate
+            // the error — the rotation continues so the next segment can capture
+            // normally. A removed invalid segment degrades preview for its frames
+            // but does not tear down the session.
+            if let Err(error) = validate_windows_screen_video_file(&self.current_output_path) {
+                capture_runtime::debug_log!(
+                    "[capture-screen] finalized Windows screen segment failed validation at rotation, removing {}: [{}] {}",
+                    self.current_output_path.display(),
+                    error.code,
+                    error.message
+                );
+                let _ = std::fs::remove_file(&self.current_output_path);
+            }
         }
 
         let writer = create_sink_writer(
@@ -1267,11 +1281,30 @@ impl CaptureEngine {
         let boundary_ticks = (self.segment_start.elapsed().as_nanos() / 100) as i64;
         self.flush_pending_frame_at_boundary(boundary_ticks)?;
         if let Some(writer) = self.writer.take() {
-            unsafe {
+            let finalize_result = unsafe {
                 writer
                     .writer
                     .Finalize()
-                    .map_err(|e| win_error("IMFSinkWriter.Finalize (stop) failed", &e))?;
+                    .map_err(|e| win_error("IMFSinkWriter.Finalize (stop) failed", &e))
+            };
+            if let Err(ref finalize_error) = finalize_result {
+                // Finalize itself failed — the artifact may be a 0-byte stub.
+                // Remove it so the file does not persist as a broken preview
+                // source (the same outcome as the post-validate remove_file
+                // below, but reached via a different failure path).
+                if std::fs::metadata(&self.current_output_path)
+                    .map(|m| m.len() == 0)
+                    .unwrap_or(false)
+                {
+                    capture_runtime::debug_log!(
+                        "[capture-screen] Finalize (stop) failed and left a 0-byte segment, removing {}: [{}] {}",
+                        self.current_output_path.display(),
+                        finalize_error.code,
+                        finalize_error.message
+                    );
+                    let _ = std::fs::remove_file(&self.current_output_path);
+                }
+                return Err(finalize_result.unwrap_err());
             }
             self.persist_segment_frame_index();
             // Mirror the macOS finalized-video validation: inspect timing through
