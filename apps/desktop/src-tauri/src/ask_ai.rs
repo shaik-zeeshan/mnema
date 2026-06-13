@@ -565,8 +565,21 @@ fn broker_response_to_tool_value(
     response: BrokeredCaptureResponse,
 ) -> Result<serde_json::Value, String> {
     match response {
-        BrokeredCaptureResponse::Search(response) => serde_json::to_value(response)
-            .map_err(|error| format!("failed to serialize Ask AI search result: {error}")),
+        BrokeredCaptureResponse::Search(mut response) => {
+            // Strip internal frame DB ids + sub-segment timing before the result
+            // leaves the device for the (possibly cloud) model. The model never
+            // uses these — source cards read them locally from `search_metadata`
+            // via the HMAC-signed opaque ref, populated from the raw response
+            // before this call. Nulling each `Option` (all `skip_serializing_if`)
+            // drops them from the serialized value entirely.
+            for result in &mut response.results {
+                result.aligned_frame_id = None;
+                result.span_start_ms = None;
+                result.span_end_ms = None;
+            }
+            serde_json::to_value(response)
+                .map_err(|error| format!("failed to serialize Ask AI search result: {error}"))
+        }
         BrokeredCaptureResponse::Timeline(response) => serde_json::to_value(response)
             .map_err(|error| format!("failed to serialize Ask AI timeline result: {error}")),
         BrokeredCaptureResponse::ShowText(response) => serde_json::to_value(response)
@@ -2745,6 +2758,36 @@ mod tests {
         let value = broker_response_to_tool_value(response).expect("search serializes");
         assert_eq!(value["limit"], serde_json::json!(8));
         assert_eq!(value["results"][0]["opaqueId"], serde_json::json!("op-1"));
+    }
+
+    #[test]
+    fn broker_response_to_tool_value_strips_internal_ids_for_model() {
+        // An audio result carries the internal frame DB id + sub-segment timing.
+        // The model-facing value must NOT include them (they egress off-device for
+        // a cloud engine and the model never uses them — source cards read them
+        // locally from `search_metadata`).
+        let mut audio = sample_result();
+        audio.kind = "audio".to_string();
+        audio.span_start_ms = Some(3_000);
+        audio.span_end_ms = Some(5_000);
+        audio.aligned_frame_id = Some(99);
+        let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
+            results: vec![audio],
+            limit: 8,
+        });
+
+        let value = broker_response_to_tool_value(response).expect("search serializes");
+        let result = &value["results"][0];
+        // `skip_serializing_if = "Option::is_none"` drops them entirely once None.
+        assert!(result.get("spanStartMs").is_none(), "spanStartMs stripped");
+        assert!(result.get("spanEndMs").is_none(), "spanEndMs stripped");
+        assert!(
+            result.get("alignedFrameId").is_none(),
+            "alignedFrameId stripped"
+        );
+        // The model-facing fields it DOES use survive.
+        assert_eq!(result["opaqueId"], serde_json::json!("op-1"));
+        assert_eq!(result["snippet"], serde_json::json!("build passed"));
     }
 
     #[test]

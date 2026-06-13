@@ -41,10 +41,13 @@ enum Mode {
     /// Inside a recognized `mnema-*` fence whose closing ` ``` ` has not yet
     /// arrived. `variant` is the matched kind; `opener_start` is the byte index in
     /// `raw` where the opener ` ``` ` begins (so we can recover the verbatim block
-    /// text on degrade).
+    /// text on degrade). `scan_from` is the absolute byte index in `raw` at which
+    /// the next close-fence scan resumes — advanced past already-scanned text each
+    /// delta so the body isn't re-scanned from the start every time (O(n²) → O(n)).
     InFence {
         variant: Variant,
         opener_start: usize,
+        scan_from: usize,
     },
 }
 
@@ -144,8 +147,9 @@ impl AnswerView {
                 Mode::InFence {
                     variant,
                     opener_start,
+                    scan_from,
                 } => {
-                    if !self.scan_in_fence(variant, opener_start, ops) {
+                    if !self.scan_in_fence(variant, opener_start, scan_from, ops) {
                         break;
                     }
                 }
@@ -232,6 +236,9 @@ impl AnswerView {
                 self.mode = Mode::InFence {
                     variant,
                     opener_start,
+                    // Scanning resumes from the opener; `scan_in_fence` clamps this
+                    // forward to the body start once the info line is terminated.
+                    scan_from: opener_start,
                 };
                 true
             }
@@ -246,6 +253,7 @@ impl AnswerView {
         &mut self,
         variant: Variant,
         opener_start: usize,
+        scan_from: usize,
         ops: &mut Vec<TurnUpdate>,
     ) -> bool {
         // The fence content begins after the opener's info line. Re-derive the
@@ -256,18 +264,41 @@ impl AnswerView {
             return false;
         };
         let body_start = opener_start + nl + 1;
-        let body_region = &self.raw[body_start..];
 
-        match find_fence_close(body_region) {
+        // Resume the close scan from the saved offset rather than re-scanning the
+        // whole body each delta (the O(n²) hot-path bug). `scan_from` is never
+        // earlier than `body_start`. It may land mid-line, so derive whether the
+        // resume byte is a line start explicitly rather than assuming `i == 0` is.
+        let region_start = scan_from.max(body_start);
+        let region = &self.raw[region_start..];
+        let region_at_line_start =
+            region_start == body_start || self.raw.as_bytes()[region_start - 1] == b'\n';
+
+        match find_fence_close(region, region_at_line_start) {
             None => {
-                // No closing ``` line yet — keep pending, emit nothing.
+                // No closing ``` line yet — keep pending, emit nothing. Advance the
+                // resume offset past everything that can no longer become a close: a
+                // close must START its line with ` ``` `, so the only live candidate
+                // in the scanned tail is the LAST line, and only while it is still a
+                // prefix of ` ``` ` (1–2 backticks) that could grow into one. If the
+                // last line is already disqualified, resume at the very end so the
+                // next delta only scans freshly-arrived bytes. Bounds per-delta work
+                // to O(new bytes), making the whole stream O(n) instead of O(n²).
+                let resume = next_close_resume(region, region_start, region_at_line_start);
+                self.mode = Mode::InFence {
+                    variant,
+                    opener_start,
+                    scan_from: resume,
+                };
                 false
             }
             Some(close) => {
-                // The body is everything before the closing fence. The whole
-                // verbatim block runs from `opener_start` to the end of the close.
-                let body = body_region[..close.body_end].to_string();
-                let block_end = body_start + close.fence_end;
+                // The body is everything from `body_start` before the closing
+                // fence. The whole verbatim block runs from `opener_start` to the
+                // end of the close. `close` offsets are relative to `region_start`.
+                let body_end_abs = region_start + close.body_end;
+                let body = self.raw[body_start..body_end_abs].to_string();
+                let block_end = region_start + close.fence_end;
 
                 let parsed = match variant {
                     Variant::Bars => parse_bars(&body),
@@ -404,6 +435,38 @@ fn trailing_open_candidate_len(s: &str) -> usize {
     0
 }
 
+/// Given a fence body region `[region_start, region_end)` that contained no close
+/// (`find_fence_close` returned `None`), compute the absolute byte offset from
+/// which the NEXT delta should resume scanning — skipping everything that can
+/// never become a close.
+///
+/// A close must begin its line with ` ``` `. Every line fully present in this
+/// region (i.e. followed by a `\n`) that wasn't already a close is immutable and
+/// can never become one. The only live candidate is the final, still-growing
+/// line, and only while it is a prefix of ` ``` ` (1–2 backticks). So:
+/// - last line is `` ` `` or ` `` ` (could grow into ` ``` `) → resume at its
+///   start (preserving the held-back partial close);
+/// - otherwise → resume at `region_end` (next delta scans only new bytes; any
+///   future close starts after a not-yet-seen `\n`, which the resume scan detects
+///   via its own `bytes[i-1] == '\n'` check).
+fn next_close_resume(region: &str, region_start: usize, region_at_line_start: bool) -> usize {
+    let region_end = region_start + region.len();
+    let last_line_rel = region.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    // The final line is a line start in the full text only if it follows a `\n`
+    // within the region, or the region itself began at a line start.
+    let last_line_is_line_start = region.contains('\n') || region_at_line_start;
+    let last_line = &region[last_line_rel..];
+    let is_growing_close_prefix = last_line_is_line_start
+        && !last_line.is_empty()
+        && last_line.len() <= 2
+        && last_line.bytes().all(|b| b == b'`');
+    if is_growing_close_prefix {
+        region_start + last_line_rel
+    } else {
+        region_end
+    }
+}
+
 /// Result of locating a closing fence within a fence body region.
 struct FenceClose {
     /// Byte index in the body region where the body ends (start of the close
@@ -418,11 +481,19 @@ struct FenceClose {
 /// The frontend regex doesn't anchor the close to a line start, but a line-start
 /// match is the well-formed case and avoids swallowing inline backticks; we match
 /// at a line start to be robust.
-fn find_fence_close(s: &str) -> Option<FenceClose> {
+///
+/// `first_is_line_start` tells whether byte 0 of `s` sits at a line start in the
+/// full text. The incremental scanner resumes mid-line (so byte 0 isn't always a
+/// line start), so this must be passed rather than assumed from `i == 0`.
+fn find_fence_close(s: &str, first_is_line_start: bool) -> Option<FenceClose> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        let at_line_start = i == 0 || bytes[i - 1] == b'\n';
+        let at_line_start = if i == 0 {
+            first_is_line_start
+        } else {
+            bytes[i - 1] == b'\n'
+        };
         if at_line_start && bytes[i..].starts_with(b"```") {
             // Body ends at the start of this close line. If the close is preceded
             // by a newline, drop that trailing newline from the body so the
@@ -916,6 +987,51 @@ mod tests {
     #[test]
     fn parse_answer_to_blocks_empty_is_no_blocks() {
         assert!(parse_answer_to_blocks("").is_empty());
+    }
+
+    // Incremental close-scan: a long single-line (newline-free) JSON body fed one
+    // char at a time still finds the close exactly once and matches the whole-feed
+    // result. Pins that the resume-offset optimization preserves parsing behavior
+    // for the body shape (one long line) that drove the O(n²) hot path.
+    #[test]
+    fn long_single_line_body_char_by_char() {
+        let bars: String = (0..200)
+            .map(|i| format!("{{\"label\":\"item {i}\",\"value\":{i}}}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let fence = format!("```mnema-bars\n{{\"bars\":[{bars}]}}\n```");
+        let text = format!("Lead.\n\n{fence}\n\nTail.");
+        let (whole, _) = run_whole(&text);
+        let (split, split_ops) = run_char_by_char(&text);
+        assert_eq!(whole.blocks(), split.blocks());
+        assert_eq!(
+            split
+                .blocks()
+                .iter()
+                .filter(|b| matches!(b, AnswerBlock::Bars { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(apply_ops(&split_ops), split.blocks());
+    }
+
+    // Incremental close-scan: the closing ` ``` ` arriving split across deltas
+    // (newline, then one backtick at a time) must still be detected — the resume
+    // offset has to hold back a growing backtick prefix at a line start.
+    #[test]
+    fn close_fence_split_backtick_by_backtick() {
+        let mut v = AnswerView::new();
+        let mut ops = v.push_delta("```mnema-bars\n{\"bars\":[{\"label\":\"x\",\"value\":1}]}");
+        ops.extend(v.push_delta("\n"));
+        ops.extend(v.push_delta("`"));
+        ops.extend(v.push_delta("`"));
+        ops.extend(v.push_delta("`"));
+        ops.extend(v.finalize());
+        assert!(v
+            .blocks()
+            .iter()
+            .any(|b| matches!(b, AnswerBlock::Bars { .. })));
+        assert_eq!(apply_ops(&ops), v.blocks());
     }
 
     // Trailing-backtick hold-back: a delta ending mid-opener must not leak prose
