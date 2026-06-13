@@ -580,6 +580,8 @@
           return { kind: "timeline", label: "Scanned timeline" };
         if (tool === "show_text")
           return { kind: "show_text", label: "Read a capture" };
+        if (tool === "recall_context")
+          return { kind: "recall_context", label: "Recalled what I know about you" };
         return { kind: "other", label: tool ? `Ran ${tool}` : "Working" };
       })
       .filter((x): x is ToolActivityEntry => x !== null);
@@ -820,11 +822,13 @@
     let searches = 0;
     let timelines = 0;
     let reads = 0;
+    let recalls = 0;
     let others = 0;
     for (const entry of toolActivities) {
       if (entry.kind === "search") searches += 1;
       else if (entry.kind === "timeline") timelines += 1;
       else if (entry.kind === "show_text") reads += 1;
+      else if (entry.kind === "recall_context") recalls += 1;
       else others += 1;
     }
     const parts: string[] = [];
@@ -835,6 +839,8 @@
         `${timelines} ${timelines === 1 ? "timeline scan" : "timeline scans"}`,
       );
     if (reads > 0) parts.push(`${reads} ${reads === 1 ? "read" : "reads"}`);
+    if (recalls > 0)
+      parts.push(`${recalls} ${recalls === 1 ? "recall" : "recalls"}`);
     if (others > 0) parts.push(`${others} ${others === 1 ? "step" : "steps"}`);
     return parts.length > 0 ? parts.join(" · ") : null;
   }

@@ -70,6 +70,19 @@ pub(crate) fn format_tool_activity(tool: &str, params: &Value) -> ToolActivityEn
             app: None,
             app_icon_path: None,
         },
+        "recall_context" => {
+            let label = match read_string_param(params, "query") {
+                // Curly double-quotes (U+201C / U+201D) to match `search`.
+                Some(query) => format!("Recalling \u{201c}{query}\u{201d}"),
+                None => "Recalling what I know about you".to_string(),
+            };
+            ToolActivityEntry {
+                kind: "recall_context".to_string(),
+                label,
+                app: None,
+                app_icon_path: None,
+            }
+        }
         other => ToolActivityEntry {
             kind: "other".to_string(),
             label: if other.is_empty() {
@@ -155,6 +168,23 @@ mod tests {
         assert_eq!(entry.kind, "show_text");
         assert_eq!(entry.label, "Reading a capture");
         assert_eq!(entry.app, None);
+    }
+
+    #[test]
+    fn recall_context_with_query_formats_curly_quoted_label() {
+        let entry =
+            format_tool_activity("recall_context", &json!({ "query": "what do I work on" }));
+        assert_eq!(entry.kind, "recall_context");
+        assert_eq!(entry.label, "Recalling \u{201c}what do I work on\u{201d}");
+        assert_eq!(entry.app, None);
+        assert_eq!(entry.app_icon_path, None);
+    }
+
+    #[test]
+    fn recall_context_without_query_uses_fallback_label() {
+        let entry = format_tool_activity("recall_context", &json!({}));
+        assert_eq!(entry.kind, "recall_context");
+        assert_eq!(entry.label, "Recalling what I know about you");
     }
 
     #[test]
