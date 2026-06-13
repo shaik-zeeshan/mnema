@@ -1136,13 +1136,6 @@
       <span class="tick" aria-hidden="true"></span>
       Exhibits
       <span class="rule"></span>
-      {#if engineOn && categorySegments.length > 0}
-        <button
-          type="button"
-          class="evidence-link"
-          onclick={() => (categoryModalOpen = true)}>open category detail →</button
-        >
-      {/if}
     </p>
     <div class="exhibits-grid">
       <!-- Time — the whole card is a conditional button (role/tabindex are
@@ -1583,8 +1576,27 @@
     display: flex;
     flex-direction: column;
     gap: 20px;
-    max-width: 60%;
+    width: 100%;
+    /* Stepped reading column: fill the surface on narrow widths, then cap at
+       discrete breakpoints so the content doesn't sprawl on large/ultrawide
+       displays (replaces a fluid `max-width: 60%` that widened without bound). */
+    max-width: 720px;
     margin: 0 auto;
+  }
+  @media (min-width: 1024px) {
+    .overview {
+      max-width: 860px;
+    }
+  }
+  @media (min-width: 1280px) {
+    .overview {
+      max-width: 1024px;
+    }
+  }
+  @media (min-width: 1600px) {
+    .overview {
+      max-width: 1200px;
+    }
   }
 
   /* ---- Page header ---- */
@@ -1699,13 +1711,21 @@
      lower min-height, thinner headers. The hero must clearly dominate this. */
   .exhibits-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    /* Stack the exhibits on narrow surfaces, pair them two-up once there's room
+       — same breakpoint that widens the overview column, so wrapping and width
+       step together rather than cards squeezing at small sizes. */
+    grid-template-columns: 1fr;
     gap: 10px;
     /* Stretch both cards in a row to the tallest one so Time and Categories
        read as an equal-height pair. The shorter card's slack isn't dead space:
        its `view … →` hint is pushed to the bottom edge (margin-top: auto),
        turning the gap into breathing room. */
     align-items: stretch;
+  }
+  @media (min-width: 860px) {
+    .exhibits-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
   }
   .exhibits-grid .exhibit:last-child {
     grid-column: 1 / -1;
@@ -1715,8 +1735,10 @@
      (which would make the fill bar visibly re-grow after load). The figure is
      the Time card's own layout: 22 (padding) + 23 (header) + 112 (5 app rows ×
      16 + 4 gaps × 8) + 26 (bottom hint) ≈ 183. */
-  .exhibits-grid .exhibit:not(:last-child) {
-    min-height: 190px;
+  @media (min-width: 860px) {
+    .exhibits-grid .exhibit:not(:last-child) {
+      min-height: 190px;
+    }
   }
   .exhibit {
     display: flex;
