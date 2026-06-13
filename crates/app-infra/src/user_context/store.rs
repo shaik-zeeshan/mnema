@@ -269,6 +269,59 @@ impl UserContextStore {
         Ok(activities)
     }
 
+    /// Activities whose `title` or `summary` contain ANY of the given keyword
+    /// `terms` (case-insensitive SQL `LIKE`), newest-first, capped at `limit` and
+    /// each hydrated with its evidence refs. This is the relevance-bounded recall
+    /// candidate set: it lets `recall_context` reach an older-but-relevant
+    /// Activity that a purely recency-bounded window would never surface (the
+    /// recency window can be saturated by recent-but-irrelevant Activities).
+    ///
+    /// `terms` are matched as substrings on purpose — the in-memory scorer that
+    /// consumes this set does the precise whole-word / stemmed relevance ranking;
+    /// this DB pass only has to be a cheap, recall-favoring pre-filter that pulls
+    /// a superset of plausibly-relevant rows. When `terms` is empty there is
+    /// nothing to filter on, so this returns the most-recent `limit` Activities
+    /// (the no-token fallback set).
+    pub async fn search_recent_activities(
+        &self,
+        terms: &[String],
+        limit: i64,
+    ) -> Result<Vec<Activity>> {
+        if terms.is_empty() {
+            return self.list_recent_activities(limit, 0).await;
+        }
+
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT id, title, summary, category, focus, corrected_category, category_corrected, \
+                    corrected_focus, focus_corrected, started_at_ms, ended_at_ms, created_at_ms \
+             FROM user_context_activities WHERE ",
+        );
+        let mut separated = query.separated(" OR ");
+        for term in terms {
+            // `LIKE` is case-insensitive for ASCII in SQLite; `%term%` matches the
+            // term as a substring anywhere in title or summary. Escaping is not
+            // needed because `term` is a recall query token (alphanumeric only).
+            let pattern = format!("%{term}%");
+            separated.push("(title LIKE ");
+            separated.push_bind_unseparated(pattern.clone());
+            separated.push_unseparated(" OR summary LIKE ");
+            separated.push_bind_unseparated(pattern);
+            separated.push_unseparated(")");
+        }
+        query.push(" ORDER BY started_at_ms DESC, id DESC LIMIT ");
+        query.push_bind(limit);
+
+        let rows = query.build().fetch_all(&self.pool).await?;
+
+        let mut activities = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut activity = map_activity(row);
+            activity.evidence = self.list_activity_evidence(activity.id).await?;
+            activities.push(activity);
+        }
+        Ok(activities)
+    }
+
     /// Every Activity overlapping the half-open `[range_start_ms, range_end_ms)`
     /// window, chronological (oldest first) — the **Digest** input set. The
     /// overlap predicate matches the digest staleness purge in
@@ -2020,6 +2073,44 @@ mod tests {
             formed_at_ms: 1_000,
             last_supported_at_ms: 1_000,
         }
+    }
+
+    /// `search_recent_activities` reaches an older-but-keyword-matching Activity
+    /// even when many newer (non-matching) Activities exist, and falls back to the
+    /// most-recent set when no terms are given.
+    #[test]
+    fn search_recent_activities_filters_by_keyword_and_falls_back() {
+        block_on(async {
+            let store = test_store().await;
+            // One old activity that matches "parser", buried under newer noise.
+            seed_activity(&store, "parser internals", 1_000).await;
+            for i in 0..20 {
+                seed_activity(&store, &format!("standup meeting {i}"), 10_000 + i).await;
+            }
+
+            // Keyword filter reaches the old, relevant activity.
+            let matched = store
+                .search_recent_activities(&["parser".to_string()], 50)
+                .await
+                .expect("search");
+            assert_eq!(matched.len(), 1, "only the parser activity matches");
+            assert_eq!(matched[0].title, "parser internals");
+
+            // Multiple terms OR together.
+            let or_matched = store
+                .search_recent_activities(&["parser".to_string(), "standup".to_string()], 50)
+                .await
+                .expect("search");
+            assert_eq!(or_matched.len(), 21);
+
+            // Empty terms => most-recent fallback, capped.
+            let fallback = store
+                .search_recent_activities(&[], 5)
+                .await
+                .expect("search");
+            assert_eq!(fallback.len(), 5, "fallback is the most-recent window, capped");
+            assert!(fallback[0].started_at_ms >= fallback[1].started_at_ms);
+        });
     }
 
     #[test]

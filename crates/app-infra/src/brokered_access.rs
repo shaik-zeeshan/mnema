@@ -1507,13 +1507,20 @@ const MAX_RECALL_CONTEXT_LIMIT: u32 = 20;
 
 /// `recall_context`: return ONLY the User-Context Conclusions/Activities relevant
 /// to the question, redacted, capped, and never sensitive. This deliberately never
-/// returns the whole dossier — both lists are token-overlap filtered against the
+/// returns the whole dossier — both lists are relevance-filtered against the
 /// question and hard-capped at [`MAX_RECALL_CONTEXT_LIMIT`].
 ///
-/// Sensitive Conclusions are dropped via the same hard guardrail
-/// (`crate::user_context::guardrail::is_sensitive`) used at derivation time, and
-/// only Visible (not Faded, not Dismissed) Conclusions are eligible. No ids or
-/// evidence refs cross the boundary.
+/// Relevance is scored in-memory by whole-word (#1), lightly-stemmed (#3),
+/// rare-token-weighted (#2 IDF) overlap of the query tokens against each item's
+/// text — a token only counts when it appears as a full (stemmed) word, and rare
+/// tokens outweigh common ones. Activity candidates are pulled with a DB-side
+/// keyword pre-filter (#5) so an older-but-relevant Activity is reachable, not
+/// just the most-recent window.
+///
+/// Sensitive Conclusions AND sensitive Activities are dropped via the same hard
+/// guardrail (`crate::user_context::guardrail::is_sensitive`, #4) used at
+/// derivation time, and only Visible (not Faded, not Dismissed) Conclusions are
+/// eligible. No ids or evidence refs cross the boundary.
 async fn broker_recall_context(
     infra: &AppInfra,
     grants: &[BrokerGrant],
@@ -1531,13 +1538,25 @@ async fn broker_recall_context(
     let store = infra.user_context();
     // Non-faded conclusions only; `list_conclusions(false)` already excludes faded.
     let conclusions = store.list_conclusions(false).await?;
-    // Pull a generous activity window, then relevance-filter + cap below so the
-    // cap, not the query, bounds the result.
-    let activities = store
-        .list_recent_activities(MAX_RECALL_CONTEXT_LIMIT as i64 * 4, 0)
-        .await?;
 
     let tokens = recall_query_tokens(&request.query);
+
+    // #5: relevance-bounded (not recency-bounded) Activity candidates. We push the
+    // query tokens into a DB-side `LIKE` pre-filter (`search_recent_activities`) so
+    // an older-but-relevant Activity is a candidate even when the recent window is
+    // saturated by recent-but-irrelevant Activities — the old
+    // `list_recent_activities(MAX*4)` window could never reach it. The DB pass is a
+    // cheap recall-favoring superset (raw substring `LIKE` on the un-stemmed
+    // tokens); the in-memory scorer below does the precise whole-word + stemmed +
+    // IDF ranking and the hard `limit` cap. We still pull a generous candidate cap
+    // so the in-memory scorer ranks across a wide set rather than a thin slice.
+    //
+    // When there are no usable query tokens, `search_recent_activities` degrades to
+    // the most-recent window — the same fallback set the old path used.
+    const ACTIVITY_CANDIDATE_CAP: i64 = 200;
+    let activities = store
+        .search_recent_activities(&tokens, ACTIVITY_CANDIDATE_CAP)
+        .await?;
 
     let conclusions = select_relevant_conclusions(&conclusions, &tokens, limit);
     let activities = select_relevant_activities(&activities, &tokens, limit);
@@ -1557,26 +1576,140 @@ const RECALL_STOPWORDS: &[&str] = &[
 ];
 
 /// Lowercase, tokenize the query into words (length >= 3, punctuation stripped),
-/// dropping trivial stopwords. Empty when the query has no usable tokens.
+/// dropping trivial stopwords, then **stem** each survivor ([`recall_stem`]) so
+/// the matcher is morphology-insensitive ("running" ~ "run"). Empty when the
+/// query has no usable tokens. Tokens are de-duplicated so a repeated query word
+/// cannot inflate the overlap score.
 fn recall_query_tokens(query: &str) -> Vec<String> {
-    query
-        .split(|ch: char| !ch.is_alphanumeric())
-        .map(|word| word.to_lowercase())
-        .filter(|word| word.len() >= 3 && !RECALL_STOPWORDS.contains(&word.as_str()))
+    let mut tokens: Vec<String> = Vec::new();
+    for word in query.split(|ch: char| !ch.is_alphanumeric()) {
+        let word = word.to_lowercase();
+        if word.len() < 3 || RECALL_STOPWORDS.contains(&word.as_str()) {
+            continue;
+        }
+        let stemmed = recall_stem(&word);
+        if !tokens.contains(&stemmed) {
+            tokens.push(stemmed);
+        }
+    }
+    tokens
+}
+
+/// Cheap, hand-rolled English suffix stripper (#3) — NOT a real stemmer, just a
+/// lexical-gap reducer applied identically to query tokens and corpus words so
+/// "running"~"run", "coding"~"code", "tests"~"test", "quickly"~"quick" collapse
+/// to a shared key. It does NOT try to produce a real dictionary stem; it only
+/// has to be *consistent*, so a query word and the corpus word it should match
+/// land on the same key.
+///
+/// Three passes: (1) strip one common suffix (`-ing`, `-edly`, `-ied`, `-ed`,
+/// `-ly`, `-ies`, `-es`, `-s`); (2) collapse a doubled final consonant
+/// ("runn" -> "run", "stopp" -> "stop") so the `-ing`/`-ed` doubling rule is
+/// undone; (3) drop a single silent terminal `e` from whatever remains so the
+/// un-suffixed form lines up with the suffixed one ("code" -> "cod" matches
+/// "coding" -> "cod"). Guards against over-stemming: a suffix is only stripped
+/// when a reasonable stem (>= 3 chars) remains, so short words like
+/// "is"/"red"/"bus"/"ring" are left intact. No allocation when nothing changes.
+fn recall_stem(word: &str) -> String {
+    // Each rule: (suffix, min length of the FULL word to apply). Longer suffixes
+    // first so `-ing` wins over `-s`. The min-length guards keep very short words
+    // from being gutted.
+    const RULES: &[(&str, usize)] = &[
+        ("ing", 6),
+        ("edly", 7),
+        ("ied", 5),
+        ("ed", 5),
+        ("ly", 5),
+        ("ies", 5),
+        ("es", 5),
+        ("s", 4),
+    ];
+
+    // Pass 1: strip the first matching suffix (if a >= 3-char stem survives).
+    let mut stem = word;
+    for (suffix, min_len) in RULES {
+        if word.len() >= *min_len && word.ends_with(suffix) {
+            let candidate = &word[..word.len() - suffix.len()];
+            if candidate.len() >= 3 {
+                stem = candidate;
+                break;
+            }
+        }
+    }
+
+    let bytes = stem.as_bytes();
+    let mut end = bytes.len();
+
+    // Pass 2: collapse a doubled final consonant ("runn" -> "run").
+    if end >= 2 {
+        let last = bytes[end - 1];
+        let prev = bytes[end - 2];
+        let is_consonant = last.is_ascii_alphabetic() && !b"aeiou".contains(&last);
+        if last == prev && is_consonant && end - 1 >= 3 {
+            end -= 1;
+        }
+    }
+
+    // Pass 3: drop a single silent terminal `e` ("code" -> "cod") so the
+    // un-suffixed form matches the suffixed one. Keep >= 3 chars.
+    if end >= 4 && bytes[end - 1] == b'e' {
+        end -= 1;
+    }
+
+    stem[..end].to_string()
+}
+
+/// Split `text` into lowercased, stemmed whole-word keys (length >= 3), the same
+/// normalization [`recall_query_tokens`] applies to the query so the two sides
+/// compare like-for-like. Used to build per-document word sets for whole-word
+/// (#1) matching and IDF (#2) document-frequency.
+fn recall_doc_words(text: &str) -> std::collections::HashSet<String> {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| word.len() >= 3)
+        .map(|word| recall_stem(&word.to_lowercase()))
         .collect()
 }
 
-/// Token-overlap score of `tokens` against the lowercased `text`: the number of
-/// query tokens that appear as a substring in the text.
-fn recall_overlap_score(tokens: &[String], text: &str) -> u32 {
-    if tokens.is_empty() {
-        return 0;
+/// IDF-style weight for a token matching `df` of `n` candidate documents: rarer
+/// tokens (low `df`) outweigh common ones. `ln((N+1)/(df+1)) + 1`, always
+/// positive so any match still counts. (#2)
+fn recall_idf_weight(n: usize, df: usize) -> f64 {
+    (((n as f64 + 1.0) / (df as f64 + 1.0)).ln()) + 1.0
+}
+
+/// Build a token -> document-frequency map over the candidate `docs` (each a
+/// pre-split whole-word set), counting only tokens that are actual query tokens.
+/// (#2)
+fn recall_document_frequencies(
+    tokens: &[String],
+    docs: &[std::collections::HashSet<String>],
+) -> std::collections::HashMap<String, usize> {
+    let mut df: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for token in tokens {
+        let count = docs.iter().filter(|words| words.contains(token)).count();
+        df.insert(token.clone(), count);
     }
-    let haystack = text.to_lowercase();
+    df
+}
+
+/// Whole-word (#1), rare-token-weighted (#2) relevance score of `tokens` against
+/// a document's pre-split whole-word set `doc_words`: sums the IDF weight of each
+/// query token present as a full (stemmed) word. Substring hits no longer count —
+/// "cat" matches "cat" but not "category". Returns `0.0` when nothing matches.
+fn recall_overlap_score(
+    tokens: &[String],
+    doc_words: &std::collections::HashSet<String>,
+    df: &std::collections::HashMap<String, usize>,
+    n: usize,
+) -> f64 {
+    if tokens.is_empty() {
+        return 0.0;
+    }
     tokens
         .iter()
-        .filter(|token| haystack.contains(token.as_str()))
-        .count() as u32
+        .filter(|token| doc_words.contains(*token))
+        .map(|token| recall_idf_weight(n, df.get(token).copied().unwrap_or(0)))
+        .sum()
 }
 
 /// Convert a snake_case-serde enum value to its wire string (e.g. `Creating` ->
@@ -1590,23 +1723,36 @@ fn snake_case_enum_string<T: Serialize>(value: &T) -> Option<String> {
 }
 
 /// Pure relevance + sensitive-filter + cap for Conclusions. Drops sensitive and
-/// non-Visible Conclusions, scores the rest by token overlap of the query against
-/// subject+statement, keeps score>0 (sorted by score desc, confidence desc),
-/// falls back to top-by-confidence when the query has no usable tokens, and
-/// truncates to `limit` so the whole dossier can never be returned.
+/// non-Visible Conclusions, then scores the rest by whole-word (#1), stemmed (#3),
+/// rare-token-weighted (#2 IDF) overlap of the query against subject+statement.
+/// Keeps score>0 (sorted by score desc, confidence desc), falls back to
+/// top-by-confidence when the query has no usable tokens, and truncates to
+/// `limit` so the whole dossier can never be returned. IDF document-frequency is
+/// computed over the non-sensitive, Visible candidate set only.
 fn select_relevant_conclusions(
     conclusions: &[capture_types::Conclusion],
     tokens: &[String],
     limit: usize,
 ) -> Vec<BrokerRecalledConclusion> {
-    let mut scored: Vec<(u32, &capture_types::Conclusion)> = conclusions
+    // Eligible candidates first (Visible + non-sensitive), so the IDF corpus and
+    // the scoring set are the same population.
+    let candidates: Vec<&capture_types::Conclusion> = conclusions
         .iter()
         .filter(|c| matches!(c.status, capture_types::ConclusionStatus::Visible))
         .filter(|c| !crate::user_context::guardrail::is_sensitive(&c.subject, &c.statement))
-        .map(|c| {
-            let text = format!("{} {}", c.subject, c.statement);
-            (recall_overlap_score(tokens, &text), c)
-        })
+        .collect();
+
+    let docs: Vec<std::collections::HashSet<String>> = candidates
+        .iter()
+        .map(|c| recall_doc_words(&format!("{} {}", c.subject, c.statement)))
+        .collect();
+    let df = recall_document_frequencies(tokens, &docs);
+    let n = candidates.len();
+
+    let mut scored: Vec<(f64, &capture_types::Conclusion)> = candidates
+        .iter()
+        .zip(docs.iter())
+        .map(|(c, words)| (recall_overlap_score(tokens, words, &df, n), *c))
         .collect();
 
     if tokens.is_empty() {
@@ -1617,13 +1763,15 @@ fn select_relevant_conclusions(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     } else {
-        scored.retain(|(score, _)| *score > 0);
+        scored.retain(|(score, _)| *score > 0.0);
         scored.sort_by(|a, b| {
-            b.0.cmp(&a.0).then_with(|| {
-                b.1.confidence
-                    .partial_cmp(&a.1.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    b.1.confidence
+                        .partial_cmp(&a.1.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
     }
 
@@ -1639,16 +1787,30 @@ fn select_relevant_conclusions(
         .collect()
 }
 
-/// Pure relevance + cap for Activities. Scores by token overlap of the query
-/// against title+summary+category, keeps score>0 (sorted by score desc, recency
-/// desc), falls back to most-recent when the query has no usable tokens, and
-/// truncates to `limit`. No ids or evidence refs cross the boundary.
+/// Pure relevance + sensitive-filter + cap for Activities. Drops sensitive
+/// Activities via the SAME hard guardrail used for Conclusions (#4) — an
+/// Activity's `title` reads as the "subject", its `summary` as the "statement",
+/// closing the asymmetry where Activity text crossed the broker boundary
+/// unfiltered. Then scores survivors by whole-word (#1), stemmed (#3),
+/// rare-token-weighted (#2 IDF) overlap of the query against title+summary+
+/// category. Keeps score>0 (sorted by score desc, recency desc), falls back to
+/// most-recent when the query has no usable tokens, and truncates to `limit`. No
+/// ids or evidence refs cross the boundary.
 fn select_relevant_activities(
     activities: &[capture_types::Activity],
     tokens: &[String],
     limit: usize,
 ) -> Vec<BrokerRecalledActivity> {
-    let mut scored: Vec<(u32, &capture_types::Activity)> = activities
+    // #4: guardrail Activities the same way Conclusions are guardrailed. The
+    // guardrail is pure text-pattern matching (subject + statement combined), so
+    // running it over title (as subject) + summary (as statement) catches a
+    // sensitive Activity before it can be scored or returned.
+    let candidates: Vec<&capture_types::Activity> = activities
+        .iter()
+        .filter(|a| !crate::user_context::guardrail::is_sensitive(&a.title, &a.summary))
+        .collect();
+
+    let docs: Vec<std::collections::HashSet<String>> = candidates
         .iter()
         .map(|a| {
             let category = a
@@ -1656,18 +1818,26 @@ fn select_relevant_activities(
                 .as_ref()
                 .and_then(snake_case_enum_string)
                 .unwrap_or_default();
-            let text = format!("{} {} {}", a.title, a.summary, category);
-            (recall_overlap_score(tokens, &text), a)
+            recall_doc_words(&format!("{} {} {}", a.title, a.summary, category))
         })
+        .collect();
+    let df = recall_document_frequencies(tokens, &docs);
+    let n = candidates.len();
+
+    let mut scored: Vec<(f64, &capture_types::Activity)> = candidates
+        .iter()
+        .zip(docs.iter())
+        .map(|(a, words)| (recall_overlap_score(tokens, words, &df, n), *a))
         .collect();
 
     if tokens.is_empty() {
         // No usable query tokens: fall back to most-recent, STILL capped.
         scored.sort_by(|a, b| b.1.started_at_ms.cmp(&a.1.started_at_ms));
     } else {
-        scored.retain(|(score, _)| *score > 0);
+        scored.retain(|(score, _)| *score > 0.0);
         scored.sort_by(|a, b| {
-            b.0.cmp(&a.0)
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.1.started_at_ms.cmp(&a.1.started_at_ms))
         });
     }
@@ -2143,6 +2313,168 @@ mod tests {
         // Both relevant; recency tie-break puts the later one first.
         assert_eq!(recalled[0].title, "Code review");
         assert!(recalled.iter().all(|a| !a.title.contains("Lunch")));
+    }
+
+    // --- #1 whole-word matching: no substring false positives --------------
+
+    #[test]
+    fn recall_word_boundary_matching_rejects_substrings() {
+        use capture_types::ConclusionStatus::Visible;
+        // Query token "cat" must NOT match "category"/"education" (substring), only
+        // the whole word "cat".
+        let conclusions = vec![
+            test_conclusion("work", "spends time on category triage", 0.9, Visible),
+            test_conclusion("pets", "adopted a cat last month", 0.5, Visible),
+        ];
+        let tokens = recall_query_tokens("cat");
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10);
+        assert_eq!(recalled.len(), 1, "only the whole-word match should survive");
+        assert_eq!(recalled[0].subject, "pets");
+    }
+
+    #[test]
+    fn recall_word_boundary_matching_on_activities_rejects_substrings() {
+        // "run" must not match "running errands" via substring inside another word,
+        // but stemming collapses "running" -> "run", so it SHOULD match as a word.
+        let activities = vec![
+            test_activity("Prepped a meal", "chopped vegetables for dinner", 2000),
+            test_activity("Morning jog", "went running in the park", 1000),
+        ];
+        let tokens = recall_query_tokens("run");
+        let recalled = select_relevant_activities(&activities, &tokens, 10);
+        assert_eq!(recalled.len(), 1);
+        assert_eq!(recalled[0].title, "Morning jog");
+    }
+
+    // --- #2 IDF weighting: rare token outranks common token ----------------
+
+    #[test]
+    fn recall_idf_weight_favors_rare_tokens() {
+        // Rarer token (lower df) must weigh more than a common one.
+        let rare = recall_idf_weight(100, 1);
+        let common = recall_idf_weight(100, 90);
+        assert!(rare > common, "rare {rare} should outweigh common {common}");
+        // Always positive so any match still counts.
+        assert!(recall_idf_weight(100, 100) > 0.0);
+    }
+
+    #[test]
+    fn recall_idf_ranks_distinctive_match_above_common_match() {
+        use capture_types::ConclusionStatus::Visible;
+        // "rust" appears in many candidates (common); "kazoo" in one (rare). A
+        // single-token query matching the rare word should outrank a single-token
+        // query matching the common word, all confidence equal.
+        let mut conclusions: Vec<_> = (0..10)
+            .map(|i| test_conclusion("rust", &format!("uses rust at work {i}"), 0.5, Visible))
+            .collect();
+        conclusions.push(test_conclusion(
+            "music",
+            "plays the kazoo on weekends",
+            0.5,
+            Visible,
+        ));
+        // Query both a common and a rare token; the rare-token doc must rank first.
+        let tokens = recall_query_tokens("rust kazoo");
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 11);
+        assert_eq!(
+            recalled[0].statement, "plays the kazoo on weekends",
+            "rare-token match must rank above common-token matches: {recalled:?}"
+        );
+    }
+
+    // --- #3 stemmer: collapses common suffixes, guards short words ---------
+
+    #[test]
+    fn recall_stem_collapses_common_suffixes() {
+        // The stem need not be a real word — only consistent. What matters is
+        // that morphological variants collapse to the SAME key.
+        assert_eq!(recall_stem("running"), "run");
+        assert_eq!(recall_stem("tests"), "test");
+        assert_eq!(recall_stem("quickly"), "quick");
+        assert_eq!(recall_stem("reviewed"), "review");
+        // Cross-form keys agree so the matcher bridges the lexical gap.
+        assert_eq!(recall_stem("coding"), recall_stem("code"));
+        assert_eq!(recall_stem("parsing"), recall_stem("parse"));
+        assert_eq!(recall_stem("runs"), recall_stem("running"));
+        assert_eq!(recall_stem("tested"), recall_stem("tests"));
+    }
+
+    #[test]
+    fn recall_stem_guards_against_over_stemming_short_words() {
+        // Short words must survive intact rather than being gutted.
+        assert_eq!(recall_stem("is"), "is");
+        assert_eq!(recall_stem("red"), "red");
+        assert_eq!(recall_stem("bus"), "bus");
+        assert_eq!(recall_stem("cat"), "cat");
+        assert_eq!(recall_stem("ring"), "ring"); // not stemmed to "r"
+    }
+
+    #[test]
+    fn recall_stemming_bridges_lexical_gap() {
+        use capture_types::ConclusionStatus::Visible;
+        // Query "running" should reach a conclusion that says "run".
+        let conclusions = vec![test_conclusion(
+            "fitness",
+            "likes to run every morning",
+            0.9,
+            Visible,
+        )];
+        let tokens = recall_query_tokens("running");
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10);
+        assert_eq!(recalled.len(), 1, "stemming should bridge running~run");
+    }
+
+    // --- #4 sensitive-activity filtering -----------------------------------
+
+    #[test]
+    fn recall_context_drops_sensitive_activities() {
+        // An Activity whose title/summary lands in a sensitive category must be
+        // dropped before scoring, exactly like sensitive Conclusions.
+        let activities = vec![
+            test_activity("Therapy session", "attended a therapy appointment", 2000),
+            test_activity("Code review", "reviewed the therapy scheduler code", 1000),
+        ];
+        // Query matches both, but the sensitive one must never be returned.
+        let tokens = recall_query_tokens("therapy");
+        let recalled = select_relevant_activities(&activities, &tokens, 10);
+        assert!(
+            recalled.iter().all(|a| a.title != "Therapy session"),
+            "sensitive activity leaked: {recalled:?}"
+        );
+        // The benign code-review activity (its TEXT trips the guardrail via
+        // "therapy" too) — confirm guardrail symmetry: anything matching the
+        // sensitive term list is dropped, biasing to over-suppression like
+        // conclusions do. So NOTHING relevant survives here.
+        assert!(recalled.is_empty(), "over-suppression by design: {recalled:?}");
+    }
+
+    #[test]
+    fn recall_context_keeps_benign_activities_when_sensitive_present() {
+        let activities = vec![
+            test_activity("Doctor visit", "discussed medication options", 3000),
+            test_activity("Parser work", "wrote a new parser module", 2000),
+        ];
+        let tokens = recall_query_tokens("parser medication");
+        let recalled = select_relevant_activities(&activities, &tokens, 10);
+        // The medication (sensitive) activity is dropped; the parser one stays.
+        assert_eq!(recalled.len(), 1);
+        assert_eq!(recalled[0].title, "Parser work");
+    }
+
+    // --- fallbacks remain intact (no usable tokens) ------------------------
+
+    #[test]
+    fn recall_context_empty_query_falls_back_most_recent_activities_capped() {
+        let activities: Vec<_> = (0..30)
+            .map(|i| test_activity(&format!("act {i}"), "summary", 1000 + i as i64))
+            .collect();
+        // Stopwords-only query yields no usable tokens.
+        let tokens = recall_query_tokens("what is the and for");
+        assert!(tokens.is_empty());
+        let recalled = select_relevant_activities(&activities, &tokens, 5);
+        assert_eq!(recalled.len(), 5, "fallback must still be capped");
+        // Most-recent first.
+        assert!(recalled[0].started_at >= recalled[1].started_at);
     }
 
     #[test]
