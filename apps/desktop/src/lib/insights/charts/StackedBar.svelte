@@ -20,9 +20,12 @@
   interface Props {
     segments: StackSegment[];
     showLegend?: boolean;
+    // When the host card has spare vertical height, let the bar grow to absorb
+    // it (capped) instead of leaving a dead gap below the legend.
+    fill?: boolean;
   }
 
-  let { segments, showLegend = true }: Props = $props();
+  let { segments, showLegend = true, fill = false }: Props = $props();
 
   const total = $derived(segments.reduce((acc, s) => acc + Math.max(0, s.value), 0));
 
@@ -32,7 +35,7 @@
   }
 </script>
 
-<div class="stacked">
+<div class="stacked" class:fill>
   <div
     class="bar"
     role="img"
@@ -59,6 +62,14 @@
   .stacked {
     width: 100%;
   }
+  /* Fill mode: stretch to the host's height and let the bar grow into the
+     spare space (capped) so the card reads full instead of leaving a gap. */
+  .stacked.fill {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
   .bar {
     display: flex;
     width: 100%;
@@ -67,6 +78,12 @@
     overflow: hidden;
     border: 1px solid var(--app-border);
     background: var(--app-surface-subtle);
+  }
+  .stacked.fill .bar {
+    height: auto;
+    flex: 1 1 auto;
+    min-height: 24px;
+    max-height: 88px;
   }
   .bar > span {
     display: block;

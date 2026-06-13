@@ -51,6 +51,8 @@
     type ActivityThread,
   } from "$lib/insights/activity-helpers";
   import CategoryDetailModal from "$lib/insights/CategoryDetailModal.svelte";
+  import AppDetailModal from "$lib/insights/AppDetailModal.svelte";
+  import FocusDetailModal from "$lib/insights/FocusDetailModal.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
   import StackedBar from "$lib/insights/charts/StackedBar.svelte";
   import Heatmap from "$lib/insights/charts/Heatmap.svelte";
@@ -255,6 +257,19 @@
     })),
   );
 
+  // The full ranked app list (NOT sliced) for the AppDetailModal — same row
+  // shape the modal contract expects (app/activeMs/frameCount/iconSrc/fallback).
+  // Backend already sorts `timePerApp` descending by active time; keep it.
+  const allApps = $derived.by(() =>
+    (usage?.timePerApp ?? []).map((a) => ({
+      app: a.app,
+      activeMs: a.activeMs,
+      frameCount: a.frameCount,
+      iconSrc: appIconSrc(a.appBundleId),
+      fallback: appIconFallback(a.app, a.appBundleId),
+    })),
+  );
+
   // Icon resolutions are bundle-id-keyed facts, not range-scoped data: a late
   // response from a previous range still maps the right id to the right icon,
   // so the merge map doubles as a cross-range cache — no staleness token.
@@ -293,10 +308,11 @@
     return iconPath ? convertFileSrc(iconPath) : null;
   }
 
-  // Ask for icons whenever the Top apps tile's apps change (usage payload /
-  // range).
+  // Ask for icons whenever the usage payload / range changes. Resolve the FULL
+  // app list (not just the top 5) so every row in the AppDetailModal gets an
+  // icon, not only the ones shown on the small "Time" card.
   $effect(() => {
-    const ids = topAppUsage.map((a) => a.appBundleId);
+    const ids = (usage?.timePerApp ?? []).map((a) => a.appBundleId);
     void untrack(() => resolveAppIcons(ids));
   });
 
@@ -580,6 +596,8 @@
   // (the threads no longer live inline in the feed — Phase 2 redesign). The
   // per-row "adjust" popover lives in the modal too.
   let categoryModalOpen = $state(false);
+  let appsModalOpen = $state(false);
+  let focusModalOpen = $state(false);
 
   // ── Needs attention (#? — tag what the engine missed) ──────────────────
   // Uncategorized in-range activities, newest first — the one place in the feed
@@ -868,6 +886,17 @@
   const feedLoading = $derived(
     !statusLoaded || (engineOn && (loadingEngine || !engineLoadedOnce)),
   );
+
+  // Each exhibit card is a clickable trigger for its detail modal ONLY when its
+  // populated branch renders (not while loading or empty/locked) — these mirror
+  // the template branch conditions exactly so "openable" ⇔ the chart shows.
+  const timeOpenable = $derived(!freeLoading && topApps.length > 0);
+  const categoriesOpenable = $derived(
+    engineOn && !engineTilesLoading && categorySegments.length > 0,
+  );
+  const focusOpenable = $derived(
+    engineOn && !engineTilesLoading && focusRows.length > 0,
+  );
 </script>
 
 <section class="overview" aria-label="Overview">
@@ -1093,8 +1122,27 @@
       {/if}
     </p>
     <div class="exhibits-grid">
-      <!-- Time -->
-      <div class="exhibit">
+      <!-- Time — the whole card is a conditional button (role/tabindex are
+           paired and only set when openable); the analyzer can't see the
+           conditional role, so the tabindex pairing is safe to ignore. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <div
+        class="exhibit"
+        class:exhibit--clickable={timeOpenable}
+        role={timeOpenable ? "button" : undefined}
+        tabindex={timeOpenable ? 0 : undefined}
+        aria-haspopup={timeOpenable ? "dialog" : undefined}
+        aria-label={timeOpenable ? "View app usage detail" : undefined}
+        onclick={timeOpenable ? () => (appsModalOpen = true) : undefined}
+        onkeydown={timeOpenable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                appsModalOpen = true;
+              }
+            }
+          : undefined}
+      >
         <div class="exhibit-head">
           <span class="exhibit-title">Time</span>
         </div>
@@ -1112,12 +1160,30 @@
             <p class="tile-note">No tracked app time in this range.</p>
           {:else}
             <MiniBars items={topApps} />
+            <span class="exhibit-hint">view all apps →</span>
           {/if}
         </div>
       </div>
 
-      <!-- Categories -->
-      <div class="exhibit">
+      <!-- Categories — conditional button; see Time card note above. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <div
+        class="exhibit"
+        class:exhibit--clickable={categoriesOpenable}
+        role={categoriesOpenable ? "button" : undefined}
+        tabindex={categoriesOpenable ? 0 : undefined}
+        aria-haspopup={categoriesOpenable ? "dialog" : undefined}
+        aria-label={categoriesOpenable ? "View category breakdown" : undefined}
+        onclick={categoriesOpenable ? () => (categoryModalOpen = true) : undefined}
+        onkeydown={categoriesOpenable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                categoryModalOpen = true;
+              }
+            }
+          : undefined}
+      >
         <div class="exhibit-head">
           <span class="exhibit-title">Categories</span>
         </div>
@@ -1136,22 +1202,31 @@
           {:else if categorySegments.length === 0}
             <p class="tile-note">No categorized activity yet.</p>
           {:else}
-            <button
-              type="button"
-              class="cat-bar-trigger"
-              aria-haspopup="dialog"
-              aria-label="View category breakdown"
-              onclick={() => (categoryModalOpen = true)}
-            >
-              <StackedBar segments={categorySegments} showLegend={true} />
-            </button>
-            <span class="cat-bar-hint">view breakdown →</span>
+            <StackedBar segments={categorySegments} showLegend={true} fill={true} />
+            <span class="exhibit-hint">view breakdown →</span>
           {/if}
         </div>
       </div>
 
-      <!-- Focus -->
-      <div class="exhibit">
+      <!-- Focus — conditional button; see Time card note above. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <div
+        class="exhibit"
+        class:exhibit--clickable={focusOpenable}
+        role={focusOpenable ? "button" : undefined}
+        tabindex={focusOpenable ? 0 : undefined}
+        aria-haspopup={focusOpenable ? "dialog" : undefined}
+        aria-label={focusOpenable ? "View focus detail" : undefined}
+        onclick={focusOpenable ? () => (focusModalOpen = true) : undefined}
+        onkeydown={focusOpenable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                focusModalOpen = true;
+              }
+            }
+          : undefined}
+      >
         <div class="exhibit-head">
           <span class="exhibit-title">Focus</span>
         </div>
@@ -1179,6 +1254,7 @@
               colorMode="focus"
               legend="deep · mixed · scattered"
             />
+            <span class="exhibit-hint">view focus detail →</span>
           {/if}
         </div>
       </div>
@@ -1462,6 +1538,21 @@
     onCorrectCategory={correctCategory}
     onCorrectFocus={correctFocus}
   />
+
+  <AppDetailModal
+    open={appsModalOpen}
+    apps={allApps}
+    {rangeLabel}
+    onClose={() => (appsModalOpen = false)}
+  />
+  <FocusDetailModal
+    open={focusModalOpen}
+    activities={rangeActivities}
+    {focusRows}
+    {rangeMode}
+    {rangeLabel}
+    onClose={() => (focusModalOpen = false)}
+  />
 </section>
 
 <style>
@@ -1587,9 +1678,22 @@
     display: grid;
     grid-template-columns: repeat(2, 1fr);
     gap: 10px;
+    /* Stretch both cards in a row to the tallest one so Time and Categories
+       read as an equal-height pair. The shorter card's slack isn't dead space:
+       its `view … →` hint is pushed to the bottom edge (margin-top: auto),
+       turning the gap into breathing room. */
+    align-items: stretch;
   }
   .exhibits-grid .exhibit:last-child {
     grid-column: 1 / -1;
+  }
+  /* Pin the top-row pair (Time / Categories) to the loaded Time card's height
+     so the row never resizes between the loading skeleton and real content
+     (which would make the fill bar visibly re-grow after load). The figure is
+     the Time card's own layout: 22 (padding) + 23 (header) + 112 (5 app rows ×
+     16 + 4 gaps × 8) + 26 (bottom hint) ≈ 183. */
+  .exhibits-grid .exhibit:not(:last-child) {
+    min-height: 190px;
   }
   .exhibit {
     display: flex;
@@ -1605,6 +1709,17 @@
   }
   .exhibit:hover {
     border-color: var(--app-border-hover);
+  }
+  /* The whole card is the trigger when its detail modal is openable. */
+  .exhibit--clickable {
+    cursor: pointer;
+  }
+  .exhibit--clickable:hover {
+    border-color: var(--app-border-hover);
+  }
+  .exhibit--clickable:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
   .exhibit-head {
     display: flex;
@@ -1624,7 +1739,9 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    /* Top-align content directly under the header — no floating in the middle
+       with dead space above and below. */
+    justify-content: flex-start;
   }
 
   .tile-note {
@@ -1638,29 +1755,17 @@
     font-style: italic;
   }
 
-  /* Categories bar is a transparent trigger that opens the breakdown modal —
-     the StackedBar still reads as the bar, with a subtle hover affordance. */
-  .cat-bar-trigger {
-    display: block;
-    width: 100%;
-    padding: 0;
-    border: none;
-    background: transparent;
-    text-align: left;
-    cursor: pointer;
-    border-radius: 6px;
-    transition: opacity 0.12s ease;
-  }
-  .cat-bar-trigger:hover {
-    opacity: 0.85;
-  }
-  .cat-bar-trigger:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-  .cat-bar-hint {
+  /* Non-interactive visual cue at the bottom of each exhibit card hinting that
+     the whole card opens a detail modal. */
+  .exhibit-hint {
     display: inline-block;
-    margin-top: 8px;
+    /* Sit at the bottom edge of the card; a stretched card's slack lands here
+       as breathing room rather than a gap under the chart. padding-top keeps a
+       minimum gap from the chart when the card is short and the auto margin
+       collapses. */
+    margin-top: auto;
+    padding-top: 12px;
+    align-self: flex-start;
     font-size: 11px;
     color: var(--app-text-muted);
     border-bottom: 1px dotted var(--app-border-strong);
