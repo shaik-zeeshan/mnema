@@ -480,8 +480,9 @@ fn build_temporal_grounding(now_ms: i64, clock: &ClientClock) -> String {
         }
     }
     grounding.push_str(
-        "Every capture timestamp you see, and every `from`/`to` bound you pass to `search` and \
-`timeline`, is in UTC (RFC3339 `Z`). Resolve the user's relative or local-time phrasing — \
+        "Every capture timestamp you see, and every `from`/`to` bound you pass to `search`, \
+`timeline`, and `recall_context`, is in UTC (RFC3339 `Z`). Resolve the user's relative or \
+local-time phrasing — \
 \"today\", \"yesterday\", \"this morning\", \"last week\" — against the local time above, convert \
 it to UTC for tool calls, and present times back to the user in their local time. \
 Each search and timeline result also includes pre-converted `startedAtLocal`/`endedAtLocal` \
@@ -927,7 +928,9 @@ filters); `timeline` returns coarse activity intervals for a bounded `from`/`to`
 `recall_context` returns ONLY the User-Context conclusions (distilled beliefs about the user) \
 and recent activities relevant to the question — redacted, capped, never the whole dossier, and \
 never sensitive-category conclusions — and is the best first tool for questions about the user's \
-habits, interests, projects, or what you know about them. When the \
+habits, interests, projects, or what you know about them; it also accepts an optional `from`/`to` \
+UTC time window that scopes the returned ACTIVITIES by date (conclusions are standing beliefs and \
+are never time-scoped), so pass it when the question is about a specific day or period. When the \
 seeded context below is missing or insufficient to answer, ISSUE follow-up tool calls to gather \
 what you need before answering — prefer a concise `search` first, and use `show_text` sparingly \
 for the specific results you need to read in full. Cite times and apps when useful, but never \
@@ -1086,6 +1089,8 @@ fn recall_context_tool_schema() -> serde_json::Value {
                 "type": "string",
                 "description": "The user's question; returns only the User-Context conclusions/activities relevant to it."
             },
+            "from": { "type": "string", "description": "Optional inclusive lower time bound for ACTIVITIES, RFC3339 (e.g. 2026-06-01T09:00:00Z). Conclusions are never time-scoped." },
+            "to": { "type": "string", "description": "Optional inclusive upper time bound for ACTIVITIES, RFC3339." },
             "limit": { "type": "number", "description": "Maximum number of conclusions/activities to return (capped server-side)." }
         },
         "required": ["query"]
@@ -1725,6 +1730,11 @@ async fn run_ask_ai_turn(
     let reasoning: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let mut deltas_since_persist = 0usize;
     let mut chars_since_persist = 0usize;
+    // Captured for the `ToolCall` arm's tool-activity labelling: the recall-range
+    // suffix renders its `from`/`to` window in the user's LOCAL time. `clock`'s
+    // last use is `build_ask_ai_prompt(&clock)` above, before this closure, so we
+    // copy out the offset (a `Copy` `Option<i32>`).
+    let label_utc_offset_minutes = clock.utc_offset_minutes;
     let on_event = {
         let app_handle = app_handle.clone();
         let conversation_id = conversation_id.clone();
@@ -1883,7 +1893,13 @@ async fn run_ask_ai_turn(
                 // callback is sync) without the icon, record it in the rail, and
                 // set it as the live activity line. Icon resolution is async, so it
                 // is spawned and re-emits an enriched live line if/when it resolves.
-                let entry = tool_activity::format_tool_activity(&name, &params);
+                let now = now_ms();
+                let entry = tool_activity::format_tool_activity(
+                    &name,
+                    &params,
+                    now,
+                    label_utc_offset_minutes,
+                );
                 emit_live_update(
                     &app_handle,
                     &conversation_id,
