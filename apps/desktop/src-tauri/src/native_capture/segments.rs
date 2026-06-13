@@ -2257,10 +2257,17 @@ pub(super) fn pause_runtime_for_system_suspend_with_app_handle(
     let result = (|| -> Result<(), CaptureErrorResponse> {
         if active_sources.microphone {
             pause_microphone_for_inactivity_with_app_handle(runtime, app_handle)?;
+            // System suspend fully releases the endpoint and resume re-creates it
+            // via start_windows_active_segment, so detach the just-paused session
+            // here (the screen family is likewise stopped+detached by
+            // pause_screen_for_transient_liveness) — an inactivity pause instead
+            // keeps it attached for an in-place resume.
+            stop_and_detach_windows_audio_session(&mut runtime.active_microphone_session);
             paused_sources.microphone = true;
         }
         if active_sources.system_audio {
             pause_system_audio_for_inactivity_with_app_handle(runtime, app_handle)?;
+            stop_and_detach_windows_audio_session(&mut runtime.active_system_audio_session);
             paused_sources.system_audio = true;
         }
         if active_sources.screen {
@@ -4576,6 +4583,25 @@ fn stop_windows_audio_session_for_inactivity(
     } else {
         session.stop_returning_finalization()
     }
+}
+
+/// Stop a Windows audio capture session and detach it from the runtime, used by
+/// the system-suspend pause. Unlike an inactivity pause — which keeps the session
+/// attached for an in-place resume — system suspend fully releases the WASAPI
+/// endpoint (it can disappear while the machine sleeps) and resume re-creates the
+/// session via [`start_windows_active_segment`], so a stale session must not stay
+/// attached (it would otherwise hold the endpoint across sleep and be overwritten
+/// by a second session on resume). The preceding inactivity-pause call already
+/// finalized the current segment, so this stop is an empty no-op finalize (the
+/// engine's sink is already taken); its result is intentionally discarded.
+#[cfg(target_os = "windows")]
+fn stop_and_detach_windows_audio_session(
+    session: &mut Option<Box<dyn microphone_capture::AudioCaptureSession>>,
+) {
+    if let Some(active) = session.as_mut() {
+        let _ = active.stop_returning_finalization();
+    }
+    *session = None;
 }
 
 #[cfg(target_os = "windows")]

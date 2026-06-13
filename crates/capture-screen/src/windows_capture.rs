@@ -2511,6 +2511,76 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         unsafe { MFShutdown().ok() };
     }
+
+    /// Regression test for F07 (issue #81): when the requested offset lands past
+    /// the last frame, `extract_video_frame_rgba` must return the FINAL frame
+    /// (matching the macOS `AVAssetImageGenerator` past-end tolerance) by
+    /// re-seeking to 0 and decoding the whole stream forward, NOT a
+    /// `Decode("no decodable video frame")` error. Also covers a mid-stream
+    /// offset returning the kept frame at/<= the target, and `inspect_video`
+    /// reporting positive timing — the runtime coverage the seam previously
+    /// lacked (its only test extracted at offset 0).
+    #[test]
+    fn finalized_screen_segment_extracts_last_frame_past_eos() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION, MFSTARTUP_FULL).expect("MFStartup");
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-screen-past-eos-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (width, height, frames) = (320u32, 240u32, 5usize);
+        let path = dir.join("past-eos.mp4");
+        write_test_screen_segment(&path, width, height, frames)
+            .unwrap_or_else(|e| panic!("finalize past-eos segment: {e:?}"));
+
+        let info = media_decode::inspect_video(&path).expect("inspect finalized segment");
+        assert!(
+            info.duration_ms > 0,
+            "finalized segment must report positive duration"
+        );
+        assert_eq!(info.width, width, "inspected width");
+        assert_eq!(info.height, height, "inspected height");
+
+        // A mid-stream offset returns the kept frame at or before the target.
+        let mid = info.duration_ms / 2;
+        let mid_frame = media_decode::extract_video_frame_rgba(&path, mid)
+            .expect("mid-stream extract should succeed");
+        assert_eq!(mid_frame.width, width);
+        assert_eq!(mid_frame.height, height);
+        assert!(
+            mid_frame.presented_offset_ms <= mid + 1,
+            "kept frame {}ms must be at/<= the {mid}ms target",
+            mid_frame.presented_offset_ms
+        );
+
+        // F07: an offset well past EOS must fall back to the LAST decodable frame,
+        // not surface a decode error.
+        let past_eos = info.duration_ms + 10_000;
+        let last_frame = media_decode::extract_video_frame_rgba(&path, past_eos).expect(
+            "past-EOS extract must fall back to the last frame, not error \
+             (F07 parity with AVAssetImageGenerator)",
+        );
+        assert_eq!(last_frame.width, width);
+        assert_eq!(last_frame.height, height);
+        assert_eq!(
+            last_frame.pixels.len(),
+            (width * height * 4) as usize,
+            "past-EOS fallback frame must be a tightly packed RGBA buffer"
+        );
+        assert!(
+            last_frame.presented_offset_ms <= info.duration_ms,
+            "past-EOS fallback must return an in-stream frame ({}ms <= {}ms)",
+            last_frame.presented_offset_ms,
+            info.duration_ms
+        );
+
+        let _ = std::fs::remove_file(&path);
+        unsafe { MFShutdown().ok() };
+    }
 }
 
 // `OsStr::encode_wide` lives behind this platform extension trait.

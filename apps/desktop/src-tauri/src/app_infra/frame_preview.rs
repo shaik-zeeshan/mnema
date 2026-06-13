@@ -1971,12 +1971,24 @@ fn extract_scrub_preview_images_from_video_batch_blocking(
         .expect("test video preview extractor poisoned")
         .is_some()
     {
-        let mut results = results.lock().expect("scrub preview batch results poisoned");
+        // Mirror the production loop's cancel/deadline handling (below) so the
+        // partial-batch-survival path (a chunk that stops early still persists the
+        // offsets it completed — the F08 regression) is reachable through the
+        // injected seam without a real MF backend.
         for offset_ms in video_offset_ms {
+            if cancel_requested.load(Ordering::SeqCst) {
+                return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
             if let Some(result) =
                 run_test_video_preview_extractor(&video_path, offset_ms as f64 / 1000.0)
             {
-                results.insert(offset_ms, result.map(|(bytes, _)| bytes));
+                results
+                    .lock()
+                    .expect("scrub preview batch results poisoned")
+                    .insert(offset_ms, result.map(|(bytes, _)| bytes));
             }
         }
         return Ok(());
@@ -2070,6 +2082,21 @@ fn render_scrub_preview_jpeg(
     Ok(output)
 }
 
+/// Per-batch timeout for the Windows scrub extraction. Each offset pays a full
+/// MF startup + reader + seek + decode, so the budget scales with the offset
+/// count ([`SCRUB_PREVIEW_VIDEO_PER_OFFSET_BUDGET`] each) with a
+/// [`SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT`] floor and a
+/// [`SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT_MAX`] cap — unlike the flat macOS
+/// single-request timeout (macOS issues one `AVAssetImageGenerator` request, so
+/// per-offset scaling is not needed there). Extracted so the scaling is unit
+/// testable without an MF backend (issue #83 / F08).
+#[cfg(target_os = "windows")]
+fn windows_scrub_batch_timeout(offset_count: usize) -> Duration {
+    SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT
+        .max(SCRUB_PREVIEW_VIDEO_PER_OFFSET_BUDGET.saturating_mul(offset_count as u32))
+        .min(SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT_MAX)
+}
+
 #[cfg(target_os = "windows")]
 async fn extract_scrub_preview_images_from_video_batch(
     video_path: &Path,
@@ -2082,9 +2109,7 @@ async fn extract_scrub_preview_images_from_video_batch(
     // macOS `SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT`. Results accumulate into a shared
     // map so a timeout surfaces the offsets that completed instead of discarding
     // the whole chunk (the previous `if let Ok(..)` caller dropped every frame).
-    let batch_timeout = SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT
-        .max(SCRUB_PREVIEW_VIDEO_PER_OFFSET_BUDGET.saturating_mul(video_offset_ms.len() as u32))
-        .min(SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT_MAX);
+    let batch_timeout = windows_scrub_batch_timeout(video_offset_ms.len());
     let deadline = Instant::now() + batch_timeout;
     let results: ScrubBatchResults = Arc::new(Mutex::new(HashMap::with_capacity(
         video_offset_ms.len(),
@@ -3238,21 +3263,38 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
-    struct TestVideoPreviewExtractorGuard;
+    /// Serializes the tests that install a process-global preview-extractor seam.
+    /// The extractor lives in a shared `OnceLock`, so two such tests running
+    /// concurrently would stomp each other (one guard's `Drop` clearing the seam
+    /// mid-run, making the other fall through to the real MF path). The guard
+    /// holds this lock for its whole lifetime, so guard-using tests run serially.
+    #[cfg(target_os = "windows")]
+    static SCRUB_SEAM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(target_os = "windows")]
+    struct TestVideoPreviewExtractorGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
 
     #[cfg(target_os = "windows")]
     impl TestVideoPreviewExtractorGuard {
         fn install(extractor: Arc<TestVideoPreviewExtractor>) -> Self {
+            let serial = SCRUB_SEAM_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *test_video_preview_extractor_state()
                 .lock()
                 .expect("test video preview extractor poisoned") = Some(extractor);
-            Self
+            Self { _serial: serial }
         }
     }
 
     #[cfg(target_os = "windows")]
     impl Drop for TestVideoPreviewExtractorGuard {
         fn drop(&mut self) {
+            // Clear the seam before releasing the serialization lock (the
+            // `_serial` field drops after this body runs), so the next
+            // guard-using test starts from a clean `None` state.
             *test_video_preview_extractor_state()
                 .lock()
                 .expect("test video preview extractor poisoned") = None;
@@ -3289,6 +3331,82 @@ mod tests {
         assert_eq!(results.get(&0).unwrap().as_ref().unwrap(), b"jpeg-0");
         assert_eq!(results.get(&1_000).unwrap().as_ref().unwrap(), b"jpeg-1000");
         assert_eq!(results.get(&2_000).unwrap().as_ref().unwrap(), b"jpeg-2000");
+    }
+
+    // F08 (issue #83): a scrub batch that stops early (here: cancellation midway,
+    // standing in for the per-batch deadline) must still surface the offsets it
+    // decoded, instead of dropping the entire chunk — the regression where the old
+    // `if let Ok(..)` caller discarded every frame on a single timeout.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_scrub_batch_persists_completed_offsets_when_stopped_midway() {
+        use std::sync::atomic::AtomicUsize;
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let cancel_for_extractor = Arc::clone(&cancel);
+        let completed_for_extractor = Arc::clone(&completed);
+        let _guard = TestVideoPreviewExtractorGuard::install(Arc::new(
+            move |_path: PathBuf, offset_seconds: f64| {
+                let offset_ms = (offset_seconds * 1000.0).round() as u64;
+                // After three offsets complete, signal the batch to stop; the
+                // already-decoded offsets must still be returned.
+                if completed_for_extractor.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
+                    cancel_for_extractor.store(true, Ordering::SeqCst);
+                }
+                Ok((format!("jpeg-{offset_ms}").into_bytes(), "image/jpeg"))
+            },
+        ));
+
+        let results = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(extract_scrub_preview_images_from_video_batch(
+                Path::new("session-segment-0007.mp4"),
+                &[0, 1_000, 2_000, 3_000, 4_000],
+                SCRUB_PREVIEW_MAX_PIXEL_SIZE,
+                Arc::clone(&cancel),
+            ))
+            .expect("a partially-stopped batch must still resolve with the completed offsets");
+
+        assert_eq!(
+            results.len(),
+            3,
+            "the three offsets decoded before the stop must survive, not the whole chunk dropped"
+        );
+        assert_eq!(results.get(&0).unwrap().as_ref().unwrap(), b"jpeg-0");
+        assert_eq!(results.get(&1_000).unwrap().as_ref().unwrap(), b"jpeg-1000");
+        assert_eq!(results.get(&2_000).unwrap().as_ref().unwrap(), b"jpeg-2000");
+        assert!(results.get(&3_000).is_none(), "offset after the stop must be dropped");
+        assert!(results.get(&4_000).is_none(), "offset after the stop must be dropped");
+    }
+
+    // F08 (issue #83): the per-batch timeout grows with the offset count (each
+    // Windows offset pays a full MF reader create + seek + decode) with a flat
+    // floor and a hard cap, rather than the flat macOS single-request timeout.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_scrub_batch_timeout_scales_with_offset_count() {
+        // Empty / single offset: clamped up to the flat floor.
+        assert_eq!(
+            windows_scrub_batch_timeout(0),
+            SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT
+        );
+        assert_eq!(
+            windows_scrub_batch_timeout(1),
+            SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT
+        );
+        // Mid range: scales linearly at the per-offset budget.
+        assert_eq!(
+            windows_scrub_batch_timeout(10),
+            SCRUB_PREVIEW_VIDEO_PER_OFFSET_BUDGET * 10
+        );
+        // Large chunk: capped at the maximum (30 * 750ms = 22.5s -> 20s cap).
+        assert_eq!(
+            windows_scrub_batch_timeout(30),
+            SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT_MAX
+        );
     }
 
     fn count_scrub_preview_jpegs(cache_root: &Path) -> usize {

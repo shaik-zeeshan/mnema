@@ -120,3 +120,38 @@ jobs:
           -p capture-vad
           -p secret-redaction
           -p capture-metadata
+
+      - name: Test Windows capture crates
+        # These crates carry the #[cfg(target_os = "windows")] runtime tests for
+        # the Windows recording pipeline: capture-writers (F02 AAC sink
+        # zero-sample finalize guard via a real IMFSinkWriter round-trip),
+        # capture-screen + media-decode (F07 past-EOS frame extraction, F16 RGB32
+        # stride/flip, the MF Source Reader decode round-trips), and
+        # capture-microphone (MF format/HRESULT classification). They pull only
+        # the in-box Windows media stack (MF / WGC / WASAPI) — no ML native
+        # runtimes, no capture device or display — so they run headlessly on the
+        # GitHub runner. `cargo check --all-targets` above only type-checks these
+        # tests; this step actually executes them.
+        run: >
+          cargo test --locked
+          -p capture-writers
+          -p capture-microphone
+          -p capture-screen
+          -p media-decode
+
+      - name: Test Windows desktop-crate pipeline logic
+        # The mnema desktop crate (apps/desktop/src-tauri) holds the remaining
+        # Windows pipeline tests: the scrub-preview batch (#83/F08 — scaled
+        # per-offset timeout and partial-result survival when a chunk stops
+        # early), the tray pause/resume exposure (F22), and the system-suspend
+        # pause/resume-all-families teardown. Scoped by test-name filter to those
+        # modules: the full mnema suite still carries pre-existing Unix-path test
+        # failures tracked by #77, so a broad `cargo test -p mnema` is deferred
+        # until that lands; the filter below runs only the windows-pipeline tests,
+        # which are green. The ML/native link these need was already built by the
+        # "Build desktop crate" step above (cargo test reuses that artifact).
+        run: >
+          cargo test --locked -p mnema --lib --
+          app_infra::frame_preview
+          status_bar::tests
+          native_capture::tests::windows_system_suspend

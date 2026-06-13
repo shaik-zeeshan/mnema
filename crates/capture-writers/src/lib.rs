@@ -2813,3 +2813,136 @@ pub use windows_aac_m4a::{
     windows_audio_file_duration_ms, windows_audio_file_has_positive_duration,
     WindowsAacM4aSinkWriter, WindowsAudioTailHoldbackSink,
 };
+
+/// Runtime coverage for the F02 zero-sample finalize guard on the REAL
+/// production Windows AAC sink (`WindowsAacM4aSinkWriter` /
+/// `WindowsAudioTailHoldbackSink`), not the platform-neutral
+/// `AudioTailSampleBuffer` stand-in the `audio_tail_buffer_tests` module covers.
+///
+/// These drive an actual `IMFSinkWriter` through Media Foundation on the runner
+/// (no capture device needed — only the in-box AAC encoder), so the
+/// `has_written_samples`/`finalize_writer` skip-guard is exercised end to end:
+/// a fully-held-back segment discarded on an inactivity stop must report an
+/// empty segment (`Ok(false)`) WITHOUT calling `IMFSinkWriter::Finalize()`
+/// (which would fail `MF_E_SINK_NO_SAMPLES_PROCESSED` -> the user-facing
+/// `windows_audio_writer_failed`), while a segment that wrote samples finalizes
+/// a playable `.m4a` (`Ok(true)`).
+#[cfg(all(test, target_os = "windows"))]
+mod windows_aac_m4a_finalize_tests {
+    use crate::{
+        windows_audio_file_has_positive_duration, WindowsAacM4aSinkWriter,
+        WindowsAudioTailHoldbackSink,
+    };
+    use windows::Win32::Media::MediaFoundation::{
+        MFShutdown, MFStartup, MFSTARTUP_FULL, MF_VERSION,
+    };
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+    const SAMPLE_RATE_HZ: u32 = 48_000;
+    const MF_TICKS_PER_SECOND: i64 = 10_000_000;
+
+    /// One mono 16-bit-LE PCM chunk of `duration_ms` of silence.
+    fn silent_chunk(duration_ms: u64) -> Vec<u8> {
+        let samples = (u64::from(SAMPLE_RATE_HZ) * duration_ms / 1_000) as usize;
+        vec![0u8; samples * 2]
+    }
+
+    /// RAII Media Foundation platform startup for a test (the production sink
+    /// relies on the capture thread's single `MFStartup`; a standalone test must
+    /// supply its own). Balanced by `MFShutdown` on drop; the duration probe does
+    /// its own ref-counted startup/shutdown in between, which stays balanced.
+    struct MfPlatform;
+    impl MfPlatform {
+        fn startup() -> Self {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                MFStartup(MF_VERSION, MFSTARTUP_FULL).expect("MFStartup");
+            }
+            Self
+        }
+    }
+    impl Drop for MfPlatform {
+        fn drop(&mut self) {
+            unsafe {
+                MFShutdown().ok();
+            }
+        }
+    }
+
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-aac-{label}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join(format!("{label}.m4a"))
+    }
+
+    #[test]
+    fn holdback_discard_of_fully_held_segment_reports_empty_without_finalize() {
+        let _mf = MfPlatform::startup();
+        let path = temp_path("held-discarded");
+
+        let writer = WindowsAacM4aSinkWriter::create(&path, SAMPLE_RATE_HZ, 1)
+            .expect("create AAC sink writer");
+        let mut sink = WindowsAudioTailHoldbackSink::new(writer, SAMPLE_RATE_HZ);
+        // 2s hold-back with a high activity threshold: silent chunks never cross
+        // it, so every chunk stays withheld and nothing is released to the encoder.
+        sink.configure_tail_holdback(2, 0.5, false);
+
+        let chunk = silent_chunk(500);
+        let duration_100ns = MF_TICKS_PER_SECOND / 2; // 0.5s
+        for i in 0..3 {
+            sink.append_pcm_s16(&chunk, i * duration_100ns, duration_100ns, 0.0, false)
+                .expect("append held silent chunk");
+        }
+
+        // Inactivity stop: discard the withheld tail. Nothing ever reached the
+        // encoder, so the guard must skip Finalize() and report an empty segment
+        // rather than erroring with MF_E_SINK_NO_SAMPLES_PROCESSED.
+        let finalized = sink.finalize_discarding_inactivity_tail().expect(
+            "discarding finalize of an empty segment must not error (no \
+             MF_E_SINK_NO_SAMPLES_PROCESSED -> windows_audio_writer_failed)",
+        );
+        assert!(
+            !finalized,
+            "a fully-held-back-then-discarded segment must report empty (no output file)"
+        );
+        assert!(
+            !windows_audio_file_has_positive_duration(&path.to_string_lossy()),
+            "the skipped-Finalize .m4a must not present a positive duration"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn flush_of_written_segment_finalizes_playable_m4a() {
+        let _mf = MfPlatform::startup();
+        let path = temp_path("written-flushed");
+
+        let writer = WindowsAacM4aSinkWriter::create(&path, SAMPLE_RATE_HZ, 1)
+            .expect("create AAC sink writer");
+        let mut sink = WindowsAudioTailHoldbackSink::new(writer, SAMPLE_RATE_HZ);
+        // Hold-back disabled: each chunk is written straight through to the encoder.
+        sink.configure_tail_holdback(0, 0.0, false);
+
+        let chunk = silent_chunk(1_000);
+        sink.append_pcm_s16(&chunk, 0, MF_TICKS_PER_SECOND, 0.0, false)
+            .expect("append straight-through chunk");
+
+        let finalized = sink
+            .finalize_flushing()
+            .expect("flushing finalize of a written segment");
+        assert!(
+            finalized,
+            "a segment with written samples must finalize a real .m4a (Ok(true))"
+        );
+        assert!(
+            windows_audio_file_has_positive_duration(&path.to_string_lossy()),
+            "the finalized .m4a must present a positive duration"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+}

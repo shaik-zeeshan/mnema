@@ -938,20 +938,45 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn pause_control_is_hidden_on_windows() {
-        // Recording or not, paused or not, Windows must never offer pause/resume.
-        for (recording, user_paused) in [(true, false), (true, true), (false, false)] {
-            let model = build_menu_model(
-                true,
-                recording,
-                user_paused,
-                &settings_with_sources(true, true, false),
-                &support_all(),
-                StatusBarOperation::Idle,
-            );
-            assert_eq!(model.pause_label, None);
-            assert!(!model.pause_enabled);
-        }
+    fn pause_control_is_exposed_on_windows() {
+        // F22: pause/resume is honoured by the backend on every platform
+        // (`pause_user_capture` is cross-platform and `resume_user_capture` has a
+        // working Windows arm), and the global `pauseResumeRecording` keyboard
+        // shortcut is not platform-gated, so the tray must offer it on Windows too
+        // — the same way it does on macOS — rather than diverge from the shortcut.
+        let recording = build_menu_model(
+            true,
+            true,
+            false,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(recording.pause_label, Some("Pause Recording"));
+        assert!(recording.pause_enabled);
+
+        let paused = build_menu_model(
+            true,
+            true,
+            true,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(paused.pause_label, Some("Resume Recording"));
+        assert!(paused.pause_enabled);
+
+        // Not recording: nothing to pause, on Windows as elsewhere.
+        let idle = build_menu_model(
+            true,
+            false,
+            false,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(idle.pause_label, None);
+        assert!(!idle.pause_enabled);
     }
 
     #[test]
