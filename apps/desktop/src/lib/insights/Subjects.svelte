@@ -47,6 +47,7 @@
     decideRefresh,
     debounce,
   } from "$lib/insights/subjectsTiers";
+  import { rankSubjects } from "$lib/insights/subjectSearch";
 
   // Number of placeholder rows shown while the conclusions load.
   const SKELETON_COUNT = 6;
@@ -100,6 +101,19 @@
   // Grouping axis for the tier layout. "conviction" = how firmly held (default);
   // "movement" = which way it's heading. Drives `buildTiers`.
   let axis = $state<Axis>("conviction");
+
+  // Search box. `searchQuery` is the raw input; `appliedQuery` is the debounced
+  // value the ranking actually runs on (filtering is in-memory and cheap, so the
+  // debounce only spares us re-ranking on every keystroke). A non-empty applied
+  // query swaps the tiered/sparse layout for one flat relevance-ranked list.
+  let searchQuery = $state("");
+  let appliedQuery = $state("");
+  const applySearch = debounce((q: string) => {
+    appliedQuery = q;
+  }, 200);
+  function onSearchInput(): void {
+    applySearch(searchQuery);
+  }
 
   // Which row's detail is expanded (by subject name), or null for none. The
   // expand container is an interaction skeleton — Slice 3 fills its content.
@@ -234,6 +248,17 @@
   // Honest header counts (no rolled-up score) from the real displayed rows:
   // "{active} active views · {fading} fading — {warming} ▲ · {steady} · {cooling} ▼".
   const summary = $derived(summaryCounts(displayRows));
+
+  // True when a search is active. Drives the layout swap (flat ranked list) and
+  // the header line (match count instead of the conviction/movement tallies).
+  const searching = $derived(appliedQuery.trim().length > 0);
+
+  // Relevance-ranked matches for the active query. Ranks over `displayRows` so
+  // ties fall back to the same confidence-desc, faded-last order the tiers use.
+  // Matches name + conclusion statements across ALL loaded rows (fading too).
+  const searchResults = $derived.by<SubjectRow[]>(() =>
+    searching ? rankSubjects(displayRows, appliedQuery) : [],
+  );
 
   function relativeTime(ms: number): string {
     if (!Number.isFinite(ms) || ms <= 0) return "—";
@@ -626,6 +651,7 @@
       disposed = true;
       unlisten?.();
       debounced.cancel();
+      applySearch.cancel();
       if (scrollEl) scrollEl.removeEventListener("scroll", updateAtTop);
       if (usingWindow) window.removeEventListener("scroll", updateAtTop);
     };
@@ -797,14 +823,23 @@
          there are zero subjects — the empty state covers that. The line simply
          isn't rendered until conclusions load, so the header doesn't jank. -->
     {#if conclusions && displayRows.length > 0}
-      <p class="conv-summary">
-        <span class="num">{summary.active}</span> active views ·
-        <span class="num">{summary.fading}</span> fading<span class="sep">—</span
-        ><span class="num">{summary.warming}</span> warming
-        <span class="up">▲</span> · <span class="num">{summary.steady}</span>
-        steady · <span class="num">{summary.cooling}</span> cooling
-        <span class="down">▼</span>
-      </p>
+      {#if searching}
+        <p class="conv-summary">
+          <span class="num">{searchResults.length}</span>
+          {searchResults.length === 1 ? "match" : "matches"} for
+          <span class="num">“{appliedQuery.trim()}”</span>
+        </p>
+      {:else}
+        <p class="conv-summary">
+          <span class="num">{summary.active}</span> active views ·
+          <span class="num">{summary.fading}</span> fading<span class="sep"
+            >—</span
+          ><span class="num">{summary.warming}</span> warming
+          <span class="up">▲</span> · <span class="num">{summary.steady}</span>
+          steady · <span class="num">{summary.cooling}</span> cooling
+          <span class="down">▼</span>
+        </p>
+      {/if}
     {/if}
   </div>
 
@@ -826,8 +861,21 @@
     </div>
   {/if}
 
-  <!-- Controls: grouping-axis toggle -->
+  <!-- Controls: search box + grouping-axis toggle -->
   <div class="conv-controls">
+    <div class="search">
+      <span class="search-glyph" aria-hidden="true">⌕</span>
+      <input
+        type="search"
+        class="search-input"
+        placeholder="Search subjects…"
+        aria-label="Search subjects"
+        autocomplete="off"
+        spellcheck="false"
+        bind:value={searchQuery}
+        oninput={onSearchInput}
+      />
+    </div>
     <div class="sort-seg" role="group" aria-label="Organize subjects by">
       <button
         type="button"
@@ -883,6 +931,23 @@
         Settings → Access to begin.
       </p>
     </div>
+  {:else if searching}
+    <!-- Search active: one flat list ranked by relevance, no tier headers. -->
+    {#if searchResults.length === 0}
+      <div class="state">
+        <p class="state-title">No subjects match “{appliedQuery.trim()}”.</p>
+        <p class="state-detail">
+          Search looks at subject names and the wording of each belief. Try a
+          shorter or different term, or clear the search to browse all subjects.
+        </p>
+      </div>
+    {:else}
+      <div class="conv-rows">
+        {#each searchResults as r (r.subject)}
+          {@render row(r)}
+        {/each}
+      </div>
+    {/if}
   {:else if sparse}
     <!-- Sparse: one ungrouped list, no tier headers. -->
     <div class="conv-rows">
@@ -989,6 +1054,45 @@
     gap: 10px;
     flex-wrap: wrap;
     margin: 14px 0 10px;
+  }
+
+  /* Search box — same surface as the Chat rail's search so the two read alike. */
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 28px;
+    padding: 0 9px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+    flex: 1 1 220px;
+    min-width: 180px;
+    max-width: 320px;
+  }
+  .search:focus-within {
+    border-color: var(--app-border-hover);
+  }
+  .search-glyph {
+    color: var(--app-text-subtle);
+    font-size: 12px;
+  }
+  .search-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    font: inherit;
+    font-size: 11.5px;
+    border: none;
+    background: transparent;
+    color: var(--app-text);
+    outline: none;
+  }
+  .search-input::placeholder {
+    color: var(--app-text-faint);
+  }
+  .search-input::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
   }
 
   /* Segmented grouping-axis control — the canonical segmented control look. */
