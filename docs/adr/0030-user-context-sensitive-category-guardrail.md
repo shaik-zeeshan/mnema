@@ -38,7 +38,12 @@ the headline the guardrail exists to prevent.
 
 The hard filter will sometimes suppress a legitimately benign conclusion that merely brushes a
 sensitive category (e.g. a nutrition interest tripping a health filter), so the dossier has a
-deliberate, invisible blind spot by design — the right error to make here. The guardrail runs at
-*derivation* time, so sensitive conclusions never enter the dossier and the `recall_context` broker
-tool that **Ask AI** uses physically cannot return them; guardrailing is not re-implemented at the
-broker boundary. The off-limits category policy is a maintained list that will need to evolve.
+deliberate, invisible blind spot by design — the right error to make here. For **Conclusions** the
+guardrail runs at *derivation* time, so sensitive conclusions never enter the dossier and the
+`recall_context` broker tool that **Ask AI** uses physically cannot return them; for Conclusions the
+broker re-filter is belt-and-suspenders. **Activities are different and the broker filter is
+load-bearing for them:** an Activity's title/summary is persisted *unfiltered* (only its Category /
+Focus *labels* are guarded at derivation time), so the `is_sensitive` re-filter on the
+`recall_context` activity path is the only thing stopping a sensitive Activity from reaching a cloud
+engine — it must not be removed as "redundant." The off-limits category policy is a maintained list
+that will need to evolve.

@@ -6,8 +6,18 @@
 //!
 //! Privacy invariant (spec §7): this reader only ever reads
 //! `processing_results.result_text` — the already-redacted OCR / transcript
-//! text — and the Search Context labels. It never reads frame images or audio
-//! files. Only this redacted text is ever sent to a cloud engine.
+//! text — plus a Search Context label drawn from the frame metadata snapshot. It
+//! never reads frame images or audio files.
+//!
+//! Metadata egress caveat (PR #112 #7): the secret-redaction pipeline rewrites
+//! only `result_text`, NOT the metadata snapshot. So `app_label`/`url` are NOT
+//! redacted the way `result_text` is. A `BrowserUrlMode::Full` URL can carry
+//! tokens/PII in its path/query, and a window title can carry document/recipient
+//! names. Because this window is handed to a (possibly cloud) Reasoning Engine, we
+//! reduce the metadata to a privacy-safe form at read time:
+//! [`search_context_from_snapshot`] drops the window title (keeping only the app
+//! name) and reduces any browser URL to its bare origin host (scheme/path/query/
+//! fragment stripped). The redacted `result_text` remains the only free text sent.
 
 use sqlx::Row;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -182,9 +192,17 @@ impl UserContextStore {
     }
 }
 
-/// Builds a best-effort `(app_label, url)` pair from a frame metadata snapshot
-/// JSON blob. Prefers the app name, falling back to the bundle id, and appends
-/// the window title when present.
+/// Builds a privacy-reduced best-effort `(app_label, url)` pair from a frame
+/// metadata snapshot JSON blob, for egress to a (possibly cloud) Reasoning Engine.
+///
+/// The snapshot metadata is NOT covered by the secret-redaction pipeline (which
+/// only rewrites `result_text`), so this deliberately keeps only the low-risk
+/// signal (PR #112 #7):
+/// - `app_label` is the **app name only** (falling back to the bundle id). The
+///   **window title is dropped** — titles carry document/chat/recipient names.
+/// - `url` is reduced to its **bare origin host** via [`url_origin_host`]
+///   (scheme, userinfo, path, query, fragment, and port all stripped) — a
+///   `BrowserUrlMode::Full` URL can otherwise carry tokens/PII in its path/query.
 fn search_context_from_snapshot(
     snapshot_json: Option<&str>,
 ) -> (Option<String>, Option<String>) {
@@ -197,15 +215,53 @@ fn search_context_from_snapshot(
         return (None, None);
     };
 
-    let app = snapshot.app_name.or(snapshot.app_bundle_id);
-    let app_label = match (app, snapshot.window_title) {
-        (Some(app), Some(title)) if !title.trim().is_empty() => Some(format!("{app} — {title}")),
-        (Some(app), _) => Some(app),
-        (None, Some(title)) if !title.trim().is_empty() => Some(title),
-        (None, _) => None,
-    };
+    // App name only (bundle id fallback). Window title is intentionally dropped.
+    let app_label = snapshot.app_name.or(snapshot.app_bundle_id);
+    // Reduce any browser URL to its bare origin host before it can egress.
+    let url = snapshot
+        .browser_url
+        .as_deref()
+        .and_then(url_origin_host);
 
-    (app_label, snapshot.browser_url)
+    (app_label, url)
+}
+
+/// Reduces a URL string to its bare lowercase origin host: strips the scheme, any
+/// userinfo, the path/query/fragment, and the port. Returns `None` for an
+/// empty/host-less value. Avoids pulling in the `url` crate; mirrors
+/// `usage_charts::domain_from_url`. This is the privacy reduction applied to a
+/// browser URL before it is handed to the Reasoning Engine (PR #112 #7).
+fn url_origin_host(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // Drop scheme.
+    let after_scheme = match raw.split_once("://") {
+        Some((_, rest)) => rest,
+        None => raw,
+    };
+    // Authority ends at the first '/', '?', or '#'.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // Drop userinfo (user:pass@host).
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    // Drop port. IPv6 bracket forms keep the bracketed host.
+    let host = if host_port.starts_with('[') {
+        host_port
+            .split_once(']')
+            .map_or(host_port, |(h, _)| &host_port[..h.len() + 1])
+    } else {
+        host_port.rsplit_once(':').map_or(host_port, |(h, _)| h)
+    };
+    let host = host.trim().trim_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
 }
 
 /// Converts unix milliseconds to an RFC3339 string for comparison against the
@@ -224,4 +280,76 @@ fn rfc3339_to_ms(value: &str) -> Option<i64> {
     OffsetDateTime::parse(value, &Rfc3339)
         .ok()
         .map(|dt| (dt.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_origin_host_reduces_to_bare_host() {
+        // Path, query, and fragment are all dropped — these carry tokens/PII.
+        assert_eq!(
+            url_origin_host("https://mail.example.com/u/0/inbox?token=secret#x"),
+            Some("mail.example.com".to_string())
+        );
+        // Userinfo and port dropped, host lowercased.
+        assert_eq!(
+            url_origin_host("http://user:pass@Example.COM:8443/path"),
+            Some("example.com".to_string())
+        );
+        // Scheme-less input still yields the host.
+        assert_eq!(url_origin_host("docs.rs/foo"), Some("docs.rs".to_string()));
+        // Empty / host-less inputs.
+        assert_eq!(url_origin_host(""), None);
+        assert_eq!(url_origin_host("https://"), None);
+    }
+
+    #[test]
+    fn snapshot_drops_window_title_and_reduces_url() {
+        let snapshot = capture_metadata::FrameMetadataSnapshot {
+            app_name: Some("Safari".to_string()),
+            app_bundle_id: Some("com.apple.Safari".to_string()),
+            // A title carrying a recipient/document name — must NOT egress.
+            window_title: Some("Re: contract for Jane Doe — Mail".to_string()),
+            // A Full-mode URL carrying a token in its query — must be reduced.
+            browser_url: Some("https://mail.example.com/inbox?auth=topsecret".to_string()),
+            ..Default::default()
+        };
+        let json = snapshot.normalized_json();
+        let (app_label, url) = search_context_from_snapshot(Some(&json));
+
+        // App name only — the window title is dropped entirely.
+        assert_eq!(app_label, Some("Safari".to_string()));
+        let label = app_label.unwrap();
+        assert!(!label.contains("Jane Doe"), "window title leaked: {label}");
+        assert!(!label.contains("contract"), "window title leaked: {label}");
+
+        // URL reduced to bare origin host — no path, no token.
+        assert_eq!(url, Some("mail.example.com".to_string()));
+        let url = url.unwrap();
+        assert!(!url.contains("topsecret"), "url query leaked: {url}");
+        assert!(!url.contains("inbox"), "url path leaked: {url}");
+    }
+
+    #[test]
+    fn snapshot_falls_back_to_bundle_id_when_no_app_name() {
+        let snapshot = capture_metadata::FrameMetadataSnapshot {
+            app_name: None,
+            app_bundle_id: Some("com.acme.tool".to_string()),
+            window_title: Some("Secret Document".to_string()),
+            browser_url: None,
+            ..Default::default()
+        };
+        let json = snapshot.normalized_json();
+        let (app_label, url) = search_context_from_snapshot(Some(&json));
+        assert_eq!(app_label, Some("com.acme.tool".to_string()));
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn snapshot_none_or_unparseable_yields_no_context() {
+        assert_eq!(search_context_from_snapshot(None), (None, None));
+        assert_eq!(search_context_from_snapshot(Some("not json")), (None, None));
+    }
 }

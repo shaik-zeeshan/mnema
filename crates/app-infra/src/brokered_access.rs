@@ -1553,6 +1553,14 @@ const RANGE_PRESENT_CONCLUSION_LIMIT: usize = 3;
 /// derivation time, and only Visible (not Faded, not Dismissed) Conclusions are
 /// eligible. No ids or evidence refs cross the boundary.
 ///
+/// For Conclusions the guardrail re-filter is belt-and-suspenders (derivation
+/// never persists a sensitive Conclusion). For **Activities it is LOAD-BEARING**:
+/// an Activity's `title`/`summary` is persisted *unfiltered*, so the broker-side
+/// `is_sensitive` filter in `select_relevant_activities` is the only thing
+/// stopping a sensitive Activity from reaching a cloud engine. Do not remove it as
+/// "redundant" — see `guardrail.rs` and the `sensitive_activity_never_*`
+/// regression test below.
+///
 /// When an explicit time range is present (either `from` OR `to` parsed to a real
 /// bound), the question is episodic, so Conclusions are de-emphasized so they don't
 /// crowd out the activity timeline: they're capped at
@@ -1887,6 +1895,13 @@ fn select_relevant_activities(
     // guardrail is pure text-pattern matching (subject + statement combined), so
     // running it over title (as subject) + summary (as statement) catches a
     // sensitive Activity before it can be scored or returned.
+    //
+    // LOAD-BEARING — DO NOT REMOVE. Unlike Conclusions (filtered at derivation
+    // time, so never persisted), an Activity's title/summary is persisted
+    // UNFILTERED. This line is the ONLY thing stopping a sensitive Activity from
+    // egressing to a cloud engine via recall_context. Removing it as "redundant"
+    // silently opens a sensitive-text leak — see the `sensitive_activity_never_*`
+    // regression test and `guardrail.rs`.
     let candidates: Vec<&capture_types::Activity> = activities
         .iter()
         .filter(|a| !crate::user_context::guardrail::is_sensitive(&a.title, &a.summary))
@@ -2765,6 +2780,115 @@ mod tests {
             // Conclusion is unaffected by the activity time window.
             assert_eq!(windowed.conclusions.len(), 1);
             assert_eq!(windowed.conclusions[0].subject, "parser");
+        });
+    }
+
+    /// End-to-end regression (#4): an Activity is persisted *unfiltered*, so the
+    /// ONLY guardrail on the Activity egress path is the broker re-filter in
+    /// `select_relevant_activities`. Drive the full `broker_recall_context` over a
+    /// real store and assert a sensitive Activity never appears in
+    /// `BrokerRecallContextResponse.activities`. This is the test the load-bearing
+    /// comment points at — if someone deletes the "redundant"-looking filter line,
+    /// THIS goes red even though derivation-time tests stay green.
+    #[test]
+    fn sensitive_activity_never_egresses_via_recall_context() {
+        run_async_test(async {
+            use crate::user_context::store::{NewActivity, NewActivityEvidence};
+
+            let config_dir = temp_config_dir("recall-sensitive-activity");
+            let save_dir = temp_save_dir("recall-sensitive-activity");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let store = infra.user_context();
+
+            // A SENSITIVE activity persisted unfiltered (derivation does NOT drop
+            // Activities), matching the query on a benign token ("appointment").
+            store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "Therapy appointment".to_string(),
+                    summary: "attended a therapy appointment".to_string(),
+                    category: None,
+                    focus: None,
+                    started_at_ms: 2_000,
+                    ended_at_ms: 2_001,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 1,
+                        captured_at_ms: Some(2_000),
+                    }],
+                })
+                .await
+                .expect("seed sensitive activity");
+            // A benign activity matching the same query token, to prove recall is
+            // working (not just empty) while the sensitive one is excluded.
+            store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "Dentist appointment".to_string(),
+                    summary: "booked a dentist appointment".to_string(),
+                    category: None,
+                    focus: None,
+                    started_at_ms: 1_000,
+                    ended_at_ms: 1_001,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 2,
+                        captured_at_ms: Some(1_000),
+                    }],
+                })
+                .await
+                .expect("seed benign activity");
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_recall_context(
+                &infra,
+                &[grant],
+                BrokerRecallContextRequest {
+                    query: "appointment".to_string(),
+                    limit: None,
+                    from: None,
+                    to: None,
+                },
+            )
+            .await
+            .expect("recall should run")
+            .expect("recall should be authorized");
+
+            // The sensitive activity must NOT appear in the response, in neither
+            // title nor summary (no sensitive text crosses the boundary).
+            assert!(
+                response.activities.iter().all(|a| {
+                    !crate::user_context::guardrail::is_sensitive(&a.title, &a.summary)
+                }),
+                "sensitive activity egressed via recall_context: {:?}",
+                response.activities
+            );
+            assert!(
+                response
+                    .activities
+                    .iter()
+                    .all(|a| a.title != "Therapy appointment"),
+                "therapy activity leaked: {:?}",
+                response.activities
+            );
+            // The benign appointment still comes back — recall is genuinely working.
+            assert!(
+                response
+                    .activities
+                    .iter()
+                    .any(|a| a.title == "Dentist appointment"),
+                "benign activity should still be recalled: {:?}",
+                response.activities
+            );
         });
     }
 

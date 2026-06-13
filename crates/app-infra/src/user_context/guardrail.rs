@@ -24,10 +24,19 @@
 //! (there is no "infer my mental health" toggle), and it deliberately errs toward
 //! **over-suppression**: it would rather false-suppress a benign conclusion that
 //! brushes a sensitive category than false-surface a real sensitive inference.
-//! Because [`is_sensitive`] runs at *derivation* time, sensitive Conclusions
+//! Because [`is_sensitive`] runs at *derivation* time, sensitive **Conclusions**
 //! never enter the **Encrypted Capture Index**, so the `recall_context` broker
-//! tool that **Ask AI** uses physically cannot return them — guardrailing is
-//! **not** re-implemented at the broker boundary.
+//! tool that **Ask AI** uses physically cannot return them — for Conclusions the
+//! broker re-filter is belt-and-suspenders.
+//!
+//! **Activities are different — the broker filter is LOAD-BEARING for them.**
+//! Unlike Conclusions, an Activity's `title`/`summary` is persisted *unfiltered*
+//! (derivation does not drop a sensitive Activity from storage). The only thing
+//! stopping a sensitive Activity ("attended a therapy appointment") from being
+//! serialized to a cloud engine is the [`is_sensitive`] re-filter on the broker
+//! path (`select_relevant_activities` in `brokered_access.rs`). Do **not** remove
+//! that line as "redundant": deleting it silently opens a sensitive-text egress
+//! hole. See the end-to-end regression test in `brokered_access.rs`.
 //!
 //! This module is **pure** (no I/O, no clock): match logic only, so the policy is
 //! unit-tested in isolation.
@@ -190,6 +199,19 @@ const HEALTH_TERMS: &[&str] = &[
     "eating disorder",
     "anorexia",
     "bulimia",
+    // Serious diagnoses / treatments / conditions — the plain words a cooperating
+    // engine uses, not adversarial obfuscation (ADR 0030's hard backstop).
+    "cancer",
+    "hiv",
+    "aids",
+    "diabetes",
+    // "chemo" alone is whole-word matched (does not trip "chemotherapy" via
+    // substring — both are listed so either phrasing matches).
+    "chemo",
+    "chemotherapy",
+    "miscarriage",
+    "stroke",
+    "covid",
 ];
 
 /// Sexual orientation / sexuality / gender identity.
@@ -304,6 +326,16 @@ const OTHER_PROTECTED_TERMS: &[&str] = &[
     "unemployed",
     "laid off",
     "financial distress",
+    // Bereavement / relationship breakdown — intimate domains a grounded
+    // inference should never surface (ADR 0030). "grief"/"grieving" matched
+    // whole-word so "aggrieved" is unaffected.
+    "grief",
+    "grieving",
+    "divorce",
+    "divorced",
+    "widowed",
+    "widow",
+    "widower",
 ];
 
 #[cfg(test)]
@@ -439,6 +471,52 @@ mod tests {
             "nutrition",
             "has been dieting and tracking weight loss"
         ));
+    }
+
+    // --- Worst-category terms added per PR #112 review (#5) → DROPPED --------
+    //
+    // Each added term gets a representative conclusion asserting `is_sensitive`
+    // returns true — these are the plain words a cooperating engine uses.
+
+    #[test]
+    fn added_health_terms_are_suppressed() {
+        assert_eq!(
+            category_of("health", "was just diagnosed with cancer"),
+            Some(SensitiveCategory::Health)
+        );
+        assert!(is_sensitive("health", "is HIV positive"));
+        assert!(is_sensitive("health", "living with AIDS"));
+        assert!(is_sensitive("health", "manages type 2 diabetes"));
+        assert!(is_sensitive("health", "starting chemo next week"));
+        assert!(is_sensitive("health", "is undergoing chemotherapy"));
+        assert!(is_sensitive("family", "had a miscarriage recently"));
+        assert!(is_sensitive("health", "recovering from a stroke"));
+        assert!(is_sensitive("health", "tested positive for covid"));
+    }
+
+    #[test]
+    fn added_other_protected_terms_are_suppressed() {
+        assert_eq!(
+            category_of("relationship", "is going through a divorce"),
+            Some(SensitiveCategory::OtherProtected)
+        );
+        assert!(is_sensitive("relationship", "recently divorced"));
+        assert!(is_sensitive("emotional", "is grieving a loss"));
+        assert!(is_sensitive("emotional", "deep in grief"));
+        assert!(is_sensitive("family", "was recently widowed"));
+        assert!(is_sensitive("family", "is a widow"));
+        assert!(is_sensitive("family", "is a widower"));
+    }
+
+    #[test]
+    fn added_terms_avoid_substring_false_positives() {
+        // "chemo" must not trip "chemistry"; "stroke" not "keystroke"/"brushstroke";
+        // "aids" not "aids the team"... wait, "aids" IS a verb — accept that as a
+        // deliberate over-suppression rather than weaken the AIDS match. "grief"
+        // must not trip "aggrieved" (whole-word).
+        assert!(!is_sensitive("study", "enjoys chemistry experiments"));
+        assert!(!is_sensitive("typing", "tracks keystroke latency"));
+        assert!(!is_sensitive("teamwork", "felt aggrieved by the decision"));
     }
 
     #[test]

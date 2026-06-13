@@ -88,6 +88,34 @@ fn within_freshness_floor(range_kind: &str, generated_at_ms: i64, at_ms: i64) ->
     at_ms.saturating_sub(generated_at_ms) < freshness_floor_ms(range_kind)
 }
 
+/// How many recent corrections to scan when deciding whether the freshness floor
+/// should be bypassed. A correction older than the most recent 30 cannot be
+/// newer than a just-generated digest in any realistic scenario, so this bound
+/// (mirroring `derivation.rs`'s `CORRECTION_FEEDBACK_LIMIT`) is ample.
+const CORRECTION_SCAN_LIMIT: i64 = 30;
+
+/// Whether any Activity in `activities` was corrected (#108) at a time strictly
+/// after `generated_at_ms` — i.e. the user relabeled an in-range Activity since
+/// the stored digest was generated. Used to let a user correction bypass the
+/// freshness floor (PR #112 digest edge): otherwise a corrected-away label can
+/// stay visible in a stale narrative for up to the floor window.
+///
+/// Best-effort: a store read failure returns `false` (do not force regeneration
+/// on a transient error — the floor still rate-limits, and the next tick retries).
+async fn range_has_correction_after(
+    store: &UserContextStore,
+    activities: &[Activity],
+    generated_at_ms: i64,
+) -> bool {
+    let Ok(corrections) = store.list_activity_corrections(CORRECTION_SCAN_LIMIT).await else {
+        return false;
+    };
+    let in_range: std::collections::HashSet<i64> = activities.iter().map(|a| a.id).collect();
+    corrections
+        .iter()
+        .any(|c| c.corrected_at_ms > generated_at_ms && in_range.contains(&c.activity_id))
+}
+
 /// Per-activity summary cap inside the Digest prompt, so one verbose Activity
 /// cannot dominate the budget. Mirrors `derivation.rs`'s per-item-cap approach
 /// (`ACTIVITY_SUMMARY_CHAR_CAP` there is module-private, so the value is
@@ -719,8 +747,20 @@ pub async fn get_or_generate_digest(
         .await
         .map_err(|error| error.to_string())?
     {
+        // A USER CORRECTION must win over the freshness floor (PR #112 digest
+        // edge). The floor only exists to rate-limit *churn*-driven regeneration
+        // (new captures arriving on a current range) — it must not pin a
+        // narrative the user explicitly contradicted by relabeling an in-range
+        // Activity, which would leave the corrected-away label visible in the
+        // digest for up to the floor window (24h for a month). When an in-range
+        // Activity was corrected AFTER this digest was generated, bypass the
+        // floor and fall through to regenerate.
+        let corrected_since_generated =
+            range_has_correction_after(store, &activities, stored.generated_at_ms).await;
+
         if stored.input_fingerprint == fingerprint
-            || within_freshness_floor(range_kind, stored.generated_at_ms, now_ms())
+            || (!corrected_since_generated
+                && within_freshness_floor(range_kind, stored.generated_at_ms, now_ms()))
         {
             return Ok(Some(digest_dto(
                 &stored.range_kind,
@@ -785,6 +825,27 @@ pub async fn get_or_generate_digest(
     };
     // An unusable headline is NOT a failure — the narrative-only digest stands.
     let headline = normalize_headline(&batch.headline);
+
+    // 5b. HARD sensitive post-filter (PR #112 #8). The digest narrative is the
+    //     engine's FREE TEXT, gated until now only by the SOFT guardrail preamble
+    //     — and an LLM told to avoid a category will sometimes do it anyway. Run
+    //     the same deterministic `is_sensitive` backstop used on Conclusions over
+    //     the generated headline + narrative before anything is persisted or
+    //     shown. A trip means the model wrote into an off-limits category: DROP
+    //     the whole digest (do not persist, do not surface) and record a failed
+    //     run, exactly as a sensitive Conclusion is dropped at derivation time.
+    if guardrail::is_sensitive(headline.as_deref().unwrap_or(""), &narrative) {
+        record_digest_run(
+            store,
+            ai_runtime,
+            "failed",
+            input_tokens,
+            output_tokens,
+            Some("digest narrative tripped the sensitive-category guardrail".to_string()),
+        )
+        .await;
+        return Ok(None);
+    }
 
     // 6. Persist, 7. record the run (see `record_digest_run` for why the run
     //    carries NULL window bounds), then return the fresh digest.
@@ -1194,6 +1255,29 @@ mod tests {
         assert!(!within_freshness_floor("week", generated_at, generated_at + 24 * HOUR_MS));
         // Clock moved backwards: fresh, never a forced regeneration.
         assert!(within_freshness_floor("day", generated_at, generated_at - HOUR_MS));
+    }
+
+    /// PR #112 #8: the hard sensitive post-filter run over the generated digest
+    /// before persist uses the SAME `guardrail::is_sensitive` backstop as
+    /// Conclusions, applied to (headline, narrative). A narrative the model wrote
+    /// into an off-limits category must trip it; a benign work narrative must not.
+    #[test]
+    fn sensitive_digest_narrative_trips_the_hard_post_filter() {
+        // Free-text narrative the soft preamble failed to prevent.
+        assert!(guardrail::is_sensitive(
+            "A heavy week",
+            "Most of this week went into therapy appointments and managing your depression."
+        ));
+        assert!(guardrail::is_sensitive(
+            "",
+            "You spent a lot of time reading about your cancer diagnosis."
+        ));
+        // A benign work digest must NOT trip — no false suppression of the
+        // ordinary case.
+        assert!(!guardrail::is_sensitive(
+            "A deep week in the editor",
+            "Most of this week went into the billing migration, with a shift toward test coverage by Friday."
+        ));
     }
 
     #[test]
