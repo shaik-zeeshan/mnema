@@ -282,12 +282,24 @@ impl UserContextStore {
     /// a superset of plausibly-relevant rows. When `terms` is empty there is
     /// nothing to filter on, so this returns the most-recent `limit` Activities
     /// (the no-token fallback set).
+    ///
+    /// `from_ms`/`to_ms` are optional half-open `[from, to)` time bounds applied
+    /// at the DB layer (each bound is independent — either may be `None`). The
+    /// predicate matches [`Self::list_activities_in_range`]:
+    /// `started_at_ms < to AND ended_at_ms >= from`. Filtering in SQL (not after
+    /// the `limit` cap) matters because the cap keeps the most-recent matches, so
+    /// an in-Rust date filter would miss older in-range Activities the recency cap
+    /// already dropped. When BOTH bounds are absent the behavior is unchanged.
+    /// When terms are empty BUT a bound is present, the time window still applies
+    /// (a bound-only, no-keyword query filters by date).
     pub async fn search_recent_activities(
         &self,
         terms: &[String],
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
         limit: i64,
     ) -> Result<Vec<Activity>> {
-        if terms.is_empty() {
+        if terms.is_empty() && from_ms.is_none() && to_ms.is_none() {
             return self.list_recent_activities(limit, 0).await;
         }
 
@@ -296,18 +308,45 @@ impl UserContextStore {
                     corrected_focus, focus_corrected, started_at_ms, ended_at_ms, created_at_ms \
              FROM user_context_activities WHERE ",
         );
-        let mut separated = query.separated(" OR ");
-        for term in terms {
-            // `LIKE` is case-insensitive for ASCII in SQLite; `%term%` matches the
-            // term as a substring anywhere in title or summary. Escaping is not
-            // needed because `term` is a recall query token (alphanumeric only).
-            let pattern = format!("%{term}%");
-            separated.push("(title LIKE ");
-            separated.push_bind_unseparated(pattern.clone());
-            separated.push_unseparated(" OR summary LIKE ");
-            separated.push_bind_unseparated(pattern);
-            separated.push_unseparated(")");
+
+        // The keyword OR-group (when present) AND the time-window bounds (when
+        // present). Both are optional; at least one is non-empty here (the
+        // all-absent case returned above).
+        let mut needs_and = false;
+        if !terms.is_empty() {
+            query.push("(");
+            let mut separated = query.separated(" OR ");
+            for term in terms {
+                // `LIKE` is case-insensitive for ASCII in SQLite; `%term%` matches
+                // the term as a substring anywhere in title or summary. Escaping is
+                // not needed because `term` is a recall query token (alphanumeric
+                // only).
+                let pattern = format!("%{term}%");
+                separated.push("(title LIKE ");
+                separated.push_bind_unseparated(pattern.clone());
+                separated.push_unseparated(" OR summary LIKE ");
+                separated.push_bind_unseparated(pattern);
+                separated.push_unseparated(")");
+            }
+            query.push(")");
+            needs_and = true;
         }
+        if let Some(to_ms) = to_ms {
+            if needs_and {
+                query.push(" AND ");
+            }
+            query.push("started_at_ms < ");
+            query.push_bind(to_ms);
+            needs_and = true;
+        }
+        if let Some(from_ms) = from_ms {
+            if needs_and {
+                query.push(" AND ");
+            }
+            query.push("ended_at_ms >= ");
+            query.push_bind(from_ms);
+        }
+
         query.push(" ORDER BY started_at_ms DESC, id DESC LIMIT ");
         query.push_bind(limit);
 
@@ -2090,7 +2129,7 @@ mod tests {
 
             // Keyword filter reaches the old, relevant activity.
             let matched = store
-                .search_recent_activities(&["parser".to_string()], 50)
+                .search_recent_activities(&["parser".to_string()], None, None, 50)
                 .await
                 .expect("search");
             assert_eq!(matched.len(), 1, "only the parser activity matches");
@@ -2098,18 +2137,77 @@ mod tests {
 
             // Multiple terms OR together.
             let or_matched = store
-                .search_recent_activities(&["parser".to_string(), "standup".to_string()], 50)
+                .search_recent_activities(
+                    &["parser".to_string(), "standup".to_string()],
+                    None,
+                    None,
+                    50,
+                )
                 .await
                 .expect("search");
             assert_eq!(or_matched.len(), 21);
 
             // Empty terms => most-recent fallback, capped.
             let fallback = store
-                .search_recent_activities(&[], 5)
+                .search_recent_activities(&[], None, None, 5)
                 .await
                 .expect("search");
             assert_eq!(fallback.len(), 5, "fallback is the most-recent window, capped");
             assert!(fallback[0].started_at_ms >= fallback[1].started_at_ms);
+        });
+    }
+
+    /// A `from`/`to` time window reaches an older in-range keyword match and
+    /// excludes a recent out-of-range one (the in-range filter happens in SQL,
+    /// before the recency cap, so an older in-range Activity is never lost). And
+    /// a bound-only query (no keyword terms) still filters by date instead of
+    /// degrading to the most-recent window.
+    #[test]
+    fn search_recent_activities_filters_by_time_window() {
+        block_on(async {
+            let store = test_store().await;
+            // seed_activity spans [started, started + 1].
+            // An OLD activity that matches "parser", inside the window.
+            seed_activity(&store, "parser internals", 1_000).await;
+            // A RECENT activity that ALSO matches "parser", but outside the window.
+            seed_activity(&store, "parser rewrite", 50_000).await;
+            // Noise inside the window that does NOT match the keyword.
+            seed_activity(&store, "standup meeting", 2_000).await;
+
+            // Window [500, 10_000): catches the old parser match, excludes the
+            // recent one even though both match the keyword.
+            let matched = store
+                .search_recent_activities(
+                    &["parser".to_string()],
+                    Some(500),
+                    Some(10_000),
+                    50,
+                )
+                .await
+                .expect("search");
+            assert_eq!(matched.len(), 1, "only the in-window parser match survives");
+            assert_eq!(matched[0].title, "parser internals");
+
+            // Bound-only (no keyword terms) still filters by date — it does NOT
+            // degrade to the most-recent window. Window [500, 10_000) catches the
+            // two in-range activities, excludes the recent one.
+            let bound_only = store
+                .search_recent_activities(&[], Some(500), Some(10_000), 50)
+                .await
+                .expect("search");
+            assert_eq!(bound_only.len(), 2, "bound-only query is date-scoped");
+            assert!(
+                bound_only.iter().all(|a| a.title != "parser rewrite"),
+                "out-of-range recent activity excluded: {bound_only:?}"
+            );
+
+            // A single open bound works independently (only `from`).
+            let from_only = store
+                .search_recent_activities(&[], Some(40_000), None, 50)
+                .await
+                .expect("search");
+            assert_eq!(from_only.len(), 1, "only the recent activity is >= from");
+            assert_eq!(from_only[0].title, "parser rewrite");
         });
     }
 

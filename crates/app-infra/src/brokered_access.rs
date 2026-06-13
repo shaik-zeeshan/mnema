@@ -301,14 +301,22 @@ pub struct BrokerTimelineResponse {
     pub limit: u32,
 }
 
-/// A `recall_context` request: the user's question, plus an optional cap on how
-/// many recalled items to return. The cap is clamped server-side so it can never
-/// return the whole dossier.
+/// A `recall_context` request: the user's question, an optional cap on how many
+/// recalled items to return, and optional `from`/`to` RFC3339 UTC bounds that
+/// scope the recalled ACTIVITIES by date (mirroring `search`/`timeline`). The
+/// cap is clamped server-side so it can never return the whole dossier; the time
+/// bounds filter activities only — Conclusions are standing beliefs and carry no
+/// wire timestamp, so they are never scoped. Omitting both bounds is the legacy
+/// recency-bounded keyword behavior.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerRecallContextRequest {
     pub query: String,
     pub limit: Option<u32>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
 }
 
 /// A single redacted Conclusion returned by `recall_context`. Carries no ids,
@@ -896,6 +904,22 @@ pub fn format_broker_unix_ms(unix_ms: u64) -> String {
 fn parse_rfc3339(value: &str) -> Result<OffsetDateTime> {
     OffsetDateTime::parse(value, &Rfc3339)
         .map_err(|error| AppInfraError::InvalidSearchRequest(error.to_string()))
+}
+
+/// Parse an optional `recall_context` RFC3339 UTC bound into unix-ms, IGNORING a
+/// missing or unparseable value (returns `None`). Unlike `search`/`timeline`
+/// (whose `scoped_date_range` hard-errors a bad bound), `recall_context`
+/// degrades gracefully to its recency-bounded behavior rather than failing the
+/// turn — so we reuse the same `parse_rfc3339` parser but discard the error.
+fn recall_bound_to_unix_ms(value: Option<&str>) -> Option<i64> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let parsed = parse_rfc3339(value).ok()?;
+    // Floor to whole milliseconds; the overlap predicate compares against the
+    // `*_ms` columns.
+    Some((parsed.unix_timestamp_nanos() / 1_000_000) as i64)
 }
 
 fn effective_scope_start(grants: &[BrokerGrant], now_unix_ms: u64) -> Option<u64> {
@@ -1505,6 +1529,13 @@ async fn broker_frame_timeline(
 const DEFAULT_RECALL_CONTEXT_LIMIT: u32 = 8;
 const MAX_RECALL_CONTEXT_LIMIT: u32 = 20;
 
+/// When an explicit `from`/`to` time range is supplied, the question is episodic
+/// ("what did I do in window X"), so standing-belief Conclusions are de-emphasized
+/// to keep them from competing with the activity timeline that answers the
+/// question. Cap recalled Conclusions this low in that case (Activities still get
+/// the full `limit`).
+const RANGE_PRESENT_CONCLUSION_LIMIT: usize = 3;
+
 /// `recall_context`: return ONLY the User-Context Conclusions/Activities relevant
 /// to the question, redacted, capped, and never sensitive. This deliberately never
 /// returns the whole dossier — both lists are relevance-filtered against the
@@ -1521,6 +1552,15 @@ const MAX_RECALL_CONTEXT_LIMIT: u32 = 20;
 /// guardrail (`crate::user_context::guardrail::is_sensitive`, #4) used at
 /// derivation time, and only Visible (not Faded, not Dismissed) Conclusions are
 /// eligible. No ids or evidence refs cross the boundary.
+///
+/// When an explicit time range is present (either `from` OR `to` parsed to a real
+/// bound), the question is episodic, so Conclusions are de-emphasized so they don't
+/// crowd out the activity timeline: they're capped at
+/// [`RANGE_PRESENT_CONCLUSION_LIMIT`] instead of the full `limit`, AND the
+/// no-token confidence fallback is suppressed (a confidence dump of unrelated
+/// standing beliefs is pure noise in an episodic answer — see
+/// `select_relevant_conclusions`). Activities are unaffected: always the full
+/// `limit`, date-scoped by the same bounds.
 async fn broker_recall_context(
     infra: &AppInfra,
     grants: &[BrokerGrant],
@@ -1541,6 +1581,29 @@ async fn broker_recall_context(
 
     let tokens = recall_query_tokens(&request.query);
 
+    // Optional `from`/`to` UTC bounds scope the ACTIVITIES by date (Conclusions
+    // are standing beliefs and are never scoped). A bad/unparseable bound is
+    // IGNORED gracefully (that bound becomes `None`) rather than erroring the
+    // turn — `recall_context` favors degrading to its recency-bounded behavior
+    // over failing, unlike `search`/`timeline` whose `scoped_date_range` parse
+    // hard-errors. We mirror those handlers' `parse_rfc3339` parser but discard
+    // the error via `.ok()`.
+    let from_ms = recall_bound_to_unix_ms(request.from.as_deref());
+    let to_ms = recall_bound_to_unix_ms(request.to.as_deref());
+
+    // A time range is "present" when EITHER bound parsed to a real value — a bad
+    // bound that lenient-parsed to `None` does not count. A present range means the
+    // turn is episodic, so we de-emphasize the standing-belief Conclusions: cap them
+    // low and disable the no-token confidence fallback (see below). Activities are
+    // untouched — they ALWAYS get the full `limit`.
+    let range_present = from_ms.is_some() || to_ms.is_some();
+    let conclusion_limit = if range_present {
+        limit.min(RANGE_PRESENT_CONCLUSION_LIMIT)
+    } else {
+        limit
+    };
+    let allow_confidence_fallback = !range_present;
+
     // #5: relevance-bounded (not recency-bounded) Activity candidates. We push the
     // query tokens into a DB-side `LIKE` pre-filter (`search_recent_activities`) so
     // an older-but-relevant Activity is a candidate even when the recent window is
@@ -1555,10 +1618,15 @@ async fn broker_recall_context(
     // the most-recent window — the same fallback set the old path used.
     const ACTIVITY_CANDIDATE_CAP: i64 = 200;
     let activities = store
-        .search_recent_activities(&tokens, ACTIVITY_CANDIDATE_CAP)
+        .search_recent_activities(&tokens, from_ms, to_ms, ACTIVITY_CANDIDATE_CAP)
         .await?;
 
-    let conclusions = select_relevant_conclusions(&conclusions, &tokens, limit);
+    let conclusions = select_relevant_conclusions(
+        &conclusions,
+        &tokens,
+        conclusion_limit,
+        allow_confidence_fallback,
+    );
     let activities = select_relevant_activities(&activities, &tokens, limit);
 
     Ok(Ok(BrokerRecallContextResponse {
@@ -1725,14 +1793,21 @@ fn snake_case_enum_string<T: Serialize>(value: &T) -> Option<String> {
 /// Pure relevance + sensitive-filter + cap for Conclusions. Drops sensitive and
 /// non-Visible Conclusions, then scores the rest by whole-word (#1), stemmed (#3),
 /// rare-token-weighted (#2 IDF) overlap of the query against subject+statement.
-/// Keeps score>0 (sorted by score desc, confidence desc), falls back to
-/// top-by-confidence when the query has no usable tokens, and truncates to
-/// `limit` so the whole dossier can never be returned. IDF document-frequency is
-/// computed over the non-sensitive, Visible candidate set only.
+/// Keeps score>0 (sorted by score desc, confidence desc) and truncates to `limit`
+/// so the whole dossier can never be returned. IDF document-frequency is computed
+/// over the non-sensitive, Visible candidate set only.
+///
+/// `allow_confidence_fallback` gates the no-token path: when the query has no
+/// usable tokens and the flag is `true`, fall back to top-by-confidence (the
+/// default `recall_context` behavior). When it is `false` (an episodic, time-ranged
+/// turn), suppress that fallback and return an empty list instead — dumping
+/// unrelated standing beliefs into an episodic answer is pure noise. With usable
+/// tokens the flag has no effect: the normal score>0 path runs either way.
 fn select_relevant_conclusions(
     conclusions: &[capture_types::Conclusion],
     tokens: &[String],
     limit: usize,
+    allow_confidence_fallback: bool,
 ) -> Vec<BrokerRecalledConclusion> {
     // Eligible candidates first (Visible + non-sensitive), so the IDF corpus and
     // the scoring set are the same population.
@@ -1756,7 +1831,14 @@ fn select_relevant_conclusions(
         .collect();
 
     if tokens.is_empty() {
-        // No usable query tokens: fall back to top-by-confidence, STILL capped.
+        // No usable query tokens. The confidence fallback is only safe for the
+        // default (non-episodic) path: when it's disabled (a time-ranged turn),
+        // return NOTHING rather than dumping unrelated standing beliefs into an
+        // episodic answer.
+        if !allow_confidence_fallback {
+            return Vec::new();
+        }
+        // Fall back to top-by-confidence, STILL capped.
         scored.sort_by(|a, b| {
             b.1.confidence
                 .partial_cmp(&a.1.confidence)
@@ -2242,7 +2324,7 @@ mod tests {
             test_conclusion("health", "user has depression", 0.95, Visible),
         ];
         let tokens = recall_query_tokens("tell me about rust and health and depression");
-        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10);
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10, true);
         assert!(
             recalled.iter().all(|c| !c.statement.contains("depression")),
             "sensitive conclusion leaked: {recalled:?}"
@@ -2259,7 +2341,7 @@ mod tests {
             test_conclusion("Rust", "Faded Rust opinion", 0.9, Faded),
         ];
         let tokens = recall_query_tokens("rust");
-        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10);
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10, true);
         assert_eq!(recalled.len(), 1);
         assert_eq!(recalled[0].statement, "Likes Rust");
     }
@@ -2280,7 +2362,7 @@ mod tests {
             .collect();
         let tokens = recall_query_tokens("project alpha");
         let recalled =
-            select_relevant_conclusions(&conclusions, &tokens, MAX_RECALL_CONTEXT_LIMIT as usize);
+            select_relevant_conclusions(&conclusions, &tokens, MAX_RECALL_CONTEXT_LIMIT as usize, true);
         assert_eq!(recalled.len(), MAX_RECALL_CONTEXT_LIMIT as usize);
         assert!(recalled.len() < conclusions.len());
     }
@@ -2294,10 +2376,71 @@ mod tests {
         // Stopwords-only query yields no usable tokens.
         let tokens = recall_query_tokens("what is the and for");
         assert!(tokens.is_empty());
-        let recalled = select_relevant_conclusions(&conclusions, &tokens, 5);
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 5, true);
         assert_eq!(recalled.len(), 5, "fallback must still be capped");
         // Highest confidence first.
         assert!(recalled[0].confidence >= recalled[1].confidence);
+    }
+
+    #[test]
+    fn recall_context_no_usable_tokens_suppresses_fallback_when_disabled() {
+        use capture_types::ConclusionStatus::Visible;
+        // The default path falls back to top-by-confidence on a no-token query
+        // (above); with the fallback DISABLED (an episodic, time-ranged turn) the
+        // SAME no-token query must yield ZERO conclusions instead of a confidence
+        // dump of unrelated standing beliefs.
+        let conclusions: Vec<_> = (0..10)
+            .map(|i| test_conclusion("subj", &format!("statement {i}"), i as f64 / 10.0, Visible))
+            .collect();
+        let tokens = recall_query_tokens("what is the and for");
+        assert!(tokens.is_empty());
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 5, false);
+        assert!(
+            recalled.is_empty(),
+            "fallback disabled must suppress the confidence dump: {recalled:?}"
+        );
+    }
+
+    #[test]
+    fn recall_context_disabling_fallback_does_not_affect_token_query() {
+        use capture_types::ConclusionStatus::Visible;
+        // With usable tokens the `allow_confidence_fallback` flag has no effect:
+        // the normal score>0 path runs regardless of the flag.
+        let conclusions = vec![
+            test_conclusion("Rust", "Likes Rust", 0.9, Visible),
+            test_conclusion("Python", "Likes Python", 0.9, Visible),
+        ];
+        let tokens = recall_query_tokens("rust");
+        let with = select_relevant_conclusions(&conclusions, &tokens, 10, true);
+        let without = select_relevant_conclusions(&conclusions, &tokens, 10, false);
+        assert_eq!(with.len(), 1);
+        assert_eq!(without.len(), 1);
+        assert_eq!(with[0].statement, without[0].statement);
+        assert_eq!(without[0].subject, "Rust");
+    }
+
+    #[test]
+    fn recall_context_range_present_caps_conclusions_low() {
+        use capture_types::ConclusionStatus::Visible;
+        // Many conclusions all match the query, but a present time range caps the
+        // recalled set at RANGE_PRESENT_CONCLUSION_LIMIT even though `limit` is
+        // higher — proving the episodic de-emphasis.
+        let conclusions: Vec<_> = (0..30)
+            .map(|i| {
+                test_conclusion(
+                    "project alpha",
+                    &format!("works on project alpha item {i}"),
+                    0.5,
+                    Visible,
+                )
+            })
+            .collect();
+        let tokens = recall_query_tokens("project alpha");
+        // The handler passes `limit.min(RANGE_PRESENT_CONCLUSION_LIMIT)` and
+        // `allow_confidence_fallback = false` when a range is present.
+        let limit = (MAX_RECALL_CONTEXT_LIMIT as usize).min(RANGE_PRESENT_CONCLUSION_LIMIT);
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, limit, false);
+        assert_eq!(recalled.len(), RANGE_PRESENT_CONCLUSION_LIMIT);
     }
 
     #[test]
@@ -2327,7 +2470,7 @@ mod tests {
             test_conclusion("pets", "adopted a cat last month", 0.5, Visible),
         ];
         let tokens = recall_query_tokens("cat");
-        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10);
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10, true);
         assert_eq!(recalled.len(), 1, "only the whole-word match should survive");
         assert_eq!(recalled[0].subject, "pets");
     }
@@ -2375,7 +2518,7 @@ mod tests {
         ));
         // Query both a common and a rare token; the rare-token doc must rank first.
         let tokens = recall_query_tokens("rust kazoo");
-        let recalled = select_relevant_conclusions(&conclusions, &tokens, 11);
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 11, true);
         assert_eq!(
             recalled[0].statement, "plays the kazoo on weekends",
             "rare-token match must rank above common-token matches: {recalled:?}"
@@ -2420,7 +2563,7 @@ mod tests {
             Visible,
         )];
         let tokens = recall_query_tokens("running");
-        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10);
+        let recalled = select_relevant_conclusions(&conclusions, &tokens, 10, true);
         assert_eq!(recalled.len(), 1, "stemming should bridge running~run");
     }
 
@@ -2482,6 +2625,8 @@ mod tests {
         let request = BrokeredCaptureRequest::RecallContext(BrokerRecallContextRequest {
             query: "anything".to_string(),
             limit: None,
+            from: None,
+            to: None,
         });
         assert_eq!(request.command_type(), Some("recall_context"));
 
@@ -2502,6 +2647,209 @@ mod tests {
             }],
         });
         assert_eq!(response.result_count(), 2);
+    }
+
+    /// A seeded in-range Activity that matches the query is recalled; a recent
+    /// out-of-range Activity that ALSO matches is excluded by the `from`/`to`
+    /// window. Conclusions are unaffected by the window (they have no wire
+    /// timestamp). An unparseable bound is IGNORED gracefully — the turn still
+    /// succeeds with the other (valid) bound applied.
+    #[test]
+    fn recall_context_filters_activities_by_time_window_and_ignores_bad_bound() {
+        run_async_test(async {
+            use crate::user_context::store::{NewActivity, NewActivityEvidence, NewConclusion};
+
+            let config_dir = temp_config_dir("recall-window");
+            let save_dir = temp_save_dir("recall-window");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let store = infra.user_context();
+
+            // An OLD activity that matches "parser", inside the window.
+            store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "parser internals".to_string(),
+                    summary: "worked on the parser module".to_string(),
+                    category: None,
+                    focus: None,
+                    started_at_ms: 1_000,
+                    ended_at_ms: 1_001,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 1,
+                        captured_at_ms: Some(1_000),
+                    }],
+                })
+                .await
+                .expect("seed old activity");
+            // A RECENT activity that ALSO matches "parser", but outside the window.
+            store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "parser rewrite".to_string(),
+                    summary: "rewrote the parser".to_string(),
+                    category: None,
+                    focus: None,
+                    started_at_ms: 50_000,
+                    ended_at_ms: 50_001,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 2,
+                        captured_at_ms: Some(50_000),
+                    }],
+                })
+                .await
+                .expect("seed recent activity");
+            // A visible Conclusion that mentions the query subject — must survive
+            // regardless of the time window (Conclusions are never time-scoped).
+            store
+                .upsert_conclusion(NewConclusion {
+                    subject: "parser".to_string(),
+                    statement: "The user maintains a parser".to_string(),
+                    confidence: 0.9,
+                    formed_at_ms: 1_000,
+                    last_supported_at_ms: 1_000,
+                })
+                .await
+                .expect("seed conclusion");
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            // Window [500ms, 10_000ms): one valid `from`, and a deliberately
+            // BAD `to` that must be ignored gracefully (the turn still runs with
+            // only `from` applied, so the recent out-of-range match survives —
+            // see the assertion below for the both-valid-bounds case).
+            let bad_to = broker_recall_context(
+                &infra,
+                &[grant.clone()],
+                BrokerRecallContextRequest {
+                    query: "parser".to_string(),
+                    limit: None,
+                    from: Some("1970-01-01T00:00:00.500Z".to_string()),
+                    to: Some("not-a-timestamp".to_string()),
+                },
+            )
+            .await
+            .expect("recall should run")
+            .expect("recall should be authorized");
+            // Bad `to` ignored → only `from` applied → BOTH parser activities
+            // survive (turn did not error).
+            assert_eq!(bad_to.activities.len(), 2, "{:?}", bad_to.activities);
+
+            // Both bounds valid: window [500ms, 10_000ms) catches only the old
+            // parser activity; the recent one is excluded.
+            let windowed = broker_recall_context(
+                &infra,
+                &[grant],
+                BrokerRecallContextRequest {
+                    query: "parser".to_string(),
+                    limit: None,
+                    from: Some("1970-01-01T00:00:00.500Z".to_string()),
+                    to: Some("1970-01-01T00:00:10Z".to_string()),
+                },
+            )
+            .await
+            .expect("recall should run")
+            .expect("recall should be authorized");
+
+            assert_eq!(windowed.activities.len(), 1, "{:?}", windowed.activities);
+            assert_eq!(windowed.activities[0].title, "parser internals");
+            // Conclusion is unaffected by the activity time window.
+            assert_eq!(windowed.conclusions.len(), 1);
+            assert_eq!(windowed.conclusions[0].subject, "parser");
+        });
+    }
+
+    /// A range-present query with NO usable tokens (all stopwords) returns ZERO
+    /// conclusions — the no-token confidence fallback is suppressed for episodic
+    /// turns — while still returning the date-filtered activities. This proves
+    /// Conclusions are de-emphasized without harming the activity timeline that
+    /// actually answers an episodic question.
+    #[test]
+    fn recall_context_range_present_no_tokens_drops_conclusions_keeps_activities() {
+        run_async_test(async {
+            use crate::user_context::store::{NewActivity, NewActivityEvidence, NewConclusion};
+
+            let config_dir = temp_config_dir("recall-range-no-tokens");
+            let save_dir = temp_save_dir("recall-range-no-tokens");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let store = infra.user_context();
+
+            // An in-window activity (any text; the query has no usable tokens, so
+            // the activity path degrades to the most-recent in-window set).
+            store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "morning standup".to_string(),
+                    summary: "discussed the sprint plan".to_string(),
+                    category: None,
+                    focus: None,
+                    started_at_ms: 1_000,
+                    ended_at_ms: 1_001,
+                    derivation_run_id: None,
+                    evidence: vec![NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 1,
+                        captured_at_ms: Some(1_000),
+                    }],
+                })
+                .await
+                .expect("seed in-window activity");
+            // A high-confidence standing belief that the OLD (rangeless) path would
+            // have dumped via the no-token confidence fallback.
+            store
+                .upsert_conclusion(NewConclusion {
+                    subject: "habits".to_string(),
+                    statement: "The user prefers dark mode".to_string(),
+                    confidence: 0.99,
+                    formed_at_ms: 1_000,
+                    last_supported_at_ms: 1_000,
+                })
+                .await
+                .expect("seed conclusion");
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            // Stopwords-only query → no usable tokens. A present range (valid
+            // bounds) suppresses the confidence fallback.
+            let ranged = broker_recall_context(
+                &infra,
+                &[grant],
+                BrokerRecallContextRequest {
+                    query: "what did i do".to_string(),
+                    limit: None,
+                    from: Some("1970-01-01T00:00:00.500Z".to_string()),
+                    to: Some("1970-01-01T00:00:10Z".to_string()),
+                },
+            )
+            .await
+            .expect("recall should run")
+            .expect("recall should be authorized");
+
+            assert!(
+                ranged.conclusions.is_empty(),
+                "range-present no-token query must drop conclusions: {:?}",
+                ranged.conclusions
+            );
+            // Activities intact: the in-window activity still comes back.
+            assert_eq!(ranged.activities.len(), 1, "{:?}", ranged.activities);
+            assert_eq!(ranged.activities[0].title, "morning standup");
+        });
     }
 
     #[test]
