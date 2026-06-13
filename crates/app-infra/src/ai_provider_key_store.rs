@@ -190,8 +190,12 @@ fn store_platform_key(provider: &str, key: &str) -> Result<()> {
     use std::io::Write;
     use std::process::Stdio;
 
-    // `-w` with no value makes `security` read the password from stdin, so the
-    // secret never appears in the subprocess argv (visible to same-user `ps`).
+    // `-w` with no value keeps the secret off the subprocess argv (visible to
+    // same-user `ps`), but it does NOT take a single value from stdin: `security`
+    // runs an interactive "password" + "retype password" confirmation prompt and
+    // reads BOTH from stdin. Feeding the key once leaves the retype empty, which
+    // `security` resolves by silently storing an EMPTY password while still
+    // exiting 0 — so the key must be written twice and the store verified.
     let mut child = Command::new("security")
         .args([
             "add-generic-password",
@@ -207,11 +211,15 @@ fn store_platform_key(provider: &str, key: &str) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()?;
 
-    child
-        .stdin
-        .take()
-        .expect("stdin was requested via Stdio::piped")
-        .write_all(key.as_bytes())?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .expect("stdin was requested via Stdio::piped");
+        // Password line, then the retype confirmation line.
+        writeln!(stdin, "{key}")?;
+        writeln!(stdin, "{key}")?;
+    }
 
     let add = child.wait_with_output()?;
     if !add.status.success() {
@@ -219,7 +227,15 @@ fn store_platform_key(provider: &str, key: &str) -> Result<()> {
             String::from_utf8_lossy(&add.stderr).trim().to_string(),
         ));
     }
-    Ok(())
+
+    // `security` reports success even when the prompts left it storing an empty
+    // value, so confirm the key actually round-trips before declaring success.
+    match load_platform_key(provider)? {
+        Some(stored) if stored == key.trim() => Ok(()),
+        _ => Err(AppInfraError::AiProviderKeyStore(
+            "keychain reported success but did not store the provider key".to_string(),
+        )),
+    }
 }
 
 #[cfg(target_os = "macos")]
