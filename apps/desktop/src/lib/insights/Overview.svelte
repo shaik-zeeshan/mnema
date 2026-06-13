@@ -967,7 +967,7 @@
         {#if summary.spark.length > 0}
           <div class="lede-stat lede-stat--spark">
             <div class="sparkbar" aria-hidden="true">
-              {#each summary.spark as v (v)}
+              {#each summary.spark as v, i (i)}
                 <span
                   style="height:{summary.sparkMax > 0
                     ? Math.max(8, (v / summary.sparkMax) * 100)
@@ -1031,7 +1031,7 @@
           {#if summary.spark.length > 0}
             <div class="lede-stat lede-stat--spark">
               <div class="sparkbar" aria-hidden="true">
-                {#each summary.spark as v (v)}
+                {#each summary.spark as v, i (i)}
                   <span
                     style="height:{summary.sparkMax > 0
                       ? Math.max(8, (v / summary.sparkMax) * 100)

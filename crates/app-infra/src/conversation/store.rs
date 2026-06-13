@@ -117,7 +117,8 @@ impl ConversationStore {
                 phase = excluded.phase, \
                 error_message = excluded.error_message, \
                 seeded_result_count = excluded.seeded_result_count, \
-                updated_at_ms = excluded.updated_at_ms",
+                updated_at_ms = excluded.updated_at_ms \
+             WHERE conversation_turns.phase NOT IN ('done', 'error')",
         )
         .bind(conversation_row_id)
         .bind(turn_index)

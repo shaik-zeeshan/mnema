@@ -433,9 +433,14 @@ fn floor_to_hour(ms: i64) -> i64 {
 }
 
 /// Converts unix milliseconds to an RFC3339 string for comparison against the
-/// RFC3339 TEXT `frames.captured_at` column.
+/// RFC3339 TEXT `frames.captured_at` column. The value is TRUNCATED to whole
+/// seconds first: `captured_at` is second-precision TEXT, and a fractional-second
+/// bound (`…00.500Z`) sorts BEFORE a non-fractional one (`…00Z`) under lexical
+/// TEXT comparison ('.' 0x2E < 'Z' 0x5A), which would silently drop a frame
+/// sitting exactly on the boundary. Real callers already pass whole-second
+/// bounds; this makes the guarantee unconditional.
 fn ms_to_rfc3339(ms: i64) -> String {
-    let nanos = (ms as i128) * 1_000_000;
+    let nanos = (ms.div_euclid(1_000) as i128) * 1_000_000_000;
     OffsetDateTime::from_unix_timestamp_nanos(nanos)
         .ok()
         .and_then(|dt| dt.format(&Rfc3339).ok())

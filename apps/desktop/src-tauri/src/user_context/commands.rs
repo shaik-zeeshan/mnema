@@ -298,7 +298,6 @@ pub async fn user_context_run_derivation_now(
     // surfaces fresh Conclusions immediately (helpful for verification). It
     // shares the same engine and stamps its own `derivation_run` (kind
     // `'conclusion'`); distillation no-ops below two Activities.
-    let conclusions_before = infra.user_context().count_conclusions().await.unwrap_or(0);
     let distillation = run_conclusion_distillation(
         &engine,
         infra.user_context(),
@@ -306,8 +305,12 @@ pub async fn user_context_run_derivation_now(
         model_label,
     )
     .await;
-    let conclusions_after = infra.user_context().count_conclusions().await.unwrap_or(0);
-    let conclusions_derived = (conclusions_after - conclusions_before).max(0);
+    // "Conclusions upserted" = inserts AND updates. A distillation pass that
+    // refreshes existing Conclusions on fresh evidence upserts via UPDATE (no new
+    // row), so a count_conclusions before/after delta would report 0 while real
+    // work happened. Use the outcome's own upserted count (also what the worker
+    // stamps on its ledger row).
+    let conclusions_derived = distillation.map_or(0, |outcome| outcome.upserted as i64);
 
     let distilled_changed = distillation.is_some_and(|outcome| outcome.upserted > 0);
     if run.changed || distilled_changed {

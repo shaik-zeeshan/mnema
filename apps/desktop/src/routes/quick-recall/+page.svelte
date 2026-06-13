@@ -1114,7 +1114,11 @@
         const rec = e as { tool?: unknown; kind?: unknown; label?: unknown };
         // Already render-ready (a snapshot/live entry round-tripped to the DB).
         if (typeof rec.label === "string" && typeof rec.kind === "string") {
-          return { kind: rec.kind, label: rec.label };
+          // Validate the persisted kind against the known set so a stale or
+          // unexpected value still buckets as "other" in activitySummaryFor.
+          const knownKinds = ["search", "timeline", "show_text", "recall_context", "other"];
+          const kind = knownKinds.includes(rec.kind) ? rec.kind : "other";
+          return { kind, label: rec.label };
         }
         const tool = typeof rec.tool === "string" ? rec.tool : null;
         if (tool === "search")
@@ -1159,6 +1163,11 @@
       if (hydrated.length === 0) return;
       askTurns = hydrated;
       askSubmitted = true;
+      // Restore the first-turn question so the turn-1 "Try again" button (which
+      // re-runs the whole thread via retryAsk) isn't silently dead after a
+      // re-summon. The seed isn't persisted per turn, so retry re-runs without
+      // one (askLastSeed stays null, which startAsk handles).
+      askFirstQuestion = hydrated[0].question;
       const last = hydrated[hydrated.length - 1];
       // A persisted "streaming" last turn is still in flight server-side; the
       // snapshot below replaces it with the authoritative live view + version.

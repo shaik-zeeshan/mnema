@@ -694,6 +694,14 @@ impl CaptureRetentionStore {
         summary.deleted_audio_segments += orphan_audio_segment_ids(&self.pool, &cutoff, context)
             .await?
             .len() as i64;
+        // Conversations obey the same local-calendar cutoff and are deleted by
+        // run_cleanup, so the pre-confirmation preview must count them too
+        // (mirrors `delete_conversations_older_than`). A cutoff parse failure
+        // yields the same skip semantics as the run path.
+        if let Some(cutoff_ms) = rfc3339_to_ms(&cutoff) {
+            summary.deleted_conversations =
+                count_conversations_older_than(&self.pool, cutoff_ms).await?;
+        }
         Ok(summary)
     }
 
@@ -805,6 +813,19 @@ async fn delete_conversations_older_than(pool: &SqlitePool, cutoff_ms: i64) -> R
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+/// Counts (without deleting) the conversations that
+/// [`delete_conversations_older_than`] would age out for `cutoff_ms`, so
+/// `plan_cleanup`/preview reports the same destructive scope the run applies.
+/// Names only the `conversations` table for the same reason as the delete.
+async fn count_conversations_older_than(pool: &SqlitePool, cutoff_ms: i64) -> Result<u64> {
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE last_activity_at_ms < ?1")
+            .bind(cutoff_ms)
+            .fetch_one(pool)
+            .await?;
+    Ok(count as u64)
 }
 
 fn local_midnight_offset(date: Date) -> Option<UtcOffset> {

@@ -23,6 +23,7 @@
   //   subject: string     — the Subject name being inspected.
   //   onBack: () => void  — return to the Subjects index.
 
+  import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { goto } from "$app/navigation";
@@ -231,9 +232,14 @@
   // batched; mirrors Chat.svelte's source-thumbnail loader. Skips ids already
   // cached so re-selecting a conclusion is free.
   async function loadEvidenceThumbnails(rows: EvidenceRow[]): Promise<void> {
+    // Read the cache untracked: this loader runs synchronously inside a $effect
+    // keyed on evidenceRows, so a tracked thumbnailCache.has() read before the
+    // first await would make the cache a dependency — and the `thumbnailCache =
+    // next` write below would then re-run the effect for one wasted pass.
+    const cache = untrack(() => thumbnailCache);
     const wanted = rows
       .map((r) => r.frameId)
-      .filter((id): id is number => id != null && !thumbnailCache.has(id));
+      .filter((id): id is number => id != null && !cache.has(id));
     const uniqueIds = Array.from(new Set(wanted));
     if (uniqueIds.length === 0) return;
     try {

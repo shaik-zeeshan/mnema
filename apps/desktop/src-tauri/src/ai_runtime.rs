@@ -173,6 +173,12 @@ struct FireworksAccount {
 /// How long the `/models` request waits before giving up.
 const MODELS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Hard ceiling on paginated `/models` (and `/accounts`) fetches. The per-request
+/// timeout bounds a single page, but a server (or proxy) echoing the same
+/// non-empty `nextPageToken` forever would loop indefinitely and hang the model
+/// picker; this caps the page walk far above any realistic catalog size.
+const MODELS_MAX_PAGES: usize = 50;
+
 /// `anthropic-version` header required by Anthropic's REST API.
 const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
 
@@ -695,7 +701,7 @@ async fn discover_fireworks_accounts(
     let mut accounts: Vec<String> = Vec::new();
     let mut page_token: Option<String> = None;
 
-    loop {
+    for page in 0..MODELS_MAX_PAGES {
         let mut request = client
             .get(&url)
             .query(&[("pageSize", "200")])
@@ -733,7 +739,15 @@ async fn discover_fireworks_accounts(
         );
 
         match parsed.next_page_token {
-            Some(token) if !token.is_empty() => page_token = Some(token),
+            Some(token) if !token.is_empty() => {
+                if page + 1 == MODELS_MAX_PAGES {
+                    tauri_plugin_log::log::warn!(
+                        "fireworks /accounts pagination hit the {MODELS_MAX_PAGES}-page cap; truncating account list"
+                    );
+                    break;
+                }
+                page_token = Some(token);
+            }
             _ => break,
         }
     }
@@ -756,7 +770,7 @@ async fn list_fireworks_account_models(
     let mut ids: Vec<String> = Vec::new();
     let mut page_token: Option<String> = None;
 
-    loop {
+    for page in 0..MODELS_MAX_PAGES {
         let mut request = client
             .get(&catalog_url)
             .query(&[("pageSize", "200")])
@@ -792,7 +806,15 @@ async fn list_fireworks_account_models(
         );
 
         match parsed.next_page_token {
-            Some(token) if !token.is_empty() => page_token = Some(token),
+            Some(token) if !token.is_empty() => {
+                if page + 1 == MODELS_MAX_PAGES {
+                    tauri_plugin_log::log::warn!(
+                        "fireworks catalog pagination hit the {MODELS_MAX_PAGES}-page cap; truncating model list"
+                    );
+                    break;
+                }
+                page_token = Some(token);
+            }
             _ => break,
         }
     }

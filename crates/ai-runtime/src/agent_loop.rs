@@ -351,8 +351,9 @@ where
     M: CompletionModel + 'static,
     <M as CompletionModel>::StreamingResponse: WasmCompatSend + GetTokenUsage,
 {
-    // Clamp the caller's cap onto rig's multi-turn depth: `0`/`usize::MAX` (the
-    // "no cap" sentinels) collapse to the ceiling rather than overflowing.
+    // Clamp the caller's cap onto rig's multi-turn depth: `0` floors to a single
+    // turn, and anything above the ceiling (including the `usize::MAX` "no cap"
+    // sentinel) caps at it rather than overflowing rig's internal counter.
     let max_turns = max_tool_calls.clamp(1, MULTI_TURN_CEILING);
 
     // Cancelled before we even started: emit Done and return.

@@ -1983,6 +1983,7 @@
   // The Ask AI override picker consumes the same merged provider-tagged pool
   // (ai_runtime_list_models), built from the current draft provider list.
   async function loadAskAiModels() {
+    if (askAiModelsLoading) return;
     askAiModelsLoading = true;
     askAiModelsError = null;
     try {

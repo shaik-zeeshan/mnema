@@ -69,6 +69,9 @@ export interface SaveConversationTurnRequest {
   turnIndex: number;
   question: string;
   answer: string;
+  /** The model's streamed reasoning/thinking for this turn; omit when none
+   *  (Rust `#[serde(default)] reasoning: Option<String>`). */
+  reasoning?: string | null;
   toolActivities: unknown;
   sources: unknown;
   phase: string;

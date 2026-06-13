@@ -854,9 +854,18 @@ impl UserContextStore {
 
         if let Some(row) = existing {
             let id: i64 = row.get("id");
+            // Re-derive visibility from the NEW confidence (mirrors
+            // `confidence::status_for`: below DISPLAY_FLOOR 0.15 and unpinned →
+            // 'faded', else 'visible'). Without this, a conclusion that decayed
+            // to 'faded' and is then re-supported above the floor would keep
+            // status='faded' and stay hidden from the default dossier until the
+            // next slow confidence-decay beat runs. A dismissed row can't reach
+            // here — dismissal deletes the row, so the dedup SELECT never matches it.
             sqlx::query(
                 "UPDATE user_context_conclusions \
-                 SET confidence = ?2, last_supported_at_ms = ?3, updated_at_ms = ?4 \
+                 SET confidence = ?2, last_supported_at_ms = ?3, updated_at_ms = ?4, \
+                     status = CASE WHEN ?2 < 0.15 AND COALESCE(pinned, 0) = 0 \
+                                   THEN 'faded' ELSE 'visible' END \
                  WHERE id = ?1",
             )
             .bind(id)

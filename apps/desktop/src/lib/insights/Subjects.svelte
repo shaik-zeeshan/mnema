@@ -385,8 +385,9 @@
   // instant. Best-effort — unresolved refs simply yield no chip.
   async function resolveActivitiesFor(subject: string): Promise<void> {
     if (resolvedSubjects.has(subject)) return;
-    resolvedSubjects.add(subject);
-    resolvedSubjects = new Set(resolvedSubjects);
+    const nextResolved = new Set(resolvedSubjects);
+    nextResolved.add(subject);
+    resolvedSubjects = nextResolved;
 
     const row = rows.find((r) => r.subject === subject);
     if (!row) return;
@@ -491,7 +492,13 @@
       loadError = null;
       return list;
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // Only surface the full error screen when there's nothing to preserve
+      // (initial load — `conclusions` still null). A background realtime refetch
+      // failure keeps the intact rendered rows instead of flashing the error
+      // state over good content; we still return the current list below.
+      if (!conclusions?.length) {
+        loadError = error instanceof Error ? error.message : String(error);
+      }
       return conclusions ?? [];
     }
   }
