@@ -2243,24 +2243,47 @@ pub(super) fn pause_runtime_for_system_suspend_with_app_handle(
         return Ok(false);
     }
 
-    if active_sources.microphone {
-        pause_microphone_for_inactivity_with_app_handle(runtime, app_handle)?;
-    }
-    if active_sources.system_audio {
-        pause_system_audio_for_inactivity_with_app_handle(runtime, app_handle)?;
-    }
-    if active_sources.screen {
-        pause_screen_for_transient_liveness(
-            runtime,
-            super::inactivity::TransientLivenessTrigger::SystemSuspend,
-        )?;
+    // Pause each requested family in turn, recording exactly what actually paused.
+    // On a partial failure (e.g. mic pauses but system-audio/screen errors) we must
+    // still record the paused set in `system_suspend_paused_sources` before
+    // propagating the error, so `is_system_suspend_paused()` reports true and the
+    // resume path restarts precisely the families that paused — otherwise those
+    // families stay paused forever with no resume trigger.
+    let mut paused_sources = CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: false,
+    };
+    let result = (|| -> Result<(), CaptureErrorResponse> {
+        if active_sources.microphone {
+            pause_microphone_for_inactivity_with_app_handle(runtime, app_handle)?;
+            paused_sources.microphone = true;
+        }
+        if active_sources.system_audio {
+            pause_system_audio_for_inactivity_with_app_handle(runtime, app_handle)?;
+            paused_sources.system_audio = true;
+        }
+        if active_sources.screen {
+            pause_screen_for_transient_liveness(
+                runtime,
+                super::inactivity::TransientLivenessTrigger::SystemSuspend,
+            )?;
+            paused_sources.screen = true;
+        }
+        Ok(())
+    })();
+
+    let any_paused =
+        paused_sources.screen || paused_sources.microphone || paused_sources.system_audio;
+    if any_paused {
+        runtime.inactivity.is_paused = true;
+        runtime.inactivity.system_suspend_paused_sources = Some(paused_sources);
+        refresh_windows_current_segment_sources(runtime);
     }
 
-    runtime.inactivity.is_paused = true;
-    runtime.inactivity.system_suspend_paused_sources = Some(active_sources);
-    refresh_windows_current_segment_sources(runtime);
+    result?;
 
-    Ok(true)
+    Ok(any_paused)
 }
 
 #[cfg(target_os = "windows")]
@@ -2272,12 +2295,29 @@ pub(super) fn resume_runtime_from_system_suspend(
         return Ok(false);
     };
 
-    start_windows_active_segment(
+    if let Err(error) = start_windows_active_segment(
         app_handle,
         runtime,
         &resume_sources,
         "resuming Windows native capture from system suspend",
-    )?;
+    ) {
+        // Re-init failed at wake (WGC/WASAPI not ready yet). Clearing the
+        // system-suspend marker is what guarantees eventual recovery: while it is
+        // set the tick unconditionally short-circuits with `SkipRotation`, so
+        // nothing would ever retry. Once cleared, the families fall back to the
+        // standard resume machinery — the screen (still paused as
+        // `TransientLiveness { SystemSuspend }`) retries via the throttled
+        // display-present probe, and audio families resume via their per-family
+        // activity blocks. This trades the all-at-once suspend resume for the
+        // throttled transient-liveness retry rather than wedging the session.
+        super::debug_log::log(format!(
+            "failed to resume Windows native capture from system suspend; clearing suspend marker and falling back to transient-liveness/inactivity resume: [{}] {}",
+            error.code, error.message
+        ));
+        runtime.inactivity.system_suspend_paused_sources = None;
+        refresh_windows_current_segment_sources(runtime);
+        return Err(error);
+    }
 
     let screen_paused = runtime.inactivity.screen_paused && !resume_sources.screen;
     let microphone_paused = runtime.inactivity.microphone_paused && !resume_sources.microphone;

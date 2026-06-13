@@ -2338,6 +2338,12 @@ mod windows_aac_m4a {
     pub struct WindowsAacM4aSinkWriter {
         writer: IMFSinkWriter,
         stream_index: u32,
+        /// Count of `WriteSample` calls that actually reached the encoder. When
+        /// zero, `Finalize()` would fail with `MF_E_SINK_NO_SAMPLES_PROCESSED`
+        /// (surfaced as `windows_audio_writer_failed`), so callers skip it and
+        /// treat the segment as empty — mirroring the macOS
+        /// `appended_samples == 0` guard.
+        written_samples: u64,
     }
 
     impl WindowsAacM4aSinkWriter {
@@ -2359,11 +2365,11 @@ mod windows_aac_m4a {
                 .collect();
 
             unsafe {
-                // Defensive, reference-counted MFStartup; the capture thread owns
-                // the balancing MFShutdown for the whole session.
-                MFStartup(MF_VERSION, MFSTARTUP_FULL)
-                    .map_err(|e| win_error("MFStartup failed", &e))?;
-
+                // No MFStartup here: `create` only ever runs on the capture
+                // thread, which performs exactly one MFStartup/MFShutdown around
+                // the whole session. A per-create startup would leave the MF
+                // refcount unbalanced (finalize deliberately does not shut down),
+                // so we rely on the thread's single startup.
                 let output_type = MFCreateMediaType()
                     .map_err(|e| win_error("MFCreateMediaType (AAC output) failed", &e))?;
                 output_type
@@ -2438,6 +2444,7 @@ mod windows_aac_m4a {
                 Ok(Self {
                     writer,
                     stream_index,
+                    written_samples: 0,
                 })
             }
         }
@@ -2486,7 +2493,15 @@ mod windows_aac_m4a {
                     .WriteSample(self.stream_index, &sample)
                     .map_err(|e| win_error("WriteSample failed", &e))?;
             }
+            self.written_samples += 1;
             Ok(())
+        }
+
+        /// Whether any sample has been written to the encoder. `Finalize()` must
+        /// not be called when this is `false` (MF would fail with
+        /// `MF_E_SINK_NO_SAMPLES_PROCESSED`).
+        pub fn has_written_samples(&self) -> bool {
+            self.written_samples > 0
         }
 
         /// Finalize the MPEG-4 container, flushing the AAC encoder. Does not call
@@ -2661,7 +2676,10 @@ mod windows_aac_m4a {
         /// Flush the withheld tail into the encoder and finalize the `.m4a`. Used
         /// for a normal stop or a segment rotation, where the segment must be
         /// whole. Mirrors `finish_audio_asset_writer` on macOS.
-        pub fn finalize_flushing(mut self) -> Result<(), CaptureErrorResponse> {
+        ///
+        /// Returns `true` if a non-empty `.m4a` was finalized, `false` if nothing
+        /// ever reached the encoder (empty segment — no output file).
+        pub fn finalize_flushing(mut self) -> Result<bool, CaptureErrorResponse> {
             while let Some(pending) = self.tail.samples.pop_front() {
                 self.write_pending(&pending.sample)?;
             }
@@ -2671,16 +2689,31 @@ mod windows_aac_m4a {
         /// Discard the withheld tail and finalize the `.m4a`. Used for an
         /// inactivity stop so the committed segment never carries the dead idle
         /// tail. Mirrors `finish_audio_asset_writer_discarding_inactivity_tail`.
-        pub fn finalize_discarding_inactivity_tail(mut self) -> Result<(), CaptureErrorResponse> {
+        ///
+        /// Returns `true` if a non-empty `.m4a` was finalized, `false` if the
+        /// discard left nothing that ever reached the encoder (empty segment) —
+        /// the inactivity case the macOS `appended_samples == 0` guard covers.
+        pub fn finalize_discarding_inactivity_tail(
+            mut self,
+        ) -> Result<bool, CaptureErrorResponse> {
             self.tail.discard_tail();
             self.finalize_writer()
         }
 
-        fn finalize_writer(&mut self) -> Result<(), CaptureErrorResponse> {
+        /// Finalize the underlying sink writer. Skips `IMFSinkWriter::Finalize()`
+        /// when no sample ever reached the encoder, since MF would fail it with
+        /// `MF_E_SINK_NO_SAMPLES_PROCESSED`; returns `false` in that case so the
+        /// caller records an empty segment (no output file) instead of claiming a
+        /// playable `.m4a`.
+        fn finalize_writer(&mut self) -> Result<bool, CaptureErrorResponse> {
             if let Some(writer) = self.writer.take() {
+                if !writer.has_written_samples() {
+                    return Ok(false);
+                }
                 writer.finalize()?;
+                return Ok(true);
             }
-            Ok(())
+            Ok(false)
         }
     }
 

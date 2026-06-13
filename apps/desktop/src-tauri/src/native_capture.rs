@@ -2341,7 +2341,22 @@ pub async fn request_capture_permission(
     state: tauri::State<'_, NativeCaptureState>,
 ) -> Result<CapturePermissionsResponse, String> {
     match kind.as_str() {
+        // On Windows, system audio is WASAPI loopback and needs no permission
+        // prompt, so skip the screen-recording preflight and just return the
+        // refreshed permission state. On macOS system audio shares the
+        // screen-recording permission, so it still runs the screen preflight.
+        #[cfg(target_os = "windows")]
+        "systemAudio" => {}
+        #[cfg(not(target_os = "windows"))]
         "screen" | "systemAudio" => {
+            tauri::async_runtime::spawn_blocking(|| {
+                capture_screen::ensure_screen_permission();
+            })
+            .await
+            .map_err(|error| format!("screen permission request failed: {error}"))?;
+        }
+        #[cfg(target_os = "windows")]
+        "screen" => {
             tauri::async_runtime::spawn_blocking(|| {
                 capture_screen::ensure_screen_permission();
             })

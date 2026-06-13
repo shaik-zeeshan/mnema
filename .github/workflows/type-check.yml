@@ -100,6 +100,18 @@ jobs:
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
 
+      - name: Build desktop crate (exercises ML native link)
+        # `cargo check` above type-checks the workspace but never *links* the
+        # heavy native ML runtimes. The desktop `mnema` crate enables the
+        # `audio-transcription` (local-whisper + parakeet-onnx/ort),
+        # `speaker-analysis` (sherpa-onnx), and Windows `ocr`/`media-decode`
+        # features, so building its lib forces the real Windows link of
+        # onnxruntime (ort), sherpa-onnx, and whisper.cpp. Scoped to `--lib`
+        # (no Tauri bundle / no frontend dist) to keep CI time bounded while
+        # still validating that the native ML link succeeds on Windows.
+        # NOT covered here: producing the packaged NSIS/MSI bundle.
+        run: cargo build -p mnema --lib --locked
+
       - name: Test platform-neutral crates
         run: >
           cargo test --locked

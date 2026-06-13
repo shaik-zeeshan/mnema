@@ -160,6 +160,20 @@ fn format_guid_lower(guid: &GUID) -> String {
 /// than duplicated as a bare string literal across the crate boundary.
 pub const SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE: &str = "screen_capture_item_closed";
 
+/// Stop-error code recorded when the D3D device backing capture is lost
+/// (`DXGI_ERROR_DEVICE_REMOVED` / `DXGI_ERROR_DEVICE_RESET`, e.g. a GPU TDR,
+/// driver upgrade, or adapter reset). Like a closed capture item this is a
+/// *transient liveness* loss (ADR 0023): the device can be recreated once the
+/// GPU recovers, so the lifecycle should suspend and auto-resume rather than
+/// failing the session. Classified as transient by
+/// [`screen_capture_stop_error_is_transient_liveness`].
+pub const SCREEN_CAPTURE_DEVICE_LOST_ERROR_CODE: &str = "screen_capture_device_lost";
+
+/// `HRESULT`s that indicate the D3D device was lost and must be recreated.
+const DXGI_ERROR_DEVICE_REMOVED: i32 = 0x887A0005u32 as i32;
+const DXGI_ERROR_DEVICE_RESET: i32 = 0x887A0007u32 as i32;
+const D3DDDIERR_DEVICEREMOVED: i32 = 0x88760870u32 as i32;
+
 /// Whether a screen stop-error code denotes a transient liveness loss (the
 /// display went away) rather than a genuine capture failure.
 ///
@@ -169,27 +183,33 @@ pub const SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE: &str = "screen_capture_item_clo
 /// the session. Keeping the predicate next to the producer means callers never
 /// re-encode the error-code string (ADR 0023).
 pub fn screen_capture_stop_error_is_transient_liveness(code: &str) -> bool {
-    code == SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE
+    code == SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE || code == SCREEN_CAPTURE_DEVICE_LOST_ERROR_CODE
 }
 
 // ---------------------------------------------------------------------------
 // Cheap display-present probe
 // ---------------------------------------------------------------------------
 
-/// Whether at least one display monitor is present/attachable right now.
+/// Whether at least one display monitor is currently *attached* to the system.
 ///
-/// This is the Windows liveness signal for ADR 0023's display-unavailable
-/// trigger: while every monitor is asleep, the lid is closed, the session is
-/// locked, or the only monitor is unplugged, this returns `false`, so a
-/// `TransientLiveness` suspension can wait quietly and only re-attempt WGC
-/// capture once a display returns — mirroring macOS's `screen_display_available`
-/// (`CGGetActiveDisplayList`) gate.
+/// This reports monitor attachment only — it is **not** a session-unlocked
+/// signal. It returns `false` only when no monitor is attached at all (e.g. the
+/// sole monitor is unplugged or fully powered off as far as the OS is
+/// concerned). It returns `true` whenever a monitor is attached, **including
+/// while the session is locked** (`Win+L` does not detach monitors, so
+/// `SM_CMONITORS` stays positive) and, on many drivers, while a monitor is
+/// merely asleep. Callers must not treat a `true` result as "the user can see
+/// the screen"; the behavioral gating for locked/idle sessions lives in the
+/// desktop lifecycle, not here.
 ///
 /// It uses `GetSystemMetrics(SM_CMONITORS)`, a single non-allocating Win32 call
 /// that returns the number of display monitors, deliberately *not*
 /// `EnumDisplayMonitors` (which runs a per-monitor callback) and with no COM /
 /// WinRT / D3D session setup, so it is cheap enough to poll every ~2s from the
-/// 1s segment-loop tick.
+/// 1s segment-loop tick. It is the coarse "a display exists to capture again"
+/// probe a `TransientLiveness` suspension polls before re-attempting WGC capture
+/// — the rough Windows analogue of macOS's `screen_display_available`
+/// (`CGGetActiveDisplayList`) gate, with the lock-state caveat above.
 pub fn windows_display_present() -> bool {
     // SAFETY: `GetSystemMetrics` is a pure read of a system metric with no
     // pointer arguments and no initialization requirements.
@@ -438,7 +458,19 @@ pub fn start_capture_session_with_options(
         }
     }
 
-    shared.live.store(true, Ordering::Relaxed);
+    // Promote to live only if no stop-error has already been recorded. The
+    // `Closed` handler runs on a free-threaded WGC frame-pool thread and may
+    // have fired (setting `live=false` + a stop-error) between `StartCapture`
+    // and this point; unconditionally storing `true` here would clobber that and
+    // resurrect a session whose display already went away. Holding the
+    // stop_error lock across the check+store keeps the two consistent against a
+    // concurrent `record_stop_error`.
+    {
+        let stop_error = shared.stop_error.lock().unwrap_or_else(|p| p.into_inner());
+        if stop_error.is_none() {
+            shared.live.store(true, Ordering::Relaxed);
+        }
+    }
 
     let recording_file = output_path.to_string_lossy().to_string();
     Ok(StartedCaptureSession {
@@ -516,7 +548,7 @@ fn run_message_loop(
     while let Ok(message) = receiver.recv() {
         match message {
             Message::Frame => {
-                if let Err(error) = engine.process_next_frame() {
+                if let Some(error) = engine.process_frame_message() {
                     record_stop_error(shared, error);
                 }
             }
@@ -551,8 +583,13 @@ fn run_message_loop(
 }
 
 fn record_stop_error(shared: &Arc<SharedState>, error: CaptureErrorResponse) {
-    shared.live.store(false, Ordering::Relaxed);
+    // Set `live=false` while holding the stop_error lock so the pair is atomic
+    // against the startup `live=true` promotion, which checks stop_error under
+    // the same lock before storing `true` (see `start_capture_session_with_options`).
+    // Without this the promotion could observe an empty stop_error slot and
+    // resurrect a session this call is tearing down.
     let mut slot = shared.stop_error.lock().unwrap_or_else(|p| p.into_inner());
+    shared.live.store(false, Ordering::Relaxed);
     if slot.is_none() {
         *slot = Some(error);
     }
@@ -597,8 +634,19 @@ struct CaptureEngine {
     /// 60s segment is a 60s `.mp4`, not a single 33ms frame).
     segment_start: Instant,
     logged_invalid_content_size: bool,
+    /// Count of consecutive `process_next_frame` failures since the last
+    /// successful frame. A single Map/readback/MF hiccup on the GPU hot path is
+    /// usually transient, so the message loop tolerates a few in a row before
+    /// flipping liveness; any successful frame resets this to zero.
+    consecutive_frame_errors: u32,
     closed: bool,
 }
+
+/// Number of consecutive frame-processing errors tolerated before a non-device-
+/// lost failure is treated as a genuine teardown and recorded as a stop-error.
+/// Small so a real, persistent fault still ends the session promptly while a
+/// one-off GPU/MF hiccup is ridden out.
+const MAX_CONSECUTIVE_FRAME_ERRORS: u32 = 3;
 
 /// The Media Foundation sink writer plus the stream index it was given.
 struct SinkWriter {
@@ -825,8 +873,48 @@ impl CaptureEngine {
                 nv12: vec![0u8; (width as usize) * (height as usize) * 3 / 2],
                 segment_start: Instant::now(),
                 logged_invalid_content_size: false,
+                consecutive_frame_errors: 0,
                 closed: false,
             })
+        }
+    }
+
+    /// Process one `Frame` message, applying transient-error tolerance.
+    ///
+    /// Returns `Some(error)` only when the failure should flip liveness and be
+    /// recorded as a stop-error; returns `None` when the frame succeeded or the
+    /// error was tolerated as a transient hiccup. A device-lost error is surfaced
+    /// immediately (it is itself classified transient-liveness, so the lifecycle
+    /// rides it out by suspending/resuming); other failures are tolerated up to
+    /// [`MAX_CONSECUTIVE_FRAME_ERRORS`] in a row before being treated as a
+    /// genuine teardown. Any successful frame resets the consecutive-error count.
+    fn process_frame_message(&mut self) -> Option<CaptureErrorResponse> {
+        match self.process_next_frame() {
+            Ok(()) => {
+                self.consecutive_frame_errors = 0;
+                None
+            }
+            Err(error) => {
+                if error.code == SCREEN_CAPTURE_DEVICE_LOST_ERROR_CODE {
+                    // Device-lost is a recoverable transient-liveness loss; let
+                    // the lifecycle suspend and auto-resume rather than counting
+                    // it toward a teardown.
+                    return Some(error);
+                }
+                self.consecutive_frame_errors = self.consecutive_frame_errors.saturating_add(1);
+                if self.consecutive_frame_errors >= MAX_CONSECUTIVE_FRAME_ERRORS {
+                    Some(error)
+                } else {
+                    capture_runtime::debug_log!(
+                        "[capture-screen] tolerating transient Windows frame error ({}/{}): [{}] {}",
+                        self.consecutive_frame_errors,
+                        MAX_CONSECUTIVE_FRAME_ERRORS,
+                        error.code,
+                        error.message
+                    );
+                    None
+                }
+            }
         }
     }
 
@@ -1052,6 +1140,19 @@ impl CaptureEngine {
         captured_at_unix_ms: u64,
         relative_ticks: i64,
     ) -> Result<CapturedFrameEquivalenceOutcome, CaptureErrorResponse> {
+        // Snap the sidecar offset to the most recent *kept* (encoded) sample's
+        // ticks. The 1fps export cadence and the encode rate-cap are
+        // independent, so a frame can be exported while `should_drop_frame`
+        // removed it from the H.264 stream; using this frame's own
+        // `relative_ticks` would point the scrub entry at a PTS that never
+        // exists in the finalized video (it would land between two real sample
+        // PTS). `last_kept_ticks` is updated in `process_next_frame` immediately
+        // before this call, so when the current frame *was* encoded it already
+        // equals `relative_ticks`; when it was dropped it holds the previous
+        // kept sample, keeping offsets monotonic and aligned to real PTS. Before
+        // any frame has been encoded we fall back to this frame's ticks.
+        let video_offset_ms = ticks_to_ms(self.last_kept_ticks.unwrap_or(relative_ticks));
+
         let Some(runtime) = self.frame_export.as_mut() else {
             return Ok(CapturedFrameEquivalenceOutcome::quarantined(
                 "Windows frame export runtime is not configured",
@@ -1063,20 +1164,6 @@ impl CaptureEngine {
         runtime.next_frame_index = runtime.next_frame_index.saturating_add(1);
         let file_path =
             screen_frame_artifact_path(&runtime.artifact_dir, frame_index, captured_at_unix_ms);
-
-        // The segment timeline rebases the first kept frame to tick zero, so a
-        // frame's segment-relative video offset is exactly its `relative_ticks`
-        // converted to milliseconds — the same finalized-video-relative offset
-        // the macOS path derives post-hoc from the encoded sample PTS. Exported
-        // frames are processed in increasing tick order, keeping offsets
-        // monotonic by construction.
-        runtime
-            .segment_frame_index_entries
-            .push(ScreenSegmentFrameIndexEntry {
-                captured_at_unix_ms,
-                frame_index,
-                video_offset_ms: ticks_to_ms(relative_ticks),
-            });
 
         let captured_frame_equivalence = read_scaled_frame_equivalence(
             &self.device,
@@ -1094,6 +1181,27 @@ impl CaptureEngine {
         )?;
 
         save_rgb_as_jpeg(&file_path, self.width, self.height, &runtime.rgb)?;
+
+        // Record the sidecar scrub entry only after both fallible steps above
+        // have succeeded, so a readback/JPEG-write failure (which returns `?`)
+        // never leaves the SFI1 sidecar pointing at a `.jpg` that was never
+        // written — matching the macOS path, which pushes the frame-index entry
+        // only after the JPEG save succeeds.
+        //
+        // The segment timeline rebases the first kept frame to tick zero, so a
+        // frame's segment-relative video offset is exactly its `video_offset_ms`
+        // converted from ticks — the same finalized-video-relative offset the
+        // macOS path derives post-hoc from the encoded sample PTS. Exported
+        // frames are processed in increasing tick order, keeping offsets
+        // monotonic by construction.
+        runtime
+            .segment_frame_index_entries
+            .push(ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms,
+                frame_index,
+                video_offset_ms,
+            });
+
         (runtime.on_frame_exported)(ScreenFrameArtifact {
             file_path: file_path.to_string_lossy().to_string(),
             captured_at_unix_ms,
@@ -1998,10 +2106,27 @@ fn create_dir(path: &Path) -> Result<(), CaptureErrorResponse> {
 }
 
 fn win_error(context: &str, error: &windows::core::Error) -> CaptureErrorResponse {
+    // A lost D3D device is a recoverable, transient-liveness condition (the
+    // device can be recreated once the GPU recovers), not a genuine capture
+    // failure — surface it under its own code so the lifecycle suspends and
+    // auto-resumes rather than tearing the session down.
+    let code = if win_error_is_device_lost(error) {
+        SCREEN_CAPTURE_DEVICE_LOST_ERROR_CODE
+    } else {
+        "windows_capture_failed"
+    };
     CaptureErrorResponse {
-        code: "windows_capture_failed".to_string(),
+        code: code.to_string(),
         message: format!("{context}: {error}"),
     }
+}
+
+/// Whether a `windows::core::Error` carries a device-lost `HRESULT`.
+fn win_error_is_device_lost(error: &windows::core::Error) -> bool {
+    matches!(
+        error.code().0,
+        DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET | D3DDDIERR_DEVICEREMOVED
+    )
 }
 
 fn no_active_writer_error(action: &str) -> CaptureErrorResponse {
@@ -2152,6 +2277,9 @@ mod tests {
     fn transient_liveness_predicate_matches_item_closed_code() {
         assert!(screen_capture_stop_error_is_transient_liveness(
             SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE
+        ));
+        assert!(screen_capture_stop_error_is_transient_liveness(
+            SCREEN_CAPTURE_DEVICE_LOST_ERROR_CODE
         ));
         assert!(!screen_capture_stop_error_is_transient_liveness(
             "windows_capture_failed"

@@ -5,6 +5,7 @@ use std::{
 };
 
 use rand::RngCore;
+use zeroize::Zeroizing;
 
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -36,17 +37,24 @@ struct CaptureIndexIdentity {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CaptureIndexDatabaseKey {
-    passphrase: String,
+    // Held for the lifetime of the process; `Zeroizing` scrubs the passphrase
+    // bytes when the key is dropped so the SQLCipher secret does not linger in
+    // freed heap memory.
+    passphrase: Zeroizing<String>,
 }
 
 impl CaptureIndexDatabaseKey {
-    fn new(passphrase: String) -> Self {
-        Self { passphrase }
+    fn new(passphrase: impl Into<Zeroizing<String>>) -> Self {
+        Self {
+            passphrase: passphrase.into(),
+        }
     }
 
     pub(crate) fn sqlcipher_pragma_value(&self) -> String {
-        let escaped_key = self.passphrase.replace('\'', "''");
-        format!("'{escaped_key}'")
+        // The intermediate escaped copy is scrubbed on drop; the returned String
+        // is consumed immediately by sqlx's pragma handling.
+        let escaped_key = Zeroizing::new(self.passphrase.replace('\'', "''"));
+        format!("'{}'", escaped_key.as_str())
     }
 }
 
@@ -101,15 +109,15 @@ where
         Ok(Some(CaptureIndexDatabaseKey::new(passphrase)))
     }
 
-    fn load_or_create_key(&self, index_id: &str, require_existing: bool) -> Result<String> {
+    fn load_or_create_key(&self, index_id: &str, require_existing: bool) -> Result<Zeroizing<String>> {
         if let Some(key) = self.adapter.load_key(index_id)? {
-            return Ok(key);
+            return Ok(Zeroizing::new(key));
         }
         if require_existing {
             return Err(self.adapter.missing_key_error(index_id));
         }
 
-        let key = random_hex(32)?;
+        let key = Zeroizing::new(random_hex(32)?);
         self.adapter.store_key(index_id, &key)?;
         Ok(key)
     }
@@ -365,7 +373,8 @@ fn load_platform_key(index_id: &str) -> Result<Option<String>> {
 fn store_platform_key(index_id: &str, key: &str) -> Result<()> {
     let mut target = windows_credential_target(index_id);
     let mut user_name = windows_credential_user_name();
-    let mut key_bytes = key.as_bytes().to_vec();
+    // Scrub the plaintext passphrase bytes once the credential write completes.
+    let mut key_bytes = Zeroizing::new(key.as_bytes().to_vec());
 
     let mut credential = CREDENTIALW::default();
     credential.Type = CRED_TYPE_GENERIC;

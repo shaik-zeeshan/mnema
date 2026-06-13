@@ -29,7 +29,7 @@ pub type FramePreviewCacheState = Mutex<FramePreviewState>;
 
 pub(super) const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
 pub(super) const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
 const FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT: Duration = Duration::from_secs(5);
 const PREVIEW_GENERATION_CANCELLED: &str = "preview generation cancelled";
@@ -40,6 +40,18 @@ const SCRUB_PREVIEW_MIN_MAX_PIXEL_SIZE: u32 = 200;
 const SCRUB_PREVIEW_MAX_MAX_PIXEL_SIZE: u32 = 1280;
 const SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS: u128 = 25;
 const SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT: Duration = Duration::from_secs(2);
+/// Windows decodes each scrub-preview offset with its own MF startup + reader +
+/// seek + decode (no reusable batch generator like macOS `AVAssetImageGenerator`,
+/// which issues one request for all offsets). A single fixed 2s batch timeout can
+/// fire mid-chunk and discard every already-decoded frame, so the Windows backend
+/// scales its budget per offset and surfaces the offsets it managed to complete.
+/// macOS keeps the flat [`SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT`].
+#[cfg(target_os = "windows")]
+const SCRUB_PREVIEW_VIDEO_PER_OFFSET_BUDGET: Duration = Duration::from_millis(750);
+/// Upper bound on the scaled Windows scrub-preview batch budget so a large chunk
+/// cannot hold the extraction worker indefinitely.
+#[cfg(target_os = "windows")]
+const SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT_MAX: Duration = Duration::from_secs(20);
 const SCRUB_PREVIEW_JPEG_QUALITY: u8 = 72;
 /// JPEG quality for Windows exact frame previews extracted via the
 /// `media-decode` MF seam (issue #81). Exact previews are full-resolution and
@@ -1942,19 +1954,24 @@ async fn extract_scrub_preview_images_from_video_batch(
 // byte-compatible `v1-jpeg-q72-max360-1fps` rendition. macOS keeps
 // `AVAssetImageGenerator` above.
 #[cfg(target_os = "windows")]
+type ScrubBatchResults = Arc<Mutex<HashMap<u64, Result<Vec<u8>, String>>>>;
+
+#[cfg(target_os = "windows")]
 fn extract_scrub_preview_images_from_video_batch_blocking(
     video_path: PathBuf,
     video_offset_ms: Vec<u64>,
     max_pixel_size: u32,
     cancel_requested: Arc<AtomicBool>,
-) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
+    results: ScrubBatchResults,
+    deadline: Instant,
+) -> Result<(), String> {
     #[cfg(test)]
     if test_video_preview_extractor_state()
         .lock()
         .expect("test video preview extractor poisoned")
         .is_some()
     {
-        let mut results = HashMap::new();
+        let mut results = results.lock().expect("scrub preview batch results poisoned");
         for offset_ms in video_offset_ms {
             if let Some(result) =
                 run_test_video_preview_extractor(&video_path, offset_ms as f64 / 1000.0)
@@ -1962,27 +1979,36 @@ fn extract_scrub_preview_images_from_video_batch_blocking(
                 results.insert(offset_ms, result.map(|(bytes, _)| bytes));
             }
         }
-        return Ok(results);
+        return Ok(());
     }
 
     if video_offset_ms.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(());
     }
     if cancel_requested.load(Ordering::SeqCst) {
         return Err(PREVIEW_GENERATION_CANCELLED.to_string());
     }
 
-    let mut results = HashMap::with_capacity(video_offset_ms.len());
+    // Decode each offset against its own MF reader, accumulating into the shared
+    // results map so already-decoded frames survive a batch timeout instead of
+    // being discarded wholesale (parity with the macOS batch, which returns every
+    // frame the single `AVAssetImageGenerator` request produced). If the per-batch
+    // deadline passes mid-chunk we stop early and let the caller persist the
+    // offsets that completed.
     for offset_ms in video_offset_ms {
         if cancel_requested.load(Ordering::SeqCst) {
             return Err(PREVIEW_GENERATION_CANCELLED.to_string());
         }
-        results.insert(
-            offset_ms,
-            scrub_preview_jpeg_from_video_offset(&video_path, offset_ms, max_pixel_size),
-        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        let result = scrub_preview_jpeg_from_video_offset(&video_path, offset_ms, max_pixel_size);
+        results
+            .lock()
+            .expect("scrub preview batch results poisoned")
+            .insert(offset_ms, result);
     }
-    Ok(results)
+    Ok(())
 }
 
 /// Extract the frame at `offset_ms` via the MF seam and render it into the
@@ -2051,32 +2077,72 @@ async fn extract_scrub_preview_images_from_video_batch(
     max_pixel_size: u32,
     cancel_requested: Arc<AtomicBool>,
 ) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
+    // Each Windows offset pays a full MF startup + reader + seek + decode, so the
+    // batch budget scales with the number of offsets (capped) rather than the flat
+    // macOS `SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT`. Results accumulate into a shared
+    // map so a timeout surfaces the offsets that completed instead of discarding
+    // the whole chunk (the previous `if let Ok(..)` caller dropped every frame).
+    let batch_timeout = SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT
+        .max(SCRUB_PREVIEW_VIDEO_PER_OFFSET_BUDGET.saturating_mul(video_offset_ms.len() as u32))
+        .min(SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT_MAX);
+    let deadline = Instant::now() + batch_timeout;
+    let results: ScrubBatchResults = Arc::new(Mutex::new(HashMap::with_capacity(
+        video_offset_ms.len(),
+    )));
+
     let cancel_on_timeout = Arc::clone(&cancel_requested);
-    tokio::time::timeout(
-        SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT,
+    let join_outcome = tokio::time::timeout(
+        batch_timeout,
         tokio::task::spawn_blocking({
             let video_path = video_path.to_path_buf();
             let video_offset_ms = video_offset_ms.to_vec();
             let cancel_requested = Arc::clone(&cancel_requested);
+            let results = Arc::clone(&results);
             move || {
                 extract_scrub_preview_images_from_video_batch_blocking(
                     video_path,
                     video_offset_ms,
                     max_pixel_size,
                     cancel_requested,
+                    results,
+                    deadline,
                 )
             }
         }),
     )
-    .await
-    .map_err(|_| {
-        cancel_on_timeout.store(true, Ordering::SeqCst);
-        format!(
-            "timed out joining scrub preview extraction task after {}s",
-            SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT.as_secs()
-        )
-    })?
-    .map_err(|error| format!("failed to join scrub preview extraction task: {error}"))?
+    .await;
+
+    match join_outcome {
+        // Blocking task ran to completion (it stops itself at `deadline`): return
+        // whatever it accumulated, including a partial set if it hit the deadline.
+        Ok(Ok(Ok(()))) => Ok(take_scrub_batch_results(&results)),
+        // The blocking task returned a hard error (e.g. cancellation): propagate it
+        // only if nothing was decoded, otherwise keep the partial results.
+        Ok(Ok(Err(error))) => {
+            let partial = take_scrub_batch_results(&results);
+            if partial.is_empty() {
+                Err(error)
+            } else {
+                Ok(partial)
+            }
+        }
+        Ok(Err(join_error)) => Err(format!(
+            "failed to join scrub preview extraction task: {join_error}"
+        )),
+        // The outer join timed out (the blocking task is still running): cancel it
+        // and recover the offsets it managed to decode rather than dropping all.
+        Err(_) => {
+            cancel_on_timeout.store(true, Ordering::SeqCst);
+            Ok(take_scrub_batch_results(&results))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn take_scrub_batch_results(
+    results: &ScrubBatchResults,
+) -> HashMap<u64, Result<Vec<u8>, String>> {
+    std::mem::take(&mut *results.lock().expect("scrub preview batch results poisoned"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -2089,6 +2155,44 @@ async fn extract_scrub_preview_images_from_video_batch(
     Err("scrub preview video generation is only supported on macOS and Windows".to_string())
 }
 
+// Windows MF seeking lands on keyframes and the seam decodes forward to the
+// target offset, so the presented frame's timestamp can differ from what was
+// requested. This mirrors the macOS `log_video_preview_exact_miss` observability
+// (it logs when AVFoundation's actual_time diverges from requested_time) using
+// the MF seam's `presented_offset_ms` instead of `cm::Time`, for parity.
+#[cfg(target_os = "windows")]
+fn log_video_preview_exact_miss(
+    video_path: &Path,
+    frame: &::app_infra::Frame,
+    used_indexed_offset: bool,
+    require_exact_time: bool,
+    offset_seconds: f64,
+    target_offset_ms: u64,
+    presented_offset_ms: u64,
+) {
+    let delta_ms = (presented_offset_ms as f64 - target_offset_ms as f64).abs();
+    if delta_ms < FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS {
+        return;
+    }
+
+    let frame_identity = parse_frame_identity_from_path(Path::new(&frame.file_path))
+        .map(|(captured_at_unix_ms, frame_index)| format!("{captured_at_unix_ms}:{frame_index}"))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    crate::native_capture::debug_log::log_warn(format!(
+        "[DEBUG-frame-preview] event=video_exact_miss path={} frame_id={} frame_identity={} used_indexed_offset={} require_exact_time={} offset_seconds={} requested_time={} actual_time={} delta_ms={:.3}",
+        video_path.display(),
+        frame.id,
+        frame_identity,
+        used_indexed_offset,
+        require_exact_time,
+        offset_seconds,
+        target_offset_ms as f64 / 1000.0,
+        presented_offset_ms as f64 / 1000.0,
+        delta_ms,
+    ));
+}
+
 // Windows exact-preview fallback through the `media-decode` MF Source Reader
 // video seam (ADR 0024 / issue #81). MF seeking lands on keyframes, so the seam
 // seeks to (or before) the target offset and decodes forward to it; the decoded
@@ -2098,8 +2202,10 @@ async fn extract_scrub_preview_images_from_video_batch(
 #[cfg(target_os = "windows")]
 fn extract_preview_image_from_video_blocking(
     video_path: PathBuf,
+    frame: &::app_infra::Frame,
     exact_offset_ms: Option<u64>,
     offset_seconds: f64,
+    require_exact_time: bool,
     cancel_requested: Arc<AtomicBool>,
 ) -> Result<(Vec<u8>, &'static str), String> {
     #[cfg(test)]
@@ -2115,7 +2221,7 @@ fn extract_preview_image_from_video_blocking(
     // estimated offset from the related-frame timeline, clamped to >= 0.
     let target_offset_ms = exact_offset_ms.unwrap_or_else(|| (offset_seconds.max(0.0) * 1000.0).round() as u64);
 
-    let frame = media_decode::extract_video_frame_rgba(&video_path, target_offset_ms)
+    let decoded = media_decode::extract_video_frame_rgba(&video_path, target_offset_ms)
         .map_err(|error| {
             format!(
                 "failed to extract exact frame from video {} at {}ms: {error}",
@@ -2128,7 +2234,20 @@ fn extract_preview_image_from_video_blocking(
         return Err(PREVIEW_GENERATION_CANCELLED.to_string());
     }
 
-    let jpeg = frame.encode_jpeg(EXACT_PREVIEW_JPEG_QUALITY).map_err(|error| {
+    // The MF seam decodes forward to the requested offset; log when the presented
+    // frame's timestamp diverges from the target (parity with the macOS exact-miss
+    // observability above).
+    log_video_preview_exact_miss(
+        &video_path,
+        frame,
+        exact_offset_ms.is_some(),
+        require_exact_time,
+        offset_seconds,
+        target_offset_ms,
+        decoded.presented_offset_ms,
+    );
+
+    let jpeg = decoded.encode_jpeg(EXACT_PREVIEW_JPEG_QUALITY).map_err(|error| {
         format!(
             "failed to JPEG-encode exact frame from video {}: {error}",
             video_path.display()
@@ -2140,10 +2259,10 @@ fn extract_preview_image_from_video_blocking(
 #[cfg(target_os = "windows")]
 async fn extract_preview_image_from_video(
     video_path: &Path,
-    _frame: &::app_infra::Frame,
+    frame: &::app_infra::Frame,
     exact_offset_ms: Option<u64>,
     offset_seconds: f64,
-    _require_exact_time: bool,
+    require_exact_time: bool,
     cancel_requested: Arc<AtomicBool>,
 ) -> Result<(Vec<u8>, &'static str), String> {
     let cancel_on_timeout = Arc::clone(&cancel_requested);
@@ -2151,12 +2270,15 @@ async fn extract_preview_image_from_video(
         FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT,
         tokio::task::spawn_blocking({
             let video_path = video_path.to_path_buf();
+            let frame = frame.clone();
             let cancel_requested = Arc::clone(&cancel_requested);
             move || {
                 extract_preview_image_from_video_blocking(
                     video_path,
+                    &frame,
                     exact_offset_ms,
                     offset_seconds,
+                    require_exact_time,
                     cancel_requested,
                 )
             }

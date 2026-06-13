@@ -339,7 +339,7 @@ mod windows_mf {
                 path.display()
             )));
         }
-        let channels = channels as usize;
+        let mut channels = channels as usize;
 
         let mut interleaved: Vec<f32> = Vec::new();
         loop {
@@ -359,6 +359,25 @@ mod windows_mf {
             // End of stream: no more samples to read.
             if (stream_flags & MF_SOURCE_READER_FLAG_ENDOFSTREAM) != 0 {
                 break;
+            }
+
+            // A mid-stream output format change invalidates the channel count we
+            // cached before the loop; re-read the current type so the downmix that
+            // follows uses the live layout rather than a stale one.
+            if (stream_flags & MF_SOURCE_READER_FLAG_CURRENTMEDIATYPECHANGED) != 0 {
+                let changed_type = reader
+                    .GetCurrentMediaType(stream_index)
+                    .map_err(|e| win_error("GetCurrentMediaType (after change) failed", &e))?;
+                let new_channels = changed_type
+                    .GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS)
+                    .map_err(|e| win_error("GetUINT32(num channels, after change) failed", &e))?;
+                if new_channels == 0 {
+                    return Err(MediaDecodeError::Decode(format!(
+                        "Media Foundation reported zero channels after a format change for {}",
+                        path.display()
+                    )));
+                }
+                channels = new_channels as usize;
             }
 
             let Some(sample) = sample else {
@@ -382,6 +401,12 @@ mod windows_mf {
     /// constant, so define it locally (`MF_SOURCE_READERF_ENDOFSTREAM`).
     const MF_SOURCE_READER_FLAG_ENDOFSTREAM: u32 = 0x2;
 
+    /// `CURRENTMEDIATYPECHANGED` bit of the `ReadSample` stream-flags
+    /// out-parameter (`MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED`); set when the
+    /// stream's output media type changed mid-decode, so cached
+    /// channel-count/rate values must be re-read.
+    const MF_SOURCE_READER_FLAG_CURRENTMEDIATYPECHANGED: u32 = 0x20;
+
     /// Copy one decoded float sample's contiguous buffer into `out` as `f32`.
     unsafe fn append_sample_f32(
         sample: &windows::Win32::Media::MediaFoundation::IMFSample,
@@ -398,11 +423,19 @@ mod windows_mf {
             .map_err(|e| win_error("IMFMediaBuffer.Lock failed", &e))?;
 
         // Read exactly the whole-f32 prefix of the locked region; a trailing
-        // partial float (which MF never emits for float PCM) is ignored.
-        let float_count = (current_len as usize) / std::mem::size_of::<f32>();
-        if float_count > 0 && !data_ptr.is_null() {
-            let floats = std::slice::from_raw_parts(data_ptr as *const f32, float_count);
-            out.extend_from_slice(floats);
+        // partial float (which MF never emits for float PCM) is ignored. We
+        // convert byte-wise via `f32::from_le_bytes` rather than reinterpreting
+        // the COM buffer as `*const f32`: that cast requires 4-byte alignment of
+        // the locked pointer, which MF does not guarantee, and an unaligned
+        // `from_raw_parts::<f32>` is UB before any read.
+        let len = current_len as usize;
+        if len >= std::mem::size_of::<f32>() && !data_ptr.is_null() {
+            let bytes = std::slice::from_raw_parts(data_ptr, len);
+            out.extend(
+                bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])),
+            );
         }
 
         // Always unlock, even if we copied nothing.
@@ -453,6 +486,12 @@ mod windows_mf_video {
     /// constant the audio seam defines locally; the `windows` crate surfaces the
     /// flags as a raw `u32`).
     const MF_SOURCE_READER_FLAG_ENDOFSTREAM: u32 = 0x2;
+
+    /// `CURRENTMEDIATYPECHANGED` bit of the `ReadSample` stream-flags
+    /// out-parameter (`MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED`); set when the
+    /// video stream's output media type changed mid-decode, so cached frame
+    /// dimensions must be re-derived.
+    const MF_SOURCE_READER_FLAG_CURRENTMEDIATYPECHANGED: u32 = 0x20;
 
     /// Media Foundation measures time in 100ns ticks.
     const HUNDRED_NS_PER_MS: i64 = 10_000;
@@ -565,20 +604,67 @@ mod windows_mf_video {
         target_offset_ms: u64,
     ) -> Result<VideoFrame> {
         let reader = create_video_source_reader(url)?;
-        let stream_index = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
         let (width, height) = configure_rgb32_output(&reader, path)?;
 
         let target_ticks = (target_offset_ms as i64).saturating_mul(HUNDRED_NS_PER_MS);
 
+        match decode_forward_keep_target(&reader, path, target_ticks, width, height)? {
+            Some(frame) => Ok(frame),
+            // An empty decode after a non-zero seek means `SetCurrentPosition`
+            // landed strictly past the last frame (the target is past EOS). The
+            // macOS `AVAssetImageGenerator` tolerates a slightly-past-end request
+            // and yields the final frame, so re-seek to 0 and decode the whole
+            // stream forward, keeping the last frame. Retry only once and only
+            // when the original seek was non-zero, to bound the work and avoid
+            // recursing forever on a genuinely undecodable stream.
+            None if target_ticks > 0 => {
+                decode_forward_keep_target(&reader, path, i64::MAX, width, height)?.ok_or_else(
+                    || {
+                        MediaDecodeError::Decode(format!(
+                            "Media Foundation returned no decodable video frame for {}",
+                            path.display()
+                        ))
+                    },
+                )
+            }
+            None => Err(MediaDecodeError::Decode(format!(
+                "Media Foundation returned no decodable video frame for {}",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Seek to (or before) `target_ticks` and decode forward, keeping the latest
+    /// frame whose presentation time is `<= target` (or the first frame when none
+    /// is at/<= target). Returns `Ok(None)` when the decode yields no frame at all
+    /// — the seek landed past the last sample — so the caller can re-seek to 0.
+    ///
+    /// `width`/`height` are the negotiated dimensions; they are re-derived in-loop
+    /// if MF reports a mid-stream `CURRENTMEDIATYPECHANGED`.
+    unsafe fn decode_forward_keep_target(
+        reader: &IMFSourceReader,
+        path: &Path,
+        target_ticks: i64,
+        mut width: u32,
+        mut height: u32,
+    ) -> Result<Option<VideoFrame>> {
+        let stream_index = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+
+        // Read the negotiated row stride/orientation once up front; it is
+        // re-derived in-loop on a mid-stream media type change.
+        let (_, _, mut stride) = current_frame_layout(reader, path)?;
+
         // MF seeks land on keyframes; seek to (or before) the target, then decode
         // forward. A seek to the keyframe at/<= target keeps the forward walk
         // short. Seeking can fail for non-seekable sources; fall back to decoding
-        // from the current position.
-        if target_ticks > 0 {
-            let position = i8_propvariant(target_ticks);
-            let time_format = GUID::zeroed();
-            let _ = reader.SetCurrentPosition(&time_format, &position);
-        }
+        // from the current position. A `target_ticks` of `i64::MAX` is the
+        // "decode the whole stream, keep the final frame" retry, which seeks to 0.
+        let seek_ticks = if target_ticks == i64::MAX { 0 } else { target_ticks };
+        // Always issue an explicit seek (including to 0) so the retry rewinds a
+        // reader whose first pass already consumed the stream.
+        let position = i8_propvariant(seek_ticks);
+        let time_format = GUID::zeroed();
+        let _ = reader.SetCurrentPosition(&time_format, &position);
 
         // Decode forward, keeping the latest frame whose presentation time is
         // <= target, and stop once we pass the target. If no frame is at/<=
@@ -603,12 +689,23 @@ mod windows_mf_video {
             if (stream_flags & MF_SOURCE_READER_FLAG_ENDOFSTREAM) != 0 {
                 break;
             }
+
+            // A mid-stream output format change invalidates the frame dimensions
+            // and stride we cached; re-derive them from the current media type so
+            // the subsequent `sample_to_rgba` copy uses the live layout.
+            if (stream_flags & MF_SOURCE_READER_FLAG_CURRENTMEDIATYPECHANGED) != 0 {
+                let (new_width, new_height, new_stride) = current_frame_layout(reader, path)?;
+                width = new_width;
+                height = new_height;
+                stride = new_stride;
+            }
+
             let Some(sample) = sample else {
                 // Flag-only callback (e.g. a stream tick); keep reading.
                 continue;
             };
 
-            let rgba = sample_to_rgba(&sample, width, height)?;
+            let rgba = sample_to_rgba(&sample, width, height, stride)?;
 
             let past_target = timestamp > target_ticks;
             if kept.is_none() || !past_target {
@@ -621,20 +718,49 @@ mod windows_mf_video {
             }
         }
 
-        let (timestamp, pixels) = kept.ok_or_else(|| {
-            MediaDecodeError::Decode(format!(
-                "Media Foundation returned no decodable video frame for {}",
-                path.display()
-            ))
-        })?;
+        Ok(kept.map(|(timestamp, pixels)| {
+            let presented_offset_ms = (timestamp.max(0) / HUNDRED_NS_PER_MS) as u64;
+            VideoFrame {
+                pixels,
+                width,
+                height,
+                presented_offset_ms,
+            }
+        }))
+    }
 
-        let presented_offset_ms = (timestamp.max(0) / HUNDRED_NS_PER_MS) as u64;
-        Ok(VideoFrame {
-            pixels,
-            width,
-            height,
-            presented_offset_ms,
-        })
+    /// Re-read the video stream's current frame size and default stride from its
+    /// current media type. Mirrors the `MF_MT_FRAME_SIZE` decode in
+    /// [`configure_rgb32_output`] and additionally returns the signed
+    /// `MF_MT_DEFAULT_STRIDE` (positive = top-down, negative = bottom-up). When
+    /// the attribute is absent MF leaves rows tightly packed, so we fall back to a
+    /// top-down `width * 4` stride.
+    unsafe fn current_frame_layout(
+        reader: &IMFSourceReader,
+        path: &Path,
+    ) -> Result<(u32, u32, i32)> {
+        let stream_index = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+        let actual_type = reader
+            .GetCurrentMediaType(stream_index)
+            .map_err(|e| win_error("GetCurrentMediaType (video layout) failed", &e))?;
+        let frame_size = actual_type
+            .GetUINT64(&MF_MT_FRAME_SIZE)
+            .map_err(|e| win_error("GetUINT64(frame size, layout) failed", &e))?;
+        let width = (frame_size >> 32) as u32;
+        let height = (frame_size & 0xFFFF_FFFF) as u32;
+        if width == 0 || height == 0 {
+            return Err(MediaDecodeError::Decode(format!(
+                "Media Foundation reported a zero video frame size for {}",
+                path.display()
+            )));
+        }
+        // MF_MT_DEFAULT_STRIDE is a UINT32 attribute interpreted as a signed i32;
+        // when absent the contiguous RGB32 buffer is top-down width*4 packed.
+        let stride = match actual_type.GetUINT32(&MF_MT_DEFAULT_STRIDE) {
+            Ok(raw) => raw as i32,
+            Err(_) => (width as i32) * 4,
+        };
+        Ok((width, height, stride))
     }
 
     unsafe fn inspect_with_reader(url: &[u16], path: &Path) -> Result<VideoInfo> {
@@ -673,12 +799,15 @@ mod windows_mf_video {
 
     /// Copy one decoded `RGB32` video sample into a tightly packed top-down RGBA
     /// buffer. MF `RGB32` is 32-bit `BGRX` per pixel in memory; we swap to RGBA
-    /// and force opaque alpha. A negative `MF_MT_DEFAULT_STRIDE` means the source
-    /// is bottom-up, so we flip rows to deliver a top-down buffer.
+    /// and force opaque alpha. `stride` is the source's `MF_MT_DEFAULT_STRIDE`:
+    /// its magnitude is the per-row byte pitch (which can exceed `width * 4` when
+    /// the reader pads rows), and a negative value means the rows are stored
+    /// bottom-up, so we flip them to deliver a top-down buffer.
     unsafe fn sample_to_rgba(
         sample: &windows::Win32::Media::MediaFoundation::IMFSample,
         width: u32,
         height: u32,
+        stride: i32,
     ) -> Result<Vec<u8>> {
         let buffer = sample
             .ConvertToContiguousBuffer()
@@ -690,7 +819,7 @@ mod windows_mf_video {
             .Lock(&mut data_ptr, None, Some(&mut current_len))
             .map_err(|e| win_error("IMFMediaBuffer.Lock (video) failed", &e))?;
 
-        let result = copy_rgb32_to_rgba(data_ptr, current_len as usize, width, height);
+        let result = copy_rgb32_to_rgba(data_ptr, current_len as usize, width, height, stride);
 
         let unlock = buffer.Unlock();
         unlock.map_err(|e| win_error("IMFMediaBuffer.Unlock (video) failed", &e))?;
@@ -698,40 +827,56 @@ mod windows_mf_video {
     }
 
     /// Convert a locked contiguous `RGB32`/`BGRX` region to a tightly packed
-    /// top-down RGBA `Vec<u8>`. Assumes the contiguous buffer is top-down with a
-    /// `width * 4` stride (the default the source reader produces for `RGB32`).
+    /// top-down RGBA `Vec<u8>`, honoring the source `stride`.
+    ///
+    /// `abs(stride)` is the per-row byte pitch, which may exceed `width * 4` when
+    /// the reader pads rows; we walk the source row-by-row at that pitch and copy
+    /// only the `width * 4` payload, dropping the padding. A negative `stride`
+    /// means the rows are stored bottom-up (last row first), so we emit them in
+    /// reverse to produce the documented top-down output.
     unsafe fn copy_rgb32_to_rgba(
         data_ptr: *const u8,
         data_len: usize,
         width: u32,
         height: u32,
+        stride: i32,
     ) -> Result<Vec<u8>> {
         let width = width as usize;
         let height = height as usize;
         let row_bytes = width * 4;
-        let expected = row_bytes * height;
+        // A zero/absent stride falls back to the tightly packed width*4 pitch.
+        let row_pitch = if stride == 0 {
+            row_bytes
+        } else {
+            (stride.unsigned_abs() as usize).max(row_bytes)
+        };
+        let bottom_up = stride < 0;
+        let expected = row_pitch * height;
         if data_ptr.is_null() || data_len < expected {
             return Err(MediaDecodeError::Decode(format!(
-                "video frame buffer too small: have {data_len} bytes, need {expected} for {width}x{height} RGB32"
+                "video frame buffer too small: have {data_len} bytes, need {expected} for {width}x{height} RGB32 (stride {stride})"
             )));
         }
         let src = std::slice::from_raw_parts(data_ptr, expected);
-        let mut rgba = vec![0_u8; expected];
-        for (dst_px, src_px) in rgba.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-            // BGRX -> RGBA, opaque alpha.
-            dst_px[0] = src_px[2];
-            dst_px[1] = src_px[1];
-            dst_px[2] = src_px[0];
-            dst_px[3] = 0xFF;
+        let mut rgba = vec![0_u8; row_bytes * height];
+        for dst_row in 0..height {
+            // Bottom-up sources store the last image row first, so read source
+            // rows in reverse to lay the output out top-down.
+            let src_row = if bottom_up { height - 1 - dst_row } else { dst_row };
+            let src_start = src_row * row_pitch;
+            let dst_start = dst_row * row_bytes;
+            let src_line = &src[src_start..src_start + row_bytes];
+            let dst_line = &mut rgba[dst_start..dst_start + row_bytes];
+            for (dst_px, src_px) in dst_line.chunks_exact_mut(4).zip(src_line.chunks_exact(4)) {
+                // BGRX -> RGBA, opaque alpha.
+                dst_px[0] = src_px[2];
+                dst_px[1] = src_px[1];
+                dst_px[2] = src_px[0];
+                dst_px[3] = 0xFF;
+            }
         }
         Ok(rgba)
     }
-
-    // Touch `MF_MT_DEFAULT_STRIDE` import so it is available for future stride
-    // handling; the default `RGB32` source-reader output is top-down packed, so
-    // the current path does not need a per-row stride walk.
-    #[allow(dead_code)]
-    const _DEFAULT_STRIDE_GUID: GUID = MF_MT_DEFAULT_STRIDE;
 
     fn win_error(context: &str, error: &windows::core::Error) -> MediaDecodeError {
         MediaDecodeError::Decode(format!("{context}: {error}"))
@@ -743,9 +888,10 @@ mod windows_mf_video {
 
         #[test]
         fn copy_rgb32_swaps_bgrx_to_opaque_rgba() {
-            // One pixel, BGRX in memory = (B=10, G=20, R=30, X=255).
+            // One pixel, BGRX in memory = (B=10, G=20, R=30, X=255). Top-down
+            // stride = width*4 = 4.
             let bgrx: [u8; 4] = [10, 20, 30, 255];
-            let rgba = unsafe { copy_rgb32_to_rgba(bgrx.as_ptr(), bgrx.len(), 1, 1) }
+            let rgba = unsafe { copy_rgb32_to_rgba(bgrx.as_ptr(), bgrx.len(), 1, 1, 4) }
                 .expect("1x1 BGRX converts to RGBA");
             assert_eq!(rgba, vec![30, 20, 10, 0xFF]);
         }
@@ -755,8 +901,37 @@ mod windows_mf_video {
             let bytes: [u8; 4] = [0, 0, 0, 0];
             // Claim a 2x2 frame (needs 16 bytes) but only 4 are available.
             let error =
-                unsafe { copy_rgb32_to_rgba(bytes.as_ptr(), bytes.len(), 2, 2) }.unwrap_err();
+                unsafe { copy_rgb32_to_rgba(bytes.as_ptr(), bytes.len(), 2, 2, 8) }.unwrap_err();
             assert!(matches!(error, MediaDecodeError::Decode(_)));
+        }
+
+        #[test]
+        fn copy_rgb32_drops_row_padding() {
+            // 1x2 image with a padded stride of 8 bytes (4 payload + 4 pad) per
+            // row. Row 0 pixel = BGRX(1,2,3,255); row 1 pixel = BGRX(4,5,6,255).
+            let src: [u8; 16] = [
+                1, 2, 3, 255, 0xAA, 0xBB, 0xCC, 0xDD, // row 0: pixel + padding
+                4, 5, 6, 255, 0xEE, 0xFF, 0x11, 0x22, // row 1: pixel + padding
+            ];
+            let rgba = unsafe { copy_rgb32_to_rgba(src.as_ptr(), src.len(), 1, 2, 8) }
+                .expect("padded rows convert");
+            // Output is tightly packed width*4 RGBA with the padding dropped.
+            assert_eq!(rgba, vec![3, 2, 1, 0xFF, 6, 5, 4, 0xFF]);
+        }
+
+        #[test]
+        fn copy_rgb32_flips_bottom_up_rows() {
+            // 1x2 bottom-up (negative stride): source stores the LAST image row
+            // first. Source row 0 = BGRX(4,5,6); source row 1 = BGRX(1,2,3).
+            // A negative stride must flip them so the top-down output starts with
+            // BGRX(1,2,3) -> RGBA(3,2,1).
+            let src: [u8; 8] = [
+                4, 5, 6, 255, // stored first (bottom image row)
+                1, 2, 3, 255, // stored last (top image row)
+            ];
+            let rgba = unsafe { copy_rgb32_to_rgba(src.as_ptr(), src.len(), 1, 2, -4) }
+                .expect("bottom-up rows flip");
+            assert_eq!(rgba, vec![3, 2, 1, 0xFF, 6, 5, 4, 0xFF]);
         }
     }
 }

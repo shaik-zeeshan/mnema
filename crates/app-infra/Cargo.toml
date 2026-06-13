@@ -35,6 +35,7 @@ libsqlite3-sys = { version = "0.30.1", features = ["bundled-sqlcipher"] }
 thiserror = "2"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread"] }
+zeroize = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cidre = { version = "0.15", default-features = false, features = ["vn", "blocks", "cm", "cv", "macos_15_0"] }

@@ -1014,8 +1014,9 @@
       case "capture_sources":
         return {
           captureScreen: draftCaptureScreen,
-          captureMicrophone: draftCaptureMicrophone,
-          captureSystemAudio: draftCaptureSystemAudio,
+          // Never send a `true` for a source the platform/backend cannot service.
+          captureMicrophone: microphoneSourceSupported && draftCaptureMicrophone,
+          captureSystemAudio: systemAudioSourceSupported && draftCaptureSystemAudio,
         };
       case "capture_timing":
         return {
@@ -2373,6 +2374,21 @@
     }
   });
 
+  // Coerce capture-source drafts to false when the source is unsupported on this
+  // platform/backend. Hiding the toggle alone leaves a stale `true` that autosave
+  // would re-persist and capture would be asked to honor for an unavailable
+  // source. Mirrors the systemAudioRequiresScreen coercion above.
+  $effect(() => {
+    if (!microphoneSourceSupported && draftCaptureMicrophone) {
+      draftCaptureMicrophone = false;
+    }
+  });
+  $effect(() => {
+    if (!systemAudioSourceSupported && draftCaptureSystemAudio) {
+      draftCaptureSystemAudio = false;
+    }
+  });
+
   // Invariant: coerce any non-original draft back to "original" only once we
   // have confirmed that non-original is unsupported (AVFoundation / pre-macOS 15).
   // While support is still pending we preserve the loaded draft intact — the
@@ -2453,7 +2469,10 @@
 
   const recValidationErrors = $derived((() => {
     const errors: string[] = [];
-    const anySource = draftCaptureScreen || draftCaptureMicrophone || draftCaptureSystemAudio;
+    const anySource =
+      draftCaptureScreen
+      || (microphoneSourceSupported && draftCaptureMicrophone)
+      || (systemAudioSourceSupported && draftCaptureSystemAudio);
     if (!anySource) {
       errors.push("At least one capture source (Screen, Microphone, or System Audio) must be enabled.");
     }

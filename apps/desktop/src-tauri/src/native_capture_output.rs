@@ -628,7 +628,13 @@ pub(crate) fn finalize_capture_outputs(
         return capture_writers::aggregate_output_processing_failures(Vec::new());
     }
 
-    failures.extend(audio_failures);
+    // Only fold audio failures into the segment failure when the screen output
+    // itself is missing/unopenable or some other failure already exists. When the
+    // screen `.mp4` finalized fine, a failure merely deleting an unusable audio
+    // file must not sink the good screen+audio segment. Mirrors the macOS guard.
+    if !has_screen_output || !failures.is_empty() {
+        failures.extend(audio_failures);
+    }
     capture_writers::aggregate_output_processing_failures(failures)
 }
 

@@ -70,6 +70,82 @@ const SHARED_BUFFER_DURATION_HNS: i64 = 10_000_000;
 /// AAC supports up to 2 channels; clamp wider endpoints down to stereo.
 const MAX_AAC_CHANNELS: u16 = 2;
 
+/// Per-sample storage format of the WASAPI mix format. Shared-mode mixers
+/// almost always hand back 32-bit IEEE float, but a device can negotiate a
+/// packed-int format; we decode each correctly rather than reading the low 16
+/// bits at the wrong stride. Anything else is rejected explicitly at
+/// `open_capture_stream` so corrupt PCM/VAD/peak never reaches the encoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceSampleFormat {
+    /// 32-bit IEEE float in `-1.0..=1.0`.
+    Float32,
+    /// 16-bit signed little-endian int.
+    Int16,
+    /// 24-bit signed little-endian int (3 bytes, packed).
+    Int24,
+    /// 32-bit signed little-endian int.
+    Int32,
+}
+
+impl SourceSampleFormat {
+    /// Bytes occupied by one source sample (one channel) in the mix format.
+    fn bytes_per_sample(self) -> usize {
+        match self {
+            SourceSampleFormat::Float32 | SourceSampleFormat::Int32 => 4,
+            SourceSampleFormat::Int24 => 3,
+            SourceSampleFormat::Int16 => 2,
+        }
+    }
+
+    /// Resolve the mix format's subformat + bit depth into a decoder format,
+    /// rejecting depths we cannot decode (so they surface as an explicit error
+    /// instead of silent corruption).
+    fn from_mix_format(mix_format: &WaveFormat) -> Result<Self, CaptureErrorResponse> {
+        let bits = mix_format.get_bitspersample();
+        match mix_format.get_subformat() {
+            Ok(SampleType::Float) if bits == 32 => Ok(SourceSampleFormat::Float32),
+            Ok(SampleType::Int) if bits == 16 => Ok(SourceSampleFormat::Int16),
+            Ok(SampleType::Int) if bits == 24 => Ok(SourceSampleFormat::Int24),
+            Ok(SampleType::Int) if bits == 32 => Ok(SourceSampleFormat::Int32),
+            other => Err(CaptureErrorResponse {
+                code: "windows_microphone_capture_failed".to_string(),
+                message: format!(
+                    "Unsupported WASAPI mix format (subformat: {other:?}, bits per sample: {bits})"
+                ),
+            }),
+        }
+    }
+
+    /// Decode one source sample at `bytes` (length == `bytes_per_sample`) into a
+    /// normalized f32 in `-1.0..=1.0`.
+    fn sample_to_f32(self, bytes: &[u8]) -> f32 {
+        match self {
+            SourceSampleFormat::Float32 => f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            SourceSampleFormat::Int16 => {
+                i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0
+            }
+            SourceSampleFormat::Int24 => {
+                // Sign-extend the 3 LE bytes into an i32, then normalize.
+                let raw = (bytes[0] as i32) | ((bytes[1] as i32) << 8) | ((bytes[2] as i32) << 16);
+                let signed = (raw << 8) >> 8;
+                signed as f32 / 8_388_608.0
+            }
+            SourceSampleFormat::Int32 => {
+                i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f32 / 2_147_483_648.0
+            }
+        }
+    }
+
+    /// Decode one source sample at `bytes` directly to the i16 the AAC encoder
+    /// input expects.
+    fn sample_to_i16(self, bytes: &[u8]) -> i16 {
+        match self {
+            SourceSampleFormat::Int16 => i16::from_le_bytes([bytes[0], bytes[1]]),
+            _ => float_sample_to_i16(self.sample_to_f32(bytes)),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Support gate
 // ---------------------------------------------------------------------------
@@ -703,8 +779,8 @@ struct CaptureEngine {
     source_channels: u16,
     /// Channel count written to the AAC stream (clamped to <= 2).
     output_channels: u16,
-    /// Whether the WASAPI mix format is IEEE float (vs. 16-bit int).
-    source_is_float: bool,
+    /// Per-sample storage format of the WASAPI mix format.
+    source_format: SourceSampleFormat,
     /// Bytes per WASAPI source frame (block align).
     source_bytes_per_frame: usize,
     /// Reusable raw-capture scratch buffer.
@@ -723,7 +799,15 @@ struct CaptureEngine {
     /// Filesystem path of the active segment.
     current_path: PathBuf,
     /// Frames appended to the active segment (for timing + empty detection).
+    /// Advances by both real captured frames AND any dropped-frame gap inserted
+    /// for a `DATA_DISCONTINUITY`, so MF sample times stay wall-clock aligned.
     frames_in_segment: u64,
+    /// Device-position of the frame WASAPI is expected to deliver next (the
+    /// previous packet's `index + frames`). A jump or a `DATA_DISCONTINUITY`
+    /// flag means frames were dropped; the gap is folded into the MF timeline so
+    /// audio does not compress against video (A/V desync). `None` until the
+    /// first packet of a segment is read.
+    next_expected_device_pos: Option<u64>,
     /// First fatal error recorded for the active segment.
     failed: bool,
     /// Inactivity tail hold-back configuration applied to each new segment's
@@ -747,7 +831,7 @@ struct CaptureStream {
     sample_rate_hz: u32,
     source_channels: u16,
     output_channels: u16,
-    source_is_float: bool,
+    source_format: SourceSampleFormat,
     source_bytes_per_frame: usize,
 }
 
@@ -756,7 +840,7 @@ struct CaptureStreamFormat {
     sample_rate_hz: u32,
     source_channels: u16,
     output_channels: u16,
-    source_is_float: bool,
+    source_format: SourceSampleFormat,
     source_bytes_per_frame: usize,
 }
 
@@ -787,14 +871,14 @@ fn can_continue_active_writer(
         sample_rate_hz: active_sample_rate_hz,
         source_channels: _,
         output_channels: active_output_channels,
-        source_is_float: _,
+        source_format: _,
         source_bytes_per_frame: _,
     } = active;
     let CaptureStreamFormat {
         sample_rate_hz: replacement_sample_rate_hz,
         source_channels: _,
         output_channels: replacement_output_channels,
-        source_is_float: _,
+        source_format: _,
         source_bytes_per_frame: _,
     } = replacement;
 
@@ -808,7 +892,7 @@ impl CaptureStream {
             sample_rate_hz: self.sample_rate_hz,
             source_channels: self.source_channels,
             output_channels: self.output_channels,
-            source_is_float: self.source_is_float,
+            source_format: self.source_format,
             source_bytes_per_frame: self.source_bytes_per_frame,
         }
     }
@@ -843,7 +927,7 @@ impl CaptureEngine {
             sample_rate_hz: stream.sample_rate_hz,
             source_channels: stream.source_channels,
             output_channels: stream.output_channels,
-            source_is_float: stream.source_is_float,
+            source_format: stream.source_format,
             source_bytes_per_frame: stream.source_bytes_per_frame,
             raw: VecDeque::new(),
             records_microphone_activity,
@@ -854,6 +938,7 @@ impl CaptureEngine {
             sink: Some(sink),
             current_path: output_path.to_path_buf(),
             frames_in_segment: 0,
+            next_expected_device_pos: None,
             failed: false,
             tail_trim_seconds: 0,
             activity_threshold: 0.0,
@@ -918,9 +1003,21 @@ impl CaptureEngine {
 
         let sample_rate_hz = mix_format.get_samplespersec();
         let source_channels = mix_format.get_nchannels();
-        let source_is_float = matches!(mix_format.get_subformat(), Ok(SampleType::Float));
+        let source_format = SourceSampleFormat::from_mix_format(&mix_format)?;
         let output_channels = source_channels.min(MAX_AAC_CHANNELS).max(1);
         let source_bytes_per_frame = WaveFormat::get_blockalign(&mix_format) as usize;
+        // The block align must equal channels * per-sample stride for our
+        // interleaved per-sample offset math; reject a format where it doesn't
+        // rather than reading samples across frame boundaries.
+        if source_bytes_per_frame != source_channels.max(1) as usize * source_format.bytes_per_sample()
+        {
+            return Err(CaptureErrorResponse {
+                code: "windows_microphone_capture_failed".to_string(),
+                message: format!(
+                    "Unexpected WASAPI block align {source_bytes_per_frame} for {source_channels} channels of {source_format:?}"
+                ),
+            });
+        }
 
         audio_client
             .initialize_client(
@@ -947,16 +1044,29 @@ impl CaptureEngine {
             sample_rate_hz,
             source_channels,
             output_channels,
-            source_is_float,
+            source_format,
             source_bytes_per_frame,
         })
     }
 
     /// Drain all queued WASAPI packets and append them to the active segment.
+    ///
+    /// A mid-session WASAPI fault is terminal for this engine: latch `failed` so
+    /// every subsequent `pump()` is a no-op rather than re-entering the same
+    /// fault every poll cycle (~10ms) and spinning the capture loop. This
+    /// mirrors how `handle_default_render_device_changed` latches `failed`.
     fn pump(&mut self) -> Result<(), CaptureErrorResponse> {
         if self.failed {
             return Ok(());
         }
+        let result = self.pump_inner();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn pump_inner(&mut self) -> Result<(), CaptureErrorResponse> {
         loop {
             let next = self
                 .capture_client
@@ -970,7 +1080,12 @@ impl CaptureEngine {
                         .read_from_device_to_deque(&mut self.raw)
                         .map_err(|e| wasapi_error("read_from_device_to_deque failed", &e))?;
                     let raw: Vec<u8> = self.raw.drain(..).collect();
-                    self.append_raw_frames(&raw, info.flags.silent)?;
+                    self.append_raw_frames(
+                        &raw,
+                        info.flags.silent,
+                        info.index,
+                        info.flags.data_discontinuity,
+                    )?;
                 }
                 _ => break,
             }
@@ -983,7 +1098,37 @@ impl CaptureEngine {
     /// Microphone sessions additionally emit the debug-visible Audio Activity
     /// Sample and feed mono VAD PCM; system-audio loopback emits only the
     /// independent system-audio Audio Activity Sample.
-    fn append_raw_frames(&mut self, raw: &[u8], silent: bool) -> Result<(), CaptureErrorResponse> {
+    fn append_raw_frames(
+        &mut self,
+        raw: &[u8],
+        silent: bool,
+        device_pos: u64,
+        data_discontinuity: bool,
+    ) -> Result<(), CaptureErrorResponse> {
+        // WASAPI dropped frames between the previous packet and this one when the
+        // device position jumps ahead of where we expected the next frame, or
+        // when it raises `DATA_DISCONTINUITY`. macOS preserves such a gap via the
+        // real sample-buffer PTS; we mirror that by folding the dropped-frame
+        // count into `frames_in_segment` BEFORE stamping this packet, so the MF
+        // sample time advances past the gap and audio stays wall-clock aligned
+        // (otherwise the timeline silently compresses and A/V drifts apart).
+        if let Some(expected) = self.next_expected_device_pos {
+            if data_discontinuity && device_pos > expected {
+                self.frames_in_segment = self
+                    .frames_in_segment
+                    .saturating_add(device_pos - expected);
+            }
+        }
+        // Record where the next packet should continue. Tracked for every packet
+        // (including silent/empty/paused ones) so we never mistake a normal
+        // boundary for a gap. `source_bytes_per_frame` is non-zero here.
+        let source_frames = if self.source_bytes_per_frame > 0 {
+            (raw.len() / self.source_bytes_per_frame) as u64
+        } else {
+            0
+        };
+        self.next_expected_device_pos = Some(device_pos.saturating_add(source_frames));
+
         // Segment-relative start time of THIS packet, captured before we advance
         // `frames_in_segment`, so the VAD frame's media timeline matches the
         // writer's sample-time stamp.
@@ -998,7 +1143,7 @@ impl CaptureEngine {
             self.source_bytes_per_frame,
             self.source_channels.max(1) as usize,
             self.output_channels as usize,
-            self.source_is_float,
+            self.source_format,
             silent,
             self.records_microphone_activity,
             self.records_microphone_activity || self.records_system_audio_activity,
@@ -1093,20 +1238,30 @@ impl CaptureEngine {
         discard_inactivity_tail: bool,
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         let closed_path = self.current_path.to_string_lossy().to_string();
-        let had_frames = self.frames_in_segment > 0;
+
+        // The sink is the source of truth for whether anything actually reached
+        // the encoder: `frames_in_segment` counts buffered chunks even while they
+        // are only HELD in the tail, so on an inactivity stop that discards the
+        // entire held tail nothing is ever written. Treating that as a file would
+        // both lie (positive duration over an empty `.m4a`) and make `Finalize()`
+        // fail with `MF_E_SINK_NO_SAMPLES_PROCESSED`. Mirror the macOS
+        // `appended_samples == 0` guard: no samples written -> empty segment.
+        let produced_output = if let Some(sink) = self.sink.take() {
+            if discard_inactivity_tail {
+                sink.finalize_discarding_inactivity_tail()?
+            } else {
+                sink.finalize_flushing()?
+            }
+        } else {
+            false
+        };
+
+        let had_frames = produced_output && self.frames_in_segment > 0;
         let duration_ms = if self.sample_rate_hz > 0 && had_frames {
             Some(self.frames_in_segment * 1000 / self.sample_rate_hz as u64)
         } else {
             None
         };
-
-        if let Some(sink) = self.sink.take() {
-            if discard_inactivity_tail {
-                sink.finalize_discarding_inactivity_tail()?;
-            } else {
-                sink.finalize_flushing()?;
-            }
-        }
 
         if had_frames {
             Ok(MicrophoneOutputFinalization {
@@ -1146,6 +1301,8 @@ impl CaptureEngine {
         self.sink = Some(WindowsAudioTailHoldbackSink::new(writer, self.sample_rate_hz));
         self.current_path = output_path.to_path_buf();
         self.frames_in_segment = 0;
+        // Fresh segment timeline: the next packet seeds the gap baseline anew.
+        self.next_expected_device_pos = None;
         // Carry the tail hold-back configuration onto the fresh segment's sink.
         self.apply_tail_holdback_to_sink();
 
@@ -1183,7 +1340,7 @@ impl CaptureEngine {
                 sample_rate_hz: self.sample_rate_hz,
                 source_channels: self.source_channels,
                 output_channels: self.output_channels,
-                source_is_float: self.source_is_float,
+                source_format: self.source_format,
                 source_bytes_per_frame: self.source_bytes_per_frame,
             },
             stream.format(),
@@ -1206,10 +1363,14 @@ impl CaptureEngine {
         self.audio_client = stream.audio_client;
         self.capture_client = stream.capture_client;
         self.source_channels = stream.source_channels;
-        self.source_is_float = stream.source_is_float;
+        self.source_format = stream.source_format;
         self.source_bytes_per_frame = stream.source_bytes_per_frame;
         self.current_render_endpoint_id = stream.endpoint_id.take();
         self.raw.clear();
+        // The replacement endpoint has its own device-position clock unrelated to
+        // the old one; reseed the gap baseline so the first packet from it is not
+        // mistaken for a multi-billion-frame discontinuity.
+        self.next_expected_device_pos = None;
 
         Ok(())
     }
@@ -1237,6 +1398,7 @@ impl CaptureEngine {
         self.sink = Some(WindowsAudioTailHoldbackSink::new(writer, self.sample_rate_hz));
         self.current_path = new_path.to_path_buf();
         self.frames_in_segment = 0;
+        self.next_expected_device_pos = None;
         self.paused = false;
         self.apply_tail_holdback_to_sink();
         Ok(())
@@ -1650,7 +1812,7 @@ fn decode_packet_to_pcm_and_mono(
     source_bytes_per_frame: usize,
     source_channels: usize,
     output_channels: usize,
-    source_is_float: bool,
+    source_format: SourceSampleFormat,
     silent: bool,
     include_mono: bool,
     include_peak: bool,
@@ -1664,6 +1826,16 @@ fn decode_packet_to_pcm_and_mono(
     }
 
     let source_channels = source_channels.max(1);
+    let bytes_per_sample = source_format.bytes_per_sample();
+    // The block align must be an exact multiple of the per-sample stride times
+    // the channel count, or our per-sample offsets would read across frame
+    // boundaries. This is upheld at `open_capture_stream`; assert it here so a
+    // mismatched format fails loudly in tests rather than corrupting PCM.
+    debug_assert_eq!(
+        source_bytes_per_frame,
+        source_channels * bytes_per_sample,
+        "WASAPI block align must equal channels * bytes-per-sample"
+    );
 
     if silent {
         // Honor the silent flag without trusting the (possibly stale) buffer.
@@ -1675,7 +1847,6 @@ fn decode_packet_to_pcm_and_mono(
         return (vec![0u8; frame_count * output_channels * 2], mono, 0.0);
     }
 
-    let bytes_per_sample = if source_is_float { 4 } else { 2 };
     let mut pcm = Vec::with_capacity(frame_count * output_channels * 2);
     let mut mono = if include_mono {
         Vec::with_capacity(frame_count)
@@ -1692,18 +1863,7 @@ fn decode_packet_to_pcm_and_mono(
             // Map output channel to source channel; both are <= source.
             let src_ch = out_ch.min(source_channels - 1);
             let sample_off = frame_base + src_ch * bytes_per_sample;
-            let value = if source_is_float {
-                let bytes = [
-                    raw[sample_off],
-                    raw[sample_off + 1],
-                    raw[sample_off + 2],
-                    raw[sample_off + 3],
-                ];
-                float_sample_to_i16(f32::from_le_bytes(bytes))
-            } else {
-                let bytes = [raw[sample_off], raw[sample_off + 1]];
-                i16::from_le_bytes(bytes)
-            };
+            let value = source_format.sample_to_i16(&raw[sample_off..sample_off + bytes_per_sample]);
             pcm.extend_from_slice(&value.to_le_bytes());
         }
 
@@ -1712,19 +1872,8 @@ fn decode_packet_to_pcm_and_mono(
             let mut sum = 0.0f32;
             for src_ch in 0..source_channels {
                 let sample_off = frame_base + src_ch * bytes_per_sample;
-                let sample = if source_is_float {
-                    let bytes = [
-                        raw[sample_off],
-                        raw[sample_off + 1],
-                        raw[sample_off + 2],
-                        raw[sample_off + 3],
-                    ];
-                    f32::from_le_bytes(bytes)
-                } else {
-                    let bytes = [raw[sample_off], raw[sample_off + 1]];
-                    i16::from_le_bytes(bytes) as f32 / 32768.0
-                };
-                sum += sample;
+                sum += source_format
+                    .sample_to_f32(&raw[sample_off..sample_off + bytes_per_sample]);
             }
             let value = (sum / source_channels as f32).clamp(-1.0, 1.0);
             peak = peak.max(value.abs());
@@ -1803,14 +1952,14 @@ mod tests {
         sample_rate_hz: u32,
         source_channels: u16,
         output_channels: u16,
-        source_is_float: bool,
+        source_format: SourceSampleFormat,
         source_bytes_per_frame: usize,
     ) -> CaptureStreamFormat {
         CaptureStreamFormat {
             sample_rate_hz,
             source_channels,
             output_channels,
-            source_is_float,
+            source_format,
             source_bytes_per_frame,
         }
     }
@@ -1833,23 +1982,23 @@ mod tests {
 
     #[test]
     fn writer_format_changes_are_incompatible_with_active_segment() {
-        let active = capture_stream_format(48_000, 2, 2, false, 4);
+        let active = capture_stream_format(48_000, 2, 2, SourceSampleFormat::Int16, 4);
 
         assert!(!can_continue_active_writer(
             active,
-            capture_stream_format(44_100, 2, 2, false, 4)
+            capture_stream_format(44_100, 2, 2, SourceSampleFormat::Int16, 4)
         ));
         assert!(!can_continue_active_writer(
             active,
-            capture_stream_format(48_000, 2, 1, false, 4)
+            capture_stream_format(48_000, 2, 1, SourceSampleFormat::Int16, 4)
         ));
     }
 
     #[test]
     fn source_format_changes_are_compatible_when_writer_format_is_stable() {
         assert!(can_continue_active_writer(
-            capture_stream_format(48_000, 2, 2, false, 4),
-            capture_stream_format(48_000, 6, 2, true, 24)
+            capture_stream_format(48_000, 2, 2, SourceSampleFormat::Int16, 4),
+            capture_stream_format(48_000, 6, 2, SourceSampleFormat::Float32, 24)
         ));
     }
 
@@ -1915,7 +2064,7 @@ mod tests {
         raw.extend_from_slice(&(-16384i16).to_le_bytes());
         let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(
             &raw, /* bytes_per_frame */ 4, /* src ch */ 2, /* out ch */ 2,
-            /* float */ false, /* silent */ false, /* include mono */ true,
+            SourceSampleFormat::Int16, /* silent */ false, /* include mono */ true,
             /* include peak */ true,
         );
         assert_eq!(pcm_to_i16(&pcm), vec![16384, -16384]);
@@ -1931,7 +2080,7 @@ mod tests {
         raw.extend_from_slice(&16384i16.to_le_bytes());
         raw.extend_from_slice(&16384i16.to_le_bytes());
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, true, true);
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, SourceSampleFormat::Int16, false, true, true);
         assert_eq!(pcm_to_i16(&pcm), vec![16384, 16384]);
         assert_eq!(mono.len(), 1);
         assert!((mono[0] - 0.5).abs() < 1e-6, "mono {} != 0.5", mono[0]);
@@ -1945,7 +2094,7 @@ mod tests {
         raw.extend_from_slice(&0.75f32.to_le_bytes());
         raw.extend_from_slice(&(-0.5f32).to_le_bytes());
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 1, 1, true, false, true, true);
+            decode_packet_to_pcm_and_mono(&raw, 4, 1, 1, SourceSampleFormat::Float32, false, true, true);
         // mono equals the source samples for a single channel.
         assert_eq!(mono.len(), 2);
         assert!((mono[0] - 0.75).abs() < 1e-6, "mono0 {}", mono[0]);
@@ -1963,7 +2112,7 @@ mod tests {
         // Pass junk raw of the right length (2 frames * 4 bytes); must be ignored.
         let raw = vec![0xABu8; 8];
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, true, true, true);
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, SourceSampleFormat::Int16, true, true, true);
         // 2 frames * 2 output channels * 2 bytes = 8 zero bytes.
         assert_eq!(pcm, vec![0u8; 8]);
         assert_eq!(mono, vec![0.0f32, 0.0f32]);
@@ -1976,7 +2125,7 @@ mod tests {
         let mut raw = Vec::new();
         raw.extend_from_slice(&8192i16.to_le_bytes());
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 2, 1, 2, false, false, true, true);
+            decode_packet_to_pcm_and_mono(&raw, 2, 1, 2, SourceSampleFormat::Int16, false, true, true);
         // Both output channels carry the single source sample.
         assert_eq!(pcm_to_i16(&pcm), vec![8192, 8192]);
         assert_eq!(mono.len(), 1);
@@ -1990,7 +2139,7 @@ mod tests {
         raw.extend_from_slice(&16384i16.to_le_bytes());
         raw.extend_from_slice(&16384i16.to_le_bytes());
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, false, true);
+            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, SourceSampleFormat::Int16, false, false, true);
         assert_eq!(pcm_to_i16(&pcm), vec![16384, 16384]);
         assert!(mono.is_empty());
         assert!((peak - 0.5).abs() < 1e-6, "peak {peak} != 0.5");
@@ -2000,11 +2149,11 @@ mod tests {
     fn decode_empty_inputs_return_empties() {
         // Zero bytes-per-frame guard.
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&[0u8; 4], 0, 2, 2, false, false, true, true);
+            decode_packet_to_pcm_and_mono(&[0u8; 4], 0, 2, 2, SourceSampleFormat::Int16, false, true, true);
         assert!(pcm.is_empty() && mono.is_empty() && peak == 0.0);
         // Fewer bytes than one frame -> frame_count == 0.
         let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&[0u8; 2], 4, 2, 2, false, false, true, true);
+            decode_packet_to_pcm_and_mono(&[0u8; 2], 4, 2, 2, SourceSampleFormat::Int16, false, true, true);
         assert!(pcm.is_empty() && mono.is_empty() && peak == 0.0);
     }
 }

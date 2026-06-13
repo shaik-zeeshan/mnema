@@ -242,7 +242,9 @@
   const showChrome = $derived(!isWelcome && !isFinal);
   const canGoBack = $derived(activeIndex > 0 && !saving && !starting && !completing && !applyingRecommended && !appPrivacyExclusion.commandInFlight);
   const selectedSourceCount = $derived(
-    Number(draftCaptureScreen) + Number(draftCaptureMicrophone) + Number(draftCaptureSystemAudio)
+    Number(draftCaptureScreen)
+    + Number(microphoneSourceSupported && draftCaptureMicrophone)
+    + Number(systemAudioSourceSupported && draftCaptureSystemAudio)
   );
   const requiresOcrAvailability = $derived(draftOcrEnabled);
   const requiresTranscriptionAvailability = $derived(draftTranscriptionEnabled);
@@ -254,7 +256,15 @@
   );
   const grantedCount = $derived(
     permissions === null ? 0
-      : (["screen", "microphone", "systemAudio"] as const).filter((k) => permissions?.[k] === "granted").length
+      : (["screen", "microphone", "systemAudio"] as const).filter((k) => {
+          const value = permissions?.[k];
+          // On Windows the per-app microphone toggle can't be read, so the mic
+          // permission is reported as the system-managed "unknown" state. Treat
+          // that as satisfied for the readiness count; otherwise a fully
+          // configured Windows user could never reach 3/3. macOS unchanged.
+          if (isWindows && k === "microphone" && value === "unknown") return true;
+          return value === "granted";
+        }).length
   );
   const customResolutionErrors = $derived(validateCustomResolution());
   const customBitrateErrors = $derived(validateCustomBitrate());
@@ -299,6 +309,18 @@
   });
   $effect(() => {
     if (systemAudioRequiresScreen && !draftCaptureScreen && draftCaptureSystemAudio) {
+      draftCaptureSystemAudio = false;
+    }
+  });
+  // Coerce capture-source drafts to false when the source is unsupported on this
+  // platform/backend, so a hidden toggle never persists/sends a stale `true`.
+  $effect(() => {
+    if (!microphoneSourceSupported && draftCaptureMicrophone) {
+      draftCaptureMicrophone = false;
+    }
+  });
+  $effect(() => {
+    if (!systemAudioSourceSupported && draftCaptureSystemAudio) {
       draftCaptureSystemAudio = false;
     }
   });
@@ -431,10 +453,11 @@
     return {
       ...base,
       captureScreen: draftCaptureScreen,
-      captureMicrophone: draftCaptureMicrophone,
-      captureSystemAudio: systemAudioRequiresScreen
+      // Never persist a `true` for a source the platform/backend cannot service.
+      captureMicrophone: microphoneSourceSupported && draftCaptureMicrophone,
+      captureSystemAudio: systemAudioSourceSupported && (systemAudioRequiresScreen
         ? draftCaptureScreen && draftCaptureSystemAudio
-        : draftCaptureSystemAudio,
+        : draftCaptureSystemAudio),
       screenFrameRate: draftFrameRate,
       screenResolution: draftResolutionMode === "custom"
         ? { mode: "custom", width: draftCustomWidth!, height: draftCustomHeight! }
@@ -674,10 +697,10 @@
         await invoke("start_native_capture", {
           request: {
             captureScreen: draftCaptureScreen,
-            captureMicrophone: draftCaptureMicrophone,
-            captureSystemAudio: systemAudioRequiresScreen
+            captureMicrophone: microphoneSourceSupported && draftCaptureMicrophone,
+            captureSystemAudio: systemAudioSourceSupported && (systemAudioRequiresScreen
               ? draftCaptureScreen && draftCaptureSystemAudio
-              : draftCaptureSystemAudio,
+              : draftCaptureSystemAudio),
           },
         });
       }

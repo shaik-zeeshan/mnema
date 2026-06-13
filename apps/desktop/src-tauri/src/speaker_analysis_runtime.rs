@@ -156,14 +156,17 @@ async fn run_sherpa_analysis_subprocess(
             stage: "write_stdin".to_string(),
             message: "speaker-analysis helper stdin was unavailable".to_string(),
         })?;
-    stdin
-        .write_all(&request_json)
-        .await
-        .map_err(|error| SpeakerAnalysisError::Subprocess {
-            stage: "write_stdin".to_string(),
-            message: format!("failed to write speaker-analysis helper stdin: {error}"),
-        })?;
-    drop(stdin);
+    // Drive the stdin write on its own task so a request larger than the OS pipe
+    // buffer can keep flowing while the stdout/stderr readers below drain the
+    // child. Writing inline before spawning the readers risks a pipe-full
+    // deadlock on Windows (write_all blocks with no timeout while the helper
+    // waits to be read). The reader tasks plus the child.wait() timeout below
+    // bound the overall operation, so this writer needs no separate timeout.
+    let stdin_task = tokio::spawn(async move {
+        let result = stdin.write_all(&request_json).await;
+        drop(stdin);
+        result
+    });
 
     let mut stdout = child
         .stdout
@@ -201,6 +204,7 @@ async fn run_sherpa_analysis_subprocess(
                 "speaker-analysis helper timeout: elapsed_ms={} timeout_seconds={} kill_result={:?}",
                 elapsed_ms, helper_timeout_seconds, kill_result
             );
+            stdin_task.abort();
             stdout_task.abort();
             stderr_task.abort();
             return Err(match kill_result {
@@ -221,6 +225,29 @@ async fn run_sherpa_analysis_subprocess(
     };
     let stdout = join_reader_task(stdout_task, "stdout").await?;
     let stderr = join_reader_task(stderr_task, "stderr").await?;
+
+    // The child has exited; join the stdin writer so a write failure is not lost.
+    // A helper that exits before draining stdin yields BrokenPipe here, which we
+    // tolerate because the child's own exit status and stderr already describe
+    // the failure; any other write error is surfaced.
+    match stdin_task.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Ok(Err(error)) => {
+            return Err(SpeakerAnalysisError::Subprocess {
+                stage: "write_stdin".to_string(),
+                message: format!("failed to write speaker-analysis helper stdin: {error}"),
+            });
+        }
+        Err(error) => {
+            return Err(SpeakerAnalysisError::Subprocess {
+                stage: "write_stdin".to_string(),
+                message: format!(
+                    "failed joining speaker-analysis helper stdin writer: {error}"
+                ),
+            });
+        }
+    }
 
     if !status.success() {
         let stderr = trimmed_stderr(&stderr);

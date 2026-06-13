@@ -233,10 +233,11 @@ fn build_menu_model(
     })
     .collect();
 
-    // The user pause/resume control is not exposed on Windows yet (a later slice
-    // wires up transient capture recovery there). Hide it entirely so the tray
-    // never offers a pause action the backend cannot honour.
-    let pause_supported = !cfg!(target_os = "windows");
+    // Pause/resume is honoured by the backend on every platform: pause_user_capture
+    // is cross-platform and resume_user_capture has a working Windows arm. Expose
+    // the tray control everywhere so it agrees with the global pauseResumeRecording
+    // keyboard shortcut (which is not platform-gated).
+    let pause_supported = true;
 
     StatusBarMenuModel {
         onboarding_complete: true,
@@ -348,14 +349,11 @@ fn build_menu(
     let separator = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
 
-    // The pause item is hidden entirely on Windows (no user pause/resume yet).
-    // Everywhere else it stays visible, disabled while not recording, matching
-    // the existing macOS tray behaviour.
+    // The pause item stays visible on every platform, disabled while not
+    // recording, matching the existing macOS tray behaviour.
     let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
         vec![&recording as &dyn tauri::menu::IsMenuItem<tauri::Wry>];
-    if !cfg!(target_os = "windows") {
-        items.push(&pause);
-    }
+    items.push(&pause);
     items.push(&sources);
     items.push(&exclude_current);
     items.push(&delete_recent);

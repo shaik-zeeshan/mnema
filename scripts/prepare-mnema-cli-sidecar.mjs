@@ -7,7 +7,7 @@
 // Usage: node scripts/prepare-mnema-cli-sidecar.mjs [debug|release] [--locked]
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, copyFileSync, chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,6 +67,15 @@ function sidecarOutputPath(rustTarget) {
   return join(outputDir, `mnema-cli-${rustTarget}${exeSuffix}`);
 }
 
+// The original shell script ran `chmod 755` on every copied/lipo output so the
+// sidecar keeps its executable bit. The Unix permission bit is meaningless on
+// Windows (NTFS does not model it), so only apply it off-Windows.
+function ensureExecutable(targetPath) {
+  if (process.platform !== "win32") {
+    chmodSync(targetPath, 0o755);
+  }
+}
+
 function buildTarget(rustTarget) {
   const cargoArgs = [
     "build",
@@ -118,8 +127,12 @@ if (targetTriple === "universal-apple-darwin") {
     "mnema-cli",
   );
 
-  copyFileSync(armSourcePath, sidecarOutputPath("aarch64-apple-darwin"));
-  copyFileSync(intelSourcePath, sidecarOutputPath("x86_64-apple-darwin"));
+  const armOutputPath = sidecarOutputPath("aarch64-apple-darwin");
+  const intelOutputPath = sidecarOutputPath("x86_64-apple-darwin");
+  copyFileSync(armSourcePath, armOutputPath);
+  copyFileSync(intelSourcePath, intelOutputPath);
+  ensureExecutable(armOutputPath);
+  ensureExecutable(intelOutputPath);
 
   const lipo = spawnSync(
     "lipo",
@@ -129,6 +142,7 @@ if (targetTriple === "universal-apple-darwin") {
   if (lipo.status !== 0) {
     fail("lipo failed to create universal binary", lipo.status ?? 1);
   }
+  ensureExecutable(outputPath);
 } else {
   buildTarget(targetTriple);
 
@@ -143,6 +157,7 @@ if (targetTriple === "universal-apple-darwin") {
     fail(`expected build output not found at ${sourcePath}`);
   }
   copyFileSync(sourcePath, outputPath);
+  ensureExecutable(outputPath);
 }
 
 console.log(`prepared ${outputPath}`);

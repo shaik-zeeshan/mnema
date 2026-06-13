@@ -300,11 +300,21 @@ impl RecordingLifecycle {
         now: u64,
         probe_display_present: impl FnOnce() -> bool,
     ) -> bool {
-        use super::inactivity::ScreenPauseReason;
+        use super::inactivity::{ScreenPauseReason, TransientLivenessTrigger};
 
+        // Cross-trigger isolation (ADR 0023): the display-present probe
+        // (`windows_display_present` = `SM_CMONITORS > 0`) is true during `Win+L`
+        // because the monitors stay attached, so it must NOT resume a `SessionLock`
+        // pause — that would restart WGC against the locked secure desktop. A
+        // session lock resumes EXCLUSIVELY via `WTS_SESSION_UNLOCK`. Only
+        // `DisplayUnavailable` / `SystemSuspend` recover through this probe.
         if !matches!(
             self.runtime.inactivity.screen_pause_reason(),
-            Some(ScreenPauseReason::TransientLiveness { .. })
+            Some(ScreenPauseReason::TransientLiveness {
+                trigger:
+                    TransientLivenessTrigger::DisplayUnavailable
+                    | TransientLivenessTrigger::SystemSuspend
+            })
         ) {
             return false;
         }
@@ -1686,6 +1696,14 @@ impl RecordingLifecycle {
         let mut next_system_audio_recording_file = self.runtime.system_audio_recording_file.clone();
         let mut screen_segment_dir: Option<std::path::PathBuf> = None;
 
+        // Thread the probed finalization duration of each rotated-out audio source
+        // through to `persist_committed_audio_segments` so non-final audio segments
+        // get their real `.m4a` duration rather than the scheduled fallback
+        // (`audio_file_duration_ms` is a None stub on Windows). Mirrors the stop
+        // path's `stop_known_durations` map.
+        let mut rotation_known_durations: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+
         // --- Screen rotation (only when screen is an active source) ---
         if active_sources.screen {
             let screen_planner = screen_planner
@@ -1752,6 +1770,11 @@ impl RecordingLifecycle {
             if let Some(session) = self.runtime.active_microphone_session.as_mut() {
                 match session.rotate_output_file_returning_finalization(&microphone_output_file) {
                     Ok(finalization) => {
+                        if let (Some(file), Some(ms)) =
+                            (finalization.output_file.as_deref(), finalization.duration_ms)
+                        {
+                            rotation_known_durations.insert(file.to_string(), ms);
+                        }
                         super::segments::apply_windows_microphone_output_finalization(
                             previous_segment_output_files.as_mut(),
                             &finalization,
@@ -1802,6 +1825,11 @@ impl RecordingLifecycle {
             if let Some(session) = self.runtime.active_system_audio_session.as_mut() {
                 match session.rotate_output_file_returning_finalization(&system_audio_output_file) {
                     Ok(finalization) => {
+                        if let (Some(file), Some(ms)) =
+                            (finalization.output_file.as_deref(), finalization.duration_ms)
+                        {
+                            rotation_known_durations.insert(file.to_string(), ms);
+                        }
                         super::segments::apply_windows_system_audio_output_finalization(
                             previous_segment_output_files.as_mut(),
                             &finalization,
@@ -1859,7 +1887,7 @@ impl RecordingLifecycle {
             self.runtime.segment_schedule.as_ref(),
             self.runtime.current_segment_index,
             previous_segment_output_files.as_ref(),
-            &std::collections::HashMap::new(),
+            &rotation_known_durations,
         );
         // Enqueue scrub-preview generation for the rotated-out screen segment;
         // its SFI1 frame-index sidecar was finalized above so it is now

@@ -454,40 +454,64 @@ unsafe extern "system" fn windows_session_notification_subclass_proc(
     app_handle_ptr: usize,
 ) -> LRESULT {
     if msg == WM_POWERBROADCAST {
-        let app_handle = &*(app_handle_ptr as *const tauri::AppHandle);
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            match windows_power_broadcast_event(wparam) {
-                Some(WindowsPowerBroadcastEvent::Suspend) => {
-                    crate::native_capture::handle_windows_system_suspend_from_app_handle(app_handle);
+        // The handlers below lock NativeCaptureState and start/stop real capture,
+        // which can block. Running that inline on the HWND message-queue thread
+        // would stall DefSubclassProc and the message pump, so offload it to a
+        // worker thread (mirroring how macOS offloads wake recovery). The
+        // AppHandle is cloned before being moved into the thread; the
+        // catch_unwind guard is preserved inside the worker so a panicking
+        // handler never tears down the process.
+        if let Some(event) = windows_power_broadcast_event(wparam) {
+            let app_handle = (*(app_handle_ptr as *const tauri::AppHandle)).clone();
+            std::thread::spawn(move || {
+                let result = catch_unwind(AssertUnwindSafe(|| match event {
+                    WindowsPowerBroadcastEvent::Suspend => {
+                        crate::native_capture::handle_windows_system_suspend_from_app_handle(
+                            &app_handle,
+                        );
+                    }
+                    WindowsPowerBroadcastEvent::Resume => {
+                        crate::native_capture::handle_windows_system_resume_from_app_handle(
+                            &app_handle,
+                        );
+                    }
+                }));
+                if result.is_err() {
+                    crate::native_capture::debug_log::log_error(
+                        "Windows power broadcast callback panicked; continuing without aborting window procedure",
+                    );
                 }
-                Some(WindowsPowerBroadcastEvent::Resume) => {
-                    crate::native_capture::handle_windows_system_resume_from_app_handle(app_handle);
-                }
-                None => {}
-            }
-        }));
-        if result.is_err() {
-            crate::native_capture::debug_log::log_error(
-                "Windows power broadcast callback panicked; continuing without aborting window procedure",
-            );
+            });
         }
     }
 
     if msg == WM_WTSSESSION_CHANGE {
-        let app_handle = &*(app_handle_ptr as *const tauri::AppHandle);
-        let result = catch_unwind(AssertUnwindSafe(|| match wparam as u32 {
-            WTS_SESSION_LOCK => {
-                crate::native_capture::handle_windows_session_lock_from_app_handle(app_handle);
-            }
-            WTS_SESSION_UNLOCK => {
-                crate::native_capture::handle_windows_session_unlock_from_app_handle(app_handle);
-            }
-            _ => {}
-        }));
-        if result.is_err() {
-            crate::native_capture::debug_log::log_error(
-                "Windows session notification callback panicked; continuing without aborting window procedure",
-            );
+        // See the WM_POWERBROADCAST note above: lock/unlock restart work runs on a
+        // worker thread so the subclass proc returns promptly and the message
+        // pump keeps draining.
+        let session_event = wparam as u32;
+        if matches!(session_event, WTS_SESSION_LOCK | WTS_SESSION_UNLOCK) {
+            let app_handle = (*(app_handle_ptr as *const tauri::AppHandle)).clone();
+            std::thread::spawn(move || {
+                let result = catch_unwind(AssertUnwindSafe(|| match session_event {
+                    WTS_SESSION_LOCK => {
+                        crate::native_capture::handle_windows_session_lock_from_app_handle(
+                            &app_handle,
+                        );
+                    }
+                    WTS_SESSION_UNLOCK => {
+                        crate::native_capture::handle_windows_session_unlock_from_app_handle(
+                            &app_handle,
+                        );
+                    }
+                    _ => {}
+                }));
+                if result.is_err() {
+                    crate::native_capture::debug_log::log_error(
+                        "Windows session notification callback panicked; continuing without aborting window procedure",
+                    );
+                }
+            });
         }
     }
 

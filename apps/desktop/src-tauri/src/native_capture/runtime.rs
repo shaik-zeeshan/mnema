@@ -390,7 +390,7 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.frame_artifact_tx = None;
     runtime.effective_screen_bitrate_bps = None;
     runtime.current_segment_sources = None;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         runtime.current_segment_output_files = None;
     }
@@ -468,7 +468,7 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     runtime.frame_artifact_tx = None;
     runtime.effective_screen_bitrate_bps = None;
     runtime.current_segment_sources = None;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         runtime.current_segment_output_files = None;
     }
@@ -520,7 +520,7 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
     runtime.requested_sources = None;
     runtime.current_segment_sources = None;
     runtime.output_files = None;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         runtime.current_segment_output_files = None;
     }
