@@ -24,7 +24,7 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { confirm } from "@tauri-apps/plugin-dialog";
+  import { confirm, message } from "@tauri-apps/plugin-dialog";
   import type {
     Conclusion,
     UserContextStatus,
@@ -201,7 +201,11 @@
       );
       cancelEdit();
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // The list-load error surface only renders when there are no statements,
+      // so it's unreachable here (we're editing an existing one). Show a visible
+      // dialog instead of silently swallowing the failure.
+      const detail = error instanceof Error ? error.message : String(error);
+      await message(detail, { title: "Couldn't save context", kind: "error" });
     } finally {
       savingEdit = false;
     }
@@ -218,7 +222,9 @@
       statements = (statements ?? []).filter((x) => x.id !== s.id);
       if (editingId === s.id) cancelEdit();
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // Same unreachable-surface problem as saveEdit — surface a visible dialog.
+      const detail = error instanceof Error ? error.message : String(error);
+      await message(detail, { title: "Couldn't delete context", kind: "error" });
     }
   }
 

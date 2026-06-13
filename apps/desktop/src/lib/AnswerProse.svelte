@@ -40,6 +40,16 @@
   // onDestroy so a swapped-back revert never fires against a torn-down element.
   let copyRevertTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Route an external link through the controlled opener (Quick Recall must
+  // suppress its panel blur-dismiss first) or open it directly.
+  function openExternal(anchor: HTMLAnchorElement): void {
+    const href = anchor.getAttribute("href");
+    if (href !== null && href.length > 0) {
+      if (onOpenLink) onOpenLink(href);
+      else void openUrl(href);
+    }
+  }
+
   // Delegated click handler over the rendered HTML. Two responsibilities, checked
   // in order: a code-block copy button, then an external link.
   function handleClick(event: MouseEvent): void {
@@ -63,16 +73,25 @@
       return;
     }
 
-    // 2. External link — route through the surface callback (Quick Recall must
-    //    suppress its panel blur-dismiss first) or open it directly.
+    // 2. External link — left-click or modified (ctrl/cmd/shift) click. We must
+    //    catch the modified click too: without preventDefault the webview's
+    //    native `target=_blank` would open it outside the controlled opener.
     const anchor = target?.closest("a[data-external]") as HTMLAnchorElement | null;
     if (anchor) {
       event.preventDefault();
-      const href = anchor.getAttribute("href");
-      if (href !== null && href.length > 0) {
-        if (onOpenLink) onOpenLink(href);
-        else void openUrl(href);
-      }
+      openExternal(anchor);
+    }
+  }
+
+  // Middle-click / any non-primary button fires `auxclick`, not `click`, so it
+  // bypasses `handleClick` and the webview opens `target=_blank` natively —
+  // escaping the controlled opener. Intercept it and route the same way.
+  function handleAuxClick(event: MouseEvent): void {
+    const target = event.target as HTMLElement | null;
+    const anchor = target?.closest("a[data-external]") as HTMLAnchorElement | null;
+    if (anchor) {
+      event.preventDefault();
+      openExternal(anchor);
     }
   }
 
@@ -83,7 +102,12 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="answer-prose" class:is-streaming={isStreaming} onclick={handleClick}>
+<div
+  class="answer-prose"
+  class:is-streaming={isStreaming}
+  onclick={handleClick}
+  onauxclick={handleAuxClick}
+>
   {@html html}
 </div>
 

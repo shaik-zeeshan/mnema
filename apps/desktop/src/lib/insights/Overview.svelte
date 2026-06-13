@@ -317,9 +317,17 @@
   });
 
   const categorySegments = $derived.by(() => {
+    const { startMs, endMs } = range;
     const totals = new Map<string, number>();
     for (const a of rangeActivities) {
-      const dur = Math.max(0, a.endedAtMs - a.startedAtMs);
+      // Count only the portion of the activity that falls inside the active
+      // range. An activity straddling a range boundary would otherwise add its
+      // full duration here (and again in the wider Week window), double-counting
+      // the out-of-range span. Clip to `[startMs, endMs)` so each bucket sums
+      // only the time actually spent in this range.
+      const clippedStart = Math.max(a.startedAtMs, startMs);
+      const clippedEnd = Math.min(a.endedAtMs, endMs);
+      const dur = Math.max(0, clippedEnd - clippedStart);
       if (dur <= 0) continue;
       const key = a.category ?? "__uncat__";
       totals.set(key, (totals.get(key) ?? 0) + dur);
@@ -366,15 +374,18 @@
   );
 
   // ── ENGINE TILE 3: focus heatmap (day rows × time-of-day slots) ───────
-  // Six slots roughly 8a-8p in 2h bands; cell value = avg focus weight.
+  // Twelve 2h slots covering the full local day (12a-12a); cell value = avg
+  // focus weight. Covering all 24h means early/late work (before 8a, after 6p)
+  // lands in its own real slot instead of being folded into an edge slot and
+  // mislabeled as morning/evening work.
   const FOCUS_WEIGHT: Record<string, number> = {
     deep: 1.0,
     mixed: 0.55,
     distracted: 0.2,
   };
-  const SLOT_COUNT = 6; // 8a,10a,12p,2p,4p,6p
-  const SLOT_START_HOUR = 8;
   const SLOT_SPAN_HOURS = 2;
+  const SLOT_START_HOUR = 0;
+  const SLOT_COUNT = 24 / SLOT_SPAN_HOURS; // 12 slots: 12a,2a,…,10p
 
   const focusRows = $derived.by(() => {
     // Group range activities by local day → slot, averaging focus weight.
@@ -386,6 +397,9 @@
       const start = new Date(a.startedAtMs);
       const dayKey = startOfDay(a.startedAtMs);
       const hour = start.getHours();
+      // Full-day band: every 0–23 hour maps to its own slot, so off-band
+      // (early/late) hours aren't folded into an edge slot. The clamp is now
+      // only a defensive guard against an out-of-range hour, never a fold.
       let slot = Math.floor((hour - SLOT_START_HOUR) / SLOT_SPAN_HOURS);
       slot = Math.max(0, Math.min(SLOT_COUNT - 1, slot));
       let day = days.get(dayKey);

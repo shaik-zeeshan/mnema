@@ -138,6 +138,10 @@
   // conclusionId → oldest-first confidence points). Used to draw honest spark
   // lines + derive warming/steady/cooling from the start-vs-end of the arc.
   let trajectories = $state<Map<string, Map<number, number[]>>>(new Map());
+  // Monotonic generation token for `loadTrajectories`. Each call bumps it; only
+  // the call whose token still matches at completion may write `trajectories`,
+  // so a slow earlier load can't clobber a newer one's results (stale clobber).
+  let trajectoriesGen = 0;
 
   // Guards a single in-flight Pin/Dismiss action by conclusion id, so the
   // expanded detail's per-conclusion buttons disable while one is running.
@@ -182,10 +186,15 @@
     // real history points; fall back to a flat baseline from current confidence.
     return cs.map((c, i) => {
       const pts = history?.get(c.id);
+      // A polyline needs >= 2 points to draw a visible segment. A single
+      // snapshot (one history point, or none) would render an invisible line,
+      // so flatten it into a 2-point baseline at that confidence.
       const points =
-        pts && pts.length > 0
+        pts && pts.length >= 2
           ? pts
-          : [c.confidence, c.confidence]; // flat baseline (2 pts so a line draws)
+          : pts && pts.length === 1
+            ? [pts[0], pts[0]]
+            : [c.confidence, c.confidence]; // flat baseline (2 pts so a line draws)
       return {
         colorVar: CAT_PALETTE[i % CAT_PALETTE.length],
         faded: c.status === "faded",
@@ -534,6 +543,7 @@
   // failed fetch just leaves that subject on its baseline. Bounded concurrency
   // keeps a large dossier responsive.
   async function loadTrajectories(list: Conclusion[]): Promise<void> {
+    const gen = ++trajectoriesGen;
     const subjects = [...new Set(list.map((c) => c.subject))];
     const next = new Map<string, Map<number, number[]>>();
     const CONCURRENCY = 4;
@@ -561,6 +571,8 @@
     await Promise.all(
       Array.from({ length: Math.min(CONCURRENCY, subjects.length) }, worker),
     );
+    // Drop the result if a newer load started while this one was in flight.
+    if (gen !== trajectoriesGen) return;
     trajectories = next;
   }
 

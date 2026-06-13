@@ -585,11 +585,31 @@
   }
 
   function removeAiProvider(id: string): void {
+    const removed = draftAiProviders.find((p) => p.id === id);
     draftAiProviders = draftAiProviders.filter((p) => p.id !== id);
     // A default model stranded on a disconnected provider can never resolve;
     // clear it so the status reads "choose a default model" instead.
     if (draftAiDefaultModel?.provider === id) {
       draftAiDefaultModel = null;
+    }
+    // Removing a cloud provider must also drop its keychain key — otherwise the
+    // key is orphaned under its instance id, and since `newAiProviderId` reuses
+    // the bare `kind` as the id, re-adding the same kind would silently
+    // reattach the old key. Best-effort: a clear failure shouldn't block remove.
+    if (removed && isCloudAiProviderKind(removed.kind)) {
+      void invoke("ai_runtime_clear_provider_key", {
+        request: { provider: id },
+      })
+        .then(() => {
+          const { [id]: _orphaned, ...rest } = aiProviderKeySavedByProvider;
+          aiProviderKeySavedByProvider = rest;
+        })
+        .catch((error) => {
+          aiProviderKeyErrors = {
+            ...aiProviderKeyErrors,
+            [id]: error instanceof Error ? error.message : String(error),
+          };
+        });
     }
   }
 

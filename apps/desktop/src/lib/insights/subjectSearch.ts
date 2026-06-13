@@ -82,7 +82,9 @@ export function stem(word: string): string {
  *  tokens. Port of `recall_query_tokens`. */
 export function queryTokens(query: string): string[] {
   const tokens: string[] = [];
-  for (const raw of query.split(/[^a-zA-Z0-9]+/)) {
+  // Split on anything that isn't a Unicode letter/number so non-ASCII subject
+  // names (accents, CJK, etc.) tokenize too — mirrors the Unicode-aware backend.
+  for (const raw of query.split(/[^\p{L}\p{N}]+/u)) {
     const word = raw.toLowerCase();
     if (word.length < 3 || STOPWORDS.has(word)) continue;
     const stemmed = stem(word);
@@ -96,7 +98,7 @@ export function queryTokens(query: string): string[] {
  *  `recall_doc_words`. */
 function docWords(text: string): Set<string> {
   const out = new Set<string>();
-  for (const raw of text.split(/[^a-zA-Z0-9]+/)) {
+  for (const raw of text.split(/[^\p{L}\p{N}]+/u)) {
     if (raw.length < 3) continue;
     out.add(stem(raw.toLowerCase()));
   }

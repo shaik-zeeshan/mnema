@@ -13,7 +13,11 @@
 
   let { confidence, trend }: Props = $props();
 
-  const clamped = $derived(Math.max(0, Math.min(1, confidence)));
+  // Guard non-finite input (NaN/Infinity → 0) before clamping to [0, 1] so the
+  // fill width can never become `NaN%`/`Infinity%`.
+  const clamped = $derived(
+    Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
+  );
   const pct = $derived(Math.round(clamped * 100));
   const isFaded = $derived(trend === "faded");
 
