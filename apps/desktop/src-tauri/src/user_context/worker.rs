@@ -33,6 +33,7 @@
 //!     window of realtime. See [`is_catching_up`] and `worker_tick`.
 
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use capture_types::{AiProviderKind, DerivationBudgetTier};
@@ -116,6 +117,23 @@ fn backfill_windows_per_tick(provider: AiProviderKind, tier: DerivationBudgetTie
             DerivationBudgetTier::Thorough => 4,
         }
     }
+}
+
+/// Process-wide serialization for the forward Activity beat (#12). BOTH the
+/// background worker tick AND the "Run derivation now" command call
+/// [`run_forward_activity_window`]; without a guard they could read the same
+/// cursor, pick the same `[start, end]` window, and derive it twice — DUPLICATE
+/// Activities and a second cloud bill for that span. This `tokio::Mutex` is
+/// `try_lock`'d inside [`run_forward_activity_window`], so whichever caller is
+/// already mid-window wins and the other returns a no-op for this pass (the
+/// worker simply retries next tick). Paired with the `derived_window_exists`
+/// idempotency guard below, which extinguishes the race even across the
+/// select-window gap (e.g. a run that committed between lock release and the next
+/// caller's window selection).
+static FORWARD_DERIVATION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn forward_derivation_lock() -> &'static tokio::sync::Mutex<()> {
+    FORWARD_DERIVATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// Current unix time in milliseconds (matches the user_context `*_at_ms`
@@ -279,6 +297,32 @@ pub async fn run_forward_activity_window(
     model_label: Option<String>,
 ) -> ForwardWindowRun {
     let now = now_ms();
+
+    // (#12) Serialize the forward beat: if another caller (the worker tick or the
+    // run-now command) is already mid-window, do not race it onto the same cursor.
+    // `try_lock` — neither caller blocks; the loser returns a no-op (the worker
+    // retries next tick; the manual command reports it).
+    let _guard = match forward_derivation_lock().try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            let last_covered_end = store
+                .latest_derivation_run_window()
+                .await
+                .ok()
+                .flatten()
+                .map(|(_, end)| end);
+            return ForwardWindowRun {
+                activities_derived: 0,
+                window_start_ms: last_covered_end.unwrap_or(now),
+                window_end_ms: now,
+                items_read: 0,
+                message: "A derivation pass is already running.".to_string(),
+                changed: false,
+                derived_window: false,
+            };
+        }
+    };
+
     let last_covered_end = store
         .latest_derivation_run_window()
         .await
@@ -297,6 +341,23 @@ pub async fn run_forward_activity_window(
             derived_window: false,
         };
     };
+
+    // Idempotency backstop (#12): a run may already cover exactly this window — a
+    // racing caller could have committed it between our lock acquisition and the
+    // cursor read above (the cursor read is not itself under any longer-held lock).
+    // `derived_window_exists` is the guard that was built for this and never wired.
+    // Treat an already-covered window as a no-op rather than re-billing it.
+    if store.derived_window_exists(start, end).await.unwrap_or(false) {
+        return ForwardWindowRun {
+            activities_derived: 0,
+            window_start_ms: start,
+            window_end_ms: end,
+            items_read: 0,
+            message: "This window was already derived.".to_string(),
+            changed: false,
+            derived_window: false,
+        };
+    }
 
     let window = match store.read_capture_window(start, end, MAX_ITEMS).await {
         Ok(window) => window,
@@ -918,19 +979,28 @@ pub(crate) async fn run_confidence_decay(
     };
 
     let mut touched = 0i64;
-    for conclusion in &conclusions {
+    for decayable in &conclusions {
+        let conclusion = &decayable.conclusion;
         // A pinned Conclusion is exempt from decay (#99). `list_decayable_conclusions`
         // already excludes pinned rows, so this is normally `false` here; passing the
         // real flag keeps `decay()`/`status_for()` correct as a guard regardless.
         let pinned = conclusion.pinned;
+        // Decay over the per-pass DELTA: anchor on `decay_anchor_ms`
+        // (`COALESCE(last_decayed_at_ms, last_supported_at_ms)`), not the fixed
+        // `last_supported_at_ms`. Each pass feeds back the already-decayed
+        // `confidence`; anchoring on the previous decay time makes the per-pass
+        // factors telescope to exactly one 30-day half-life instead of re-applying
+        // the full elapsed factor every pass (the HIGH compounding bug #1).
         let decayed = confidence::decay(
             conclusion.confidence,
-            conclusion.last_supported_at_ms,
+            decayable.decay_anchor_ms,
             now,
             pinned,
         );
         let status = confidence::status_for(decayed, pinned);
 
+        // Stamp `last_decayed_at_ms = now` so the NEXT pass anchors here (this is
+        // what `update_conclusion_confidence` writes into `last_decayed_at_ms`).
         if let Err(error) = store
             .update_conclusion_confidence(conclusion.id, decayed, status, now)
             .await

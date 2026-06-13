@@ -158,6 +158,25 @@ pub struct NewConclusionEvidence {
     pub stance: EvidenceStance,
 }
 
+/// One Conclusion eligible for the confidence-decay beat, paired with the
+/// **decay anchor** the beat must decay *from* this pass (#95).
+///
+/// The anchor is `COALESCE(last_decayed_at_ms, last_supported_at_ms)`: a
+/// Conclusion that has already been decayed at least once anchors on the LAST
+/// decay time, so each beat decays only the per-pass delta since then. Without
+/// this, a beat that re-anchored on the fixed `last_supported_at_ms` while
+/// feeding back the already-decayed `confidence` would re-apply the *full*
+/// elapsed factor every pass — compounding decay quadratically in pass count
+/// (the HIGH bug #1). Per-pass deltas telescope to exactly one 30-day half-life.
+#[derive(Debug, Clone)]
+pub struct DecayableConclusion {
+    pub conclusion: Conclusion,
+    /// `COALESCE(last_decayed_at_ms, last_supported_at_ms)` — the instant the
+    /// next [`confidence::decay`](super::confidence::decay) call must measure
+    /// elapsed silence from.
+    pub decay_anchor_ms: i64,
+}
+
 /// Counts from a **Delete Recent Capture** derived-data cascade
 /// ([`UserContextStore::delete_derived_for_capture_subjects`]): how many
 /// **Activity** rows, how many now-below-the-formation-bar **Conclusion** rows,
@@ -837,62 +856,140 @@ impl UserContextStore {
     /// `last_supported_at_ms`, and `updated_at_ms` are refreshed and its id
     /// returned; otherwise a new `visible` row is inserted (with
     /// `created_at_ms`/`updated_at_ms` = now) and the new id returned.
+    ///
+    /// Dedup is **atomic** via `INSERT ... ON CONFLICT DO UPDATE` on the
+    /// `(subject COLLATE NOCASE, statement COLLATE NOCASE)` unique index
+    /// (migration 0037) — never a SELECT-then-INSERT, which raced under the
+    /// multi-connection pool and could insert a duplicate the `ORDER BY id ASC`
+    /// dedup then hid forever, double-counting in `recall_context` (#11). A
+    /// dismissed row can't conflict here — dismissal deletes the row.
     pub async fn upsert_conclusion(&self, draft: NewConclusion) -> Result<i64> {
         let now = now_ms();
+        Self::upsert_conclusion_in(&self.pool, &draft, draft.confidence, now).await
+    }
 
-        // Case-insensitive dedup on (subject, statement). NOCASE collation is
-        // ASCII-only, which matches the rest of the store's matching.
+    /// Atomic conclusion upsert against an arbitrary executor (the pool or an open
+    /// transaction), writing `confidence` (the caller-resolved value — the raw
+    /// formation value for the standalone primitive, the *reinforced* value for
+    /// the derivation persist path). Re-derives visibility from `confidence`
+    /// (mirrors `confidence::status_for`: below DISPLAY_FLOOR 0.15 and unpinned →
+    /// 'faded', else 'visible') so a re-supported faded Conclusion returns to the
+    /// dossier immediately, and only ever bumps `last_supported_at_ms`
+    /// FORWARD (`MAX`) so fresh support cannot move the support anchor backward.
+    async fn upsert_conclusion_in<'e, E>(
+        executor: E,
+        draft: &NewConclusion,
+        confidence: f64,
+        now: i64,
+    ) -> Result<i64>
+    where
+        E: sqlx::Executor<'e, Database = Sqlite>,
+    {
+        let id = sqlx::query(
+            "INSERT INTO user_context_conclusions \
+                (subject, statement, confidence, status, formed_at_ms, \
+                 last_supported_at_ms, updated_at_ms, created_at_ms) \
+             VALUES (?1, ?2, ?3, \
+                     CASE WHEN ?3 < 0.15 THEN 'faded' ELSE 'visible' END, \
+                     ?4, ?5, ?6, ?6) \
+             ON CONFLICT (subject COLLATE NOCASE, statement COLLATE NOCASE) DO UPDATE SET \
+                confidence = excluded.confidence, \
+                last_supported_at_ms = MAX(last_supported_at_ms, excluded.last_supported_at_ms), \
+                updated_at_ms = excluded.updated_at_ms, \
+                status = CASE WHEN excluded.confidence < 0.15 AND COALESCE(pinned, 0) = 0 \
+                              THEN 'faded' ELSE 'visible' END \
+             RETURNING id",
+        )
+        .bind(&draft.subject)
+        .bind(&draft.statement)
+        .bind(confidence)
+        .bind(draft.formed_at_ms)
+        .bind(draft.last_supported_at_ms)
+        .bind(now)
+        .fetch_one(executor)
+        .await?
+        .get::<i64, _>("id");
+        Ok(id)
+    }
+
+    /// Persist one distilled **Conclusion** and its full evidence set in a SINGLE
+    /// transaction (#14): the upsert and the evidence replacement must commit or
+    /// roll back together, so a crash/error between them can never leave a
+    /// Conclusion with stale or zero evidence (the old code spanned two
+    /// transactions). Returns the Conclusion id.
+    ///
+    /// Confidence is the **reinforcement ratchet** (#9/#10), not a reset: for an
+    /// existing Conclusion the prior value is decayed to `now` over silence since
+    /// its `COALESCE(last_decayed_at_ms, last_supported_at_ms)` anchor, ratcheted
+    /// up to `max(decayed, initial_confidence(support, 0))` so fresh support never
+    /// silently resets a well-supported Conclusion to a lower window value, then
+    /// dropped by [`confidence::apply_contradiction`] for any fresh contradicting
+    /// evidence (the active reversal, faster than silence — this is what wires the
+    /// formerly-dead contradiction path into the persist path). A brand-new
+    /// Conclusion forms at `initial_confidence(support, contradict)`.
+    ///
+    /// `support_count` / `contradict_count` are the resolved fresh evidence counts
+    /// from this window; `evidence` is the full link set (support + contradict).
+    pub async fn upsert_conclusion_with_evidence(
+        &self,
+        draft: NewConclusion,
+        support_count: usize,
+        contradict_count: usize,
+        evidence: Vec<NewConclusionEvidence>,
+    ) -> Result<i64> {
+        let now = now_ms();
+        let mut transaction = self.pool.begin().await?;
+
+        // Read the existing row's confidence + decay anchor + pin inside the txn so
+        // the ratchet is computed against a consistent snapshot. Absent → formation.
         let existing = sqlx::query(
-            "SELECT id FROM user_context_conclusions \
+            "SELECT confidence, COALESCE(last_decayed_at_ms, last_supported_at_ms) AS decay_anchor_ms, \
+                    COALESCE(pinned, 0) AS pinned \
+             FROM user_context_conclusions \
              WHERE subject = ?1 COLLATE NOCASE AND statement = ?2 COLLATE NOCASE \
              ORDER BY id ASC LIMIT 1",
         )
         .bind(&draft.subject)
         .bind(&draft.statement)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await?;
 
-        if let Some(row) = existing {
-            let id: i64 = row.get("id");
-            // Re-derive visibility from the NEW confidence (mirrors
-            // `confidence::status_for`: below DISPLAY_FLOOR 0.15 and unpinned →
-            // 'faded', else 'visible'). Without this, a conclusion that decayed
-            // to 'faded' and is then re-supported above the floor would keep
-            // status='faded' and stay hidden from the default dossier until the
-            // next slow confidence-decay beat runs. A dismissed row can't reach
-            // here — dismissal deletes the row, so the dedup SELECT never matches it.
-            sqlx::query(
-                "UPDATE user_context_conclusions \
-                 SET confidence = ?2, last_supported_at_ms = ?3, updated_at_ms = ?4, \
-                     status = CASE WHEN ?2 < 0.15 AND COALESCE(pinned, 0) = 0 \
-                                   THEN 'faded' ELSE 'visible' END \
-                 WHERE id = ?1",
-            )
-            .bind(id)
-            .bind(draft.confidence)
-            .bind(draft.last_supported_at_ms)
-            .bind(now)
-            .execute(&self.pool)
+        let confidence = match existing {
+            Some(row) => super::confidence::reinforce(
+                row.get::<f64, _>("confidence"),
+                row.get::<i64, _>("decay_anchor_ms"),
+                now,
+                support_count,
+                contradict_count,
+                row.get::<i64, _>("pinned") != 0,
+            ),
+            None => super::confidence::initial_confidence(support_count, contradict_count),
+        };
+
+        let conclusion_id =
+            Self::upsert_conclusion_in(&mut *transaction, &draft, confidence, now).await?;
+
+        // Replace the full evidence set (delete then re-insert) in the SAME txn.
+        sqlx::query("DELETE FROM user_context_conclusion_evidence WHERE conclusion_id = ?1")
+            .bind(conclusion_id)
+            .execute(&mut *transaction)
             .await?;
-            return Ok(id);
+        for link in &evidence {
+            sqlx::query(
+                "INSERT OR IGNORE INTO user_context_conclusion_evidence \
+                    (conclusion_id, activity_id, stance, created_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .bind(conclusion_id)
+            .bind(link.activity_id)
+            .bind(stance_to_str(link.stance))
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
         }
 
-        let id = sqlx::query(
-            "INSERT INTO user_context_conclusions \
-                (subject, statement, confidence, status, formed_at_ms, \
-                 last_supported_at_ms, updated_at_ms, created_at_ms) \
-             VALUES (?1, ?2, ?3, 'visible', ?4, ?5, ?6, ?6)",
-        )
-        .bind(&draft.subject)
-        .bind(&draft.statement)
-        .bind(draft.confidence)
-        .bind(draft.formed_at_ms)
-        .bind(draft.last_supported_at_ms)
-        .bind(now)
-        .execute(&self.pool)
-        .await?
-        .last_insert_rowid();
-        Ok(id)
+        transaction.commit().await?;
+        Ok(conclusion_id)
     }
 
     /// Replace the full evidence set for a Conclusion: delete its existing
@@ -1200,17 +1297,37 @@ impl UserContextStore {
     /// exempts a Conclusion from confidence decay, so a pinned row is dropped from
     /// the decayable set entirely. Hydrated with their evidence. Ordered
     /// oldest-supported-first so the loop touches the stalest rows first.
-    pub async fn list_decayable_conclusions(&self) -> Result<Vec<Conclusion>> {
+    ///
+    /// Each row carries its **decay anchor** —
+    /// `COALESCE(last_decayed_at_ms, last_supported_at_ms)` — so the beat decays
+    /// only the delta since the *previous* pass (the fix for #1: chaining the
+    /// already-decayed value off the fixed `last_supported_at_ms` re-applied the
+    /// full elapsed factor every pass, compounding decay). The
+    /// `last_decayed_at_ms` column was written by every pass but never read until
+    /// now.
+    pub async fn list_decayable_conclusions(&self) -> Result<Vec<DecayableConclusion>> {
         let rows = sqlx::query(
             "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
-                    last_supported_at_ms, updated_at_ms \
+                    last_supported_at_ms, updated_at_ms, \
+                    COALESCE(last_decayed_at_ms, last_supported_at_ms) AS decay_anchor_ms \
              FROM user_context_conclusions \
              WHERE status IN ('visible', 'faded') AND COALESCE(pinned, 0) = 0 \
              ORDER BY last_supported_at_ms ASC, id ASC",
         )
         .fetch_all(&self.pool)
         .await?;
-        self.hydrate_conclusions(rows).await
+
+        let mut decayable = Vec::with_capacity(rows.len());
+        for row in rows {
+            let decay_anchor_ms: i64 = row.get("decay_anchor_ms");
+            let mut conclusion = map_conclusion(row);
+            conclusion.evidence = self.list_conclusion_evidence(conclusion.id).await?;
+            decayable.push(DecayableConclusion {
+                conclusion,
+                decay_anchor_ms,
+            });
+        }
+        Ok(decayable)
     }
 
     // --- #99: Pin + Dismiss + Dismissal State -----------------------------
@@ -2033,6 +2150,10 @@ mod tests {
                 last_decayed_at_ms INTEGER,
                 pinned INTEGER NOT NULL DEFAULT 0
             )",
+            // Mirrors migration 0037: the NOCASE unique index that backs the
+            // atomic `INSERT ... ON CONFLICT` dedup in `upsert_conclusion`.
+            "CREATE UNIQUE INDEX user_context_conclusions_subject_statement_unique_idx
+                ON user_context_conclusions (subject COLLATE NOCASE, statement COLLATE NOCASE)",
             "CREATE TABLE user_context_conclusion_evidence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conclusion_id INTEGER NOT NULL REFERENCES user_context_conclusions(id) ON DELETE CASCADE,
@@ -2245,6 +2366,84 @@ mod tests {
         });
     }
 
+    /// A shared-cache in-memory store with `max_connections > 1` so concurrent
+    /// upserts can actually run on DIFFERENT connections and race (the default
+    /// `test_store` uses `max_connections(1)`, which serializes everything and so
+    /// structurally CANNOT catch the dedup TOCTOU). Each call uses a unique
+    /// `mode=memory&cache=shared` URI; the pool's `min_connections` keeps the
+    /// shared DB alive across the connections. Creates only the conclusions table +
+    /// the NOCASE unique index (migration 0037) needed for the upsert.
+    async fn racing_conclusions_store(name: &str) -> UserContextStore {
+        let url = format!("file:{name}?mode=memory&cache=shared");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .min_connections(4)
+            .connect(&url)
+            .await
+            .expect("shared in-memory db should open");
+        for statement in [
+            "CREATE TABLE IF NOT EXISTS user_context_conclusions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject TEXT NOT NULL,
+                statement TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'visible',
+                formed_at_ms INTEGER NOT NULL,
+                last_supported_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                last_decayed_at_ms INTEGER,
+                pinned INTEGER NOT NULL DEFAULT 0
+            )",
+            "CREATE UNIQUE INDEX IF NOT EXISTS user_context_conclusions_subject_statement_unique_idx
+                ON user_context_conclusions (subject COLLATE NOCASE, statement COLLATE NOCASE)",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("schema should apply");
+        }
+        UserContextStore::new(pool)
+    }
+
+    #[test]
+    fn upsert_conclusion_dedup_is_atomic_under_concurrency() {
+        // Regression for #11: two concurrent upserts of the SAME normalized
+        // (subject, statement) pair on a multi-connection pool. The old
+        // SELECT-then-INSERT (no UNIQUE backing) let both miss the SELECT and both
+        // INSERT, leaving a duplicate the `ORDER BY id ASC LIMIT 1` dedup then hid
+        // forever. With the NOCASE unique index + `INSERT ... ON CONFLICT`, the
+        // race collapses to exactly ONE row regardless of interleaving.
+        block_on(async {
+            let store = racing_conclusions_store("dedup_race_db").await;
+
+            // Fire many concurrent upserts of the same pair (varied casing, which
+            // must STILL collapse via NOCASE) to maximize interleaving.
+            let mut handles = Vec::new();
+            for i in 0..16 {
+                let store = store.clone();
+                handles.push(tokio::spawn(async move {
+                    let (subject, statement) = if i % 2 == 0 {
+                        ("Apple", "Interested in Apple")
+                    } else {
+                        ("apple", "interested in apple")
+                    };
+                    store.upsert_conclusion(draft(subject, statement, 0.5)).await
+                }));
+            }
+            for handle in handles {
+                handle.await.expect("task joins").expect("upsert ok");
+            }
+
+            // Exactly one row survived the race (no hidden duplicate).
+            assert_eq!(
+                store.count_conclusions().await.expect("count"),
+                1,
+                "concurrent upserts of the same pair must collapse to one row"
+            );
+        });
+    }
+
     #[test]
     fn replace_conclusion_evidence_hydrates_with_stance_and_title() {
         block_on(async {
@@ -2452,7 +2651,7 @@ mod tests {
             .expect("set dismissed");
 
         let decayable = store.list_decayable_conclusions().await.expect("decayable");
-        let ids: Vec<i64> = decayable.iter().map(|c| c.id).collect();
+        let ids: Vec<i64> = decayable.iter().map(|c| c.conclusion.id).collect();
         assert!(ids.contains(&visible), "visible is decayable");
         assert!(ids.contains(&faded), "faded is decayable (history still snapshotted)");
         assert!(!ids.contains(&dismissed), "dismissed is not decayable");
@@ -2560,14 +2759,17 @@ mod tests {
         assert!(fetched.pinned, "pinned column is read back as true");
 
         let decayable = store.list_decayable_conclusions().await.expect("decayable");
-        let ids: Vec<i64> = decayable.iter().map(|c| c.id).collect();
+        let ids: Vec<i64> = decayable.iter().map(|c| c.conclusion.id).collect();
         assert!(!ids.contains(&pinned), "pinned is exempt from decay");
         assert!(ids.contains(&unpinned), "unpinned stays decayable");
 
         // Unpinning restores decayability.
         store.set_pinned(pinned, false).await.expect("unpin");
         let after = store.list_decayable_conclusions().await.expect("decayable");
-        assert!(after.iter().any(|c| c.id == pinned), "unpinned is decayable again");
+        assert!(
+            after.iter().any(|c| c.conclusion.id == pinned),
+            "unpinned is decayable again"
+        );
         });
     }
 

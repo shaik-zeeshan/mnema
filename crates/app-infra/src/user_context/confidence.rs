@@ -102,6 +102,52 @@ pub fn apply_contradiction(current: f64, contradiction_count: usize) -> f64 {
     clamp(current - CONTRADICTION_DROP * contradiction_count as f64)
 }
 
+/// Re-derivation **reinforcement** (#9/#10): fold a fresh distillation window's
+/// support/contradiction into an *existing* Conclusion's confidence so it
+/// **rises with fresh supporting evidence, fades slowly in silence, and drops
+/// faster on contradiction** — rather than being overwritten by whatever the
+/// latest window alone justifies.
+///
+/// The previous code set `confidence = initial_confidence(...)` on every
+/// re-derivation, resetting a long-standing well-supported Conclusion to the
+/// current window's formation value (often *lower*) and wiping the accrued
+/// decay. This is the ratchet that earns confidence upward over time:
+///
+/// 1. **Decay the existing value to now** over silence since `decay_anchor_ms`
+///    (`COALESCE(last_decayed_at_ms, last_supported_at_ms)`), so a stale
+///    Conclusion does not keep an unearned-high baseline.
+/// 2. **Ratchet up** to `max(decayed_existing, newly_justified)`, where
+///    `newly_justified = initial_confidence(support, 0)` — fresh support can
+///    only *raise* (or hold) confidence, never silently drop a supported
+///    Conclusion to a lower formation value because this window saw less support.
+/// 3. **Apply contradiction** on top via [`apply_contradiction`]: each fresh
+///    contradicting Activity drops [`CONTRADICTION_DROP`], so an active reversal
+///    moves the value DOWN faster than silence — and can pull it below the
+///    ratcheted-up value (the contradiction path is wired into the persist path,
+///    not only formation; this is what made the dead `apply_contradiction` live).
+///
+/// The result still respects the formation cap implicitly: `newly_justified`
+/// is capped at [`INITIAL_CAP`] by `initial_confidence`, and `decayed_existing`
+/// can only have come from prior reinforcement under the same rule (or formation),
+/// so the ratchet never *grants* above what sustained support earned. `pinned`
+/// is honored by the decay step (a pinned Conclusion does not fade).
+pub fn reinforce(
+    existing: f64,
+    decay_anchor_ms: i64,
+    now_ms: i64,
+    support_count: usize,
+    contradict_count: usize,
+    pinned: bool,
+) -> f64 {
+    // 1. Fade the prior value to now (silence since the last support/decay).
+    let decayed_existing = decay(existing, decay_anchor_ms, now_ms, pinned);
+    // 2. Fresh support can only raise (or hold) — never reset to a lower window.
+    let newly_justified = initial_confidence(support_count, 0);
+    let ratcheted = decayed_existing.max(newly_justified);
+    // 3. Contradiction actively reverses, faster than silence, on top of the ratchet.
+    apply_contradiction(ratcheted, contradict_count)
+}
+
 /// Whether enough supporting evidence has accumulated for a Conclusion to form
 /// (the **formation bar**: ≥ [`FORMATION_BAR_EVIDENCE`] supporting Activities).
 pub fn meets_formation_bar(support_count: usize) -> bool {
@@ -187,6 +233,33 @@ mod tests {
     }
 
     #[test]
+    fn split_interval_decay_telescopes_to_one_half_life() {
+        // Regression for the worker's chained-decay bug (#1): the decay beat fires
+        // many times over a silence. If each pass anchors on the PREVIOUS pass's
+        // decay time (the `decay_anchor_ms` the worker now passes) rather than the
+        // fixed `last_supported_at_ms`, splitting one 30-day interval into two
+        // 15-day passes must telescope to EXACTLY one 30-day half-life — not
+        // re-apply the full elapsed factor each pass (which compounded to ~quadratic
+        // decay). decay(15d) then decay(15d-from-the-new-anchor) == decay(30d).
+        let start = 1_000_000_000_000;
+        let c0 = 0.8;
+        // Pass 1: 15 days of silence, anchored at the last support time.
+        let mid = start + 15 * DAY_MS;
+        let after_pass1 = decay(c0, start, mid, false);
+        // Pass 2: another 15 days, anchored at the PREVIOUS decay time (`mid`), not
+        // back at `start`. This is the per-pass-delta anchoring the fix introduces.
+        let after_pass2 = decay(after_pass1, mid, mid + 15 * DAY_MS, false);
+        // One-shot 30-day decay from the original anchor.
+        let one_shot_30d = decay(c0, start, start + 30 * DAY_MS, false);
+        assert!(
+            (after_pass2 - one_shot_30d).abs() < 1e-9,
+            "two 15d passes ({after_pass2}) must equal one 30d decay ({one_shot_30d})"
+        );
+        // And concretely ≈ C0 * 0.5 (one half-life).
+        assert!((after_pass2 - c0 * 0.5).abs() < 1e-9);
+    }
+
+    #[test]
     fn no_elapsed_silence_leaves_confidence_unchanged() {
         let now = 2_000_000_000_000;
         // now == last and now < last both leave confidence unchanged (guard).
@@ -252,6 +325,63 @@ mod tests {
         // No recorded prior evidence → any fresh support resurfaces.
         assert!(meets_resurface_bar(1, 0));
         assert!(!meets_resurface_bar(0, 0));
+    }
+
+    #[test]
+    fn reinforce_ratchets_up_and_never_resets_to_a_lower_window() {
+        // A long-standing well-supported Conclusion (0.85) re-derived in a window
+        // that alone would only justify a low formation value (2 supports → 0.54)
+        // must NOT be reset downward (#9): fresh support holds/raises, never drops.
+        let start = 1_000_000_000_000;
+        let well_supported = 0.85;
+        let reinforced = reinforce(well_supported, start, start, 2, 0, false);
+        assert!(
+            reinforced >= well_supported - 1e-9,
+            "fresh support must not reset a well-supported conclusion downward"
+        );
+
+        // More fresh support than the existing value justifies ratchets it UP.
+        let provisional = 0.40;
+        let raised = reinforce(provisional, start, start, 4, 0, false);
+        assert!(raised > provisional, "stronger fresh support raises confidence");
+    }
+
+    #[test]
+    fn reinforce_fades_existing_over_silence_before_ratcheting() {
+        // With NO time elapsed the prior value is preserved; with a long silence the
+        // prior value decays first, so the ratchet baseline is the faded value.
+        let start = 1_000_000_000_000;
+        let existing = 0.80;
+        let no_silence = reinforce(existing, start, start, 0, 0, false);
+        let after_30d = reinforce(existing, start, start + 30 * DAY_MS, 0, 0, false);
+        assert!((no_silence - existing).abs() < 1e-9);
+        assert!(after_30d < existing, "silence fades the prior value first");
+        assert!((after_30d - existing * 0.5).abs() < 1e-9, "≈ one half-life");
+    }
+
+    #[test]
+    fn reinforce_wires_contradiction_to_drop_faster_than_silence() {
+        // #10: the contradiction path is LIVE on re-derivation — a contradicting
+        // Activity drops the reinforced value faster than a quiet fade would.
+        let start = 1_000_000_000_000;
+        let existing = 0.80;
+        let with_contradiction = reinforce(existing, start, start, 2, 1, false);
+        let support_only = reinforce(existing, start, start, 2, 0, false);
+        assert!(
+            with_contradiction < support_only,
+            "a fresh contradiction actively lowers the reinforced confidence"
+        );
+        // And the drop is at least one CONTRADICTION_DROP below the support-only value.
+        assert!((support_only - with_contradiction) >= CONTRADICTION_DROP - 1e-9);
+    }
+
+    #[test]
+    fn reinforce_honors_pin_no_fade() {
+        // A pinned Conclusion does not fade during the reinforce decay step.
+        let start = 1_000_000_000_000;
+        let existing = 0.70;
+        let pinned = reinforce(existing, start, start + 365 * DAY_MS, 0, 0, true);
+        assert!((pinned - existing).abs() < 1e-9, "Pin exempts the fade step");
     }
 
     #[test]

@@ -724,9 +724,6 @@ pub async fn distill_conclusions(
             }
         }
 
-        let confidence =
-            confidence::initial_confidence(support_refs.len(), contradict_refs.len());
-
         // started / last_supported = the most recent supporting Activity time
         // (fallback: now if none resolved, though support_refs is non-empty here).
         let last_supported_at_ms = support_refs
@@ -735,17 +732,12 @@ pub async fn distill_conclusions(
             .max()
             .unwrap_or(now);
 
-        let conclusion_id = store
-            .upsert_conclusion(NewConclusion {
-                subject: subject.to_string(),
-                statement: statement.to_string(),
-                confidence,
-                formed_at_ms: last_supported_at_ms,
-                last_supported_at_ms,
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-
+        // Confidence is resolved INSIDE the store's transaction as the
+        // reinforcement ratchet (#9/#10): a new Conclusion forms at
+        // `initial_confidence(support, contradict)`, an existing one is decayed to
+        // now, ratcheted up by fresh support (never reset to a lower window), then
+        // dropped by `apply_contradiction` for fresh contradicting evidence. The
+        // store needs the resolved support/contradict counts to do this.
         let mut evidence: Vec<NewConclusionEvidence> = Vec::with_capacity(
             support_refs.len() + contradict_refs.len(),
         );
@@ -762,8 +754,27 @@ pub async fn distill_conclusions(
             });
         }
 
+        // Single transaction: upsert (with the ratcheted confidence) + evidence
+        // replacement commit/roll back together, so an error between them can
+        // never leave a Conclusion with stale or zero evidence (#14).
         store
-            .replace_conclusion_evidence(conclusion_id, evidence)
+            .upsert_conclusion_with_evidence(
+                NewConclusion {
+                    subject: subject.to_string(),
+                    statement: statement.to_string(),
+                    // Unused by the ratchet path (the store resolves confidence),
+                    // kept coherent: the formation value for a brand-new row.
+                    confidence: confidence::initial_confidence(
+                        support_refs.len(),
+                        contradict_refs.len(),
+                    ),
+                    formed_at_ms: last_supported_at_ms,
+                    last_supported_at_ms,
+                },
+                support_refs.len(),
+                contradict_refs.len(),
+                evidence,
+            )
             .await
             .map_err(|error| error.to_string())?;
         upserted += 1;
