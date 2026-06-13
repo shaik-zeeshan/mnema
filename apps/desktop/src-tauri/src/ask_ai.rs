@@ -60,6 +60,29 @@ fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     ASK_AI_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Conversations whose cancel arrived BEFORE their turn registered its in-flight
+/// flag — the "cancel at the very start of a request" race. The frontend reveals
+/// the Stop button the instant a turn is sent, but the backend registers the
+/// cancel flag only after an async access-readiness check (`ask_ai_start` /
+/// `ask_ai_followup`). A cancel landing in that window finds no flag via
+/// `take_inflight`; rather than drop it, `ask_ai_cancel` records the id here and
+/// the imminent `register_inflight` consumes it, bringing the turn up already
+/// cancelled so it short-circuits before any model call.
+static ASK_AI_PENDING_CANCEL: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+fn ask_ai_pending_cancel() -> &'static Mutex<std::collections::HashSet<String>> {
+    ASK_AI_PENDING_CANCEL.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Record a cancel that arrived before the conversation's turn registered. The
+/// next `register_inflight` for this id will consume the entry and start its flag
+/// already set. Used by `ask_ai_cancel` only when `take_inflight` found no flag.
+fn record_cancel_before_register(conversation_id: &str) {
+    if let Ok(mut pending) = ask_ai_pending_cancel().lock() {
+        pending.insert(conversation_id.to_string());
+    }
+}
+
 /// Register a fresh cancel flag for a conversation's new in-flight turn,
 /// returning the flag. Any flag already registered for that conversation (a prior
 /// turn still streaming) is CANCELLED before being replaced, so a racing
@@ -67,7 +90,15 @@ fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 /// turns interleave `ask_ai_update` output under the same conversation id. The
 /// displaced turn observes its flag between stream items and ends cleanly.
 fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
-    let cancel = Arc::new(AtomicBool::new(false));
+    // Consume a cancel that raced ahead of this registration (see
+    // ASK_AI_PENDING_CANCEL): the turn comes up already cancelled and stops at its
+    // first check, before any model call. Consume exactly once so the pending entry
+    // never poisons a later, legitimate turn for the same conversation.
+    let pre_cancelled = ask_ai_pending_cancel()
+        .lock()
+        .map(|mut pending| pending.remove(conversation_id))
+        .unwrap_or(false);
+    let cancel = Arc::new(AtomicBool::new(pre_cancelled));
     if let Ok(mut map) = ask_ai_inflight().lock() {
         if let Some(previous) = map.insert(conversation_id.to_string(), cancel.clone()) {
             previous.store(true, Ordering::SeqCst);
@@ -1996,8 +2027,6 @@ pub async fn ask_ai_start(
     app_handle: tauri::AppHandle,
     request: AskAiStartRequest,
 ) -> Result<(), String> {
-    ensure_ask_ai_access_ready(&app_handle).await?;
-
     let AskAiStartRequest {
         conversation_id,
         question,
@@ -2009,6 +2038,18 @@ pub async fn ask_ai_start(
         time_zone,
     } = request;
 
+    // Register the in-flight cancel flag FIRST — before the async readiness check —
+    // so a Stop that races the request start is captured (consumed from the
+    // pending-cancel set) rather than dropped, and so a pending entry can never
+    // leak past a failed readiness check. If readiness fails no turn is spawned, so
+    // clean the flag back up. Registering also cancels any prior running turn for
+    // this conversation, which is the intended displacement on a new start.
+    let cancel = register_inflight(&conversation_id);
+    if let Err(err) = ensure_ask_ai_access_ready(&app_handle).await {
+        remove_inflight_if_owner(&conversation_id, &cancel);
+        return Err(err);
+    }
+
     let origin = origin
         .map(|origin| origin.trim().to_string())
         .filter(|origin| !origin.is_empty())
@@ -2019,10 +2060,8 @@ pub async fn ask_ai_start(
         time_zone,
     };
 
-    // Register the in-flight cancel flag (cancelling any prior running turn for
-    // this conversation), then spawn the detached driver. The command returns
-    // promptly so the turn completes in the background regardless of dismiss.
-    let cancel = register_inflight(&conversation_id);
+    // Spawn the detached driver. The command returns promptly so the turn completes
+    // in the background regardless of dismiss.
     tauri::async_runtime::spawn(run_ask_ai_turn(
         app_handle,
         conversation_id,
@@ -2049,8 +2088,6 @@ pub async fn ask_ai_followup(
     app_handle: tauri::AppHandle,
     request: AskAiFollowupRequest,
 ) -> Result<(), String> {
-    ensure_ask_ai_access_ready(&app_handle).await?;
-
     let AskAiFollowupRequest {
         conversation_id,
         question,
@@ -2066,10 +2103,17 @@ pub async fn ask_ai_followup(
         time_zone,
     };
 
-    // A follow-up reuses the conversation's existing origin/title (the store
-    // preserves an existing row's origin and first non-empty title regardless of
-    // what is passed), so default values are fine here.
+    // Register the in-flight cancel flag before the async readiness check so a Stop
+    // racing the request start is honored, not dropped (see `ask_ai_start`). Clean
+    // up if readiness fails, since no turn is spawned. A follow-up reuses the
+    // conversation's existing origin/title (the store preserves an existing row's
+    // origin and first non-empty title regardless of what is passed), so default
+    // values are fine here.
     let cancel = register_inflight(&conversation_id);
+    if let Err(err) = ensure_ask_ai_access_ready(&app_handle).await {
+        remove_inflight_if_owner(&conversation_id, &cancel);
+        return Err(err);
+    }
     tauri::async_runtime::spawn(run_ask_ai_turn(
         app_handle,
         conversation_id,
@@ -2092,8 +2136,15 @@ pub async fn ask_ai_cancel(
     // Cooperative cancel: set + remove the conversation's in-flight flag. The
     // running loop checks it between stream items and stops cleanly, keeping
     // whatever was generated so far.
-    if let Some(cancel) = take_inflight(&request.conversation_id) {
-        cancel.store(true, Ordering::SeqCst);
+    //
+    // If no flag is registered yet, the cancel raced ahead of the turn's
+    // registration (the Stop button is live before `register_inflight` runs, which
+    // sits behind an async access-readiness check). Record it as pending so the
+    // imminent registration brings the turn up already cancelled instead of
+    // dropping the cancel and letting the turn run to completion.
+    match take_inflight(&request.conversation_id) {
+        Some(cancel) => cancel.store(true, Ordering::SeqCst),
+        None => record_cancel_before_register(&request.conversation_id),
     }
     Ok(())
 }
@@ -2678,6 +2729,54 @@ mod tests {
         );
         assert!(!second.load(Ordering::SeqCst));
         // Cleanup so the static map does not leak into other tests.
+        let _ = take_inflight(id);
+    }
+
+    #[test]
+    fn cancel_before_register_is_honored_by_next_register() {
+        // The "cancel at the very start of a request" race: the frontend shows the
+        // Stop button the instant a turn is sent, but the backend registers the
+        // turn's cancel flag only after an async access-readiness check. A cancel
+        // landing in that window finds no flag — it must NOT be dropped. Instead it
+        // is recorded as pending, and the imminent registration must start its flag
+        // already cancelled so the turn short-circuits before any model call.
+        let id = "inflight-cancel-before-register-conv";
+        // No flag registered yet — this is what `ask_ai_cancel` does in the race.
+        record_cancel_before_register(id);
+        // The turn finally registers; it must come up already cancelled.
+        let cancel = register_inflight(id);
+        assert!(
+            cancel.load(Ordering::SeqCst),
+            "a cancel that arrived before registration must carry over to the turn's flag"
+        );
+        // The pending cancel is consumed exactly once: a *subsequent* fresh turn for
+        // the same conversation must start uncancelled.
+        let _ = take_inflight(id);
+        let next = register_inflight(id);
+        assert!(
+            !next.load(Ordering::SeqCst),
+            "a pending cancel must apply to one registration only, not future turns"
+        );
+        let _ = take_inflight(id);
+    }
+
+    #[test]
+    fn cancel_with_live_turn_takes_flag_and_skips_pending() {
+        // When a flag IS registered, cancel takes + sets it (existing behavior) and
+        // must NOT leave a pending entry that would poison the next turn.
+        let id = "inflight-cancel-live-conv";
+        let cancel = register_inflight(id);
+        // Mirror `ask_ai_cancel`'s body: take wins, so no pending recorded.
+        let taken = take_inflight(id);
+        if let Some(flag) = taken {
+            flag.store(true, Ordering::SeqCst);
+        } else {
+            record_cancel_before_register(id);
+        }
+        assert!(cancel.load(Ordering::SeqCst));
+        // Next turn must be clean — no leaked pending cancel.
+        let next = register_inflight(id);
+        assert!(!next.load(Ordering::SeqCst));
         let _ = take_inflight(id);
     }
 
