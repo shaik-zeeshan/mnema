@@ -153,12 +153,33 @@ pub async fn get_user_context_status(
 }
 
 /// The most-recently-derived Activities (newest first) for the preview list.
+///
+/// When BOTH `start_ms` and `end_ms` are supplied, returns EVERY Activity
+/// overlapping the half-open `[start_ms, end_ms)` window (oldest-first), so a
+/// range-scoped view (e.g. Overview's selected day/week/month) gets the whole
+/// period rather than a recency-capped slice — fixing the case where a busy
+/// month exceeds the limit or a past range falls outside the newest page.
+/// Range results are NOT evidence-hydrated (the range consumers read only the
+/// Activity's own fields; skipping hydration keeps a month-wide fetch cheap).
+///
+/// With no bounds it keeps the legacy `limit`/`offset` recency-paged behavior
+/// (newest-first, evidence hydrated) for the preview / evidence-resolution
+/// callers that depend on `activity.evidence`.
 #[tauri::command]
 pub async fn list_user_context_activities(
     infra: tauri::State<'_, AppInfraState>,
     limit: Option<i64>,
     offset: Option<i64>,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
 ) -> Result<Vec<Activity>, String> {
+    if let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) {
+        return infra
+            .user_context()
+            .list_activities_in_range(start_ms, end_ms)
+            .await
+            .map_err(|e| e.to_string());
+    }
     let limit = limit.unwrap_or(50).clamp(1, 500);
     let offset = offset.unwrap_or(0).max(0);
     infra

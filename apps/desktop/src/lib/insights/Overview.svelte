@@ -47,6 +47,7 @@
     humanizeMs,
     humanizeHours,
     startOfDay,
+    startOfHour,
     buildActivityThreads,
     type ActivityThread,
   } from "$lib/insights/activity-helpers";
@@ -458,6 +459,20 @@
     }
     const days = activeDays.size;
     const avgMs = days > 0 ? totalMs / days : 0;
+    // Spark granularity follows the selected period: a Day window buckets the
+    // heatmap by HOUR (its native granularity — `get_usage_charts` floors each
+    // bucket to the hour), Week/Month by calendar DAY. Coarser-than-day stays
+    // day; finer-than-hour isn't needed since the source is already hourly.
+    const sparkByHour = rangeMode === "day";
+    const sparkLabel = sparkByHour ? "per hour" : "per day";
+    const perBucket = new Map<number, number>();
+    for (const b of buckets) {
+      if (b.intensityCount <= 0) continue;
+      const key = sparkByHour
+        ? startOfHour(b.bucketStartMs)
+        : startOfDay(b.bucketStartMs);
+      perBucket.set(key, (perBucket.get(key) ?? 0) + b.intensityCount);
+    }
     // Deep-focus % over range activities (engine tier only).
     let deepPct: number | null = null;
     if (engineOn) {
@@ -471,8 +486,8 @@
       }
       deepPct = counted > 0 ? Math.round((deep / counted) * 100) : null;
     }
-    // Per-day spark for the mini bar strip (ordered by day).
-    const spark = [...perDay.entries()]
+    // Period-aware spark for the mini bar strip (ordered by bucket start).
+    const spark = [...perBucket.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([, v]) => v);
     const sparkMax = spark.reduce((m, v) => Math.max(m, v), 0);
@@ -483,6 +498,7 @@
       deepPct,
       spark,
       sparkMax,
+      sparkLabel,
     };
   });
 
@@ -635,8 +651,11 @@
     }
   }
 
-  // Page through activities to cover the range. Newest-first; stop once we've
-  // walked past the range start (or hit a sane cap to stay responsive).
+  // Fetch the activities for the active range. Passing `startMs`/`endMs` makes
+  // the backend return EVERY activity overlapping the selected period in one
+  // call (overlap-bounded, not recency-capped) — so navigating to a past
+  // week/month or a busy month (>400 activities) no longer truncates or misses
+  // the window the way the old newest-400 global scan did.
   async function loadEngine(): Promise<void> {
     if (!engineOn) {
       activities = [];
@@ -646,26 +665,11 @@
     }
     loadingEngine = true;
     try {
-      const { startMs } = range;
-      const PAGE = 100;
-      const MAX = 400;
-      const collected: Activity[] = [];
-      let offset = 0;
-      while (offset < MAX) {
-        const page = await invoke<Activity[]>("list_user_context_activities", {
-          limit: PAGE,
-          offset,
-        });
-        if (page.length === 0) break;
-        collected.push(...page);
-        const oldest = page[page.length - 1];
-        // Newest-first: once the oldest of this page predates the window start,
-        // no further pages can contribute.
-        if (oldest.startedAtMs < startMs) break;
-        if (page.length < PAGE) break;
-        offset += PAGE;
-      }
-      activities = collected;
+      const { startMs, endMs } = range;
+      activities = await invoke<Activity[]>("list_user_context_activities", {
+        startMs,
+        endMs,
+      });
       conclusions = await invoke<Conclusion[]>(
         "list_user_context_conclusions",
         { includeFaded: true },
@@ -872,9 +876,14 @@
   );
 
   // ── Skeleton gating ────────────────────────────────────────────────────
-  // FREE tiles show a skeleton until the first usage payload lands; they are
-  // engine-independent (resolve on usage data even when the engine is off).
-  const freeLoading = $derived(loadingFree && !usage);
+  // FREE tiles show a skeleton whenever a usage fetch is in flight — both the
+  // first load (`usage === null`) AND every re-fetch on a range change. Gating
+  // only on `!usage` would let the PREVIOUS range's `usage` (and the sparkbar /
+  // stats derived from it) linger on screen during a reload; the user wants
+  // nothing stale shown mid-load, so we follow the in-flight `loadingFree` flag
+  // directly. `loadingFree` starts `true` and is re-set at the top of every
+  // `loadFree()` call, so it covers re-loads too.
+  const freeLoading = $derived(loadingFree);
   // Engine tiles (Categories/Focus) show a skeleton while we don't yet know the
   // engine state OR while the engine data is still loading for this range. When
   // the engine is known-off they fall through to the "enable the engine" note.
@@ -978,23 +987,35 @@
       <!-- Stats footer — the single source of truth for the range's headline
            numbers. Tracked is always present; deep focus %, top category, the
            daily average, and the per-day sparkbar render only when they have a
-           value. -->
+           value. The usage-derived stats (tracked / daily avg / sparkbar) gate
+           on `freeLoading` and the engine-derived stats (deep focus % / top
+           category) on `engineTilesLoading` so a range switch never shows the
+           PREVIOUS range's numbers or sparkbar while the new range refetches. -->
       <div class="lede-stats" aria-label="Highlights this {rangeMode}">
-        <div class="lede-stat">
-          <span class="lede-stat-n">{summary.totalLabel}</span>
-          <span class="lede-stat-cap">tracked</span>
-        </div>
-        <div class="lede-stat">
-          <span class="lede-stat-n">{summary.avgLabel}</span>
-          <span class="lede-stat-cap">daily avg</span>
-        </div>
-        {#if summary.deepPct !== null}
+        {#if freeLoading}
+          <div class="tile-skeleton tile-skeleton--stat" aria-busy="true">
+            <div class="sk-stat-row">
+              <Skeleton variant="text" width="64px" height="16px" />
+              <Skeleton variant="text" width="64px" height="16px" />
+            </div>
+          </div>
+        {:else}
+          <div class="lede-stat">
+            <span class="lede-stat-n">{summary.totalLabel}</span>
+            <span class="lede-stat-cap">tracked</span>
+          </div>
+          <div class="lede-stat">
+            <span class="lede-stat-n">{summary.avgLabel}</span>
+            <span class="lede-stat-cap">daily avg</span>
+          </div>
+        {/if}
+        {#if !engineTilesLoading && summary.deepPct !== null}
           <div class="lede-stat">
             <span class="lede-stat-n">{summary.deepPct}%</span>
             <span class="lede-stat-cap">deep focus</span>
           </div>
         {/if}
-        {#if topCategory}
+        {#if !engineTilesLoading && topCategory}
           <div class="lede-stat">
             <span class="lede-stat-n lede-stat-n--cat">
               <span
@@ -1007,7 +1028,7 @@
             <span class="lede-stat-cap">top category</span>
           </div>
         {/if}
-        {#if summary.spark.length > 0}
+        {#if !freeLoading && summary.spark.length > 0}
           <div class="lede-stat lede-stat--spark">
             <div class="sparkbar" aria-hidden="true">
               {#each summary.spark as v, i (i)}
@@ -1018,7 +1039,7 @@
                 ></span>
               {/each}
             </div>
-            <span class="lede-stat-cap">per day</span>
+            <span class="lede-stat-cap">{summary.sparkLabel}</span>
           </div>
         {/if}
       </div>
@@ -1082,7 +1103,7 @@
                   ></span>
                 {/each}
               </div>
-              <span class="lede-stat-cap">per day</span>
+              <span class="lede-stat-cap">{summary.sparkLabel}</span>
             </div>
           {/if}
         {/if}

@@ -40,6 +40,12 @@ export function startOfDay(ms: number): number {
   return d.getTime();
 }
 
+export function startOfHour(ms: number): number {
+  const d = new Date(ms);
+  d.setMinutes(0, 0, 0);
+  return d.getTime();
+}
+
 // ── Humanisers ─────────────────────────────────────────────────────────
 export function humanizeMs(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "0m";
