@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
@@ -26,6 +27,11 @@ where
     }
 
     fn store(&self, provider: &str, key: &str) -> Result<()> {
+        if key.trim().is_empty() {
+            return Err(AppInfraError::AiProviderKeyStore(
+                "provider api key must not be empty".to_string(),
+            ));
+        }
         self.adapter.store_key(provider, key)
     }
 
@@ -42,11 +48,16 @@ where
     }
 }
 
+// The plaintext file-backed key store exists only for tests; release builds
+// must route every key through the OS keychain (the "keys live ONLY in the
+// keychain" invariant), so it is compiled out entirely outside `cfg(test)`.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct FileAiProviderKeyStoreAdapter {
     key_dir: PathBuf,
 }
 
+#[cfg(test)]
 impl FileAiProviderKeyStoreAdapter {
     fn new(key_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -59,6 +70,7 @@ impl FileAiProviderKeyStoreAdapter {
     }
 }
 
+#[cfg(test)]
 impl AiProviderKeyStoreAdapter for FileAiProviderKeyStoreAdapter {
     fn load_key(&self, provider: &str) -> Result<Option<String>> {
         std::fs::create_dir_all(&self.key_dir)?;
@@ -68,10 +80,11 @@ impl AiProviderKeyStoreAdapter for FileAiProviderKeyStoreAdapter {
         }
 
         let key = std::fs::read_to_string(path)?;
-        if key.trim().is_empty() {
+        let key = key.trim();
+        if key.is_empty() {
             return Ok(None);
         }
-        Ok(Some(key))
+        Ok(Some(key.to_string()))
     }
 
     fn store_key(&self, provider: &str, key: &str) -> Result<()> {
@@ -109,6 +122,7 @@ impl AiProviderKeyStoreAdapter for PlatformKeychainAiProviderKeyStoreAdapter {
 
 /// Store the bring-your-own provider API key in the OS keychain, keyed by provider id.
 pub fn store_ai_provider_key(provider: &str, key: &str) -> Result<()> {
+    #[cfg(test)]
     if let Ok(key_dir) = std::env::var("MNEMA_AI_PROVIDER_KEY_DIR") {
         return AiProviderKeyStore::new(FileAiProviderKeyStoreAdapter::new(key_dir))
             .store(provider, key);
@@ -119,6 +133,7 @@ pub fn store_ai_provider_key(provider: &str, key: &str) -> Result<()> {
 
 /// Load the stored provider API key, or `None` when no key is stored for the provider.
 pub fn load_ai_provider_key(provider: &str) -> Result<Option<String>> {
+    #[cfg(test)]
     if let Ok(key_dir) = std::env::var("MNEMA_AI_PROVIDER_KEY_DIR") {
         return AiProviderKeyStore::new(FileAiProviderKeyStoreAdapter::new(key_dir)).load(provider);
     }
@@ -128,6 +143,7 @@ pub fn load_ai_provider_key(provider: &str) -> Result<Option<String>> {
 
 /// Delete the stored provider API key. A missing key is treated as success.
 pub fn delete_ai_provider_key(provider: &str) -> Result<()> {
+    #[cfg(test)]
     if let Ok(key_dir) = std::env::var("MNEMA_AI_PROVIDER_KEY_DIR") {
         return AiProviderKeyStore::new(FileAiProviderKeyStoreAdapter::new(key_dir))
             .delete(provider);
@@ -138,6 +154,7 @@ pub fn delete_ai_provider_key(provider: &str) -> Result<()> {
 
 /// Whether a provider API key is currently stored.
 pub fn has_ai_provider_key(provider: &str) -> Result<bool> {
+    #[cfg(test)]
     if let Ok(key_dir) = std::env::var("MNEMA_AI_PROVIDER_KEY_DIR") {
         return AiProviderKeyStore::new(FileAiProviderKeyStoreAdapter::new(key_dir)).has(provider);
     }
@@ -170,7 +187,12 @@ fn load_platform_key(provider: &str) -> Result<Option<String>> {
 
 #[cfg(target_os = "macos")]
 fn store_platform_key(provider: &str, key: &str) -> Result<()> {
-    let add = Command::new("security")
+    use std::io::Write;
+    use std::process::Stdio;
+
+    // `-w` with no value makes `security` read the password from stdin, so the
+    // secret never appears in the subprocess argv (visible to same-user `ps`).
+    let mut child = Command::new("security")
         .args([
             "add-generic-password",
             "-U",
@@ -179,9 +201,19 @@ fn store_platform_key(provider: &str, key: &str) -> Result<()> {
             "-a",
             provider,
             "-w",
-            key,
         ])
-        .output()?;
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    child
+        .stdin
+        .take()
+        .expect("stdin was requested via Stdio::piped")
+        .write_all(key.as_bytes())?;
+
+    let add = child.wait_with_output()?;
     if !add.status.success() {
         return Err(AppInfraError::AiProviderKeyStore(
             String::from_utf8_lossy(&add.stderr).trim().to_string(),
@@ -316,6 +348,29 @@ mod tests {
 
         assert!(store.load("anthropic").expect("load should succeed").is_none());
         assert!(!store.has("anthropic").expect("has should succeed"));
+    }
+
+    #[test]
+    fn store_rejects_empty_or_whitespace_key() {
+        let key_dir = TestDir::new("reject-empty");
+        let store = file_store(key_dir.path());
+
+        assert!(store.store("anthropic", "").is_err());
+        assert!(store.store("anthropic", "   ").is_err());
+        assert!(store.load("anthropic").expect("load should succeed").is_none());
+    }
+
+    #[test]
+    fn file_store_trims_key_on_read() {
+        let key_dir = TestDir::new("trim");
+        let store = file_store(key_dir.path());
+        std::fs::write(key_dir.path().join("anthropic.key"), "  sk-secret-key\n")
+            .expect("padded key should be written");
+
+        assert_eq!(
+            store.load("anthropic").expect("load should succeed"),
+            Some("sk-secret-key".to_string())
+        );
     }
 
     #[test]

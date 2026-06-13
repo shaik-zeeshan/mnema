@@ -12,6 +12,11 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# `rt` only: used by the reachability probe to offload its blocking DNS/connect
+# onto the runtime's blocking pool when one is present. The engine stays
+# runtime-agnostic (`run_agent_loop` is a plain `async fn`); the probe degrades
+# to an inline blocking connect when no tokio runtime is current.
+tokio = { version = "1", features = ["rt"] }
 url = "2"
 
 [dev-dependencies]

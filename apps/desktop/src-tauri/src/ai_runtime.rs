@@ -94,6 +94,9 @@ fn classify_listing_failure(error: &str) -> String {
         "missing API key".to_string()
     } else if error.starts_with("no_base_url") {
         "no base URL set".to_string()
+    } else if error.starts_with("invalid_base_url") || error.starts_with("base_url_host_mismatch")
+    {
+        "invalid base URL".to_string()
     } else if error.contains("error sending request")
         || error.contains("connect")
         || error.contains("dns")
@@ -220,6 +223,42 @@ fn base_host(base: &str) -> String {
 /// [`list_fireworks_serverless_models`].
 fn is_fireworks_host(base: &str) -> bool {
     base_host(base) == "api.fireworks.ai"
+}
+
+/// The fixed host a well-known first-party provider id must talk to. `None` for
+/// ids that legitimately carry a caller-chosen host (the `openai_compatible`
+/// custom-endpoint flow, local runtimes, or same-kind instances with derived
+/// ids). Used to stop a request from pairing a first-party keychain key with an
+/// arbitrary `base_url`.
+fn fixed_host_for_provider_id(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        "anthropic" => Some("api.anthropic.com"),
+        "openai" => Some("api.openai.com"),
+        _ => None,
+    }
+}
+
+/// Reject a caller-supplied `base_url` that would send a key somewhere it must
+/// not go. Two guards: (1) the scheme must be `http`/`https` (a `file:`,
+/// `gopher:`, etc. URL never reaches a model endpoint); (2) a well-known
+/// first-party provider id (`anthropic`/`openai`) may only point at its fixed
+/// host, so a `{id:"anthropic", kind:OpenaiCompatible, baseUrl:"…attacker…"}`
+/// request can't POST the Anthropic key to an arbitrary host. Custom
+/// `openai_compatible` instances (whose ids are not the reserved first-party
+/// ids) keep their caller-chosen host.
+fn validate_provider_base_url(provider_id: &str, base_url: &str) -> Result<(), String> {
+    let trimmed = base_url.trim();
+    let parsed = url::Url::parse(trimmed).map_err(|_| "invalid_base_url".to_string())?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err("invalid_base_url_scheme".to_string());
+    }
+    if let Some(fixed_host) = fixed_host_for_provider_id(provider_id) {
+        if base_host(trimmed) != fixed_host {
+            return Err(format!("base_url_host_mismatch:{provider_id}"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -576,6 +615,17 @@ async fn list_models_for_provider(
     provider: &AiProviderConfig,
 ) -> Result<Vec<String>, String> {
     let base_url = provider.base_url.trim();
+
+    // OpenAI-compatible is the only kind that POSTs the keychain key to a
+    // caller-supplied `base_url` (Anthropic/OpenAI hardcode their first-party
+    // host below; local kinds carry no credential). Validate it before any
+    // request fires: reject non-http(s) schemes and refuse to pair a well-known
+    // first-party id (anthropic/openai) with a host other than its fixed one, so
+    // a {id:"anthropic", kind:OpenaiCompatible, baseUrl:"…"} request can't send
+    // the Anthropic key to an arbitrary host.
+    if provider.kind == AiProviderKind::OpenaiCompatible && !base_url.is_empty() {
+        validate_provider_base_url(&provider.id, base_url)?;
+    }
 
     // Fireworks special-case: its OpenAI-compatible `/inference/v1/models`
     // route advertises only a small curated set (≈6), so page the proprietary
@@ -1168,5 +1218,31 @@ mod tests {
         assert!(!is_fireworks_host("https://openrouter.ai/api/v1"));
         // A path that merely mentions the host must not match (host-anchored).
         assert!(!is_fireworks_host("https://evil.test/api.fireworks.ai/v1"));
+    }
+
+    #[test]
+    fn validate_provider_base_url_rejects_nonhttp_schemes() {
+        // Only http/https may ever carry a key to a model endpoint.
+        assert!(validate_provider_base_url("custom-1", "file:///etc/passwd").is_err());
+        assert!(validate_provider_base_url("custom-1", "gopher://host/v1").is_err());
+        assert!(validate_provider_base_url("custom-1", "not a url").is_err());
+        // A legitimate custom OpenAI-compatible endpoint passes.
+        assert!(validate_provider_base_url("custom-1", "http://192.168.0.9:8080/v1").is_ok());
+        assert!(validate_provider_base_url("custom-1", "https://openrouter.ai/api/v1").is_ok());
+    }
+
+    #[test]
+    fn validate_provider_base_url_binds_first_party_ids_to_their_host() {
+        // The leak: a first-party id paired with an attacker host is refused, so
+        // the keychain key for "anthropic"/"openai" can't reach a foreign host.
+        assert!(validate_provider_base_url("anthropic", "https://attacker.test/v1").is_err());
+        assert!(validate_provider_base_url("openai", "https://attacker.test/v1").is_err());
+        // The fixed first-party host stays allowed.
+        assert!(validate_provider_base_url("anthropic", "https://api.anthropic.com/v1").is_ok());
+        assert!(validate_provider_base_url("openai", "https://api.openai.com/v1").is_ok());
+        // Non-reserved ids (same-kind custom instances) keep their own host.
+        assert!(
+            validate_provider_base_url("openai_compatible-2", "https://my-proxy.example/v1").is_ok()
+        );
     }
 }

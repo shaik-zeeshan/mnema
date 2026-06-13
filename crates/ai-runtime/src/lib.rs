@@ -341,7 +341,23 @@ pub async fn ping_endpoint(endpoint: &str) -> bool {
         return false;
     };
 
-    let Ok(addrs) = (host.as_str(), port).to_socket_addrs() else {
+    // `to_socket_addrs` (a blocking DNS lookup) and `connect_timeout` (a
+    // synchronous connect, up to PING_CONNECT_TIMEOUT) must not run on an async
+    // worker — they'd stall the runtime. Offload them to the blocking pool when
+    // a tokio runtime is current; if the engine is driven by some other executor
+    // (it stays runtime-agnostic), fall back to running them inline.
+    let probe = move || blocking_connect_probe(&host, port);
+    match tokio::runtime::Handle::try_current() {
+        Ok(_) => tokio::task::spawn_blocking(probe).await.unwrap_or(false),
+        Err(_) => probe(),
+    }
+}
+
+/// The blocking half of [`ping_endpoint`]: resolve `host:port` and try each
+/// resolved address with a short connect timeout. Pulled out so it can run
+/// either on tokio's blocking pool or inline.
+fn blocking_connect_probe(host: &str, port: u16) -> bool {
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
         return false;
     };
 
@@ -388,8 +404,13 @@ mod tests {
     #[test]
     fn ping_endpoint_returns_false_for_closed_port() {
         // 127.0.0.1:1 is a privileged, almost-certainly-closed local port, so
-        // the connect attempt fails fast without touching the network.
-        let reachable = futures_executor_block_on(ping_endpoint("http://127.0.0.1:1"));
+        // the connect attempt fails fast without touching the network. A tokio
+        // current-thread runtime drives it because the probe now offloads the
+        // blocking DNS/connect onto `spawn_blocking`, which needs a runtime.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime should build");
+        let reachable = runtime.block_on(ping_endpoint("http://127.0.0.1:1"));
         assert!(!reachable);
     }
 
@@ -454,31 +475,5 @@ mod tests {
         );
         assert_eq!(parse_host_port(""), None);
         assert_eq!(parse_host_port("not a url"), None);
-    }
-
-    /// Minimal blocking driver so the `async` [`ping_endpoint`] can be exercised
-    /// without pulling in a full async runtime dependency. The future only
-    /// performs a synchronous `std::net` connect, so polling it once to
-    /// completion is sufficient.
-    fn futures_executor_block_on<F: std::future::Future>(mut fut: F) -> F::Output {
-        use std::pin::Pin;
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-        fn noop_clone(_: *const ()) -> RawWaker {
-            RawWaker::new(std::ptr::null(), &VTABLE)
-        }
-        fn noop(_: *const ()) {}
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
-
-        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
-        let mut cx = Context::from_waker(&waker);
-        // SAFETY: `fut` is owned and not moved for the duration of the loop.
-        let mut fut = unsafe { Pin::new_unchecked(&mut fut) };
-        loop {
-            match fut.as_mut().poll(&mut cx) {
-                Poll::Ready(out) => return out,
-                Poll::Pending => continue,
-            }
-        }
     }
 }
