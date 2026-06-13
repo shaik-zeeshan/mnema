@@ -155,6 +155,25 @@
       else unlistenInsightsOpenConversation = fn;
     });
 
+    // Cold-window inverse: a freshly-opened main window boots on Timeline (`/`),
+    // and the live `insights_open_conversation` event may have already fired
+    // before the listener above attached — so without this the handoff would
+    // strand on Timeline and the Insights surface (which owns the drain) would
+    // never mount. Peek the queue on mount and, if a handoff is pending, route
+    // to `/insights` so its on-mount drain runs. Non-draining: the Insights page
+    // still owns consuming the queue.
+    if (isMainWindow && !isInsightsRoute) {
+      void invoke<boolean>("has_pending_insights_open_conversations")
+        .then((pending) => {
+          if (!destroyed && pending && !isInsightsRoute) {
+            void goto("/insights");
+          }
+        })
+        .catch(() => {
+          // Best-effort: leave the route as-is if the peek is unavailable.
+        });
+    }
+
     return () => {
       destroyed = true;
       unlistenBrokerOpenCaptureResult?.();

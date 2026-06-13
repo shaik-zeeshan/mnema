@@ -137,10 +137,29 @@ fn drain_pending_insights_open_conversations(
     pending.drain(..).collect()
 }
 
+/// Non-draining peek used by the cold-window route shim: a freshly-opened main
+/// window boots on Timeline (`/`), so the layout asks whether a Quick Recall →
+/// Chat handoff is queued and, if so, routes to `/insights` — where the Insights
+/// surface mounts and drains the queue. Returns `false` if the lock is poisoned.
+#[tauri::command]
+fn has_pending_insights_open_conversations(
+    state: tauri::State<'_, InsightsOpenConversationState>,
+) -> bool {
+    state
+        .pending
+        .lock()
+        .map(|pending| !pending.is_empty())
+        .unwrap_or(false)
+}
+
 /// Show + focus the main window, navigate it to the Insights → Chat tab, and
 /// select `conversation_id`. Mirrors `open_capture_result_in_main_window`: the
-/// payload is queued for a cold-window drain AND emitted as a live event so a
-/// warm window reacts immediately. Quick Recall calls this for "Open in Chat".
+/// payload is emitted as a live event so a warm window reacts immediately, and
+/// is queued for a cold-window drain ONLY when the main window isn't already
+/// open. Queuing on a warm window would leave the entry stranded — the page
+/// doesn't remount, so `drain_pending_insights_open_conversations` never runs,
+/// and the next genuine mount would replay every stale handoff and hijack the
+/// view onto an old thread. Quick Recall calls this for "Open in Chat".
 #[tauri::command]
 fn open_conversation_in_chat(
     conversation_id: String,
@@ -148,8 +167,14 @@ fn open_conversation_in_chat(
     state: tauri::State<'_, InsightsOpenConversationState>,
 ) {
     let payload = InsightsOpenConversationPayload { conversation_id };
-    if let Ok(mut pending) = state.pending.lock() {
-        pending.push_back(payload.clone());
+    // A cold main window drains the queue on mount; a warm one is served by the
+    // live event alone. Only queue when the window is not yet open so a warm
+    // window never accumulates stale entries.
+    let main_window_open = app_handle.get_webview_window("main").is_some();
+    if !main_window_open {
+        if let Ok(mut pending) = state.pending.lock() {
+            pending.push_back(payload.clone());
+        }
     }
     let _ = windows::open_main_window(&app_handle);
     let _ = app_handle.emit(INSIGHTS_OPEN_CONVERSATION_EVENT, payload);
@@ -558,7 +583,6 @@ pub fn run() {
             conversation::commands::list_conversations,
             conversation::commands::get_conversation,
             conversation::commands::search_conversations,
-            conversation::commands::save_conversation_turn,
             conversation::commands::set_conversation_engine,
             conversation::commands::set_conversation_title,
             conversation::commands::delete_conversation,
@@ -588,6 +612,7 @@ pub fn run() {
             drain_pending_broker_open_capture_results,
             open_capture_result_in_main_window,
             drain_pending_insights_open_conversations,
+            has_pending_insights_open_conversations,
             open_conversation_in_chat,
         ])
         .setup(|app| {

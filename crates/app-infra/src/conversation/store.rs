@@ -3,8 +3,8 @@
 //!
 //! ONE shared store backs both doors. It owns the `0028_*` tables
 //! (`conversations`, `conversation_turns`). Conversations OBEY Retention Policy
-//! (aged out via [`ConversationStore::delete_conversations_older_than`], driven
-//! by `last_activity_at_ms`) and are CLEARED by Wipe User Context
+//! (aged out by the capture-cleanup pass in `capture_retention.rs`, driven by
+//! `last_activity_at_ms`) and are CLEARED by Wipe User Context
 //! ([`ConversationStore::wipe_all`]).
 //!
 //! Timestamps are INTEGER unix milliseconds; the caller stamps `now_ms` so the
@@ -69,9 +69,14 @@ impl ConversationStore {
     }
 
     /// Upsert one turn of a conversation. The conversation row is ensured first
-    /// (via [`Self::upsert_conversation`], which also bumps its activity stamps),
-    /// then the turn is inserted or — on conflict with an existing
+    /// (mirroring [`Self::upsert_conversation`], which also bumps its activity
+    /// stamps), then the turn is inserted or — on conflict with an existing
     /// `(conversation_row_id, turn_index)` — updated in place.
+    ///
+    /// Both writes run in ONE transaction so a crash/error between them can
+    /// never leave the conversation row activity-bumped without its turn (or an
+    /// orphan turn against a half-written conversation row): either both land or
+    /// neither does.
     #[allow(clippy::too_many_arguments)]
     pub async fn save_turn(
         &self,
@@ -90,17 +95,40 @@ impl ConversationStore {
         seeded_result_count: Option<i64>,
         now_ms: i64,
     ) -> Result<()> {
-        // Ensure the conversation exists (and bump its activity stamps).
-        let conversation_row_id = self
-            .upsert_conversation(conversation_id, title, origin, now_ms)
-            .await?;
-
         // Round-trip the parsed blocks as opaque JSON text (the store does NO
         // parsing): `Some(slice)` → a JSON array; `None` → SQL NULL (legacy).
         let blocks_json: Option<String> = match blocks {
             Some(slice) => Some(serde_json::to_string(slice)?),
             None => None,
         };
+
+        let mut tx = self.pool.begin().await?;
+
+        // Ensure the conversation exists (and bump its activity stamps). Inlined
+        // from `upsert_conversation` so it shares this transaction; the conflict
+        // semantics (first non-empty title wins; pin/origin preserved) match.
+        sqlx::query(
+            "INSERT INTO conversations \
+                (conversation_id, title, origin, created_at_ms, updated_at_ms, last_activity_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?4, ?4) \
+             ON CONFLICT(conversation_id) DO UPDATE SET \
+                title = CASE WHEN conversations.title = '' THEN excluded.title ELSE conversations.title END, \
+                updated_at_ms = excluded.updated_at_ms, \
+                last_activity_at_ms = excluded.last_activity_at_ms",
+        )
+        .bind(conversation_id)
+        .bind(title)
+        .bind(origin)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await?;
+
+        let conversation_row_id: i64 =
+            sqlx::query("SELECT id FROM conversations WHERE conversation_id = ?1")
+                .bind(conversation_id)
+                .fetch_one(&mut *tx)
+                .await?
+                .get("id");
 
         sqlx::query(
             "INSERT INTO conversation_turns \
@@ -132,8 +160,10 @@ impl ConversationStore {
         .bind(error_message)
         .bind(seeded_result_count)
         .bind(now_ms)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -390,17 +420,6 @@ impl ConversationStore {
         Ok(())
     }
 
-    /// Retention aging: delete every conversation whose `last_activity_at_ms`
-    /// falls before `cutoff_ms` (turns cascade via FK). Returns the number of
-    /// conversations deleted. Mirrors the local-calendar cutoff capture cleanup
-    /// uses (the caller converts the RFC3339 cutoff to unix millis).
-    pub async fn delete_conversations_older_than(&self, cutoff_ms: i64) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM conversations WHERE last_activity_at_ms < ?1")
-            .bind(cutoff_ms)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
 }
 
 /// Parse a JSON column back into a `serde_json::Value`, falling back to JSON
@@ -936,41 +955,6 @@ mod tests {
                 .await
                 .expect("list")
                 .is_empty());
-        });
-    }
-
-    #[test]
-    fn delete_older_than_ages_out_old_keeps_recent() {
-        block_on(async {
-            let store = test_store().await;
-            // Old conversation (last activity before cutoff).
-            store
-                .save_turn(
-                    "old", "Old", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, None, 1_000,
-                )
-                .await
-                .expect("old saves");
-            // Recent conversation (last activity after cutoff).
-            store
-                .save_turn(
-                    "recent", "Recent", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, None,
-                    10_000,
-                )
-                .await
-                .expect("recent saves");
-
-            let deleted = store
-                .delete_conversations_older_than(5_000)
-                .await
-                .expect("delete older than");
-            assert_eq!(deleted, 1);
-
-            assert!(store.get_conversation("old").await.expect("get").is_none());
-            assert!(store
-                .get_conversation("recent")
-                .await
-                .expect("get")
-                .is_some());
         });
     }
 

@@ -3120,6 +3120,11 @@ struct DeleteRecentCaptureDeletion {
     deleted_background_jobs: i64,
     deleted_frame_batches: i64,
     deleted_search_documents: i64,
+    // Derived **User Context** cascade (ADR 0029), purged in the SAME
+    // transaction as the raw rows so a privacy-panic delete and its derived
+    // cascade commit (or roll back) together — never raw-gone-but-dossier-left.
+    deleted_user_context_activities: i64,
+    deleted_user_context_conclusions: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3509,6 +3514,113 @@ fn dedupe_delete_recent_paths(paths: &mut Vec<DeleteRecentCapturePath>) {
     paths.retain(|path| seen.insert(path.path.clone()));
 }
 
+/// **Delete Recent Capture** derived-data cascade (ADR 0029), run INSIDE the
+/// raw-delete transaction so the privacy panic button's raw delete and its
+/// derived purge are atomic. Mirrors the canonical reference
+/// `app_infra::user_context::UserContextStore::delete_derived_for_capture_subjects`
+/// (`crates/app-infra/src/user_context/store.rs`) — kept identical on purpose:
+/// that method owns the same logic for the pooled (non-transactional) callers,
+/// but the privacy delete must share one transaction with the raw rows, which a
+/// pool-borrowing method cannot, so the steps are replayed here against `tx`.
+/// Returns the dropped (activities, conclusions) counts; digests are purged too
+/// but their count isn't surfaced to callers (matches the store summary's use).
+async fn cascade_user_context_for_deleted_subjects(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    frame_ids: &[i64],
+    audio_segment_ids: &[i64],
+) -> Result<(i64, i64), sqlx::Error> {
+    if frame_ids.is_empty() && audio_segment_ids.is_empty() {
+        return Ok((0, 0));
+    }
+
+    // 1. Activities with any evidence row pointing at a deleted subject.
+    let mut activity_ids: Vec<i64> = Vec::new();
+    for (subject_type, subject_ids) in [("frame", frame_ids), ("audio_segment", audio_segment_ids)]
+    {
+        for chunk in subject_ids.chunks(900) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                "SELECT DISTINCT activity_id FROM user_context_activity_evidence \
+                 WHERE subject_type = ",
+            );
+            query.push_bind(subject_type);
+            query.push(" AND subject_id IN (");
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(*id);
+            }
+            separated.push_unseparated(")");
+            activity_ids.extend(
+                query
+                    .build_query_scalar::<i64>()
+                    .fetch_all(&mut **tx)
+                    .await?,
+            );
+        }
+    }
+    activity_ids.sort_unstable();
+    activity_ids.dedup();
+
+    // 2. Purge Digests overlapping a to-be-deleted Activity's span, BEFORE the
+    //    Activities are deleted (their spans are the overlap source).
+    for chunk in activity_ids.chunks(900) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "DELETE FROM user_context_digests \
+             WHERE EXISTS (\
+                 SELECT 1 FROM user_context_activities a \
+                 WHERE a.started_at_ms < user_context_digests.range_end_ms \
+                   AND a.ended_at_ms >= user_context_digests.range_start_ms \
+                   AND a.id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for id in chunk {
+            separated.push_bind(*id);
+        }
+        separated.push_unseparated("))");
+        query.build().execute(&mut **tx).await?;
+    }
+
+    // 3. DELETE those Activities; *_activity_evidence + *_conclusion_evidence
+    //    link rows cascade via FK.
+    let mut deleted_activities = 0_i64;
+    for chunk in activity_ids.chunks(900) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut query =
+            sqlx::QueryBuilder::<sqlx::Sqlite>::new("DELETE FROM user_context_activities WHERE id IN (");
+        let mut separated = query.separated(", ");
+        for id in chunk {
+            separated.push_bind(*id);
+        }
+        separated.push_unseparated(")");
+        deleted_activities += query.build().execute(&mut **tx).await?.rows_affected() as i64;
+    }
+
+    // 4. Re-apply the formation bar to survivors: drop every Conclusion whose
+    //    remaining SUPPORT-stance evidence no longer meets the bar (pinned is
+    //    exempt down to a floor of one support; zero support always drops).
+    let deleted_conclusions = sqlx::query(
+        "DELETE FROM user_context_conclusions \
+         WHERE (\
+             SELECT COUNT(*) FROM user_context_conclusion_evidence ce \
+             WHERE ce.conclusion_id = user_context_conclusions.id \
+               AND ce.stance = 'support'\
+         ) < CASE WHEN pinned = 1 THEN 1 ELSE ?1 END",
+    )
+    .bind(::app_infra::user_context::confidence::FORMATION_BAR_EVIDENCE as i64)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected() as i64;
+
+    Ok((deleted_activities, deleted_conclusions))
+}
+
 async fn delete_recent_capture_rows(
     infra: &::app_infra::AppInfra,
     started_at: &str,
@@ -3717,6 +3829,18 @@ async fn delete_recent_capture_rows(
             .map_err(|error| format!("failed to delete capture segments: {error}"))?
             .rows_affected() as i64;
 
+    // ADR 0029: the privacy panic button cascades into derived **User Context**,
+    // and that cascade MUST be atomic with the raw delete — a crash or error
+    // between committing the raw delete and running the cascade would leave the
+    // dossier describing content that no longer exists ("spent 5 minutes on [the
+    // sensitive thing]"). Folding it into THIS transaction makes raw-delete +
+    // derived-purge commit or roll back as one. (Time-based Retention Policy
+    // deliberately does NOT take this path — it never touches user_context_*.)
+    let (deleted_user_context_activities, deleted_user_context_conclusions) =
+        cascade_user_context_for_deleted_subjects(&mut tx, &frame_ids, &audio_segment_ids)
+            .await
+            .map_err(|error| format!("failed to cascade user-context deletion: {error}"))?;
+
     tx.commit()
         .await
         .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
@@ -3734,6 +3858,8 @@ async fn delete_recent_capture_rows(
         deleted_background_jobs,
         deleted_frame_batches,
         deleted_search_documents,
+        deleted_user_context_activities,
+        deleted_user_context_conclusions,
     })
 }
 
@@ -3867,32 +3993,14 @@ async fn delete_recent_capture_inner(
         },
     );
 
-    // ADR 0029: the privacy panic button cascades into derived **User Context**.
-    // The raw rows just deleted are the primary, already-committed guarantee; now
-    // purge the Activities derived from those exact frame/audio subjects and drop
-    // any Conclusion left ungrounded, so "spent 5 minutes on [the sensitive
-    // thing]" cannot survive in the dossier and that derivation is no longer
-    // re-runnable (its Activities are gone). Best-effort: a failure is logged but
-    // never undoes or fails the raw capture deletion. Time-based Retention Policy
-    // deliberately does NOT take this path.
-    match infra
-        .user_context()
-        .delete_derived_for_capture_subjects(&deletion.frame_ids, &deletion.audio_segment_ids)
-        .await
+    // ADR 0029: the derived **User Context** cascade already ran atomically with
+    // the raw delete inside `delete_recent_capture_rows` (so a failure rolls back
+    // the whole privacy delete rather than leaving the dossier describing deleted
+    // content). All that's left here is to notify any open Insights surface.
+    if deletion.deleted_user_context_activities > 0
+        || deletion.deleted_user_context_conclusions > 0
     {
-        Ok(cascade) => {
-            if cascade.deleted_activities > 0 || cascade.deleted_conclusions > 0 {
-                let _ = app_handle.emit(
-                    crate::user_context::worker::USER_CONTEXT_CHANGED_EVENT,
-                    (),
-                );
-            }
-        }
-        Err(error) => {
-            crate::native_capture::debug_log::log_warn(format!(
-                "delete recent capture: derived user-context cascade failed (raw delete already committed): {error}"
-            ));
-        }
+        let _ = app_handle.emit(crate::user_context::worker::USER_CONTEXT_CHANGED_EVENT, ());
     }
 
     let post_delete_result = async {
@@ -5358,6 +5466,111 @@ mod tests {
         });
     }
 
+    /// ADR 0029 + atomicity: the derived **User Context** cascade must commit in
+    /// the SAME transaction as the raw delete, so a single
+    /// `delete_recent_capture_rows` call leaves neither the raw rows NOR the
+    /// dossier rows derived from them behind. Seeds a frame inside the window, an
+    /// Activity grounded in it, an overlapping Digest, and a Conclusion grounded
+    /// only by that Activity, then asserts all are gone and the counts surface.
+    #[test]
+    fn delete_recent_capture_rows_cascades_user_context_in_one_transaction() {
+        run_async_test(async {
+            let dir = TestDir::new("delete-recent-user-context-cascade");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let pool = infra.pool();
+
+            // A frame inside the delete window — the cascade keys off its id.
+            let frame_id: i64 = sqlx::query_scalar(
+                "INSERT INTO frames (session_id, file_path, captured_at)
+                 VALUES ('screen-uc', '/tmp/uc-frame.jpg', '2026-05-19T10:00:05Z')
+                 RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("frame should insert");
+
+            // An Activity grounded in that frame, plus an overlapping Digest.
+            let activity_id: i64 = sqlx::query_scalar(
+                "INSERT INTO user_context_activities (
+                    title, summary, started_at_ms, ended_at_ms, created_at_ms
+                 ) VALUES ('Worked on the spec', 'spec work', 1000, 2000, 1000)
+                 RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("activity should insert");
+            sqlx::query(
+                "INSERT INTO user_context_activity_evidence (activity_id, subject_type, subject_id)
+                 VALUES (?1, 'frame', ?2)",
+            )
+            .bind(activity_id)
+            .bind(frame_id)
+            .execute(pool)
+            .await
+            .expect("activity evidence should insert");
+            sqlx::query(
+                "INSERT INTO user_context_digests (
+                    range_kind, range_start_ms, range_end_ms, narrative, input_fingerprint,
+                    generated_at_ms
+                 ) VALUES ('day', 0, 5000, 'a day of spec work', 'fp', 1000)",
+            )
+            .execute(pool)
+            .await
+            .expect("digest should insert");
+
+            // A Conclusion grounded ONLY by that Activity -> zero surviving
+            // support once the Activity is gone -> dropped by the formation bar.
+            let conclusion_id: i64 = sqlx::query_scalar(
+                "INSERT INTO user_context_conclusions (
+                    subject, statement, confidence, formed_at_ms, last_supported_at_ms,
+                    updated_at_ms, created_at_ms
+                 ) VALUES ('Spec', 'Cares about the spec', 0.7, 1000, 1000, 1000, 1000)
+                 RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("conclusion should insert");
+            sqlx::query(
+                "INSERT INTO user_context_conclusion_evidence (
+                    conclusion_id, activity_id, stance, created_at_ms
+                 ) VALUES (?1, ?2, 'support', 1000)",
+            )
+            .bind(conclusion_id)
+            .bind(activity_id)
+            .execute(pool)
+            .await
+            .expect("conclusion evidence should insert");
+
+            let deletion =
+                delete_recent_capture_rows(&infra, "2026-05-19T09:59:00Z", "2026-05-19T10:01:00Z")
+                    .await
+                    .expect("delete recent rows should complete");
+
+            assert_eq!(deletion.deleted_frames, 1);
+            assert_eq!(deletion.deleted_user_context_activities, 1);
+            assert_eq!(deletion.deleted_user_context_conclusions, 1);
+
+            // The raw frame AND every derived row committed away together.
+            for table in [
+                "frames",
+                "user_context_activities",
+                "user_context_activity_evidence",
+                "user_context_conclusions",
+                "user_context_conclusion_evidence",
+                "user_context_digests",
+            ] {
+                let sql = format!("SELECT COUNT(*) FROM {table}");
+                let count: i64 = sqlx::query_scalar(&sql)
+                    .fetch_one(pool)
+                    .await
+                    .expect("row count should load");
+                assert_eq!(count, 0, "{table} should be purged atomically with the raw delete");
+            }
+        });
+    }
+
     #[test]
     fn delete_recent_capture_rows_prunes_empty_frame_batches() {
         run_async_test(async {
@@ -5489,6 +5702,8 @@ mod tests {
                 deleted_background_jobs: 0,
                 deleted_frame_batches: 0,
                 deleted_search_documents: 0,
+                deleted_user_context_activities: 0,
+                deleted_user_context_conclusions: 0,
             };
             let context = ::app_infra::RetentionCleanupContext {
                 save_directory: Some(save_dir.path().display().to_string()),

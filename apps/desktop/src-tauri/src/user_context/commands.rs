@@ -501,17 +501,21 @@ pub async fn user_context_add_authored(
     text: String,
     topic: Option<String>,
 ) -> Result<AuthoredContext, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Authored context text cannot be empty.".to_string());
+    }
     let now = now_ms();
     let topic = topic.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let store = infra.user_context();
     let id = store
-        .add_authored_context(text.trim(), topic.as_deref(), now)
+        .add_authored_context(text, topic.as_deref(), now)
         .await
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     Ok(AuthoredContext {
         id,
-        text: text.trim().to_string(),
+        text: text.to_string(),
         topic,
         created_at_ms: now,
         updated_at_ms: now,
@@ -528,10 +532,14 @@ pub async fn user_context_update_authored(
     text: String,
     topic: Option<String>,
 ) -> Result<(), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Authored context text cannot be empty.".to_string());
+    }
     let topic = topic.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     infra
         .user_context()
-        .update_authored_context(id, text.trim(), topic.as_deref(), now_ms())
+        .update_authored_context(id, text, topic.as_deref(), now_ms())
         .await
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
@@ -557,45 +565,43 @@ pub async fn user_context_delete_authored(
 
 /// **Wipe User Context** (#97, ADR 0029): the explicit, full clear of the derived
 /// dossier. Because that dossier deliberately outlives the raw-capture Retention
-/// Policy window, this is the disclosed control for erasing it. In order:
+/// Policy window, this is the disclosed control for erasing it.
 ///
-/// 1. Clear every `user_context_*` table — all derived **Activity** /
+/// These are three independent writes (engine settings, the `user_context_*`
+/// tables, the conversation store) with no enclosing transaction, so a mid-failure
+/// is possible. We order them so the *only* possible partial state is the safe one:
+///
+/// 1. Turn the **Reasoning Engine** OFF FIRST, through the normal AI-runtime
+///    settings flow (`enabled = false`), so it persists to
+///    `recording-settings.json` and broadcasts
+///    `recording_settings_changed`/`*_domain_changed`. Wiping implies "I'm done";
+///    rebuilding is a deliberate re-opt-in. (Merely toggling the engine off — the
+///    separate master toggle — is NOT a wipe: it stops new derivation but leaves
+///    the dossier readable.) Disabling first means a later data-wipe failure leaves
+///    "engine OFF + dossier present" (consistent, retryable) rather than the unsafe
+///    "engine ON + data gone" the previous ordering risked. If disabling fails we
+///    bail before touching any data, leaving everything intact.
+/// 2. Clear every `user_context_*` table — all derived **Activity** /
 ///    **Conclusion** data AND **Dismissal State** and the derivation-run ledger
-///    (`wipe_all`). Raw captures and other settings are untouched. This also
-///    clears all persistent Quick Recall / Chat conversations (issue #102), the
-///    single shared store.
-/// 2. Turn the **Reasoning Engine** OFF through the normal AI-runtime settings
-///    flow (`enabled = false`), so it persists to `recording-settings.json` and
-///    broadcasts `recording_settings_changed`/`*_domain_changed`. Wiping implies
-///    "I'm done"; rebuilding is a deliberate re-opt-in. (Merely toggling the
-///    engine off — the separate master toggle — is NOT a wipe: it stops new
-///    derivation but leaves the dossier readable.)
-/// 3. Emit `user_context_changed` so the now-empty surface refreshes.
+///    (`wipe_all`). Raw captures and other settings are untouched.
+/// 3. Clear all persistent Quick Recall / Chat conversations (issue #102), the
+///    single shared store, so the same control erases every derived/recalled
+///    surface. Both data wipes run even if the first one errors, so a single
+///    failure cannot strand the other store half-cleared with no retry; the first
+///    error is surfaced afterwards.
+/// 4. Emit `user_context_changed` so the now-empty surface refreshes.
 #[tauri::command]
 pub async fn wipe_user_context(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
     infra: tauri::State<'_, AppInfraState>,
 ) -> Result<(), String> {
-    // 1. Storage half: clear the whole dossier.
-    infra
-        .user_context()
-        .wipe_all()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // 1b. Wipe User Context also CLEARS all persistent conversations (issue #102):
-    //     the single shared Quick Recall / Chat store. Done before disabling the
-    //     engine so the same control erases every derived/recalled surface.
-    infra
-        .conversation()
-        .wipe_all()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // 2. Disable the engine via the same settings-update path the toggle uses, so
-    //    persistence + broadcasts (recording_settings_changed / domain_changed)
-    //    are identical.
+    // 1. Disable the engine FIRST via the same settings-update path the toggle
+    //    uses, so persistence + broadcasts (recording_settings_changed /
+    //    domain_changed) are identical. Doing this before any data wipe makes the
+    //    unsafe "engine ON + data gone" state unreachable: if this fails we bail
+    //    with everything intact; if a later data wipe fails we are left with
+    //    "engine OFF + dossier present", which is consistent and retryable.
     crate::native_capture::update_ai_runtime_settings(
         UpdateAiRuntimeSettingsRequest {
             enabled: Some(false),
@@ -606,7 +612,16 @@ pub async fn wipe_user_context(
     )
     .map_err(|e| e.message)?;
 
-    // 3. Refresh the (now empty) User Context surface.
+    // 2 + 3. Storage half: clear the whole dossier AND all persistent conversations.
+    //    Run both regardless of an error in the first so a single store failure
+    //    cannot leave the other half-cleared with no retry path; report the first
+    //    error after attempting both.
+    let wipe_context = infra.user_context().wipe_all().await;
+    let wipe_conversations = infra.conversation().wipe_all().await;
+    wipe_context.map_err(|e| e.to_string())?;
+    wipe_conversations.map_err(|e| e.to_string())?;
+
+    // 4. Refresh the (now empty) User Context surface.
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     Ok(())
 }
