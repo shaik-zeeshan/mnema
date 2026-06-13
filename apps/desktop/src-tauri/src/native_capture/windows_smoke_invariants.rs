@@ -36,6 +36,7 @@ use std::time::Duration;
 /// [`capture_screen::screen_segment_frame_index_offsets_are_monotonic`].
 ///
 /// Pure over the sidecar bytes so it is unit-testable without a real capture.
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn frame_index_sidecar_payload_is_monotonic(bytes: &[u8]) -> Result<(), String> {
     let index = capture_screen::decode_screen_segment_frame_index(bytes)
         .map_err(|error| format!("frame-index sidecar failed to decode: {error}"))?;
@@ -55,6 +56,7 @@ pub(crate) fn frame_index_sidecar_payload_is_monotonic(bytes: &[u8]) -> Result<(
 ///
 /// `tolerance_ms` absorbs codec priming / frame quantization so a *normal* stop
 /// that legitimately commits ~the full window is not flagged as "shorter".
+#[cfg(any(target_os = "windows", test))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) enum StopKind {
     /// Capture stopped while inactivity-paused: #74 discards the idle tail, so
@@ -72,6 +74,7 @@ pub(crate) enum StopKind {
 /// For an [`StopKind::Inactivity`] stop the committed audio must be shorter than
 /// the window by at least `tolerance_ms`; for [`StopKind::Normal`] it must not
 /// fall short of the window by more than `tolerance_ms`.
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn audio_tail_holdback_verdict(
     stop_kind: StopKind,
     committed_audio_ms: u64,

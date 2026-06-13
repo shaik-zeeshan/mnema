@@ -52,6 +52,7 @@ const SCREEN_RESUME_MIN_PAUSED_MS: u64 = 2_000;
 // mirroring macOS's `DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL`
 // (`native_capture/segments.rs`, 2s) so a `TransientLiveness` screen pause waits
 // quietly between probes instead of re-spamming the capture backend per poll.
+#[cfg(any(target_os = "windows", test))]
 const TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS: u64 = 2_000;
 
 /// Why a `TransientLiveness` screen pause was entered (ADR 0023). `DisplayUnavailable`
@@ -68,6 +69,7 @@ pub(crate) enum TransientLivenessTrigger {
     SessionLock,
     // Constructed by the phase-2 transient-liveness recovery slice when the WGC
     // screen session reports `GraphicsCaptureItem.Closed` / stops being live.
+    #[allow(dead_code)]
     DisplayUnavailable,
 }
 
@@ -80,6 +82,7 @@ pub(crate) enum ScreenPauseReason {
     Inactivity,
     // Constructed by the phase-2 transient-liveness recovery slice via
     // `set_family_paused_states_with_reason` / `mark_screen_pause_started_with_reason`.
+    #[allow(dead_code)]
     TransientLiveness { trigger: TransientLivenessTrigger },
 }
 
@@ -155,6 +158,7 @@ pub(crate) struct InactivityState {
     pub screen_pause_reason: Option<ScreenPauseReason>,
     // Monotonic timestamp of the last transient-liveness recovery probe, used to
     // throttle probes to `TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS`.
+    #[cfg(any(target_os = "windows", test))]
     pub last_transient_liveness_probe_monotonic_ms: Option<u64>,
     // Sources paused by a Windows `SystemSuspend` transient-liveness event. This
     // is separate from `screen_pause_reason` because microphone/system-audio
@@ -181,6 +185,7 @@ impl Default for InactivityState {
             system_audio_paused: false,
             is_paused: false,
             screen_pause_reason: None,
+            #[cfg(any(target_os = "windows", test))]
             last_transient_liveness_probe_monotonic_ms: None,
             system_suspend_paused_sources: None,
         }
@@ -207,6 +212,7 @@ impl InactivityState {
             system_audio_paused: false,
             is_paused: false,
             screen_pause_reason: None,
+            #[cfg(any(target_os = "windows", test))]
             last_transient_liveness_probe_monotonic_ms: None,
             system_suspend_paused_sources: None,
         }
@@ -263,6 +269,7 @@ impl InactivityState {
     /// screen pause-start guard. Keeping screen state out of the audio path entirely
     /// enforces that invariant here rather than trusting every caller to re-thread
     /// the current screen reason.
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn set_audio_family_paused_states(
         &mut self,
         microphone_paused: bool,
@@ -305,6 +312,7 @@ impl InactivityState {
 
     /// The reason the screen is currently paused, or `None` when not paused.
     // Read by the phase-2 transient-liveness wiring and by this module's tests.
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn screen_pause_reason(&self) -> Option<ScreenPauseReason> {
         self.screen_pause_reason
     }
@@ -660,6 +668,7 @@ impl InactivityState {
     /// since the last one. Pure timestamp logic; the caller records the probe via
     /// `mark_transient_liveness_probe`.
     // Wired by the phase-2 transient-liveness recovery slice.
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn is_transient_liveness_probe_due(&self, now_monotonic_ms: u64) -> bool {
         self.last_transient_liveness_probe_monotonic_ms
             .map(|last_probe_ms| {
@@ -672,6 +681,7 @@ impl InactivityState {
     /// Record that a transient-liveness recovery probe ran at `now_monotonic_ms`,
     /// resetting the throttle window.
     // Wired by the phase-2 transient-liveness recovery slice.
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn mark_transient_liveness_probe(&mut self, now_monotonic_ms: u64) {
         self.last_transient_liveness_probe_monotonic_ms = Some(now_monotonic_ms);
     }
@@ -690,6 +700,7 @@ impl InactivityState {
     /// never fire (it would be dead code). `now_monotonic_ms` is retained for API
     /// symmetry with the rest of the resume predicates.
     // Wired by the phase-2 transient-liveness recovery slice.
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn should_resume_screen_from_transient_liveness(
         &self,
         display_present: bool,
