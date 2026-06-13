@@ -101,20 +101,6 @@ pub(crate) async fn resolve_app_icon_path(
         .and_then(|resolution| resolution.icon_path)
 }
 
-/// Format a tool call into a [`ToolActivityEntry`] and, when it is app-scoped,
-/// enrich it with a resolved `app_icon_path`. Convenience used by Slice 4.
-pub(crate) async fn build_tool_activity_entry(
-    app_handle: &tauri::AppHandle,
-    tool: &str,
-    params: &Value,
-) -> ToolActivityEntry {
-    let mut entry = format_tool_activity(tool, params);
-    if let Some(app) = entry.app.clone() {
-        entry.app_icon_path = resolve_app_icon_path(app_handle, &app).await;
-    }
-    entry
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
