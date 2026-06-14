@@ -2,7 +2,7 @@
 // mirror of `crates/capture-types/src/conversation.rs`. ONE shared conversation
 // store backs both doors (Quick Recall and Chat); these types are the wire shape
 // of its Tauri commands (`list_conversations` / `get_conversation` /
-// `search_conversations` / `save_conversation_turn` / `delete_conversation`).
+// `search_conversations` / `delete_conversation`).
 //
 // `toolActivities` / `sources` are opaque JSON the frontend round-trips, so they
 // are typed `unknown` here and re-narrowed where consumed.
@@ -60,24 +60,6 @@ export interface Conversation {
 /** The conversation door that owns a saved turn: the Insights Chat workspace or
  *  the Quick Recall launcher (both now persist to the shared store — #111). */
 export type ConversationOrigin = "chat" | "quick_recall";
-
-/** The payload sent to `save_conversation_turn` (upserts the row + the turn). */
-export interface SaveConversationTurnRequest {
-  conversationId: string;
-  title: string;
-  origin: ConversationOrigin;
-  turnIndex: number;
-  question: string;
-  answer: string;
-  /** The model's streamed reasoning/thinking for this turn; omit when none
-   *  (Rust `#[serde(default)] reasoning: Option<String>`). */
-  reasoning?: string | null;
-  toolActivities: unknown;
-  sources: unknown;
-  phase: string;
-  errorMessage: string | null;
-  seededResultCount: number | null;
-}
 
 // ── Render-ready chat view model (issue #110, Slice 1) ───────────────────────
 // The BACKEND-OWNED render model for a streaming Ask AI turn, mirroring the Rust
