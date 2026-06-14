@@ -814,6 +814,105 @@ mod tests {
         });
     }
 
+    /// #L4 regression: the load-bearing `WHERE phase NOT IN ('done', 'error')`
+    /// guard on the turn upsert (store.rs ~line 149) makes a write to an
+    /// already-TERMINAL turn a no-op, closing the "permanent Writing…" race where
+    /// a late streaming update could overwrite a finalized answer/phase. This test
+    /// pins both halves: a write to a 'done' (and an 'error') turn is dropped, and
+    /// a non-terminal ('streaming') turn IS updated. Dropping the guard re-opens
+    /// the race while every other test stays green.
+    #[test]
+    fn save_turn_guard_rejects_writes_to_terminal_phase_only() {
+        block_on(async {
+            let store = test_store().await;
+
+            // A turn finalized to 'done'.
+            store
+                .save_turn(
+                    "conv-done", "t", "chat", 0, "q", "final answer", None, None, "[]", "[]",
+                    "done", None, None, 1_000,
+                )
+                .await
+                .expect("initial done turn");
+            // A late update arrives for that same (conversation, index): the guard
+            // must drop it — answer/phase stay finalized.
+            store
+                .save_turn(
+                    "conv-done", "t", "chat", 0, "q", "LATE overwrite", None, None, "[]", "[]",
+                    "streaming", None, None, 2_000,
+                )
+                .await
+                .expect("late write returns Ok (no-op, not an error)");
+
+            let done = store
+                .get_conversation("conv-done")
+                .await
+                .expect("get succeeds")
+                .expect("conversation exists");
+            assert_eq!(done.turns.len(), 1);
+            assert_eq!(
+                done.turns[0].answer, "final answer",
+                "terminal 'done' turn is not overwritten by a late write"
+            );
+            assert_eq!(done.turns[0].phase, "done");
+
+            // Same for a turn already in the terminal 'error' phase.
+            store
+                .save_turn(
+                    "conv-error", "t", "chat", 0, "q", "", None, None, "[]", "[]", "error",
+                    Some("boom"), None, 1_000,
+                )
+                .await
+                .expect("initial error turn");
+            store
+                .save_turn(
+                    "conv-error", "t", "chat", 0, "q", "RECOVERED", None, None, "[]", "[]", "done",
+                    None, None, 2_000,
+                )
+                .await
+                .expect("late write returns Ok (no-op)");
+
+            let errored = store
+                .get_conversation("conv-error")
+                .await
+                .expect("get succeeds")
+                .expect("conversation exists");
+            assert_eq!(
+                errored.turns[0].phase, "error",
+                "terminal 'error' turn is not revived by a late write"
+            );
+            assert_eq!(errored.turns[0].answer, "");
+
+            // Control: a NON-terminal ('streaming') turn IS updated in place, so
+            // the guard rejects only terminal phases (not all updates).
+            store
+                .save_turn(
+                    "conv-live", "t", "chat", 0, "q", "partial", None, None, "[]", "[]", "streaming",
+                    None, None, 1_000,
+                )
+                .await
+                .expect("initial streaming turn");
+            store
+                .save_turn(
+                    "conv-live", "t", "chat", 0, "q", "final answer", None, None, "[]", "[]", "done",
+                    None, None, 2_000,
+                )
+                .await
+                .expect("finalize streaming turn");
+
+            let live = store
+                .get_conversation("conv-live")
+                .await
+                .expect("get succeeds")
+                .expect("conversation exists");
+            assert_eq!(
+                live.turns[0].answer, "final answer",
+                "non-terminal turn IS updated through the guard"
+            );
+            assert_eq!(live.turns[0].phase, "done");
+        });
+    }
+
     #[test]
     fn list_orders_newest_updated_first_with_preview() {
         block_on(async {
