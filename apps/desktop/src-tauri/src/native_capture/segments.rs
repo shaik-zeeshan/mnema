@@ -2138,7 +2138,7 @@ pub(super) fn resume_screen_from_inactivity(
 #[cfg(target_os = "windows")]
 pub(super) fn resume_microphone_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
-    _app_handle: Option<&tauri::AppHandle>,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     if !runtime.inactivity.is_microphone_paused() {
         return Ok(());
@@ -2151,6 +2151,37 @@ pub(super) fn resume_microphone_from_inactivity(
         });
     };
     if !requested_sources.microphone {
+        return Ok(());
+    }
+
+    // A detached session (None) means the WASAPI endpoint was released by a
+    // system-suspend pause whose wake re-init failed; the in-place resume below
+    // needs a live session, so recreate it through the canonical start path (which
+    // configures the inactivity tail hold-back and commits the session). Scoped to
+    // microphone-only sources so a failure here never disturbs screen/system audio,
+    // and independent of activity so it recovers even while the machine stays idle.
+    if runtime.active_microphone_session.is_none() {
+        let resume_sources = active_sources_for_inactivity_paused_state(
+            &requested_sources,
+            runtime.inactivity.screen_paused,
+            false, // microphone resumed
+            runtime.inactivity.system_audio_paused,
+        )
+        .unwrap_or(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        });
+        start_windows_active_segment(
+            app_handle,
+            runtime,
+            &resume_sources,
+            "recreating Windows microphone after a detached system-suspend pause",
+        )?;
+        runtime
+            .inactivity
+            .set_audio_family_paused_states(false, runtime.inactivity.system_audio_paused);
+        refresh_windows_current_segment_sources(runtime);
         return Ok(());
     }
 
@@ -2190,7 +2221,7 @@ pub(super) fn resume_microphone_from_inactivity(
 #[cfg(target_os = "windows")]
 pub(super) fn resume_system_audio_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
-    _app_handle: Option<&tauri::AppHandle>,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     if !runtime.inactivity.is_system_audio_paused() {
         return Ok(());
@@ -2203,6 +2234,36 @@ pub(super) fn resume_system_audio_from_inactivity(
         });
     };
     if !requested_sources.system_audio {
+        return Ok(());
+    }
+
+    // A detached session (None) means the WASAPI loopback endpoint was released by
+    // a system-suspend pause whose wake re-init failed; recreate it through the
+    // canonical start path. Scoped to system-audio-only sources so a failure never
+    // disturbs screen/microphone, and independent of activity. See the microphone
+    // resume above for the full rationale.
+    if runtime.active_system_audio_session.is_none() {
+        let resume_sources = active_sources_for_inactivity_paused_state(
+            &requested_sources,
+            runtime.inactivity.screen_paused,
+            runtime.inactivity.microphone_paused,
+            false, // system audio resumed
+        )
+        .unwrap_or(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        });
+        start_windows_active_segment(
+            app_handle,
+            runtime,
+            &resume_sources,
+            "recreating Windows system audio after a detached system-suspend pause",
+        )?;
+        runtime
+            .inactivity
+            .set_audio_family_paused_states(runtime.inactivity.microphone_paused, false);
+        refresh_windows_current_segment_sources(runtime);
         return Ok(());
     }
 
@@ -2328,9 +2389,12 @@ pub(super) fn resume_runtime_from_system_suspend(
         // nothing would ever retry. Once cleared, the families fall back to the
         // standard resume machinery — the screen (still paused as
         // `TransientLiveness { SystemSuspend }`) retries via the throttled
-        // display-present probe, and audio families resume via their per-family
-        // activity blocks. This trades the all-at-once suspend resume for the
-        // throttled transient-liveness retry rather than wedging the session.
+        // display-present probe, and each audio family — whose WASAPI session was
+        // detached here, so it has no activity-driven resume trigger (its activity
+        // atomics stall while detached) — is recreated by the tick's throttled
+        // detached-audio recovery (`try_recover_detached_windows_audio_families`).
+        // Per-family so a permanently-failing device never blocks the others, and
+        // independent of the screen so an audio-only session still recovers.
         super::debug_log::log(format!(
             "failed to resume Windows native capture from system suspend; clearing suspend marker and falling back to transient-liveness/inactivity resume: [{}] {}",
             error.code, error.message

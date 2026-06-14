@@ -370,6 +370,73 @@ impl RecordingLifecycle {
         );
     }
 
+    /// Recreate audio families whose WASAPI session was detached by a system-suspend
+    /// pause but whose wake re-init failed (`resume_runtime_from_system_suspend`).
+    /// Such a family is requested + paused but has no live session, and — unlike the
+    /// screen, which recovers via the display-present probe — it has no
+    /// activity-driven resume trigger, because its activity atomics stall while the
+    /// session is detached. Recreate each family independently on a throttled cadence
+    /// so a permanently-failing device never blocks the others, and so an audio-only
+    /// session (no screen to ride along with) still recovers (ADR 0023). A normal
+    /// inactivity pause keeps the session attached, so this only fires after a
+    /// detaching suspend pause.
+    #[cfg(target_os = "windows")]
+    fn try_recover_detached_windows_audio_families(
+        &mut self,
+        now: u64,
+        app_handle: &tauri::AppHandle,
+    ) {
+        let Some(requested) = self.runtime.requested_sources.clone() else {
+            return;
+        };
+        let microphone_detached = requested.microphone
+            && self.runtime.inactivity.is_microphone_paused()
+            && self.runtime.active_microphone_session.is_none();
+        let system_audio_detached = requested.system_audio
+            && self.runtime.inactivity.is_system_audio_paused()
+            && self.runtime.active_system_audio_session.is_none();
+        if !microphone_detached && !system_audio_detached {
+            return;
+        }
+        if !self.runtime.inactivity.is_detached_audio_recovery_due(now) {
+            return;
+        }
+        self.runtime
+            .inactivity
+            .mark_detached_audio_recovery_probe(now);
+
+        if microphone_detached {
+            if let Err(error) =
+                resume_microphone_from_inactivity(&mut self.runtime, Some(app_handle))
+            {
+                super::debug_log::log(format!(
+                    "failed to recover detached Windows microphone after system suspend; will retry on the next probe: [{}] {}",
+                    error.code, error.message
+                ));
+            } else {
+                super::debug_log::log(
+                    "recovered detached Windows microphone after a failed system-suspend wake re-init"
+                        .to_string(),
+                );
+            }
+        }
+        if system_audio_detached {
+            if let Err(error) =
+                resume_system_audio_from_inactivity(&mut self.runtime, Some(app_handle))
+            {
+                super::debug_log::log(format!(
+                    "failed to recover detached Windows system audio after system suspend; will retry on the next probe: [{}] {}",
+                    error.code, error.message
+                ));
+            } else {
+                super::debug_log::log(
+                    "recovered detached Windows system audio after a failed system-suspend wake re-init"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     #[cfg(target_os = "windows")]
     fn all_requested_families_paused_for_inactivity(&self) -> bool {
         let Some(sources) = self.runtime.requested_sources.as_ref() else {
@@ -950,6 +1017,10 @@ impl RecordingLifecycle {
         // init error) must never fail the session — log and let the next throttled
         // probe retry, mirroring macOS's `DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL`.
         self.try_resume_windows_screen_from_transient_liveness(now, app_handle);
+        // Recover audio families whose WASAPI session was detached by a
+        // system-suspend pause whose wake re-init failed; they have no
+        // activity-driven resume trigger while detached (ADR 0023).
+        self.try_recover_detached_windows_audio_families(now, app_handle);
         let activity_snapshot = current_activity_snapshot(&mut self.runtime);
         let effective_idle = self
             .runtime

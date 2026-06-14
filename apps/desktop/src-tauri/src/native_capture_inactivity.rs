@@ -160,6 +160,14 @@ pub(crate) struct InactivityState {
     // throttle probes to `TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS`.
     #[cfg(any(target_os = "windows", test))]
     pub last_transient_liveness_probe_monotonic_ms: Option<u64>,
+    // Throttle for the per-family recovery of an audio family whose WASAPI session
+    // was detached by a system-suspend pause but whose wake re-init failed. Such a
+    // family has no activity-driven resume trigger (its activity atomics stall
+    // while detached), so the tick recreates it on a polled cadence; this bounds
+    // that retry. Separate from the screen probe marker so a simultaneous screen
+    // transient pause and detached audio family do not starve each other.
+    #[cfg(any(target_os = "windows", test))]
+    pub last_detached_audio_recovery_probe_monotonic_ms: Option<u64>,
     // Sources paused by a Windows `SystemSuspend` transient-liveness event. This
     // is separate from `screen_pause_reason` because microphone/system-audio
     // families do not have per-family reason slots; it lets wake resume only the
@@ -187,6 +195,8 @@ impl Default for InactivityState {
             screen_pause_reason: None,
             #[cfg(any(target_os = "windows", test))]
             last_transient_liveness_probe_monotonic_ms: None,
+            #[cfg(any(target_os = "windows", test))]
+            last_detached_audio_recovery_probe_monotonic_ms: None,
             system_suspend_paused_sources: None,
         }
     }
@@ -214,6 +224,8 @@ impl InactivityState {
             screen_pause_reason: None,
             #[cfg(any(target_os = "windows", test))]
             last_transient_liveness_probe_monotonic_ms: None,
+            #[cfg(any(target_os = "windows", test))]
+            last_detached_audio_recovery_probe_monotonic_ms: None,
             system_suspend_paused_sources: None,
         }
     }
@@ -684,6 +696,25 @@ impl InactivityState {
     #[cfg(any(target_os = "windows", test))]
     pub(crate) fn mark_transient_liveness_probe(&mut self, now_monotonic_ms: u64) {
         self.last_transient_liveness_probe_monotonic_ms = Some(now_monotonic_ms);
+    }
+
+    /// True when a detached-audio recovery attempt is due (no attempt yet, or at
+    /// least `TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS` has elapsed since the last
+    /// one). Mirrors [`is_transient_liveness_probe_due`] but on an independent
+    /// marker so the screen probe and audio recovery do not throttle each other.
+    #[cfg(any(target_os = "windows", test))]
+    pub(crate) fn is_detached_audio_recovery_due(&self, now_monotonic_ms: u64) -> bool {
+        self.last_detached_audio_recovery_probe_monotonic_ms
+            .map(|last_ms| {
+                now_monotonic_ms.saturating_sub(last_ms) >= TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS
+            })
+            .unwrap_or(true)
+    }
+
+    /// Record that a detached-audio recovery attempt ran at `now_monotonic_ms`.
+    #[cfg(any(target_os = "windows", test))]
+    pub(crate) fn mark_detached_audio_recovery_probe(&mut self, now_monotonic_ms: u64) {
+        self.last_detached_audio_recovery_probe_monotonic_ms = Some(now_monotonic_ms);
     }
 
     /// Pure resume predicate for a `TransientLiveness` screen pause (ADR 0023).
@@ -2160,6 +2191,26 @@ mod tests {
         assert!(
             state.is_transient_liveness_probe_due(10_000 + TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS),
             "probe should be due once the recovery interval elapses"
+        );
+    }
+
+    #[test]
+    fn detached_audio_recovery_throttle_respects_interval() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+
+        // No recovery attempt yet: always due.
+        assert!(state.is_detached_audio_recovery_due(0));
+
+        state.mark_detached_audio_recovery_probe(10_000);
+        assert!(
+            !state.is_detached_audio_recovery_due(
+                10_000 + TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS - 1
+            ),
+            "detached-audio recovery should not be due before the interval elapses"
+        );
+        assert!(
+            state.is_detached_audio_recovery_due(10_000 + TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS),
+            "detached-audio recovery should be due once the interval elapses"
         );
     }
 }
