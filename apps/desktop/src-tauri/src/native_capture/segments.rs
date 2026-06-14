@@ -72,7 +72,7 @@ const PRIVACY_FILTER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(target_os = "macos")]
 const DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL: Duration = Duration::from_secs(2);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn persist_capture_session_started(
     app_handle: &tauri::AppHandle,
     capture_session_id: String,
@@ -6066,6 +6066,7 @@ pub(super) fn start_capture_runtime(
         #[cfg(target_os = "windows")]
         {
             let started = now_unix_ms();
+            let capture_id = prefixed_capture_id("cap")?;
             let recordings_root =
                 crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
                     &settings.save_directory,
@@ -6128,6 +6129,20 @@ pub(super) fn start_capture_runtime(
                     started_at_unix_ms: started,
                 }),
             };
+            // Register the capture session in the DB so Windows recordings are
+            // first-class for session/timeline listing, segment-based retention,
+            // and the stop-time completion update (which matches on source session
+            // ids and would otherwise be a silent no-op). Audio *processing* jobs
+            // remain deferred to a later slice; only the relational record is
+            // persisted here, matching the macOS start path.
+            persist_capture_session_started(
+                &app_handle,
+                capture_id,
+                started,
+                &sources,
+                &source_sessions,
+                settings.segment_duration_seconds,
+            );
             let segment_loop_control = spawn_segment_loop(app_handle.clone());
 
             runtime.is_running = true;
