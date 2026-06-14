@@ -320,6 +320,17 @@ impl InactivityState {
     ) {
         self.screen_paused_at_monotonic_ms = Some(now_monotonic_ms);
         self.screen_pause_reason = Some(screen_pause_reason);
+        // A fresh transient-liveness pause must probe immediately rather than
+        // inherit the throttle marker from a prior recovery episode, which would
+        // defer this pause's first display-present probe by up to one recovery
+        // interval (ADR 0023).
+        #[cfg(any(target_os = "windows", test))]
+        if matches!(
+            screen_pause_reason,
+            ScreenPauseReason::TransientLiveness { .. }
+        ) {
+            self.last_transient_liveness_probe_monotonic_ms = None;
+        }
     }
 
     /// The reason the screen is currently paused, or `None` when not paused.
@@ -2191,6 +2202,37 @@ mod tests {
         assert!(
             state.is_transient_liveness_probe_due(10_000 + TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS),
             "probe should be due once the recovery interval elapses"
+        );
+    }
+
+    #[test]
+    fn entering_transient_liveness_pause_resets_probe_throttle() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+
+        // A throttle marker left over from a prior recovery episode would otherwise
+        // defer this pause's first probe.
+        state.mark_transient_liveness_probe(10_000);
+        assert!(!state.is_transient_liveness_probe_due(10_500));
+
+        // Entering a NEW transient-liveness pause clears the marker so the first
+        // display-present probe of this pause is immediately due (#7).
+        state.mark_screen_pause_started_with_reason(
+            10_500,
+            ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::SystemSuspend,
+            },
+        );
+        assert!(
+            state.is_transient_liveness_probe_due(10_500),
+            "a fresh transient-liveness pause must reset the probe throttle"
+        );
+
+        // An inactivity pause must NOT reset the transient-liveness probe throttle.
+        state.mark_transient_liveness_probe(20_000);
+        state.mark_screen_pause_started_with_reason(20_500, ScreenPauseReason::Inactivity);
+        assert!(
+            !state.is_transient_liveness_probe_due(20_500),
+            "an inactivity pause must not reset the transient-liveness probe throttle"
         );
     }
 
