@@ -269,6 +269,12 @@ mod windows_mf {
 
     use crate::{downmix_interleaved_f32_to_mono, DecodedAudio, MediaDecodeError, Result};
 
+    /// Defensive bound on the run of flag-only `ReadSample` callbacks that carry no
+    /// buffer. A well-formed source always makes forward progress and eventually
+    /// sets `ENDOFSTREAM`; a malformed/truncated container that perpetually returns
+    /// empty reads without EOS would otherwise spin the decode loop forever.
+    const MAX_CONSECUTIVE_EMPTY_READS: u32 = 1024;
+
     pub(crate) fn decode_to_mono_f32(path: &Path) -> Result<DecodedAudio> {
         let url: Vec<u16> = path
             .as_os_str()
@@ -342,6 +348,7 @@ mod windows_mf {
         let mut channels = channels as usize;
 
         let mut interleaved: Vec<f32> = Vec::new();
+        let mut consecutive_empty_reads: u32 = 0;
         loop {
             let mut stream_flags: u32 = 0;
             let mut sample = None;
@@ -382,9 +389,19 @@ mod windows_mf {
 
             let Some(sample) = sample else {
                 // A flag-only callback (e.g. a stream tick) with no buffer; keep
-                // reading until end-of-stream.
+                // reading until end-of-stream. Bound the run of empty reads so a
+                // malformed stream that never reports end-of-stream fails fast
+                // instead of spinning a core forever.
+                consecutive_empty_reads += 1;
+                if consecutive_empty_reads >= MAX_CONSECUTIVE_EMPTY_READS {
+                    return Err(MediaDecodeError::Decode(format!(
+                        "Media Foundation returned {MAX_CONSECUTIVE_EMPTY_READS} consecutive empty audio reads without end-of-stream for {}",
+                        path.display()
+                    )));
+                }
                 continue;
             };
+            consecutive_empty_reads = 0;
 
             append_sample_f32(&sample, &mut interleaved)?;
         }
@@ -495,6 +512,12 @@ mod windows_mf_video {
 
     /// Media Foundation measures time in 100ns ticks.
     const HUNDRED_NS_PER_MS: i64 = 10_000;
+
+    /// Defensive bound on the run of flag-only `ReadSample` callbacks that carry no
+    /// buffer. A well-formed source always makes forward progress and eventually
+    /// sets `ENDOFSTREAM`; a malformed/truncated container that perpetually returns
+    /// empty reads without EOS would otherwise spin the decode loop forever.
+    const MAX_CONSECUTIVE_EMPTY_READS: u32 = 1024;
 
     pub(crate) fn extract_video_frame_rgba(
         path: &Path,
@@ -670,7 +693,13 @@ mod windows_mf_video {
         // <= target, and stop once we pass the target. If no frame is at/<=
         // target (e.g. the seek landed after it, or target precedes the first
         // sample), keep the first frame we see so the caller always gets a frame.
-        let mut kept: Option<(i64, Vec<u8>)> = None;
+        //
+        // The kept frame carries the dimensions it was decoded at, not the
+        // loop-scope `width`/`height`: a later `CURRENTMEDIATYPECHANGED` past the
+        // target mutates those before the loop breaks, which would otherwise make
+        // the returned frame report W'xH' while its pixel buffer is still WxH*4.
+        let mut kept: Option<(i64, Vec<u8>, u32, u32)> = None;
+        let mut consecutive_empty_reads: u32 = 0;
         loop {
             let mut stream_flags: u32 = 0;
             let mut timestamp: i64 = 0;
@@ -701,15 +730,25 @@ mod windows_mf_video {
             }
 
             let Some(sample) = sample else {
-                // Flag-only callback (e.g. a stream tick); keep reading.
+                // Flag-only callback (e.g. a stream tick); keep reading. Bound the
+                // run of empty reads so a malformed stream that never reports
+                // end-of-stream fails fast instead of spinning a core forever.
+                consecutive_empty_reads += 1;
+                if consecutive_empty_reads >= MAX_CONSECUTIVE_EMPTY_READS {
+                    return Err(MediaDecodeError::Decode(format!(
+                        "Media Foundation returned {MAX_CONSECUTIVE_EMPTY_READS} consecutive empty video reads without end-of-stream for {}",
+                        path.display()
+                    )));
+                }
                 continue;
             };
+            consecutive_empty_reads = 0;
 
             let rgba = sample_to_rgba(&sample, width, height, stride)?;
 
             let past_target = timestamp > target_ticks;
             if kept.is_none() || !past_target {
-                kept = Some((timestamp, rgba));
+                kept = Some((timestamp, rgba, width, height));
             }
             if past_target {
                 // We already hold the best <= target frame (or the first frame);
@@ -718,12 +757,12 @@ mod windows_mf_video {
             }
         }
 
-        Ok(kept.map(|(timestamp, pixels)| {
+        Ok(kept.map(|(timestamp, pixels, frame_width, frame_height)| {
             let presented_offset_ms = (timestamp.max(0) / HUNDRED_NS_PER_MS) as u64;
             VideoFrame {
                 pixels,
-                width,
-                height,
+                width: frame_width,
+                height: frame_height,
                 presented_offset_ms,
             }
         }))
