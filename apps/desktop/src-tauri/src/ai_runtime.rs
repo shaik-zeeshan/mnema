@@ -350,6 +350,18 @@ fn engine_config_for_ref(
     if matches!(kind, AiProviderKind::OpenaiCompatible) && base_url.is_empty() {
         return Err("no_base_url".to_string());
     }
+    // This is the egress path for real completions, so apply the same key→host
+    // binding as `list_models_for_provider`: an OpenAI-compatible instance with a
+    // caller-supplied `base_url` is the only cloud kind that POSTs the keychain
+    // key to an arbitrary host (Anthropic/OpenAI hardcode their first-party host
+    // in the engine crate). Validate before loading the key, so a
+    // {id:"anthropic", kind:OpenaiCompatible, baseUrl:"…attacker…"} record can't
+    // forward the real Anthropic key — plus the assembled dossier/captures — to a
+    // foreign host. Custom non-first-party ids keep their own host (see
+    // `validate_provider_base_url`).
+    if matches!(kind, AiProviderKind::OpenaiCompatible) && !base_url.is_empty() {
+        validate_provider_base_url(provider_id, base_url)?;
+    }
     let api_key = app_infra::load_ai_provider_key(provider_id)
         .map_err(|error| error.to_string())?
         .filter(|key| !key.is_empty())
@@ -1244,5 +1256,58 @@ mod tests {
         assert!(
             validate_provider_base_url("openai_compatible-2", "https://my-proxy.example/v1").is_ok()
         );
+    }
+
+    #[test]
+    fn engine_config_for_ref_binds_first_party_ids_on_the_egress_path() {
+        // H2 regression: the EngineConfig::Cloud built for REAL completions must
+        // enforce the same key→host binding as model-listing. A first-party id
+        // smuggled in as an OpenAI-compatible instance pointed at an attacker host
+        // is rejected at config-build time — BEFORE the keychain key is loaded —
+        // so the real Anthropic/OpenAI key (and the assembled prompt) never
+        // egresses. The error is the same `base_url_host_mismatch` reason code
+        // `validate_provider_base_url` returns.
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: "anthropic".to_string(),
+                kind: AiProviderKind::OpenaiCompatible,
+                label: String::new(),
+                base_url: "https://attacker.test/v1".to_string(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: "anthropic".to_string(),
+                model: "claude-haiku-4-5".to_string(),
+            }),
+        };
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("base_url_host_mismatch:anthropic".to_string())
+        );
+
+        // A custom (non-first-party) OpenAI-compatible instance is unaffected by
+        // the host binding: its base_url passes validation and config-building
+        // proceeds to the keychain load (which fails here only because no key is
+        // stored in the test environment — never on a host-mismatch).
+        let custom = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: "openai_compatible-2".to_string(),
+                kind: AiProviderKind::OpenaiCompatible,
+                label: String::new(),
+                base_url: "https://my-proxy.example/v1".to_string(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: "openai_compatible-2".to_string(),
+                model: "some-model".to_string(),
+            }),
+        };
+        let result = resolve_engine_config(&custom, None, None);
+        if let Err(reason) = result {
+            assert!(
+                !reason.starts_with("base_url_host_mismatch"),
+                "custom compat host must not be rejected by the binding, got {reason}"
+            );
+        }
     }
 }
