@@ -163,9 +163,17 @@
     // to `/insights` so its on-mount drain runs. Non-draining: the Insights page
     // still owns consuming the queue.
     if (isMainWindow && !isInsightsRoute) {
+      // Snapshot the route at peek time. The peek is async, so the user may
+      // navigate during the drain window; if the route changed underneath us we
+      // bail rather than yanking them back to /insights (self-healing, but the
+      // bounce is jarring). Comparing the captured pathname keeps the re-route
+      // intent tied to the route this peek was started for.
+      const peekPathname = normalizeAppPathname($page.url.pathname);
       void invoke<boolean>("has_pending_insights_open_conversations")
         .then((pending) => {
-          if (!destroyed && pending && !isInsightsRoute) {
+          const routeUnchanged =
+            normalizeAppPathname($page.url.pathname) === peekPathname;
+          if (!destroyed && pending && routeUnchanged && !isInsightsRoute) {
             void goto("/insights");
           }
         })
