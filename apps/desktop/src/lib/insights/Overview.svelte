@@ -649,16 +649,29 @@
     statusLoaded = true;
   }
 
+  // Monotonic gen tokens guard the range-scoped fetches against stale responses:
+  // rapid ‹/› stepping fires overlapping loads, so gate every state assignment
+  // on the token still being current — a slow earlier-range response that lands
+  // after a newer fetch is dropped instead of overwriting the current tiles.
+  // (Same shape as loadDigest's `digestRequestToken`.)
+  let freeRequestToken = 0;
   async function loadFree(): Promise<void> {
+    const token = ++freeRequestToken;
     loadingFree = true;
     try {
       const { startMs, endMs } = range;
-      usage = await invoke<UsageCharts>("get_usage_charts", { startMs, endMs });
+      const next = await invoke<UsageCharts>("get_usage_charts", {
+        startMs,
+        endMs,
+      });
+      if (token !== freeRequestToken) return; // range moved on — stale
+      usage = next;
       freeError = null;
     } catch (error) {
-      freeError = error instanceof Error ? error.message : String(error);
+      if (token === freeRequestToken)
+        freeError = error instanceof Error ? error.message : String(error);
     } finally {
-      loadingFree = false;
+      if (token === freeRequestToken) loadingFree = false;
     }
   }
 
@@ -667,7 +680,9 @@
   // call (overlap-bounded, not recency-capped) — so navigating to a past
   // week/month or a busy month (>400 activities) no longer truncates or misses
   // the window the way the old newest-400 global scan did.
+  let engineRequestToken = 0;
   async function loadEngine(): Promise<void> {
+    const token = ++engineRequestToken;
     if (!engineOn) {
       activities = [];
       conclusions = [];
@@ -677,22 +692,28 @@
     loadingEngine = true;
     try {
       const { startMs, endMs } = range;
-      activities = await invoke<Activity[]>("list_user_context_activities", {
-        startMs,
-        endMs,
-      });
-      conclusions = await invoke<Conclusion[]>(
+      const nextActivities = await invoke<Activity[]>(
+        "list_user_context_activities",
+        { startMs, endMs },
+      );
+      if (token !== engineRequestToken) return; // range moved on — stale
+      const nextConclusions = await invoke<Conclusion[]>(
         "list_user_context_conclusions",
         { includeFaded: true },
       );
+      if (token !== engineRequestToken) return; // range moved on — stale
+      activities = nextActivities;
+      conclusions = nextConclusions;
       // Clear stale optimistic overrides now that we have fresh truth.
       pinnedOverride = new Map();
       dismissedIds = new Set();
     } catch {
       // Best-effort; engine tiles degrade to empty / "still learning".
     } finally {
-      loadingEngine = false;
-      engineLoadedOnce = true;
+      if (token === engineRequestToken) {
+        loadingEngine = false;
+        engineLoadedOnce = true;
+      }
     }
   }
 
