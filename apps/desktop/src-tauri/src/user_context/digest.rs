@@ -739,10 +739,26 @@ pub async fn get_or_generate_digest(
     };
 
     // 2./3. The range's Activities; a narrative over fewer than two is silly.
-    let activities = store
+    //
+    // LOAD-BEARING — DO NOT REMOVE. Activities are persisted UNFILTERED at
+    // derivation (only Conclusions are gated there), so their title/summary may
+    // carry sensitive text. The Digest prompt embeds raw activity title/summary
+    // (`format_activity_line`) and ships it to a possibly-cloud engine. This
+    // re-filter is the ONLY thing stopping a sensitive Activity from being
+    // serialized into the digest prompt and egressing to a cloud engine —
+    // mirroring `select_relevant_activities` in `brokered_access.rs` and the
+    // `sensitive_activity_never_egresses_via_recall_context` regression test.
+    // The output post-filter at step 5b only catches what the ENGINE writes; it
+    // runs after the sensitive INPUT has already left the device. Filtering here
+    // (before the count gate and fingerprint) keeps cache + count decisions in
+    // step with what is actually sent.
+    let activities: Vec<Activity> = store
         .list_activities_in_range(range_start_ms, range_end_ms)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|a| !guardrail::is_sensitive(&a.title, &a.summary))
+        .collect();
     if activities.len() < MIN_DIGEST_ACTIVITIES {
         crate::native_capture::debug_log::log_info(format!(
             "digest: skipped {range_kind} (only {} activities, need {MIN_DIGEST_ACTIVITIES})",
@@ -1334,6 +1350,81 @@ mod tests {
             "A deep week in the editor",
             "Most of this week went into the billing migration, with a shift toward test coverage by Friday."
         ));
+    }
+
+    /// Mirrors `sensitive_activity_never_egresses_via_recall_context` in
+    /// `brokered_access.rs`, for the Digest egress door. Activities are persisted
+    /// UNFILTERED (only Conclusions are gated at derivation), so the Digest path
+    /// must re-filter activity INPUT through `guardrail::is_sensitive` before it
+    /// embeds title/summary into the cloud-bound prompt. This drives the SAME
+    /// filter expression the production path applies after
+    /// `list_activities_in_range` and asserts the sensitive Activity's text
+    /// never reaches `build_digest_prompt`'s output — if someone deletes the
+    /// "redundant"-looking input filter, THIS goes red even though the output
+    /// post-filter test (`sensitive_digest_narrative_trips_the_hard_post_filter`)
+    /// stays green.
+    #[test]
+    fn sensitive_activity_never_egresses_via_digest_prompt() {
+        // A SENSITIVE activity persisted unfiltered, and a benign one, in range.
+        let sensitive = activity(
+            1,
+            1_000,
+            2_000,
+            "Therapy appointment",
+            "attended a therapy appointment about your depression",
+            None,
+            None,
+        );
+        let benign_one = activity(
+            2,
+            3_000,
+            4_000,
+            "Billing migration",
+            "Moved invoices to the new schema.",
+            Some(ActivityCategory::Creating),
+            None,
+        );
+        let benign_two = activity(
+            3,
+            5_000,
+            6_000,
+            "Test coverage",
+            "Added tests for the new schema.",
+            Some(ActivityCategory::Creating),
+            None,
+        );
+        let raw = vec![sensitive.clone(), benign_one, benign_two];
+
+        // EXACTLY the production filter from `get_or_generate_digest`.
+        let filtered: Vec<Activity> = raw
+            .iter()
+            .cloned()
+            .filter(|a| !guardrail::is_sensitive(&a.title, &a.summary))
+            .collect();
+
+        // The sensitive Activity is dropped; the benign ones survive.
+        assert_eq!(filtered.len(), 2, "sensitive activity must be filtered out");
+        assert!(
+            filtered.iter().all(|a| !guardrail::is_sensitive(&a.title, &a.summary)),
+            "no surviving activity may be sensitive"
+        );
+
+        // The cloud-bound prompt built from the filtered set must not carry the
+        // sensitive Activity's text in any form.
+        let prompt = build_digest_prompt("day", 0, DAY_MS, DAY_MS, &filtered, &[]);
+        assert!(
+            !prompt.contains("Therapy"),
+            "sensitive activity title egressed via digest prompt: {prompt}"
+        );
+        assert!(
+            !prompt.contains("depression"),
+            "sensitive activity summary egressed via digest prompt: {prompt}"
+        );
+        // Recall still works: a benign activity is present (not just empty).
+        assert!(
+            prompt.contains("Billing migration"),
+            "benign activity should remain in the prompt: {prompt}"
+        );
     }
 
     #[test]
