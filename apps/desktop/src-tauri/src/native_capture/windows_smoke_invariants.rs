@@ -170,13 +170,27 @@ pub(crate) fn committed_audio_duration_ms(audio_path: &Path) -> Result<u64, Stri
 }
 
 /// Assert the #74 tail-holdback invariant against the committed microphone /
-/// system-audio files of a stop. Every committed audio file in the pass must
-/// satisfy [`audio_tail_holdback_verdict`] for `stop_kind`.
+/// system-audio files of a stop, comparing committed duration against the
+/// **active recording window** `reference_ms` (NOT the full session wall-clock,
+/// which in the inactivity smoke is padded by the idle-wait, the idle pause gap,
+/// and the resume wait — none of which is recorded audio).
+///
+/// The comparison differs by stop kind because both smoke modes pass through an
+/// inactivity pause that legitimately discards one segment's idle tail:
+/// - [`StopKind::Inactivity`]: stopped straight out of the pause, so the
+///   committed audio is the pre-pause segment(s) with the idle tail discarded.
+///   The SUM of committed durations must fall short of the pre-pause active
+///   window (capture start -> pause observed) by more than the tolerance.
+/// - [`StopKind::Normal`]: resumed then stopped normally, so the LAST committed
+///   segment is the post-resume one, whose tail drains on a normal stop. Its
+///   duration must match the post-resume active window (resume observed -> stop)
+///   within the tolerance. Earlier segments (including the held-back pre-pause
+///   one) are intentionally not compared here.
 #[cfg(target_os = "windows")]
 pub(crate) fn assert_audio_tail_holdback(
     stop_kind: StopKind,
     committed_audio_files: &[String],
-    wall_clock_ms: u64,
+    reference_ms: u64,
     tolerance_ms: u64,
 ) -> Result<(), String> {
     if committed_audio_files.is_empty() {
@@ -185,13 +199,35 @@ pub(crate) fn assert_audio_tail_holdback(
                 .to_string(),
         );
     }
-    for audio_file in committed_audio_files {
-        let committed_ms = committed_audio_duration_ms(Path::new(audio_file))?;
-        audio_tail_holdback_verdict(stop_kind, committed_ms, wall_clock_ms, tolerance_ms).map_err(
-            |error| format!("committed audio {audio_file} failed the #74 invariant: {error}"),
-        )?;
+    match stop_kind {
+        StopKind::Inactivity => {
+            let mut committed_total_ms: u64 = 0;
+            for audio_file in committed_audio_files {
+                committed_total_ms = committed_total_ms
+                    .saturating_add(committed_audio_duration_ms(Path::new(audio_file))?);
+            }
+            audio_tail_holdback_verdict(stop_kind, committed_total_ms, reference_ms, tolerance_ms)
+                .map_err(|error| {
+                    format!(
+                        "committed audio ({} file(s), {committed_total_ms}ms total) failed the #74 invariant: {error}",
+                        committed_audio_files.len()
+                    )
+                })
+        }
+        StopKind::Normal => {
+            let last_file = committed_audio_files
+                .last()
+                .expect("committed_audio_files is non-empty");
+            let last_ms = committed_audio_duration_ms(Path::new(last_file))?;
+            audio_tail_holdback_verdict(stop_kind, last_ms, reference_ms, tolerance_ms).map_err(
+                |error| {
+                    format!(
+                        "post-resume committed audio {last_file} ({last_ms}ms) failed the #74 invariant: {error}"
+                    )
+                },
+            )
+        }
     }
-    Ok(())
 }
 
 #[cfg(test)]
