@@ -3516,109 +3516,34 @@ fn dedupe_delete_recent_paths(paths: &mut Vec<DeleteRecentCapturePath>) {
 
 /// **Delete Recent Capture** derived-data cascade (ADR 0029), run INSIDE the
 /// raw-delete transaction so the privacy panic button's raw delete and its
-/// derived purge are atomic. Mirrors the canonical reference
-/// `app_infra::user_context::UserContextStore::delete_derived_for_capture_subjects`
-/// (`crates/app-infra/src/user_context/store.rs`) — kept identical on purpose:
-/// that method owns the same logic for the pooled (non-transactional) callers,
-/// but the privacy delete must share one transaction with the raw rows, which a
-/// pool-borrowing method cannot, so the steps are replayed here against `tx`.
-/// Returns the dropped (activities, conclusions) counts; digests are purged too
-/// but their count isn't surfaced to callers (matches the store summary's use).
+/// derived purge are atomic. This is a thin adapter: it delegates to the
+/// **canonical** cascade
+/// [`::app_infra::user_context::cascade_derived_for_deleted_subjects_in`]
+/// (`crates/app-infra/src/user_context/store.rs`), passing the SAME `tx` that
+/// deleted the raw frames/audio so raw-delete + derived-purge commit or roll
+/// back as one — something the pooled
+/// `UserContextStore::delete_derived_for_capture_subjects` wrapper cannot do
+/// because it owns its own transaction. There is now ONE copy of the cascade SQL
+/// (and one chunk size), so the two paths can no longer drift. Returns the
+/// dropped (activities, conclusions) counts; digests are purged too but their
+/// count isn't surfaced to callers (matches the store summary's use).
 async fn cascade_user_context_for_deleted_subjects(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     frame_ids: &[i64],
     audio_segment_ids: &[i64],
-) -> Result<(i64, i64), sqlx::Error> {
+) -> Result<(i64, i64), ::app_infra::AppInfraError> {
     if frame_ids.is_empty() && audio_segment_ids.is_empty() {
         return Ok((0, 0));
     }
 
-    // 1. Activities with any evidence row pointing at a deleted subject.
-    let mut activity_ids: Vec<i64> = Vec::new();
-    for (subject_type, subject_ids) in [("frame", frame_ids), ("audio_segment", audio_segment_ids)]
-    {
-        for chunk in subject_ids.chunks(900) {
-            if chunk.is_empty() {
-                continue;
-            }
-            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-                "SELECT DISTINCT activity_id FROM user_context_activity_evidence \
-                 WHERE subject_type = ",
-            );
-            query.push_bind(subject_type);
-            query.push(" AND subject_id IN (");
-            let mut separated = query.separated(", ");
-            for id in chunk {
-                separated.push_bind(*id);
-            }
-            separated.push_unseparated(")");
-            activity_ids.extend(
-                query
-                    .build_query_scalar::<i64>()
-                    .fetch_all(&mut **tx)
-                    .await?,
-            );
-        }
-    }
-    activity_ids.sort_unstable();
-    activity_ids.dedup();
-
-    // 2. Purge Digests overlapping a to-be-deleted Activity's span, BEFORE the
-    //    Activities are deleted (their spans are the overlap source).
-    for chunk in activity_ids.chunks(900) {
-        if chunk.is_empty() {
-            continue;
-        }
-        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "DELETE FROM user_context_digests \
-             WHERE EXISTS (\
-                 SELECT 1 FROM user_context_activities a \
-                 WHERE a.started_at_ms < user_context_digests.range_end_ms \
-                   AND a.ended_at_ms >= user_context_digests.range_start_ms \
-                   AND a.id IN (",
-        );
-        let mut separated = query.separated(", ");
-        for id in chunk {
-            separated.push_bind(*id);
-        }
-        separated.push_unseparated("))");
-        query.build().execute(&mut **tx).await?;
-    }
-
-    // 3. DELETE those Activities; *_activity_evidence + *_conclusion_evidence
-    //    link rows cascade via FK.
-    let mut deleted_activities = 0_i64;
-    for chunk in activity_ids.chunks(900) {
-        if chunk.is_empty() {
-            continue;
-        }
-        let mut query =
-            sqlx::QueryBuilder::<sqlx::Sqlite>::new("DELETE FROM user_context_activities WHERE id IN (");
-        let mut separated = query.separated(", ");
-        for id in chunk {
-            separated.push_bind(*id);
-        }
-        separated.push_unseparated(")");
-        deleted_activities += query.build().execute(&mut **tx).await?.rows_affected() as i64;
-    }
-
-    // 4. Re-apply the formation bar to survivors: drop every Conclusion whose
-    //    remaining SUPPORT-stance evidence no longer meets the bar (pinned is
-    //    exempt down to a floor of one support; zero support always drops).
-    let deleted_conclusions = sqlx::query(
-        "DELETE FROM user_context_conclusions \
-         WHERE (\
-             SELECT COUNT(*) FROM user_context_conclusion_evidence ce \
-             WHERE ce.conclusion_id = user_context_conclusions.id \
-               AND ce.stance = 'support'\
-         ) < CASE WHEN pinned = 1 THEN 1 ELSE ?1 END",
+    let summary = ::app_infra::user_context::cascade_derived_for_deleted_subjects_in(
+        &mut *tx,
+        frame_ids,
+        audio_segment_ids,
     )
-    .bind(::app_infra::user_context::confidence::FORMATION_BAR_EVIDENCE as i64)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected() as i64;
+    .await?;
 
-    Ok((deleted_activities, deleted_conclusions))
+    Ok((summary.deleted_activities, summary.deleted_conclusions))
 }
 
 async fn delete_recent_capture_rows(

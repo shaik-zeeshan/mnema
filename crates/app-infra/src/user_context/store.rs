@@ -1699,103 +1699,10 @@ impl UserContextStore {
         }
 
         let mut tx = self.pool.begin().await?;
-
-        // 1. Activities with any evidence row in the deleted subjects.
-        let mut activity_ids: Vec<i64> = Vec::new();
-        for (subject_type, subject_ids) in
-            [("frame", frame_ids), ("audio_segment", audio_ids)]
-        {
-            for chunk in subject_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
-                if chunk.is_empty() {
-                    continue;
-                }
-                let mut query = QueryBuilder::<Sqlite>::new(
-                    "SELECT DISTINCT activity_id FROM user_context_activity_evidence \
-                     WHERE subject_type = ",
-                );
-                query.push_bind(subject_type);
-                query.push(" AND subject_id IN (");
-                let mut separated = query.separated(", ");
-                for id in chunk {
-                    separated.push_bind(id);
-                }
-                separated.push_unseparated(")");
-                activity_ids.extend(
-                    query
-                        .build()
-                        .fetch_all(&mut *tx)
-                        .await?
-                        .into_iter()
-                        .map(|row| row.get::<i64, _>("activity_id")),
-                );
-            }
-        }
-        activity_ids.sort_unstable();
-        activity_ids.dedup();
-
-        // 2. Purge Digests overlapping a to-be-deleted Activity's span, BEFORE
-        //    the Activities are deleted (their spans are the overlap source).
-        //    Overlap of digest [range_start_ms, range_end_ms) with activity
-        //    [started_at_ms, ended_at_ms]: started < range_end AND ended >= start.
-        let mut deleted_digests = 0_i64;
-        for chunk in activity_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
-            let mut query = QueryBuilder::<Sqlite>::new(
-                "DELETE FROM user_context_digests \
-                 WHERE EXISTS (\
-                     SELECT 1 FROM user_context_activities a \
-                     WHERE a.started_at_ms < user_context_digests.range_end_ms \
-                       AND a.ended_at_ms >= user_context_digests.range_start_ms \
-                       AND a.id IN (",
-            );
-            let mut separated = query.separated(", ");
-            for id in chunk {
-                separated.push_bind(id);
-            }
-            separated.push_unseparated("))");
-            deleted_digests += query.build().execute(&mut *tx).await?.rows_affected() as i64;
-        }
-
-        // 3. DELETE those Activities; activity_evidence + conclusion_evidence rows
-        //    cascade via FK.
-        let mut deleted_activities = 0_i64;
-        for chunk in activity_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
-            let mut query = QueryBuilder::<Sqlite>::new(
-                "DELETE FROM user_context_activities WHERE id IN (",
-            );
-            let mut separated = query.separated(", ");
-            for id in chunk {
-                separated.push_bind(id);
-            }
-            separated.push_unseparated(")");
-            deleted_activities += query.build().execute(&mut *tx).await?.rows_affected() as i64;
-        }
-
-        // 4. Re-apply the formation bar (#95) to the survivors: drop every
-        //    Conclusion whose remaining SUPPORT-stance evidence no longer meets
-        //    [`confidence::FORMATION_BAR_EVIDENCE`] — losing evidence un-forms a
-        //    Conclusion the same way lacking it would have prevented forming one.
-        //    A *pinned* Conclusion ("this is true, keep it") is exempt down to a
-        //    floor of one support; ZERO surviving support always drops, pinned or
-        //    not (ADR 0029: no ungrounded Conclusions, ever).
-        let deleted_conclusions = sqlx::query(
-            "DELETE FROM user_context_conclusions \
-             WHERE (\
-                 SELECT COUNT(*) FROM user_context_conclusion_evidence ce \
-                 WHERE ce.conclusion_id = user_context_conclusions.id \
-                   AND ce.stance = 'support'\
-             ) < CASE WHEN pinned = 1 THEN 1 ELSE ?1 END",
-        )
-        .bind(super::confidence::FORMATION_BAR_EVIDENCE as i64)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected() as i64;
-
+        let summary =
+            cascade_derived_for_deleted_subjects_in(&mut tx, frame_ids, audio_ids).await?;
         tx.commit().await?;
-        Ok(UserContextCascadeSummary {
-            deleted_activities,
-            deleted_conclusions,
-            deleted_digests,
-        })
+        Ok(summary)
     }
 
     /// **Wipe User Context** storage half (ADR 0029): in ONE transaction, clear
@@ -1827,6 +1734,132 @@ impl UserContextStore {
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// **Single source of truth** for the Delete Recent Capture derived-data cascade
+/// (ADR 0029), run against an already-open connection/transaction so callers can
+/// own the transaction boundary:
+/// - [`UserContextStore::delete_derived_for_capture_subjects`] wraps this in its
+///   own pool transaction for non-transactional callers;
+/// - the desktop privacy-delete path
+///   (`apps/desktop/src-tauri/src/app_infra.rs`) calls this with the SAME `tx`
+///   that deleted the raw frames/audio, so the raw delete and this derived purge
+///   commit or roll back together (a pool-borrowing method cannot share that
+///   transaction, which is why this connection-taking entry point exists).
+///
+/// The cascade, in order (see [`UserContextStore::delete_derived_for_capture_subjects`]
+/// for the full rationale):
+/// 1. Collect Activities with ANY evidence row pointing at a deleted subject
+///    (`frame`/`audio_segment`), chunked by [`SQLITE_BIND_CHUNK_SIZE`].
+/// 2. DELETE Digests whose `[range_start_ms, range_end_ms)` window overlaps a
+///    to-be-deleted Activity's span (BEFORE the Activities are deleted, since
+///    their spans are the overlap source).
+/// 3. DELETE those Activities (`*_activity_evidence` / `*_conclusion_evidence`
+///    cascade via FK).
+/// 4. Re-apply the formation bar: drop every Conclusion whose surviving
+///    support-stance evidence falls below
+///    [`confidence::FORMATION_BAR_EVIDENCE`](super::confidence::FORMATION_BAR_EVIDENCE)
+///    (pinned exempt to a floor of one; zero support always drops).
+///
+/// With empty id lists it finds no Activities and returns a zero summary; the
+/// pooled wrapper short-circuits that case to avoid opening a transaction.
+pub async fn cascade_derived_for_deleted_subjects_in(
+    conn: &mut sqlx::SqliteConnection,
+    frame_ids: &[i64],
+    audio_ids: &[i64],
+) -> Result<UserContextCascadeSummary> {
+    // 1. Activities with any evidence row in the deleted subjects.
+    let mut activity_ids: Vec<i64> = Vec::new();
+    for (subject_type, subject_ids) in [("frame", frame_ids), ("audio_segment", audio_ids)] {
+        for chunk in subject_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "SELECT DISTINCT activity_id FROM user_context_activity_evidence \
+                 WHERE subject_type = ",
+            );
+            query.push_bind(subject_type);
+            query.push(" AND subject_id IN (");
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(id);
+            }
+            separated.push_unseparated(")");
+            activity_ids.extend(
+                query
+                    .build()
+                    .fetch_all(&mut *conn)
+                    .await?
+                    .into_iter()
+                    .map(|row| row.get::<i64, _>("activity_id")),
+            );
+        }
+    }
+    activity_ids.sort_unstable();
+    activity_ids.dedup();
+
+    // 2. Purge Digests overlapping a to-be-deleted Activity's span, BEFORE the
+    //    Activities are deleted (their spans are the overlap source). Overlap of
+    //    digest [range_start_ms, range_end_ms) with activity [started_at_ms,
+    //    ended_at_ms]: started < range_end AND ended >= start.
+    let mut deleted_digests = 0_i64;
+    for chunk in activity_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "DELETE FROM user_context_digests \
+             WHERE EXISTS (\
+                 SELECT 1 FROM user_context_activities a \
+                 WHERE a.started_at_ms < user_context_digests.range_end_ms \
+                   AND a.ended_at_ms >= user_context_digests.range_start_ms \
+                   AND a.id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for id in chunk {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated("))");
+        deleted_digests += query.build().execute(&mut *conn).await?.rows_affected() as i64;
+    }
+
+    // 3. DELETE those Activities; activity_evidence + conclusion_evidence rows
+    //    cascade via FK.
+    let mut deleted_activities = 0_i64;
+    for chunk in activity_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
+        let mut query =
+            QueryBuilder::<Sqlite>::new("DELETE FROM user_context_activities WHERE id IN (");
+        let mut separated = query.separated(", ");
+        for id in chunk {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        deleted_activities += query.build().execute(&mut *conn).await?.rows_affected() as i64;
+    }
+
+    // 4. Re-apply the formation bar (#95) to the survivors: drop every Conclusion
+    //    whose remaining SUPPORT-stance evidence no longer meets
+    //    [`confidence::FORMATION_BAR_EVIDENCE`] — losing evidence un-forms a
+    //    Conclusion the same way lacking it would have prevented forming one. A
+    //    *pinned* Conclusion ("this is true, keep it") is exempt down to a floor
+    //    of one support; ZERO surviving support always drops, pinned or not (ADR
+    //    0029: no ungrounded Conclusions, ever).
+    let deleted_conclusions = sqlx::query(
+        "DELETE FROM user_context_conclusions \
+         WHERE (\
+             SELECT COUNT(*) FROM user_context_conclusion_evidence ce \
+             WHERE ce.conclusion_id = user_context_conclusions.id \
+               AND ce.stance = 'support'\
+         ) < CASE WHEN pinned = 1 THEN 1 ELSE ?1 END",
+    )
+    .bind(super::confidence::FORMATION_BAR_EVIDENCE as i64)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected() as i64;
+
+    Ok(UserContextCascadeSummary {
+        deleted_activities,
+        deleted_conclusions,
+        deleted_digests,
+    })
 }
 
 /// Deterministic fingerprint of a **Digest**'s input: the in-range Activity
