@@ -865,7 +865,9 @@ impl UserContextStore {
     /// dismissed row can't conflict here — dismissal deletes the row.
     pub async fn upsert_conclusion(&self, draft: NewConclusion) -> Result<i64> {
         let now = now_ms();
-        Self::upsert_conclusion_in(&self.pool, &draft, draft.confidence, now).await
+        // Formation path: does NOT pre-decay, so it must not touch the decay
+        // anchor — the decay beat owns `last_decayed_at_ms` here (#H3).
+        Self::upsert_conclusion_in(&self.pool, &draft, draft.confidence, now, false).await
     }
 
     /// Atomic conclusion upsert against an arbitrary executor (the pool or an open
@@ -876,30 +878,54 @@ impl UserContextStore {
     /// 'faded', else 'visible') so a re-supported faded Conclusion returns to the
     /// dossier immediately, and only ever bumps `last_supported_at_ms`
     /// FORWARD (`MAX`) so fresh support cannot move the support anchor backward.
+    ///
+    /// `stamp_decayed` controls the decay-beat bookkeeping column
+    /// `last_decayed_at_ms`: the decay beat anchors each pass on
+    /// `COALESCE(last_decayed_at_ms, last_supported_at_ms)` and stamps
+    /// `last_decayed_at_ms = now` every pass, so EVERY confidence writer that has
+    /// already accounted silence up to `now` must advance the anchor too — else
+    /// the next beat re-decays the window this writer already consumed (#H3). The
+    /// **reinforce** persist path ([`upsert_conclusion_with_evidence`]) decays the
+    /// prior value to `now` before writing, so it passes `true` (also correct for
+    /// a brand-new row, which has no silence to re-count). The standalone
+    /// formation upsert ([`upsert_conclusion`]) does NOT pre-decay and must leave
+    /// the column to the decay beat, so it passes `false`.
     async fn upsert_conclusion_in<'e, E>(
         executor: E,
         draft: &NewConclusion,
         confidence: f64,
         now: i64,
+        stamp_decayed: bool,
     ) -> Result<i64>
     where
         E: sqlx::Executor<'e, Database = Sqlite>,
     {
-        let id = sqlx::query(
+        // When `stamp_decayed`, advance the decay anchor to `now` on both the
+        // INSERT (new row) and the ON CONFLICT UPDATE (reinforced existing row);
+        // otherwise leave the column untouched (NULL on insert, unchanged on
+        // update) so only the decay beat writes it.
+        let insert_decayed_value = if stamp_decayed { "?6" } else { "NULL" };
+        let update_decayed_clause = if stamp_decayed {
+            ", last_decayed_at_ms = ?6"
+        } else {
+            ""
+        };
+        let id = sqlx::query(&format!(
             "INSERT INTO user_context_conclusions \
                 (subject, statement, confidence, status, formed_at_ms, \
-                 last_supported_at_ms, updated_at_ms, created_at_ms) \
+                 last_supported_at_ms, updated_at_ms, created_at_ms, last_decayed_at_ms) \
              VALUES (?1, ?2, ?3, \
                      CASE WHEN ?3 < 0.15 THEN 'faded' ELSE 'visible' END, \
-                     ?4, ?5, ?6, ?6) \
+                     ?4, ?5, ?6, ?6, {insert_decayed_value}) \
              ON CONFLICT (subject COLLATE NOCASE, statement COLLATE NOCASE) DO UPDATE SET \
                 confidence = excluded.confidence, \
                 last_supported_at_ms = MAX(last_supported_at_ms, excluded.last_supported_at_ms), \
                 updated_at_ms = excluded.updated_at_ms, \
                 status = CASE WHEN excluded.confidence < 0.15 AND COALESCE(pinned, 0) = 0 \
-                              THEN 'faded' ELSE 'visible' END \
+                              THEN 'faded' ELSE 'visible' END\
+                {update_decayed_clause} \
              RETURNING id",
-        )
+        ))
         .bind(&draft.subject)
         .bind(&draft.statement)
         .bind(confidence)
@@ -966,8 +992,13 @@ impl UserContextStore {
             None => super::confidence::initial_confidence(support_count, contradict_count),
         };
 
+        // Reinforce path: `reinforce`/formation already accounted silence up to
+        // `now`, so advance the decay anchor to `now` — else the next decay beat
+        // re-decays the [stale anchor, now] window this write already consumed
+        // (#H3). Brand-new rows have no silence to re-count, so this is correct
+        // for them too.
         let conclusion_id =
-            Self::upsert_conclusion_in(&mut *transaction, &draft, confidence, now).await?;
+            Self::upsert_conclusion_in(&mut *transaction, &draft, confidence, now, true).await?;
 
         // Replace the full evidence set (delete then re-insert) in the SAME txn.
         sqlx::query("DELETE FROM user_context_conclusion_evidence WHERE conclusion_id = ?1")
@@ -2655,6 +2686,95 @@ mod tests {
         assert_eq!(faded.len(), 1);
         assert_eq!(faded[0].confidence, 0.10);
         assert_eq!(faded[0].status, ConclusionStatus::Faded);
+        });
+    }
+
+    /// #H3 regression: reinforcing a Conclusion must advance the decay anchor
+    /// (`last_decayed_at_ms`) to `now`, because the reinforce path already decayed
+    /// the prior value to `now` over silence. If it leaves the anchor stale, the
+    /// next decay beat re-decays the `[stale_anchor, reinforce_now]` window the
+    /// reinforce already consumed — fading faster than true silence.
+    ///
+    /// We seed an existing Conclusion whose only decay anchor is a far-past
+    /// `last_supported_at_ms` (the stale-anchor situation), reinforce it, then
+    /// assert (a) the anchor the decay beat will read advanced to ~`now`, NOT the
+    /// far-past value, and (b) decaying from that anchor over a single half-life
+    /// window halves the confidence (one half-life over POST-reinforce elapsed
+    /// time, not double-counted from the stale anchor).
+    #[test]
+    fn reinforce_advances_decay_anchor_so_beat_does_not_double_count_silence() {
+        block_on(async {
+            let store = test_store().await;
+
+            // An existing, well-supported Conclusion whose decay anchor is a
+            // far-past instant (last_supported_at_ms = 1_000, last_decayed NULL):
+            // this is exactly the row that, under the bug, would be re-decayed
+            // from 1_000 by the next beat after a reinforce.
+            sqlx::query(
+                "INSERT INTO user_context_conclusions \
+                    (subject, statement, confidence, status, formed_at_ms, \
+                     last_supported_at_ms, updated_at_ms, created_at_ms, last_decayed_at_ms) \
+                 VALUES ('Rust', 'Learning Rust', 0.8, 'visible', 1000, 1000, 1000, 1000, NULL)",
+            )
+            .execute(&store.pool)
+            .await
+            .expect("seed conclusion");
+
+            // Two surviving supports so the row stays past the formation bar, and
+            // so the reinforce path finds an existing row (it computes against the
+            // (subject, statement) match).
+            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
+            let b = seed_activity(&store, "rust async", 3_000).await;
+
+            // Reinforce: this decays the prior value to `now` and (the fix) stamps
+            // last_decayed_at_ms = now.
+            let now_before = now_ms();
+            store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.8),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("reinforce");
+
+            // The decay beat reads COALESCE(last_decayed_at_ms, last_supported_at_ms):
+            // it must now be ~now (advanced by the reinforce), NOT the far-past 1_000.
+            let decayable = store.list_decayable_conclusions().await.expect("decayable");
+            assert_eq!(decayable.len(), 1, "the reinforced Conclusion is decayable");
+            let anchor = decayable[0].decay_anchor_ms;
+            assert!(
+                anchor >= now_before,
+                "reinforce advanced the decay anchor to ~now ({now_before}); got stale {anchor}"
+            );
+            assert!(
+                anchor > 1_000,
+                "anchor must not stay at the far-past last_supported_at_ms"
+            );
+
+            // And: decaying from THAT anchor over a single half-life (30 days)
+            // halves the post-reinforce confidence — one half-life over true
+            // elapsed silence, not the double-counted [1_000, now] window.
+            let confidence_after_reinforce = decayable[0].conclusion.confidence;
+            const MS_PER_DAY: i64 = 24 * 60 * 60 * 1000;
+            let one_half_life_ms =
+                (crate::user_context::confidence::FADE_HALF_LIFE_DAYS as i64) * MS_PER_DAY;
+            let decayed = crate::user_context::confidence::decay(
+                confidence_after_reinforce,
+                anchor,
+                anchor + one_half_life_ms,
+                false,
+            );
+            assert!(
+                (decayed - confidence_after_reinforce * 0.5).abs() < 1e-9,
+                "one half-life over post-reinforce silence halves confidence: \
+                 expected {}, got {decayed}",
+                confidence_after_reinforce * 0.5
+            );
         });
     }
 
