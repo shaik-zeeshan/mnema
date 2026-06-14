@@ -3223,7 +3223,6 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
             runtime.segment_schedule.as_ref(),
             runtime.current_segment_index,
             current_segment_output_files.as_ref(),
-            &std::collections::HashMap::new(),
         );
         warm_scrub_previews_for_committed_screen_outputs(
             app_handle,
