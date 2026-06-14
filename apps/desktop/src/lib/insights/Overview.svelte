@@ -194,6 +194,14 @@
   // (engine off, sparse range) — the lede silently omits, never errors.
   let digest = $state<UserContextDigest | null>(null);
   let digestLoading = $state(false);
+  // The manual re-read (re-digest button): a forced regeneration that bypasses
+  // the backend cache/freshness floor. Unlike the silent auto-load, its failure
+  // is shown — `digestError` carries the one-sentence reason ("…rejected your
+  // API key", "…couldn't complete this request") so a read that never appears
+  // (e.g. an OpenAI-compatible provider that fluffed the structured call) is no
+  // longer a mystery.
+  let digestRegenerating = $state(false);
+  let digestError = $state<string | null>(null);
 
   let loadingFree = $state(true);
   let loadingEngine = $state(false);
@@ -701,6 +709,7 @@
     }
     const token = ++digestRequestToken;
     digestLoading = true;
+    digestError = null;
     try {
       const { startMs, endMs } = range;
       const next = await invoke<UserContextDigest | null>(
@@ -716,6 +725,35 @@
     }
   }
 
+  // Re-read: force a fresh digest for the current range, ignoring the backend
+  // cache + freshness floor. The deliberate counterpart to the silent auto-load
+  // — this is a user action, so a failure is surfaced in `digestError` rather
+  // than collapsed to an empty lede.
+  async function regenerateDigest(): Promise<void> {
+    if (!engineOn || digestRegenerating) return;
+    const token = ++digestRequestToken;
+    digestRegenerating = true;
+    digestLoading = false;
+    digestError = null;
+    try {
+      const { startMs, endMs } = range;
+      const next = await invoke<UserContextDigest | null>(
+        "regenerate_user_context_digest",
+        { rangeKind: rangeMode, startMs, endMs },
+      );
+      if (token !== digestRequestToken) return; // range moved on — stale
+      digest = next;
+      if (!next) {
+        // Not an error: the range simply has too little activity to read.
+        digestError = "Not enough activity in this range to write a read.";
+      }
+    } catch (error) {
+      if (token === digestRequestToken) digestError = String(error);
+    } finally {
+      if (token === digestRequestToken) digestRegenerating = false;
+    }
+  }
+
   // Range steps debounce the digest fetch — a changed range can cost a paid
   // model call and the user may flick through weeks. Mount/refresh paths call
   // `loadDigest` directly instead.
@@ -726,6 +764,10 @@
     // last week's lede never sits over this week's cards.
     digestRequestToken += 1;
     digest = null;
+    // A new range drops any pending re-read and its error — last range's reason
+    // never sits over this one (the token bump also frees a stuck spinner).
+    digestRegenerating = false;
+    digestError = null;
     if (digestDebounceTimer != null) clearTimeout(digestDebounceTimer);
     digestDebounceTimer = null;
     if (!statusLoaded || !engineOn) {
@@ -959,13 +1001,30 @@
        and the skeleton only appear when there's a digest or one is loading;
        the eyebrow + stats footer stand alone otherwise. -->
   {#if engineOn}
-    <article class="entry entry--lede" aria-busy={!digest && digestLoading}>
+    <article
+      class="entry entry--lede"
+      aria-busy={(!digest && digestLoading) || digestRegenerating}
+    >
       <p class="eyebrow">
         <span class="diamond" aria-hidden="true">◆</span>
         <span class="tick" aria-hidden="true"></span>
         The read
         <span class="rule"></span>
-        {#if digest}{relativeTime(digest.generatedAtMs)}{/if}
+        {#if digest}<span class="eyebrow-when">{relativeTime(digest.generatedAtMs)}</span>{/if}
+        <!-- Re-read: force a fresh narrative for this range, bypassing the
+             backend cache. Available whenever the engine is on, so a range
+             whose read failed (empty lede) can still be retried. -->
+        <button
+          type="button"
+          class="re-read"
+          class:is-busy={digestRegenerating}
+          onclick={regenerateDigest}
+          disabled={digestRegenerating || (!digest && digestLoading)}
+          title="Write a fresh read for this range"
+        >
+          <span class="re-read-ico" aria-hidden="true">↻</span>
+          {digestRegenerating ? "reading…" : "re-read"}
+        </button>
       </p>
       {#if digest}
         <!-- Keyed on generation time: fresh prose replays the reveal,
@@ -978,13 +1037,15 @@
             <p class="lede-text">{digest.narrative}</p>
           </div>
         {/key}
-      {:else if digestLoading}
+      {:else if digestLoading || digestRegenerating}
         <div class="sk-row">
           <Skeleton variant="text" width="92%" height="12px" />
         </div>
         <div class="sk-row">
           <Skeleton variant="text" width="64%" height="12px" />
         </div>
+      {:else if digestError}
+        <p class="lede-error">{digestError}</p>
       {/if}
       <!-- Stats footer — the single source of truth for the range's headline
            numbers. Tracked is always present; deep focus %, top category, the
@@ -1983,6 +2044,67 @@
   .eyebrow .diamond {
     color: var(--app-text-faint);
     letter-spacing: 0;
+  }
+  .eyebrow-when {
+    flex: 0 0 auto;
+  }
+  /* Re-read button — sits at the far right of the eyebrow, in the same muted
+     terminal register; lifts to the accent on hover. */
+  .re-read {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+    padding: 2px 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .re-read:hover:not(:disabled) {
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
+  }
+  .re-read:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .re-read-ico {
+    font-size: 12px;
+    line-height: 1;
+    letter-spacing: 0;
+  }
+  .re-read.is-busy .re-read-ico {
+    animation: re-read-spin 0.8s linear infinite;
+  }
+  @keyframes re-read-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .re-read.is-busy .re-read-ico {
+      animation: none;
+    }
+  }
+  /* Re-read failure reason — sits where the prose would, in the same scale,
+     tinted toward the app's danger register without shouting. */
+  .lede-error {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--app-danger, var(--app-text-subtle));
   }
 
   /* Narrative lede — 2-4 sentences of prose, read not clicked. The feed's

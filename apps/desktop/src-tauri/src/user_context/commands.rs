@@ -409,6 +409,38 @@ pub async fn get_user_context_digest(
         &range_kind,
         start_ms,
         end_ms,
+        false,
+    )
+    .await
+}
+
+/// **Re-read**: force a fresh User Context Digest for one Insights Overview
+/// range, ignoring the fingerprint cache and the freshness floor. Backs the
+/// Overview's re-digest button.
+///
+/// Unlike [`get_user_context_digest`], which collapses any failure into a silent
+/// `Ok(None)` lede omission, this is an explicit user action — an `Err` here is
+/// surfaced to the user (e.g. "The AI provider rejected your API key") so a
+/// digest that never appears stops being a mystery. `Ok(None)` still means the
+/// range genuinely has no read to write (User Context off, engine unready, or
+/// fewer than two Activities).
+#[tauri::command]
+pub async fn regenerate_user_context_digest(
+    state: tauri::State<'_, RecordingSettingsState>,
+    infra: tauri::State<'_, AppInfraState>,
+    range_kind: String,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Option<UserContextDigest>, String> {
+    let settings = read_recording_settings(state.inner());
+    super::digest::get_or_generate_digest(
+        &settings.ai_runtime,
+        settings.user_context.enabled,
+        infra.user_context(),
+        &range_kind,
+        start_ms,
+        end_ms,
+        true,
     )
     .await
 }

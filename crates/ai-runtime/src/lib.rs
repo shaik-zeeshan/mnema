@@ -28,6 +28,36 @@ pub use agent_loop::{
 /// Maximum time [`ping_endpoint`] waits for a TCP connection to a local engine.
 const PING_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Retries granted to a structured-extraction round trip (total attempts =
+/// `EXTRACT_RETRIES + 1`).
+///
+/// `rig`'s extractor models structured output as a tool call: it sends a
+/// synthetic `submit` function with the target JSON schema, then deserializes
+/// that call's arguments. The first-party providers (Anthropic/OpenAI) emit it
+/// reliably, but OpenAI-*compatible* endpoints (DeepSeek, OpenRouter, local
+/// runtimes) can occasionally answer with prose and no `submit` call — surfaced
+/// as [`AiRuntimeError::Extraction`] (rig's `NoData`) and, for the Digest, an
+/// inshort that silently never appears. rig defaults to **zero** retries, so one
+/// missing call is a hard failure; a couple of attempts absorb the intermittent
+/// case without masking a genuine outage (an unreachable host / rejected key
+/// fails every attempt). NB this is the *flakiness* backstop — the structural
+/// fix for DeepSeek's thinking models is `tool_choice: auto` (see the compat
+/// branch), since they reject rig's default `required` deterministically and no
+/// number of retries would help.
+const EXTRACT_RETRIES: u64 = 2;
+
+/// Temperature pinned on the OpenAI-*compatible* extraction request.
+///
+/// rig sends no temperature, so the endpoint falls back to its (often high,
+/// ~1.0) default — and DeepSeek's API docs explicitly call its function calling
+/// *unstable*, recommending a low temperature so the model reliably emits the
+/// `submit` tool call instead of an empty / prose answer (which rig surfaces as
+/// `NoData`, i.e. no inshort). A low-but-nonzero value keeps the narrative from
+/// reading robotically while making the structured tool call far more reliable.
+/// Applied only to the compat path; the first-party Anthropic/OpenAI providers
+/// honour forced tool calls reliably at their defaults and are left untouched.
+const COMPAT_EXTRACT_TEMPERATURE: f64 = 0.2;
+
 /// Cloud LLM provider reached over HTTPS with a bring-your-own-key credential.
 #[derive(Debug, Clone, Copy)]
 pub enum CloudProvider {
@@ -252,6 +282,7 @@ where
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)
+                        .retries(EXTRACT_RETRIES)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }
@@ -260,6 +291,7 @@ where
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)
+                        .retries(EXTRACT_RETRIES)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }
@@ -280,6 +312,27 @@ where
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)
+                        .retries(EXTRACT_RETRIES)
+                        // Use `auto`, NOT rig's default `required`. DeepSeek's
+                        // thinking models (deepseek-reasoner, deepseek-v4-flash, …)
+                        // reach this OpenAI-compatible path and reject a forced
+                        // tool choice outright — `400 "Thinking mode does not
+                        // support this tool_choice"` — so an `inshort` never
+                        // generates. Under `auto` the same models DO emit the
+                        // single `submit` tool call (there is one tool and the
+                        // preamble tells them to use it), which rig reads back
+                        // identically; `EXTRACT_RETRIES` covers the rare turn that
+                        // answers in prose instead. Non-thinking compat models are
+                        // unaffected — `auto` + one instructed tool calls it too.
+                        .tool_choice(rig_core::message::ToolChoice::Auto)
+                        // Pin a low temperature into the request body (rig
+                        // flattens `additional_params`; it sets no temperature of
+                        // its own) — DeepSeek recommends it for steadier tool
+                        // selection, and it makes the structured output more
+                        // deterministic everywhere on this path.
+                        .additional_params(serde_json::json!({
+                            "temperature": COMPAT_EXTRACT_TEMPERATURE,
+                        }))
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }
@@ -305,6 +358,7 @@ where
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)
+                        .retries(EXTRACT_RETRIES)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }
@@ -313,6 +367,7 @@ where
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)
+                        .retries(EXTRACT_RETRIES)
                         .build();
                     Ok(extractor.extract(prompt).await?)
                 }

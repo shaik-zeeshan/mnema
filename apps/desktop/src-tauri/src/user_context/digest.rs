@@ -695,6 +695,13 @@ async fn record_digest_run(
 /// the digest is part of the User Context feature, so it honours the same opt-in
 /// as the worker / run-now / status gates (a configured engine alone is not
 /// enough — the user must have turned User Context on).
+///
+/// `force` is the manual **re-read** path (the Overview's re-digest button): it
+/// skips the fingerprint cache hit AND the freshness floor so a stored narrative
+/// is always regenerated from the range's current Activities, re-billing the
+/// engine for one round trip. The opt-in / engine / minimum-Activity gates still
+/// apply (a re-read cannot conjure a digest the normal path could never make);
+/// only the staleness short-circuit is bypassed.
 pub async fn get_or_generate_digest(
     ai_runtime: &AiRuntimeSettings,
     user_context_enabled: bool,
@@ -702,6 +709,7 @@ pub async fn get_or_generate_digest(
     range_kind: &str,
     range_start_ms: i64,
     range_end_ms: i64,
+    force: bool,
 ) -> Result<Option<UserContextDigest>, String> {
     // A bad range is a frontend bug, not a normal-off case.
     if !matches!(range_kind, "day" | "week" | "month") {
@@ -717,13 +725,16 @@ pub async fn get_or_generate_digest(
     if !user_context_enabled {
         return Ok(None);
     }
-    if crate::ai_runtime::engine_configured_prerequisite(ai_runtime)
-        .await
-        .is_err()
-    {
+    if let Err(reason) = crate::ai_runtime::engine_configured_prerequisite(ai_runtime).await {
+        crate::native_capture::debug_log::log_info(format!(
+            "digest: skipped {range_kind} (engine not ready: {reason})"
+        ));
         return Ok(None);
     }
     let Ok(engine) = crate::ai_runtime::resolve_engine_config(ai_runtime, None, None) else {
+        crate::native_capture::debug_log::log_info(format!(
+            "digest: skipped {range_kind} (engine config did not resolve)"
+        ));
         return Ok(None);
     };
 
@@ -733,6 +744,10 @@ pub async fn get_or_generate_digest(
         .await
         .map_err(|error| error.to_string())?;
     if activities.len() < MIN_DIGEST_ACTIVITIES {
+        crate::native_capture::debug_log::log_info(format!(
+            "digest: skipped {range_kind} (only {} activities, need {MIN_DIGEST_ACTIVITIES})",
+            activities.len()
+        ));
         return Ok(None);
     }
 
@@ -741,35 +756,39 @@ pub async fn get_or_generate_digest(
     //    freshness floor — a current range churns on every worker beat, so a
     //    recent digest is served slightly stale instead of re-billing per
     //    visit. NOTE a racing second generation is fine — see the module doc.
+    //    A forced re-read skips this short-circuit entirely and always
+    //    regenerates from the range's current Activities.
     let fingerprint = digest_input_fingerprint(&activities);
-    if let Some(stored) = store
-        .get_digest(range_kind, range_start_ms)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        // A USER CORRECTION must win over the freshness floor (PR #112 digest
-        // edge). The floor only exists to rate-limit *churn*-driven regeneration
-        // (new captures arriving on a current range) — it must not pin a
-        // narrative the user explicitly contradicted by relabeling an in-range
-        // Activity, which would leave the corrected-away label visible in the
-        // digest for up to the floor window (24h for a month). When an in-range
-        // Activity was corrected AFTER this digest was generated, bypass the
-        // floor and fall through to regenerate.
-        let corrected_since_generated =
-            range_has_correction_after(store, &activities, stored.generated_at_ms).await;
-
-        if stored.input_fingerprint == fingerprint
-            || (!corrected_since_generated
-                && within_freshness_floor(range_kind, stored.generated_at_ms, now_ms()))
+    if !force {
+        if let Some(stored) = store
+            .get_digest(range_kind, range_start_ms)
+            .await
+            .map_err(|error| error.to_string())?
         {
-            return Ok(Some(digest_dto(
-                &stored.range_kind,
-                stored.range_start_ms,
-                stored.range_end_ms,
-                stored.narrative,
-                stored.headline,
-                stored.generated_at_ms,
-            )));
+            // A USER CORRECTION must win over the freshness floor (PR #112 digest
+            // edge). The floor only exists to rate-limit *churn*-driven regeneration
+            // (new captures arriving on a current range) — it must not pin a
+            // narrative the user explicitly contradicted by relabeling an in-range
+            // Activity, which would leave the corrected-away label visible in the
+            // digest for up to the floor window (24h for a month). When an in-range
+            // Activity was corrected AFTER this digest was generated, bypass the
+            // floor and fall through to regenerate.
+            let corrected_since_generated =
+                range_has_correction_after(store, &activities, stored.generated_at_ms).await;
+
+            if stored.input_fingerprint == fingerprint
+                || (!corrected_since_generated
+                    && within_freshness_floor(range_kind, stored.generated_at_ms, now_ms()))
+            {
+                return Ok(Some(digest_dto(
+                    &stored.range_kind,
+                    stored.range_start_ms,
+                    stored.range_end_ms,
+                    stored.narrative,
+                    stored.headline,
+                    stored.generated_at_ms,
+                )));
+            }
         }
     }
 
@@ -798,15 +817,43 @@ pub async fn get_or_generate_digest(
     );
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
+    crate::native_capture::debug_log::log_info(format!(
+        "digest: generating {range_kind} [{range_start_ms}..{range_end_ms}) force={force} \
+         activities={} day_digests={} prompt_chars={} est_input_tokens={input_tokens} \
+         provider={:?} model={:?}",
+        activities.len(),
+        day_digests.len(),
+        prompt.chars().count(),
+        provider_label_for(ai_runtime),
+        model_label_for(ai_runtime),
+    ));
+
     let extracted =
         ai_engine::extract_with_preamble::<DigestNarrative>(&engine, &preamble, &prompt).await;
     let batch = match extracted {
         Ok(batch) => batch,
         Err(error) => {
-            let message = error.to_string();
-            record_digest_run(store, ai_runtime, "failed", input_tokens, 0, Some(message.clone()))
-                .await;
-            return Err(format!("Digest generation failed: {message}"));
+            // Log the RAW provider/transport error (the user-facing message is a
+            // lossy one-liner; the raw text carries the status code + provider
+            // body needed to tell "thinking mode rejected tool_choice" apart from
+            // a bad key or an outage).
+            crate::native_capture::debug_log::log_warn(format!(
+                "digest: extraction FAILED for {range_kind} [{range_start_ms}..{range_end_ms}): {error}"
+            ));
+            // The ledger keeps the raw provider/transport detail for debugging;
+            // the surface gets the one-sentence classification (rate limit,
+            // rejected key, out of quota, unreachable, …) so a forced re-read can
+            // tell the user WHY the inshort failed instead of silently omitting it.
+            record_digest_run(
+                store,
+                ai_runtime,
+                "failed",
+                input_tokens,
+                0,
+                Some(error.to_string()),
+            )
+            .await;
+            return Err(error.user_facing_message());
         }
     };
     let output_tokens = estimate_tokens(&batch.narrative) + estimate_tokens(&batch.headline);
@@ -821,7 +868,9 @@ pub async fn get_or_generate_digest(
             Some("engine returned an empty narrative".to_string()),
         )
         .await;
-        return Err("Digest generation failed: engine returned an empty narrative".to_string());
+        return Err(
+            "The AI engine returned an empty read. Try again in a moment.".to_string(),
+        );
     };
     // An unusable headline is NOT a failure — the narrative-only digest stands.
     let headline = normalize_headline(&batch.headline);
@@ -863,6 +912,13 @@ pub async fn get_or_generate_digest(
         .await
         .map_err(|error| error.to_string())?;
     record_digest_run(store, ai_runtime, "completed", input_tokens, output_tokens, None).await;
+
+    crate::native_capture::debug_log::log_info(format!(
+        "digest: generated {range_kind} [{range_start_ms}..{range_end_ms}) \
+         narrative_chars={} headline={:?} output_tokens={output_tokens}",
+        narrative.chars().count(),
+        headline.as_deref(),
+    ));
 
     Ok(Some(digest_dto(
         range_kind,
