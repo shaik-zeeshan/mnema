@@ -1819,10 +1819,11 @@ fn mark_windows_family_paused_with_screen_reason(
 #[cfg(target_os = "windows")]
 pub(super) fn pause_screen_for_inactivity_with_app_handle(
     runtime: &mut NativeCaptureRuntime,
-    _app_handle: Option<&tauri::AppHandle>,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     pause_windows_screen_with_reason(
         runtime,
+        app_handle,
         super::inactivity::ScreenPauseReason::Inactivity,
         "inactivity",
         false,
@@ -1843,6 +1844,12 @@ pub(super) fn pause_screen_for_transient_liveness(
 ) -> Result<(), CaptureErrorResponse> {
     pause_windows_screen_with_reason(
         runtime,
+        // The transient-liveness pause callers (lifecycle screen-stop handlers,
+        // session lock, system suspend) do not thread an app handle; its
+        // finalized segment is often already dead, so scrub-preview warming is
+        // skipped here (the helper no-ops on `None`) and left to the inactivity
+        // pause / rotate / stop paths.
+        None,
         super::inactivity::ScreenPauseReason::TransientLiveness { trigger },
         "transient liveness",
         true,
@@ -1857,6 +1864,7 @@ pub(super) fn pause_screen_for_transient_liveness(
 #[cfg(target_os = "windows")]
 fn pause_windows_screen_with_reason(
     runtime: &mut NativeCaptureRuntime,
+    app_handle: Option<&tauri::AppHandle>,
     screen_pause_reason: super::inactivity::ScreenPauseReason,
     context: &str,
     tolerate_stop_error: bool,
@@ -1918,6 +1926,12 @@ fn pause_windows_screen_with_reason(
     }
 
     append_committed_outputs(runtime, screen_outputs.as_ref());
+    // A pause-finalized screen segment is final (it will not be rotated again), so
+    // enqueue its scrub-preview generation here just like the rotate/stop paths and
+    // the macOS pause path; without this an idle-paused segment never gets background
+    // previews (#83). No-ops when there is no app handle (transient-liveness pauses)
+    // or no screen files.
+    warm_scrub_previews_for_committed_screen_outputs(app_handle, screen_outputs.as_ref());
     runtime.recording_file = None;
     clear_current_screen_output(runtime.current_segment_output_files.as_mut());
     mark_windows_family_paused_with_screen_reason(
