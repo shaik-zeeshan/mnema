@@ -19,6 +19,15 @@ const STOPWORDS = new Set<string>([
   "should", "will", "shall", "may", "might", "any", "all", "some",
 ]);
 
+// UTF-8 byte length of a string. The Rust port gates tokens on `str::len()`
+// (byte length), so a CJK character — 1 UTF-16 unit but 3 UTF-8 bytes — counts
+// toward the >= 3 threshold the same way it does on the backend. Using JS
+// `.length` (UTF-16 units) instead would silently drop single/short CJK queries.
+const encoder = new TextEncoder();
+function byteLength(s: string): number {
+  return encoder.encode(s).length;
+}
+
 // Extra weight applied to a token that hits the subject NAME (on top of the
 // base overlap, which already counts the name as part of the document). ~1.0
 // makes a name hit count roughly double a statement-only hit.
@@ -76,30 +85,33 @@ export function stem(word: string): string {
   return stemmed.slice(0, end);
 }
 
-/** Lowercase + tokenize the query into stemmed whole-word keys (length >= 3,
- *  punctuation stripped), dropping stopwords and de-duplicating so a repeated
- *  query word can't inflate the score. Empty when the query has no usable
- *  tokens. Port of `recall_query_tokens`. */
+/** Lowercase + tokenize the query into stemmed whole-word keys (>= 3 UTF-8
+ *  bytes, punctuation stripped), dropping stopwords and de-duplicating so a
+ *  repeated query word can't inflate the score. Empty when the query has no
+ *  usable tokens. Port of `recall_query_tokens` — the length gate uses UTF-8
+ *  byte length to match the Rust `str::len()` semantics (so a single CJK char,
+ *  3 bytes, clears the threshold). */
 export function queryTokens(query: string): string[] {
   const tokens: string[] = [];
   // Split on anything that isn't a Unicode letter/number so non-ASCII subject
   // names (accents, CJK, etc.) tokenize too — mirrors the Unicode-aware backend.
   for (const raw of query.split(/[^\p{L}\p{N}]+/u)) {
     const word = raw.toLowerCase();
-    if (word.length < 3 || STOPWORDS.has(word)) continue;
+    if (byteLength(word) < 3 || STOPWORDS.has(word)) continue;
     const stemmed = stem(word);
     if (!tokens.includes(stemmed)) tokens.push(stemmed);
   }
   return tokens;
 }
 
-/** Split text into the same lowercased, stemmed whole-word keys (length >= 3)
- *  the query is normalized to, so the two sides compare like-for-like. Port of
- *  `recall_doc_words`. */
+/** Split text into the same lowercased, stemmed whole-word keys (>= 3 UTF-8
+ *  bytes) the query is normalized to, so the two sides compare like-for-like.
+ *  Port of `recall_doc_words` — the length gate uses UTF-8 byte length to match
+ *  the Rust `str::len()` semantics. */
 function docWords(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of text.split(/[^\p{L}\p{N}]+/u)) {
-    if (raw.length < 3) continue;
+    if (byteLength(raw) < 3) continue;
     out.add(stem(raw.toLowerCase()));
   }
   return out;
