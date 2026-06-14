@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by [ADR 0033](0033-ask-ai-migrates-onto-shared-reasoning-engine.md)
 ---
 
 # Ask AI delegates provider auth to the user's installed PI

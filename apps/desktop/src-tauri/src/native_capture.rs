@@ -27,11 +27,13 @@ use capture_types::{
     NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, OcrProvider, OcrSettings,
     RecordingSettings, RecordingSettingsDomainUpdateResponse, ScreenResolution,
     ScreenResolutionPreset, SettingsOwnershipDomain, StartNativeCaptureRequest,
-    UpdateAccessSettingsRequest, UpdateCaptureSourceSettingsRequest,
-    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
+    UpdateAccessSettingsRequest, UpdateAiRuntimeSettingsRequest,
+    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
+    UpdateDeveloperSettingsRequest,
     UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
     UpdateMicrophoneControllerRequest, UpdateProcessingSettingsRequest,
-    UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest, UpdateVideoSettingsRequest,
+    UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest,
+    UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest,
     VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::configured_adapter_as_str;
@@ -285,16 +287,36 @@ pub async fn resolve_app_icons(
 
     #[cfg(target_os = "macos")]
     {
+        // Each requested identifier resolves to an app bundle path. They are
+        // usually bundle ids, but some callers (e.g. the Ask-AI timeline chip)
+        // pass a human display name like "Zen Browser"; when the bundle-id
+        // lookup misses, fall back to a case-insensitive match against the
+        // installed/running app catalog so those chips still get a real icon.
+        // Non-app labels (e.g. a website name) stay unresolved, and the frontend
+        // renders its letter fallback.
+        let mut bundle_paths: BTreeMap<String, Option<PathBuf>> = requested_bundle_ids
+            .iter()
+            .map(|identifier| (identifier.clone(), app_icon_bundle_path(identifier)))
+            .collect();
+        if bundle_paths.values().any(Option::is_none) {
+            let catalog = app_display_name_bundle_path_catalog();
+            for (identifier, path) in bundle_paths.iter_mut() {
+                if path.is_none() {
+                    *path = catalog.get(&canonical_app_display_name(identifier)).cloned();
+                }
+            }
+        }
+
         let mut candidates = BTreeMap::new();
-        for bundle_id in &requested_bundle_ids {
+        for identifier in &requested_bundle_ids {
             insert_privacy_app_candidate(
                 &mut candidates,
                 PrivacyAppCandidate {
-                    bundle_id: bundle_id.clone(),
-                    display_name: bundle_id.clone(),
+                    bundle_id: identifier.clone(),
+                    display_name: identifier.clone(),
                     running: false,
                     icon_path: None,
-                    bundle_path: app_icon_bundle_path(bundle_id),
+                    bundle_path: bundle_paths.get(identifier).cloned().flatten(),
                 },
             );
         }
@@ -523,6 +545,37 @@ fn app_icon_bundle_path(bundle_id: &str) -> Option<PathBuf> {
             .then(main_bundle_path)
             .flatten()
     })
+}
+
+#[cfg(target_os = "macos")]
+fn canonical_app_display_name(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+/// Index installed/running apps by canonical display name → bundle path, so an
+/// icon request that carries a human name (e.g. "Zen Browser") rather than a
+/// bundle id can still resolve to a real app icon. Built lazily and only when a
+/// bundle-id lookup has already missed, since it scans the application folders.
+#[cfg(target_os = "macos")]
+fn app_display_name_bundle_path_catalog() -> std::collections::HashMap<String, PathBuf> {
+    let mut candidates = BTreeMap::new();
+    add_installed_privacy_app_candidates(&mut candidates);
+    merge_running_privacy_app_candidates(&mut candidates, running_privacy_app_candidates());
+
+    let mut by_name = std::collections::HashMap::new();
+    for candidate in candidates.into_values() {
+        let Some(bundle_path) = candidate.bundle_path else {
+            continue;
+        };
+        let key = canonical_app_display_name(&candidate.display_name);
+        if key.is_empty() {
+            continue;
+        }
+        // First match wins; a display-name collision across two installed apps is
+        // rare and any matching real icon is acceptable for a decorative chip.
+        by_name.entry(key).or_insert(bundle_path);
+    }
+    by_name
 }
 
 #[cfg(target_os = "macos")]
@@ -2691,6 +2744,32 @@ pub fn update_access_settings(
         &app_handle,
         state.inner(),
         RecordingSettingsDomainPatch::Access(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_ai_runtime_settings(
+    request: UpdateAiRuntimeSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::AiRuntime(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_user_context_settings(
+    request: UpdateUserContextSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::UserContext(request),
     )
 }
 

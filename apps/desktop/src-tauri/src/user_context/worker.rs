@@ -1,0 +1,1580 @@
+//! Background **Activity** derivation worker (issue #93).
+//!
+//! Mirrors `spawn_retention_cleanup_worker`: one `tauri::async_runtime::spawn`
+//! loop, tracked for graceful shutdown, that selects between a tier-paced sleep
+//! and the shutdown watch. The loop runs the **OCR Catch-Up** pattern — it walks
+//! the forward (newest) un-derived capture window opportunistically off the
+//! capture hot path and asks the configured Reasoning Engine to segment it into
+//! semantic Activities.
+//!
+//! Cheapness when disabled is load-bearing: continuous derivation is gated on
+//! the **User Context** opt-in (`user_context.enabled`, off by default) AND the
+//! shared engine-configured prerequisite, so a tick with the opt-in off (or an
+//! unresolved/unreachable engine) does nothing but sleep the idle interval. No
+//! store/LLM work happens.
+//!
+//! Conclusion distillation (#94) runs on a slower beat after the Activity window
+//! each tick (see [`WorkerCadence`]); confidence decay (#95) extends the loop on
+//! a slower beat still — see the cadence note near [`run_forward_activity_window`].
+//!
+//! GAP CATCH-UP. The forward beat covers at most one `MAX_WINDOW_MS` window per
+//! tick, so a long time behind realtime would otherwise drain one window per
+//! tick-interval — hours of crawl after the worker (or the engine) was idle.
+//! Two mechanisms keep catch-up fast:
+//!   - **Empty-gap jump (A):** an *empty* forward window (no captures — e.g. an
+//!     away-from-keyboard gap) jumps the cursor straight to the next raw capture
+//!     (or to `now` if there is none) in a SINGLE tick instead of stepping one
+//!     30-minute window. See [`empty_window_jump_target`] and the empty-window
+//!     branch of [`run_forward_activity_window`].
+//!   - **Catch-up cadence (C):** when the forward beat actually covered a window
+//!     this tick AND the cursor is still more than one window behind `now`, the
+//!     tick sleeps [`CATCHUP_INTERVAL`] (a few seconds) instead of the full tier
+//!     interval, so windows-with-captures drain back-to-back until within one
+//!     window of realtime. See [`is_catching_up`] and `worker_tick`.
+
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use capture_types::{AiProviderKind, DerivationBudgetTier};
+use tauri::{Emitter, Manager};
+
+use app_infra::retry_policy::RetryPolicy;
+use app_infra::user_context::confidence;
+use app_infra::{DistillationGateDrops, NewDerivationRun, UserContextStore};
+
+use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
+use crate::native_capture::{read_recording_settings, RecordingSettingsState};
+
+use super::derivation;
+
+/// Frontend event emitted after a derivation pass changes the dossier, so the
+/// settings preview list + status can refresh. Carries no payload.
+pub const USER_CONTEXT_CHANGED_EVENT: &str = "user_context_changed";
+
+/// Idle interval when the engine is disabled / unresolved. Kept modest so the
+/// worker notices an enable promptly, but it does no work on these ticks.
+const IDLE_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Tier-based poll intervals for a cloud engine (the Derivation Budget knob).
+const LIGHT_INTERVAL: Duration = Duration::from_secs(600);
+const BALANCED_INTERVAL: Duration = Duration::from_secs(300);
+const THOROUGH_INTERVAL: Duration = Duration::from_secs(120);
+
+/// Local engine pacing is fixed (resource pacing only; the tier knob is
+/// cloud-only because it is about token spend).
+const LOCAL_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Catch-up sleep: when the forward beat did real work but the cursor is still
+/// more than one window behind `now`, the worker ticks again after this short
+/// interval instead of the full tier interval, draining the backlog back-to-back
+/// until it is within one window of realtime. (Empty gaps are already collapsed
+/// in one tick by the cursor jump; this drains a backlog of windows that have captures.)
+const CATCHUP_INTERVAL: Duration = Duration::from_secs(5);
+/// Forward-backlog threshold for entering catch-up cadence: more than one full
+/// window (`MAX_WINDOW_MS`) of un-derived time still ahead of the cursor.
+const CATCHUP_BACKLOG_MS: i64 = MAX_WINDOW_MS;
+
+/// How far back the very first forward window reaches when nothing has been
+/// derived yet (6h). Older history is the job of History Backfill (#98); this
+/// slice only walks forward.
+const INITIAL_LOOKBACK_MS: i64 = 6 * 60 * 60 * 1000;
+
+/// Don't derive until at least this much new, un-derived time has accumulated,
+/// so the engine sees a real stretch of activity (intent shifts need context).
+const MIN_WINDOW_MS: i64 = 120 * 1000;
+
+/// Cap one window so a long gap since the last run is split across ticks rather
+/// than derived in a single oversized prompt (30 min).
+const MAX_WINDOW_MS: i64 = 30 * 60 * 1000;
+
+/// Cap items per window so a busy stretch stays within a sane prompt budget.
+const MAX_ITEMS: i64 = 80;
+
+/// One **History Backfill** window walks this far back per pass (30 min, matching
+/// the forward `MAX_WINDOW_MS`). Backfill extends coverage backward, newest-first,
+/// one bounded window at a time — a background trickle paced by the Derivation
+/// Budget, never a synchronous whole-history bill.
+const BACKFILL_WINDOW_MS: i64 = 30 * 60 * 1000;
+
+/// Per-tick **backfill intensity** — how many backward windows one tick may
+/// derive — as a function of the resolved engine + tier. This is what makes the
+/// named cloud tier a *real* intensity knob (not just a sleep): Thorough chews
+/// through more history per pass, Light at most one. A LOCAL engine ignores the
+/// tier entirely (fixed resource pacing, like OCR) and does one window per tick.
+///
+/// Cloud: Light = 1, Balanced = 2, Thorough = 4 windows/tick (paired with the
+/// tier sleeps `LIGHT_INTERVAL` 600s / `BALANCED_INTERVAL` 300s / `THOROUGH_INTERVAL`
+/// 120s, so the windows-per-hour spread is wide: ~6 / ~24 / ~120). Local = 1.
+/// The engine is keyed by the global default model's provider (ADR 0034).
+fn backfill_windows_per_tick(provider: AiProviderKind, tier: DerivationBudgetTier) -> u32 {
+    if provider.is_local() {
+        1
+    } else {
+        match tier {
+            DerivationBudgetTier::Light => 1,
+            DerivationBudgetTier::Balanced => 2,
+            DerivationBudgetTier::Thorough => 4,
+        }
+    }
+}
+
+/// Process-wide serialization for the forward Activity beat (#12). BOTH the
+/// background worker tick AND the "Run derivation now" command call
+/// [`run_forward_activity_window`]; without a guard they could read the same
+/// cursor, pick the same `[start, end]` window, and derive it twice — DUPLICATE
+/// Activities and a second cloud bill for that span. This `tokio::Mutex` is
+/// `try_lock`'d inside [`run_forward_activity_window`], so whichever caller is
+/// already mid-window wins and the other returns a no-op for this pass (the
+/// worker simply retries next tick). Paired with the `derived_window_exists`
+/// idempotency guard below, which extinguishes the race even across the
+/// select-window gap (e.g. a run that committed between lock release and the next
+/// caller's window selection).
+static FORWARD_DERIVATION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn forward_derivation_lock() -> &'static tokio::sync::Mutex<()> {
+    FORWARD_DERIVATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Current unix time in milliseconds (matches the user_context `*_at_ms`
+/// convention; no `Date.now()`-style nondeterminism).
+pub(crate) fn now_ms() -> i64 {
+    (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
+}
+
+/// The tier-paced sleep between ticks for a resolved engine (keyed by the
+/// global default model's provider: local = fixed pacing, cloud = the tier).
+fn tick_interval(provider: AiProviderKind, tier: DerivationBudgetTier) -> Duration {
+    if provider.is_local() {
+        LOCAL_INTERVAL
+    } else {
+        match tier {
+            DerivationBudgetTier::Light => LIGHT_INTERVAL,
+            DerivationBudgetTier::Balanced => BALANCED_INTERVAL,
+            DerivationBudgetTier::Thorough => THOROUGH_INTERVAL,
+        }
+    }
+}
+
+/// The next forward window `[start, end]` to derive, or `None` when not enough
+/// new time has accumulated yet. `start` resumes from the newest covered window
+/// (or `now - INITIAL_LOOKBACK_MS` on a cold store); `end` is `now`, clamped to
+/// at most `MAX_WINDOW_MS` past `start`.
+fn next_forward_window(now: i64, last_covered_end: Option<i64>) -> Option<(i64, i64)> {
+    let start = last_covered_end.unwrap_or_else(|| now.saturating_sub(INITIAL_LOOKBACK_MS));
+    if now.saturating_sub(start) < MIN_WINDOW_MS {
+        return None;
+    }
+    let end = now.min(start.saturating_add(MAX_WINDOW_MS));
+    Some((start, end))
+}
+
+/// Where to advance the forward cursor when a window read empty (A). Rather than
+/// stepping one `MAX_WINDOW_MS` window across a multi-hour away-from-keyboard gap
+/// (one tick per 30 min), jump in O(1) to the next raw capture — or straight to
+/// `now` when nothing has been captured since `end`.
+///
+/// `next_raw_capture` is `store.next_raw_capture_at_ms(end)`: the earliest RAW
+/// (NOT OCR-completeness-filtered, on purpose) frame/audio timestamp at-or-after
+/// `end`, or `None` if there is none. The RAW-ness matters: if a capture sits
+/// *within* the just-read window its OCR may still be pending, so we must NOT
+/// leap past it — we advance one window as before and re-derive it next tick.
+///
+/// Invariant: the result is always `>= end` (the cursor never goes backward)
+/// and `<= now`.
+fn empty_window_jump_target(end: i64, now: i64, next_raw_capture: Option<i64>) -> i64 {
+    let target = match next_raw_capture {
+        // Empty gap [end, next): jump past it (clamped to `now`).
+        Some(next) if next > end => next.min(now),
+        // A raw capture sits within the just-read window (OCR pending): do NOT
+        // leap past it — advance one window as before.
+        Some(_) => end,
+        // No raw captures at/after `end`: safe to jump straight to `now`.
+        None => now,
+    };
+    // Defensive clamp: `end <= result <= now` (note `end <= now` always holds here).
+    target.max(end).min(now)
+}
+
+/// Whether the worker should use the short catch-up cadence after this tick (C):
+/// only when the forward beat actually covered a window this tick
+/// (`derived_window`) AND the cursor is still more than `CATCHUP_BACKLOG_MS`
+/// behind `now`.
+fn is_catching_up(derived_window: bool, forward_backlog_ms: i64) -> bool {
+    derived_window && forward_backlog_ms > CATCHUP_BACKLOG_MS
+}
+
+/// The **History Backfill** floor (#98): how far back backfill is allowed to
+/// reach, newest-first. When **go-deeper** is on, the floor is the true earliest
+/// capture (`earliest_capture_at_ms`, all of history); otherwise it is the
+/// bounded recent window `now - backfill_window_days`. A `None` earliest-capture
+/// (no captures, or go-deeper but nothing recorded) collapses to `now`, which
+/// makes backfill a no-op (the floor is at/after coverage) until captures exist.
+///
+/// This bounded-by-default-with-explicit-go-deeper shape is what caps the
+/// "cost surprise" even at the Thorough tier: backfill stops at the floor.
+///
+/// Shared with the status command (`get_user_context_status`) so the worker's
+/// backfill floor and the "backfilling" progress readout agree on exactly the
+/// same floor for a given settings snapshot.
+pub(crate) fn backfill_floor_ms(
+    now: i64,
+    window_days: u32,
+    go_deeper: bool,
+    earliest_capture: Option<i64>,
+) -> i64 {
+    if go_deeper {
+        earliest_capture.unwrap_or(now)
+    } else {
+        now.saturating_sub((window_days as i64).saturating_mul(86_400_000))
+    }
+}
+
+/// The next backward backfill window `[start, end]`, or `None` when backfill has
+/// nothing to do this pass. `oldest_covered` is the trailing edge of coverage
+/// (`oldest_derivation_run_window_start`); the window is
+/// `[max(floor, oldest_covered - BACKFILL_WINDOW_MS) .. oldest_covered]`. When
+/// `oldest_covered <= floor`, coverage already reaches the floor → `None`
+/// (backfill complete).
+fn next_backfill_window(floor_ms: i64, oldest_covered: i64) -> Option<(i64, i64)> {
+    if oldest_covered <= floor_ms {
+        return None;
+    }
+    let start = floor_ms.max(oldest_covered.saturating_sub(BACKFILL_WINDOW_MS));
+    Some((start, oldest_covered))
+}
+
+/// The result of running one forward window (used by both the worker tick and
+/// the manual run-now command).
+#[derive(Debug, Clone)]
+pub struct ForwardWindowRun {
+    pub activities_derived: i64,
+    pub window_start_ms: i64,
+    pub window_end_ms: i64,
+    pub items_read: i64,
+    /// Human-readable outcome for the run-now button / logs.
+    pub message: String,
+    /// Whether the dossier changed (drives whether to emit the refresh event).
+    pub changed: bool,
+    /// Whether a forward window was actually *picked* this pass (i.e.
+    /// `next_forward_window` returned a window). `false` means the forward catch-up
+    /// is caught up — there was no new recent window to derive — which is the signal
+    /// the worker uses to gate the backward **History Backfill** pass (newest-first:
+    /// backfill only runs when forward has nothing new). Note this is `true` even
+    /// when the window read empty / derived zero Activities — what matters for the
+    /// interleave is whether forward had ground to cover, not the yield.
+    pub derived_window: bool,
+}
+
+/// Run exactly one forward un-derived Activity window end-to-end: pick the
+/// window, read the redacted capture text, ask the engine to segment it, persist
+/// the Activities, and stamp a single `derivation_run` ledger row (which also
+/// advances the newest-covered cursor). Never panics; an engine error records a
+/// `failed` run so the cursor still advances and the loop/caller continues.
+///
+/// EMPTY-GAP JUMP (A): when the window reads empty (no captures — an
+/// away-from-keyboard gap), the recorded `skipped` run advances the cursor in
+/// O(1) to the next raw capture (or to `now` if there is none) via
+/// [`empty_window_jump_target`], instead of stepping a single `MAX_WINDOW_MS`.
+/// This collapses a multi-hour zero-capture gap into one tick rather than one
+/// tick per 30 minutes. A capture sitting *within* the just-read window (OCR
+/// still pending) is never leapt past — the cursor advances one window as before.
+///
+/// `provider_label` / `model_label` are recorded on the run row for the
+/// tokens-used readout. The engine is already resolved (key sourced from the
+/// keychain) — this fn never touches credentials.
+///
+/// CADENCE HOOK (for #94/#95): this is the Activity beat. A Conclusion
+/// distillation pass (`distill_conclusions`) should run on a slower beat — e.g.
+/// every K successful Activity ticks or when new Activities exist since the last
+/// distillation — and a confidence-decay pass slower still. Add those as sibling
+/// helpers called from `worker_tick` after `run_forward_activity_window`, each
+/// recording its own `derivation_run` (kind `'conclusion'` / `'confidence'`).
+pub async fn run_forward_activity_window(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> ForwardWindowRun {
+    let now = now_ms();
+
+    // (#12) Serialize the forward beat: if another caller (the worker tick or the
+    // run-now command) is already mid-window, do not race it onto the same cursor.
+    // `try_lock` — neither caller blocks; the loser returns a no-op (the worker
+    // retries next tick; the manual command reports it).
+    let _guard = match forward_derivation_lock().try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            let last_covered_end = store
+                .latest_derivation_run_window()
+                .await
+                .ok()
+                .flatten()
+                .map(|(_, end)| end);
+            return ForwardWindowRun {
+                activities_derived: 0,
+                window_start_ms: last_covered_end.unwrap_or(now),
+                window_end_ms: now,
+                items_read: 0,
+                message: "A derivation pass is already running.".to_string(),
+                changed: false,
+                derived_window: false,
+            };
+        }
+    };
+
+    let last_covered_end = store
+        .latest_derivation_run_window()
+        .await
+        .ok()
+        .flatten()
+        .map(|(_, end)| end);
+
+    let Some((start, end)) = next_forward_window(now, last_covered_end) else {
+        return ForwardWindowRun {
+            activities_derived: 0,
+            window_start_ms: last_covered_end.unwrap_or(now),
+            window_end_ms: now,
+            items_read: 0,
+            message: "Not enough new captures yet to derive an Activity.".to_string(),
+            changed: false,
+            derived_window: false,
+        };
+    };
+
+    // Idempotency backstop (#12): a run may already cover exactly this window — a
+    // racing caller could have committed it between our lock acquisition and the
+    // cursor read above (the cursor read is not itself under any longer-held lock).
+    // `derived_window_exists` is the guard that was built for this and never wired.
+    // Treat an already-covered window as a no-op rather than re-billing it.
+    if store.derived_window_exists(start, end).await.unwrap_or(false) {
+        return ForwardWindowRun {
+            activities_derived: 0,
+            window_start_ms: start,
+            window_end_ms: end,
+            items_read: 0,
+            message: "This window was already derived.".to_string(),
+            changed: false,
+            derived_window: false,
+        };
+    }
+
+    let window = match store.read_capture_window(start, end, MAX_ITEMS).await {
+        Ok(window) => window,
+        Err(error) => {
+            // Could not even read the window: record a failed run so the cursor
+            // still advances, and report it.
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "activity".to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label.clone(),
+                    model: model_label.clone(),
+                    error: Some(error.to_string()),
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            return ForwardWindowRun {
+                activities_derived: 0,
+                window_start_ms: start,
+                window_end_ms: end,
+                items_read: 0,
+                message: format!("Failed to read capture window: {error}"),
+                changed: false,
+                derived_window: true,
+            };
+        }
+    };
+
+    let items_read = window.items.len() as i64;
+
+    // No captures in range: record a `skipped` run to ADVANCE the cursor so the
+    // worker does not re-pick the same empty window forever. Rather than stepping
+    // a single window, jump the cursor in O(1) past the empty gap to the next raw
+    // capture (A) — see `empty_window_jump_target`. The `Err` fallback stays here
+    // as `end` (a failed jump query degrades to the old one-window step).
+    if window.items.is_empty() {
+        let jump_to = match store.next_raw_capture_at_ms(end).await {
+            Ok(next) => empty_window_jump_target(end, now, next),
+            Err(_) => end, // query failed: fall back to the current 30-min step
+        };
+        let _ = store
+            .insert_derivation_run(NewDerivationRun {
+                kind: "activity".to_string(),
+                window_start_ms: Some(start),
+                window_end_ms: Some(jump_to),
+                status: "skipped".to_string(),
+                activities_derived: 0,
+                conclusions_derived: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                provider: provider_label,
+                model: model_label,
+                error: None,
+                gate_drops: DistillationGateDrops::default(),
+            })
+            .await;
+        let message = if jump_to > end {
+            "No captures in range; jumped the derivation cursor past the empty gap.".to_string()
+        } else {
+            "No captures in range; advanced the derivation cursor.".to_string()
+        };
+        return ForwardWindowRun {
+            activities_derived: 0,
+            window_start_ms: start,
+            window_end_ms: jump_to,
+            items_read: 0,
+            message,
+            changed: false,
+            derived_window: true,
+        };
+    }
+
+    // Run the LLM segmentation, then stamp ONE derivation_run with the final
+    // outcome (status / count / estimated tokens / window). This single insert
+    // both records the result and advances the newest-covered cursor.
+    match derivation::derive_activities(
+        engine,
+        store,
+        window,
+        provider_label.clone(),
+        model_label.clone(),
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "activity".to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "completed".to_string(),
+                    activities_derived: outcome.inserted as i64,
+                    conclusions_derived: 0,
+                    input_tokens: outcome.input_tokens,
+                    output_tokens: outcome.output_tokens,
+                    provider: provider_label,
+                    model: model_label,
+                    error: None,
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            let message = if outcome.inserted == 0 {
+                "Derivation completed; no new Activities in this window.".to_string()
+            } else {
+                format!(
+                    "Derived {} {} from {} capture item(s).",
+                    outcome.inserted,
+                    if outcome.inserted == 1 {
+                        "Activity"
+                    } else {
+                        "Activities"
+                    },
+                    items_read
+                )
+            };
+            ForwardWindowRun {
+                activities_derived: outcome.inserted as i64,
+                window_start_ms: start,
+                window_end_ms: end,
+                items_read,
+                message,
+                changed: outcome.inserted > 0,
+                derived_window: true,
+            }
+        }
+        Err(error) => {
+            // Record a failed run (cursor still advances) and report it; never
+            // panic the worker.
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "activity".to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error.clone()),
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            ForwardWindowRun {
+                activities_derived: 0,
+                window_start_ms: start,
+                window_end_ms: end,
+                items_read,
+                message: format!("Derivation failed: {error}"),
+                changed: false,
+                derived_window: true,
+            }
+        }
+    }
+}
+
+/// The outcome of deriving one bounded window (shared by the backward
+/// **History Backfill** pass and the failed-window **Retry** pass, #113).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackfillStep {
+    /// Coverage already reaches the floor — nothing left to backfill this pass.
+    Complete,
+    /// A window was read but had no captures; a `skipped` run advanced the
+    /// cursor. Keep going (more windows may have content).
+    Advanced,
+    /// A window was derived (≥1 Activity), recorded as a completed run.
+    Derived,
+    /// A window read empty-of-engine-work or failed; the outcome was still
+    /// recorded via a run. Keep going.
+    NoChange,
+}
+
+/// Derive ONE explicit `[start, end]` window and stamp a `derivation_run` of
+/// `kind` with the outcome (empty → `skipped`, derived → `completed`, engine
+/// error → `failed`). This is the shared engine-facing half of both the
+/// History Backfill step (#98) and the failed-window Retry step (#113); the
+/// callers own window *selection*. Resilient: an error records a `failed` run
+/// and returns `BackfillStep::NoChange`; it never panics.
+async fn derive_window_and_record(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    kind: &str,
+    start: i64,
+    end: i64,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> BackfillStep {
+    let window = match store.read_capture_window(start, end, MAX_ITEMS).await {
+        Ok(window) => window,
+        Err(error) => {
+            // Record a failed run so the outcome stays visible in the ledger.
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: kind.to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error.to_string()),
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            return BackfillStep::NoChange;
+        }
+    };
+
+    // No captures in this window: record a `skipped` run to advance the cursor
+    // (and, for a retry, extinguish the hole — the captures are gone).
+    if window.items.is_empty() {
+        let _ = store
+            .insert_derivation_run(NewDerivationRun {
+                kind: kind.to_string(),
+                window_start_ms: Some(start),
+                window_end_ms: Some(end),
+                status: "skipped".to_string(),
+                activities_derived: 0,
+                conclusions_derived: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                provider: provider_label,
+                model: model_label,
+                error: None,
+                gate_drops: DistillationGateDrops::default(),
+            })
+            .await;
+        return BackfillStep::Advanced;
+    }
+
+    match derivation::derive_activities(
+        engine,
+        store,
+        window,
+        provider_label.clone(),
+        model_label.clone(),
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: kind.to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "completed".to_string(),
+                    activities_derived: outcome.inserted as i64,
+                    conclusions_derived: 0,
+                    input_tokens: outcome.input_tokens,
+                    output_tokens: outcome.output_tokens,
+                    provider: provider_label,
+                    model: model_label,
+                    error: None,
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            if outcome.inserted > 0 {
+                BackfillStep::Derived
+            } else {
+                BackfillStep::NoChange
+            }
+        }
+        Err(error) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: kind.to_string(),
+                    window_start_ms: Some(start),
+                    window_end_ms: Some(end),
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error),
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            BackfillStep::NoChange
+        }
+    }
+}
+
+/// Run exactly ONE backward **History Backfill** window (#98): extend coverage
+/// older by `[max(floor, oldest_covered - BACKFILL_WINDOW_MS) .. oldest_covered]`.
+/// This walks history newest-first, one bounded window per call — a background
+/// trickle, NOT a synchronous whole-history bill (there is deliberately no
+/// "derive all of history now" path).
+///
+/// Every outcome records a `'backfill'`-kind `derivation_run` so the
+/// oldest-covered cursor advances backward each pass (empty → `skipped`,
+/// derived → `completed`, engine error → `failed`). Resilient: an error records
+/// a `failed` run and returns `BackfillStep::NoChange`; it never panics.
+///
+/// `oldest_covered` is the caller-resolved `oldest_derivation_run_window_start()`;
+/// the caller skips backfill entirely (forward seeds coverage first) when that is
+/// `None`. `floor_ms` is `backfill_floor_ms(...)`.
+async fn run_backfill_window(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    floor_ms: i64,
+    oldest_covered: i64,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> BackfillStep {
+    let Some((start, end)) = next_backfill_window(floor_ms, oldest_covered) else {
+        return BackfillStep::Complete;
+    };
+    derive_window_and_record(
+        engine,
+        store,
+        "backfill",
+        start,
+        end,
+        provider_label,
+        model_label,
+    )
+    .await
+}
+
+/// Run the per-tick backward **History Backfill** pass: up to
+/// `backfill_windows_per_tick(provider, tier)` windows, oldest-covered →
+/// floor. Returns whether any window derived an Activity (so the caller can emit
+/// `user_context_changed`). Stops early when backfill is complete. Re-reads the
+/// oldest-covered cursor between windows so each window steps strictly older.
+///
+/// Newest-first ordering invariant (#98): the caller runs this ONLY after the
+/// forward catch-up is caught up this tick, so recent windows are always covered
+/// before older ones — recency-weighted Confidence means recent history drives
+/// current conclusions.
+async fn run_backfill_pass(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    floor_ms: i64,
+    max_windows: u32,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> bool {
+    let mut derived_anything = false;
+    for _ in 0..max_windows {
+        let oldest_covered = match store.oldest_derivation_run_window_start().await {
+            Ok(Some(oldest)) => oldest,
+            // No windowed coverage yet → the forward pass seeds it first; skip.
+            Ok(None) => break,
+            Err(_) => break,
+        };
+        let step = run_backfill_window(
+            engine,
+            store,
+            floor_ms,
+            oldest_covered,
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await;
+        match step {
+            BackfillStep::Complete => break,
+            BackfillStep::Derived => derived_anything = true,
+            BackfillStep::Advanced | BackfillStep::NoChange => {}
+        }
+    }
+    derived_anything
+}
+
+/// Retry policy for failed derivation windows: 3 total attempts (original + 2 retries),
+/// flat 10-minute backoff between attempts. Mirrors the processing-queue caps in
+/// `processing/store.rs`; a single-element `backoff_seconds` slice saturates to the same
+/// value for every failure count, giving flat (non-stepped) spacing.
+const WINDOW_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    max_attempts: 3,
+    backoff_seconds: &[600],
+};
+
+/// At most this many failed windows are retried per tick. Retries are a
+/// low-priority background trickle behind fresh forward work and backfill,
+/// never a burst.
+const RETRY_WINDOWS_PER_TICK: i64 = 1;
+
+/// Run the per-tick failed-window **Retry** pass (#113): re-derive up to
+/// [`RETRY_WINDOWS_PER_TICK`] `failed` windows whose span was never covered by
+/// a later `completed`/`skipped` run, newest-first. Eligibility (the
+/// per-window [`MAX_WINDOW_DERIVATION_FAILURES`] cap and the
+/// [`RETRY_BACKOFF_MS`] spacing) is resolved by the store query; a successful
+/// or `skipped` retry run extinguishes the hole, while another failure counts
+/// toward the cap and re-arms the backoff. Runs AFTER the forward beat (fresh
+/// capture always derives first) so a transient engine hiccup heals itself
+/// within a few beats instead of leaving a permanent Activity gap. Returns
+/// whether any window derived an Activity.
+async fn run_failed_window_retry_pass(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> bool {
+    let eligible = match store
+        .failed_windows_eligible_for_retry(
+            WINDOW_RETRY_POLICY.max_attempts,
+            now_ms().saturating_sub(WINDOW_RETRY_POLICY.backoff_seconds(1) * 1000),
+            RETRY_WINDOWS_PER_TICK,
+        )
+        .await
+    {
+        Ok(eligible) => eligible,
+        Err(_) => return false,
+    };
+
+    let mut derived_anything = false;
+    for window in eligible {
+        let step = derive_window_and_record(
+            engine,
+            store,
+            &window.kind,
+            window.window_start_ms,
+            window.window_end_ms,
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await;
+        if step == BackfillStep::Derived {
+            derived_anything = true;
+        }
+        crate::native_capture::debug_log::log_info(format!(
+            "user context worker retried failed window [{},{}] (attempt {} of {}): {:?}",
+            window.window_start_ms,
+            window.window_end_ms,
+            window.failure_count + 1,
+            WINDOW_RETRY_POLICY.max_attempts,
+            step
+        ));
+    }
+    derived_anything
+}
+
+/// Run Conclusion distillation on the slower beat once every this many
+/// successful Activity ticks, so the dossier (expensive, occasional) re-distills
+/// less often than the diary (cheap, frequent). A distillation also runs early
+/// whenever the Activity count has grown since the last one (see [`WorkerCadence`]).
+const CONCLUSION_EVERY_K_ACTIVITY_TICKS: u32 = 3;
+
+/// Run the confidence-decay beat once every this many ticks. This is the
+/// *slowest* beat (M ≥ K, the Conclusion beat): confidence fades on a 30-day
+/// half-life, so re-evaluating decay only every few ticks is plenty, and decay
+/// uses **no LLM** (it is pure local math). Counting ticks (not successful
+/// Activity ticks) means the dossier keeps fading during quiet stretches even
+/// when no new Activities are arriving — silence is exactly when decay matters.
+const CONFIDENCE_DECAY_EVERY_M_TICKS: u32 = 6;
+
+/// Keep at most this many **Confidence History** snapshots per Conclusion. History
+/// is aggressively prunable: recency-weighting means old snapshots stop mattering,
+/// so the trajectory keeps only a recent tail. At one snapshot per decay beat this
+/// is many days of arc, far more than the Subject line needs.
+const MAX_SNAPSHOTS_PER_CONCLUSION: i64 = 64;
+
+/// Cross-tick state for the slower Conclusion-distillation beat. The worker loop
+/// owns one of these and threads it through each tick. Activity derivation stays
+/// the frequent beat; this counts successful Activity ticks so distillation runs
+/// on a slower cadence (or sooner when new Activities have accumulated).
+#[derive(Debug, Default)]
+struct WorkerCadence {
+    /// Successful Activity ticks since the last distillation.
+    activity_ticks_since_distillation: u32,
+    /// `count_activities()` observed at the last distillation, so a tick can
+    /// distill early when the Activity total has grown.
+    last_distilled_activity_count: Option<i64>,
+    /// Ticks (of any kind, including idle-but-resolved ones that reach the
+    /// decay check) since the last confidence-decay pass.
+    ticks_since_decay: u32,
+}
+
+impl WorkerCadence {
+    /// Whether this tick should run a Conclusion distillation: every Kth
+    /// successful Activity tick, OR as soon as new Activities exist since the
+    /// last distillation.
+    fn should_distill(&self, current_activity_count: i64) -> bool {
+        let grew = self
+            .last_distilled_activity_count
+            .map(|last| current_activity_count > last)
+            .unwrap_or(current_activity_count > 0);
+        grew || self.activity_ticks_since_distillation >= CONCLUSION_EVERY_K_ACTIVITY_TICKS
+    }
+
+    /// Whether this tick should run the confidence-decay beat: every Mth tick.
+    /// Decay is the slowest beat (M ≥ K) and unconditional on new Activities —
+    /// silence is precisely when a Conclusion should fade.
+    fn should_decay(&self) -> bool {
+        self.ticks_since_decay >= CONFIDENCE_DECAY_EVERY_M_TICKS
+    }
+}
+
+/// Run one Conclusion distillation pass over accumulated Activities and stamp a
+/// single `derivation_run` (kind `'conclusion'`) with the outcome — including
+/// the per-gate withheld counts, so a pass whose drafts were all dropped by
+/// policy stays diagnosable. Resilient: any engine/store error records a
+/// `failed` run and returns `None`; it never panics the worker. Returns the
+/// distillation outcome on success.
+///
+/// Shared with the run-now command so manual and automatic distillation behave
+/// identically and both stamp the same ledger row.
+pub(crate) async fn run_conclusion_distillation(
+    engine: &ai_engine::EngineConfig,
+    store: &UserContextStore,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> Option<derivation::ConclusionDistillationOutcome> {
+    match derivation::distill_conclusions(engine, store).await {
+        Ok(outcome) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "conclusion".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "completed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: outcome.upserted as i64,
+                    input_tokens: outcome.input_tokens,
+                    output_tokens: outcome.output_tokens,
+                    provider: provider_label,
+                    model: model_label,
+                    error: None,
+                    gate_drops: outcome.gate_drops,
+                })
+                .await;
+            if outcome.upserted > 0 {
+                crate::native_capture::debug_log::log_info(format!(
+                    "user context worker distilled {} conclusion(s)",
+                    outcome.upserted
+                ));
+            }
+            if outcome.gate_drops.total() > 0 {
+                let drops = outcome.gate_drops;
+                crate::native_capture::debug_log::log_info(format!(
+                    "user context distillation withheld {} draft(s): {} ungrounded, \
+                     {} guardrail-suppressed, {} below the formation bar, {} resurface-blocked",
+                    drops.total(),
+                    drops.ungrounded,
+                    drops.guardrail_suppressed,
+                    drops.below_formation_bar,
+                    drops.resurface_blocked,
+                ));
+            }
+            Some(outcome)
+        }
+        Err(error) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "conclusion".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error),
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            None
+        }
+    }
+}
+
+/// Run one **confidence-decay** pass (#95): the slowest, LLM-free beat. For each
+/// decayable Conclusion (`visible`/`faded`, never dismissed), apply the
+/// recency-weighted half-life [`confidence::decay`] over elapsed silence,
+/// recompute its [`confidence::status_for`] (below the display floor → `faded`,
+/// leaving the visible dossier while its Confidence History is kept), persist the
+/// new value + status + `last_decayed_at_ms`, and append a Confidence History
+/// snapshot so the Subject trajectory can plot the arc. After the loop, prune the
+/// history to [`MAX_SNAPSHOTS_PER_CONCLUSION`] per Conclusion. Records a single
+/// `derivation_run` (kind `'confidence'`, **0 tokens** — decay uses no LLM) with
+/// the count touched. Resilient: every error is swallowed-with-log; it never
+/// panics the worker.
+///
+/// A **pinned** Conclusion is exempt from decay (#99): `list_decayable_conclusions`
+/// already drops pinned rows from the set entirely, and the per-row `pinned` flag
+/// is passed to `decay()`/`status_for()` (which also honor it) as a belt-and-braces
+/// guard. So pinned Conclusions are never touched by this beat.
+pub(crate) async fn run_confidence_decay(
+    store: &UserContextStore,
+    provider_label: Option<String>,
+    model_label: Option<String>,
+) -> bool {
+    let now = now_ms();
+    let conclusions = match store.list_decayable_conclusions().await {
+        Ok(conclusions) => conclusions,
+        Err(error) => {
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "confidence".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error.to_string()),
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            return false;
+        }
+    };
+
+    let mut touched = 0i64;
+    for decayable in &conclusions {
+        let conclusion = &decayable.conclusion;
+        // A pinned Conclusion is exempt from decay (#99). `list_decayable_conclusions`
+        // already excludes pinned rows, so this is normally `false` here; passing the
+        // real flag keeps `decay()`/`status_for()` correct as a guard regardless.
+        let pinned = conclusion.pinned;
+        // Decay over the per-pass DELTA: anchor on `decay_anchor_ms`
+        // (`COALESCE(last_decayed_at_ms, last_supported_at_ms)`), not the fixed
+        // `last_supported_at_ms`. Each pass feeds back the already-decayed
+        // `confidence`; anchoring on the previous decay time makes the per-pass
+        // factors telescope to exactly one 30-day half-life instead of re-applying
+        // the full elapsed factor every pass (the HIGH compounding bug #1).
+        let decayed = confidence::decay(
+            conclusion.confidence,
+            decayable.decay_anchor_ms,
+            now,
+            pinned,
+        );
+        let status = confidence::status_for(decayed, pinned);
+
+        // Stamp `last_decayed_at_ms = now` so the NEXT pass anchors here (this is
+        // what `update_conclusion_confidence` writes into `last_decayed_at_ms`).
+        if let Err(error) = store
+            .update_conclusion_confidence(conclusion.id, decayed, status, now)
+            .await
+        {
+            crate::native_capture::debug_log::log_info(format!(
+                "user context confidence decay: update failed for conclusion {}: {error}",
+                conclusion.id
+            ));
+            continue;
+        }
+        // Snapshot the (possibly-faded) value so the Subject trajectory keeps the
+        // arc even below the display floor (faded is not deleted).
+        if let Err(error) = store
+            .insert_confidence_snapshot(conclusion.id, decayed, now)
+            .await
+        {
+            crate::native_capture::debug_log::log_info(format!(
+                "user context confidence decay: snapshot failed for conclusion {}: {error}",
+                conclusion.id
+            ));
+        }
+        touched += 1;
+    }
+
+    // Aggressively prune the history tail (recency-weighting means old snapshots
+    // stop mattering). Best-effort: a prune error does not fail the beat.
+    if let Err(error) = store
+        .prune_confidence_history(MAX_SNAPSHOTS_PER_CONCLUSION)
+        .await
+    {
+        crate::native_capture::debug_log::log_info(format!(
+            "user context confidence decay: history prune failed: {error}"
+        ));
+    }
+
+    let _ = store
+        .insert_derivation_run(NewDerivationRun {
+            kind: "confidence".to_string(),
+            window_start_ms: None,
+            window_end_ms: None,
+            status: "completed".to_string(),
+            activities_derived: 0,
+            conclusions_derived: touched,
+            input_tokens: 0,
+            output_tokens: 0,
+            provider: provider_label,
+            model: model_label,
+            error: None,
+            gate_drops: DistillationGateDrops::default(),
+        })
+        .await;
+
+    if touched > 0 {
+        crate::native_capture::debug_log::log_info(format!(
+            "user context worker decayed {touched} conclusion(s)"
+        ));
+    }
+    touched > 0
+}
+
+/// One worker tick. Returns the sleep to wait before the next tick. All errors
+/// are logged, never propagated. `cadence` carries the slower Conclusion beat
+/// across ticks.
+async fn worker_tick(
+    infra: &AppInfraState,
+    app_handle: &tauri::AppHandle,
+    cadence: &mut WorkerCadence,
+) -> Duration {
+    let Some(settings_state) = app_handle.try_state::<RecordingSettingsState>() else {
+        return IDLE_INTERVAL;
+    };
+    let settings = read_recording_settings(settings_state.inner());
+    let ai_runtime = settings.ai_runtime;
+    let user_context = settings.user_context;
+
+    // Two-layer gate: continuous derivation runs ONLY when User Context's own
+    // opt-in is on (the continuous-derivation opt-in, independent of Ask AI) AND
+    // the shared engine-configured prerequisite is satisfied. Cheap-when-off: the
+    // opt-in is off by default, so a tick on a fresh install does nothing but
+    // idle (this short-circuits before the prerequisite's local reachability
+    // ping).
+    if !user_context.enabled {
+        return IDLE_INTERVAL;
+    }
+
+    if crate::ai_runtime::engine_configured_prerequisite(&ai_runtime)
+        .await
+        .is_err()
+    {
+        // Engine off / not ready (no model / no key / unreachable endpoint).
+        // Stay cheap; do not log the reason at error level on every tick.
+        return IDLE_INTERVAL;
+    }
+
+    let engine = match crate::ai_runtime::resolve_engine_config(&ai_runtime, None, None) {
+        Ok(engine) => engine,
+        Err(_reason) => {
+            // Defensive: the prerequisite already passed, but a local engine
+            // could become unreachable between the ping and here. Stay cheap.
+            return IDLE_INTERVAL;
+        }
+    };
+
+    // Pacing + run-ledger labels key off the global default model's provider
+    // (the prerequisite guarantees one is chosen; defensive bail otherwise).
+    // Pacing depends on the provider *kind* (cloud vs local), so resolve the
+    // default model's provider instance id back to its kind via the provider
+    // list.
+    let Some(default_provider) = ai_runtime.default_model.as_ref().and_then(|model| {
+        ai_runtime
+            .providers
+            .iter()
+            .find(|provider| provider.id == model.provider)
+            .map(|provider| provider.kind)
+    }) else {
+        return IDLE_INTERVAL;
+    };
+    let provider_label = provider_label_for(&ai_runtime);
+    let model_label = model_label_for(&ai_runtime);
+
+    // --- Activity beat (frequent) ---
+    let run = run_forward_activity_window(
+        &engine,
+        infra.user_context(),
+        provider_label.clone(),
+        model_label.clone(),
+    )
+    .await;
+
+    // Catch-up signal (C): if this tick covered a forward window and the cursor
+    // is still more than one window behind realtime, we have a backlog of
+    // windows-with-captures to drain — sleep the short catch-up interval (below)
+    // and defer the expensive Conclusion distillation until caught up.
+    let forward_backlog_ms = now_ms().saturating_sub(run.window_end_ms);
+    let catching_up = is_catching_up(run.derived_window, forward_backlog_ms);
+
+    let mut dossier_changed = run.changed;
+    if run.activities_derived > 0 {
+        crate::native_capture::debug_log::log_info(format!(
+            "user context worker derived {} activities (window=[{},{}], items={})",
+            run.activities_derived, run.window_start_ms, run.window_end_ms, run.items_read
+        ));
+        cadence.activity_ticks_since_distillation =
+            cadence.activity_ticks_since_distillation.saturating_add(1);
+    }
+
+    // --- History Backfill beat (backward, newest-first) ---
+    // (#98) STRICTLY newest-first: only extend coverage *backward* once the forward
+    // catch-up has no new recent window to derive this tick (`!run.derived_window`).
+    // Recency-weighted Confidence means recent history drives current conclusions,
+    // so recent windows are always covered before older ones.
+    //
+    // This is a BACKGROUND TRICKLE paced by the Derivation Budget — one bounded
+    // window per pass, up to a small per-tier count — never a synchronous
+    // whole-history bill (there is deliberately no "derive all of history now"
+    // path). It is bounded by default (`backfill_window_days`) and extends to the
+    // true earliest capture only under the explicit go-deeper toggle.
+    if !run.derived_window {
+        let now = now_ms();
+        let earliest_capture = if user_context.backfill_go_deeper {
+            infra
+                .user_context()
+                .earliest_capture_at_ms()
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let floor_ms = backfill_floor_ms(
+            now,
+            user_context.backfill_window_days,
+            user_context.backfill_go_deeper,
+            earliest_capture,
+        );
+        let max_windows =
+            backfill_windows_per_tick(default_provider, user_context.derivation_budget_tier);
+        let backfilled = run_backfill_pass(
+            &engine,
+            infra.user_context(),
+            floor_ms,
+            max_windows,
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await;
+        if backfilled {
+            dossier_changed = true;
+            cadence.activity_ticks_since_distillation =
+                cadence.activity_ticks_since_distillation.saturating_add(1);
+            crate::native_capture::debug_log::log_info(
+                "user context worker backfilled older history (background trickle)",
+            );
+        }
+    }
+
+    // --- Failed-window Retry beat (#113, lowest-priority trickle) ---
+    // Re-derive windows whose only coverage is `failed` runs (a transient cloud
+    // hiccup mid-window would otherwise leave a PERMANENT hole in the Activity
+    // history — the cursor advances past failures by design). This runs every
+    // tick AFTER the forward beat (fresh capture always derives first; gating it
+    // on an idle forward beat would starve retries forever during continuous
+    // use), is capped at one window per tick, and the store query enforces the
+    // per-window attempt cap + wall-clock backoff so a deterministically-failing
+    // window stops consuming engine calls.
+    {
+        let retried = run_failed_window_retry_pass(
+            &engine,
+            infra.user_context(),
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await;
+        if retried {
+            dossier_changed = true;
+            cadence.activity_ticks_since_distillation =
+                cadence.activity_ticks_since_distillation.saturating_add(1);
+        }
+    }
+
+    // --- Conclusion beat (slower) ---
+    // CADENCE HOOK (spec §6 / §4): after the forward Activity window, run
+    // Conclusion distillation on a slower beat — every Kth successful Activity
+    // tick, or whenever the Activity count has grown since the last distillation.
+    // It shares the SAME resolved engine and records its own `derivation_run`
+    // (kind `'conclusion'`).
+    let activity_count = infra
+        .user_context()
+        .count_activities()
+        .await
+        .unwrap_or(0);
+    // While draining a forward backlog (catch-up cadence) we derive many
+    // Activities fast; deferring distillation until caught up avoids an LLM
+    // distillation call on every catch-up tick — it runs once on the first normal
+    // tick afterward (the Activity count will have grown by then, so
+    // `should_distill` fires immediately).
+    if !catching_up && cadence.should_distill(activity_count) {
+        let changed = run_conclusion_distillation(
+            &engine,
+            infra.user_context(),
+            provider_label.clone(),
+            model_label.clone(),
+        )
+        .await
+        .is_some_and(|outcome| outcome.upserted > 0);
+        dossier_changed = dossier_changed || changed;
+        cadence.activity_ticks_since_distillation = 0;
+        cadence.last_distilled_activity_count = Some(activity_count);
+    }
+
+    // --- Confidence-decay beat (slowest, LLM-free) ---
+    // (#95) Every Mth tick, fade Conclusions on their recency-weighted half-life,
+    // recompute faded/visible status, snapshot Confidence History, and prune it.
+    // This beat counts ticks (not Activities) and runs even when no new Activities
+    // arrived — silence is exactly when a Conclusion should fade. It uses NO LLM,
+    // so it records a 0-token `derivation_run` (kind `'confidence'`).
+    cadence.ticks_since_decay = cadence.ticks_since_decay.saturating_add(1);
+    if cadence.should_decay() {
+        let changed = run_confidence_decay(
+            infra.user_context(),
+            provider_label,
+            model_label,
+        )
+        .await;
+        dossier_changed = dossier_changed || changed;
+        cadence.ticks_since_decay = 0;
+    }
+
+    if dossier_changed {
+        let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    }
+
+    // Catch-up cadence (C): drain a remaining forward backlog of
+    // windows-with-captures back-to-back; otherwise sleep the tier-paced interval.
+    if catching_up {
+        CATCHUP_INTERVAL
+    } else {
+        tick_interval(default_provider, user_context.derivation_budget_tier)
+    }
+}
+
+/// Provider label for the run ledger: the global default model's stable
+/// provider id (background derivation always uses the global default model).
+pub(crate) fn provider_label_for(settings: &capture_types::AiRuntimeSettings) -> Option<String> {
+    settings
+        .default_model
+        .as_ref()
+        .map(|model| model.provider.clone())
+}
+
+/// Model label for the run ledger (the global default model id).
+pub(crate) fn model_label_for(settings: &capture_types::AiRuntimeSettings) -> Option<String> {
+    settings
+        .default_model
+        .as_ref()
+        .map(|model| model.model.trim().to_string())
+        .filter(|model| !model.is_empty())
+}
+
+/// Spawn the background User Context derivation worker. Mirrors
+/// `spawn_retention_cleanup_worker`: tracks the handle for graceful shutdown and
+/// selects between a tier-paced sleep and the shutdown watch.
+pub fn spawn_user_context_worker(
+    infra: AppInfraState,
+    app_handle: tauri::AppHandle,
+    background_workers: BackgroundWorkersState,
+) {
+    let mut shutdown_rx = background_workers.subscribe();
+    crate::native_capture::debug_log::log_info(
+        "starting user context derivation worker (idle_when_disabled)",
+    );
+    let handle = tauri::async_runtime::spawn(async move {
+        let infra = Arc::clone(&infra);
+        // The slower Conclusion-distillation beat is paced relative to the
+        // frequent Activity beat; this state survives across ticks.
+        let mut cadence = WorkerCadence::default();
+        loop {
+            if *shutdown_rx.borrow() {
+                break;
+            }
+
+            // Every tick path is error-recording (no `?`, no `unwrap`), so a
+            // tick returns an idle/paced sleep rather than panicking the worker.
+            let next_sleep = worker_tick(&infra, &app_handle, &mut cadence).await;
+
+            if shutdown_aware_sleep(&mut shutdown_rx, next_sleep).await {
+                break;
+            }
+        }
+        crate::native_capture::debug_log::log_info("stopped user context derivation worker");
+    });
+    background_workers.track(handle);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cold_store_window_reaches_back_initial_lookback() {
+        let now = 10_000_000_000;
+        let window = next_forward_window(now, None).expect("cold window");
+        assert_eq!(window.0, now - INITIAL_LOOKBACK_MS);
+        assert_eq!(window.1, (now - INITIAL_LOOKBACK_MS) + MAX_WINDOW_MS);
+    }
+
+    #[test]
+    fn resumes_from_last_covered_end() {
+        let now = 10_000_000_000;
+        let last_end = now - (5 * 60 * 1000);
+        let window = next_forward_window(now, Some(last_end)).expect("forward window");
+        assert_eq!(window.0, last_end);
+        assert_eq!(window.1, now);
+    }
+
+    #[test]
+    fn waits_until_enough_new_time() {
+        let now = 10_000_000_000;
+        let last_end = now - (MIN_WINDOW_MS - 1);
+        assert!(next_forward_window(now, Some(last_end)).is_none());
+    }
+
+    #[test]
+    fn clamps_long_gap_to_max_window() {
+        let now = 10_000_000_000;
+        let last_end = now - (5 * MAX_WINDOW_MS);
+        let window = next_forward_window(now, Some(last_end)).expect("clamped window");
+        assert_eq!(window.1 - window.0, MAX_WINDOW_MS);
+    }
+
+    // --- A: empty-window cursor jump -------------------------------------------
+
+    #[test]
+    fn empty_window_jump_target_leaps_gap_to_next_capture() {
+        let end = 1_000;
+        let now = 10_000;
+        // A raw capture sits in the gap ahead: jump straight to it.
+        let next = 5_000;
+        assert_eq!(empty_window_jump_target(end, now, Some(next)), next);
+    }
+
+    #[test]
+    fn empty_window_jump_target_clamps_next_to_now() {
+        let end = 1_000;
+        let now = 4_000;
+        // The next raw capture is beyond `now` (clock skew / racing capture):
+        // clamp to `now`, never overshoot realtime.
+        assert_eq!(empty_window_jump_target(end, now, Some(9_000)), now);
+    }
+
+    #[test]
+    fn empty_window_jump_target_holds_when_capture_inside_window() {
+        let end = 5_000;
+        let now = 10_000;
+        // A raw capture sits within the just-read window (OCR pending): do NOT
+        // leap past it — advance one window (stay at `end`).
+        assert_eq!(empty_window_jump_target(end, now, Some(end)), end);
+        assert_eq!(empty_window_jump_target(end, now, Some(end - 1)), end);
+    }
+
+    #[test]
+    fn empty_window_jump_target_none_jumps_to_now() {
+        let end = 1_000;
+        let now = 10_000;
+        // No raw captures at/after `end`: safe to jump straight to `now`.
+        assert_eq!(empty_window_jump_target(end, now, None), now);
+    }
+
+    #[test]
+    fn empty_window_jump_target_always_within_end_and_now() {
+        let end = 2_000;
+        let now = 8_000;
+        for next in [None, Some(0), Some(2_000), Some(5_000), Some(99_999)] {
+            let result = empty_window_jump_target(end, now, next);
+            assert!(result >= end, "result {result} went backward before end {end}");
+            assert!(result <= now, "result {result} overshot now {now}");
+        }
+    }
+
+    // --- C: catch-up cadence ---------------------------------------------------
+
+    #[test]
+    fn is_catching_up_false_when_caught_up() {
+        // Small backlog (within one window) => no catch-up cadence.
+        assert!(!is_catching_up(true, MIN_WINDOW_MS));
+        assert!(!is_catching_up(true, 0));
+    }
+
+    #[test]
+    fn is_catching_up_true_with_large_backlog_and_derived_window() {
+        assert!(is_catching_up(true, CATCHUP_BACKLOG_MS + 1));
+        assert!(is_catching_up(true, 10 * CATCHUP_BACKLOG_MS));
+    }
+
+    #[test]
+    fn is_catching_up_false_without_a_derived_window() {
+        // Even a huge backlog does not trigger catch-up if the forward beat did
+        // not actually cover a window this tick (e.g. it was idle/not-enough-yet).
+        assert!(!is_catching_up(false, 10 * CATCHUP_BACKLOG_MS));
+    }
+
+    #[test]
+    fn is_catching_up_strictly_greater_than_threshold() {
+        // Exactly at the threshold => not catching up (strictly greater).
+        assert!(!is_catching_up(true, CATCHUP_BACKLOG_MS));
+    }
+
+    #[test]
+    fn cadence_distills_when_activity_count_grows() {
+        let mut cadence = WorkerCadence::default();
+        // Cold: distills as soon as there is at least one Activity.
+        assert!(cadence.should_distill(1));
+        cadence.last_distilled_activity_count = Some(5);
+        cadence.activity_ticks_since_distillation = 0;
+        // No growth and below the K threshold => skip.
+        assert!(!cadence.should_distill(5));
+        // Growth => distill early even below the K threshold.
+        assert!(cadence.should_distill(6));
+    }
+
+    #[test]
+    fn cadence_distills_every_kth_tick_without_growth() {
+        let cadence = WorkerCadence {
+            activity_ticks_since_distillation: CONCLUSION_EVERY_K_ACTIVITY_TICKS,
+            last_distilled_activity_count: Some(10),
+            ticks_since_decay: 0,
+        };
+        // No growth, but the K-tick threshold is met => distill.
+        assert!(cadence.should_distill(10));
+    }
+
+    #[test]
+    fn cadence_decays_on_the_slowest_beat() {
+        // The decay beat is strictly the slowest (M ≥ K).
+        assert!(CONFIDENCE_DECAY_EVERY_M_TICKS >= CONCLUSION_EVERY_K_ACTIVITY_TICKS);
+        let mut cadence = WorkerCadence::default();
+        // Below the M threshold => no decay yet.
+        cadence.ticks_since_decay = CONFIDENCE_DECAY_EVERY_M_TICKS - 1;
+        assert!(!cadence.should_decay());
+        // At the threshold => decay.
+        cadence.ticks_since_decay = CONFIDENCE_DECAY_EVERY_M_TICKS;
+        assert!(cadence.should_decay());
+    }
+
+    #[test]
+    fn tier_paces_cloud_but_not_local() {
+        assert_eq!(
+            tick_interval(AiProviderKind::Anthropic, DerivationBudgetTier::Light),
+            LIGHT_INTERVAL
+        );
+        assert_eq!(
+            tick_interval(AiProviderKind::Anthropic, DerivationBudgetTier::Thorough),
+            THOROUGH_INTERVAL
+        );
+        assert_eq!(
+            tick_interval(AiProviderKind::Ollama, DerivationBudgetTier::Thorough),
+            LOCAL_INTERVAL
+        );
+    }
+
+    // --- #98 History Backfill window math --------------------------------------
+
+    #[test]
+    fn bounded_backfill_floor_is_now_minus_window_days() {
+        let now = 10_000_000_000;
+        // go-deeper OFF: floor is the bounded recent window, ignoring the earliest
+        // capture even when there is much older history.
+        let floor = backfill_floor_ms(now, 30, false, Some(0));
+        assert_eq!(floor, now - 30 * 86_400_000);
+    }
+
+    #[test]
+    fn go_deeper_floor_reaches_earliest_capture() {
+        let now = 10_000_000_000;
+        let earliest = 1_234;
+        // go-deeper ON: floor is the true earliest capture (all of history).
+        assert_eq!(backfill_floor_ms(now, 30, true, Some(earliest)), earliest);
+        // go-deeper ON with no captures collapses to `now` (backfill no-op).
+        assert_eq!(backfill_floor_ms(now, 30, true, None), now);
+    }
+
+    #[test]
+    fn backfill_window_steps_one_window_older() {
+        let oldest_covered = 10_000_000_000;
+        let floor = oldest_covered - 10 * BACKFILL_WINDOW_MS;
+        let (start, end) = next_backfill_window(floor, oldest_covered).expect("backfill window");
+        // The window ends at the current trailing edge and reaches back exactly one
+        // BACKFILL_WINDOW_MS (the floor is far below, so it does not clamp here).
+        assert_eq!(end, oldest_covered);
+        assert_eq!(start, oldest_covered - BACKFILL_WINDOW_MS);
+    }
+
+    #[test]
+    fn backfill_window_clamps_to_floor() {
+        let oldest_covered = 10_000_000_000;
+        // Floor is closer than one full window: the window start clamps to the floor.
+        let floor = oldest_covered - (BACKFILL_WINDOW_MS / 2);
+        let (start, end) = next_backfill_window(floor, oldest_covered).expect("clamped window");
+        assert_eq!(start, floor);
+        assert_eq!(end, oldest_covered);
+    }
+
+    #[test]
+    fn backfill_complete_when_coverage_reaches_floor() {
+        let oldest_covered = 10_000_000_000;
+        // Coverage already AT the floor → nothing to backfill.
+        assert!(next_backfill_window(oldest_covered, oldest_covered).is_none());
+        // Coverage already BELOW the floor (e.g. floor moved up) → nothing to do.
+        assert!(next_backfill_window(oldest_covered + 1, oldest_covered).is_none());
+    }
+
+    #[test]
+    fn backfill_intensity_is_a_real_cloud_tier_knob() {
+        // The named cloud tier is a real intensity knob (windows/tick), not just a
+        // sleep: Light < Balanced < Thorough.
+        assert_eq!(
+            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Light),
+            1
+        );
+        assert_eq!(
+            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Balanced),
+            2
+        );
+        assert_eq!(
+            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Thorough),
+            4
+        );
+        // Local ignores the tier entirely (fixed pacing): always one window/tick.
+        for tier in [
+            DerivationBudgetTier::Light,
+            DerivationBudgetTier::Balanced,
+            DerivationBudgetTier::Thorough,
+        ] {
+            assert_eq!(backfill_windows_per_tick(AiProviderKind::Ollama, tier), 1);
+        }
+    }
+}

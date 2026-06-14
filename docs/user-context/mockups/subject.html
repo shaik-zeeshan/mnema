@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Insights · Apple silicon</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* ===================================================================
+       SUBJECT DETAIL — master-detail with an EVIDENCE INSPECTOR.
+       A Subject shows its INDIVIDUAL conclusions, each with its own
+       confidence-over-time trajectory — NOT a single rolled-up score.
+       All color via tokens; flipping data-theme=light fully reskins.
+       =================================================================== */
+
+    /* ---- Subject hero ---- */
+    .subj-hero {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .subj-hero-main { min-width: 0; }
+    .subj-title {
+      font-size: 25px;
+      letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+      font-weight: 600;
+      margin: 0 0 10px;
+    }
+    .subj-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    /* compact subject switcher (dropdown-looking control) */
+    .subj-switch {
+      position: relative;
+      flex: 0 0 auto;
+    }
+    .subj-switch-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font: inherit;
+      font-size: 12px;
+      height: 28px;
+      padding: 0 11px;
+      border: 1px solid var(--app-border);
+      border-radius: 6px;
+      background: var(--app-surface);
+      color: var(--app-text);
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .subj-switch-btn:hover {
+      background: var(--app-surface-hover);
+      border-color: var(--app-border-hover);
+      color: var(--app-text-strong);
+    }
+    .subj-switch-btn .caret { color: var(--app-text-subtle); font-size: 10px; }
+    .subj-switch-strip {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 5px;
+      margin-top: 8px;
+      max-width: 320px;
+    }
+    .subj-switch-strip a.chip:hover {
+      background: var(--app-surface-hover);
+      border-color: var(--app-border-hover);
+      color: var(--app-text-strong);
+    }
+
+    /* ---- Overlay trajectory chart card ---- */
+    .traj-card { margin-bottom: 18px; }
+    .traj-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 4px;
+    }
+    .traj-sub { font-size: 11px; color: var(--app-text-muted); margin: 2px 0 12px; }
+    .traj-chartwrap { width: 100%; }
+    .traj-svg { display: block; width: 100%; height: auto; }
+
+    /* SVG token-driven classes (no fill="var(...)") */
+    .grid-line--faint { stroke: var(--app-border); stroke-width: 1; opacity: 0.5; }
+    .axis-line { stroke: var(--app-border-strong); stroke-width: 1; }
+    .floor-line {
+      stroke: var(--app-text-faint);
+      stroke-width: 1.25;
+      stroke-dasharray: 4 4;
+    }
+    .axis-label { fill: var(--app-text-subtle); font-size: 10px; }
+    .axis-label--y { fill: var(--app-text-subtle); font-size: 9.5px; }
+    .floor-label { fill: var(--app-text-faint); font-size: 9.5px; letter-spacing: 0.04em; }
+    .traj-line { fill: none; stroke-width: 2; }
+    .traj-line--dim { fill: none; stroke-width: 2; opacity: 0.5; }
+    .traj-line--faded { fill: none; stroke-width: 1.5; opacity: 0.42; stroke-dasharray: 3 3; }
+    .traj-line--sel { fill: none; stroke-width: 3; }
+    .dot { stroke: var(--app-surface); stroke-width: 1; }
+
+    .line-coding   { stroke: var(--cat-coding); }
+    .line-research { stroke: var(--cat-research); }
+    .line-comm     { stroke: var(--cat-communication); }
+    .line-design   { stroke: var(--cat-design); }
+    .line-testing  { stroke: var(--cat-testing); }
+    .line-personal { stroke: var(--cat-personal); }
+    .fill-coding   { fill: var(--cat-coding); }
+    .fill-research { fill: var(--cat-research); }
+    .fill-comm     { fill: var(--cat-communication); }
+    .fill-design   { fill: var(--cat-design); }
+    .fill-testing  { fill: var(--cat-testing); }
+    .fill-personal { fill: var(--cat-personal); }
+
+    /* ---- Legend ---- */
+    .traj-legend {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px 22px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--app-border);
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: var(--app-text);
+      min-width: 0;
+    }
+    .legend-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .legend-swatch {
+      width: 18px;
+      height: 0;
+      border-top: 2px solid var(--app-text-faint);
+      flex: 0 0 auto;
+    }
+    .legend-swatch--coding   { border-top-color: var(--cat-coding); }
+    .legend-swatch--research { border-top-color: var(--cat-research); }
+    .legend-swatch--comm     { border-top-color: var(--cat-communication); }
+    .legend-swatch--design   { border-top-color: var(--cat-design); }
+    .legend-swatch--testing  { border-top-color: var(--cat-testing); }
+    .legend-swatch--faded {
+      border-top-style: dashed;
+      border-top-color: var(--cat-personal);
+      opacity: 0.5;
+    }
+    .legend-trend { color: var(--app-text-muted); font-size: 10.5px; margin-left: auto; flex: 0 0 auto; }
+
+    /* ============================================================ MASTER-DETAIL */
+    .md-grid {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .md-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 10px;
+    }
+
+    /* ---- LEFT: conclusions list ---- */
+    .concl-list { display: flex; flex-direction: column; gap: 11px; }
+
+    .concl-card {
+      display: grid;
+      grid-template-columns: 1fr 124px;
+      gap: 10px 16px;
+      align-items: start;
+      cursor: pointer;
+      transition: border-color 0.12s ease, background 0.12s ease;
+    }
+    .concl-card:hover { border-color: var(--app-border-hover); }
+    .concl-card.is-selected {
+      border-color: var(--app-accent);
+      background: var(--app-accent-bg);
+    }
+    .concl-card--faded { opacity: 0.6; }
+    .concl-main { min-width: 0; }
+    .concl-statement {
+      font-size: 13.5px;
+      line-height: 1.45;
+      margin: 0 0 9px;
+    }
+
+    .concl-conf {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 10px;
+    }
+    .concl-conf .confidence-bar { max-width: 200px; }
+    .conf-pct {
+      font-size: 12px;
+      color: var(--app-text-strong);
+      font-variant-numeric: tabular-nums;
+      min-width: 32px;
+    }
+    .trend {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+    }
+    .trend--up { color: var(--app-accent-strong); }
+    .trend--down { color: var(--app-danger); }
+    .trend--steady { color: var(--app-text-muted); }
+    .trend--faded { color: var(--app-text-faint); }
+
+    .fill--rise   { background: var(--app-accent); box-shadow: 0 0 8px var(--app-accent-glow); }
+    .fill--info   { background: var(--app-info); box-shadow: none; }
+    .fill--cool   { background: var(--app-danger); box-shadow: none; }
+    .fill--steady { background: var(--app-text-muted); box-shadow: none; }
+    .fill--faded  { background: var(--app-text-faint); box-shadow: none; }
+
+    .concl-footrow {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .concl-footrow .btn { padding: 3px 10px; font-size: 11.5px; }
+    .concl-footrow .spacer { flex: 1 1 auto; }
+    .ev-affordance {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--app-accent-strong);
+      cursor: pointer;
+      border-bottom: 1px dotted var(--app-accent-border);
+    }
+    .ev-affordance:hover { color: var(--app-accent); }
+
+    .concl-aside {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+    }
+    .spark-svg { display: block; width: 116px; height: 34px; }
+    .spark-line { fill: none; stroke-width: 1.75; }
+    .spark-floor { stroke: var(--app-text-faint); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.7; }
+
+    .floor-note {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin: 0 0 10px;
+      padding: 6px 9px;
+      border: 1px dashed var(--app-border-strong);
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--app-text-muted);
+    }
+    .floor-note .glyph { color: var(--app-text-faint); }
+
+    /* ---- RIGHT: evidence inspector (sticky) ---- */
+    .inspector {
+      position: sticky;
+      top: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    .insp-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+    }
+    .insp-head .ih-title {
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--app-text-muted);
+    }
+    .insp-head .ih-count { font-size: 10px; color: var(--app-text-subtle); }
+    .insp-conclusion {
+      padding: 10px 13px;
+      border-bottom: 1px solid var(--app-border);
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--app-text);
+    }
+    .insp-conclusion .ic-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+      background: var(--cat-coding);
+    }
+
+    .ev-list { padding: 6px 9px 10px; }
+    .ev-item {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 9px;
+      padding: 9px 8px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .ev-item:hover {
+      background: var(--app-surface-hover);
+      border-color: var(--app-border);
+    }
+    .ev-thumb {
+      width: 44px;
+      height: 32px;
+      border-radius: 4px;
+      border: 1px solid var(--app-border);
+      overflow: hidden;
+      position: relative;
+      flex: 0 0 auto;
+    }
+    .ev-thumb.is-screen { background: var(--app-source-screen-bg); }
+    .ev-thumb.is-audio {
+      background: var(--app-source-mic-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ev-thumb-svg { width: 100%; height: 100%; display: block; }
+    .ev-src-tag {
+      position: absolute;
+      left: 2px;
+      bottom: 2px;
+      font-size: 7px;
+      letter-spacing: 0.04em;
+      padding: 0 3px;
+      border-radius: 3px;
+      text-transform: uppercase;
+    }
+    .ev-src-tag.is-screen {
+      color: var(--app-source-screen);
+      background: var(--app-bg);
+    }
+    .ev-src-tag.is-audio {
+      color: var(--app-source-mic);
+      background: var(--app-bg);
+    }
+    .ev-body { min-width: 0; }
+    .ev-title {
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: var(--app-text);
+      margin-bottom: 3px;
+    }
+    .ev-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--app-text-subtle);
+      margin-bottom: 4px;
+    }
+    .ev-meta .ev-app { color: var(--app-text-muted); }
+    .ev-link {
+      font-size: 10.5px;
+      color: var(--app-accent-strong);
+      border-bottom: 1px dotted var(--app-accent-border);
+      cursor: pointer;
+      transition: color 0.12s ease;
+    }
+    .ev-link:hover { color: var(--app-accent); }
+
+    .insp-subhead {
+      padding: 9px 13px 5px;
+      font-size: 9.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--app-text-subtle);
+      border-top: 1px solid var(--app-border);
+    }
+    .conf-hist { padding: 2px 13px 14px; }
+    .ch-row {
+      display: grid;
+      grid-template-columns: 30px 1fr 30px;
+      align-items: center;
+      gap: 8px;
+      padding: 2px 0;
+      font-size: 10.5px;
+      color: var(--app-text-muted);
+    }
+    .ch-date { color: var(--app-text-subtle); }
+    .ch-track {
+      height: 5px;
+      border-radius: 999px;
+      background: var(--app-surface-hover);
+      overflow: hidden;
+      border: 1px solid var(--app-border);
+    }
+    .ch-fill { height: 100%; background: var(--app-accent); border-radius: 999px; }
+    .ch-val { text-align: right; color: var(--app-text); font-variant-numeric: tabular-nums; }
+
+    @media (max-width: 900px) {
+      .md-grid { grid-template-columns: 1fr; }
+      .inspector { position: static; }
+      .traj-legend { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">mnema</span>
+      </div>
+      <div class="surface-toggle">
+        <button type="button">Timeline</button>
+        <button type="button" class="active" aria-current="page">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip"><span class="dot"></span>idle</span>
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <div class="insights">
+        <nav class="subnav">
+          <div class="subnav-tabs">
+            <a class="subnav-tab" href="overview.html">Overview</a>
+            <a class="subnav-tab active" aria-current="page" href="subjects-index.html">Subjects</a>
+            <a class="subnav-tab" href="context.html">Context</a>
+            <a class="subnav-tab" href="chat.html">Chat</a>
+          </div>
+          <div class="subnav-meta">
+            <div class="subnav-search">
+              <span class="subnav-search-glyph">⌕</span>
+              <span class="subnav-search-text">Jump to a subject or ask…</span>
+              <span class="kbd">⌘K</span>
+            </div>
+            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+          </div>
+        </nav>
+
+        <main class="insights-main">
+          <!-- BUILD NOTES — subject (detail)
+               Slice: #106 — single Subject view. Shows its INDIVIDUAL Conclusions, each with its own
+                 Confidence-over-time trajectory (Confidence History) — NOT a single rolled-up sentiment score.
+               Tier: ENGINE — Conclusions + Confidence History are rig-core-derived, in the Encrypted Capture Index.
+               Layout: overlay trajectory chart (one line per Conclusion) + master-detail conclusions list
+                 with a sticky Evidence inspector listing the Activity values each Conclusion is grounded in.
+               Concepts: Confidence (recency-weighted), display floor (below it a Conclusion leaves the
+                 dossier but its history persists), Pin (protect from decay), Dismiss (high-bar resurface).
+               Interactions: Pin/Dismiss = Correction UI (#108); evidence "view in Timeline" = Activity-span handoff
+                 (lands Timeline at the Activity's start + highlighted range; Timeline stays raw, no semantic ribbon in v1).
+               Reuse: SearchResultCard.svelte for evidence rows. Charts are hand-built SVG — no chart lib.
+               ADRs: ../../adr/0028-ai-features-call-models-rust-side-via-rig-core.md,
+                     ../../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md
+               Full guide: see README.md
+          -->
+          <!-- ============================================================
+               SURFACE CONTENT START
+               ============================================================ -->
+
+          <!-- 1. Breadcrumb + back -->
+          <div class="breadcrumb">
+            <a class="breadcrumb-back" href="subjects-index.html">‹ back</a>
+            <a href="subjects-index.html">Subjects</a>
+            <span class="sep">/</span>
+            <span class="current">Apple silicon</span>
+          </div>
+
+          <!-- 2. Subject hero -->
+          <div class="subj-hero">
+            <div class="subj-hero-main">
+              <h1 class="subj-title">Apple silicon</h1>
+              <div class="subj-meta">
+                <span class="pill">6 conclusions</span>
+                <span class="pill">first seen 8 months ago</span>
+                <span class="pill">last evidence 4 days ago</span>
+                <span class="pill">42 linked activities</span>
+              </div>
+            </div>
+            <div class="subj-switch">
+              <button class="subj-switch-btn" type="button">Apple silicon <span class="caret">▾</span></button>
+              <div class="subj-switch-strip">
+                <a class="chip" href="subjects-index.html">Rust</a>
+                <a class="chip" href="subjects-index.html">Async comms</a>
+                <a class="chip" href="subjects-index.html">Local LLMs</a>
+                <a class="chip" href="subjects-index.html">Figma→code</a>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. Hero overlay trajectory chart -->
+          <div class="card traj-card">
+            <div class="traj-head">
+              <div class="section-title">
+                Conclusion trajectories
+                <span class="tier-badge tier-badge--engine">ENGINE</span>
+              </div>
+              <span class="muted" style="font-size:11px;">confidence over time · Oct → Jun</span>
+            </div>
+            <p class="traj-sub">
+              Each line is one conclusion — they warm and cool independently.
+              Not a single sentiment score.
+            </p>
+
+            <div class="traj-chartwrap">
+              <!-- BUILD: one line per Conclusion = its own Confidence History; NOT a single rolled-up score. Hand-built SVG, no chart lib. -->
+              <!-- viewBox: 0..760 x, 0..260 y. Plot x[58..740] y[18..212].
+                   y=18 -> 100%, y=212 -> 0%. Display floor 15% -> y=182.9 -->
+              <svg class="traj-svg" viewBox="0 0 760 260" preserveAspectRatio="none"
+                   role="img" aria-label="Overlay confidence-over-time chart, one line per conclusion about Apple silicon">
+
+                <!-- gridlines at 0,25,50,75,100% -->
+                <line class="grid-line--faint" x1="58" y1="18"   x2="740" y2="18" />
+                <line class="grid-line--faint" x1="58" y1="66.5" x2="740" y2="66.5" />
+                <line class="grid-line--faint" x1="58" y1="115"  x2="740" y2="115" />
+                <line class="grid-line--faint" x1="58" y1="163.5" x2="740" y2="163.5" />
+                <!-- baseline axes -->
+                <line class="axis-line" x1="58" y1="212" x2="740" y2="212" />
+                <line class="axis-line" x1="58" y1="18"  x2="58"  y2="212" />
+
+                <!-- y labels -->
+                <text class="axis-label--y" x="52" y="21"    text-anchor="end">100%</text>
+                <text class="axis-label--y" x="52" y="69.5"  text-anchor="end">75%</text>
+                <text class="axis-label--y" x="52" y="118"   text-anchor="end">50%</text>
+                <text class="axis-label--y" x="52" y="166.5" text-anchor="end">25%</text>
+                <text class="axis-label--y" x="52" y="215"   text-anchor="end">0%</text>
+
+                <!-- month ticks: Oct → Jun across x[58..740] -->
+                <text class="axis-label" x="58"  y="228" text-anchor="middle">Oct</text>
+                <text class="axis-label" x="155" y="228" text-anchor="middle">Nov</text>
+                <text class="axis-label" x="252" y="228" text-anchor="middle">Dec</text>
+                <text class="axis-label" x="349" y="228" text-anchor="middle">Jan</text>
+                <text class="axis-label" x="447" y="228" text-anchor="middle">Feb</text>
+                <text class="axis-label" x="544" y="228" text-anchor="middle">Mar</text>
+                <text class="axis-label" x="641" y="228" text-anchor="middle">Apr</text>
+                <text class="axis-label" x="740" y="228" text-anchor="middle">Jun</text>
+                <text class="axis-label" x="399" y="246" text-anchor="middle" style="fill:var(--app-text-faint);">time →</text>
+
+                <!-- display floor at 15% -> y = 212 - 0.15*194 = 182.9 -->
+                <line class="floor-line" x1="58" y1="182.9" x2="740" y2="182.9" />
+                <text class="floor-label" x="736" y="178" text-anchor="end">display floor · 15%</text>
+
+                <!-- SELECTED — increasingly interested (coding/green): rising to 78% (y=60.8) -->
+                <polyline class="traj-line--sel line-coding"
+                  points="58,160 155,142 252,118 349,96 447,84 544,74 641,66 740,60.8" />
+                <circle class="dot fill-coding" cx="740" cy="60.8" r="3.6" />
+
+                <!-- M-series GPU for local ML (research/blue): rising to 64% (y=87.8) -->
+                <polyline class="traj-line line-research"
+                  points="58,170 155,156 252,140 349,124 447,112 544,102 641,94 740,87.8" />
+                <circle class="dot fill-research" cx="740" cy="87.8" r="3" />
+
+                <!-- on-device AI (communication/violet): steady ~52% (y=111.1) -->
+                <polyline class="traj-line line-comm"
+                  points="58,118 155,114 252,116 349,112 447,114 544,110 641,113 740,111.1" />
+                <circle class="dot fill-comm" cx="740" cy="111.1" r="3" />
+
+                <!-- compare rigs (design/pink): rising to 49% (y=116.9) -->
+                <polyline class="traj-line--dim line-design"
+                  points="58,158 155,150 252,144 349,138 447,132 544,126 641,121 740,116.9" />
+                <circle class="dot fill-design" cx="740" cy="116.9" r="2.6" />
+
+                <!-- Foundation Models follow (testing/olive): mild ~44% (y=126.6) -->
+                <polyline class="traj-line--dim line-testing"
+                  points="58,150 155,146 252,142 349,140 447,134 544,132 641,129 740,126.6" />
+                <circle class="dot fill-testing" cx="740" cy="126.6" r="2.6" />
+
+                <!-- FADED — switch away from Apple (personal/amber): cools below floor, 41% drawn faint -->
+                <polyline class="traj-line--faded line-personal"
+                  points="58,84 155,100 252,118 349,132 447,144 544,156 641,168 740,182" />
+                <circle class="dot fill-personal" cx="740" cy="182" r="2.5" style="opacity:0.5;" />
+              </svg>
+            </div>
+
+            <!-- Legend: each colored line → its conclusion -->
+            <div class="traj-legend">
+              <span class="legend-item">
+                <span class="legend-swatch legend-swatch--coding"></span>
+                <span class="legend-label">Increasingly interested in Apple silicon</span>
+                <span class="legend-trend">78% ▲</span>
+              </span>
+              <span class="legend-item">
+                <span class="legend-swatch legend-swatch--research"></span>
+                <span class="legend-label">Curious about M-series GPU for local ML</span>
+                <span class="legend-trend">64% ▲</span>
+              </span>
+              <span class="legend-item">
+                <span class="legend-swatch legend-swatch--comm"></span>
+                <span class="legend-label">Prefers Apple's on-device AI</span>
+                <span class="legend-trend">52% –</span>
+              </span>
+              <span class="legend-item">
+                <span class="legend-swatch legend-swatch--design"></span>
+                <span class="legend-label">Comparing Mac vs a Linux build</span>
+                <span class="legend-trend">49% ▲</span>
+              </span>
+              <span class="legend-item">
+                <span class="legend-swatch legend-swatch--testing"></span>
+                <span class="legend-label">Following Foundation Models APIs</span>
+                <span class="legend-trend">44% –</span>
+              </span>
+              <span class="legend-item">
+                <span class="legend-swatch legend-swatch--faded"></span>
+                <span class="legend-label">Cooled on switching away from Apple</span>
+                <span class="legend-trend">41% ▼</span>
+              </span>
+            </div>
+          </div>
+
+          <!-- 4. Two-column master-detail -->
+          <div class="md-grid">
+
+            <!-- LEFT: conclusions list -->
+            <div class="md-left">
+              <div class="md-head">
+                <div class="section-title">Conclusions (6)</div>
+                <span class="muted" style="font-size:11px;">click a row to inspect its evidence · 1 below floor</span>
+              </div>
+
+              <div class="concl-list">
+
+                <!-- Card 1 — SELECTED, drives the inspector -->
+                <div class="card concl-card is-selected">
+                  <div class="concl-main">
+                    <p class="concl-statement strong">Has been increasingly interested in Apple silicon</p>
+                    <div class="concl-conf">
+                      <div class="confidence-bar"><div class="confidence-bar-fill fill--rise" style="width:78%"></div></div>
+                      <span class="conf-pct">78%</span>
+                      <span class="trend trend--up">▲ rising</span>
+                    </div>
+                    <!-- BUILD: Pin/Dismiss = Correction UI (#108). Pin protects from decay; Dismiss = high-bar resurface, not a permanent veto. -->
+                    <div class="concl-footrow">
+                      <button class="btn btn--accent">★ Pin</button>
+                      <button class="btn btn--ghost">Dismiss</button>
+                      <span class="spacer"></span>
+                      <span class="ev-affordance">view evidence · 14</span>
+                    </div>
+                  </div>
+                  <div class="concl-aside">
+                    <svg class="spark-svg" viewBox="0 0 116 34" preserveAspectRatio="none" aria-hidden="true">
+                      <line class="spark-floor" x1="0" y1="28" x2="116" y2="28" />
+                      <polyline class="spark-line line-coding" points="2,28 24,22 46,17 68,12 90,8 114,5" />
+                    </svg>
+                  </div>
+                </div>
+
+                <!-- Card 2 -->
+                <div class="card concl-card">
+                  <div class="concl-main">
+                    <p class="concl-statement strong">Curious about the M-series GPU for local ML</p>
+                    <div class="concl-conf">
+                      <div class="confidence-bar"><div class="confidence-bar-fill fill--info" style="width:64%"></div></div>
+                      <span class="conf-pct">64%</span>
+                      <span class="trend trend--up">▲ rising</span>
+                    </div>
+                    <div class="concl-footrow">
+                      <button class="btn btn--ghost">Pin</button>
+                      <button class="btn btn--ghost">Dismiss</button>
+                      <span class="spacer"></span>
+                      <span class="ev-affordance">view evidence · 11</span>
+                    </div>
+                  </div>
+                  <div class="concl-aside">
+                    <svg class="spark-svg" viewBox="0 0 116 34" preserveAspectRatio="none" aria-hidden="true">
+                      <line class="spark-floor" x1="0" y1="28" x2="116" y2="28" />
+                      <polyline class="spark-line line-research" points="2,30 24,26 46,21 68,16 90,11 114,8" />
+                    </svg>
+                  </div>
+                </div>
+
+                <!-- Card 3 -->
+                <div class="card concl-card">
+                  <div class="concl-main">
+                    <p class="concl-statement strong">Prefers Apple's on-device AI over the cloud</p>
+                    <div class="concl-conf">
+                      <div class="confidence-bar"><div class="confidence-bar-fill fill--steady" style="width:52%"></div></div>
+                      <span class="conf-pct">52%</span>
+                      <span class="trend trend--steady">– steady</span>
+                    </div>
+                    <div class="concl-footrow">
+                      <button class="btn btn--ghost">Pin</button>
+                      <button class="btn btn--ghost">Dismiss</button>
+                      <span class="spacer"></span>
+                      <span class="ev-affordance">view evidence · 6</span>
+                    </div>
+                  </div>
+                  <div class="concl-aside">
+                    <svg class="spark-svg" viewBox="0 0 116 34" preserveAspectRatio="none" aria-hidden="true">
+                      <line class="spark-floor" x1="0" y1="28" x2="116" y2="28" />
+                      <polyline class="spark-line line-comm" points="2,18 24,19 46,17 68,19 90,17 114,18" />
+                    </svg>
+                  </div>
+                </div>
+
+                <!-- Card 4 -->
+                <div class="card concl-card">
+                  <div class="concl-main">
+                    <p class="concl-statement strong">Comparing a MacBook Pro vs building a Linux box</p>
+                    <div class="concl-conf">
+                      <div class="confidence-bar"><div class="confidence-bar-fill fill--rise" style="width:49%"></div></div>
+                      <span class="conf-pct">49%</span>
+                      <span class="trend trend--up">▲ rising</span>
+                    </div>
+                    <div class="concl-footrow">
+                      <button class="btn btn--ghost">Pin</button>
+                      <button class="btn btn--ghost">Dismiss</button>
+                      <span class="spacer"></span>
+                      <span class="ev-affordance">view evidence · 9</span>
+                    </div>
+                  </div>
+                  <div class="concl-aside">
+                    <svg class="spark-svg" viewBox="0 0 116 34" preserveAspectRatio="none" aria-hidden="true">
+                      <line class="spark-floor" x1="0" y1="28" x2="116" y2="28" />
+                      <polyline class="spark-line line-design" points="2,27 24,24 46,21 68,18 90,15 114,13" />
+                    </svg>
+                  </div>
+                </div>
+
+                <!-- Card 5 -->
+                <div class="card concl-card">
+                  <div class="concl-main">
+                    <p class="concl-statement strong">Following Apple's Foundation Models APIs</p>
+                    <div class="concl-conf">
+                      <div class="confidence-bar"><div class="confidence-bar-fill fill--steady" style="width:44%"></div></div>
+                      <span class="conf-pct">44%</span>
+                      <span class="trend trend--steady">– steady</span>
+                    </div>
+                    <div class="concl-footrow">
+                      <button class="btn btn--ghost">Pin</button>
+                      <button class="btn btn--ghost">Dismiss</button>
+                      <span class="spacer"></span>
+                      <span class="ev-affordance">view evidence · 5</span>
+                    </div>
+                  </div>
+                  <div class="concl-aside">
+                    <svg class="spark-svg" viewBox="0 0 116 34" preserveAspectRatio="none" aria-hidden="true">
+                      <line class="spark-floor" x1="0" y1="28" x2="116" y2="28" />
+                      <polyline class="spark-line line-testing" points="2,24 24,23 46,22 68,21 90,20 114,19" />
+                    </svg>
+                  </div>
+                </div>
+
+                <!-- Card 6 — FADED / below display floor -->
+                <div class="card concl-card concl-card--faded">
+                  <div class="concl-main">
+                    <p class="concl-statement strong">Cooled on switching away from Apple</p>
+                    <div class="concl-conf">
+                      <div class="confidence-bar"><div class="confidence-bar-fill fill--cool" style="width:41%"></div></div>
+                      <span class="conf-pct">41%</span>
+                      <span class="trend trend--down">▼ cooling</span>
+                    </div>
+                    <div class="floor-note">
+                      <span class="glyph">⊘</span>
+                      Below display floor — kept for history.
+                    </div>
+                    <div class="concl-footrow">
+                      <button class="btn btn--ghost">Pin</button>
+                      <button class="btn btn--ghost">Dismiss</button>
+                      <span class="spacer"></span>
+                      <span class="ev-affordance">view evidence · 4</span>
+                    </div>
+                  </div>
+                  <div class="concl-aside">
+                    <svg class="spark-svg" viewBox="0 0 116 34" preserveAspectRatio="none" aria-hidden="true">
+                      <line class="spark-floor" x1="0" y1="14" x2="116" y2="14" />
+                      <polyline class="spark-line line-personal" style="opacity:0.6;" points="2,6 24,9 46,14 68,19 90,24 114,29" />
+                    </svg>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- RIGHT: EVIDENCE INSPECTOR (sticky) -->
+            <!-- BUILD: each row links to an Activity (evidence). "view in Timeline" = Activity-span handoff to the raw Timeline surface. -->
+            <aside class="card inspector">
+              <div class="insp-head">
+                <span class="ih-title">Evidence</span>
+                <span class="ih-count">14 linked activities</span>
+              </div>
+              <div class="insp-conclusion">
+                <span class="ic-dot"></span>Has been increasingly interested in Apple silicon
+                <span class="muted" style="font-size:10.5px;">· 78% ▲</span>
+              </div>
+
+              <div class="ev-list">
+
+                <div class="ev-item">
+                  <div class="ev-thumb is-screen">
+                    <svg class="ev-thumb-svg" viewBox="0 0 44 32" preserveAspectRatio="none">
+                      <rect x="0" y="0" width="44" height="32" style="fill:var(--app-source-screen-bg);" />
+                      <rect x="3" y="4"  width="26" height="3" rx="1" style="fill:var(--app-source-screen-strong);" />
+                      <rect x="3" y="10" width="38" height="2" rx="1" style="fill:var(--app-source-screen);opacity:.5;" />
+                      <rect x="3" y="15" width="32" height="2" rx="1" style="fill:var(--app-source-screen);opacity:.5;" />
+                      <rect x="3" y="20" width="20" height="2" rx="1" style="fill:var(--app-source-screen);opacity:.35;" />
+                    </svg>
+                    <span class="ev-src-tag is-screen">scr</span>
+                  </div>
+                  <div class="ev-body">
+                    <div class="ev-title">Read HN: M4 Max benchmarks</div>
+                    <div class="ev-meta"><span class="ev-app">Chrome</span><span>·</span><span>2d ago</span></div>
+                    <span class="ev-link">view in Timeline →</span>
+                  </div>
+                </div>
+
+                <div class="ev-item">
+                  <div class="ev-thumb is-screen">
+                    <svg class="ev-thumb-svg" viewBox="0 0 44 32" preserveAspectRatio="none">
+                      <rect x="0" y="0" width="44" height="32" style="fill:var(--app-source-screen-bg);" />
+                      <rect x="3" y="3"  width="38" height="14" rx="2" style="fill:var(--app-source-screen-strong);opacity:.6;" />
+                      <polygon points="18,7 18,13 24,10" style="fill:var(--app-source-screen);" />
+                      <rect x="3" y="21" width="30" height="2" rx="1" style="fill:var(--app-source-screen);opacity:.45;" />
+                      <rect x="3" y="26" width="22" height="2" rx="1" style="fill:var(--app-source-screen);opacity:.3;" />
+                    </svg>
+                    <span class="ev-src-tag is-screen">scr</span>
+                  </div>
+                  <div class="ev-body">
+                    <div class="ev-title">Watched: Asahi Linux progress</div>
+                    <div class="ev-meta"><span class="ev-app">Chrome</span><span>·</span><span>4d ago</span></div>
+                    <span class="ev-link">view in Timeline →</span>
+                  </div>
+                </div>
+
+                <div class="ev-item">
+                  <div class="ev-thumb is-screen">
+                    <svg class="ev-thumb-svg" viewBox="0 0 44 32" preserveAspectRatio="none">
+                      <rect x="0" y="0" width="44" height="32" style="fill:var(--app-source-screen-bg);" />
+                      <rect x="3" y="3" width="38" height="26" rx="2" style="fill:none;stroke:var(--app-source-screen-strong);stroke-width:1;" />
+                      <rect x="6" y="6"  width="14" height="2" style="fill:var(--app-source-screen);opacity:.6;" />
+                      <rect x="6" y="11" width="32" height="1.6" style="fill:var(--app-source-screen);opacity:.4;" />
+                      <rect x="6" y="15" width="28" height="1.6" style="fill:var(--app-source-screen);opacity:.4;" />
+                      <rect x="6" y="19" width="30" height="1.6" style="fill:var(--app-source-screen);opacity:.4;" />
+                      <rect x="6" y="23" width="20" height="1.6" style="fill:var(--app-source-screen);opacity:.3;" />
+                    </svg>
+                    <span class="ev-src-tag is-screen">scr</span>
+                  </div>
+                  <div class="ev-body">
+                    <div class="ev-title">Browsed llama.cpp Metal backend</div>
+                    <div class="ev-meta"><span class="ev-app">VS Code</span><span>·</span><span>5d ago</span></div>
+                    <span class="ev-link">view in Timeline →</span>
+                  </div>
+                </div>
+
+                <div class="ev-item">
+                  <div class="ev-thumb is-audio">
+                    <svg class="ev-thumb-svg" viewBox="0 0 44 32" preserveAspectRatio="none">
+                      <g style="stroke:var(--app-source-mic);stroke-width:1.6;stroke-linecap:round;">
+                        <line x1="6"  y1="14" x2="6"  y2="18" />
+                        <line x1="9"  y1="12" x2="9"  y2="20" />
+                        <line x1="12" y1="8"  x2="12" y2="24" />
+                        <line x1="15" y1="13" x2="15" y2="19" />
+                        <line x1="18" y1="6"  x2="18" y2="26" />
+                        <line x1="21" y1="11" x2="21" y2="21" />
+                        <line x1="24" y1="9"  x2="24" y2="23" />
+                        <line x1="27" y1="14" x2="27" y2="18" />
+                        <line x1="30" y1="7"  x2="30" y2="25" />
+                        <line x1="33" y1="12" x2="33" y2="20" />
+                        <line x1="36" y1="14" x2="36" y2="18" />
+                        <line x1="39" y1="15" x2="39" y2="17" />
+                      </g>
+                    </svg>
+                    <span class="ev-src-tag is-audio">mic</span>
+                  </div>
+                  <div class="ev-body">
+                    <div class="ev-title">Audio note: “M-series for local inference?”</div>
+                    <div class="ev-meta"><span class="ev-app">Mic</span><span>·</span><span>1w ago · 0:38</span></div>
+                    <span class="ev-link">view in Timeline →</span>
+                  </div>
+                </div>
+
+              </div>
+
+              <div class="insp-subhead">Confidence history</div>
+              <div class="conf-hist">
+                <div class="ch-row"><span class="ch-date">Jan</span><div class="ch-track"><div class="ch-fill" style="width:28%;"></div></div><span class="ch-val">28</span></div>
+                <div class="ch-row"><span class="ch-date">Feb</span><div class="ch-track"><div class="ch-fill" style="width:38%;"></div></div><span class="ch-val">38</span></div>
+                <div class="ch-row"><span class="ch-date">Mar</span><div class="ch-track"><div class="ch-fill" style="width:52%;"></div></div><span class="ch-val">52</span></div>
+                <div class="ch-row"><span class="ch-date">Apr</span><div class="ch-track"><div class="ch-fill" style="width:62%;"></div></div><span class="ch-val">62</span></div>
+                <div class="ch-row"><span class="ch-date">May</span><div class="ch-track"><div class="ch-fill" style="width:71%;"></div></div><span class="ch-val">71</span></div>
+                <div class="ch-row"><span class="ch-date">Jun</span><div class="ch-track"><div class="ch-fill" style="width:78%;"></div></div><span class="ch-val">78</span></div>
+              </div>
+            </aside>
+
+          </div>
+          <!-- ============================================================
+               SURFACE CONTENT END
+               ============================================================ -->
+        </main>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

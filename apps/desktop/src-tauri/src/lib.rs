@@ -1,9 +1,11 @@
+mod ai_runtime;
 mod app_infra;
 mod app_updates;
 mod ask_ai;
 mod audio_transcription_models;
 mod broker_authorization_channel;
 mod cli_access;
+mod conversation;
 mod general_app_log;
 mod keyboard_bindings;
 mod managed_storage_layout;
@@ -16,6 +18,8 @@ mod sensitive_capture_recommendations;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
+mod usage_charts;
+mod user_context;
 mod windows;
 
 use std::{collections::VecDeque, path::Path, sync::Mutex};
@@ -44,6 +48,12 @@ const ALREADY_RUNNING_MESSAGE: &str =
     "Mnema is already running. Close the existing Mnema window before opening it again.";
 const BROKER_OPEN_CAPTURE_RESULT_EVENT: &str = "broker_open_capture_result";
 const BROKER_AUTHORIZATION_REQUEST_FILE_NAME: &str = "broker-authorization-request.json";
+/// Event the main window listens for to switch the Insights surface to the Chat
+/// tab and select a given conversation. Emitted by `open_conversation_in_chat`
+/// when Quick Recall promotes a thread into the full Chat workspace (issue #111,
+/// ADR 0031). The conversation is already persisted under the same id, so Chat's
+/// `get_conversation` + resurrect-from-transcript path continues it seamlessly.
+const INSIGHTS_OPEN_CONVERSATION_EVENT: &str = "insights_open_conversation";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +110,74 @@ fn open_capture_result_in_main_window(
     }
     let _ = windows::open_main_window(&app_handle);
     let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InsightsOpenConversationPayload {
+    conversation_id: String,
+}
+
+/// Pending Insights→Chat conversation handoff(s) for a cold main window. Mirrors
+/// `BrokerOpenCaptureResultState`: the live event drives a warm window, while a
+/// freshly-opened (cold) main window drains this queue on mount so the handoff
+/// still lands when Insights mounts after the event fired.
+#[derive(Default)]
+struct InsightsOpenConversationState {
+    pending: Mutex<VecDeque<InsightsOpenConversationPayload>>,
+}
+
+#[tauri::command]
+fn drain_pending_insights_open_conversations(
+    state: tauri::State<'_, InsightsOpenConversationState>,
+) -> Vec<InsightsOpenConversationPayload> {
+    let Ok(mut pending) = state.pending.lock() else {
+        return Vec::new();
+    };
+    pending.drain(..).collect()
+}
+
+/// Non-draining peek used by the cold-window route shim: a freshly-opened main
+/// window boots on Timeline (`/`), so the layout asks whether a Quick Recall →
+/// Chat handoff is queued and, if so, routes to `/insights` — where the Insights
+/// surface mounts and drains the queue. Returns `false` if the lock is poisoned.
+#[tauri::command]
+fn has_pending_insights_open_conversations(
+    state: tauri::State<'_, InsightsOpenConversationState>,
+) -> bool {
+    state
+        .pending
+        .lock()
+        .map(|pending| !pending.is_empty())
+        .unwrap_or(false)
+}
+
+/// Show + focus the main window, navigate it to the Insights → Chat tab, and
+/// select `conversation_id`. Mirrors `open_capture_result_in_main_window`: the
+/// payload is emitted as a live event so a warm window reacts immediately, and
+/// is queued for a cold-window drain ONLY when the main window isn't already
+/// open. Queuing on a warm window would leave the entry stranded — the page
+/// doesn't remount, so `drain_pending_insights_open_conversations` never runs,
+/// and the next genuine mount would replay every stale handoff and hijack the
+/// view onto an old thread. Quick Recall calls this for "Open in Chat".
+#[tauri::command]
+fn open_conversation_in_chat(
+    conversation_id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, InsightsOpenConversationState>,
+) {
+    let payload = InsightsOpenConversationPayload { conversation_id };
+    // A cold main window drains the queue on mount; a warm one is served by the
+    // live event alone. Only queue when the window is not yet open so a warm
+    // window never accumulates stale entries.
+    let main_window_open = app_handle.get_webview_window("main").is_some();
+    if !main_window_open {
+        if let Ok(mut pending) = state.pending.lock() {
+            pending.push_back(payload.clone());
+        }
+    }
+    let _ = windows::open_main_window(&app_handle);
+    let _ = app_handle.emit(INSIGHTS_OPEN_CONVERSATION_EVENT, payload);
 }
 
 fn is_app_log_target(target: &str) -> bool {
@@ -308,6 +386,7 @@ pub fn run() {
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
         .manage(BrokerOpenCaptureResultState::default())
+        .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if notify_pending_broker_authorization_request_if_onboarded(app) {
@@ -378,12 +457,11 @@ pub fn run() {
             cli_access::get_cli_access_status,
             cli_access::install_cli,
             cli_access::reinstall_cli,
-            ask_ai::get_pi_runtime_status,
             ask_ai::ask_ai_availability,
-            ask_ai::ask_ai_list_models,
             ask_ai::ask_ai_start,
             ask_ai::ask_ai_followup,
             ask_ai::ask_ai_cancel,
+            ask_ai::ask_ai_snapshot,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,
@@ -479,6 +557,37 @@ pub fn run() {
             native_capture::update_processing_settings,
             native_capture::update_developer_settings,
             native_capture::update_access_settings,
+            native_capture::update_ai_runtime_settings,
+            native_capture::update_user_context_settings,
+            ai_runtime::ai_runtime_set_provider_key,
+            ai_runtime::ai_runtime_clear_provider_key,
+            ai_runtime::ai_runtime_has_provider_key,
+            ai_runtime::get_ai_runtime_status,
+            ai_runtime::ai_runtime_test_connection,
+            ai_runtime::ai_runtime_list_models,
+            user_context::commands::get_user_context_status,
+            user_context::commands::list_user_context_activities,
+            user_context::commands::list_user_context_conclusions,
+            user_context::commands::get_user_context_subject,
+            user_context::commands::get_user_context_digest,
+            user_context::commands::regenerate_user_context_digest,
+            user_context::commands::user_context_run_derivation_now,
+            user_context::commands::user_context_dismiss_conclusion,
+            user_context::commands::user_context_set_pinned,
+            user_context::commands::user_context_correct_activity_category,
+            user_context::commands::user_context_correct_activity_focus,
+            user_context::commands::list_user_context_authored,
+            user_context::commands::user_context_add_authored,
+            user_context::commands::user_context_update_authored,
+            user_context::commands::user_context_delete_authored,
+            user_context::commands::wipe_user_context,
+            conversation::commands::list_conversations,
+            conversation::commands::get_conversation,
+            conversation::commands::search_conversations,
+            conversation::commands::set_conversation_engine,
+            conversation::commands::set_conversation_title,
+            conversation::commands::delete_conversation,
+            usage_charts::get_usage_charts,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,
@@ -503,6 +612,9 @@ pub fn run() {
             keyboard_bindings::update_keyboard_bindings_settings,
             drain_pending_broker_open_capture_results,
             open_capture_result_in_main_window,
+            drain_pending_insights_open_conversations,
+            has_pending_insights_open_conversations,
+            open_conversation_in_chat,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

@@ -454,9 +454,11 @@ pub struct AccessSettings {
     /// conversation can pull through the broker.
     #[serde(default = "default_ask_ai_max_tool_calls")]
     pub ask_ai_max_tool_calls: u32,
-    /// PI model id Ask AI should use for Quick Recall, in the form
-    /// `provider:modelId` (e.g. `anthropic:claude-opus-4`). `None`/empty lets
-    /// the PI runtime pick its own configured default model.
+    /// The Ask AI **model override** (ADR 0034): a bare rig-core model id that
+    /// replaces the global default model's *model* for Quick Recall and
+    /// unpinned Chat threads, riding on the default model's provider.
+    /// `None`/empty means "use the global default model". NOTE this was
+    /// historically a PI `provider:modelId` pair; it is now a bare model id.
     #[serde(default)]
     pub ask_ai_model: Option<String>,
 }
@@ -469,6 +471,435 @@ impl Default for AccessSettings {
             ask_ai_model: None,
         }
     }
+}
+
+/// Stable kind tag for one connected AI provider (ADR 0034). The serde
+/// snake_case string is the provider's stable id everywhere: the OS-keychain
+/// account in the Capture Index Key Store, the conversation engine-pin
+/// `provider` string, and the `provider` tag on discovered models.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProviderKind {
+    Anthropic,
+    Openai,
+    OpenaiCompatible,
+    Ollama,
+    Llamafile,
+}
+
+impl AiProviderKind {
+    /// The stable provider id (the serde snake_case form).
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::Openai => "openai",
+            Self::OpenaiCompatible => "openai_compatible",
+            Self::Ollama => "ollama",
+            Self::Llamafile => "llamafile",
+        }
+    }
+
+    /// Parse a stable provider id back into the kind. `None` for an unknown id
+    /// (e.g. a conversation pin recorded by a build with other providers).
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "anthropic" => Some(Self::Anthropic),
+            "openai" => Some(Self::Openai),
+            "openai_compatible" => Some(Self::OpenaiCompatible),
+            "ollama" => Some(Self::Ollama),
+            "llamafile" => Some(Self::Llamafile),
+            _ => None,
+        }
+    }
+
+    /// Local runtimes are reached on an endpoint and need no credential.
+    pub fn is_local(self) -> bool {
+        matches!(self, Self::Ollama | Self::Llamafile)
+    }
+
+    /// Default endpoint for a local runtime whose provider config leaves
+    /// `baseUrl` empty. Cloud providers default to their first-party endpoint
+    /// inside the engine crate, so they have no default here.
+    pub fn default_local_endpoint(self) -> Option<&'static str> {
+        match self {
+            Self::Ollama => Some("http://localhost:11434"),
+            Self::Llamafile => Some("http://localhost:8080"),
+            _ => None,
+        }
+    }
+}
+
+/// One connected AI provider (ADR 0034, amended by ADR 0035): the provider kind
+/// plus its non-secret connection details. The credential (cloud API key) lives
+/// ONLY in the OS keychain keyed by [`AiProviderConfig::id`]; never persisted here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderConfig {
+    /// Stable per-instance id — the identity used everywhere a provider is
+    /// referenced: the OS-keychain account, the `provider` tag on discovered
+    /// models, the conversation engine-pin `provider`, and the default-model
+    /// `provider`. Multiple instances of one [`kind`](Self::kind) coexist by
+    /// carrying distinct ids; the first instance of a kind keeps `id ==
+    /// kind.id()` so keys and pins recorded before instance ids existed still
+    /// resolve. An empty id on a legacy settings file is backfilled to
+    /// `kind.id()` at load.
+    #[serde(default)]
+    pub id: String,
+    pub kind: AiProviderKind,
+    /// Optional user-facing display name distinguishing same-kind instances
+    /// (e.g. "llama-swap box"). Empty falls back to a kind+host label in the UI.
+    #[serde(default)]
+    pub label: String,
+    /// Custom base URL / endpoint. Required for `openai_compatible`; ignored
+    /// for the first-party cloud providers (which use their default endpoint);
+    /// the local endpoint for `ollama`/`llamafile` (empty = the kind's default
+    /// localhost endpoint).
+    #[serde(default)]
+    pub base_url: String,
+}
+
+impl AiProviderConfig {
+    /// Backfill an empty [`id`](Self::id) to the kind id. A legacy settings file
+    /// (saved before instance ids existed, at most one provider per kind) leaves
+    /// `id` empty; `kind.id()` is exactly the identity its keychain key and pins
+    /// were recorded under, so this keeps them resolving.
+    fn with_backfilled_id(mut self) -> Self {
+        if self.id.trim().is_empty() {
+            self.id = self.kind.id().to_string();
+        }
+        self
+    }
+}
+
+/// An engine identity `{provider, model}` (ADR 0034) — the same shape the
+/// conversation engine pin uses. The global default model is one of these, and
+/// every model decision resolves to one through the single precedence chain
+/// (thread pin → feature override → global default).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiEngineRef {
+    /// The connected provider **instance id** ([`AiProviderConfig::id`]). This
+    /// was the provider kind before instance ids existed; a legacy value equal
+    /// to a kind id still resolves because the first instance of a kind keeps
+    /// that id.
+    pub provider: String,
+    pub model: String,
+}
+
+/// The non-secret AI **provider-centric** settings domain (ADR 0034): a master
+/// switch, the flat list of connected providers, and ONE global default model
+/// chosen from the merged pool. There is no privileged default engine and no
+/// separate additional-engines list; a legacy engine-centric settings file
+/// (engineKind/cloud*/local* + additionalEngines) still deserializes into this
+/// shape via [`AiRuntimeSettingsWire`], and saves write only the new shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", from = "AiRuntimeSettingsWire")]
+pub struct AiRuntimeSettings {
+    pub enabled: bool,
+    pub providers: Vec<AiProviderConfig>,
+    pub default_model: Option<AiEngineRef>,
+}
+
+impl Default for AiRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            providers: Vec::new(),
+            default_model: None,
+        }
+    }
+}
+
+// --- legacy engine-centric wire shape (pre-ADR-0034) ---------------------
+// Kept deserialize-only so an old persisted `aiRuntime` block migrates into
+// the provider list at load time. Mirrors the old serde defaults so a partial
+// legacy file resolves exactly as it used to before converting.
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyAiEngineKind {
+    Cloud,
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyAiCloudProvider {
+    Anthropic,
+    Openai,
+    OpenaiCompatible,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyAiLocalKind {
+    Ollama,
+    Llamafile,
+}
+
+fn legacy_default_engine_kind() -> LegacyAiEngineKind {
+    LegacyAiEngineKind::Cloud
+}
+
+fn legacy_default_cloud_provider() -> LegacyAiCloudProvider {
+    LegacyAiCloudProvider::Anthropic
+}
+
+fn legacy_default_cloud_model() -> String {
+    "claude-haiku-4-5".to_string()
+}
+
+fn legacy_default_local_kind() -> LegacyAiLocalKind {
+    LegacyAiLocalKind::Ollama
+}
+
+fn legacy_default_local_endpoint() -> String {
+    "http://localhost:11434".to_string()
+}
+
+/// One legacy configured engine: the old flat default-engine fields or one
+/// entry of the old `additionalEngines` catalog.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyAiEngineProfile {
+    #[serde(default = "legacy_default_engine_kind")]
+    engine_kind: LegacyAiEngineKind,
+    #[serde(default = "legacy_default_cloud_provider")]
+    cloud_provider: LegacyAiCloudProvider,
+    #[serde(default = "legacy_default_cloud_model")]
+    cloud_model: String,
+    #[serde(default)]
+    cloud_base_url: String,
+    #[serde(default = "legacy_default_local_kind")]
+    local_kind: LegacyAiLocalKind,
+    #[serde(default = "legacy_default_local_endpoint")]
+    local_endpoint: String,
+    #[serde(default)]
+    local_model: String,
+}
+
+impl LegacyAiEngineProfile {
+    /// The provider this engine actually used (only the active engine-kind
+    /// side counts; the inactive side's fields were latent UI state).
+    fn provider_kind(&self) -> AiProviderKind {
+        match self.engine_kind {
+            LegacyAiEngineKind::Cloud => match self.cloud_provider {
+                LegacyAiCloudProvider::Anthropic => AiProviderKind::Anthropic,
+                LegacyAiCloudProvider::Openai => AiProviderKind::Openai,
+                LegacyAiCloudProvider::OpenaiCompatible => AiProviderKind::OpenaiCompatible,
+            },
+            LegacyAiEngineKind::Local => match self.local_kind {
+                LegacyAiLocalKind::Ollama => AiProviderKind::Ollama,
+                LegacyAiLocalKind::Llamafile => AiProviderKind::Llamafile,
+            },
+        }
+    }
+
+    fn base_url(&self) -> String {
+        match self.engine_kind {
+            LegacyAiEngineKind::Cloud => self.cloud_base_url.trim().to_string(),
+            LegacyAiEngineKind::Local => self.local_endpoint.trim().to_string(),
+        }
+    }
+
+    fn model(&self) -> String {
+        match self.engine_kind {
+            LegacyAiEngineKind::Cloud => self.cloud_model.trim().to_string(),
+            LegacyAiEngineKind::Local => self.local_model.trim().to_string(),
+        }
+    }
+}
+
+/// Deserialization-time wire shape for [`AiRuntimeSettings`], accepting both
+/// the provider-centric shape and the legacy engine-centric one. A `providers`
+/// key marks the new shape; otherwise any legacy engine field triggers the
+/// migration (old default engine + `additionalEngines` → providers list, with
+/// the default engine's `{provider, model}` becoming the global default model).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiRuntimeSettingsWire {
+    #[serde(default)]
+    enabled: bool,
+    // New provider-centric shape.
+    providers: Option<Vec<AiProviderConfig>>,
+    #[serde(default)]
+    default_model: Option<AiEngineRef>,
+    // Legacy engine-centric shape.
+    engine_kind: Option<LegacyAiEngineKind>,
+    cloud_provider: Option<LegacyAiCloudProvider>,
+    cloud_model: Option<String>,
+    cloud_base_url: Option<String>,
+    local_kind: Option<LegacyAiLocalKind>,
+    local_endpoint: Option<String>,
+    local_model: Option<String>,
+    #[serde(default)]
+    additional_engines: Vec<LegacyAiEngineProfile>,
+}
+
+impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
+    fn from(wire: AiRuntimeSettingsWire) -> Self {
+        // New shape present → use it verbatim (a blank default model id is
+        // treated as "no default chosen").
+        if let Some(providers) = wire.providers {
+            return Self {
+                enabled: wire.enabled,
+                providers: providers
+                    .into_iter()
+                    .map(AiProviderConfig::with_backfilled_id)
+                    .collect(),
+                default_model: wire
+                    .default_model
+                    .filter(|model| !model.model.trim().is_empty()),
+            };
+        }
+
+        let has_legacy_fields = wire.engine_kind.is_some()
+            || wire.cloud_provider.is_some()
+            || wire.cloud_model.is_some()
+            || wire.cloud_base_url.is_some()
+            || wire.local_kind.is_some()
+            || wire.local_endpoint.is_some()
+            || wire.local_model.is_some()
+            || !wire.additional_engines.is_empty();
+        if !has_legacy_fields {
+            return Self {
+                enabled: wire.enabled,
+                ..Self::default()
+            };
+        }
+
+        // Legacy migration: the flat fields are the old default engine, with
+        // the old serde defaults applied to whatever a partial file omitted.
+        let default_engine = LegacyAiEngineProfile {
+            engine_kind: wire.engine_kind.unwrap_or_else(legacy_default_engine_kind),
+            cloud_provider: wire
+                .cloud_provider
+                .unwrap_or_else(legacy_default_cloud_provider),
+            cloud_model: wire.cloud_model.unwrap_or_else(legacy_default_cloud_model),
+            cloud_base_url: wire.cloud_base_url.unwrap_or_default(),
+            local_kind: wire.local_kind.unwrap_or_else(legacy_default_local_kind),
+            local_endpoint: wire
+                .local_endpoint
+                .unwrap_or_else(legacy_default_local_endpoint),
+            local_model: wire.local_model.unwrap_or_default(),
+        };
+
+        let mut providers: Vec<AiProviderConfig> = Vec::new();
+        for profile in std::iter::once(&default_engine).chain(wire.additional_engines.iter()) {
+            let kind = profile.provider_kind();
+            if providers.iter().any(|provider| provider.kind == kind) {
+                continue;
+            }
+            providers.push(AiProviderConfig {
+                // Pre-instance-id data had one provider per kind, so the kind id
+                // is the instance id (and the account its keychain key lives at).
+                id: kind.id().to_string(),
+                kind,
+                label: String::new(),
+                base_url: profile.base_url(),
+            });
+        }
+
+        let default_model = {
+            let model = default_engine.model();
+            (!model.is_empty()).then(|| AiEngineRef {
+                provider: default_engine.provider_kind().id().to_string(),
+                model,
+            })
+        };
+
+        Self {
+            enabled: wire.enabled,
+            providers,
+            default_model,
+        }
+    }
+}
+
+/// Double-Option deserializer so `defaultModel` can express all three patch
+/// intents: field absent = leave unchanged, explicit `null` = clear, an object
+/// = set.
+fn deserialize_double_option_engine_ref<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<AiEngineRef>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<AiEngineRef>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAiRuntimeSettingsRequest {
+    pub enabled: Option<bool>,
+    /// Replacement provider list. `None` leaves the existing list unchanged;
+    /// `Some` replaces it wholesale.
+    pub providers: Option<Vec<AiProviderConfig>>,
+    /// Global default model. Absent = unchanged; explicit `null` = clear.
+    #[serde(default, deserialize_with = "deserialize_double_option_engine_ref")]
+    pub default_model: Option<Option<AiEngineRef>>,
+}
+
+/// The named **Derivation Budget** intensity tier for a cloud Reasoning Engine
+/// (CONTEXT.md "Derivation Budget"). Local engines ignore the tier (fixed
+/// resource pacing only).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DerivationBudgetTier {
+    Light,
+    Balanced,
+    Thorough,
+}
+
+pub fn default_derivation_budget_tier() -> DerivationBudgetTier {
+    DerivationBudgetTier::Balanced
+}
+
+pub fn default_backfill_window_days() -> u32 {
+    30
+}
+
+/// The non-secret **User Context** derivation settings domain (CONTEXT.md
+/// "Derivation Budget" / "History Backfill"). Persisted like every other
+/// `RecordingSettings` domain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserContextSettings {
+    /// The **continuous-derivation opt-in**: whether the background User Context
+    /// worker (Activity/Conclusion/digest derivation) runs at all. This is
+    /// independent of the interactive Ask AI opt-in — the shared prerequisite is
+    /// only that a usable Reasoning Engine is configured (the `AiRuntime` master
+    /// toggle + a resolvable engine). Off by default, so an existing user who
+    /// turned on the engine for Ask AI does NOT silently start continuous
+    /// background derivation until they opt in here.
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_derivation_budget_tier")]
+    pub derivation_budget_tier: DerivationBudgetTier,
+    #[serde(default = "default_backfill_window_days")]
+    pub backfill_window_days: u32,
+    #[serde(default)]
+    pub backfill_go_deeper: bool,
+}
+
+impl Default for UserContextSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            derivation_budget_tier: default_derivation_budget_tier(),
+            backfill_window_days: default_backfill_window_days(),
+            backfill_go_deeper: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateUserContextSettingsRequest {
+    pub enabled: Option<bool>,
+    pub derivation_budget_tier: Option<DerivationBudgetTier>,
+    pub backfill_window_days: Option<u32>,
+    pub backfill_go_deeper: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -511,6 +942,10 @@ pub struct RecordingSettings {
     pub privacy: PrivacySettings,
     #[serde(default)]
     pub access: AccessSettings,
+    #[serde(default)]
+    pub ai_runtime: AiRuntimeSettings,
+    #[serde(default)]
+    pub user_context: UserContextSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -550,6 +985,8 @@ pub enum SettingsOwnershipDomain {
     MicrophoneController,
     AppUpdate,
     Access,
+    AiRuntime,
+    UserContext,
     OneTimePromptState,
 }
 
@@ -600,6 +1037,10 @@ pub struct UpdateRecordingSettingsRequest {
     pub privacy: PrivacySettings,
     #[serde(default)]
     pub access: AccessSettings,
+    #[serde(default)]
+    pub ai_runtime: AiRuntimeSettings,
+    #[serde(default)]
+    pub user_context: UserContextSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -691,8 +1132,10 @@ pub struct UpdateAccessSettingsRequest {
     pub ask_ai_enabled: Option<bool>,
     /// New per-question tool-call cap (`0` = no cap). `None` leaves it unchanged.
     pub ask_ai_max_tool_calls: Option<u32>,
-    /// New Ask AI model id (`provider:modelId`). `None` leaves it unchanged; an
-    /// empty string clears the selection back to the PI runtime default.
+    /// New Quick Recall model id — a rig-core model id used against the default
+    /// Reasoning Engine (not a PI `provider:modelId` pair). `None` leaves it
+    /// unchanged; an empty string clears the selection back to the engine's
+    /// default model.
     pub ask_ai_model: Option<String>,
 }
 

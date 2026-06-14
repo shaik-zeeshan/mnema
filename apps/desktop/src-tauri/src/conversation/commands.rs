@@ -1,0 +1,188 @@
+//! Tauri commands for persistent conversations (issue #102, ADR 0031).
+//!
+//! ONE shared store backs both Quick Recall and Chat. Commands are thin
+//! adapters over `app_infra::ConversationStore`; after a save/delete they emit
+//! [`CONVERSATION_CHANGED_EVENT`] so any open conversation surface refreshes
+//! (mirrors `user_context_changed`).
+
+use capture_types::{Conversation, ConversationSummary};
+use serde::Deserialize;
+use tauri::Emitter;
+
+use crate::app_infra::AppInfraState;
+
+/// Frontend refresh event emitted after a conversation is saved or deleted.
+pub const CONVERSATION_CHANGED_EVENT: &str = "conversation_changed";
+
+/// "Now" in unix milliseconds (UTC), stamped Rust-side on save so the store
+/// stays deterministic. Mirrors the User Context worker's `now_ms`.
+fn now_ms() -> i64 {
+    (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
+}
+
+/// List conversations newest-first (by last update), each as a lightweight
+/// summary (turn count + first-question preview). Default limit 50.
+#[tauri::command]
+pub async fn list_conversations(
+    infra: tauri::State<'_, AppInfraState>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<ConversationSummary>, String> {
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    let offset = offset.unwrap_or(0).max(0);
+    infra
+        .conversation()
+        .list_conversations(limit, offset)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Hydrate one conversation (with its turns in order) by its frontend UUID.
+///
+/// Cold-reattach legacy backfill: a LEGACY turn (persisted before the `blocks`
+/// column existed, so `blocks == None`) carries no render-ready blocks. Here —
+/// in the DESKTOP layer, which CAN reach the [`AnswerView`] parser (app-infra is
+/// a pure store) — we parse such a turn's `answer` into blocks ONCE on read, the
+/// same parse the live stream produced. New turns already carry their persisted
+/// blocks, so this only touches legacy rows. The result: the frontend receives
+/// populated `blocks` for EVERY turn and never re-parses fenced JSON.
+#[tauri::command]
+pub async fn get_conversation(
+    infra: tauri::State<'_, AppInfraState>,
+    conversation_id: String,
+) -> Result<Option<Conversation>, String> {
+    let mut conversation = infra
+        .conversation()
+        .get_conversation(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(conversation) = conversation.as_mut() {
+        for turn in conversation.turns.iter_mut() {
+            if turn.blocks.is_none() && !turn.answer.trim().is_empty() {
+                turn.blocks = Some(crate::ask_ai::answer_view::parse_answer_to_blocks(
+                    &turn.answer,
+                ));
+            }
+        }
+    }
+
+    Ok(conversation)
+}
+
+/// Case-insensitive search across conversation titles and turn
+/// questions/answers. Newest-first, deduped per conversation. Default limit 50.
+#[tauri::command]
+pub async fn search_conversations(
+    infra: tauri::State<'_, AppInfraState>,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<ConversationSummary>, String> {
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    infra
+        .conversation()
+        .search_conversations(&query, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pin (or clear) the Reasoning Engine identity for a conversation. `provider` /
+/// `model` both absent/`null` clears the pin → unpinned (use the global default
+/// engine). The conversation row is ensured first (a pin may be set before the
+/// first turn). Emits [`CONVERSATION_CHANGED_EVENT`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationEngineRequest {
+    /// Frontend-generated UUID (the stable cross-restart identity).
+    pub conversation_id: String,
+    /// The engine provider id to pin, or `None` to clear.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The model id within `provider` to pin, or `None` to clear.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Pin (or clear) the engine identity for a conversation. Emits
+/// [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn set_conversation_engine(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    request: SetConversationEngineRequest,
+) -> Result<(), String> {
+    infra
+        .conversation()
+        .set_conversation_engine(
+            &request.conversation_id,
+            request.provider.as_deref(),
+            request.model.as_deref(),
+            now_ms(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// Rename a conversation: persist an explicit USER-SET title. A user-set title
+/// permanently wins over the background title generator (the generator's write
+/// is conditional on `user_title` still being absent), so a rename — even one
+/// racing an in-flight generation — sticks.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationTitleRequest {
+    /// Frontend-generated UUID (the stable cross-restart identity).
+    pub conversation_id: String,
+    /// The new title. Trimmed; an empty/whitespace-only title is rejected.
+    pub title: String,
+}
+
+/// Persist the user-set title for an existing conversation. Rejects an empty
+/// (post-trim) title and a missing conversation (a rename never creates a
+/// row). Emits [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn set_conversation_title(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    request: SetConversationTitleRequest,
+) -> Result<(), String> {
+    let title = request.title.trim();
+    if title.is_empty() {
+        return Err("conversation title must not be empty".to_string());
+    }
+
+    let renamed = infra
+        .conversation()
+        .set_user_title(&request.conversation_id, title, now_ms())
+        .await
+        .map_err(|e| e.to_string())?;
+    if !renamed {
+        return Err(format!(
+            "conversation {} not found",
+            request.conversation_id
+        ));
+    }
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// Delete a conversation (its turns cascade). Emits
+/// [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn delete_conversation(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    conversation_id: String,
+) -> Result<(), String> {
+    infra
+        .conversation()
+        .delete_conversation(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}

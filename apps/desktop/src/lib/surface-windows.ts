@@ -13,6 +13,7 @@ export type SettingsWindowTab =
   | "capture"
   | "video"
   | "access"
+  | "intelligence"
   | "privacy"
   | "shortcuts"
   | "audio"

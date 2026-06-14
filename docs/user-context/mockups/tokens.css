@@ -1,0 +1,247 @@
+/* tokens.css — Mnema Insights mockup design tokens.
+ * Dark theme is the default on :root; light theme overrides on [data-theme="light"].
+ * Every color in the mockups must come from one of these tokens — no hard-coded
+ * colors anywhere except in this file. Chart tokens are defined per-theme so a
+ * data-theme flip fully reskins the surfaces. */
+
+:root {
+  /* ---- App chrome ---- */
+  --app-bg: #0c0c0e;
+  --app-fg: #e2e2e8;
+  --app-fg-muted: #8a8aaa;
+  --app-fg-subtle: #45455a;
+
+  --app-titlebar-bg: #08080c;
+  --app-titlebar-border: #15151f;
+  --app-titlebar-title: #45455a;
+
+  --app-status-bg: #0a0a10;
+  --app-status-border: #161624;
+  --app-status-fg: #555574;
+  --app-status-dot: #2a2a3a;
+
+  --app-status-running-fg: #ff5d6c;
+  --app-status-running-border: #3a1820;
+  --app-status-running-dot: #ff3148;
+  --app-status-running-dot-glow: rgba(255, 49, 72, 0.18);
+
+  --app-status-paused-fg: #d6a14a;
+  --app-status-paused-border: #3a2818;
+  --app-status-paused-dot: #d6a14a;
+
+  --app-icon-fg: #8a8aaa;
+  --app-icon-fg-hover: #e2e2e8;
+  --app-icon-bg-hover: #1a1a2a;
+  --app-icon-border-hover: #2a2a3a;
+  --app-icon-bg-active: #14141f;
+  --app-icon-border-active: #2a2a3a;
+
+  /* ---- Surfaces ---- */
+  --app-surface: #0e0e16;
+  --app-surface-subtle: #101018;
+  --app-surface-raised: #13131a;
+  --app-surface-hover: #1a1a2a;
+  --app-surface-active: #131320;
+
+  /* ---- Borders ---- */
+  --app-border: #1e1e2e;
+  --app-border-strong: #2a2a3a;
+  --app-border-hover: #3a3a5a;
+
+  /* ---- Text ---- */
+  --app-text-strong: #e2e2e8;
+  --app-text: #c0c0d0;
+  --app-text-muted: #7a7a9a;
+  --app-text-subtle: #44445a;
+  --app-text-faint: #33334a;
+
+  /* ---- Accent (terminal green) ---- */
+  --app-accent: #3dffa0;
+  --app-accent-strong: #2a8a60;
+  --app-accent-bg: #0d1f15;
+  --app-accent-border: #1a4a30;
+  --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+  /* ---- Status colors ---- */
+  --app-warn: #d6a14a;
+  --app-warn-strong: #c47a30;
+  --app-warn-bg: #1a1208;
+  --app-warn-border: #7a4a18;
+
+  --app-danger: #ff6b7a;
+  --app-danger-strong: #ff4455;
+  --app-danger-bg: #2e0f14;
+  --app-danger-border: #4a1a20;
+  --app-danger-text: #ff8090;
+
+  --app-info: #60b0ff;
+  --app-info-strong: #4a6aaa;
+  --app-info-bg: #0c1a2e;
+  --app-info-border: #1a3050;
+
+  --app-neutral-bg: #1a1a2a;
+  --app-neutral-border: #2a2a3a;
+  --app-neutral-text: #7070a0;
+
+  /* ---- Source families ---- */
+  --app-source-screen: #c0b0ff;
+  --app-source-screen-strong: #5a4aaa;
+  --app-source-screen-bg: #1a1a3a;
+  --app-source-screen-border: #2a2a5a;
+
+  --app-source-mic: #80d0a8;
+  --app-source-mic-strong: #4a8a6a;
+  --app-source-mic-bg: #0f2e1f;
+  --app-source-mic-border: #1a4a30;
+
+  --app-source-sysaudio: #b0c080;
+  --app-source-sysaudio-strong: #6a7a4a;
+  --app-source-sysaudio-bg: #2a2010;
+  --app-source-sysaudio-border: #4a3a18;
+
+  --app-overlay-bg: rgba(10, 10, 16, 0.78);
+  --app-overlay-border: rgba(255, 255, 255, 0.06);
+
+  /* ---- Chart: grayscale "free tier" ramp (light → dark steps that read on dark surfaces) ---- */
+  --chart-grey-1: #2c2c3a;
+  --chart-grey-2: #3e3e50;
+  --chart-grey-3: #565669;
+  --chart-grey-4: #757589;
+  --chart-grey-5: #9a9ab0;
+
+  /* ---- Chart: engine-tier categorical palette (fixed taxonomy) ---- */
+  --cat-creating: #3dffa0;      /* app accent green — Creating */
+  --cat-communication: #c0b0ff; /* violet — Communication */
+  --cat-meetings: #ff9fd0;      /* pink — Meetings */
+  --cat-research: #60b0ff;      /* info blue — Research */
+  --cat-learning: #4fd8c8;      /* teal — Learning */
+  --cat-organizing: #b0c080;    /* olive — Organizing */
+  --cat-personal: #d6a14a;      /* amber — Personal */
+  --cat-entertainment: #ff6b7a; /* red — Entertainment */
+
+  /* ---- Focus heat (green → amber → red, gentle) ---- */
+  --focus-deep: #3dffa0;
+  --focus-mid: #d6a14a;
+  --focus-distracted: #ff6b7a;
+}
+
+[data-theme="light"] {
+  /* ---- App chrome ---- */
+  --app-bg: #f6f6f4;
+  --app-fg: #14141a;
+  --app-fg-muted: #5a5a6a;
+  --app-fg-subtle: #8a8a9a;
+
+  --app-titlebar-bg: #ececea;
+  --app-titlebar-border: #d4d4d2;
+  --app-titlebar-title: #9a9aa8;
+
+  --app-status-bg: #ffffff;
+  --app-status-border: #d8d8dc;
+  --app-status-fg: #5a5a6a;
+  --app-status-dot: #c4c4cc;
+
+  --app-status-running-fg: #c81d2e;
+  --app-status-running-border: #f1b9bf;
+  --app-status-running-dot: #d62236;
+  --app-status-running-dot-glow: rgba(255, 49, 72, 0.18);
+
+  --app-status-paused-fg: #8a5a10;
+  --app-status-paused-border: #ecd9b0;
+  --app-status-paused-dot: #c08018;
+
+  --app-icon-fg: #5a5a6a;
+  --app-icon-fg-hover: #14141a;
+  --app-icon-bg-hover: #e2e2e0;
+  --app-icon-border-hover: #c8c8c6;
+  --app-icon-bg-active: #dcdcda;
+  --app-icon-border-active: #b8b8b6;
+
+  /* ---- Surfaces ---- */
+  --app-surface: #ffffff;
+  --app-surface-subtle: #f6f6f4;
+  --app-surface-raised: #fbfbfa;
+  --app-surface-hover: #eeeeec;
+  --app-surface-active: #e8f1ea;
+
+  /* ---- Borders ---- */
+  --app-border: #d8d8d4;
+  --app-border-strong: #c4c4c0;
+  --app-border-hover: #a4a4a0;
+
+  /* ---- Text ---- */
+  --app-text-strong: #14141a;
+  --app-text: #2a2a32;
+  --app-text-muted: #5a5a6a;
+  --app-text-subtle: #7a7a86;
+  --app-text-faint: #9a9aa4;
+
+  /* ---- Accent ---- */
+  --app-accent: #1f7a4a;
+  --app-accent-strong: #155a36;
+  --app-accent-bg: #e6f4ec;
+  --app-accent-border: #9bd3b4;
+  --app-accent-glow: rgba(31, 122, 74, 0.16);
+
+  /* ---- Status colors ---- */
+  --app-warn: #9a5a12;
+  --app-warn-strong: #7f4300;
+  --app-warn-bg: #fff1df;
+  --app-warn-border: #dfbc8a;
+
+  --app-danger: #c43a48;
+  --app-danger-strong: #b42332;
+  --app-danger-bg: #fff0f2;
+  --app-danger-border: #e4b6be;
+  --app-danger-text: #d24a59;
+
+  --app-info: #2b78c5;
+  --app-info-strong: #225fa3;
+  --app-info-bg: #eef5ff;
+  --app-info-border: #bdd3ef;
+
+  --app-neutral-bg: #f2f3f6;
+  --app-neutral-border: #d5d7de;
+  --app-neutral-text: #636a79;
+
+  /* ---- Source families ---- */
+  --app-source-screen: #6f5ed1;
+  --app-source-screen-strong: #5949b8;
+  --app-source-screen-bg: #f1edff;
+  --app-source-screen-border: #cdc3f2;
+
+  --app-source-mic: #2f8e59;
+  --app-source-mic-strong: #287a4a;
+  --app-source-mic-bg: #e8f5ec;
+  --app-source-mic-border: #afd8bf;
+
+  --app-source-sysaudio: #8b7a2c;
+  --app-source-sysaudio-strong: #786821;
+  --app-source-sysaudio-bg: #faf4df;
+  --app-source-sysaudio-border: #dbc98a;
+
+  --app-overlay-bg: rgba(255, 255, 255, 0.78);
+  --app-overlay-border: rgba(20, 24, 32, 0.12);
+
+  /* ---- Chart: grayscale "free tier" ramp (light → dark steps that read on white surfaces) ---- */
+  --chart-grey-1: #d8d8de;
+  --chart-grey-2: #b6b6c0;
+  --chart-grey-3: #909099;
+  --chart-grey-4: #6a6a74;
+  --chart-grey-5: #46464e;
+
+  /* ---- Chart: engine-tier categorical palette (darkened for legibility on white) ---- */
+  --cat-creating: #1f7a4a;      /* app accent green — Creating */
+  --cat-communication: #5949b8; /* violet — Communication */
+  --cat-meetings: #c2407f;      /* pink — Meetings */
+  --cat-research: #2b78c5;      /* info blue — Research */
+  --cat-learning: #1f8579;      /* teal — Learning */
+  --cat-organizing: #6f7a2e;    /* olive — Organizing */
+  --cat-personal: #9a5a12;      /* amber — Personal */
+  --cat-entertainment: #c43a48; /* red — Entertainment */
+
+  /* ---- Focus heat (green → amber → red, gentle) ---- */
+  --focus-deep: #1f7a4a;
+  --focus-mid: #9a5a12;
+  --focus-distracted: #c43a48;
+}

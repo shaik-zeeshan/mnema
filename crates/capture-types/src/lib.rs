@@ -1,17 +1,23 @@
+mod conversation;
 mod inactivity;
 mod logs;
 mod microphone;
 mod recording;
 mod session;
+mod usage_charts;
+mod user_context;
 
 use serde::Serialize;
 
 pub use capture_metadata::{BrowserUrlMode, ExcludedAppEntry, MetadataSettings, PrivacySettings};
+pub use conversation::*;
 pub use inactivity::*;
 pub use logs::*;
 pub use microphone::*;
 pub use recording::*;
 pub use session::*;
+pub use usage_charts::*;
+pub use user_context::*;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,6 +170,8 @@ mod tests {
             metadata: default_metadata_settings(),
             privacy: default_privacy_settings(),
             access: AccessSettings::default(),
+            ai_runtime: AiRuntimeSettings::default(),
+            user_context: UserContextSettings::default(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -321,6 +329,216 @@ mod tests {
     }
 
     #[test]
+    fn ai_runtime_settings_legacy_engine_shape_migrates_to_providers() {
+        // A legacy engine-centric file (default engine + additionalEngines)
+        // must deserialize into the provider list, with the old default
+        // engine's {provider, model} becoming the global default model
+        // (ADR 0034 migration is deserialization-level).
+        let settings: AiRuntimeSettings = serde_json::from_str(
+            r#"{
+                "enabled": true,
+                "engineKind": "cloud",
+                "cloudProvider": "anthropic",
+                "cloudModel": "claude-haiku-4-5",
+                "cloudBaseUrl": "",
+                "localKind": "ollama",
+                "localEndpoint": "http://localhost:11434",
+                "localModel": "",
+                "additionalEngines": [
+                    {
+                        "engineKind": "local",
+                        "cloudProvider": "openai",
+                        "cloudModel": "",
+                        "cloudBaseUrl": "",
+                        "localKind": "ollama",
+                        "localEndpoint": "http://localhost:11434",
+                        "localModel": "llama3.2"
+                    }
+                ]
+            }"#,
+        )
+        .expect("legacy ai_runtime settings should deserialize");
+
+        assert!(settings.enabled);
+        assert_eq!(
+            settings.providers,
+            vec![
+                AiProviderConfig {
+                    id: "anthropic".to_string(),
+                    kind: AiProviderKind::Anthropic,
+                    label: String::new(),
+                    base_url: String::new(),
+                },
+                AiProviderConfig {
+                    id: "ollama".to_string(),
+                    kind: AiProviderKind::Ollama,
+                    label: String::new(),
+                    base_url: "http://localhost:11434".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            settings.default_model,
+            Some(AiEngineRef {
+                provider: "anthropic".to_string(),
+                model: "claude-haiku-4-5".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn ai_runtime_settings_legacy_local_engine_migrates_to_local_provider() {
+        // A legacy local default engine maps to its local-kind provider, with
+        // the endpoint carried as the provider's baseUrl.
+        let settings: AiRuntimeSettings = serde_json::from_str(
+            r#"{
+                "enabled": true,
+                "engineKind": "local",
+                "cloudProvider": "anthropic",
+                "cloudModel": "claude-haiku-4-5",
+                "cloudBaseUrl": "",
+                "localKind": "ollama",
+                "localEndpoint": "http://localhost:11434",
+                "localModel": "llama3.2"
+            }"#,
+        )
+        .expect("legacy local ai_runtime settings should deserialize");
+
+        assert_eq!(
+            settings.providers,
+            vec![AiProviderConfig {
+                id: "ollama".to_string(),
+                kind: AiProviderKind::Ollama,
+                label: String::new(),
+                base_url: "http://localhost:11434".to_string(),
+            }]
+        );
+        assert_eq!(
+            settings.default_model,
+            Some(AiEngineRef {
+                provider: "ollama".to_string(),
+                model: "llama3.2".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn ai_runtime_settings_new_shape_round_trips() {
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![
+                AiProviderConfig {
+                    id: "anthropic".to_string(),
+                    kind: AiProviderKind::Anthropic,
+                    label: String::new(),
+                    base_url: String::new(),
+                },
+                AiProviderConfig {
+                    id: "openai_compatible".to_string(),
+                    kind: AiProviderKind::OpenaiCompatible,
+                    label: "Fireworks".to_string(),
+                    base_url: "https://api.example.com/v1".to_string(),
+                },
+            ],
+            default_model: Some(AiEngineRef {
+                provider: "anthropic".to_string(),
+                model: "claude-haiku-4-5".to_string(),
+            }),
+        };
+
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["providers"][0]["kind"], "anthropic");
+        assert_eq!(json["providers"][0]["id"], "anthropic");
+        assert_eq!(json["providers"][1]["id"], "openai_compatible");
+        assert_eq!(json["providers"][1]["label"], "Fireworks");
+        assert_eq!(json["providers"][1]["kind"], "openai_compatible");
+        assert_eq!(json["providers"][1]["baseUrl"], "https://api.example.com/v1");
+        assert_eq!(json["defaultModel"]["provider"], "anthropic");
+        assert_eq!(json["defaultModel"]["model"], "claude-haiku-4-5");
+        // Saves write ONLY the new shape — no legacy engine-centric keys.
+        assert!(json.get("engineKind").is_none());
+        assert!(json.get("additionalEngines").is_none());
+
+        let round: AiRuntimeSettings =
+            serde_json::from_value(json).expect("deserialize round-trip");
+        assert_eq!(round, settings);
+    }
+
+    #[test]
+    fn ai_runtime_settings_empty_object_deserializes_to_defaults() {
+        // Neither shape present (e.g. `#[serde(default)]`-adjacent partials):
+        // no providers, no default model.
+        let settings: AiRuntimeSettings =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialize");
+        assert!(settings.enabled);
+        assert!(settings.providers.is_empty());
+        assert!(settings.default_model.is_none());
+    }
+
+    #[test]
+    fn update_ai_runtime_settings_request_default_model_is_double_option() {
+        // Absent → leave unchanged.
+        let request: UpdateAiRuntimeSettingsRequest =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialize");
+        assert_eq!(request.default_model, None);
+
+        // Explicit null → clear.
+        let request: UpdateAiRuntimeSettingsRequest =
+            serde_json::from_str(r#"{ "defaultModel": null }"#).expect("deserialize");
+        assert_eq!(request.default_model, Some(None));
+
+        // Object → set.
+        let request: UpdateAiRuntimeSettingsRequest = serde_json::from_str(
+            r#"{ "defaultModel": { "provider": "ollama", "model": "llama3.2" } }"#,
+        )
+        .expect("deserialize");
+        assert_eq!(
+            request.default_model,
+            Some(Some(AiEngineRef {
+                provider: "ollama".to_string(),
+                model: "llama3.2".to_string(),
+            }))
+        );
+    }
+
+    #[test]
+    fn user_context_settings_enabled_defaults_false_when_missing() {
+        // Legacy persisted UserContextSettings (no `enabled`) must default the
+        // continuous-derivation opt-in to OFF.
+        let settings: UserContextSettings = serde_json::from_str(
+            r#"{
+                "derivationBudgetTier": "balanced",
+                "backfillWindowDays": 30,
+                "backfillGoDeeper": false
+            }"#,
+        )
+        .expect("legacy user_context settings should deserialize");
+
+        assert!(!settings.enabled);
+        assert!(!UserContextSettings::default().enabled);
+    }
+
+    #[test]
+    fn user_context_settings_round_trips_enabled() {
+        let settings = UserContextSettings {
+            enabled: true,
+            ..UserContextSettings::default()
+        };
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["enabled"], true);
+        let round: UserContextSettings =
+            serde_json::from_value(json).expect("deserialize");
+        assert_eq!(round, settings);
+    }
+
+    #[test]
+    fn update_user_context_settings_request_deserializes_enabled() {
+        let request: UpdateUserContextSettingsRequest =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("request should deserialize");
+        assert_eq!(request.enabled, Some(true));
+    }
+
+    #[test]
     fn recording_settings_domain_response_serializes_domain_as_snake_case() {
         let response = RecordingSettingsDomainUpdateResponse {
             domain: SettingsOwnershipDomain::AppPrivacyExclusion,
@@ -349,6 +567,8 @@ mod tests {
                 metadata: default_metadata_settings(),
                 privacy: default_privacy_settings(),
                 access: AccessSettings::default(),
+                ai_runtime: AiRuntimeSettings::default(),
+                user_context: UserContextSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,

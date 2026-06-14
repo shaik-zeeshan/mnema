@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Main shell + Timeline/Insights</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* ---- page-scoped layout for the Main shell + Timeline/Insights toggle ---- */
+
+    /* Panel visibility: JS toggles [hidden]; we also fully detach hidden panels. */
+    #panel-timeline[hidden],
+    #panel-insights[hidden] { display: none; }
+
+    /* A thin caption strip explaining the two-surface model, under the titlebar. */
+    .surface-note {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 14px;
+      font-size: 10.5px;
+      letter-spacing: 0.02em;
+      color: var(--app-text-muted);
+      background: var(--app-surface-subtle);
+      border-bottom: 1px solid var(--app-border);
+    }
+    .surface-note .strong { font-weight: 600; }
+
+    /* ========================================================== TIMELINE PANEL */
+    #panel-timeline {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    .tl-topbar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+    }
+    .tl-search {
+      flex: 1 1 auto;
+      max-width: 360px;
+      font: inherit;
+      font-size: 12px;
+      padding: 5px 10px;
+      border: 1px solid var(--app-border);
+      border-radius: 6px;
+      background: var(--app-surface);
+      color: var(--app-text);
+    }
+    .tl-search::placeholder { color: var(--app-text-faint); }
+    .tl-topbar .spacer { flex: 1 1 auto; }
+
+    .tl-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* --- frame preview "screenshot" placeholder --- */
+    .tl-preview {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      max-height: 360px;
+      border: 1px solid var(--app-border);
+      border-radius: 9px;
+      overflow: hidden;
+      background: var(--app-surface-raised);
+    }
+    .tl-preview .grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--app-border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--app-border) 1px, transparent 1px);
+      background-size: 36px 36px;
+      opacity: 0.45;
+    }
+    /* faux app chrome inside the screenshot, so it reads as a real VS Code grab */
+    .tl-preview .scr-chrome {
+      position: absolute;
+      inset: 0;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .tl-preview .scr-tabs { display: flex; gap: 6px; }
+    .tl-preview .scr-tab {
+      height: 16px; width: 74px;
+      border: 1px solid var(--app-border);
+      border-radius: 4px;
+      background: var(--app-surface);
+    }
+    .tl-preview .scr-tab.on { background: var(--app-surface-hover); }
+    .tl-preview .scr-lines { display: flex; flex-direction: column; gap: 7px; margin-top: 4px; }
+    .tl-preview .scr-line {
+      height: 8px; border-radius: 3px;
+      background: var(--app-surface-hover);
+    }
+    /* OCR highlight box overlay — accent-bordered (no --app-ocr-box token exists) */
+    .ocr-box {
+      position: absolute;
+      left: 14%; top: 46%;
+      width: 30%; height: 11%;
+      border: 1.5px solid var(--app-accent);
+      border-radius: 3px;
+      background: var(--app-accent-bg);
+      box-shadow: 0 0 10px var(--app-accent-glow);
+    }
+    .ocr-box::after {
+      content: "OCR";
+      position: absolute;
+      top: -16px; left: 0;
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      color: var(--app-accent-strong);
+    }
+    .tl-preview .caption-chip {
+      position: absolute;
+      left: 12px; bottom: 12px;
+      z-index: 2;
+    }
+
+    /* --- scrubber track --- */
+    .tl-scrub {
+      position: relative;
+      height: 30px;
+      border: 1px solid var(--app-border);
+      border-radius: 7px;
+      background: var(--app-surface);
+    }
+    .tl-scrub .ticks {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      padding: 0 8px 4px;
+    }
+    .tl-scrub .tick {
+      width: 1px;
+      height: 8px;
+      background: var(--app-border-strong);
+    }
+    .tl-scrub .tick.major { height: 14px; background: var(--app-text-subtle); }
+    .tl-scrub .played {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 42%;
+      background: var(--app-accent-bg);
+      border-right: 1px solid var(--app-accent-border);
+      border-radius: 7px 0 0 7px;
+    }
+    .tl-scrub .playhead {
+      position: absolute;
+      top: -3px; bottom: -3px;
+      left: 42%;
+      width: 3px;
+      background: var(--app-accent);
+      box-shadow: 0 0 8px var(--app-accent-glow);
+      border-radius: 2px;
+    }
+    .tl-scrub .playhead::after {
+      content: "";
+      position: absolute;
+      top: -6px; left: 50%;
+      transform: translateX(-50%);
+      width: 11px; height: 11px;
+      border-radius: 3px;
+      background: var(--app-accent);
+      box-shadow: 0 0 8px var(--app-accent-glow);
+    }
+
+    /* --- filmstrip --- */
+    .filmstrip {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 6px;
+    }
+    .film-thumb {
+      aspect-ratio: 16 / 10;
+      border: 1px solid var(--app-border);
+      border-radius: 5px;
+      background:
+        repeating-linear-gradient(
+          135deg,
+          var(--app-surface-raised) 0 8px,
+          var(--app-surface-hover) 8px 16px
+        );
+    }
+    .film-thumb.current {
+      border-color: var(--app-accent-border);
+      box-shadow: 0 0 0 1px var(--app-accent-border);
+    }
+
+    /* --- audio waveform lane --- */
+    .audio-lane {
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      height: 44px;
+      padding: 6px 8px;
+      border: 1px solid var(--app-source-mic-border);
+      border-radius: 7px;
+      background: var(--app-source-mic-bg);
+    }
+    .audio-lane .wbar {
+      flex: 1 1 auto;
+      min-width: 2px;
+      background: var(--app-source-mic);
+      border-radius: 1px;
+      opacity: 0.85;
+    }
+
+    .lane-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 2px;
+    }
+
+    /* ========================================================== INSIGHTS PANEL
+     * The Insights panel now hosts the NEW top-tab workspace (.insights >
+     * .subnav + .insights-main). It defaults to a COMPACT Overview preview —
+     * not the full Overview surface (that's overview.html). The #panel-insights
+     * section must itself be a flex column so the .insights child can fill it. */
+    #panel-insights {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    /* compact Overview preview header */
+    .ov-preview-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+    .ov-preview-head h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+    }
+    .ov-preview-head .caption {
+      font-size: 10.5px;
+      color: var(--app-text-faint);
+      letter-spacing: 0.02em;
+    }
+
+    /* ---- bento glance band (lifted compact from overview.html) ---- */
+    .glance-band {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    @media (max-width: 920px) { .glance-band { grid-template-columns: repeat(2, 1fr); } }
+
+    .glance-tile {
+      display: flex;
+      flex-direction: column;
+      min-height: 148px;
+      padding: 12px 13px;
+      background: var(--app-surface);
+      border: 1px solid var(--app-border);
+      border-radius: 9px;
+      min-width: 0;
+      overflow: hidden;
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .glance-tile:hover { border-color: var(--app-border-hover); box-shadow: 0 6px 20px rgba(0,0,0,0.18); }
+    .glance-head { display: flex; align-items: center; gap: 7px; margin-bottom: 11px; }
+    .glance-title {
+      font-size: 10.5px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--app-text-muted);
+      white-space: nowrap;
+    }
+    .glance-head .spacer { flex: 1 1 auto; }
+    .glance-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
+
+    /* Time tile: grayscale mini app bars */
+    .mini-appbars { display: flex; flex-direction: column; gap: 8px; }
+    .mini-appbar { display: grid; grid-template-columns: 50px 1fr 42px; align-items: center; gap: 8px; }
+    .mini-appbar .label { font-size: 11px; color: var(--app-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mini-appbar .track {
+      height: 8px; border-radius: 999px;
+      background: var(--app-surface-hover);
+      border: 1px solid var(--app-border);
+      overflow: hidden;
+    }
+    .mini-appbar .fill { height: 100%; border-radius: 999px; }
+    .mini-appbar .val { font-size: 10px; color: var(--app-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* Categories tile: mini stacked bar + legend */
+    .mini-stack {
+      display: flex; width: 100%; height: 16px;
+      border-radius: 5px; overflow: hidden;
+      border: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+    }
+    .mini-stack > span { display: block; height: 100%; }
+    .mini-cat-legend {
+      margin-top: 10px;
+      display: flex; flex-wrap: wrap; gap: 4px 10px;
+      font-size: 9.5px; color: var(--app-text-muted);
+    }
+    .mini-cat-legend .li { display: inline-flex; align-items: center; gap: 5px; }
+    .mini-cat-legend .li i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: 0 0 auto; }
+    .mini-cat-legend .li b { color: var(--app-text); font-weight: 600; }
+
+    /* Focus tile: small day-strip heat */
+    .focus-strip { display: flex; flex-direction: column; gap: 5px; }
+    .focus-strip .row { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 8px; }
+    .focus-strip .day { font-size: 9.5px; color: var(--app-text-muted); }
+    .focus-strip .cells { display: flex; gap: 3px; }
+    .focus-strip .cell { flex: 1 1 0; height: 11px; border-radius: 3px; border: 1px solid var(--app-border); }
+    .fc-deep { background: var(--focus-deep); opacity: 0.88; border-color: transparent; }
+    .fc-mid  { background: var(--focus-mid); opacity: 0.62; border-color: transparent; }
+    .fc-scat { background: var(--focus-distracted); opacity: 0.45; border-color: transparent; }
+    .fc-rest { background: var(--app-surface-hover); }
+    .focus-cap { margin-top: 9px; font-size: 9.5px; color: var(--app-text-subtle); }
+
+    /* This week tile: big stat */
+    .week-stat { display: flex; flex-direction: column; gap: 9px; }
+    .week-big .n { font-size: 27px; line-height: 1; color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    .week-big .u { font-size: 10px; color: var(--app-text-muted); letter-spacing: 0.03em; }
+    .week-sub { display: flex; gap: 14px; }
+    .week-sub .cell .n { font-size: 13px; color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    .week-sub .cell .l { font-size: 9px; color: var(--app-text-muted); letter-spacing: 0.03em; text-transform: uppercase; }
+
+    /* ---- single story-feed entry (compact hero) ---- */
+    .story-rule {
+      display: flex; align-items: center; gap: 10px;
+      max-width: 720px; margin: 6px auto 12px;
+      font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--app-text-faint);
+    }
+    .story-rule .line { flex: 1 1 auto; height: 1px; background: var(--app-border); }
+
+    .entry {
+      width: 100%; max-width: 720px; margin: 0 auto;
+      position: relative;
+      padding: 20px 22px 18px;
+      border: 1px solid var(--app-accent-border);
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, var(--app-accent-bg), transparent 64%),
+        var(--app-surface-raised);
+    }
+    .entry .eyebrow {
+      display: flex; align-items: center; gap: 9px;
+      font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--app-accent-strong);
+      margin: 0 0 11px;
+    }
+    .entry .eyebrow .diamond { color: var(--app-accent); letter-spacing: 0; }
+    .entry .eyebrow .tick { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+    .entry .eyebrow .rule { flex: 1 1 auto; height: 1px; background: var(--app-border); }
+    .entry h2 {
+      margin: 0 0 10px;
+      font-size: 18px; line-height: 1.4; font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+    }
+    .entry p.lede { margin: 0; font-size: 13px; line-height: 1.7; color: var(--app-text); }
+    .entry .cat-word { font-weight: 600; }
+    .entry-figure { margin-top: 15px; padding-top: 14px; border-top: 1px dashed var(--app-border); }
+    .stack-bar {
+      display: flex; width: 100%; height: 24px;
+      border-radius: 6px; overflow: hidden;
+      border: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+    }
+    .stack-bar > span { display: block; height: 100%; }
+    .stack-legend {
+      margin-top: 11px;
+      display: flex; flex-wrap: wrap; gap: 6px 14px;
+      font-size: 11px; color: var(--app-text-muted);
+    }
+    .stack-legend .item { display: inline-flex; align-items: center; gap: 6px; }
+    .stack-legend .sw { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
+    .stack-legend .v { color: var(--app-text-strong); }
+  </style>
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">mnema</span>
+      </div>
+      <!-- BUILD: surface toggle — Main hosts Timeline + Insights; "dashboard" retired (#103). -->
+      <div class="surface-toggle">
+        <button type="button" data-surface="timeline">Timeline</button>
+        <button type="button" class="active" aria-current="page" data-surface="insights">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip status-chip--running"><span class="dot"></span>recording</span>
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+      </div>
+    </header>
+
+    <div class="surface-note">
+      <span class="strong">Main</span>
+      <span>·</span>
+      <span>Timeline and Insights are the two top-level surfaces of Main (replaces the old "dashboard"). Toggle them from the titlebar.</span>
+    </div>
+
+    <div class="app-body">
+
+      <!-- ========================================================== PANEL A: TIMELINE -->
+      <!-- BUILD: existing capture-inspection surface — reuse the current dashboard timeline component as-is; do not rebuild. -->
+      <section id="panel-timeline" hidden aria-label="Timeline — capture inspection">
+        <div class="tl-topbar">
+          <input class="tl-search" type="text" placeholder="search captures…" />
+          <span class="chip">app: VS Code <span class="muted">✕</span></span>
+          <span class="chip">date: today <span class="muted">✕</span></span>
+          <span class="spacer"></span>
+          <span class="muted" style="font-size:10.5px;">1,284 frames</span>
+        </div>
+
+        <div class="tl-body">
+          <!-- large frame preview -->
+          <div class="tl-preview">
+            <div class="grid"></div>
+            <div class="scr-chrome">
+              <div class="scr-tabs">
+                <span class="scr-tab on"></span>
+                <span class="scr-tab"></span>
+                <span class="scr-tab"></span>
+              </div>
+              <div class="scr-lines">
+                <span class="scr-line" style="width:62%;"></span>
+                <span class="scr-line" style="width:80%;"></span>
+                <span class="scr-line" style="width:46%;"></span>
+                <span class="scr-line" style="width:71%;"></span>
+                <span class="scr-line" style="width:55%;"></span>
+                <span class="scr-line" style="width:38%;"></span>
+              </div>
+            </div>
+            <div class="ocr-box"></div>
+            <span class="chip chip--accent caption-chip">VS Code — Today 14:32</span>
+          </div>
+
+          <!-- scrubber / timeline track -->
+          <div class="lane-head">
+            <span class="muted" style="font-size:10.5px;">14:00</span>
+            <span class="spacer" style="flex:1 1 auto;"></span>
+            <span class="muted" style="font-size:10.5px;">scrub · 14:32:07</span>
+            <span class="spacer" style="flex:1 1 auto;"></span>
+            <span class="muted" style="font-size:10.5px;">15:00</span>
+          </div>
+          <div class="tl-scrub">
+            <div class="played"></div>
+            <div class="ticks">
+              <span class="tick major"></span><span class="tick"></span><span class="tick"></span>
+              <span class="tick"></span><span class="tick major"></span><span class="tick"></span>
+              <span class="tick"></span><span class="tick"></span><span class="tick major"></span>
+              <span class="tick"></span><span class="tick"></span><span class="tick"></span>
+              <span class="tick major"></span>
+            </div>
+            <div class="playhead"></div>
+          </div>
+
+          <!-- filmstrip -->
+          <div class="filmstrip">
+            <div class="film-thumb"></div>
+            <div class="film-thumb"></div>
+            <div class="film-thumb"></div>
+            <div class="film-thumb current"></div>
+            <div class="film-thumb"></div>
+            <div class="film-thumb"></div>
+            <div class="film-thumb"></div>
+            <div class="film-thumb"></div>
+          </div>
+
+          <!-- audio waveform lane -->
+          <div class="lane-head">
+            <span class="pill"><span style="color:var(--app-source-mic);">●</span> Microphone</span>
+            <span class="muted" style="font-size:10.5px;">speech detected · 2 speakers</span>
+          </div>
+          <div class="audio-lane">
+            <span class="wbar" style="height:30%;"></span><span class="wbar" style="height:55%;"></span>
+            <span class="wbar" style="height:42%;"></span><span class="wbar" style="height:78%;"></span>
+            <span class="wbar" style="height:64%;"></span><span class="wbar" style="height:38%;"></span>
+            <span class="wbar" style="height:88%;"></span><span class="wbar" style="height:52%;"></span>
+            <span class="wbar" style="height:70%;"></span><span class="wbar" style="height:33%;"></span>
+            <span class="wbar" style="height:60%;"></span><span class="wbar" style="height:82%;"></span>
+            <span class="wbar" style="height:46%;"></span><span class="wbar" style="height:58%;"></span>
+            <span class="wbar" style="height:90%;"></span><span class="wbar" style="height:40%;"></span>
+            <span class="wbar" style="height:66%;"></span><span class="wbar" style="height:50%;"></span>
+            <span class="wbar" style="height:74%;"></span><span class="wbar" style="height:36%;"></span>
+            <span class="wbar" style="height:62%;"></span><span class="wbar" style="height:84%;"></span>
+            <span class="wbar" style="height:44%;"></span><span class="wbar" style="height:56%;"></span>
+            <span class="wbar" style="height:48%;"></span><span class="wbar" style="height:72%;"></span>
+            <span class="wbar" style="height:34%;"></span><span class="wbar" style="height:68%;"></span>
+            <span class="wbar" style="height:80%;"></span><span class="wbar" style="height:41%;"></span>
+          </div>
+
+          <div class="muted" style="font-size:10.5px;">Timeline · capture inspection (existing surface)</div>
+        </div>
+      </section>
+
+      <!-- ========================================================== PANEL B: INSIGHTS -->
+      <!-- NEW top-tab Insights workspace (no left rail). Opens on a compact
+           Overview preview; the full Overview surface lives in overview.html. -->
+      <section id="panel-insights" aria-label="Insights">
+        <div class="insights">
+          <nav class="subnav">
+            <div class="subnav-tabs">
+              <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
+              <a class="subnav-tab" href="subjects-index.html">Subjects</a>
+              <a class="subnav-tab" href="context.html">Context</a>
+              <a class="subnav-tab" href="chat.html">Chat</a>
+            </div>
+            <div class="subnav-meta">
+              <div class="subnav-search">
+                <span class="subnav-search-glyph">⌕</span>
+                <span class="subnav-search-text">Jump to a subject or ask…</span>
+                <span class="kbd">⌘K</span>
+              </div>
+              <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+            </div>
+          </nav>
+
+          <main class="insights-main">
+            <!-- BUILD NOTES — main-shell
+                 Slice: issue #103 — Main shell + Timeline/Insights toggle.
+                 "dashboard" is RETIRED → Main (the window) hosts two switchable Surfaces:
+                   Timeline (existing capture-inspection view) and Insights (new AI workspace).
+                 Insights is a workspace of sub-surfaces (Overview / Subjects / Context / Chat),
+                   shown here as a COMPACT Overview preview only — the real surfaces live in
+                   overview.html / subjects-index.html / context.html / chat.html.
+                 Reuse: existing dashboard Timeline component verbatim for the Timeline panel;
+                   ThemeModeControl.svelte for the theme toggle; Switch.svelte where toggles apply.
+                 Interactions: surface toggle swaps panels; Insights tabs route to sub-surfaces.
+                 Engine = Rust-side rig-core; derived data in Encrypted Capture Index (design-stage,
+                   needs new Tauri commands + migrations). ADRs: ../../adr/0028-ai-features-call-models-rust-side-via-rig-core.md
+                 Full guide: see README.md
+            -->
+            <!-- Compact Overview preview — representative, not the full surface -->
+            <div class="ov-preview-head">
+              <h1>Overview</h1>
+              <span class="caption">Insights opens on Overview · full surface in overview.html</span>
+            </div>
+
+            <!-- bento glance band: 4 small tiles -->
+            <section class="glance-band" aria-label="At-a-glance summary">
+
+              <!-- Time (FREE, grayscale) -->
+              <div class="glance-tile">
+                <div class="glance-head">
+                  <span class="glance-title">Time</span>
+                  <span class="spacer"></span>
+                  <span class="tier-badge tier-badge--free">Free</span>
+                </div>
+                <div class="glance-body">
+                  <div class="mini-appbars">
+                    <div class="mini-appbar"><span class="label">VS Code</span><span class="track"><span class="fill" style="width:100%;background:var(--chart-grey-5);"></span></span><span class="val">3h12m</span></div>
+                    <div class="mini-appbar"><span class="label">Chrome</span><span class="track"><span class="fill" style="width:56%;background:var(--chart-grey-4);"></span></span><span class="val">1h48m</span></div>
+                    <div class="mini-appbar"><span class="label">Terminal</span><span class="track"><span class="fill" style="width:42%;background:var(--chart-grey-3);"></span></span><span class="val">1h20m</span></div>
+                    <div class="mini-appbar"><span class="label">Figma</span><span class="track"><span class="fill" style="width:27%;background:var(--chart-grey-2);"></span></span><span class="val">52m</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Categories (ENGINE, colored) -->
+              <div class="glance-tile">
+                <div class="glance-head">
+                  <span class="glance-title">Categories</span>
+                  <span class="spacer"></span>
+                  <span class="tier-badge tier-badge--engine">Engine</span>
+                </div>
+                <div class="glance-body">
+                  <div class="mini-stack" role="img" aria-label="Coding 14h, Communication 6h, Research 4h, Design 3h, Testing 2h, Personal 2h, Distractions 2h">
+                    <span style="width:42.4%;background:var(--cat-coding);"></span>
+                    <span style="width:18.2%;background:var(--cat-communication);"></span>
+                    <span style="width:12.1%;background:var(--cat-research);"></span>
+                    <span style="width:9.1%;background:var(--cat-design);"></span>
+                    <span style="width:6.1%;background:var(--cat-testing);"></span>
+                    <span style="width:6.1%;background:var(--cat-personal);"></span>
+                    <span style="width:6.0%;background:var(--cat-distractions);"></span>
+                  </div>
+                  <div class="mini-cat-legend">
+                    <span class="li"><i style="background:var(--cat-coding);"></i>Coding <b>14h</b></span>
+                    <span class="li"><i style="background:var(--cat-communication);"></i>Comms <b>6h</b></span>
+                    <span class="li"><i style="background:var(--cat-research);"></i>Research <b>4h</b></span>
+                    <span class="li"><i style="background:var(--cat-design);"></i>Design <b>3h</b></span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Focus (ENGINE, colored) -->
+              <div class="glance-tile">
+                <div class="glance-head">
+                  <span class="glance-title">Focus</span>
+                  <span class="spacer"></span>
+                  <span class="tier-badge tier-badge--engine">Engine</span>
+                </div>
+                <div class="glance-body">
+                  <div class="focus-strip">
+                    <div class="row"><span class="day">Mon</span><div class="cells">
+                      <span class="cell fc-deep"></span><span class="cell fc-deep"></span><span class="cell fc-mid"></span><span class="cell fc-scat"></span><span class="cell fc-scat"></span><span class="cell fc-rest"></span>
+                    </div></div>
+                    <div class="row"><span class="day">Wed</span><div class="cells">
+                      <span class="cell fc-deep"></span><span class="cell fc-deep"></span><span class="cell fc-deep"></span><span class="cell fc-mid"></span><span class="cell fc-scat"></span><span class="cell fc-rest"></span>
+                    </div></div>
+                    <div class="row"><span class="day">Fri</span><div class="cells">
+                      <span class="cell fc-deep"></span><span class="cell fc-mid"></span><span class="cell fc-scat"></span><span class="cell fc-scat"></span><span class="cell fc-rest"></span><span class="cell fc-rest"></span>
+                    </div></div>
+                  </div>
+                  <div class="focus-cap">deep mornings · scattered afternoons</div>
+                </div>
+              </div>
+
+              <!-- This week (FREE) -->
+              <div class="glance-tile">
+                <div class="glance-head">
+                  <span class="glance-title">This week</span>
+                  <span class="spacer"></span>
+                  <span class="tier-badge tier-badge--free">Free</span>
+                </div>
+                <div class="glance-body">
+                  <div class="week-stat">
+                    <div class="week-big">
+                      <span class="n">33h</span>
+                      <div class="u">tracked · 6 active days</div>
+                    </div>
+                    <div class="week-sub">
+                      <div class="cell"><div class="n">5.5h</div><div class="l">Daily avg</div></div>
+                      <div class="cell"><div class="n">42%</div><div class="l">Deep focus</div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- one story-feed entry -->
+            <div class="story-rule"><span class="line"></span>The story this week<span class="line"></span></div>
+
+            <article class="entry">
+              <p class="eyebrow"><span class="diamond">◆</span><span class="tick"></span>This week · Jun 2–8<span class="rule"></span></p>
+              <h2>Coding dominated your week — afternoons drifted toward Slack and HN.</h2>
+              <p class="lede">
+                You spent <span class="cat-word" style="color:var(--cat-coding)">14 hours</span> writing code, most of it before lunch.
+                Communication held steady at 6 hours, and research, design, and testing split the rest — a focused, build-heavy week.
+              </p>
+              <div class="entry-figure">
+                <div class="stack-bar" role="img"
+                     aria-label="Categories: Coding 14h, Communication 6h, Research 4h, Design 3h, Testing 2h, Personal 2h, Distractions 2h">
+                  <span style="width:42.4%;background:var(--cat-coding)"></span>
+                  <span style="width:18.2%;background:var(--cat-communication)"></span>
+                  <span style="width:12.1%;background:var(--cat-research)"></span>
+                  <span style="width:9.1%;background:var(--cat-design)"></span>
+                  <span style="width:6.1%;background:var(--cat-testing)"></span>
+                  <span style="width:6.1%;background:var(--cat-personal)"></span>
+                  <span style="width:6.0%;background:var(--cat-distractions)"></span>
+                </div>
+                <div class="stack-legend">
+                  <span class="item"><span class="sw" style="background:var(--cat-coding)"></span>Coding <span class="v">14h</span></span>
+                  <span class="item"><span class="sw" style="background:var(--cat-communication)"></span>Communication <span class="v">6h</span></span>
+                  <span class="item"><span class="sw" style="background:var(--cat-research)"></span>Research <span class="v">4h</span></span>
+                  <span class="item"><span class="sw" style="background:var(--cat-design)"></span>Design <span class="v">3h</span></span>
+                </div>
+              </div>
+            </article>
+          </main>
+        </div>
+      </section>
+
+    </div>
+  </div>
+  <script src="app.js"></script>
+  <script>
+    /* Main shell view toggle: Timeline ⇄ Insights.
+     * app.js already moves the .active class between the two .surface-toggle
+     * buttons cosmetically; here we additionally show/hide the panels.
+     * Default: Insights active + visible. */
+    (function () {
+      var panels = {
+        timeline: document.getElementById("panel-timeline"),
+        insights: document.getElementById("panel-insights")
+      };
+      function show(surface) {
+        panels.timeline.hidden = surface !== "timeline";
+        panels.insights.hidden = surface !== "insights";
+      }
+      document.querySelectorAll(".surface-toggle button[data-surface]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          show(btn.getAttribute("data-surface"));
+        });
+      });
+      show("insights");
+    })();
+  </script>
+</body>
+</html>

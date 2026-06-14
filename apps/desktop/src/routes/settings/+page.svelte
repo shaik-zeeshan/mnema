@@ -1,10 +1,11 @@
 <script lang="ts">
   import { page } from "$app/stores";
-  import { tick } from "svelte";
-  import { Portal } from "bits-ui";
+  import { tick, untrack } from "svelte";
+  import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
+  import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { ask } from "@tauri-apps/plugin-dialog";
+  import { ask, confirm } from "@tauri-apps/plugin-dialog";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
@@ -36,7 +37,6 @@
   import type {
     ActivityMode,
     AppearanceSetting,
-    AskAiModel,
     CaptureSupport,
     GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
@@ -60,6 +60,17 @@
     UpdateProcessingSettingsRequest,
     UpdateStorageSettingsRequest,
     UpdateVideoSettingsRequest,
+    UpdateAiRuntimeSettingsRequest,
+    UpdateUserContextSettingsRequest,
+    DerivationBudgetTier,
+    AiProviderKind,
+    AiProviderConfig,
+    AiEngineRef,
+    AiRuntimeStatus,
+    AiRuntimeTestResult,
+    UserContextStatus,
+    UserContextDistillationSummary,
+    UserContextDerivationRunResult,
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
@@ -125,20 +136,10 @@
     existingTarget: string | null;
   };
 
-  type PiRuntimeStatus = {
-    source: "managed" | "path" | "unmanaged" | "missing";
-    executablePath: string | null;
-    version: string | null;
-    minimumVersion: string;
-    versionOk: boolean;
-    authJsonPath: string;
-    authJsonExists: boolean;
-    ready: boolean;
-    reason: "pi_not_found" | "pi_version_unavailable" | "pi_version_too_old" | "pi_auth_missing" | string | null;
-    providerCount?: number;
-    providerConfigured?: boolean;
-    authJsonProviderCount?: number;
-    authJsonProviderConfigured?: boolean;
+  // Ask AI availability snapshot (mirrors the Rust `ask_ai_availability` shape).
+  type AskAiAvailability = {
+    available: boolean;
+    reason?: string | null;
   };
 
   type RetentionCleanupSummary = {
@@ -167,6 +168,8 @@
     | "processing"
     | "developer"
     | "access"
+    | "ai_runtime"
+    | "user_context"
   >;
   type RecordingSettingsDraftDomain = AutosaveRecordingDomain | "app_privacy_exclusion";
 
@@ -180,7 +183,9 @@
     | UpdateInactivitySettingsRequest
     | UpdateProcessingSettingsRequest
     | UpdateDeveloperSettingsRequest
-    | UpdateAccessSettingsRequest;
+    | UpdateAccessSettingsRequest
+    | UpdateAiRuntimeSettingsRequest
+    | UpdateUserContextSettingsRequest;
 
   const RECORDING_AUTOSAVE_DOMAINS: readonly AutosaveRecordingDomain[] = [
     "capture_sources",
@@ -193,6 +198,8 @@
     "processing",
     "developer",
     "access",
+    "ai_runtime",
+    "user_context",
   ];
 
   const RECORDING_DRAFT_DOMAINS: readonly RecordingSettingsDraftDomain[] = [
@@ -211,6 +218,8 @@
     processing: "update_processing_settings",
     developer: "update_developer_settings",
     access: "update_access_settings",
+    ai_runtime: "update_ai_runtime_settings",
+    user_context: "update_user_context_settings",
   };
 
   function makeRecordingDomainState<T>(value: T): Record<RecordingSettingsDraftDomain, T> {
@@ -292,129 +301,19 @@
       ? Math.max(1, Math.floor(draftAskAiMaxToolCalls || ASK_AI_DEFAULT_TOOL_CALL_LIMIT))
       : 0,
   );
-  // Quick Recall model selection. Empty string means "let PI pick its default".
-  // `askAiModels` is the list discovered from the user's PI runtime.
+  // Ask AI model override (`access.askAiModel`) — governs Quick Recall AND
+  // Chat. Empty string means "follow the global default model". The model pool
+  // comes from the shared `settingsModelLoader` (both AI pickers list the same
+  // connected providers); the picker UI lives in <ModelPickerMenu>.
   let draftAskAiModel = $state("");
-  let askAiModels = $state<AskAiModel[]>([]);
-  let askAiModelsLoading = $state(false);
-  let askAiModelsError = $state<string | null>(null);
-  // Editable combobox state: the text the user types to filter, whether the
-  // dropdown is open, and the keyboard-highlighted row. The panel is portaled to
-  // <body> and fixed-positioned (computed from the input rect) so no overflow or
-  // transform ancestor in the settings layout can clip it.
+  // Open state, bound to the picker so a settings/availability change can't
+  // strand it open.
   let askAiModelOpen = $state(false);
-  let askAiModelQuery = $state("");
-  let askAiModelHighlight = $state(0);
-  let askAiModelInputEl = $state<HTMLInputElement | null>(null);
-  let askAiModelPanelStyle = $state("");
 
-  function updateAskAiModelPanelPosition() {
-    const el = askAiModelInputEl;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    // Anchor the panel above the input: pin its bottom just over the input's top
-    // so it opens upward, away from the clipped bottom edge of the settings card.
-    askAiModelPanelStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; width: ${rect.width}px;`;
-  }
-
-  function openAskAiModelMenu() {
-    askAiModelOpen = true;
-    updateAskAiModelPanelPosition();
-  }
-
-  // While the menu is open, keep it pinned under the input as the page scrolls or
-  // resizes (capture phase catches scrolling inner containers, not just window).
-  $effect(() => {
-    if (!askAiModelOpen) return;
-    const handler = () => updateAskAiModelPanelPosition();
-    window.addEventListener("scroll", handler, true);
-    window.addEventListener("resize", handler);
-    return () => {
-      window.removeEventListener("scroll", handler, true);
-      window.removeEventListener("resize", handler);
-    };
-  });
-
+  // The committed override's trigger label: the sentinel for "" (follow the
+  // global default), else the bare model id.
   function askAiModelLabel(value: string): string {
-    if (!value) return "Use PI default";
-    const match = askAiModels.find((model) => model.value === value);
-    if (!match) return value;
-    return match.provider ? `${match.name} (${match.provider})` : match.name;
-  }
-
-  // All selectable entries: the "PI default" sentinel plus every discovered
-  // model. `sublabel` shows the provider:id so ids stay recognizable.
-  let askAiModelEntries = $derived([
-    {
-      value: "",
-      label: "Use PI default",
-      sublabel: "Follows the model configured in your PI runtime",
-    },
-    ...askAiModels.map((model) => ({
-      value: model.value,
-      label: model.provider ? `${model.name} (${model.provider})` : model.name,
-      sublabel: model.value,
-    })),
-  ]);
-
-  // Substring filter on the typed query. When the query still equals the
-  // committed selection's label (e.g. just focused), show the whole list.
-  let askAiModelFiltered = $derived.by(() => {
-    const query = askAiModelQuery.trim().toLowerCase();
-    if (!query || query === askAiModelLabel(draftAskAiModel).toLowerCase()) {
-      return askAiModelEntries;
-    }
-    return askAiModelEntries.filter(
-      (entry) =>
-        entry.label.toLowerCase().includes(query) ||
-        entry.value.toLowerCase().includes(query),
-    );
-  });
-
-  // Keep the input text in sync with the committed selection while the dropdown
-  // is closed (covers settings/model loads that change the resolved label).
-  $effect(() => {
-    if (!askAiModelOpen) {
-      askAiModelQuery = askAiModelLabel(draftAskAiModel);
-    }
-  });
-
-  function commitAskAiModel(value: string) {
-    draftAskAiModel = value;
-    askAiModelQuery = askAiModelLabel(value);
-    askAiModelOpen = false;
-  }
-
-  function closeAskAiModelSoon() {
-    // Delay so an option's click (mousedown → click) lands before we close.
-    setTimeout(() => {
-      askAiModelOpen = false;
-      askAiModelQuery = askAiModelLabel(draftAskAiModel);
-    }, 120);
-  }
-
-  function handleAskAiModelKeydown(event: KeyboardEvent) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      openAskAiModelMenu();
-      askAiModelHighlight = Math.min(askAiModelHighlight + 1, askAiModelFiltered.length - 1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      askAiModelHighlight = Math.max(askAiModelHighlight - 1, 0);
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      const choice = askAiModelFiltered[askAiModelHighlight];
-      if (choice) {
-        commitAskAiModel(choice.value);
-      } else {
-        // No list match: accept a typed provider:id as a custom model.
-        const typed = askAiModelQuery.trim();
-        if (typed.includes(":")) commitAskAiModel(typed);
-      }
-    } else if (event.key === "Escape") {
-      askAiModelOpen = false;
-      askAiModelQuery = askAiModelLabel(draftAskAiModel);
-    }
+    return value ? value : "Global default model";
   }
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
@@ -424,12 +323,516 @@
   let brokerGrantSaving = $state(false);
   let brokerGrantError = $state<string | null>(null);
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
-  let piRuntimeStatus = $state<PiRuntimeStatus | null>(null);
   let mnemaCliLoading = $state(false);
-  let piRuntimeLoading = $state(false);
   let mnemaCliInstalling = $state(false);
   let mnemaCliError = $state<string | null>(null);
-  let piRuntimeError = $state<string | null>(null);
+
+  // Ask AI availability (interactive opt-in + shared engine prerequisite),
+  // derived from the `ask_ai_availability` command.
+  let askAiAvailability = $state<AskAiAvailability | null>(null);
+  let askAiAvailabilityLoading = $state(false);
+  let askAiAvailabilityError = $state<string | null>(null);
+  let askAiAvailable = $derived(askAiAvailability?.available === true);
+
+  // AI provider drafts (ADR 0034). Autosaved through the `ai_runtime` domain,
+  // EXCEPT the per-provider API key — that is stored only in the OS keychain
+  // and saved/cleared through explicit invokes (see below), never autosaved.
+  const AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
+    "anthropic",
+    "openai",
+    "openai_compatible",
+    "ollama",
+    "llamafile",
+  ];
+  const CLOUD_AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
+    "anthropic",
+    "openai",
+    "openai_compatible",
+  ];
+  const AI_LOCAL_DEFAULT_ENDPOINTS: Partial<Record<AiProviderKind, string>> = {
+    ollama: "http://localhost:11434",
+    llamafile: "http://localhost:8080",
+  };
+
+  function isCloudAiProviderKind(kind: string): boolean {
+    return (CLOUD_AI_PROVIDER_KINDS as readonly string[]).includes(kind);
+  }
+
+  // A short, friendly label for one provider id (mirrors the Rust kind ids).
+  function aiProviderKindLabel(kind: string): string {
+    switch (kind) {
+      case "anthropic":
+        return "Anthropic";
+      case "openai":
+        return "OpenAI";
+      case "openai_compatible":
+        return "OpenAI-compatible";
+      case "ollama":
+        return "Ollama";
+      case "llamafile":
+        return "Llamafile";
+      default:
+        return kind;
+    }
+  }
+
+  function aiProviderKindDescription(kind: AiProviderKind): string {
+    switch (kind) {
+      case "anthropic":
+        return "Claude models — your own API key";
+      case "openai":
+        return "GPT models — your own API key";
+      case "openai_compatible":
+        return "Fireworks, OpenRouter, Together — custom base URL + key";
+      case "ollama":
+        return "Local runtime, default endpoint http://localhost:11434";
+      case "llamafile":
+        return "Local OpenAI-compatible server, default http://localhost:8080";
+    }
+  }
+
+  let draftAiEnabled = $state(false);
+  // The flat connected-provider list (multiple instances per kind allowed,
+  // each with a stable instance id) and the ONE global default model chosen
+  // from the merged pool. Together these are the whole ai_runtime domain.
+  let draftAiProviders = $state<AiProviderConfig[]>([]);
+  let draftAiDefaultModel = $state<AiEngineRef | null>(null);
+
+  // Identity is the per-instance id; the kind is just the type tag. Every kind
+  // is always addable (same-kind instances coexist).
+  let connectedAiProviderIds = $derived(draftAiProviders.map((p) => p.id));
+  let anyCloudAiProviderConnected = $derived(
+    draftAiProviders.some((p) => isCloudAiProviderKind(p.kind)),
+  );
+
+  // The connected provider instance for an id, if any.
+  function aiProviderById(id: string): AiProviderConfig | undefined {
+    return draftAiProviders.find((p) => p.id === id);
+  }
+  // The kind backing a provider instance id (for cloud-vs-local decisions).
+  function aiProviderKindById(id: string): AiProviderKind | undefined {
+    return aiProviderById(id)?.kind;
+  }
+  function isCloudAiProviderInstance(id: string): boolean {
+    const kind = aiProviderKindById(id);
+    return kind !== undefined && isCloudAiProviderKind(kind);
+  }
+  // Host component of a base URL, for the auto-derived instance label.
+  function baseUrlHost(baseUrl: string): string {
+    const trimmed = baseUrl.trim();
+    if (!trimmed) return "";
+    try {
+      return new URL(trimmed).host || trimmed;
+    } catch {
+      return trimmed;
+    }
+  }
+  // Display name for a provider instance: its label, else kind + host, else
+  // kind + instance number. Two same-kind instances stay distinguishable even
+  // with no label typed — including first-party cloud (anthropic/openai), which
+  // has no base URL host to disambiguate on.
+  function aiProviderInstanceLabel(provider: AiProviderConfig): string {
+    const label = provider.label.trim();
+    if (label) return label;
+    const kindLabel = aiProviderKindLabel(provider.kind);
+    const host = baseUrlHost(provider.baseUrl);
+    if (host) return `${kindLabel} · ${host}`;
+    // The first instance of a kind has `id === kind`; extras are `kind-N`.
+    // Surface that N so two unlabeled same-kind instances never collide.
+    const suffix = provider.id.startsWith(`${provider.kind}-`)
+      ? provider.id.slice(provider.kind.length + 1)
+      : "";
+    return suffix ? `${kindLabel} (${suffix})` : kindLabel;
+  }
+  // Display name for a bare provider instance id (used by the model pickers and
+  // status reasons). Falls back to the raw id for an unknown/removed instance.
+  function aiProviderLabelById(id: string): string {
+    const provider = aiProviderById(id);
+    return provider ? aiProviderInstanceLabel(provider) : aiProviderKindLabel(id);
+  }
+
+  // A fresh instance id: the first instance of a kind keeps `id === kind` (so
+  // keys/pins recorded before instance ids existed still resolve); subsequent
+  // instances get a unique suffixed id.
+  function newAiProviderId(kind: AiProviderKind): string {
+    if (!connectedAiProviderIds.includes(kind)) return kind;
+    let suffix = 2;
+    let candidate = `${kind}-${suffix}`;
+    while (connectedAiProviderIds.includes(candidate)) {
+      suffix += 1;
+      candidate = `${kind}-${suffix}`;
+    }
+    return candidate;
+  }
+
+  function addAiProvider(kind: AiProviderKind): void {
+    draftAiProviders = [
+      ...draftAiProviders,
+      { id: newAiProviderId(kind), kind, label: "", baseUrl: "" },
+    ];
+    void refreshAiProviderKeyPresence();
+  }
+
+  function removeAiProvider(id: string): void {
+    const removed = draftAiProviders.find((p) => p.id === id);
+    draftAiProviders = draftAiProviders.filter((p) => p.id !== id);
+    // A default model stranded on a disconnected provider can never resolve;
+    // clear it so the status reads "choose a default model" instead.
+    if (draftAiDefaultModel?.provider === id) {
+      draftAiDefaultModel = null;
+    }
+    // Removing a cloud provider must also drop its keychain key — otherwise the
+    // key is orphaned under its instance id, and since `newAiProviderId` reuses
+    // the bare `kind` as the id, re-adding the same kind would silently
+    // reattach the old key. Best-effort: a clear failure shouldn't block remove.
+    if (removed && isCloudAiProviderKind(removed.kind)) {
+      void invoke("ai_runtime_clear_provider_key", {
+        request: { provider: id },
+      })
+        .then(() => {
+          const { [id]: _orphaned, ...rest } = aiProviderKeySavedByProvider;
+          aiProviderKeySavedByProvider = rest;
+        })
+        .catch((error) => {
+          aiProviderKeyErrors = {
+            ...aiProviderKeyErrors,
+            [id]: error instanceof Error ? error.message : String(error),
+          };
+        });
+    }
+  }
+
+  // Global default model selection — chosen from the merged provider-tagged
+  // pool, listed incrementally by the shared loader (ONE call per provider, so a
+  // fast provider's models show immediately and a slow/unreachable one only
+  // delays its own slice instead of blocking the whole list). Shared with the
+  // Ask AI override picker — both list the same connected providers. The picker
+  // UI lives in <ModelPickerMenu>; this owns the committed `{provider, model}`.
+  const settingsModelLoader = new ModelPoolLoader();
+  // Open state, bound to the picker.
+  let aiModelOpen = $state(false);
+
+  // Failed-provider rows for both pickers' footers (labels resolved against the
+  // current draft provider set).
+  let settingsModelFailureRows = $derived(
+    settingsModelLoader.failures.map((f) => ({
+      provider: f.provider,
+      label: aiProviderLabelById(f.provider),
+      reason: f.reason,
+    })),
+  );
+  // The failed providers a Retry re-lists (leaving the loaded ones untouched).
+  let settingsModelRetryTargets = $derived(
+    draftAiProviders.filter((p) =>
+      settingsModelLoader.failures.some((f) => f.provider === p.id),
+    ),
+  );
+  // A short hint naming the failed providers (shown under each picker field).
+  let settingsModelsError = $derived(
+    settingsModelLoader.failures.length > 0
+      ? settingsModelLoader.failures
+          .map((f) => `${aiProviderLabelById(f.provider)}: ${f.reason}`)
+          .join("; ")
+      : null,
+  );
+
+  // List the connected providers via the shared loader. Re-listing on open
+  // reflects in-progress draft edits; concurrent calls collapse to one.
+  async function loadSettingsModels() {
+    await settingsModelLoader.load(draftAiProviders);
+  }
+
+  // When the connected-provider set changes, the cached pool is stale: drop it
+  // so the next open re-discovers (refresh in place if a picker is open now).
+  let aiProviderSignature = $derived(
+    draftAiProviders.map((p) => `${p.id}:${p.baseUrl ?? ""}`).join("|"),
+  );
+  $effect(() => {
+    aiProviderSignature; // track
+    untrack(() => {
+      settingsModelLoader.reset();
+      if (aiModelOpen || askAiModelOpen) void loadSettingsModels();
+    });
+  });
+
+  function aiDefaultModelLabel(ref: AiEngineRef | null): string {
+    if (!ref || ref.model.trim().length === 0) return "";
+    return `${aiProviderLabelById(ref.provider)} · ${ref.model}`;
+  }
+
+  // The committed selection's trigger text (empty when no default chosen).
+  let aiModelValue = $derived(aiDefaultModelLabel(draftAiDefaultModel));
+
+  // User Context (derivation) drafts. Autosaved through the `user_context`
+  // domain, mirroring the `ai_runtime` draft-state pattern. The settings card
+  // UI is a later slice; these keep types/snapshots consistent for now.
+  const DEFAULT_USER_CONTEXT_BUDGET_TIER: DerivationBudgetTier = "balanced";
+  const DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS = 30;
+  let draftUserContextBudgetTier = $state<DerivationBudgetTier>(
+    DEFAULT_USER_CONTEXT_BUDGET_TIER
+  );
+  let draftUserContextBackfillWindowDays = $state(
+    DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS
+  );
+  let draftUserContextBackfillGoDeeper = $state(false);
+  // The high-consent continuous-derivation opt-in: whether the background User
+  // Context worker runs 24/7. Distinct from the Ask AI (interactive) toggle. Off
+  // by default.
+  let draftUserContextEnabled = $state(false);
+  // The Derivation Budget tier applies only when the global default model is a
+  // cloud provider's; a local default uses fixed background pacing.
+  let userContextCloudDefault = $derived(
+    draftAiDefaultModel !== null && isCloudAiProviderInstance(draftAiDefaultModel.provider),
+  );
+
+  // Reasoning Engine availability snapshot + the per-provider key entry boxes.
+  // Keys are not part of any draft/autosave; each provider row has its own
+  // input/saved/error state and explicit save/clear invokes
+  // (saveAiProviderKey / clearAiProviderKey), keyed by provider id.
+  let aiRuntimeStatus = $state<AiRuntimeStatus | null>(null);
+  let aiRuntimeStatusLoading = $state(false);
+  let aiRuntimeStatusError = $state<string | null>(null);
+  let aiProviderKeyInputs = $state<Record<string, string>>({});
+  let aiProviderKeySavedByProvider = $state<Record<string, boolean>>({});
+  // Provider id whose key save/clear is currently in flight (one at a time).
+  let aiProviderKeySavingProvider = $state<string | null>(null);
+  let aiProviderKeyErrors = $state<Record<string, string>>({});
+  let aiRuntimeTestRunning = $state(false);
+  let aiRuntimeTestResult = $state<AiRuntimeTestResult | null>(null);
+  let aiRuntimeTestError = $state<string | null>(null);
+
+  // Human-facing label for an AiRuntimeStatus.reason code (the shared
+  // engine-configured prerequisite codes, plus user_context_disabled from the
+  // User Context status surface).
+  function aiRuntimeReasonLabel(reason: string | null | undefined): string {
+    if (!reason) return "Unavailable";
+    if (reason.startsWith("no_provider_key:")) {
+      const provider = reason.slice("no_provider_key:".length);
+      return `No API key saved for ${aiProviderLabelById(provider)}.`;
+    }
+    if (reason.startsWith("provider_not_connected:")) {
+      const provider = reason.slice("provider_not_connected:".length);
+      return `The default model's provider (${aiProviderLabelById(provider)}) is not connected.`;
+    }
+    switch (reason) {
+      case "user_context_disabled":
+        return "Continuous derivation is turned off.";
+      case "ai_runtime_disabled":
+        return "AI features are turned off.";
+      case "no_providers":
+        return "No AI providers connected yet.";
+      case "no_default_model":
+        return "Choose a global default model.";
+      case "no_base_url":
+        return "Add the base URL for the OpenAI-compatible provider.";
+      case "local_endpoint_unreachable":
+        return "The local endpoint could not be reached.";
+      default:
+        return reason;
+    }
+  }
+
+  async function loadAiRuntimeStatus() {
+    aiRuntimeStatusLoading = true;
+    aiRuntimeStatusError = null;
+    try {
+      aiRuntimeStatus = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
+    } catch (error) {
+      aiRuntimeStatusError = error instanceof Error ? error.message : String(error);
+    } finally {
+      aiRuntimeStatusLoading = false;
+    }
+  }
+
+  // Re-check which connected cloud provider instances have a key in the
+  // keychain. Keyed by instance id (the keychain account).
+  async function refreshAiProviderKeyPresence() {
+    const cloudProviderIds = draftAiProviders
+      .filter((p) => isCloudAiProviderKind(p.kind))
+      .map((p) => p.id);
+    const next: Record<string, boolean> = {};
+    for (const id of cloudProviderIds) {
+      try {
+        next[id] = await invoke<boolean>("ai_runtime_has_provider_key", {
+          request: { provider: id },
+        });
+      } catch (error) {
+        aiProviderKeyErrors = {
+          ...aiProviderKeyErrors,
+          [id]: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    aiProviderKeySavedByProvider = next;
+  }
+
+  async function saveAiProviderKey(provider: string) {
+    const key = (aiProviderKeyInputs[provider] ?? "").trim();
+    if (!key) {
+      aiProviderKeyErrors = {
+        ...aiProviderKeyErrors,
+        [provider]: "Enter an API key first.",
+      };
+      return;
+    }
+    aiProviderKeySavingProvider = provider;
+    const { [provider]: _saveErr, ...restSaveErrors } = aiProviderKeyErrors;
+    aiProviderKeyErrors = restSaveErrors;
+    try {
+      await invoke("ai_runtime_set_provider_key", {
+        request: { provider, key },
+      });
+      aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: "" };
+      await refreshAiProviderKeyPresence();
+      await loadAiRuntimeStatus();
+    } catch (error) {
+      aiProviderKeyErrors = {
+        ...aiProviderKeyErrors,
+        [provider]: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      aiProviderKeySavingProvider = null;
+    }
+  }
+
+  async function clearAiProviderKey(provider: string) {
+    aiProviderKeySavingProvider = provider;
+    const { [provider]: _clearErr, ...restClearErrors } = aiProviderKeyErrors;
+    aiProviderKeyErrors = restClearErrors;
+    try {
+      await invoke("ai_runtime_clear_provider_key", {
+        request: { provider },
+      });
+      aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: "" };
+      await refreshAiProviderKeyPresence();
+      await loadAiRuntimeStatus();
+    } catch (error) {
+      aiProviderKeyErrors = {
+        ...aiProviderKeyErrors,
+        [provider]: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      aiProviderKeySavingProvider = null;
+    }
+  }
+
+  async function runAiRuntimeTestConnection() {
+    aiRuntimeTestRunning = true;
+    aiRuntimeTestError = null;
+    aiRuntimeTestResult = null;
+    try {
+      aiRuntimeTestResult = await invoke<AiRuntimeTestResult>("ai_runtime_test_connection");
+    } catch (error) {
+      aiRuntimeTestError = error instanceof Error ? error.message : String(error);
+    } finally {
+      aiRuntimeTestRunning = false;
+      void loadAiRuntimeStatus();
+    }
+  }
+
+  // ----- User Context (issue #93): status + recent Activity preview + run-now -
+  // Read-only surface inside the Reasoning Engine card; the derivation worker
+  // runs in the background and emits `user_context_changed` to refresh this.
+  let userContextStatus = $state<UserContextStatus | null>(null);
+  let userContextStatusError = $state<string | null>(null);
+  let userContextRunNowRunning = $state(false);
+  let userContextRunNowMessage = $state<string | null>(null);
+
+  async function loadUserContextStatus() {
+    try {
+      userContextStatus = await invoke<UserContextStatus>("get_user_context_status");
+      userContextStatusError = null;
+    } catch (error) {
+      userContextStatusError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function refreshUserContext() {
+    await loadUserContextStatus();
+  }
+
+  async function runUserContextDerivationNow() {
+    userContextRunNowRunning = true;
+    userContextRunNowMessage = null;
+    try {
+      const result = await invoke<UserContextDerivationRunResult>(
+        "user_context_run_derivation_now"
+      );
+      userContextRunNowMessage = result.message;
+      await refreshUserContext();
+    } catch (error) {
+      userContextRunNowMessage = error instanceof Error ? error.message : String(error);
+    } finally {
+      userContextRunNowRunning = false;
+    }
+  }
+
+  // Wipe User Context (#97, ADR 0029): the explicit, full clear of the derived
+  // dossier — the one control that erases the longer-than-retention memory. It
+  // clears all derived understanding (Activities, Conclusions, Dismissal State),
+  // keeps raw captures + settings, and turns the master "AI features" switch
+  // off (the recording_settings_changed event flips the toggle for us). Disk-
+  // destructive of derived data, so it goes behind a Tauri confirm dialog.
+  let userContextWiping = $state(false);
+
+  async function wipeUserContext() {
+    if (userContextWiping) return;
+    const confirmed = await confirm(
+      "This permanently clears everything Mnema has derived about you — all Activities, Conclusions, and your Dismissal corrections. Your raw recordings and settings are kept. AI features will be turned off; turning them back on starts learning from scratch.",
+      { title: "Wipe User Context?", kind: "warning", okLabel: "Wipe", cancelLabel: "Cancel" }
+    );
+    if (!confirmed) return;
+    userContextWiping = true;
+    try {
+      await invoke("wipe_user_context");
+      // The surface is now empty; the recording_settings_changed event turns the
+      // master AI switch off on its own, but refresh status/lists here
+      // immediately so the card reflects the wipe at once.
+      await refreshUserContext();
+      void loadAiRuntimeStatus();
+    } catch (error) {
+      userContextStatusError = error instanceof Error ? error.message : String(error);
+    } finally {
+      userContextWiping = false;
+    }
+  }
+
+  function formatLastDerived(ms: number | null | undefined): string {
+    if (!ms) return "never";
+    return new Date(ms).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  // Plain-language line for what the last distillation pass withheld, so a
+  // thin dossier is explainable ("3 held back by the privacy guardrail") and
+  // not a silent no-op. Empty string when nothing was withheld.
+  function distillationWithheldLine(
+    summary: UserContextDistillationSummary | null | undefined,
+  ): string {
+    if (!summary) return "";
+    const reasons: string[] = [];
+    if (summary.guardrailSuppressed > 0)
+      reasons.push(`${summary.guardrailSuppressed} by the privacy guardrail`);
+    if (summary.belowFormationBar > 0)
+      reasons.push(`${summary.belowFormationBar} needing more evidence`);
+    if (summary.resurfaceBlocked > 0)
+      reasons.push(`${summary.resurfaceBlocked} honoring a dismissal`);
+    if (summary.ungrounded > 0)
+      reasons.push(`${summary.ungrounded} without grounding`);
+    if (reasons.length === 0) return "";
+    const total =
+      summary.guardrailSuppressed +
+      summary.belowFormationBar +
+      summary.resurfaceBlocked +
+      summary.ungrounded;
+    return `Last distillation held back ${total} draft ${
+      total === 1 ? "conclusion" : "conclusions"
+    }: ${reasons.join(", ")}.`;
+  }
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
@@ -562,6 +965,7 @@
     | "capture"
     | "video"
     | "access"
+    | "intelligence"
     | "privacy"
     | "shortcuts"
     | "audio"
@@ -744,6 +1148,7 @@
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
     { id: "access",     label: "Access",      description: "CLI and local tools" },
+    { id: "intelligence", label: "AI", description: "Providers, Ask AI, User Context" },
     { id: "privacy",    label: "Privacy",     description: "Metadata and exclusions" },
     { id: "shortcuts",  label: "Shortcuts",   description: "View and customize keys" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
@@ -759,6 +1164,16 @@
     if (value === "about") return "about";
     if (value === "capture" || value === "behavior") return "capture";
     if (value === "access" || value === "cliAccess" || value === "cli-access") return "access";
+    if (
+      value === "intelligence" ||
+      value === "reasoning" ||
+      value === "reasoning-engine" ||
+      value === "ai" ||
+      value === "ai-runtime" ||
+      value === "user-context" ||
+      value === "userContext"
+    )
+      return "intelligence";
     if (value === "privacy" || value === "metadata") return "privacy";
     if (value === "shortcuts" || value === "keyboard" || value === "keyboard-shortcuts" || value === "keyboard_bindings") return "shortcuts";
     if (value === "video") return "video";
@@ -991,6 +1406,29 @@
     draftAskAiModel = s.access?.askAiModel ?? "";
   }
 
+  function syncAiRuntimeDrafts(s: RecordingSettings) {
+    draftAiEnabled = s.aiRuntime?.enabled ?? false;
+    draftAiProviders = (s.aiRuntime?.providers ?? []).map((p) => ({
+      // Backfill a legacy provider (saved before instance ids) to id === kind.
+      id: (p.id ?? "").trim() || p.kind,
+      kind: p.kind,
+      label: p.label ?? "",
+      baseUrl: p.baseUrl ?? "",
+    }));
+    draftAiDefaultModel = s.aiRuntime?.defaultModel
+      ? { provider: s.aiRuntime.defaultModel.provider, model: s.aiRuntime.defaultModel.model }
+      : null;
+  }
+
+  function syncUserContextDrafts(s: RecordingSettings) {
+    draftUserContextEnabled = s.userContext?.enabled ?? false;
+    draftUserContextBudgetTier =
+      s.userContext?.derivationBudgetTier ?? DEFAULT_USER_CONTEXT_BUDGET_TIER;
+    draftUserContextBackfillWindowDays =
+      s.userContext?.backfillWindowDays ?? DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS;
+    draftUserContextBackfillGoDeeper = s.userContext?.backfillGoDeeper ?? false;
+  }
+
   function syncInactivityDrafts(s: RecordingSettings) {
     draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
@@ -1076,6 +1514,12 @@
         break;
       case "access":
         syncAccessDrafts(s);
+        break;
+      case "ai_runtime":
+        syncAiRuntimeDrafts(s);
+        break;
+      case "user_context":
+        syncUserContextDrafts(s);
         break;
     }
   }
@@ -1205,6 +1649,31 @@
           askAiMaxToolCalls: effectiveAskAiMaxToolCalls,
           askAiModel: draftAskAiModel,
         };
+      case "ai_runtime":
+        // `defaultModel` is tri-state on the wire; the card always sends the
+        // full intent (object = set, null = clear), never "leave unchanged".
+        return {
+          enabled: draftAiEnabled,
+          providers: draftAiProviders.map((p) => ({
+            id: p.id,
+            kind: p.kind,
+            label: p.label,
+            baseUrl: p.baseUrl,
+          })),
+          defaultModel: draftAiDefaultModel
+            ? {
+                provider: draftAiDefaultModel.provider,
+                model: draftAiDefaultModel.model,
+              }
+            : null,
+        };
+      case "user_context":
+        return {
+          enabled: draftUserContextEnabled,
+          derivationBudgetTier: draftUserContextBudgetTier,
+          backfillWindowDays: draftUserContextBackfillWindowDays,
+          backfillGoDeeper: draftUserContextBackfillGoDeeper,
+        };
     }
   }
 
@@ -1254,30 +1723,19 @@
     }
   }
 
-  async function loadPiRuntimeStatus() {
-    piRuntimeLoading = true;
-    piRuntimeError = null;
+  async function loadAskAiAvailability() {
+    askAiAvailabilityLoading = true;
+    askAiAvailabilityError = null;
     try {
-      piRuntimeStatus = await invoke<PiRuntimeStatus>("get_pi_runtime_status");
+      askAiAvailability = await invoke<AskAiAvailability>("ask_ai_availability");
     } catch (err) {
-      piRuntimeError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      askAiAvailability = {
+        available: false,
+        reason: typeof err === "string" ? err : JSON.stringify(err, null, 2),
+      };
+      askAiAvailabilityError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
-      piRuntimeLoading = false;
-    }
-    // Refresh the selectable model list whenever PI status is (re)checked.
-    void loadAskAiModels();
-  }
-
-  async function loadAskAiModels() {
-    askAiModelsLoading = true;
-    askAiModelsError = null;
-    try {
-      askAiModels = await invoke<AskAiModel[]>("ask_ai_list_models");
-    } catch (err) {
-      askAiModels = [];
-      askAiModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    } finally {
-      askAiModelsLoading = false;
+      askAiAvailabilityLoading = false;
     }
   }
 
@@ -1550,45 +2008,32 @@
     return `Expires ${formatGrantTime(grant.expiresAtUnixMs)}`;
   }
 
-  function formatPiRuntimeSource(source: PiRuntimeStatus["source"]): string {
-    if (source === "managed") return "managed";
-    if (source === "path") return "PATH";
-    if (source === "unmanaged") return "configured path";
-    return "not found";
+  // Friendly copy for an Ask AI availability reason code. Covers both the Ask AI
+  // gate (ask_ai_disabled) and the shared engine-configured prerequisite codes
+  // (ai_runtime_disabled / no_providers / no_default_model / …).
+  function askAiReasonLabel(reason: string | null | undefined): string {
+    if (!reason) return "Ask AI is unavailable.";
+    switch (reason) {
+      case "ask_ai_disabled":
+        return "Ask AI is turned off.";
+      case "ai_runtime_disabled":
+        return "AI features are turned off — enable them in the Providers card above.";
+      case "no_providers":
+        return "Connect an AI provider in the Providers card above.";
+      case "no_default_model":
+        return "Choose a global default model in the Providers card above.";
+      default:
+        return aiRuntimeReasonLabel(reason);
+    }
   }
 
-  function formatPiRuntimeReason(status: PiRuntimeStatus): string {
-    if (status.ready) return "ready";
-    if (status.reason === "pi_not_found") return "pi was not found in PATH";
-    if (status.reason === "pi_version_unavailable") return "pi --version did not return a usable version";
-    if (status.reason === "pi_version_too_old") return `pi ${status.version ?? "unknown"} is older than ${status.minimumVersion}`;
-    if (status.reason === "pi_auth_missing") return `PI auth is missing at ${status.authJsonPath}`;
-    if (status.reason === "pi_auth_empty") return `PI auth has no providers at ${status.authJsonPath}`;
-    if (status.reason === "pi_auth_malformed") return `PI auth is not valid JSON at ${status.authJsonPath}`;
-    if (status.reason === "pi_auth_misconfigured") return `PI auth has no configured provider at ${status.authJsonPath}`;
-    return "PI is not ready";
-  }
-
-  function piProviderConfigured(status: PiRuntimeStatus | null): boolean {
-    return status?.providerConfigured ?? status?.authJsonProviderConfigured ?? false;
-  }
-
-  function piProviderCount(status: PiRuntimeStatus | null): number {
-    return status?.providerCount ?? status?.authJsonProviderCount ?? 0;
-  }
-
-  function askAiStatusLabel(status: PiRuntimeStatus | null): string {
-    return draftAskAiEnabled && status?.ready ? "Available" : "Unavailable";
-  }
-
-  function askAiStatusDetail(status: PiRuntimeStatus | null): string {
-    if (!draftAskAiEnabled) return "Ask AI is off. Enable it here after PI is set up.";
-    if (status === null) return "Checking PI setup.";
-    if (status.ready) return `PI ready via ${formatPiRuntimeSource(status.source)}${status.executablePath ? ` at ${status.executablePath}` : ""}.`;
-    if (!status.versionOk) return formatPiRuntimeReason(status);
-    if (!piProviderConfigured(status)) return `Set up a PI provider in ${status.authJsonPath}; no credentials are collected by Mnema.`;
-    return formatPiRuntimeReason(status);
-  }
+  let askAiStatusDetail = $derived.by(() => {
+    if (askAiAvailabilityLoading) return "Checking Ask AI availability…";
+    if (askAiAvailable) {
+      return "Ask AI can answer over your redacted capture history.";
+    }
+    return askAiReasonLabel(askAiAvailability?.reason);
+  });
 
   async function setBrowserUrlMode(mode: string) {
     if (mode === draftBrowserUrlMode) return;
@@ -1674,6 +2119,31 @@
           askAiMaxToolCalls: s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
           askAiModel: s.access?.askAiModel ?? "",
         };
+      case "ai_runtime":
+        return {
+          enabled: s.aiRuntime?.enabled ?? false,
+          providers: (s.aiRuntime?.providers ?? []).map((p) => ({
+            id: (p.id ?? "").trim() || p.kind,
+            kind: p.kind,
+            label: p.label ?? "",
+            baseUrl: p.baseUrl ?? "",
+          })),
+          defaultModel: s.aiRuntime?.defaultModel
+            ? {
+                provider: s.aiRuntime.defaultModel.provider,
+                model: s.aiRuntime.defaultModel.model,
+              }
+            : null,
+        };
+      case "user_context":
+        return {
+          enabled: s.userContext?.enabled ?? false,
+          derivationBudgetTier:
+            s.userContext?.derivationBudgetTier ?? DEFAULT_USER_CONTEXT_BUDGET_TIER,
+          backfillWindowDays:
+            s.userContext?.backfillWindowDays ?? DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS,
+          backfillGoDeeper: s.userContext?.backfillGoDeeper ?? false,
+        };
     }
   }
 
@@ -1719,6 +2189,10 @@
     if (draftDomain === "developer" && (force || !dirty)) {
       setDeveloperOptionsEnabled(s.developerOptionsEnabled ?? false);
       void loadDebugLogStatus();
+    }
+    if (draftDomain === "ai_runtime" && (force || !dirty)) {
+      void refreshAiProviderKeyPresence();
+      void loadAiRuntimeStatus();
     }
   }
 
@@ -3010,24 +3484,38 @@
   // ─── Init ─────────────────────────────────────────────────────────────────
 
   $effect(() => {
-    loadCaptureSupport();
-    loadRecordingSettings();
-    loadKeyboardBindingsSettings();
-    loadMicState();
-    loadOcrModelStatus();
-    loadTranscriptionModelStatus();
-    loadSpeakerModelStatus();
-    void loadPersonProfileCount();
-    loadDebugLogStatus();
-    loadGeneralLogStatus();
-    loadAppUpdateStatus();
-    void appPrivacyExclusion.loadPrivacyAppCandidates();
-    void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
-    loadBrokerGrants();
-    loadMnemaCliStatus();
-    loadPiRuntimeStatus();
+    // One-time mount init. Wrapped in `untrack` because several of these
+    // loaders synchronously read draft `$state` (e.g. refreshAiProviderKeyPresence
+    // reads draftAiProviders). Without untrack the effect would subscribe to
+    // those drafts and re-run on every edit — re-firing loadRecordingSettings and
+    // clobbering the in-flight draft back to the persisted value before autosave.
+    untrack(() => {
+      loadCaptureSupport();
+      // refreshAiProviderKeyPresence reads draftAiProviders, which loadRecordingSettings
+      // only populates after its async fetch resolves. Chain it so the "key in keychain"
+      // badge reflects saved keys on load instead of seeing a still-empty provider list.
+      void loadRecordingSettings().then(() => refreshAiProviderKeyPresence());
+      loadKeyboardBindingsSettings();
+      loadMicState();
+      loadOcrModelStatus();
+      loadTranscriptionModelStatus();
+      loadSpeakerModelStatus();
+      void loadPersonProfileCount();
+      loadDebugLogStatus();
+      loadGeneralLogStatus();
+      loadAppUpdateStatus();
+      void appPrivacyExclusion.loadPrivacyAppCandidates();
+      void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
+      loadBrokerGrants();
+      loadMnemaCliStatus();
+      void loadAskAiAvailability();
+      void loadSettingsModels();
+      void loadAiRuntimeStatus();
+      void refreshUserContext();
+    });
 
     let unlistenControllerChanged: (() => void) | undefined;
+    let unlistenUserContextChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let unlistenRecordingSettingsDomainChanged: (() => void) | undefined;
@@ -3129,6 +3617,13 @@
       else unlistenSpeakerDownloadProgress = fn;
     });
 
+    listen("user_context_changed", () => {
+      void refreshUserContext();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenUserContextChanged = fn;
+    });
+
     return () => {
       destroyed = true;
       for (const timer of recAutoSaveTimers.values()) clearTimeout(timer);
@@ -3143,6 +3638,7 @@
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
       unlistenSpeakerDownloadProgress?.();
+      unlistenUserContextChanged?.();
     };
   });
 </script>
@@ -3168,6 +3664,12 @@
         <rect x="3" y="4" width="18" height="16" rx="2" />
         <path d="m7 9 3 3-3 3" />
         <path d="M13 15h4" />
+      </svg>
+    {:else if kind === "intelligence"}
+      <svg viewBox="0 0 24 24">
+        <path d="M12 3a4 4 0 0 0-4 4 3 3 0 0 0-1 5.8V17a3 3 0 0 0 5 2" />
+        <path d="M12 3a4 4 0 0 1 4 4 3 3 0 0 1 1 5.8V17a3 3 0 0 1-5 2" />
+        <path d="M12 3v18" />
       </svg>
     {:else if kind === "privacy"}
       <svg viewBox="0 0 24 24">
@@ -3625,15 +4127,12 @@
             <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
               {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
             </button>
-            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading || piRuntimeLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); void loadPiRuntimeStatus(); }}>
+            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}>
               Refresh
             </button>
           </div>
           {#if mnemaCliError}
             <p class="error-text">{mnemaCliError}</p>
-          {/if}
-          {#if piRuntimeError}
-            <p class="error-text">{piRuntimeError}</p>
           {/if}
           {#if brokerGrantError}
             <p class="error-text">{brokerGrantError}</p>
@@ -3671,7 +4170,279 @@
         </div>
       </div>
 
+    </section>
+  </div>
+{/if}
+
+{#if activeTab === "intelligence"}
+  <div role="tabpanel" id="settings-panel-intelligence" aria-labelledby="settings-tab-intelligence" tabindex="0">
+    <!-- ── Card: Providers (master switch, provider list, default model) ──── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">Providers</h2>
+          <p class="card__subtitle">
+            Connect the AI providers Mnema can use and choose one global default model. Every AI
+            feature inherits the default; a chat thread or feature override can refine it.
+          </p>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <span class="group-label">AI features</span>
+        <div class="settings-stack">
+          <Switch
+            bind:checked={draftAiEnabled}
+            label="Enable AI features"
+            description="The master switch for everything AI in Mnema. While off, nothing is sent to any AI model. Off by default."
+          />
+          <div class="privacy-disclosure">
+            <p>A cloud provider receives redacted capture text over HTTPS to reason about it — continuous outbound egress and per-token cost billed to your own key.</p>
+            <p>A local runtime (Ollama or Llamafile) runs entirely on this machine — nothing is sent anywhere and no API key is needed.</p>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Connected providers</span>
+        <div class="settings-stack">
+          {#if draftAiProviders.length === 0}
+            <p class="group-hint">No providers connected yet. Connect one below, then choose a default model.</p>
+          {:else}
+            <ul class="provider-list">
+              {#each draftAiProviders as provider (provider.id)}
+                <li class="provider-row">
+                  <div class="provider-row__head">
+                    <span class="provider-row__name">{aiProviderInstanceLabel(provider)}</span>
+                    <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
+                    {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.id]}
+                      <span class="saved-badge">✓ key in keychain</span>
+                    {/if}
+                    <button
+                      class="btn btn--ghost btn--sm provider-row__remove"
+                      type="button"
+                      onclick={() => removeAiProvider(provider.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <label class="field-label" for="ai-provider-label-{provider.id}">Label</label>
+                  <input
+                    id="ai-provider-label-{provider.id}"
+                    class="text-input"
+                    autocomplete="off"
+                    placeholder={aiProviderKindLabel(provider.kind)}
+                    bind:value={provider.label}
+                  />
+                  {#if provider.kind === "openai_compatible"}
+                    <label class="field-label" for="ai-provider-base-url-{provider.id}">Base URL</label>
+                    <input
+                      id="ai-provider-base-url-{provider.id}"
+                      class="text-input"
+                      autocomplete="off"
+                      placeholder="https://api.fireworks.ai/inference/v1"
+                      bind:value={provider.baseUrl}
+                    />
+                    {#if provider.baseUrl.trim().length === 0}
+                      <p class="group-hint group-hint--warn">OpenAI-compatible providers need a base URL.</p>
+                    {/if}
+                  {:else if !isCloudAiProviderKind(provider.kind)}
+                    <label class="field-label" for="ai-provider-endpoint-{provider.id}">Endpoint</label>
+                    <input
+                      id="ai-provider-endpoint-{provider.id}"
+                      class="text-input"
+                      autocomplete="off"
+                      placeholder={AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind] ?? "http://localhost"}
+                      bind:value={provider.baseUrl}
+                    />
+                    <p class="group-hint">Leave empty to use the default endpoint {AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind]}. No key, no egress.</p>
+                  {/if}
+                  {#if isCloudAiProviderKind(provider.kind)}
+                    <label class="field-label" for="ai-provider-key-{provider.id}">API key</label>
+                    <input
+                      id="ai-provider-key-{provider.id}"
+                      class="text-input"
+                      type="password"
+                      autocomplete="off"
+                      placeholder={aiProviderKeySavedByProvider[provider.id] ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
+                      disabled={aiProviderKeySavingProvider === provider.id}
+                      bind:value={
+                        () => aiProviderKeyInputs[provider.id] ?? "",
+                        (value) => {
+                          aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider.id]: value };
+                        }
+                      }
+                    />
+                    <div class="row-actions">
+                      <button
+                        class="btn btn--ghost btn--sm"
+                        type="button"
+                        disabled={aiProviderKeySavingProvider !== null || (aiProviderKeyInputs[provider.id] ?? "").trim().length === 0}
+                        onclick={() => saveAiProviderKey(provider.id)}
+                      >
+                        {aiProviderKeySavingProvider === provider.id ? "Saving" : "Save key"}
+                      </button>
+                      <button
+                        class="btn btn--ghost btn--sm"
+                        type="button"
+                        disabled={aiProviderKeySavingProvider !== null || !aiProviderKeySavedByProvider[provider.id]}
+                        onclick={() => clearAiProviderKey(provider.id)}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    {#if aiProviderKeyErrors[provider.id]}
+                      <p class="error-text">{aiProviderKeyErrors[provider.id]}</p>
+                    {/if}
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <div class="row-actions">
+            {#each AI_PROVIDER_KINDS as kind (kind)}
+              <button
+                class="btn btn--ghost btn--sm"
+                type="button"
+                title={aiProviderKindDescription(kind)}
+                onclick={() => addAiProvider(kind)}
+              >
+                + {aiProviderKindLabel(kind)}
+              </button>
+            {/each}
+          </div>
+          <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider instance, shared by every feature. Add a kind more than once to connect several instances (e.g. two OpenAI-compatible servers).</p>
+          {#if anyCloudAiProviderConnected}
+            <div class="cloud-egress-disclosure" role="note">
+              <span class="cloud-egress-disclosure__icon" aria-hidden="true">⚠</span>
+              <div class="cloud-egress-disclosure__body">
+                <strong>Cloud egress consent</strong>
+                <p>
+                  With a cloud provider connected and AI features on, <em>redacted</em> OCR and
+                  transcript text is sent to that provider over HTTPS, billed to your own key.
+                  Your on-device data — frames, audio, and the assembled dossier — never leaves
+                  this machine. The master switch above is your explicit opt-in, separate from
+                  the per-feature toggles below.
+                </p>
+              </div>
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Default model</span>
+        <div class="settings-stack">
+          <span class="field-label">Global default model</span>
+          <ModelPickerMenu
+            label={aiModelValue || "Choose a default model"}
+            title={aiModelValue || "Choose a default model"}
+            ariaLabel="Global default model"
+            block
+            placeholder={draftAiDefaultModel === null}
+            disabled={draftAiProviders.length === 0}
+            modelPool={settingsModelLoader.pool}
+            providers={draftAiProviders}
+            firstProvider={draftAiDefaultModel?.provider ?? null}
+            sentinelLabel="No default model"
+            sentinelSelected={draftAiDefaultModel === null}
+            selectedProvider={draftAiDefaultModel?.provider ?? null}
+            selectedModel={draftAiDefaultModel?.model ?? null}
+            loading={settingsModelLoader.loading}
+            failures={settingsModelFailureRows}
+            onretry={() => void settingsModelLoader.load(settingsModelRetryTargets)}
+            portal
+            bind:open={aiModelOpen}
+            onopen={() => void loadSettingsModels()}
+            onselect={(engine) => { draftAiDefaultModel = engine; }}
+          />
+          {#if settingsModelsError}
+            <p class="group-hint group-hint--warn">
+              Could not list every provider's models — check keys/base URLs/endpoints above, then use Retry in the menu. You can still type any model id.
+            </p>
+            <p class="error-text">{aiRuntimeReasonLabel(settingsModelsError)}</p>
+          {:else}
+            <p class="group-hint">
+              One merged list across every connected provider. Open the menu to search, or type any model id and pick the provider to attribute it to.
+            </p>
+          {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Status</span>
+        <div class="settings-stack">
+          <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
+            <div>
+              <div class="model-status__title">AI {aiRuntimeStatus?.available ? "ready" : "unavailable"}</div>
+              <div class="model-status__meta">
+                {#if aiRuntimeStatusLoading}
+                  Checking providers…
+                {:else if aiRuntimeStatus?.available}
+                  Default model {aiRuntimeStatus.defaultModel
+                    ? `${aiProviderKindLabel(aiRuntimeStatus.defaultModel.provider)} · ${aiRuntimeStatus.defaultModel.model}`
+                    : "(none)"} is configured and reachable.
+                {:else}
+                  {aiRuntimeReasonLabel(aiRuntimeStatus?.reason)}
+                {/if}
+              </div>
+            </div>
+            <span class="model-status__pill">{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
+          </div>
+          {#if aiRuntimeStatusError}
+            <p class="error-text">{aiRuntimeStatusError}</p>
+          {/if}
+          <div class="row-actions">
+            <button class="btn btn--ghost btn--sm" type="button" disabled={aiRuntimeStatusLoading} onclick={loadAiRuntimeStatus}>
+              {aiRuntimeStatusLoading ? "Refreshing" : "Refresh"}
+            </button>
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              disabled={aiRuntimeTestRunning || draftAiDefaultModel === null}
+              onclick={runAiRuntimeTestConnection}
+            >
+              {aiRuntimeTestRunning ? "Testing" : "Test connection"}
+            </button>
+          </div>
+          <p class="group-hint">
+            Test connection runs one structured round trip against the global default model — it
+            verifies that provider's key/endpoint even while AI features are off.
+          </p>
+          {#if aiRuntimeTestResult}
+            <div class="cleanup-result" aria-live="polite">
+              <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
+              <p>Provider: {aiProviderKindLabel(aiRuntimeTestResult.provider)} · Model: {aiRuntimeTestResult.model || "(none)"}</p>
+              {#if aiRuntimeTestResult.rawJson}
+                <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
+              {/if}
+            </div>
+          {/if}
+          {#if aiRuntimeTestError}
+            <p class="group-hint group-hint--warn">Test connection failed.</p>
+            <p class="error-text">{aiRuntimeTestError}</p>
+          {/if}
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Card: Ask AI (interactive opt-in — Quick Recall + Insights Chat) ── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">Ask AI</h2>
+          <p class="card__subtitle">
+            Let Quick Recall and Insights Chat answer questions over your redacted capture
+            history. Uses the global default model unless overridden below.
+          </p>
+        </div>
+      </div>
 
       <div class="settings-group">
         <span class="group-label">Ask AI</span>
@@ -3679,11 +4450,11 @@
           <Switch
             bind:checked={draftAskAiEnabled}
             label="Enable Ask AI"
-            description="Allow Mnema to send your questions plus redacted capture context to your configured PI provider. Off by default."
+            description="Allow Quick Recall and Insights Chat to answer questions over your redacted capture history. Off by default."
           />
           <div class="privacy-disclosure">
             <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
-            <p>When enabled, questions and the redacted context needed to answer them are sent through PI to your configured provider/cloud. Mnema never asks for or stores provider credentials here.</p>
+            <p>Questions and the redacted context needed to answer them run through the providers configured above — a cloud provider with your own key, or a local model that never leaves this machine.</p>
           </div>
           <Switch
             bind:checked={draftAskAiLimitToolCalls}
@@ -3709,107 +4480,237 @@
               No cap: a single question can issue unlimited brokered queries into your retained capture history.
             </p>
           {/if}
-          <label class="field-label" for="ask-ai-model">Quick Recall model</label>
-          <div class="model-combobox">
-            <input
-              id="ask-ai-model"
-              class="text-input model-combobox__input"
-              role="combobox"
-              aria-expanded={askAiModelOpen}
-              aria-controls="ask-ai-model-list"
-              aria-autocomplete="list"
-              autocomplete="off"
-              placeholder="Use PI default"
-              disabled={!draftAskAiEnabled}
-              bind:this={askAiModelInputEl}
-              bind:value={askAiModelQuery}
-              oninput={() => { openAskAiModelMenu(); askAiModelHighlight = 0; }}
-              onfocus={(event) => { openAskAiModelMenu(); event.currentTarget.select(); }}
-              onblur={closeAskAiModelSoon}
-              onkeydown={handleAskAiModelKeydown}
-            />
-            {#if askAiModelOpen && draftAskAiEnabled}
-              <Portal>
-                <div
-                  class="model-combobox__panel"
-                  id="ask-ai-model-list"
-                  role="listbox"
-                  style={askAiModelPanelStyle}
-                >
-                  {#if askAiModelsLoading}
-                    <span class="model-combobox__empty">Loading models from PI…</span>
-                  {:else if askAiModelFiltered.length > 0}
-                    {#each askAiModelFiltered as entry, index (entry.value)}
-                      <button
-                        class="model-combobox__option"
-                        class:model-combobox__option--active={index === askAiModelHighlight}
-                        type="button"
-                        role="option"
-                        aria-selected={entry.value === draftAskAiModel}
-                        onmousedown={(event) => event.preventDefault()}
-                        onmouseenter={() => { askAiModelHighlight = index; }}
-                        onclick={() => commitAskAiModel(entry.value)}
-                      >
-                        <span class="model-combobox__option-main">
-                          <span class="model-combobox__name">{entry.label}</span>
-                          {#if entry.sublabel}
-                            <span class="model-combobox__sub">{entry.sublabel}</span>
-                          {/if}
-                        </span>
-                        {#if entry.value === draftAskAiModel}
-                          <span class="model-combobox__check" aria-hidden="true">✓</span>
-                        {/if}
-                      </button>
-                    {/each}
-                  {:else}
-                    <span class="model-combobox__empty">
-                      {askAiModelQuery.trim().includes(":")
-                        ? `Press Enter to use "${askAiModelQuery.trim()}"`
-                        : "No matching models"}
-                    </span>
-                  {/if}
-                </div>
-              </Portal>
-            {/if}
-          </div>
-          {#if askAiModelsError}
+          <span class="field-label">Model override</span>
+          <ModelPickerMenu
+            label={askAiModelLabel(draftAskAiModel)}
+            title={askAiModelLabel(draftAskAiModel)}
+            ariaLabel="Ask AI model override"
+            block
+            disabled={!draftAskAiEnabled}
+            modelPool={settingsModelLoader.pool}
+            providers={draftAiProviders}
+            firstProvider={draftAiDefaultModel?.provider ?? null}
+            sentinelLabel="Global default model"
+            sentinelTitle="Follows the default model chosen in Providers"
+            sentinelSelected={draftAskAiModel === ""}
+            selectedProvider={null}
+            selectedModel={draftAskAiModel === "" ? null : draftAskAiModel}
+            exactIdPerProvider={false}
+            loading={settingsModelLoader.loading}
+            failures={settingsModelFailureRows}
+            onretry={() => void settingsModelLoader.load(settingsModelRetryTargets)}
+            portal
+            bind:open={askAiModelOpen}
+            onopen={() => void loadSettingsModels()}
+            onselect={(engine) => { draftAskAiModel = engine ? engine.model : ""; }}
+          />
+          {#if settingsModelsError}
             <p class="group-hint group-hint--warn">
-              Could not list PI models, so only the PI default is guaranteed. Set up PI and refresh status — you can still type a model id as provider:id.
+              Could not list models — check the providers above (key/base URL or endpoint). You can still type any model id.
             </p>
           {:else}
             <p class="group-hint">
-              Type to filter the models from your PI runtime. "Use PI default" follows the model configured in PI.
+              Optional override for Quick Recall and Chat. "Global default model" follows the default chosen in Providers; a pinned chat thread still wins over this.
             </p>
           {/if}
-          <div class="model-status" class:model-status--available={draftAskAiEnabled && piRuntimeStatus?.ready}>
+          <div class="model-status" class:model-status--available={askAiAvailable}>
             <div>
-              <div class="model-status__title">Ask AI {askAiStatusLabel(piRuntimeStatus)}</div>
-              <div class="model-status__meta">{askAiStatusDetail(piRuntimeStatus)}</div>
+              <div class="model-status__title">Ask AI {askAiAvailable ? "available" : "unavailable"}</div>
+              <div class="model-status__meta">{askAiStatusDetail}</div>
             </div>
-            <span class="model-status__pill">{draftAskAiEnabled && piRuntimeStatus?.ready ? "available" : "unavailable"}</span>
+            <span class="model-status__pill">{askAiAvailable ? "available" : "unavailable"}</span>
           </div>
-          {#if piRuntimeStatus}
-            <p class="group-hint">
-              PI: {piRuntimeStatus.ready
-                ? `ready via ${formatPiRuntimeSource(piRuntimeStatus.source)}${piRuntimeStatus.executablePath ? ` at ${piRuntimeStatus.executablePath}` : ""}`
-                : formatPiRuntimeReason(piRuntimeStatus)}
-            </p>
-            <p class="group-hint">
-              PI auth: {piRuntimeStatus.authJsonExists ? `found at ${piRuntimeStatus.authJsonPath}` : `not found at ${piRuntimeStatus.authJsonPath}`}.
-              Providers configured: {piProviderCount(piRuntimeStatus)}.
-            </p>
-            {#if draftAskAiEnabled && !piRuntimeStatus.ready}
-              <p class="group-hint group-hint--warn">Set up PI and configure a provider in PI auth, then refresh status. Do not enter provider credentials in Mnema.</p>
-            {/if}
-          {:else if piRuntimeLoading}
-            <p class="group-hint">Checking PI setup…</p>
-          {:else}
-            <p class="group-hint group-hint--warn">Refresh PI status before enabling Ask AI.</p>
+          {#if askAiAvailabilityError}
+            <p class="error-text">{askAiAvailabilityError}</p>
           {/if}
           <div class="row-actions">
-            <button class="btn btn--ghost btn--sm" type="button" disabled={piRuntimeLoading} onclick={loadPiRuntimeStatus}>
-              {piRuntimeLoading ? "Checking" : "Refresh PI status"}
+            <button class="btn btn--ghost btn--sm" type="button" disabled={askAiAvailabilityLoading} onclick={() => { void loadAskAiAvailability(); void loadSettingsModels(); }}>
+              {askAiAvailabilityLoading ? "Checking" : "Refresh"}
             </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Card: User Context (continuous derivation — issue #88) ─────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">User Context</h2>
+          <p class="card__subtitle">
+            A private, on-device understanding of your activity, derived continuously from your
+            capture history by the default model. High-consent and off by default.
+          </p>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <span class="group-label">Continuous derivation</span>
+        <div class="settings-stack">
+          <Switch
+            bind:checked={draftUserContextEnabled}
+            label="Derive context continuously"
+            description="Let Mnema build a private, on-device understanding of your activity by deriving from your capture history in the background, 24/7. Distinct from Ask AI — this is the high-consent continuous worker, off by default. Needs a provider and default model configured above."
+          />
+          <div class="privacy-disclosure">
+            <p>While on, the default model runs over your redacted screen text and transcripts as a background trickle to derive Activities and Conclusions. With a cloud default that means continuous outbound egress billed to your key; a local default keeps everything on this machine.</p>
+            <p>The derived understanding deliberately outlives raw-capture retention. Turning this off pauses derivation; it does not erase what was already learned — use Wipe User Context below for that.</p>
+          </div>
+          <div
+            class="model-status"
+            class:model-status--available={userContextStatus?.engineAvailable}
+          >
+            <div>
+              <div class="model-status__title">
+                {userContextStatus?.engineAvailable ? "Deriving Activities" : "Derivation paused"}
+              </div>
+              <div class="model-status__meta">
+                {#if userContextStatus}
+                  {userContextStatus.activityCount}
+                  {userContextStatus.activityCount === 1 ? "Activity" : "Activities"} ·
+                  {userContextStatus.conclusionCount}
+                  {userContextStatus.conclusionCount === 1 ? "Conclusion" : "Conclusions"} ·
+                  last run {formatLastDerived(userContextStatus.lastDerivedAtMs)}
+                  {#if !userContextStatus.engineAvailable}
+                    · {aiRuntimeReasonLabel(userContextStatus.reason)}
+                  {/if}
+                {:else}
+                  Loading…
+                {/if}
+              </div>
+            </div>
+            <span class="model-status__pill">
+              {userContextStatus?.engineAvailable ? "active" : "paused"}
+            </span>
+          </div>
+
+          {#if userContextStatus?.backfilling}
+            <p class="group-hint" aria-live="polite">
+              Building your understanding… deriving from your history in the background.
+            </p>
+          {:else if userContextStatus && userContextStatus.activityCount > 0}
+            <p class="group-hint">
+              Your understanding is up to date for the covered window.
+            </p>
+          {/if}
+
+          {#if userContextStatus}
+            <p class="group-hint">
+              ≈ {userContextStatus.tokenUsage.totalTokens.toLocaleString()} tokens used,
+              cumulative across {userContextStatus.tokenUsage.runCount}
+              derivation {userContextStatus.tokenUsage.runCount === 1 ? "pass" : "passes"}
+              (estimated from text length, not a billed count).
+            </p>
+          {/if}
+
+          {#if distillationWithheldLine(userContextStatus?.lastDistillation)}
+            <p class="group-hint">
+              {distillationWithheldLine(userContextStatus?.lastDistillation)}
+            </p>
+          {/if}
+
+          {#if userContextStatusError}
+            <p class="error-text">{userContextStatusError}</p>
+          {/if}
+
+          <div class="settings-divider"></div>
+
+          <div class="settings-group">
+            <span class="group-label">Derivation Budget</span>
+            <div class="settings-stack">
+              {#if userContextCloudDefault}
+                <RadioGroup
+                  value={draftUserContextBudgetTier}
+                  onValueChange={(value) =>
+                    (draftUserContextBudgetTier = value as DerivationBudgetTier)}
+                  label="Intensity"
+                  options={[
+                    {
+                      value: "light",
+                      label: "Light",
+                      description: "Slowest pacing, fewest tokens. Understanding fills in gradually.",
+                    },
+                    {
+                      value: "balanced",
+                      label: "Balanced",
+                      description: "Moderate pacing and token spend. A sensible default.",
+                    },
+                    {
+                      value: "thorough",
+                      label: "Thorough",
+                      description: "Fastest pacing, most tokens. Covers your history sooner.",
+                    },
+                  ]}
+                />
+                <p class="group-hint">
+                  Paces background work over time so tokens are spent as a trickle, never a
+                  one-time bill. A higher tier covers more of your history per pass.
+                </p>
+              {:else}
+                <p class="group-hint">
+                  Budget tiers apply to a cloud default model. A local default uses fixed
+                  background pacing — no token spend, so there is no intensity knob to choose.
+                </p>
+              {/if}
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <span class="group-label">History Backfill</span>
+            <div class="settings-stack">
+              <p class="group-hint">
+                Newest history is derived first. By default Mnema reaches back about
+                {draftUserContextBackfillWindowDays}
+                {draftUserContextBackfillWindowDays === 1 ? "day" : "days"}; recent activity
+                drives your current understanding.
+              </p>
+              <Switch
+                bind:checked={draftUserContextBackfillGoDeeper}
+                label="Go deeper — derive all of history"
+                description="Extend backfill past the recent window to your entire history. Increases token spend over time (still a background trickle, not a one-time bill)."
+              />
+            </div>
+          </div>
+
+          <div class="row-actions">
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              disabled={userContextRunNowRunning || !userContextStatus?.engineAvailable}
+              onclick={runUserContextDerivationNow}
+            >
+              {userContextRunNowRunning ? "Deriving" : "Run derivation now"}
+            </button>
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              onclick={refreshUserContext}
+            >
+              Refresh
+            </button>
+          </div>
+
+          {#if userContextRunNowMessage}
+            <p class="group-hint" aria-live="polite">{userContextRunNowMessage}</p>
+          {/if}
+
+          <div class="user-context-wipe">
+            <p class="group-hint">
+              This derived understanding deliberately outlives your raw-capture
+              Retention Policy window — Mnema can keep what it learned about you
+              long after the recordings it learned from have aged out. Wipe User
+              Context is the only control that clears it.
+            </p>
+            <div class="row-actions">
+              <button
+                class="btn btn--ghost btn--sm user-context-wipe__btn"
+                type="button"
+                disabled={userContextWiping}
+                onclick={wipeUserContext}
+              >
+                {userContextWiping ? "Wiping…" : "Wipe User Context"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -6852,93 +7753,6 @@
     color: var(--app-text-muted);
   }
 
-  /* Editable, filterable model picker (combobox): a text input over a floating
-     listbox panel, matching the App Privacy Exclusion combobox idiom. */
-  .model-combobox {
-    position: relative;
-    min-width: 0;
-  }
-
-  .model-combobox__input {
-    width: 100%;
-  }
-
-  /* Positioning (position/top/left/width) is supplied inline because the panel
-     is portaled to <body>; only its appearance lives here. */
-  .model-combobox__panel {
-    z-index: 9999;
-    display: flex;
-    max-height: 260px;
-    flex-direction: column;
-    gap: 2px;
-    overflow-y: auto;
-    padding: 4px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
-    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-bg) 34%, transparent);
-  }
-
-  .model-combobox__option {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 7px 9px;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text);
-    font-family: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .model-combobox__option--active,
-  .model-combobox__option:hover {
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
-  }
-
-  .model-combobox__option-main {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .model-combobox__name {
-    overflow: hidden;
-    color: var(--app-text-strong);
-    font-size: 12px;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .model-combobox__sub {
-    overflow: hidden;
-    color: var(--app-text-faint);
-    font-size: 10px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .model-combobox__check {
-    flex: 0 0 auto;
-    color: var(--app-accent);
-    font-size: 12px;
-    font-weight: 800;
-  }
-
-  .model-combobox__empty {
-    padding: 10px;
-    color: var(--app-text-faint);
-    font-size: 11px;
-    font-style: italic;
-  }
-
   .model-status {
     display: flex;
     align-items: center;
@@ -7070,6 +7884,22 @@
     margin: 0;
     padding-left: 18px;
     color: var(--app-text-muted);
+  }
+
+  .ai-runtime-raw {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 4%, transparent);
+    color: var(--app-text-muted);
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 160px;
+    overflow: auto;
   }
 
   .delete-confirmation {
@@ -7901,6 +8731,52 @@
     gap: 8px;
   }
 
+  /* Connected AI providers (ADR 0034): one bordered row per provider kind,
+     holding its endpoint/base-URL and key controls. */
+  .provider-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .provider-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface-subtle);
+  }
+  .provider-row__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .provider-row__name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--app-text);
+  }
+  .provider-row__tag {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 1px 6px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    color: var(--app-text-muted);
+  }
+  .provider-row__remove {
+    margin-left: auto;
+  }
+
   .grant-row {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
@@ -7990,6 +8866,29 @@
 
   .btn--danger:not(:disabled):hover {
     background: var(--app-danger-bg);
+    border-color: var(--app-danger);
+  }
+
+  /* ── Wipe User Context (destructive end of the User Context block) ── */
+  .user-context-wipe {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--app-border-subtle, var(--app-border));
+  }
+
+  /* A subtly destructive ghost button: ghost shape, danger-tinted text so it
+     reads as a recovery/destructive control without the full filled-danger
+     weight of a Delete button. */
+  .user-context-wipe__btn {
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+
+  .user-context-wipe__btn:not(:disabled):hover {
+    background: var(--app-danger-bg-soft);
     border-color: var(--app-danger);
   }
 
@@ -8281,6 +9180,44 @@
   }
 
   .privacy-disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  /* Cloud-egress consent: a warn-tinted callout placed right beside the engine
+     picker, shown only for the cloud engine kind. Uses the shared --app-warn
+     tokens so it reads as a "this sends data off-device" disclosure rather than
+     a neutral surface note. */
+  .cloud-egress-disclosure {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-warn) 8%, transparent);
+  }
+
+  .cloud-egress-disclosure__icon {
+    color: var(--app-warn);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .cloud-egress-disclosure__body {
+    display: grid;
+    gap: 4px;
+  }
+
+  .cloud-egress-disclosure__body strong {
+    color: var(--app-warn);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+
+  .cloud-egress-disclosure__body p {
     margin: 0;
     color: var(--app-text-muted);
     font-size: 11px;

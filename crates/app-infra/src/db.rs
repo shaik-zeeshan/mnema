@@ -129,3 +129,53 @@ async fn has_pending_migrations(pool: &SqlitePool) -> Result<bool> {
         .filter(|migration| !migration.migration_type.is_down_migration())
         .any(|migration| !applied_versions.contains(&migration.version)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(future)
+    }
+
+    /// The full embedded migration chain applies cleanly against a fresh
+    /// (unencrypted, in-memory) SQLite database. This exercises every
+    /// `00NN_*.sql` — including 0024's `ALTER TABLE ... ADD COLUMN` and the new
+    /// `user_context_confidence_history` table — so a malformed migration fails
+    /// loudly here rather than at app startup.
+    #[test]
+    fn embedded_migrations_apply_to_fresh_database() {
+        block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            MIGRATOR.run(&pool).await.expect("migrations should apply");
+
+            // 0024 added the confidence-history table.
+            let history_exists: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'user_context_confidence_history'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("query sqlite_master");
+            assert_eq!(history_exists, 1, "confidence-history table should exist");
+
+            // 0024 added the last_decayed_at_ms column to user_context_conclusions.
+            let column_exists: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('user_context_conclusions') \
+                 WHERE name = 'last_decayed_at_ms'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("query pragma_table_info");
+            assert_eq!(column_exists, 1, "last_decayed_at_ms column should exist");
+        });
+    }
+}

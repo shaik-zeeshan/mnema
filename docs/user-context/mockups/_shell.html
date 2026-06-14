@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<!--
+  _shell.html — CANONICAL SHARED SHELL for every Insights surface mockup.
+
+  The chrome is now a TOP TAB BAR (.subnav), not a left rail: a slim horizontal
+  sub-surface nav sits directly under the titlebar and content runs full-width.
+  The sub-surface switcher (.subnav-tabs > .subnav-tab) is a SEGMENTED PILL
+  CONTROL — mirroring the titlebar Timeline/Insights toggle, with a filled accent
+  active segment — styled entirely in app.css (no per-page markup changes).
+
+  HOW TO USE (surface agents):
+    1. Copy the REFERENCE MARKUP block below (verbatim) into your surface page
+       (e.g. overview.html).
+    2. Set the <title>.
+    3. In the .subnav-tabs, mark ONLY your tab .active (and add
+       aria-current="page" to it); leave the others plain.
+    4. Pick the engine-status variant that fits your surface (ON or OFF) — keep
+       only ONE in your page. Both are shown below for reference.
+    5. Replace ONLY the contents between the
+         <!== SURFACE CONTENT START ==>  ...  <!== SURFACE CONTENT END ==>
+       markers inside <main class="insights-main">.
+    6. Do NOT edit the titlebar, .subnav markup, or the tab links/order. Keep all
+       colors token-driven (no hardcoded hex).
+
+  The reference block below (inside an HTML comment) is the exact markup; an
+  identical LIVE copy follows so this file itself renders as a navigable shell.
+-->
+
+<!-- ============================================================================
+  REFERENCE MARKUP (copy verbatim):
+
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mnema · Insights · YOUR SURFACE</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div class="app-window">
+      <header class="titlebar">
+        <div class="titlebar-left">
+          <div class="traffic-lights">
+            <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+          </div>
+          <span class="wordmark">mnema</span>
+        </div>
+        <div class="surface-toggle">
+          <button type="button">Timeline</button>
+          <button type="button" class="active" aria-current="page">Insights</button>
+        </div>
+        <div class="titlebar-right">
+          <span class="status-chip"><span class="dot"></span>idle</span>
+          <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+        </div>
+      </header>
+
+      <div class="app-body">
+        <div class="insights">
+          <nav class="subnav">
+            <div class="subnav-tabs">
+              <!-- mark ONLY your tab .active + aria-current="page" -->
+              <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
+              <a class="subnav-tab" href="subjects-index.html">Subjects</a>
+              <a class="subnav-tab" href="context.html">Context</a>
+              <a class="subnav-tab" href="chat.html">Chat</a>
+            </div>
+            <div class="subnav-meta">
+              <div class="subnav-search">
+                <span class="subnav-search-glyph">⌕</span>
+                <span class="subnav-search-text">Jump to a subject or ask…</span>
+                <span class="kbd">⌘K</span>
+              </div>
+              <!-- ENGINE ON variant: -->
+              <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+
+              <!-- ENGINE OFF variant (use one or the other):
+              <span class="engine-status engine-status--off"><span class="dot"></span>Engine off · <a class="engine-status-enable">Enable</a></span>
+              -->
+            </div>
+          </nav>
+
+          <main class="insights-main">
+            <!== SURFACE CONTENT START ==>
+            <!-- Drill-in surfaces (e.g. a Subject detail) begin with a breadcrumb: -->
+            <!--
+            <div class="breadcrumb"><a class="breadcrumb-back" href="subjects-index.html">‹ back</a><a href="subjects-index.html">Subjects</a><span class="sep">/</span><span class="current">Apple silicon</span></div>
+            -->
+            ...your surface body here...
+            <!== SURFACE CONTENT END ==>
+          </main>
+        </div>
+      </div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+  </html>
+============================================================================ -->
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Insights · Shared shell</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">mnema</span>
+      </div>
+      <div class="surface-toggle">
+        <button type="button">Timeline</button>
+        <button type="button" class="active" aria-current="page">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip"><span class="dot"></span>idle</span>
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <div class="insights">
+        <nav class="subnav">
+          <div class="subnav-tabs">
+            <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
+            <a class="subnav-tab" href="subjects-index.html">Subjects</a>
+            <a class="subnav-tab" href="context.html">Context</a>
+            <a class="subnav-tab" href="chat.html">Chat</a>
+          </div>
+          <div class="subnav-meta">
+            <div class="subnav-search">
+              <span class="subnav-search-glyph">⌕</span>
+              <span class="subnav-search-text">Jump to a subject or ask…</span>
+              <span class="kbd">⌘K</span>
+            </div>
+            <!-- ENGINE ON variant (default) -->
+            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+            <!-- ENGINE OFF variant (shown here for reference; in a real surface keep only one):
+            <span class="engine-status engine-status--off"><span class="dot"></span>Engine off · <a class="engine-status-enable">Enable</a></span>
+            -->
+          </div>
+        </nav>
+
+        <main class="insights-main">
+          <!-- ============================================================
+               SURFACE CONTENT START — surface agents replace everything
+               between these markers with their unique body.
+               ============================================================ -->
+          <div class="card">
+            <div class="section-title">Shared shell template</div>
+            <p class="muted" style="margin:8px 0 0;">
+              This is the canonical shell. Copy the reference markup at the top of
+              <code>_shell.html</code> into your surface page, mark your
+              <code>.subnav-tab</code> active, and fill only this
+              <code>.insights-main</code> region.
+            </p>
+          </div>
+          <!-- ============================================================
+               SURFACE CONTENT END
+               ============================================================ -->
+        </main>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
