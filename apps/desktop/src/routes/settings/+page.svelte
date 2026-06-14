@@ -1,7 +1,8 @@
 <script lang="ts">
   import { page } from "$app/stores";
   import { tick, untrack } from "svelte";
-  import { Portal } from "bits-ui";
+  import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
+  import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { ask, confirm } from "@tauri-apps/plugin-dialog";
@@ -35,8 +36,6 @@
   import { setAppearance } from "$lib/theme.svelte";
   import type {
     ActivityMode,
-    AiRuntimeModel,
-    AiRuntimeModelsResult,
     AppearanceSetting,
     CaptureSupport,
     GeneralAppLogStatus,
@@ -303,128 +302,18 @@
       : 0,
   );
   // Ask AI model override (`access.askAiModel`) — governs Quick Recall AND
-  // Chat. Empty string means "follow the global default model". `askAiModels`
-  // is the merged provider-tagged pool from ai_runtime_list_models.
+  // Chat. Empty string means "follow the global default model". The model pool
+  // comes from the shared `settingsModelLoader` (both AI pickers list the same
+  // connected providers); the picker UI lives in <ModelPickerMenu>.
   let draftAskAiModel = $state("");
-  let askAiModels = $state<AiRuntimeModel[]>([]);
-  let askAiModelsLoading = $state(false);
-  let askAiModelsError = $state<string | null>(null);
-  // Editable combobox state: the text the user types to filter, whether the
-  // dropdown is open, and the keyboard-highlighted row. The panel is portaled to
-  // <body> and fixed-positioned (computed from the input rect) so no overflow or
-  // transform ancestor in the settings layout can clip it.
+  // Open state, bound to the picker so a settings/availability change can't
+  // strand it open.
   let askAiModelOpen = $state(false);
-  let askAiModelQuery = $state("");
-  let askAiModelHighlight = $state(0);
-  let askAiModelInputEl = $state<HTMLInputElement | null>(null);
-  let askAiModelPanelStyle = $state("");
 
-  function updateAskAiModelPanelPosition() {
-    const el = askAiModelInputEl;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    // Anchor the panel above the input: pin its bottom just over the input's top
-    // so it opens upward, away from the clipped bottom edge of the settings card.
-    askAiModelPanelStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; width: ${rect.width}px;`;
-  }
-
-  function openAskAiModelMenu() {
-    askAiModelOpen = true;
-    updateAskAiModelPanelPosition();
-  }
-
-  // While the menu is open, keep it pinned under the input as the page scrolls or
-  // resizes (capture phase catches scrolling inner containers, not just window).
-  $effect(() => {
-    if (!askAiModelOpen) return;
-    const handler = () => updateAskAiModelPanelPosition();
-    window.addEventListener("scroll", handler, true);
-    window.addEventListener("resize", handler);
-    return () => {
-      window.removeEventListener("scroll", handler, true);
-      window.removeEventListener("resize", handler);
-    };
-  });
-
+  // The committed override's trigger label: the sentinel for "" (follow the
+  // global default), else the bare model id.
   function askAiModelLabel(value: string): string {
-    if (!value) return "Global default model";
-    return value;
-  }
-
-  // All selectable entries: the "global default" sentinel plus every model id
-  // in the merged provider-tagged pool. The value stays a bare rig-core model
-  // id — the override rides on the global default model's provider.
-  let askAiModelEntries = $derived([
-    {
-      value: "",
-      label: "Global default model",
-      sublabel: "Follows the default model chosen in Providers",
-    },
-    ...askAiModels.map((model) => ({
-      value: model.id,
-      label: model.id,
-      sublabel: aiProviderLabelById(model.provider),
-    })),
-  ]);
-
-  // Substring filter on the typed query. When the query still equals the
-  // committed selection's label (e.g. just focused), show the whole list.
-  let askAiModelFiltered = $derived.by(() => {
-    const query = askAiModelQuery.trim().toLowerCase();
-    if (!query || query === askAiModelLabel(draftAskAiModel).toLowerCase()) {
-      return askAiModelEntries;
-    }
-    return askAiModelEntries.filter(
-      (entry) =>
-        entry.label.toLowerCase().includes(query) ||
-        entry.value.toLowerCase().includes(query),
-    );
-  });
-
-  // Keep the input text in sync with the committed selection while the dropdown
-  // is closed (covers settings/model loads that change the resolved label).
-  $effect(() => {
-    if (!askAiModelOpen) {
-      askAiModelQuery = askAiModelLabel(draftAskAiModel);
-    }
-  });
-
-  function commitAskAiModel(value: string) {
-    draftAskAiModel = value;
-    askAiModelQuery = askAiModelLabel(value);
-    askAiModelOpen = false;
-  }
-
-  function closeAskAiModelSoon() {
-    // Delay so an option's click (mousedown → click) lands before we close.
-    setTimeout(() => {
-      askAiModelOpen = false;
-      askAiModelQuery = askAiModelLabel(draftAskAiModel);
-    }, 120);
-  }
-
-  function handleAskAiModelKeydown(event: KeyboardEvent) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      openAskAiModelMenu();
-      askAiModelHighlight = Math.min(askAiModelHighlight + 1, askAiModelFiltered.length - 1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      askAiModelHighlight = Math.max(askAiModelHighlight - 1, 0);
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      const choice = askAiModelFiltered[askAiModelHighlight];
-      if (choice) {
-        commitAskAiModel(choice.value);
-      } else {
-        // No list match: accept any typed model id as a custom model.
-        const typed = askAiModelQuery.trim();
-        if (typed) commitAskAiModel(typed);
-      }
-    } else if (event.key === "Escape") {
-      askAiModelOpen = false;
-      askAiModelQuery = askAiModelLabel(draftAskAiModel);
-    }
+    return value ? value : "Global default model";
   }
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
@@ -613,216 +502,66 @@
     }
   }
 
-  // Global default model selection — an editable combobox over the merged
-  // provider-tagged pool from `ai_runtime_list_models` (every connected
-  // provider's models route). A typed id no provider advertises is still
-  // accepted on Enter (free-form entry stays allowed); it rides on the current
-  // default's provider, else the first connected provider.
-  let aiModels = $state<AiRuntimeModel[]>([]);
-  let aiModelsLoading = $state(false);
-  let aiModelsError = $state<string | null>(null);
+  // Global default model selection — chosen from the merged provider-tagged
+  // pool, listed incrementally by the shared loader (ONE call per provider, so a
+  // fast provider's models show immediately and a slow/unreachable one only
+  // delays its own slice instead of blocking the whole list). Shared with the
+  // Ask AI override picker — both list the same connected providers. The picker
+  // UI lives in <ModelPickerMenu>; this owns the committed `{provider, model}`.
+  const settingsModelLoader = new ModelPoolLoader();
+  // Open state, bound to the picker.
   let aiModelOpen = $state(false);
-  let aiModelQuery = $state("");
-  let aiModelHighlight = $state(0);
-  let aiModelInputEl = $state<HTMLInputElement | null>(null);
-  let aiModelPanelStyle = $state("");
+
+  // Failed-provider rows for both pickers' footers (labels resolved against the
+  // current draft provider set).
+  let settingsModelFailureRows = $derived(
+    settingsModelLoader.failures.map((f) => ({
+      provider: f.provider,
+      label: aiProviderLabelById(f.provider),
+      reason: f.reason,
+    })),
+  );
+  // The failed providers a Retry re-lists (leaving the loaded ones untouched).
+  let settingsModelRetryTargets = $derived(
+    draftAiProviders.filter((p) =>
+      settingsModelLoader.failures.some((f) => f.provider === p.id),
+    ),
+  );
+  // A short hint naming the failed providers (shown under each picker field).
+  let settingsModelsError = $derived(
+    settingsModelLoader.failures.length > 0
+      ? settingsModelLoader.failures
+          .map((f) => `${aiProviderLabelById(f.provider)}: ${f.reason}`)
+          .join("; ")
+      : null,
+  );
+
+  // List the connected providers via the shared loader. Re-listing on open
+  // reflects in-progress draft edits; concurrent calls collapse to one.
+  async function loadSettingsModels() {
+    await settingsModelLoader.load(draftAiProviders);
+  }
+
+  // When the connected-provider set changes, the cached pool is stale: drop it
+  // so the next open re-discovers (refresh in place if a picker is open now).
+  let aiProviderSignature = $derived(
+    draftAiProviders.map((p) => `${p.id}:${p.baseUrl ?? ""}`).join("|"),
+  );
+  $effect(() => {
+    aiProviderSignature; // track
+    untrack(() => {
+      settingsModelLoader.reset();
+      if (aiModelOpen || askAiModelOpen) void loadSettingsModels();
+    });
+  });
 
   function aiDefaultModelLabel(ref: AiEngineRef | null): string {
     if (!ref || ref.model.trim().length === 0) return "";
     return `${aiProviderLabelById(ref.provider)} · ${ref.model}`;
   }
 
-  // The committed selection's display text (empty when no default chosen).
+  // The committed selection's trigger text (empty when no default chosen).
   let aiModelValue = $derived(aiDefaultModelLabel(draftAiDefaultModel));
-
-  function updateAiModelPanelPosition() {
-    const el = aiModelInputEl;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    // Open upward, pinned just above the input, to clear the clipped card edge.
-    aiModelPanelStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; width: ${rect.width}px;`;
-  }
-
-  function openAiModelMenu() {
-    aiModelOpen = true;
-    updateAiModelPanelPosition();
-  }
-
-  $effect(() => {
-    if (!aiModelOpen) return;
-    const handler = () => updateAiModelPanelPosition();
-    window.addEventListener("scroll", handler, true);
-    window.addEventListener("resize", handler);
-    return () => {
-      window.removeEventListener("scroll", handler, true);
-      window.removeEventListener("resize", handler);
-    };
-  });
-
-  type AiDefaultModelEntry = {
-    /** The provider instance id this model is tagged with. */
-    provider: string;
-    model: string;
-    label: string;
-  };
-
-  let aiModelEntries = $derived(
-    aiModels.map((model) => ({
-      provider: model.provider,
-      model: model.id,
-      label: `${aiProviderLabelById(model.provider)} · ${model.id}`,
-    })),
-  );
-
-  let aiModelFiltered = $derived.by(() => {
-    const query = aiModelQuery.trim().toLowerCase();
-    if (!query || query === aiModelValue.toLowerCase()) return aiModelEntries;
-    return aiModelEntries.filter(
-      (entry) =>
-        entry.label.toLowerCase().includes(query) ||
-        entry.model.toLowerCase().includes(query),
-    );
-  });
-
-  // Keep the input text in sync with the committed selection while the dropdown
-  // is closed (covers settings loads that change the default model).
-  $effect(() => {
-    if (!aiModelOpen) {
-      aiModelQuery = aiModelValue;
-    }
-  });
-
-  function commitAiDefaultModel(entry: AiDefaultModelEntry | null) {
-    draftAiDefaultModel = entry
-      ? { provider: entry.provider, model: entry.model }
-      : null;
-    aiModelQuery = aiDefaultModelLabel(draftAiDefaultModel);
-    aiModelOpen = false;
-  }
-
-  // Commit whatever is typed. The committed display is "<Provider label> · <model
-  // id>", so a re-edit carries that prefix — strip a leading KNOWN provider
-  // instance label before treating the rest as the model id (otherwise the label
-  // compounds into the id on every commit). An exact pool match keeps its
-  // provider tag; a free-form id is attributed to the stripped prefix's provider
-  // instance when connected, else the current default's provider, else the first
-  // connected provider. Empty clears the default.
-  function commitTypedAiDefaultModel() {
-    let typed = aiModelQuery.trim();
-    if (!typed) {
-      commitAiDefaultModel(null);
-      return;
-    }
-    // Exact match against the full labelled pool entries (or a bare model id).
-    const loweredFull = typed.toLowerCase();
-    const fullMatch = aiModelEntries.find(
-      (entry) =>
-        entry.label.toLowerCase() === loweredFull ||
-        entry.model.toLowerCase() === loweredFull,
-    );
-    if (fullMatch) {
-      commitAiDefaultModel(fullMatch);
-      return;
-    }
-    // Strip a leading "<Provider instance label> · " prefix and remember its
-    // instance id. Instance labels can themselves contain " · " (kind · host),
-    // so match the LONGEST connected-instance label the text starts with rather
-    // than splitting on the first separator.
-    let prefixProvider: string | null = null;
-    let bestPrefixLen = 0;
-    for (const provider of draftAiProviders) {
-      const prefix = `${aiProviderInstanceLabel(provider)} · `.toLowerCase();
-      if (
-        typed.toLowerCase().startsWith(prefix) &&
-        prefix.length > bestPrefixLen
-      ) {
-        bestPrefixLen = prefix.length;
-        prefixProvider = provider.id;
-      }
-    }
-    if (prefixProvider !== null) {
-      typed = typed.slice(bestPrefixLen).trim();
-    }
-    if (!typed) {
-      commitAiDefaultModel(null);
-      return;
-    }
-    // Re-check the pool against the now-bare model id.
-    const lowered = typed.toLowerCase();
-    const match = aiModelEntries.find(
-      (entry) => entry.model.toLowerCase() === lowered,
-    );
-    if (match) {
-      commitAiDefaultModel(match);
-      return;
-    }
-    const provider =
-      prefixProvider !== null && connectedAiProviderIds.includes(prefixProvider)
-        ? prefixProvider
-        : draftAiDefaultModel !== null &&
-            connectedAiProviderIds.includes(draftAiDefaultModel.provider)
-          ? draftAiDefaultModel.provider
-          : connectedAiProviderIds[0];
-    if (!provider) return;
-    commitAiDefaultModel({ provider, model: typed, label: "" });
-  }
-
-  function closeAiModelSoon() {
-    // Delay so an option's click (mousedown → click) lands before we close.
-    setTimeout(() => {
-      aiModelOpen = false;
-      aiModelQuery = aiModelValue;
-    }, 120);
-  }
-
-  function handleAiModelKeydown(event: KeyboardEvent) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      openAiModelMenu();
-      aiModelHighlight = Math.min(aiModelHighlight + 1, aiModelFiltered.length - 1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      aiModelHighlight = Math.max(aiModelHighlight - 1, 0);
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      const choice = aiModelFiltered[aiModelHighlight];
-      if (choice) {
-        commitAiDefaultModel(choice);
-      } else {
-        commitTypedAiDefaultModel();
-      }
-    } else if (event.key === "Escape") {
-      aiModelOpen = false;
-      aiModelQuery = aiModelValue;
-    }
-  }
-
-  async function loadAiModels() {
-    if (aiModelsLoading) return;
-    aiModelsLoading = true;
-    aiModelsError = null;
-    try {
-      // Send the in-progress draft provider list so discovery reflects what the
-      // card shows right now instead of racing the autosave debounce.
-      const result = await invoke<AiRuntimeModelsResult>("ai_runtime_list_models", {
-        request: { providers: $state.snapshot(draftAiProviders) },
-      });
-      aiModels = result.models;
-      // A provider that failed to list (unreachable, missing key) no longer
-      // vanishes silently — name it so the picker's smaller pool is explained.
-      aiModelsError =
-        result.failures.length > 0
-          ? result.failures
-              .map((f) => `${aiProviderLabelById(f.provider)}: ${f.reason}`)
-              .join("; ")
-          : null;
-    } catch (err) {
-      aiModels = [];
-      aiModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    } finally {
-      aiModelsLoading = false;
-    }
-  }
 
   // User Context (derivation) drafts. Autosaved through the `user_context`
   // domain, mirroring the `ai_runtime` draft-state pattern. The settings card
@@ -1997,31 +1736,6 @@
       askAiAvailabilityError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       askAiAvailabilityLoading = false;
-    }
-  }
-
-  // The Ask AI override picker consumes the same merged provider-tagged pool
-  // (ai_runtime_list_models), built from the current draft provider list.
-  async function loadAskAiModels() {
-    if (askAiModelsLoading) return;
-    askAiModelsLoading = true;
-    askAiModelsError = null;
-    try {
-      const result = await invoke<AiRuntimeModelsResult>("ai_runtime_list_models", {
-        request: { providers: $state.snapshot(draftAiProviders) },
-      });
-      askAiModels = result.models;
-      askAiModelsError =
-        result.failures.length > 0
-          ? result.failures
-              .map((f) => `${aiProviderLabelById(f.provider)}: ${f.reason}`)
-              .join("; ")
-          : null;
-    } catch (err) {
-      askAiModels = [];
-      askAiModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    } finally {
-      askAiModelsLoading = false;
     }
   }
 
@@ -3795,7 +3509,7 @@
       loadBrokerGrants();
       loadMnemaCliStatus();
       void loadAskAiAvailability();
-      void loadAskAiModels();
+      void loadSettingsModels();
       void loadAiRuntimeStatus();
       void refreshUserContext();
     });
@@ -4623,79 +4337,37 @@
       <div class="settings-group">
         <span class="group-label">Default model</span>
         <div class="settings-stack">
-          <label class="field-label" for="ai-default-model">Global default model</label>
-          <div class="model-combobox">
-            <input
-              id="ai-default-model"
-              class="text-input model-combobox__input"
-              role="combobox"
-              aria-expanded={aiModelOpen}
-              aria-controls="ai-model-list"
-              aria-autocomplete="list"
-              autocomplete="off"
-              placeholder="Choose a default model"
-              disabled={draftAiProviders.length === 0}
-              bind:this={aiModelInputEl}
-              bind:value={aiModelQuery}
-              oninput={() => { openAiModelMenu(); aiModelHighlight = 0; }}
-              onfocus={(event) => { openAiModelMenu(); void loadAiModels(); event.currentTarget.select(); }}
-              onblur={closeAiModelSoon}
-              onkeydown={handleAiModelKeydown}
-            />
-            {#if aiModelOpen && draftAiProviders.length > 0}
-              <Portal>
-                <div
-                  class="model-combobox__panel"
-                  id="ai-model-list"
-                  role="listbox"
-                  style={aiModelPanelStyle}
-                >
-                  {#if aiModelsLoading}
-                    <span class="model-combobox__empty">Loading models…</span>
-                  {:else if aiModelFiltered.length > 0}
-                    {#each aiModelFiltered as entry, index (`${entry.provider}-${entry.model}`)}
-                      {@const selected =
-                        draftAiDefaultModel !== null &&
-                        entry.provider === draftAiDefaultModel.provider &&
-                        entry.model === draftAiDefaultModel.model}
-                      <button
-                        class="model-combobox__option"
-                        class:model-combobox__option--active={index === aiModelHighlight}
-                        type="button"
-                        role="option"
-                        aria-selected={selected}
-                        onmousedown={(event) => event.preventDefault()}
-                        onmouseenter={() => { aiModelHighlight = index; }}
-                        onclick={() => commitAiDefaultModel(entry)}
-                      >
-                        <span class="model-combobox__option-main">
-                          <span class="model-combobox__name">{entry.model}</span>
-                          <span class="model-combobox__sub">{aiProviderLabelById(entry.provider)}</span>
-                        </span>
-                        {#if selected}
-                          <span class="model-combobox__check" aria-hidden="true">✓</span>
-                        {/if}
-                      </button>
-                    {/each}
-                  {:else}
-                    <span class="model-combobox__empty">
-                      {aiModelQuery.trim()
-                        ? `Press Enter to use "${aiModelQuery.trim()}"`
-                        : "No models found"}
-                    </span>
-                  {/if}
-                </div>
-              </Portal>
-            {/if}
-          </div>
-          {#if aiModelsError}
+          <span class="field-label">Global default model</span>
+          <ModelPickerMenu
+            label={aiModelValue || "Choose a default model"}
+            title={aiModelValue || "Choose a default model"}
+            ariaLabel="Global default model"
+            block
+            placeholder={draftAiDefaultModel === null}
+            disabled={draftAiProviders.length === 0}
+            modelPool={settingsModelLoader.pool}
+            providers={draftAiProviders}
+            firstProvider={draftAiDefaultModel?.provider ?? null}
+            sentinelLabel="No default model"
+            sentinelSelected={draftAiDefaultModel === null}
+            selectedProvider={draftAiDefaultModel?.provider ?? null}
+            selectedModel={draftAiDefaultModel?.model ?? null}
+            loading={settingsModelLoader.loading}
+            failures={settingsModelFailureRows}
+            onretry={() => void settingsModelLoader.load(settingsModelRetryTargets)}
+            portal
+            bind:open={aiModelOpen}
+            onopen={() => void loadSettingsModels()}
+            onselect={(engine) => { draftAiDefaultModel = engine; }}
+          />
+          {#if settingsModelsError}
             <p class="group-hint group-hint--warn">
-              Could not list every provider's models — check keys/base URLs/endpoints above, then refocus the field to retry. You can still type any model id.
+              Could not list every provider's models — check keys/base URLs/endpoints above, then use Retry in the menu. You can still type any model id.
             </p>
-            <p class="error-text">{aiRuntimeReasonLabel(aiModelsError)}</p>
+            <p class="error-text">{aiRuntimeReasonLabel(settingsModelsError)}</p>
           {:else}
             <p class="group-hint">
-              One merged list across every connected provider. Type to filter, or type any model id — a typed id rides on the current default's provider.
+              One merged list across every connected provider. Open the menu to search, or type any model id and pick the provider to attribute it to.
             </p>
           {/if}
         </div>
@@ -4808,70 +4480,31 @@
               No cap: a single question can issue unlimited brokered queries into your retained capture history.
             </p>
           {/if}
-          <label class="field-label" for="ask-ai-model">Model override</label>
-          <div class="model-combobox">
-            <input
-              id="ask-ai-model"
-              class="text-input model-combobox__input"
-              role="combobox"
-              aria-expanded={askAiModelOpen}
-              aria-controls="ask-ai-model-list"
-              aria-autocomplete="list"
-              autocomplete="off"
-              placeholder="Global default model"
-              disabled={!draftAskAiEnabled}
-              bind:this={askAiModelInputEl}
-              bind:value={askAiModelQuery}
-              oninput={() => { openAskAiModelMenu(); askAiModelHighlight = 0; }}
-              onfocus={(event) => { openAskAiModelMenu(); if (!askAiModelsLoading && askAiModels.length === 0) void loadAskAiModels(); event.currentTarget.select(); }}
-              onblur={closeAskAiModelSoon}
-              onkeydown={handleAskAiModelKeydown}
-            />
-            {#if askAiModelOpen && draftAskAiEnabled}
-              <Portal>
-                <div
-                  class="model-combobox__panel"
-                  id="ask-ai-model-list"
-                  role="listbox"
-                  style={askAiModelPanelStyle}
-                >
-                  {#if askAiModelsLoading}
-                    <span class="model-combobox__empty">Loading models…</span>
-                  {:else if askAiModelFiltered.length > 0}
-                    {#each askAiModelFiltered as entry, index (entry.value)}
-                      <button
-                        class="model-combobox__option"
-                        class:model-combobox__option--active={index === askAiModelHighlight}
-                        type="button"
-                        role="option"
-                        aria-selected={entry.value === draftAskAiModel}
-                        onmousedown={(event) => event.preventDefault()}
-                        onmouseenter={() => { askAiModelHighlight = index; }}
-                        onclick={() => commitAskAiModel(entry.value)}
-                      >
-                        <span class="model-combobox__option-main">
-                          <span class="model-combobox__name">{entry.label}</span>
-                          {#if entry.sublabel}
-                            <span class="model-combobox__sub">{entry.sublabel}</span>
-                          {/if}
-                        </span>
-                        {#if entry.value === draftAskAiModel}
-                          <span class="model-combobox__check" aria-hidden="true">✓</span>
-                        {/if}
-                      </button>
-                    {/each}
-                  {:else}
-                    <span class="model-combobox__empty">
-                      {askAiModelQuery.trim()
-                        ? `Press Enter to use "${askAiModelQuery.trim()}"`
-                        : "No matching models"}
-                    </span>
-                  {/if}
-                </div>
-              </Portal>
-            {/if}
-          </div>
-          {#if askAiModelsError}
+          <span class="field-label">Model override</span>
+          <ModelPickerMenu
+            label={askAiModelLabel(draftAskAiModel)}
+            title={askAiModelLabel(draftAskAiModel)}
+            ariaLabel="Ask AI model override"
+            block
+            disabled={!draftAskAiEnabled}
+            modelPool={settingsModelLoader.pool}
+            providers={draftAiProviders}
+            firstProvider={draftAiDefaultModel?.provider ?? null}
+            sentinelLabel="Global default model"
+            sentinelTitle="Follows the default model chosen in Providers"
+            sentinelSelected={draftAskAiModel === ""}
+            selectedProvider={null}
+            selectedModel={draftAskAiModel === "" ? null : draftAskAiModel}
+            exactIdPerProvider={false}
+            loading={settingsModelLoader.loading}
+            failures={settingsModelFailureRows}
+            onretry={() => void settingsModelLoader.load(settingsModelRetryTargets)}
+            portal
+            bind:open={askAiModelOpen}
+            onopen={() => void loadSettingsModels()}
+            onselect={(engine) => { draftAskAiModel = engine ? engine.model : ""; }}
+          />
+          {#if settingsModelsError}
             <p class="group-hint group-hint--warn">
               Could not list models — check the providers above (key/base URL or endpoint). You can still type any model id.
             </p>
@@ -4891,7 +4524,7 @@
             <p class="error-text">{askAiAvailabilityError}</p>
           {/if}
           <div class="row-actions">
-            <button class="btn btn--ghost btn--sm" type="button" disabled={askAiAvailabilityLoading} onclick={() => { void loadAskAiAvailability(); void loadAskAiModels(); }}>
+            <button class="btn btn--ghost btn--sm" type="button" disabled={askAiAvailabilityLoading} onclick={() => { void loadAskAiAvailability(); void loadSettingsModels(); }}>
               {askAiAvailabilityLoading ? "Checking" : "Refresh"}
             </button>
           </div>
@@ -8118,93 +7751,6 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text-muted);
-  }
-
-  /* Editable, filterable model picker (combobox): a text input over a floating
-     listbox panel, matching the App Privacy Exclusion combobox idiom. */
-  .model-combobox {
-    position: relative;
-    min-width: 0;
-  }
-
-  .model-combobox__input {
-    width: 100%;
-  }
-
-  /* Positioning (position/top/left/width) is supplied inline because the panel
-     is portaled to <body>; only its appearance lives here. */
-  .model-combobox__panel {
-    z-index: 9999;
-    display: flex;
-    max-height: 260px;
-    flex-direction: column;
-    gap: 2px;
-    overflow-y: auto;
-    padding: 4px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
-    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-bg) 34%, transparent);
-  }
-
-  .model-combobox__option {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 7px 9px;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text);
-    font-family: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .model-combobox__option--active,
-  .model-combobox__option:hover {
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
-  }
-
-  .model-combobox__option-main {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .model-combobox__name {
-    overflow: hidden;
-    color: var(--app-text-strong);
-    font-size: 12px;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .model-combobox__sub {
-    overflow: hidden;
-    color: var(--app-text-faint);
-    font-size: 10px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .model-combobox__check {
-    flex: 0 0 auto;
-    color: var(--app-accent);
-    font-size: 12px;
-    font-weight: 800;
-  }
-
-  .model-combobox__empty {
-    padding: 10px;
-    color: var(--app-text-faint);
-    font-size: 11px;
-    font-style: italic;
   }
 
   .model-status {
