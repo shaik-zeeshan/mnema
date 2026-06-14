@@ -591,7 +591,26 @@ fn build_app_window(
     let built = builder.build().map_err(|err| err.to_string())?;
 
     #[cfg(target_os = "windows")]
-    register_windows_session_notifications(&built);
+    {
+        // `SetWindowSubclass` / `WTSRegisterSessionNotification` must run on the
+        // thread that owns the window's message queue. Tauri marshals the actual
+        // window creation onto the main event-loop thread, so for runtime opens
+        // (which build off a worker thread to dodge the WebView2 deadlock) the
+        // HWND is owned by the main thread while we are on a soon-to-exit worker.
+        // Hop back to the main thread to install the subclass; calling it
+        // cross-thread is not contractually guaranteed and can silently drop the
+        // sleep/wake + lock/unlock session notifications transient-liveness
+        // recovery depends on (ADR 0023). The synchronous startup open already
+        // runs on the main thread; `run_on_main_thread` just defers a tick there.
+        let built_for_registration = built.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            register_windows_session_notifications(&built_for_registration);
+        }) {
+            crate::native_capture::debug_log::log_warn(format!(
+                "failed to schedule Windows session-notification registration on the main thread: {error}"
+            ));
+        }
+    }
 
     #[cfg(target_os = "macos")]
     if let Some(radius) = config.macos_corner_radius {
