@@ -23,31 +23,40 @@ single `data-theme` flip. There is no server or build step; just open the files.
 
 A synthesis settled during design review:
 
-- **Overview = a narrative-first Briefing.** One full-width centered column led by **The read**
-  — an engine-tier AI-narrative hero that synthesizes the range *and* owns the headline numbers —
-  with the metric charts demoted below it into a quieter **Exhibits** supporting-evidence strip,
-  then the actionable **What changed / Needs attention** tail, and a docked **Ask** bar. The free
-  tier swaps the AI hero for a deterministic factual read plus an enable-the-engine invite.
-- **Chat is its own dedicated surface**, a Claude/ChatGPT-style conversation workspace — not
-  a popover. It shares one engine and one persistent conversation store with Quick Recall.
-- **Top segmented surface-switcher nav, no left rail.** Inside **Main**, a titlebar segmented
-  control switches **Timeline ⇄ Insights**; inside Insights, a slim horizontal sub-surface
-  tab bar (`.subnav`) switches Overview / Subjects / Context / Chat. Content runs full-width.
-- **One unified segmented-control pattern** for every toggle on the surface (Timeline/Insights,
-  the surface/sub-surface switcher, Day/Week/Month, Subjects sort). Keep that visual consistency.
+- **Overview = the Split Briefing.** Not a single centered column: a glanceable two-column
+  dashboard. A **full-width "The read"** AI-narrative hero spans the top — still the engine-tier
+  synthesis of the range *and* the single owner of the headline numbers (Tracked / Daily avg /
+  Deep focus % / Top category / per-day sparkbar) — then below it the demoted metric charts as
+  **Exhibits** on the **left** and a live **"what's moving" rail** (What changed / Subject movers /
+  Needs attention) on the **right**, sized to be taken in at a glance without scrolling. The hero's
+  **"Ask about this week →"** affordance opens a new chat in the sidebar (replacing the old docked
+  Ask bar). The free tier swaps the AI hero for a deterministic factual read plus an
+  enable-the-engine invite.
+- **Chat folds into the shared sidebar.** Chat is no longer a peer tab or its own bespoke-rail
+  surface: the conversation history (**+ New chat**, search, date-grouped threads) lives in the
+  shared left sidebar (the Claude/ChatGPT pattern), and the main pane shows the open transcript.
+  It still shares one engine and one persistent conversation store with Quick Recall (ADR 0031).
+- **Left-sidebar sub-navigation, not a horizontal tab bar.** Inside **Main**, the titlebar
+  segmented control still switches **Timeline ⇄ Insights** (the `.surface-toggle`, unchanged).
+  Inside Insights, a **left sidebar** (`.insights-sidebar`) — not the old horizontal `.subnav` —
+  hosts the sub-surface nav (Overview / Subjects / Context), the chat history, and the engine
+  status. The main pane runs beside it.
+- **One unified segmented-control pattern** still governs the remaining toggles (the
+  Timeline/Insights surface toggle, Day/Week/Month range, Subjects sort) — the Insights sub-nav is
+  now the sidebar, not a segmented tab bar. Keep that visual consistency across the toggles.
 
 ## 2. Files in this folder
 
 | File | What it is |
 | --- | --- |
 | `index.html` | Mockup index — links every surface, hosts the theme toggle. Not an app screen. |
-| `main-shell.html` | **#103** — Main window shell: Timeline/Insights surface toggle + a compact Overview preview. |
-| `overview.html` | **#104 + #105** — Overview sub-surface: AI read-hero (owns headline numbers) + demoted exhibits charts + dossier tail. |
-| `subjects-index.html` | **#106** — browsable grid of Subjects (each card = multiple Conclusions). |
+| `main-shell.html` | **#103** — Main window shell: Timeline/Insights surface toggle + the Insights left sidebar + a compact Overview preview. |
+| `overview.html` | **#104 + #105** — Overview sub-surface (the **Split Briefing**): full-width AI read-hero (owns headline numbers) over a two-column body — Exhibits charts (left) + a live what's-moving rail (right). |
+| `subjects-index.html` | **#106** — browsable Subjects view (**the Conviction view**): tiered by conviction/movement, with a multi-line sparkline-as-hero per subject and an inline-expand quick look. |
 | `subject.html` | **#106** — single Subject detail: per-Conclusion confidence trajectories + evidence inspector. |
 | `context.html` | **#107** — user-authored Context composer + authored-statement list. |
-| `chat.html` | Insights **Chat** sub-surface: persistent threads, graphical inline answers. |
-| `_shell.html` | **Shared shell template** — canonical titlebar + subnav chrome to copy into each surface. |
+| `chat.html` | Insights **Chat**: the open transcript in the main pane, with graphical inline answers; the thread history lives in the shared left sidebar (not a chat-only rail). |
+| `_shell.html` | **Shared shell template** — canonical titlebar + **left sidebar** chrome (the Insights sub-nav + chat history + engine status) to copy into each surface, not a horizontal subnav. |
 | `tokens.css` | **Shared** — design tokens, **mirroring** the app's real tokens (see §6); do not fork these into the build. |
 | `app.css` | **Shared** — all mockup component styles (cards, charts, segmented controls, chat, etc.). |
 | `app.js` | **Shared** — cosmetic-only behavior (theme toggle persistence). |
@@ -78,8 +87,9 @@ A synthesis settled during design review:
   full surface — the real surfaces live in the other files.
 - **Reuse.** Mount the **existing dashboard Timeline view verbatim** for the Timeline panel
   (do not rebuild it). Theme toggle → `ThemeModeControl.svelte`; any on/off toggles → `Switch.svelte`.
-- **Interactions / handoffs.** Titlebar segmented control swaps Timeline ⇄ Insights panels; the
-  Insights subnav routes to Overview / Subjects / Context / Chat.
+- **Interactions / handoffs.** Titlebar segmented control swaps Timeline ⇄ Insights panels; inside
+  Insights, the **left sidebar** routes the sub-surface nav (Overview / Subjects / Context) and hosts
+  the chat history + engine status.
 - **Domain / ADRs.** Main, Surface, Timeline, Insights. Engine is Rust-side rig-core
   ([`../adr/0028-ai-features-call-models-rust-side-via-rig-core.md`](../adr/0028-ai-features-call-models-rust-side-via-rig-core.md)).
   This rename spans existing desktop docs/code and must be reconciled with `apps/desktop/CONTEXT.md` when built.
@@ -96,22 +106,23 @@ A synthesis settled during design review:
     v1 taxonomy: Coding, Research, Communication, Design, Testing, Personal, Distractions…) and
     **Focus Classification** (focused-vs-distracted), **plus the dossier** = **Conclusion** values
     + the **Activity** narrative. Gated on **Reasoning Engine** opt-in.
-- **Layout — the Briefing (narrative-first, one centered ~60% column):**
+- **Layout — the Split Briefing (a glanceable two-column dashboard, no scrolling to take it in):**
   - **The read** (top, full-width hero, ENGINE). The engine's synthesis of the range — headline +
     prose — and the **single source of truth for the range's headline numbers** (Tracked, Daily avg,
     Deep focus %, Top category, a per-day sparkbar). Owning the numbers here kills the old duplication
-    between a lede and a "This week" tile.
-  - **Exhibits** (demoted below the hero, quieter supporting-evidence strip). The metric charts —
-    Time + Categories on the first row, Focus full-width on the second — with an "open category
-    detail →" affordance. They justify the narrative rather than being a co-equal dashboard. **Tier
-    semantics unchanged:** Time = FREE counting; Categories + Focus = ENGINE color.
-  - **What changed / Needs attention** (actionable tail, ENGINE). Conclusion deltas with Pin/Dismiss
-    + evidence, and uncategorized Activities with inline category correction.
-  - **Ask** (docked, sticky to the bottom). The "Ask about your history → Chat" bar.
+    between a lede and a "This week" tile. The hero carries an **"Ask about this week →" pill** that
+    opens a new chat in the sidebar (this replaces the old docked Ask bar).
+  - **Exhibits** (the demoted metric charts, **left column** below the hero). Time + Categories +
+    Focus as a quieter supporting-evidence strip, with an "open category detail →" affordance. They
+    justify the narrative rather than being a co-equal dashboard. **Tier semantics unchanged:** Time =
+    FREE counting; Categories + Focus = ENGINE color.
+  - **What's moving** (the live **right column** rail, ENGINE). What changed / Subject movers /
+    Needs attention — Conclusion deltas with Pin/Dismiss + evidence, and uncategorized Activities
+    with inline category correction.
 - **FREE / no-engine state:** the hero becomes a **deterministic factual read** (no AI) plus the free
-  headline numbers (Tracked, Daily avg, sparkbar only) and a single enable-the-engine CTA; Exhibits
-  show live Time with Categories/Focus locked. Overview is never empty — the old standalone no-engine
-  card is gone.
+  headline numbers (Tracked, Daily avg, sparkbar only) and a single enable-the-engine CTA; the left
+  Exhibits column shows live Time with Categories/Focus locked, and the right what's-moving rail is
+  ENGINE (locked too). Overview is never empty — the old standalone no-engine card is gone.
 - **Components / reuse.** Charts are **hand-built inline SVG/CSS — no chart library** (on-brand;
   keep it lightweight SVG in the real build). Use `SearchResultCard.svelte` /
   `AnswerSourceCard.svelte` wherever capture references appear.
@@ -123,14 +134,39 @@ A synthesis settled during design review:
 - **ADRs.** [`0028`](../adr/0028-ai-features-call-models-rust-side-via-rig-core.md),
   [`0030`](../adr/0030-user-context-sensitive-category-guardrail.md) (sensitive categories never surfaced).
 
-### Subjects index — `subjects-index.html` (#106)
+### Subjects index — `subjects-index.html` (#106, the Conviction view)
 
-- **Data / tier.** ENGINE. A **Subject** is a **browsable entity**, not a tag. Each card surfaces
-  **multiple individual Conclusions** about the subject — **never a single rolled-up sentiment score**.
-- **Components / reuse.** Card styling akin to `SearchResultCard.svelte`. Sort segmented control
-  (Most active / Recently moved / A–Z) follows the unified segmented-control pattern.
-- **Interactions / handoffs.** Each card drills into `subject.html`. Faded subjects (below the
-  display floor) are kept for history. Pin protects from decay; Dismiss is a high-bar resurface.
+- **Data / tier.** ENGINE. A **Subject** is a **browsable entity**, not a tag. Each subject surfaces
+  **multiple individual Conclusions** about it — **never a single rolled-up sentiment score**.
+- **The view (default).** The **Conviction view** replaces the old flat card grid: it organizes
+  subjects by **how firmly Mnema holds them and which way they're moving**, reading top → bottom in
+  **conviction tiers** — **Strongly held → Forming → Just taking shape → Fading · kept for history**.
+  Each subject's **multi-line sparkline (one faint line per Conclusion)** is the **hero** of its row;
+  lines climb for warming, flat for steady, descend for cooling, over a subtle display-floor line.
+  The header carries a **By conviction | By movement** segmented toggle (unified segmented-control
+  pattern, By conviction default), a subject count, and a small accent **"N views updated · refresh"**
+  realtime pill.
+- **Tier cutoffs = the engine's real thresholds** (`crates/app-infra/src/user_context/confidence.rs`):
+  faded below **`DISPLAY_FLOOR` = 0.15** (leaves the visible dossier as `faded`, history retained);
+  beliefs form at the **`INITIAL_BASE` = 0.30** formation base ("Just taking shape" sits there);
+  `FORMATION_BAR_EVIDENCE` = 2 supporting Activities to form at all; `FADE_HALF_LIFE_DAYS` = 30. The
+  tier a subject lands in is driven by its **top (highest-confidence) Conclusion**.
+- **Interactions / handoffs.** Clicking a **row** opens the full Subject detail page (`subject.html` —
+  the deep trajectory + evidence view); the **caret inline-expands a "quick look"** of the Conclusion
+  list. **Pin / Dismiss are per-Conclusion** (not per-subject), living in the expanded list — **Pin**
+  protects a Conclusion from decay, **Dismiss** rejects it (high-bar resurface, #108); a subject-level
+  pin would just be a convenience that pins all. Faded subjects are kept for history.
+- **Hero data + state.** Each arc uses real **Confidence History**, fetched **lazily per subject with
+  bounded concurrency**, with a **flat-baseline fallback** when history is missing (the pattern exists
+  in `Subjects.svelte` via `get_user_context_subject` trajectories; this mock synthesizes the arcs). A
+  **sparse/early state collapses to a single ungrouped list** until there are enough subjects to
+  justify tiers.
+- **Realtime.** The existing **`user_context_changed`** event, **debounced ~500ms**, buffers into the
+  accent refresh pill; apply on click/idle. **Never reorder a currently-expanded row**; let a focused
+  subject's arc extend live.
+- **Components / reuse.** `Sparkline.svelte` (hero arcs), `SubjectDetail.svelte` (the deep page);
+  invokes `list_user_context_conclusions` / `get_user_context_subject` / `user_context_set_pinned` /
+  `user_context_dismiss_conclusion` / `open_capture_result_in_main_window`. Charts are hand-built SVG.
 - **ADRs.** [`0028`](../adr/0028-ai-features-call-models-rust-side-via-rig-core.md),
   [`0030`](../adr/0030-user-context-sensitive-category-guardrail.md).
 
@@ -166,10 +202,12 @@ A synthesis settled during design review:
 - **ADRs.** [`0030`](../adr/0030-user-context-sensitive-category-guardrail.md),
   [`0028`](../adr/0028-ai-features-call-models-rust-side-via-rig-core.md).
 
-### Chat — `chat.html` (Insights Chat sub-surface)
+### Chat — `chat.html` (open transcript; history in the shared sidebar)
 
-- **Data / tier.** ENGINE. A persistent, searchable chat workspace (new chat, history list, search
-  over chats) answering questions over the user's history.
+- **Data / tier.** ENGINE. A persistent, searchable chat workspace answering questions over the
+  user's history. Chat is **not its own peer tab with a bespoke rail**: the conversation history
+  (**+ New chat**, search over chats, date-grouped threads) lives in the **shared Insights left
+  sidebar** present across all sub-surfaces, while the main pane shows the **open transcript**.
 - **Shared store.** Shares **one engine and one conversation store with Quick Recall**
   (`apps/desktop/src/routes/quick-recall/+page.svelte`) — two doors into the **same** persistent
   threads; a thread started in one resumes in the other. This **reverses ADR 0027's disk-ephemerality**:
@@ -203,9 +241,10 @@ Pin/Dismiss and the Derivation Budget tier are the only user controls over confi
 - **Theme.** Set via `data-theme` on `<html>`; a single flip fully re-skins (including the hand-built
   chart palette, which is token-driven). Both light and dark must look right — verify every surface in both.
 - **Typography.** Monospace font stack throughout (terminal aesthetic).
-- **Unified segmented control.** Every toggle uses the same segmented-control pattern: the
-  Timeline/Insights surface toggle, the Insights subnav, Day/Week/Month, Subjects sort. Keep them
-  visually identical; do not introduce a second toggle style.
+- **Unified segmented control.** The segmented-control pattern covers the surface/range toggles — the
+  Timeline/Insights surface toggle, Day/Week/Month, and Subjects sort — kept visually identical; do
+  not introduce a second toggle style. The Insights **sub-navigation is a left sidebar**
+  (`.insights-sidebar`), not a segmented tab bar, so it is **not** one of these segmented controls.
 - **Reusable components to build against:** `SearchResultCard.svelte` (evidence/result cards),
   `AnswerSourceCard.svelte` (Chat Answer Sources), `Switch.svelte` (on/off), `ThemeModeControl.svelte`
   (theme), all under `apps/desktop/src/lib/components/`. The Chat surface should share the Quick Recall

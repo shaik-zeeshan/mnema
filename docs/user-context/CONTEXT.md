@@ -66,7 +66,13 @@ own view on the **Insights** surface that shows every **Conclusion** about it, e
 (the founding "likes Apple, then cools" example). The Subject page shows the *individual* Conclusions
 and their trajectories, NOT a single rolled-up "sentiment score" (that would resurrect the structured
 sentiment model rejected in the **Conclusion** definition).
-_Avoid_: knowledge-graph node, single net sentiment score, rolled-up stance scalar, search-filter-only
+The **Subjects index** presents these as the **Conviction view**: subjects grouped into tiers by **how
+firmly Mnema holds them and which way they're moving** (Strongly held → Forming → Just taking shape →
+Fading, with the tier cut at the **Confidence Policy** thresholds — formation at ~0.30, faded below the
+~0.15 display floor), each row led by its **multi-line sparkline-as-hero** (one faint line per
+Conclusion) and an inline-expand quick look exposing per-**Conclusion** **Pin** (protect from decay) /
+**Dismiss** (reject) — never a single net score, never a flat browsable grid.
+_Avoid_: knowledge-graph node, single net sentiment score, rolled-up stance scalar, search-filter-only, flat browsable card grid
 
 **Confidence History**:
 A stored time-series of a **Conclusion**'s **Confidence** — periodic snapshots, not just the current
@@ -168,8 +174,12 @@ _Avoid_: dashboard, dashboard timeline, main view
 The other **Main** surface: the AI **workspace** for understanding yourself. A container hosting
 **sub-surfaces**, not a single view. v1 sub-surfaces are **Overview**, **Chat**, and **Context**;
 **Plugins**, **Automations**, and **Project** are deferred (the shell can grow into them, but they
-are not v1). Capture *inspection* still belongs to **Timeline**; **Insights** is read/understand/ask.
-_Avoid_: analytics dashboard, stats page, single informative view, profile page
+are not v1). Sub-surface navigation is a **left sidebar** (not a horizontal segmented tab bar): it
+routes **Overview** / **Subjects** / **Context** and also hosts the **Chat** history (new chat,
+search, date-grouped threads) and engine status, while the titlebar's segmented control still
+switches the **Timeline ⇄ Insights** surface. Capture *inspection* still belongs to **Timeline**;
+**Insights** is read/understand/ask.
+_Avoid_: analytics dashboard, stats page, single informative view, profile page, horizontal sub-surface tab bar
 
 **Overview** (sub-surface):
 The charts-and-dossier sub-surface of **Insights** (renamed from the earlier "informative view" to
@@ -178,27 +188,35 @@ avoid an Insights-containing-Insights name trap). Two tiers. The **free tier** i
 Engine** opt-in — is the *color*: the categorized/focus charts (driven by **Activity Category** and
 **Focus Classification**) plus the **User Context** dossier (**Conclusion** values + the **Activity**
 story). The engine "lights up" **Overview**; without it, it still works, just grayscale.
-The layout is **narrative-first** (a "Briefing"): one full-width column led by **"The read"** —
-the engine's synthesis of the range, and the single home for the headline numbers (tracked /
-daily avg / deep-focus % / top category / sparkbar) — with the metric charts **demoted** to a
-quieter **"Exhibits"** strip (Time / Categories / Focus) that supports the narrative, then the
-actionable tail (What changed / Needs attention) and a docked Ask bar. FREE swaps the AI hero for
-a deterministic factual read plus an enable-engine invite. This replaced the originally-approved
-"bento glance band + narrative story feed" (a 4-tile at-a-glance grid above a separate centered
-feed): the two-paradigm split read as disorganized and the lede's stat row duplicated the
-"This week" tile, so leading with the engine's read — interpretation first, charts as supporting
-evidence — matches what **Overview** is *for* and gives the headline numbers one source of truth.
-Only the information architecture changed; tier semantics are unchanged (FREE = counting from
-**Search Context**, ENGINE = categorized/focus + dossier).
-_Avoid_: insights tab, stats page, profile page, bento glance band, parallel widget grid + story feed
+The layout is the **Split Briefing** — a glanceable two-column dashboard, not a single centered
+column. A **full-width "The read"** AI-narrative hero spans the top — the engine's synthesis of the
+range and the single home for the headline numbers (tracked / daily avg / deep-focus % / top
+category / sparkbar) — and below it the metric charts are **demoted** to a quieter **"Exhibits"**
+strip (Time / Categories / Focus) in the **left** column, beside a live **"what's moving" rail**
+(What changed / Subject movers / Needs attention) in the **right** column, sized to be read at a
+glance without scrolling. The hero carries an **"Ask about this week →"** affordance that opens a
+new chat in the **Insights** left sidebar (it replaced the earlier docked Ask bar). FREE swaps the
+AI hero for a deterministic factual read plus an enable-engine invite. This evolved through two
+prior shapes: the originally-approved "bento glance band + narrative story feed" (a 4-tile grid
+above a separate feed — the two-paradigm split read as disorganized and its stat row duplicated the
+"This week" tile), then a narrative-first single centered "Briefing" column (interpretation first,
+charts as evidence). The **Split Briefing** keeps the engine's read leading and the headline numbers
+single-sourced, but spreads the supporting evidence and the what's-moving rail into two columns so
+the whole range is takeable in at a glance. Only the information architecture changed; tier
+semantics are unchanged (FREE = counting from **Search Context**, ENGINE = categorized/focus +
+dossier, including the right rail).
+_Avoid_: insights tab, stats page, profile page, bento glance band, parallel widget grid + story feed, single centered narrative column
 
 **Chat** (sub-surface):
-The conversational sub-surface of **Insights**: a persistent, searchable chat workspace (new chat,
-chat history list, search over chats) that answers questions over the user's history and renders
-**graphical answers** (the same chart/dossier components inline, not just prose). It shares one
-engine *and one conversation store* with **Quick Recall**: **Quick Recall** is the fast summon-anywhere
-door, **Chat** is the sit-down deep door, and the *same* conversation opens in either. Engine-tier.
-_Avoid_: ephemeral launcher chat, text-only answers, a second conversation store, a separate engine
+The conversational sub-surface of **Insights**: a persistent, searchable chat workspace that answers
+questions over the user's history and renders **graphical answers** (the same chart/dossier
+components inline, not just prose). It is **not a peer tab with its own bespoke rail** — the
+conversation history (new chat, search over chats, date-grouped threads) folds into the **shared
+Insights left sidebar** (the Claude/ChatGPT pattern, present across all sub-surfaces), and the main
+pane shows the open transcript. It still shares one engine *and one conversation store* with **Quick
+Recall**: **Quick Recall** is the fast summon-anywhere door, **Chat** is the sit-down deep door, and
+the *same* conversation opens in either. Engine-tier.
+_Avoid_: ephemeral launcher chat, text-only answers, a second conversation store, a separate engine, its own dedicated full surface with a bespoke chat-only rail
 
 **Context** (sub-surface):
 The "providing context to AI" sub-surface of **Insights**: **user-authored context** the user tells
