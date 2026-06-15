@@ -2,25 +2,29 @@
 <!--
   _shell.html — CANONICAL SHARED SHELL for every Insights surface mockup.
 
-  The chrome is now a TOP TAB BAR (.subnav), not a left rail: a slim horizontal
-  sub-surface nav sits directly under the titlebar and content runs full-width.
-  The sub-surface switcher (.subnav-tabs > .subnav-tab) is a SEGMENTED PILL
-  CONTROL — mirroring the titlebar Timeline/Insights toggle, with a filled accent
-  active segment — styled entirely in app.css (no per-page markup changes).
+  The chrome is a LEFT SIDEBAR (.insights-sidebar), not a top tab bar: a fixed
+  230px nav rail sits beside the content. Top → bottom the rail holds an INSIGHTS
+  eyebrow + engine indicator, the surface nav (Overview / Subjects / Context), a
+  divider, and the chat zone (a "+ New chat" CTA, a search field, and a
+  date-grouped chat history), then an engine footer. The content runs in
+  <main class="insights-main"> to the right of the rail. Everything is styled in
+  app.css (no per-page markup changes), and every color is token-driven so a
+  [data-theme="light"] flip fully reskins it.
 
   HOW TO USE (surface agents):
     1. Copy the REFERENCE MARKUP block below (verbatim) into your surface page
        (e.g. overview.html).
     2. Set the <title>.
-    3. In the .subnav-tabs, mark ONLY your tab .active (and add
-       aria-current="page" to it); leave the others plain.
-    4. Pick the engine-status variant that fits your surface (ON or OFF) — keep
+    3. In .sidebar-nav, mark ONLY your surface's row .active (and add
+       aria-current="page" to it); leave the others plain. On the Chat surface NO
+       nav row is active — the open chat row in the history is .active instead.
+    4. Pick the engine indicator variant that fits your surface (ON or OFF) — keep
        only ONE in your page. Both are shown below for reference.
     5. Replace ONLY the contents between the
          <!== SURFACE CONTENT START ==>  ...  <!== SURFACE CONTENT END ==>
        markers inside <main class="insights-main">.
-    6. Do NOT edit the titlebar, .subnav markup, or the tab links/order. Keep all
-       colors token-driven (no hardcoded hex).
+    6. Do NOT edit the titlebar or the .insights-sidebar markup / nav links/order.
+       Keep all colors token-driven (no hardcoded hex).
 
   The reference block below (inside an HTML comment) is the exact markup; an
   identical LIVE copy follows so this file itself renders as a navigable shell.
@@ -58,28 +62,52 @@
 
       <div class="app-body">
         <div class="insights">
-          <nav class="subnav">
-            <div class="subnav-tabs">
-              <!-- mark ONLY your tab .active + aria-current="page" -->
-              <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
-              <a class="subnav-tab" href="subjects-index.html">Subjects</a>
-              <a class="subnav-tab" href="context.html">Context</a>
-              <a class="subnav-tab" href="chat.html">Chat</a>
-            </div>
-            <div class="subnav-meta">
-              <div class="subnav-search">
-                <span class="subnav-search-glyph">⌕</span>
-                <span class="subnav-search-text">Jump to a subject or ask…</span>
-                <span class="kbd">⌘K</span>
-              </div>
+          <aside class="insights-sidebar">
+            <div class="sidebar-head">
+              <span class="sidebar-eyebrow">Insights</span>
               <!-- ENGINE ON variant: -->
-              <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
-
+              <span class="sidebar-engine"><span class="sidebar-engine-dot"></span>engine on</span>
               <!-- ENGINE OFF variant (use one or the other):
-              <span class="engine-status engine-status--off"><span class="dot"></span>Engine off · <a class="engine-status-enable">Enable</a></span>
+              <span class="sidebar-engine sidebar-engine--off"><span class="sidebar-engine-dot"></span>Engine off · <a class="sidebar-engine-enable">Enable</a></span>
               -->
             </div>
-          </nav>
+
+            <!-- mark ONLY your surface's nav row .active + aria-current="page";
+                 on the Chat surface, NO nav row is active — the open chat row is
+                 active instead. -->
+            <nav class="sidebar-nav">
+              <a class="sidebar-nav-row active" aria-current="page" href="overview.html"><span class="snav-label">Overview</span></a>
+              <a class="sidebar-nav-row" href="subjects-index.html"><span class="snav-label">Subjects</span><span class="snav-count">12</span></a>
+              <a class="sidebar-nav-row" href="context.html"><span class="snav-label">Context</span><span class="snav-count">4</span></a>
+            </nav>
+
+            <div class="sidebar-divider"></div>
+
+            <div class="sidebar-chatzone">
+              <a class="sidebar-newchat" href="chat.html"><span>+ New chat</span></a>
+              <div class="sidebar-search"><span>⌕</span><span>search chats…</span></div>
+
+              <!-- Each chat row links to chat.html; the active row is set on the
+                   Chat surface, not here. -->
+              <div class="sidebar-history">
+                <div class="sidebar-group-label">Today</div>
+                <a class="sidebar-chat-row" href="chat.html">Time spent this week</a>
+                <a class="sidebar-chat-row" href="chat.html">Apple silicon interest over time</a>
+                <a class="sidebar-chat-row" href="chat.html">Where did Tuesday go?</a>
+
+                <div class="sidebar-group-label">Yesterday</div>
+                <a class="sidebar-chat-row" href="chat.html">Rust learning progress</a>
+                <a class="sidebar-chat-row" href="chat.html">Most distracting apps</a>
+
+                <div class="sidebar-group-label">This week</div>
+                <a class="sidebar-chat-row" href="chat.html">Meeting load by day</a>
+                <a class="sidebar-chat-row" href="chat.html">Design vs build split</a>
+                <a class="sidebar-chat-row" href="chat.html">What did I read about WebGPU?</a>
+              </div>
+            </div>
+
+            <div class="insights-sidebar-foot"><span class="foot-dot"></span>engine · Claude</div>
+          </aside>
 
           <main class="insights-main">
             <!== SURFACE CONTENT START ==>
@@ -126,26 +154,52 @@
 
     <div class="app-body">
       <div class="insights">
-        <nav class="subnav">
-          <div class="subnav-tabs">
-            <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
-            <a class="subnav-tab" href="subjects-index.html">Subjects</a>
-            <a class="subnav-tab" href="context.html">Context</a>
-            <a class="subnav-tab" href="chat.html">Chat</a>
-          </div>
-          <div class="subnav-meta">
-            <div class="subnav-search">
-              <span class="subnav-search-glyph">⌕</span>
-              <span class="subnav-search-text">Jump to a subject or ask…</span>
-              <span class="kbd">⌘K</span>
-            </div>
+        <aside class="insights-sidebar">
+          <div class="sidebar-head">
+            <span class="sidebar-eyebrow">Insights</span>
             <!-- ENGINE ON variant (default) -->
-            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+            <span class="sidebar-engine"><span class="sidebar-engine-dot"></span>engine on</span>
             <!-- ENGINE OFF variant (shown here for reference; in a real surface keep only one):
-            <span class="engine-status engine-status--off"><span class="dot"></span>Engine off · <a class="engine-status-enable">Enable</a></span>
+            <span class="sidebar-engine sidebar-engine--off"><span class="sidebar-engine-dot"></span>Engine off · <a class="sidebar-engine-enable">Enable</a></span>
             -->
           </div>
-        </nav>
+
+          <!-- mark ONLY your surface's nav row .active + aria-current="page";
+               on the Chat surface, NO nav row is active — the open chat row is
+               active instead. -->
+          <nav class="sidebar-nav">
+            <a class="sidebar-nav-row active" aria-current="page" href="overview.html"><span class="snav-label">Overview</span></a>
+            <a class="sidebar-nav-row" href="subjects-index.html"><span class="snav-label">Subjects</span><span class="snav-count">12</span></a>
+            <a class="sidebar-nav-row" href="context.html"><span class="snav-label">Context</span><span class="snav-count">4</span></a>
+          </nav>
+
+          <div class="sidebar-divider"></div>
+
+          <div class="sidebar-chatzone">
+            <a class="sidebar-newchat" href="chat.html"><span>+ New chat</span></a>
+            <div class="sidebar-search"><span>⌕</span><span>search chats…</span></div>
+
+            <!-- Each chat row links to chat.html; the active row is set on the
+                 Chat surface, not here. -->
+            <div class="sidebar-history">
+              <div class="sidebar-group-label">Today</div>
+              <a class="sidebar-chat-row" href="chat.html">Time spent this week</a>
+              <a class="sidebar-chat-row" href="chat.html">Apple silicon interest over time</a>
+              <a class="sidebar-chat-row" href="chat.html">Where did Tuesday go?</a>
+
+              <div class="sidebar-group-label">Yesterday</div>
+              <a class="sidebar-chat-row" href="chat.html">Rust learning progress</a>
+              <a class="sidebar-chat-row" href="chat.html">Most distracting apps</a>
+
+              <div class="sidebar-group-label">This week</div>
+              <a class="sidebar-chat-row" href="chat.html">Meeting load by day</a>
+              <a class="sidebar-chat-row" href="chat.html">Design vs build split</a>
+              <a class="sidebar-chat-row" href="chat.html">What did I read about WebGPU?</a>
+            </div>
+          </div>
+
+          <div class="insights-sidebar-foot"><span class="foot-dot"></span>engine · Claude</div>
+        </aside>
 
         <main class="insights-main">
           <!-- ============================================================
@@ -157,7 +211,7 @@
             <p class="muted" style="margin:8px 0 0;">
               This is the canonical shell. Copy the reference markup at the top of
               <code>_shell.html</code> into your surface page, mark your
-              <code>.subnav-tab</code> active, and fill only this
+              <code>.sidebar-nav-row</code> active, and fill only this
               <code>.insights-main</code> region.
             </p>
           </div>
