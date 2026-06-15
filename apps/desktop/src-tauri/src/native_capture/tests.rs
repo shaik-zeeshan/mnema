@@ -44,6 +44,8 @@ use super::runtime::{
     CaptureSuspensionKind, PrivacyCaptureSuspension,
 };
 #[cfg(target_os = "macos")]
+use super::runtime::{CaptureSuspensionKind, PrivacyCaptureSuspension};
+#[cfg(target_os = "macos")]
 use super::segments::{
     apply_microphone_output_finalization, audio_duration_time_to_ms,
     audio_segment_started_at_unix_ms_for_file, audio_segment_window_from_duration_ms,
@@ -92,7 +94,7 @@ use capture_types::{
     default_audio_transcription_settings, default_inactivity_activity_mode,
     default_metadata_settings, default_microphone_vad_adapter, default_ocr_settings,
     default_preview_cache_ttl_seconds, default_privacy_settings, default_retention_policy,
-    default_speaker_analysis_settings, default_video_bitrate, AppearanceSetting,
+    default_speaker_analysis_settings, default_video_bitrate, AccessSettings, AppearanceSetting,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CaptureSources,
     CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
@@ -263,6 +265,7 @@ fn recording_settings_fixture() -> RecordingSettings {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -296,6 +299,7 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         audio_speech_detection: settings.audio_speech_detection,
         metadata: settings.metadata,
         privacy: settings.privacy,
+        access: settings.access,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -1640,6 +1644,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1684,6 +1689,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1724,6 +1730,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         audio_speech_detection: default_audio_speech_detection_settings(),
         metadata: default_metadata_settings(),
         privacy: default_privacy_settings(),
+        access: AccessSettings::default(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,

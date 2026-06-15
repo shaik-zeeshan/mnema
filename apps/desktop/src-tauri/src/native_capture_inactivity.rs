@@ -1005,6 +1005,7 @@ mod tests {
             audio_speech_detection: default_audio_speech_detection_settings(),
             metadata: default_metadata_settings(),
             privacy: default_privacy_settings(),
+            access: capture_types::AccessSettings::default(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

@@ -163,6 +163,7 @@ mod tests {
             audio_speech_detection: default_audio_speech_detection_settings(),
             metadata: default_metadata_settings(),
             privacy: default_privacy_settings(),
+            access: AccessSettings::default(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -173,6 +174,7 @@ mod tests {
 
         let json = serde_json::to_value(&settings).expect("settings should serialize");
 
+        assert_eq!(json["access"]["askAiEnabled"], false);
         assert_eq!(json["audioSpeechDetection"]["detector"], "silero");
         assert!(json.get("microphoneVadAdapter").is_none());
     }
@@ -346,6 +348,7 @@ mod tests {
                 audio_speech_detection: default_audio_speech_detection_settings(),
                 metadata: default_metadata_settings(),
                 privacy: default_privacy_settings(),
+                access: AccessSettings::default(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,

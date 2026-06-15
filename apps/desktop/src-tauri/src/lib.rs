@@ -1,5 +1,6 @@
 mod app_infra;
 mod app_updates;
+mod ask_ai;
 mod audio_transcription_models;
 mod broker_authorization_channel;
 mod cli_access;
@@ -51,6 +52,14 @@ struct BrokerOpenCaptureResultPayload {
     kind: String,
     frame_id: Option<i64>,
     audio_segment_id: Option<i64>,
+    /// Audio Search Result Anchor: the match span start within the segment (ms)
+    /// and the aligned frame id, so an audio handoff lands on the selected
+    /// transcript match instead of the segment start. Absent for the broker-URL
+    /// path, which only resolves a capture reference (kind/frame/segment id).
+    #[serde(default)]
+    span_start_ms: Option<i64>,
+    #[serde(default)]
+    aligned_frame_id: Option<i64>,
 }
 
 #[derive(Default)]
@@ -66,6 +75,31 @@ fn drain_pending_broker_open_capture_results(
         return Vec::new();
     };
     pending.drain(..).collect()
+}
+
+#[tauri::command]
+fn open_capture_result_in_main_window(
+    kind: String,
+    frame_id: Option<i64>,
+    audio_segment_id: Option<i64>,
+    span_start_ms: Option<i64>,
+    aligned_frame_id: Option<i64>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, BrokerOpenCaptureResultState>,
+) {
+    let payload = BrokerOpenCaptureResultPayload {
+        opaque_id: String::from("quick-recall"),
+        kind,
+        frame_id,
+        audio_segment_id,
+        span_start_ms,
+        aligned_frame_id,
+    };
+    if let Ok(mut pending) = state.pending.lock() {
+        pending.push_back(payload.clone());
+    }
+    let _ = windows::open_main_window(&app_handle);
+    let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
 }
 
 fn is_app_log_target(target: &str) -> bool {
@@ -111,6 +145,10 @@ async fn broker_payload_from_url(
         frame_id: capture_ref.frame_id,
         audio_segment_id: capture_ref.audio_segment_id,
         kind: capture_ref.kind,
+        // The broker-URL handoff resolves only a capture reference, so it carries
+        // no search-result anchor; the audio receiver falls back to the segment start.
+        span_start_ms: None,
+        aligned_frame_id: None,
     })
 }
 
@@ -341,6 +379,12 @@ pub fn run() {
             cli_access::get_cli_access_status,
             cli_access::install_cli,
             cli_access::reinstall_cli,
+            ask_ai::get_pi_runtime_status,
+            ask_ai::ask_ai_availability,
+            ask_ai::ask_ai_list_models,
+            ask_ai::ask_ai_start,
+            ask_ai::ask_ai_followup,
+            ask_ai::ask_ai_cancel,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,
@@ -435,6 +479,7 @@ pub fn run() {
             native_capture::update_inactivity_settings,
             native_capture::update_processing_settings,
             native_capture::update_developer_settings,
+            native_capture::update_access_settings,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,
@@ -450,12 +495,15 @@ pub fn run() {
             windows::open_settings_window_to_tab,
             windows::open_debug_window,
             windows::close_current_window,
+            windows::focus_quick_recall_window,
+            windows::quick_recall_suppress_blur_dismiss,
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
             drain_pending_broker_open_capture_results,
+            open_capture_result_in_main_window,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

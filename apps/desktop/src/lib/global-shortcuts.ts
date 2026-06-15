@@ -17,6 +17,7 @@ export type GlobalShortcutId =
   | "openSettings"
   | "openDebug"
   | "toggleMainWindow"
+  | "toggleQuickRecall"
   | "toggleSourceScreen"
   | "toggleSourceMicrophone"
   | "toggleSourceSystemAudio"
@@ -66,6 +67,13 @@ export const GLOBAL_SHORTCUTS: Record<GlobalShortcutId, ShortcutDefinition> = {
     id: "toggleMainWindow",
     label: "Show or hide Mnema",
     bindings: [{ key: "M", primary: true, alt: true }],
+    kind: "command",
+    scope: "global",
+  },
+  toggleQuickRecall: {
+    id: "toggleQuickRecall",
+    label: "Summon Quick Recall",
+    bindings: [{ key: "Space", primary: true, alt: true }],
     kind: "command",
     scope: "global",
   },

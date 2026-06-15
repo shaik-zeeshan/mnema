@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Mutex, MutexGuard,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
@@ -56,6 +56,31 @@ fn windows_power_broadcast_event(wparam: WPARAM) -> Option<WindowsPowerBroadcast
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
+const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
+// Emitted to the Quick Recall webview whenever the panel is dismissed (ordered
+// out / hidden). The webview is reused across summons rather than destroyed, so
+// the Svelte `onDestroy` teardown never runs on dismiss; the panel listens for
+// this to cancel any resident Ask AI PI session.
+const QUICK_RECALL_DISMISSED_EVENT: &str = "quick_recall_dismissed";
+
+// The Quick Recall surface is a non-activating NSPanel that emits a spurious
+// `Focused(false)` while AppKit promotes its webview to first responder on the
+// first summon. A blur within this grace window of the last summon is treated as
+// that transient setup blur, not a genuine click-away, so the freshly-summoned
+// launcher is not torn down out from under the user.
+const QUICK_RECALL_SUMMON_BLUR_GRACE: Duration = Duration::from_millis(300);
+
+// The wall-clock instant of the most recent Quick Recall summon, used to honor
+// the `QUICK_RECALL_SUMMON_BLUR_GRACE` window in the `Focused(false)` handler.
+static LAST_QUICK_RECALL_SUMMON: Mutex<Option<Instant>> = Mutex::new(None);
+
+// One-shot suppression of the very next Quick Recall blur-dismiss. The frontend
+// sets this (via `quick_recall_suppress_blur_dismiss`) immediately before opening
+// an answer link in the OS browser: activating the browser blurs the panel, and
+// without this flag that blur would dismiss the launcher and tear down the
+// in-flight Ask AI session the user is reading. Consumed by the next blur only,
+// so ordinary click-away dismissal is unaffected.
+static SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
 static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -77,6 +102,7 @@ enum AppWindow {
     Settings,
     CliAccessRequest,
     Debug,
+    QuickRecall,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -239,6 +265,19 @@ impl AppWindow {
                 shadow: true,
                 macos_corner_radius: Some(12.0),
             },
+            Self::QuickRecall => AppWindowConfig {
+                label: "quick-recall",
+                path: "quick-recall",
+                title: "mnema · Quick Recall",
+                inner_size: (820.0, 560.0),
+                min_inner_size: (520.0, 160.0),
+                gated_by_dev_options: false,
+                decorations: false,
+                overlay_title_bar: false,
+                transparent: true,
+                shadow: true,
+                macos_corner_radius: Some(12.0),
+            },
         }
     }
 
@@ -249,6 +288,7 @@ impl AppWindow {
             "settings" => Some(Self::Settings),
             "cli-access-request" => Some(Self::CliAccessRequest),
             "debug" => Some(Self::Debug),
+            "quick-recall" => Some(Self::QuickRecall),
             _ => None,
         }
     }
@@ -764,6 +804,318 @@ fn apply_macos_rounded_content_view(window: &WebviewWindow, radius: f64) {
     }
 }
 
+// ── Quick Recall non-activating NSPanel ────────────────────────────────
+// A plain NSWindow cannot become key while its owning app is inactive, so we
+// reclass the tao-created window as an NSPanel subclass that reports it can
+// become key, then give it the non-activating style mask + floating level +
+// all-Spaces collection behavior. Summoning makes it key WITHOUT activating
+// Mnema, matching Spotlight/Raycast.
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn quick_recall_panel_class() -> *const objc::runtime::Class {
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Class, Object, Sel, BOOL, YES};
+    use objc::{sel, sel_impl};
+    use std::sync::OnceLock;
+
+    static CLASS_PTR: OnceLock<usize> = OnceLock::new();
+    let ptr = *CLASS_PTR.get_or_init(|| {
+        extern "C" fn yes(_this: &Object, _cmd: Sel) -> BOOL {
+            YES
+        }
+
+        // Suppress NSPanel's built-in "Escape dismisses the panel" so the web
+        // layer owns the Escape key. By default an NSPanel closes when Escape
+        // reaches `cancelOperation:` via the responder chain — and WebKit forwards
+        // Escape there even when the page calls `preventDefault()` (Escape is a
+        // special key), so the whole Quick Recall window was closing instead of
+        // letting the launcher close just its open filter sub-surface first. With
+        // this no-op override, Escape stays in the web layer: the Filter Picker /
+        // Value List close themselves, and a plain-search Escape is closed by the
+        // shell's own `dismissQuickRecallOnEscape` window handler.
+        extern "C" fn cancel_operation(_this: &Object, _cmd: Sel, _sender: *mut Object) {}
+
+        let superclass = objc::class!(NSPanel);
+        let mut decl = ClassDecl::new("MnemaQuickRecallPanel", superclass)
+            .expect("failed to declare MnemaQuickRecallPanel class");
+        unsafe {
+            decl.add_method(
+                sel!(canBecomeKeyWindow),
+                yes as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+            decl.add_method(
+                sel!(canBecomeMainWindow),
+                yes as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+            decl.add_method(
+                sel!(cancelOperation:),
+                cancel_operation as extern "C" fn(&Object, Sel, *mut Object),
+            );
+        }
+        decl.register() as *const Class as usize
+    });
+    ptr as *const objc::runtime::Class
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn configure_quick_recall_panel(window: &WebviewWindow) {
+    use cocoa::base::{id, NO, YES};
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    const NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL: u64 = 1 << 7;
+    const NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
+    const NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT: u64 = 1 << 3;
+    const NS_WINDOW_COLLECTION_BEHAVIOR_FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
+    const NS_FLOATING_WINDOW_LEVEL: i64 = 3; // NSFloatingWindowLevel
+
+    unsafe extern "C" {
+        fn object_setClass(obj: id, cls: *const Class) -> *const Class;
+    }
+
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+
+    unsafe {
+        let ns_window = ns_window as id;
+        let _: () = msg_send![ns_window, setReleasedWhenClosed: NO];
+        object_setClass(ns_window, quick_recall_panel_class());
+
+        let mut style_mask: u64 = msg_send![ns_window, styleMask];
+        style_mask |= NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL;
+        let _: () = msg_send![ns_window, setStyleMask: style_mask];
+
+        let _: () = msg_send![ns_window, setLevel: NS_FLOATING_WINDOW_LEVEL];
+        let _: () = msg_send![
+            ns_window,
+            setCollectionBehavior: NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+                | NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT
+                | NS_WINDOW_COLLECTION_BEHAVIOR_FULL_SCREEN_AUXILIARY
+        ];
+        let _: () = msg_send![ns_window, setHidesOnDeactivate: NO];
+        let _: () = msg_send![ns_window, setBecomesKeyOnlyIfNeeded: NO];
+        let _: () = msg_send![ns_window, setFloatingPanel: YES];
+    }
+}
+
+// A non-activating panel is summoned while Mnema itself stays inactive, so the
+// first click into its WKWebView is an AppKit "first mouse". By default AppKit
+// swallows that click just to order the window forward, so the very first press
+// of a Quick Recall control (e.g. the Ask AI button) never reaches the web layer
+// and WebKit surfaces its context menu instead. Teaching the webview to return
+// YES from `acceptsFirstMouse:` delivers that click straight through as a normal
+// click.
+//
+// We add the method to the live webview class with `class_addMethod` rather than
+// swapping the instance's class via `object_setClass`: WKWebView relies on its
+// own class for KVO / dynamic-property resolution, and reclassing it trips an
+// `NSDynamicProperties` assertion (`NSDP_getComputedPropertyValue`). Adding a
+// method override leaves the class identity intact.
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn configure_quick_recall_webview(window: &WebviewWindow) {
+    use cocoa::base::{id, BOOL, YES};
+    use objc::runtime::{Class, Object, Sel};
+    use objc::{sel, sel_impl};
+    use std::os::raw::c_char;
+
+    extern "C" fn accepts_first_mouse(_this: &Object, _cmd: Sel, _event: *mut Object) -> BOOL {
+        YES
+    }
+
+    unsafe extern "C" {
+        fn object_getClass(obj: id) -> *mut Class;
+        fn class_addMethod(
+            cls: *mut Class,
+            name: Sel,
+            imp: extern "C" fn(&Object, Sel, *mut Object) -> BOOL,
+            types: *const c_char,
+        ) -> BOOL;
+    }
+
+    let _ = window.with_webview(|webview| unsafe {
+        let wv = webview.inner() as id;
+        if wv.is_null() {
+            return;
+        }
+        let class = object_getClass(wv);
+        if class.is_null() {
+            return;
+        }
+        // Objective-C type encoding: BOOL return (`c`), self (`@`), _cmd (`:`),
+        // NSEvent* argument (`@`). A no-op if the method is already present.
+        class_addMethod(
+            class,
+            sel!(acceptsFirstMouse:),
+            accepts_first_mouse,
+            c"c@:@".as_ptr(),
+        );
+    });
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn make_quick_recall_panel_key(window: &WebviewWindow) {
+    use cocoa::base::{id, nil};
+    use objc::{msg_send, sel, sel_impl};
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    unsafe {
+        let ns_window = ns_window as id;
+        let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
+    }
+}
+
+// Promote the WKWebView to the panel's first responder so keyboard focus (and the
+// search field's JS `.focus()`) actually lands. This must run *after* the webview
+// has loaded: on the first summon the panel is made key while the webview is still
+// loading, so AppKit never routes focus into it and the field opens without a
+// caret. The frontend calls `focus_quick_recall_window` once mounted (and on every
+// re-summon) so this runs against a ready webview.
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn make_quick_recall_webview_first_responder(window: &WebviewWindow) {
+    use cocoa::base::{id, nil, BOOL};
+    use objc::{msg_send, sel, sel_impl};
+    let _ = window.with_webview(|webview| unsafe {
+        let wv = webview.inner() as id;
+        if wv.is_null() {
+            return;
+        }
+        let panel: id = msg_send![wv, window];
+        if panel != nil {
+            let _: BOOL = msg_send![panel, makeFirstResponder: wv];
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn order_out_quick_recall_panel(window: &WebviewWindow) {
+    use cocoa::base::{id, nil};
+    use objc::{msg_send, sel, sel_impl};
+    let Ok(ns_window) = window.ns_window() else {
+        let _ = window.hide();
+        return;
+    };
+    unsafe {
+        let ns_window = ns_window as id;
+        let _: () = msg_send![ns_window, orderOut: nil];
+    }
+}
+
+fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    let config = AppWindow::QuickRecall.config();
+    let built = WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()))
+        .title(config.title)
+        .inner_size(config.inner_size.0, config.inner_size.1)
+        .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
+        .decorations(config.decorations)
+        .transparent(config.transparent)
+        .shadow(config.shadow)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()
+        .map_err(|err| err.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        configure_quick_recall_panel(&built);
+        configure_quick_recall_webview(&built);
+        if let Some(radius) = config.macos_corner_radius {
+            apply_macos_rounded_content_view(&built, radius);
+        }
+    }
+
+    Ok(built)
+}
+
+fn summon_quick_recall_window(window: &WebviewWindow) {
+    // Record the summon instant so the `Focused(false)` handler can ignore the
+    // transient first-responder-setup blur that fires right after a fresh summon
+    // (see `QUICK_RECALL_SUMMON_BLUR_GRACE`).
+    if let Ok(mut last) = LAST_QUICK_RECALL_SUMMON.lock() {
+        *last = Some(Instant::now());
+    }
+    let _ = window.center();
+    let _ = window.show();
+    #[cfg(target_os = "macos")]
+    make_quick_recall_panel_key(window);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.set_focus();
+    }
+}
+
+fn dismiss_quick_recall_window(window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    order_out_quick_recall_panel(window);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.hide();
+    }
+    // The webview is hidden, not destroyed, so the Svelte `onDestroy` teardown
+    // never runs on dismiss. Notify the panel so it can decide whether to cancel
+    // its Ask AI PI session.
+    //
+    // Contract (PLAN.md "Ask AI seen" — background completion): the panel no
+    // longer cancels unconditionally on this event. If an Ask AI conversation is
+    // still in flight or finished-but-unseen, the panel intentionally KEEPS the
+    // PI session resident and the conversation alive so a re-summon lands back on
+    // it; the session is torn down only once the conversation is seen (or there
+    // is none). A resident PI session after dismiss is therefore expected, not a
+    // leak. It is bounded by a 30-minute unseen cap (implemented in a later
+    // slice, owned frontend-side) and by app exit / the panel's `onDestroy`.
+    let _ = window.emit(QUICK_RECALL_DISMISSED_EVENT, ());
+}
+
+// Decide whether a Quick Recall `Focused(false)` should dismiss the launcher.
+// Two transient blurs must NOT dismiss it:
+//   (a) the first-summon blur: AppKit makes the non-activating panel key before
+//       its webview is first responder, firing a spurious `Focused(false)`; a
+//       blur within `QUICK_RECALL_SUMMON_BLUR_GRACE` of the last summon is that
+//       setup blur, not a click-away.
+//   (b) an answer-link click: `handleAnswerClick` flags
+//       `SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS` right before activating the OS
+//       browser, so the browser-activation blur is consumed here instead of
+//       tearing down the in-flight Ask AI session.
+// Both guards are one-shot/time-bounded, so ordinary click-away dismissal still
+// fires immediately.
+fn should_dismiss_quick_recall_on_blur() -> bool {
+    if SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS.swap(false, Ordering::SeqCst) {
+        return false;
+    }
+
+    if let Ok(last) = LAST_QUICK_RECALL_SUMMON.lock() {
+        if let Some(summoned_at) = *last {
+            if summoned_at.elapsed() < QUICK_RECALL_SUMMON_BLUR_GRACE {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+pub(crate) fn toggle_quick_recall_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(QUICK_RECALL_WINDOW_LABEL) {
+        if existing.is_visible().unwrap_or(false) {
+            dismiss_quick_recall_window(&existing);
+        } else {
+            summon_quick_recall_window(&existing);
+        }
+        return Ok(());
+    }
+    let window = build_quick_recall_window(app)?;
+    summon_quick_recall_window(&window);
+    Ok(())
+}
+
 fn focus_main_window_if_visible(app: &tauri::AppHandle) {
     if let Some(main) = app.get_webview_window(AppWindow::Main.config().label) {
         if main.is_visible().unwrap_or(false) {
@@ -808,6 +1160,7 @@ fn refresh_macos_dock_icon_visibility(app: &tauri::AppHandle) {
     let has_visible_window = app
         .webview_windows()
         .values()
+        .filter(|window| window.label() != QUICK_RECALL_WINDOW_LABEL)
         .any(|window| window.is_visible().unwrap_or(false));
     let _ = app.set_dock_visibility(has_visible_window);
 }
@@ -980,7 +1333,7 @@ fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
         Some(AppWindow::Settings | AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
-        Some(AppWindow::CliAccessRequest) => DestroyedWindowAction::None,
+        Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall) => DestroyedWindowAction::None,
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
     }
@@ -993,6 +1346,10 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
     }
 
     match AppWindow::from_label(&label) {
+        Some(AppWindow::QuickRecall) => {
+            dismiss_quick_recall_window(&window);
+            Ok(())
+        }
         Some(
             AppWindow::Onboarding
             | AppWindow::Settings
@@ -1017,6 +1374,17 @@ pub fn handle_window_event(
     event: &WindowEvent,
     window: Option<&WebviewWindow>,
 ) {
+    if let WindowEvent::Focused(false) = event {
+        if AppWindow::from_label(label) == Some(AppWindow::QuickRecall) {
+            if let Some(window) = window {
+                if should_dismiss_quick_recall_on_blur() {
+                    dismiss_quick_recall_window(window);
+                }
+            }
+        }
+        return;
+    }
+
     if let WindowEvent::CloseRequested { api, .. } = event {
         if AppWindow::from_label(label) == Some(AppWindow::Main) {
             api.prevent_close();
@@ -1106,6 +1474,35 @@ pub fn open_debug_window(
 #[tauri::command]
 pub fn close_current_window(window: WebviewWindow) -> Result<(), String> {
     close_window(window)
+}
+
+/// Re-assert keyboard focus for the Quick Recall window from the web layer once
+/// it is mounted. On the first summon the panel is made key before its webview
+/// finishes loading, so focus never reaches the search field; the frontend calls
+/// this after mount (and on every re-summon) to route focus into the now-ready
+/// webview.
+#[tauri::command]
+pub fn focus_quick_recall_window(window: WebviewWindow) {
+    if window.label() != QUICK_RECALL_WINDOW_LABEL {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    make_quick_recall_webview_first_responder(&window);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.set_focus();
+    }
+}
+
+/// Suppress the very next Quick Recall blur-dismiss. The frontend calls this from
+/// `handleAnswerClick` immediately before opening an answer link in the OS
+/// browser: that activation blurs the non-activating panel, and without this
+/// one-shot flag the resulting `Focused(false)` would dismiss the launcher and
+/// tear down the in-flight Ask AI session the user is reading. Only the next blur
+/// consumes the flag, so ordinary click-away dismissal still works.
+#[tauri::command]
+pub fn quick_recall_suppress_blur_dismiss() {
+    SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS.store(true, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -1244,6 +1641,14 @@ mod tests {
         assert!(!close_window_focuses_main_before_close(
             "cli-access-request"
         ));
+    }
+
+    #[test]
+    fn quick_recall_destruction_has_no_side_effect() {
+        assert_eq!(
+            destroyed_window_action("quick-recall"),
+            DestroyedWindowAction::None
+        );
     }
 
     #[test]

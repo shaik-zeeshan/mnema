@@ -6,7 +6,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
-  import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
+  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
   import {
     bootstrapCaptureControls,
     captureControls,
@@ -57,9 +57,11 @@
   const isOnboarding = $derived(normalizedPathname.startsWith("/onboarding"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
-  const showMainTitlebar = $derived(isMainRoute);
+  const isPanelSurface = isQuickRecallWindow();
+  const showMainTitlebar = $derived(isMainRoute && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
-  const isMainWindow = $derived(!showDedicatedTitlebar);
+  const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
+  const isMainWindow = $derived(!showDedicatedTitlebar && !isPanelSurface);
   const canShowShortcutsHelp = $derived(isMainWindow && isMainRoute);
   let windowPlatform = $state<KeyboardPlatform>(detectKeyboardPlatform());
   let notificationsOpen = $state(false);
@@ -76,7 +78,7 @@
   $effect(() => {
     if (typeof document === "undefined") return;
 
-    document.documentElement.classList.toggle("dedicated-surface-window", showDedicatedTitlebar);
+    document.documentElement.classList.toggle("dedicated-surface-window", transparentSurface);
 
     return () => {
       document.documentElement.classList.remove("dedicated-surface-window");
@@ -504,6 +506,16 @@
     ].join(", ")));
   }
 
+  function dismissQuickRecallOnEscape(event: KeyboardEvent): boolean {
+    if (!isPanelSurface) return false;
+    if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return false;
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    void closeCurrentWindow();
+    return true;
+  }
+
   function closeDedicatedWindowOnEscape(event: KeyboardEvent): boolean {
     if (!showDedicatedTitlebar || (!isSettings && !isDebug)) return false;
     if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return false;
@@ -527,6 +539,7 @@
   }
 
   function handleGlobalShortcutKeydown(event: KeyboardEvent): void {
+    if (dismissQuickRecallOnEscape(event)) return;
     if (closeDedicatedWindowOnEscape(event)) return;
 
     const action = getGlobalShortcutAction(event, {
@@ -641,7 +654,7 @@
 </script>
 
 <svelte:window onkeydown={handleGlobalShortcutKeydown} onpointerdown={onWindowPointerDown} />
-<svelte:body class:dedicated-surface-window={showDedicatedTitlebar} />
+<svelte:body class:dedicated-surface-window={transparentSurface} />
 
 <div
   class="app-shell"
@@ -1048,7 +1061,7 @@
   </header>
   {/if}
 
-  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar}>
+  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface}>
     {#if showChildren}
       {@render children()}
     {/if}
@@ -2067,6 +2080,13 @@
     background: var(--app-bg);
     border-radius: 0 0 var(--app-window-radius) var(--app-window-radius);
     overflow: hidden;
+  }
+
+  .app-content--panel {
+    padding: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
+    background: transparent;
   }
 
   .app-shell--dedicated {

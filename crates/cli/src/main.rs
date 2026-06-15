@@ -1065,6 +1065,9 @@ mod tests {
                     app_name: Some("Linear".to_string()),
                     window_title: Some("Roadmap".to_string()),
                 }),
+                span_start_ms: None,
+                span_end_ms: None,
+                aligned_frame_id: None,
             }],
             limit: 1,
         });

@@ -31,11 +31,12 @@ use capture_types::{
     NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, OcrProvider, OcrSettings,
     RecordingSettings, RecordingSettingsDomainUpdateResponse, ScreenResolution,
     ScreenResolutionPreset, SettingsOwnershipDomain, StartNativeCaptureRequest,
-    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
-    UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
-    UpdateMetadataSettingsRequest, UpdateMicrophoneControllerRequest,
-    UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest,
-    UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    UpdateAccessSettingsRequest, UpdateCaptureSourceSettingsRequest,
+    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
+    UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
+    UpdateMicrophoneControllerRequest, UpdateProcessingSettingsRequest,
+    UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest, UpdateVideoSettingsRequest,
+    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::configured_adapter_as_str;
 use settings::{
@@ -123,6 +124,12 @@ const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recover
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 #[cfg(target_os = "macos")]
 const APP_ICON_CACHE_DIR: &str = "app-icons";
+// Point size we render cached app icons at. Displayed at 20–24 CSS px, so a
+// larger source keeps the icon crisp on Retina (2x → ~48 device px) by always
+// downscaling instead of upscaling a small bitmap. Baked into the cache
+// filename so bumping this size supersedes previously cached lower-res PNGs.
+#[cfg(target_os = "macos")]
+const APP_ICON_RENDER_POINT_SIZE: u32 = 128;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
@@ -620,7 +627,8 @@ fn app_icon_cache_path(cache_dir: &Path, bundle_id: &str) -> Option<PathBuf> {
     if file_stem.is_empty() {
         return None;
     }
-    Some(cache_dir.join(format!("{file_stem}.png")))
+    // Size suffix invalidates older lower-res caches when the render size bumps.
+    Some(cache_dir.join(format!("{file_stem}@{APP_ICON_RENDER_POINT_SIZE}.png")))
 }
 
 #[cfg(target_os = "macos")]
@@ -648,7 +656,7 @@ fn write_macos_app_icon_png(bundle_path: &Path, output_path: &Path) -> Result<()
     use objc::{class, msg_send, sel, sel_impl};
 
     const NS_PNG_FILE_TYPE: NSUInteger = 4;
-    const ICON_POINT_SIZE: f64 = 64.0;
+    let icon_point_size = f64::from(APP_ICON_RENDER_POINT_SIZE);
 
     let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
     let bundle_path = bundle_path.to_string_lossy();
@@ -665,7 +673,7 @@ fn write_macos_app_icon_png(bundle_path: &Path, output_path: &Path) -> Result<()
             return Err(format!("failed to load app icon for {}", bundle_path));
         }
 
-        let _: () = msg_send![icon, setSize: NSSize::new(ICON_POINT_SIZE, ICON_POINT_SIZE)];
+        let _: () = msg_send![icon, setSize: NSSize::new(icon_point_size, icon_point_size)];
         let tiff_data: id = msg_send![icon, TIFFRepresentation];
         if tiff_data == nil {
             return Err(format!(
@@ -2900,6 +2908,19 @@ pub fn update_developer_settings(
         &app_handle,
         state.inner(),
         RecordingSettingsDomainPatch::Developer(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_access_settings(
+    request: UpdateAccessSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::Access(request),
     )
 }
 

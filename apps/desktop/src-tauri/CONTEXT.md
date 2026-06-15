@@ -46,6 +46,10 @@ _Avoid_: Svelte updater flow, generic updater plugin surface, frontend install p
 Rust-owned app configuration that stores the user's selected **App Update** channel.
 _Avoid_: recording settings, browser local storage, one-time prompt state
 
+**Quick Recall Panel**:
+The native window backing **Quick Recall**, implemented as a macOS non-activating `NSPanel` at floating level, summoned by global shortcut so it floats over the frontmost app, takes key input without making Mnema frontmost, appears on the active Space, and dismisses on blur or Escape.
+_Avoid_: standard always-on-top window, activating window, dashboard popover
+
 ## Relationships
 
 - **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.
@@ -127,6 +131,10 @@ _Avoid_: recording settings, browser local storage, one-time prompt state
 - Tauri `lib.rs` should stay limited to startup wiring, reopen fallback hooks, and command registration for CLI access work.
 - macOS app reopen handling should honor pending legacy authorization fallback requests instead of only opening the main dashboard.
 - Existing settings-focus based authorization handoff code is provisional and should not define the finalized **Broker Authorization Channel** design.
+- The **Quick Recall Panel** is a non-activating `NSPanel`, not a standard Tauri window: summoning it must not make Mnema the frontmost app, switch Spaces, or activate the Dock icon, matching Spotlight/Raycast behavior.
+- The **Quick Recall Panel** configures its panel class/level/activation through the same native window machinery precedent in `windows.rs` (Objective-C corner radius, dock-icon control) rather than a Svelte-driven overlay, and window ownership stays in that shared window helper module like the **CLI Access Request** window.
+- The **Quick Recall Panel** is summoned by a global **Keyboard Binding** and dismisses on blur or Escape; global summon requires the Mnema process to be resident (menu-bar/hidden), and a fully quit app is not cold-launched by the shortcut in V1.
+- The **Quick Recall Panel** is macOS-first, consistent with Mnema's native capture orientation.
 
 ## Example Dialogue
 

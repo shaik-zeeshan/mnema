@@ -201,6 +201,7 @@
   let draftTranscriptionMicrophoneEnabled = $state(true);
   let draftTranscriptionSystemAudioEnabled = $state(false);
   let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
+  let draftAskAiEnabled = $state(false);
   const appPrivacyExclusion = createAppPrivacyExclusionController({
     getExcludedApps: () => draftExcludedApps,
     onSettingsUpdated: (updated) => {
@@ -445,6 +446,7 @@
     draftTranscriptionIdleUnloadSeconds = next.transcription?.idleUnloadSeconds ?? 300;
     draftTranscriptionChunkSeconds = next.transcription?.chunkSeconds ?? 30;
     draftExcludedApps = [...(next.privacy?.excludedApps ?? [])];
+    draftAskAiEnabled = next.access?.askAiEnabled ?? false;
   }
 
   function buildSettingsRequest(): RecordingSettings {
@@ -498,6 +500,14 @@
         memoryMode: draftTranscriptionMemoryMode,
         idleUnloadSeconds: Math.max(0, Math.trunc(Number(draftTranscriptionIdleUnloadSeconds) || 0)),
         chunkSeconds: Math.max(0, Math.trunc(Number(draftTranscriptionChunkSeconds) || 0)),
+      },
+      access: {
+        askAiEnabled: draftAskAiEnabled,
+        askAiMaxToolCalls: base.access?.askAiMaxToolCalls ?? 12,
+        // `access` is sent whole and is authoritative, so we must round-trip the
+        // Ask AI model selection (chosen on the Settings page); omitting it would
+        // reset the selection back to the PI runtime default on every full save.
+        askAiModel: base.access?.askAiModel ?? null,
       },
     };
   }
@@ -1456,6 +1466,19 @@
                   {#snippet status()}
                     <ArmStatus armed={processingReady} pendingLabel="Preparing" armedLabel="Ready" />
                   {/snippet}
+
+                  <div class="settings-group">
+                    <div class="settings-stack">
+                      <Switch
+                        bind:checked={draftAskAiEnabled}
+                        label="Ask AI"
+                        description="Off by default. After PI is set up, you can enable Ask AI here or later in Access Settings."
+                      />
+                    </div>
+                    <p class="hint">
+                      Ask AI sends your questions plus redacted capture context to your configured PI provider/cloud and can use retained history after redaction. Mnema does not collect provider credentials.
+                    </p>
+                  </div>
 
                   <div
                     class="process-tabs"

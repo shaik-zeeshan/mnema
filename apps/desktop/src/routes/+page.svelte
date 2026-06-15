@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { fly } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
@@ -17,6 +18,8 @@
     resyncCaptureSession,
   } from "$lib/capture-controls.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
+  import SearchResultCard from "$lib/components/SearchResultCard.svelte";
+  import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import {
     activeExactPreviewDelayMs,
@@ -450,6 +453,11 @@
     kind: "frame" | "audio";
     frameId: number | null;
     audioSegmentId: number | null;
+    // Audio Search Result Anchor carried by the Quick Recall handoff so an audio
+    // open lands on the selected transcript match (span start + aligned frame)
+    // instead of the segment start. Null for the broker-URL path.
+    spanStartMs?: number | null;
+    alignedFrameId?: number | null;
   };
   type AppIconResolution = {
     bundleId: string;
@@ -2716,6 +2724,39 @@
     hoveredFrameId != null && hoveredX != null,
   );
 
+  // App identity of the frame shown in the centered readout. Keying the icon
+  // and app-name on this makes them animate only when the *app* changes as the
+  // user scrubs across an app boundary — not on every frame within one app
+  // (the time/date update live inside the same DOM node).
+  const tooltipAppKey = $derived(
+    timelineAppIdentity(
+      normalizedTimelineAppBundleId(tooltipFrame ?? ({} as FrameDto)),
+      normalizedTimelineAppName(tooltipFrame ?? ({} as FrameDto)),
+    ) ?? "__none__",
+  );
+  // Scrub direction (+1 = scrubbing toward older frames / "backward" in time,
+  // -1 = toward newer). Drives which way the readout icon/name slide so the
+  // swap reads as motion in the direction of travel rather than a hard cut.
+  // Set synchronously in the scroll handler, so it's already current by the
+  // time the resulting active-frame change re-keys the readout.
+  let readoutScrubDirection = $state<1 | -1>(1);
+  const READOUT_FLY_OFFSET_PX = 9;
+  const READOUT_FLY_DURATION_MS = 190;
+  // The readout transition is JS-driven (Svelte `fly`), so the CSS
+  // `prefers-reduced-motion` rules elsewhere can't disable it — gate the
+  // duration here instead so reduced-motion users get an instant swap.
+  let readoutPrefersReducedMotion = $state(false);
+  $effect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    readoutPrefersReducedMotion = mq.matches;
+    const onChange = () => (readoutPrefersReducedMotion = mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  });
+  const readoutFlyDurationMs = $derived(
+    readoutPrefersReducedMotion ? 0 : READOUT_FLY_DURATION_MS,
+  );
+
   // Maximum scrollLeft for the rail. Track width = N * SLOT; rail has
   // symmetric viewport-sized margins on each side (`50cqi - 4px`) so the
   // first/last slot can sit under the centered cursor. That makes the total
@@ -2966,10 +3007,6 @@
     void resolveTimelineAppIcons(bundleIds);
   });
 
-  function parseCapturedAt(ts: string): Date {
-    return new Date(ts.includes("T") ? ts : ts.replace(" ", "T"));
-  }
-
   function normalizedTimelineAppBundleId(frame: FrameDto): string | null {
     const bundleId = frame.appBundleId?.trim();
     return bundleId ? bundleId : null;
@@ -3211,21 +3248,36 @@
     return d.toLocaleString();
   }
 
+  // Delegates to the shared compact formatter (identical behavior to the
+  // answer-source / search-result cards). Kept as a thin local wrapper so the
+  // many `formatCapturedAtCompact(...)` call sites in this file stay stable.
   function formatCapturedAtCompact(ts: string): string {
-    const d = parseCapturedAt(ts);
-    if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
+    return formatTimestampCompact(ts);
   }
 
   function formatUnixMs(ms: number): string {
     const d = new Date(ms);
     if (isNaN(d.getTime())) return "unknown";
     return d.toLocaleString();
+  }
+
+  /** Time-of-day for the rail readout, where the date is shown alongside it.
+   *  Split out from {@link formatCapturedAt} so the readout can lead with the
+   *  precise time and de-emphasize the calendar date. */
+  function formatCapturedTimeOnly(ts: string): string {
+    const d = parseCapturedAt(ts);
+    if (isNaN(d.getTime())) return ts;
+    return d.toLocaleTimeString();
+  }
+
+  function formatCapturedDateOnly(ts: string): string {
+    const d = parseCapturedAt(ts);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
   }
 
   /** Compact `HH:MM:SS` (locale-aware) for the player panel header where the
@@ -3946,32 +3998,6 @@
       endUnixMs,
       durationSeconds,
     };
-  }
-
-  type SearchSnippetSegment = { text: string; marked: boolean };
-
-  function parseSearchSnippet(snippet: string): SearchSnippetSegment[] {
-    const segments: SearchSnippetSegment[] = [];
-    let index = 0;
-    let marked = false;
-    while (index < snippet.length) {
-      const nextOpen = snippet.indexOf("<mark>", index);
-      const nextClose = snippet.indexOf("</mark>", index);
-      const next =
-        nextOpen >= 0 && (nextClose < 0 || nextOpen < nextClose)
-          ? { at: nextOpen, tag: "<mark>", markedAfter: true }
-          : nextClose >= 0
-            ? { at: nextClose, tag: "</mark>", markedAfter: false }
-            : null;
-      if (!next) {
-        if (index < snippet.length) segments.push({ text: snippet.slice(index), marked });
-        break;
-      }
-      if (next.at > index) segments.push({ text: snippet.slice(index, next.at), marked });
-      marked = next.markedAfter;
-      index = next.at + next.tag.length;
-    }
-    return segments;
   }
 
   function searchRefinementsKey(refinements: SearchCaptureRefinements): string {
@@ -4791,7 +4817,16 @@
       }
       selectedAudioSegmentPinned = mapped;
       selectedAudioSegmentId = audio?.id ?? payload.audioSegmentId;
-      pendingAudioSeekMs = 0;
+      // Mirror the in-dashboard selectAudioSearchResult: seek to the selected
+      // match span (falling back to the segment start) and jump the timeline to
+      // the aligned frame so mid-segment / out-of-window matches land correctly.
+      pendingAudioSeekMs = payload.spanStartMs ?? 0;
+      if (payload.alignedFrameId != null) {
+        const alignedFrame = await invoke<FrameDto | null>("get_frame", {
+          request: { frameId: payload.alignedFrameId },
+        });
+        if (alignedFrame) await jumpToFrame(alignedFrame, false);
+      }
     }
   }
 
@@ -5744,9 +5779,14 @@
     const scrollLeft = el.scrollLeft;
     latestTimelineScrollLeft = scrollLeft;
     const deltaMs = now - lastTimelineScrollSample.at;
+    const scrollDelta = scrollLeft - lastTimelineScrollSample.left;
     if (deltaMs > 0) {
-      latestTimelineScrubVelocityPxPerMs = Math.abs(scrollLeft - lastTimelineScrollSample.left) / deltaMs;
+      latestTimelineScrubVelocityPxPerMs = Math.abs(scrollDelta) / deltaMs;
     }
+    // Newest frame is anchored at the right, so a growing scrollLeft moves the
+    // viewport toward older frames ("backward" in time → +1).
+    if (scrollDelta > 0) readoutScrubDirection = 1;
+    else if (scrollDelta < 0) readoutScrubDirection = -1;
     lastTimelineScrollSample = { left: scrollLeft, at: now };
     syncTimelineAudioLaneScroll(scrollLeft);
     // Resize-induced scroll guard: when the window grows, `cqi`-based track
@@ -8061,39 +8101,14 @@
                 {:else}
                   <div class="search-modal__list">
                     {#each searchFrames as result (result.groupKey)}
-                      <button class="search-card search-card--frame" onclick={() => void selectFrameSearchResult(result)}>
-                        <div class="search-card__thumb">
-                          {#if scrubPreviewCache.get(result.thumbnailFrameId)}
-                            <img src={framePreviewAssetUrl(scrubPreviewCache.get(result.thumbnailFrameId) ?? "")} alt="" loading="lazy" />
-                          {:else}
-                            <svg class="search-card__thumb-glyph" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" aria-hidden="true">
-                              <rect x="1.5" y="2" width="11" height="8" rx="1.5" />
-                              <path d="M4 12h6" />
-                              <path d="M7 10v2" />
-                            </svg>
-                          {/if}
-                        </div>
-                        <div class="search-card__body">
-                          <div class="search-card__line">
-                            <span class="search-card__app">{result.appName ?? "Unknown app"}</span>
-                            {#if result.windowTitle}
-                              <span class="search-card__sub" title={result.windowTitle}>{result.windowTitle}</span>
-                            {/if}
-                          </div>
-                          <p class="search-card__snippet">
-                            {#each parseSearchSnippet(result.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
-                          </p>
-                          <div class="search-card__foot">
-                            <span class="search-card__time">{formatCapturedAtCompact(result.groupEndAt)}</span>
-                            {#if result.matchCount > 1}
-                              <span class="search-card__badge">{result.matchCount} matches</span>
-                            {/if}
-                            {#if result.hasSecretRedactions}
-                              <span class="search-card__badge search-card__badge--warn">redacted</span>
-                            {/if}
-                          </div>
-                        </div>
-                      </button>
+                      <SearchResultCard
+                        kind="frame"
+                        frame={result}
+                        thumbnailUrl={scrubPreviewCache.get(result.thumbnailFrameId)
+                          ? framePreviewAssetUrl(scrubPreviewCache.get(result.thumbnailFrameId) ?? "")
+                          : null}
+                        onselect={() => void selectFrameSearchResult(result)}
+                      />
                     {/each}
                   </div>
                   {#if searchHasMoreFrames}
@@ -8123,41 +8138,7 @@
                 {:else}
                   <div class="search-modal__list">
                     {#each searchAudio as result (result.groupKey)}
-                      <button class="search-card search-card--audio" onclick={() => void selectAudioSearchResult(result)}>
-                        <div
-                          class="search-card__thumb search-card__thumb--audio"
-                          class:search-card__thumb--mic={result.sourceKind === "microphone"}
-                          class:search-card__thumb--sysaudio={result.sourceKind !== "microphone"}
-                        >
-                          <svg class="search-card__wave" viewBox="0 0 44 24" aria-hidden="true">
-                            {#each [7, 13, 20, 10, 23, 9, 16, 12, 8] as barHeight, barIndex (barIndex)}
-                              <rect x={2 + barIndex * 4.8} y={(24 - barHeight) / 2} width="2.4" height={barHeight} rx="1.2" />
-                            {/each}
-                          </svg>
-                        </div>
-                        <div class="search-card__body">
-                          <div class="search-card__line">
-                            <span
-                              class="search-card__source"
-                              class:search-card__source--mic={result.sourceKind === "microphone"}
-                              class:search-card__source--sysaudio={result.sourceKind !== "microphone"}
-                            >{audioSourceLabel(result.sourceKind === "microphone" ? "microphone" : "systemAudio")}</span>
-                            <span class="search-card__sub">{formatDurationSeconds(Math.max(0, (result.spanEndMs - result.spanStartMs) / 1000))}</span>
-                          </div>
-                          <p class="search-card__snippet">
-                            {#each parseSearchSnippet(result.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
-                          </p>
-                          <div class="search-card__foot">
-                            <span class="search-card__time">{formatCapturedAtCompact(result.absoluteStartAt)}</span>
-                            {#if result.matchCount > 1}
-                              <span class="search-card__badge">{result.matchCount} adjacent</span>
-                            {/if}
-                            {#if result.hasSecretRedactions}
-                              <span class="search-card__badge search-card__badge--warn">redacted</span>
-                            {/if}
-                          </div>
-                        </div>
-                      </button>
+                      <SearchResultCard kind="audio" audio={result} onselect={() => void selectAudioSearchResult(result)} />
                     {/each}
                   </div>
                   {#if searchHasMoreAudio}
@@ -8635,19 +8616,39 @@
             class:timeline-rail__tooltip-icon--image={!!tooltipAppIconSrc}
             aria-hidden="true"
           >
-            {#if tooltipAppIconSrc}
-              <img src={tooltipAppIconSrc} alt="" loading="lazy" />
-            {:else}
-              <span>{timelineFrameAppFallback(tooltipFrame)}</span>
-            {/if}
+            {#key tooltipAppKey}
+              <span
+                class="timeline-rail__tooltip-icon-inner"
+                in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+              >
+                {#if tooltipAppIconSrc}
+                  <img src={tooltipAppIconSrc} alt="" loading="lazy" />
+                {:else}
+                  <span>{timelineFrameAppFallback(tooltipFrame)}</span>
+                {/if}
+              </span>
+            {/key}
           </span>
           <span class="timeline-rail__tooltip-copy">
-            <span class="timeline-rail__tooltip-app-name">{tooltipAppLabel}</span>
-            <span class="timeline-rail__tooltip-date">{formatCapturedAt(tooltipFrame.capturedAt)}</span>
+            <span class="timeline-rail__tooltip-name-stack">
+              {#key tooltipAppKey}
+                <span
+                  class="timeline-rail__tooltip-app-name"
+                  in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                  out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                >{tooltipAppLabel}</span>
+              {/key}
+            </span>
+            <span class="timeline-rail__tooltip-meta">
+              <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
+              <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
+            </span>
           </span>
         {:else}
-          <span class="timeline-rail__tooltip-date timeline-rail__tooltip-date--solo">
-            {formatCapturedAt(tooltipFrame.capturedAt)}
+          <span class="timeline-rail__tooltip-copy timeline-rail__tooltip-copy--solo">
+            <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
+            <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
           </span>
         {/if}
       </div>
@@ -9658,191 +9659,6 @@
     gap: 2px;
   }
 
-  /* Every result row shares a fixed-width left rail (thumbnail for frames,
-     source-tinted waveform tile for audio) so the text columns line up and
-     the result type is legible at a glance. */
-  .search-card {
-    width: 100%;
-    min-width: 0;
-    display: grid;
-    grid-template-columns: 116px 1fr;
-    gap: 13px;
-    align-items: center;
-    padding: 9px 10px;
-    overflow: hidden;
-    text-align: left;
-    border: 1px solid transparent;
-    border-radius: 9px;
-    background: transparent;
-    color: var(--app-text);
-    font: inherit;
-    cursor: pointer;
-    transition:
-      background 0.1s,
-      border-color 0.1s;
-  }
-
-  .search-card:hover {
-    border-color: var(--app-border);
-    background: var(--app-surface-raised);
-  }
-
-  .search-card:focus-visible {
-    outline: none;
-    border-color: var(--app-accent-border);
-    background: var(--app-surface-raised);
-    box-shadow: 0 0 0 1px var(--app-accent-border);
-  }
-
-  .search-card__thumb {
-    width: 116px;
-    aspect-ratio: 16 / 10;
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    overflow: hidden;
-    background: var(--app-bg);
-    color: var(--app-text-faint);
-  }
-
-  .search-card__thumb img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-
-  .search-card__thumb-glyph {
-    color: var(--app-text-faint);
-  }
-
-  /* Audio rail: a source-colored waveform tile. mic = green, system = olive,
-     matching the capture-source tokens used across the timeline. */
-  .search-card__thumb--audio {
-    background: var(--app-surface-raised);
-    color: var(--app-text-subtle);
-  }
-
-  .search-card__thumb--mic {
-    border-color: var(--app-source-mic-border);
-    background: var(--app-source-mic-bg);
-    color: var(--app-source-mic);
-  }
-
-  .search-card__thumb--sysaudio {
-    border-color: var(--app-source-sysaudio-border);
-    background: var(--app-source-sysaudio-bg);
-    color: var(--app-source-sysaudio);
-  }
-
-  .search-card__wave {
-    width: 62%;
-    height: auto;
-    fill: currentColor;
-  }
-
-  .search-card__body {
-    min-width: 0;
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    overflow: hidden;
-  }
-
-  .search-card__line {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .search-card__app {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--app-text-strong);
-    font-size: 12.5px;
-    font-weight: 600;
-  }
-
-  .search-card__source {
-    flex: 0 0 auto;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--app-text-muted);
-  }
-
-  .search-card__source--mic {
-    color: var(--app-source-mic);
-  }
-
-  .search-card__source--sysaudio {
-    color: var(--app-source-sysaudio);
-  }
-
-  .search-card__sub {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--app-text-subtle);
-    font-size: 11.5px;
-  }
-
-  .search-card__snippet {
-    margin: 0;
-    color: var(--app-text);
-    font-size: 12px;
-    line-height: 1.5;
-    min-width: 0;
-    overflow-wrap: anywhere;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  .search-card mark {
-    border-radius: 2px;
-    background: color-mix(in srgb, var(--app-accent) 26%, transparent);
-    color: var(--app-text-strong);
-    padding: 0 1px;
-  }
-
-  .search-card__foot {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-  }
-
-  .search-card__time {
-    color: var(--app-text-subtle);
-    font-size: 10.5px;
-    white-space: nowrap;
-  }
-
-  .search-card__badge {
-    flex: 0 0 auto;
-    padding: 0 6px;
-    border-radius: 4px;
-    background: var(--app-surface-hover);
-    color: var(--app-text-subtle);
-    font-size: 10px;
-    line-height: 1.7;
-  }
-
-  .search-card__badge--warn {
-    background: var(--app-warn-bg);
-    color: var(--app-warn);
-  }
-
   .search-modal__empty {
     margin: 0;
     padding: 10px 16px 14px;
@@ -9863,15 +9679,6 @@
     .search-modal__panel {
       width: 100%;
       height: min(700px, 88vh);
-    }
-
-    .search-card {
-      grid-template-columns: 88px 1fr;
-      gap: 10px;
-    }
-
-    .search-card__thumb {
-      width: 88px;
     }
   }
 
@@ -11813,7 +11620,7 @@
     box-sizing: border-box;
     display: grid;
     place-items: center;
-    border-radius: 4px;
+    border-radius: 5px;
     overflow: hidden;
     color: var(--app-text-strong);
     font-size: 10px;
@@ -11821,12 +11628,13 @@
     line-height: 1;
     background: color-mix(in srgb, var(--app-surface-raised) 96%, var(--app-bg));
     box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--app-border-strong) 82%, transparent),
-      0 2px 6px rgba(0, 0, 0, 0.28);
+      0 0 0 1px color-mix(in srgb, var(--app-border-strong) 70%, transparent),
+      0 1px 3px rgba(0, 0, 0, 0.22);
   }
 
   .timeline-rail__app-group-icon--image {
     padding: 2px;
+    background: color-mix(in srgb, var(--app-surface-raised) 88%, var(--app-bg));
   }
 
   .timeline-rail__app-group-icon img {
@@ -12172,10 +11980,28 @@
     object-fit: contain;
   }
 
+  /* Both the outgoing and incoming icon (during an app-change transition) are
+     pinned to the same grid cell so they cross-slide in place instead of
+     stacking into two rows; the icon container's `overflow: hidden` clips the
+     slide. */
+  .timeline-rail__tooltip-icon-inner {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+  }
+
   .timeline-rail__tooltip-copy {
     min-width: 0;
     display: grid;
     gap: 4px;
+  }
+
+  /* When no app label is known there's no icon column, so the copy spans the
+     full bubble width instead of being squeezed into the 24px icon track. */
+  .timeline-rail__tooltip-copy--solo {
+    grid-column: 1 / -1;
   }
 
   .timeline-rail__tooltip-app-name,
@@ -12186,11 +12012,40 @@
     white-space: nowrap;
   }
 
+  /* Overlap container for the keyed app name so the cross-slide copies share
+     one grid cell — the cell auto-sizes to the wider name (no width collapse)
+     and clips the horizontal slide. */
+  .timeline-rail__tooltip-name-stack {
+    min-width: 0;
+    display: grid;
+    overflow: hidden;
+  }
+
   .timeline-rail__tooltip-app-name {
+    grid-area: 1 / 1;
     color: var(--app-text-strong);
     font-size: 11px;
     font-weight: 760;
     line-height: 1.05;
+  }
+
+  /* Time leads, date trails on the same baseline so the readout answers
+     "when" at a glance without a second wrapped line. */
+  .timeline-rail__tooltip-meta {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .timeline-rail__tooltip-time {
+    flex: 0 0 auto;
+    color: var(--app-text-strong);
+    font-size: 10px;
+    font-weight: 720;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
   }
 
   .timeline-rail__tooltip-date {
@@ -12199,12 +12054,6 @@
     font-variant-numeric: tabular-nums;
     font-weight: 680;
     line-height: 1;
-  }
-
-  .timeline-rail__tooltip-date--solo {
-    grid-column: 1 / -1;
-    color: var(--app-text-strong);
-    font-size: 10px;
   }
 
   .timeline-rail__tooltip::after {
@@ -12503,6 +12352,9 @@
     color: var(--app-text);
   }
   :global([data-theme="light"]) .timeline-rail__tooltip-app-name {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .timeline-rail__tooltip-time {
     color: var(--app-text-strong);
   }
   :global([data-theme="light"]) .timeline-rail__tooltip-date {

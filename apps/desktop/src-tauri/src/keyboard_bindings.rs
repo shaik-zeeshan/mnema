@@ -14,6 +14,7 @@ const KEYBOARD_BINDINGS_CHANGED_EVENT: &str = "keyboard_bindings_settings_change
 const TOGGLE_RECORDING_DEFAULT: &str = "CommandOrControl+Alt+R";
 const PAUSE_RESUME_RECORDING_DEFAULT: &str = "CommandOrControl+Alt+P";
 const TOGGLE_MAIN_WINDOW_DEFAULT: &str = "CommandOrControl+Alt+M";
+const TOGGLE_QUICK_RECALL_DEFAULT: &str = "CommandOrControl+Alt+Space";
 const REGISTRATION_WARNING_ID: &str = "global-shortcuts-registration-failed";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,6 +50,8 @@ pub struct GlobalShortcutBindings {
     pause_resume_recording: String,
     #[serde(default = "default_toggle_main_window")]
     toggle_main_window: String,
+    #[serde(rename = "quickRecall", default = "default_toggle_quick_recall")]
+    toggle_quick_recall: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -115,6 +118,7 @@ enum GlobalShortcutAction {
     ToggleRecording,
     PauseResumeRecording,
     ToggleMainWindow,
+    ToggleQuickRecall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +218,12 @@ const EDITABLE_ACTIONS: &[EditableAction] = &[
     EditableAction {
         id: "toggleMainWindow",
         label: "Show or hide Mnema",
+        scope: ShortcutScope::NativeGlobal,
+        policy: BindingPolicy::NativeBackground,
+    },
+    EditableAction {
+        id: "toggleQuickRecall",
+        label: "Summon Quick Recall",
         scope: ShortcutScope::NativeGlobal,
         policy: BindingPolicy::NativeBackground,
     },
@@ -342,6 +352,9 @@ fn default_pause_resume_recording() -> String {
 fn default_toggle_main_window() -> String {
     TOGGLE_MAIN_WINDOW_DEFAULT.to_string()
 }
+fn default_toggle_quick_recall() -> String {
+    TOGGLE_QUICK_RECALL_DEFAULT.to_string()
+}
 fn default_open_settings() -> String {
     "CommandOrControl+,".to_string()
 }
@@ -412,6 +425,7 @@ impl GlobalShortcutBindings {
             toggle_recording: default_toggle_recording(),
             pause_resume_recording: default_pause_resume_recording(),
             toggle_main_window: default_toggle_main_window(),
+            toggle_quick_recall: default_toggle_quick_recall(),
         }
     }
 }
@@ -520,6 +534,7 @@ fn get_binding<'a>(settings: &'a KeyboardBindingsSettings, id: &str) -> &'a str 
         "toggleRecording" => &settings.global_shortcuts.bindings.toggle_recording,
         "pauseResumeRecording" => &settings.global_shortcuts.bindings.pause_resume_recording,
         "toggleMainWindow" => &settings.global_shortcuts.bindings.toggle_main_window,
+        "toggleQuickRecall" => &settings.global_shortcuts.bindings.toggle_quick_recall,
         "openSettings" => &settings.app_shortcuts.open_settings,
         "openDebug" => &settings.app_shortcuts.open_debug,
         "toggleSourceScreen" => &settings.app_shortcuts.toggle_source_screen,
@@ -547,6 +562,7 @@ fn set_binding(settings: &mut KeyboardBindingsSettings, id: &str, value: String)
         "toggleRecording" => settings.global_shortcuts.bindings.toggle_recording = value,
         "pauseResumeRecording" => settings.global_shortcuts.bindings.pause_resume_recording = value,
         "toggleMainWindow" => settings.global_shortcuts.bindings.toggle_main_window = value,
+        "toggleQuickRecall" => settings.global_shortcuts.bindings.toggle_quick_recall = value,
         "openSettings" => settings.app_shortcuts.open_settings = value,
         "openDebug" => settings.app_shortcuts.open_debug = value,
         "toggleSourceScreen" => settings.app_shortcuts.toggle_source_screen = value,
@@ -854,6 +870,7 @@ fn binding_json_pointer(id: &str) -> Option<&'static str> {
         "toggleRecording" => Some("/globalShortcuts/bindings/toggleRecording"),
         "pauseResumeRecording" => Some("/globalShortcuts/bindings/pauseResumeRecording"),
         "toggleMainWindow" => Some("/globalShortcuts/bindings/toggleMainWindow"),
+        "toggleQuickRecall" => Some("/globalShortcuts/bindings/quickRecall"),
         "openSettings" => Some("/appShortcuts/openSettings"),
         "openDebug" => Some("/appShortcuts/openDebug"),
         "toggleSourceScreen" => Some("/appShortcuts/toggleSourceScreen"),
@@ -904,27 +921,74 @@ fn current_settings(app: &tauri::AppHandle) -> KeyboardBindingsSettings {
     settings
 }
 
-fn parse_registered_shortcuts(settings: &KeyboardBindingsSettings) -> Vec<Shortcut> {
+#[derive(Debug, Clone)]
+struct RegisteredShortcut {
+    shortcut: Shortcut,
+    /// Stable action id from `EDITABLE_ACTIONS`, used to look up the display label.
+    action_id: &'static str,
+    /// The accelerator string the user assigned (e.g. "CommandOrControl+Shift+Space").
+    accelerator: String,
+}
+
+impl RegisteredShortcut {
+    /// Human-readable description naming the action and its accelerator, e.g.
+    /// "Summon Quick Recall (CommandOrControl+Shift+Space)".
+    fn display_label(&self) -> String {
+        let label = EDITABLE_ACTIONS
+            .iter()
+            .find(|action| action.id == self.action_id)
+            .map(|action| action.label)
+            .unwrap_or(self.action_id);
+        format!("{label} ({})", self.accelerator)
+    }
+}
+
+fn parse_registered_shortcuts(settings: &KeyboardBindingsSettings) -> Vec<RegisteredShortcut> {
     if !settings.global_shortcuts.enabled {
         return Vec::new();
     }
 
     [
-        settings.global_shortcuts.bindings.toggle_recording.as_str(),
-        settings
-            .global_shortcuts
-            .bindings
-            .pause_resume_recording
-            .as_str(),
-        settings
-            .global_shortcuts
-            .bindings
-            .toggle_main_window
-            .as_str(),
+        (
+            "toggleRecording",
+            settings.global_shortcuts.bindings.toggle_recording.as_str(),
+        ),
+        (
+            "pauseResumeRecording",
+            settings
+                .global_shortcuts
+                .bindings
+                .pause_resume_recording
+                .as_str(),
+        ),
+        (
+            "toggleMainWindow",
+            settings
+                .global_shortcuts
+                .bindings
+                .toggle_main_window
+                .as_str(),
+        ),
+        (
+            "toggleQuickRecall",
+            settings
+                .global_shortcuts
+                .bindings
+                .toggle_quick_recall
+                .as_str(),
+        ),
     ]
     .into_iter()
-    .filter(|binding| !binding.trim().is_empty())
-    .filter_map(|binding| Shortcut::try_from(binding).ok())
+    .filter(|(_, binding)| !binding.trim().is_empty())
+    .filter_map(|(action_id, binding)| {
+        Shortcut::try_from(binding)
+            .ok()
+            .map(|shortcut| RegisteredShortcut {
+                shortcut,
+                action_id,
+                accelerator: binding.trim().to_string(),
+            })
+    })
     .collect()
 }
 
@@ -941,6 +1005,7 @@ fn global_shortcut_action(
     let toggle_recording = parse_shortcut_for_match(&bindings.toggle_recording);
     let pause_resume_recording = parse_shortcut_for_match(&bindings.pause_resume_recording);
     let toggle_main_window = parse_shortcut_for_match(&bindings.toggle_main_window);
+    let toggle_quick_recall = parse_shortcut_for_match(&bindings.toggle_quick_recall);
 
     if Some(shortcut) == toggle_recording.as_ref() {
         Some(GlobalShortcutAction::ToggleRecording)
@@ -948,6 +1013,8 @@ fn global_shortcut_action(
         Some(GlobalShortcutAction::PauseResumeRecording)
     } else if Some(shortcut) == toggle_main_window.as_ref() {
         Some(GlobalShortcutAction::ToggleMainWindow)
+    } else if Some(shortcut) == toggle_quick_recall.as_ref() {
+        Some(GlobalShortcutAction::ToggleQuickRecall)
     } else {
         None
     }
@@ -962,15 +1029,15 @@ fn parse_shortcut_for_match(binding: &str) -> Option<Shortcut> {
 
 pub(crate) fn initialize(app: &tauri::AppHandle) {
     let settings = current_settings(app);
-    if let Err(error) = refresh_global_shortcuts(app, &settings) {
-        warn_registration_failure(app, &error);
+    if let Err(failures) = refresh_global_shortcuts(app, &settings) {
+        warn_registration_failure(app, &failures);
     }
 }
 
 fn refresh_global_shortcuts(
     app: &tauri::AppHandle,
     settings: &KeyboardBindingsSettings,
-) -> Result<(), String> {
+) -> Result<(), Vec<String>> {
     let previous = {
         let state = app.state::<KeyboardBindingsState>();
         let mut runtime = state.lock().expect("keyboard bindings state poisoned");
@@ -988,16 +1055,20 @@ fn refresh_global_shortcuts(
     let shortcuts = parse_registered_shortcuts(settings);
     let mut registered = Vec::new();
     let mut unique = HashSet::new();
-    for shortcut in shortcuts {
-        let shortcut_string = shortcut.to_string();
+    let mut failures = Vec::new();
+    for entry in shortcuts {
+        let shortcut_string = entry.shortcut.to_string();
         if !unique.insert(shortcut_string.clone()) {
             continue;
         }
-        if let Err(error) = app.global_shortcut().register(shortcut) {
-            let state = app.state::<KeyboardBindingsState>();
-            let mut runtime = state.lock().expect("keyboard bindings state poisoned");
-            runtime.registered_shortcuts = registered;
-            return Err(format!("failed to register '{shortcut_string}': {error}"));
+        // Best-effort: a failure registering one shortcut is logged/collected but
+        // does not abort registration of the remaining shortcuts.
+        if let Err(error) = app.global_shortcut().register(entry.shortcut) {
+            crate::native_capture::debug_log::log_warn(format!(
+                "failed to register global shortcut '{shortcut_string}': {error}"
+            ));
+            failures.push(entry.display_label());
+            continue;
         }
         registered.push(shortcut_string);
     }
@@ -1005,8 +1076,13 @@ fn refresh_global_shortcuts(
     let state = app.state::<KeyboardBindingsState>();
     let mut runtime = state.lock().expect("keyboard bindings state poisoned");
     runtime.registered_shortcuts = registered;
+    drop(runtime);
 
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures)
+    }
 }
 
 pub(crate) fn handle_global_shortcut(
@@ -1028,6 +1104,13 @@ pub(crate) fn handle_global_shortcut(
         Some(GlobalShortcutAction::PauseResumeRecording) => handle_pause_resume_recording(app),
         Some(GlobalShortcutAction::ToggleMainWindow) => {
             crate::windows::toggle_main_window_visibility(app);
+        }
+        Some(GlobalShortcutAction::ToggleQuickRecall) => {
+            if let Err(error) = crate::windows::toggle_quick_recall_window(app) {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "global shortcut failed to toggle quick recall: {error}"
+                ));
+            }
         }
         None => {}
     }
@@ -1079,15 +1162,30 @@ fn handle_pause_resume_recording(app: &tauri::AppHandle) {
     });
 }
 
-fn warn_registration_failure(app: &tauri::AppHandle, message: &str) {
+fn warn_registration_failure(app: &tauri::AppHandle, failures: &[String]) {
+    if failures.is_empty() {
+        return;
+    }
+
+    let names = failures.join(", ");
     crate::native_capture::debug_log::log_warn(format!(
-        "global shortcut registration failed: {message}"
+        "global shortcut registration failed: {names}"
     ));
+
+    let plural = failures.len() > 1;
+    let body = format!(
+        "Mnema could not register {}: {names}. Another app may already be using the same shortcut.",
+        if plural {
+            "these global shortcuts"
+        } else {
+            "this global shortcut"
+        }
+    );
     crate::native_capture::push_warning_app_notification(
         app,
         REGISTRATION_WARNING_ID,
         "Global shortcuts unavailable",
-        "Mnema could not register one or more global shortcuts. Another app may already be using the same shortcut.",
+        &body,
         Some("shortcuts"),
         now_unix_ms(),
     );
@@ -1119,8 +1217,8 @@ pub fn update_keyboard_bindings_settings(
         runtime.settings = Some(settings.clone());
     }
 
-    if let Err(error) = refresh_global_shortcuts(&app, &settings) {
-        warn_registration_failure(&app, &error);
+    if let Err(failures) = refresh_global_shortcuts(&app, &settings) {
+        warn_registration_failure(&app, &failures);
     }
 
     let _ = app.emit(KEYBOARD_BINDINGS_CHANGED_EVENT, &settings);
@@ -1160,6 +1258,7 @@ mod tests {
                     toggle_recording: "".to_string(),
                     pause_resume_recording: "not-a-shortcut".to_string(),
                     toggle_main_window: TOGGLE_MAIN_WINDOW_DEFAULT.to_string(),
+                    toggle_quick_recall: TOGGLE_QUICK_RECALL_DEFAULT.to_string(),
                 },
             },
             app_shortcuts: AppShortcutBindings::defaults(),
@@ -1308,6 +1407,20 @@ mod tests {
         settings.audio_drawer_shortcuts.seek_back = "".to_string();
         settings.dashboard_shortcuts.open_jump_picker = "ArrowLeft".to_string();
         assert!(settings.validated_for_update().is_err());
+    }
+
+    #[test]
+    fn defaults_include_quick_recall_global_shortcut() {
+        let settings = KeyboardBindingsSettings::defaults();
+        assert_eq!(
+            settings.global_shortcuts.bindings.toggle_quick_recall,
+            TOGGLE_QUICK_RECALL_DEFAULT
+        );
+        let shortcut = Shortcut::try_from(TOGGLE_QUICK_RECALL_DEFAULT).unwrap();
+        assert_eq!(
+            global_shortcut_action(&settings, &shortcut, true),
+            Some(GlobalShortcutAction::ToggleQuickRecall)
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ export const DEFAULT_KEYBOARD_BINDINGS: KeyboardBindingsSettings = {
       toggleRecording: "CommandOrControl+Alt+R",
       pauseResumeRecording: "CommandOrControl+Alt+P",
       toggleMainWindow: "CommandOrControl+Alt+M",
+      quickRecall: "CommandOrControl+Alt+Space",
     },
   },
   appShortcuts: {
@@ -50,6 +51,7 @@ export type EditableShortcutActionId =
   | "toggleRecording"
   | "pauseResumeRecording"
   | "toggleMainWindow"
+  | "toggleQuickRecall"
   | "openSettings"
   | "openDebug"
   | "toggleSourceScreen"
@@ -132,6 +134,7 @@ export const EDITABLE_SHORTCUT_ACTIONS: EditableShortcutAction[] = [
   { id: "toggleRecording", label: "Start or stop recording", description: "Works even when Mnema is in the background.", category: "global", nativeBackground: true },
   { id: "pauseResumeRecording", label: "Pause or resume recording", description: "Pauses or resumes User Capture Pause without stopping the session.", category: "global", nativeBackground: true },
   { id: "toggleMainWindow", label: "Show or hide Mnema", description: "Works even when Mnema is in the background.", category: "global", nativeBackground: true },
+  { id: "toggleQuickRecall", label: "Summon Quick Recall", description: "Works even when Mnema is in the background.", category: "global", nativeBackground: true },
   { id: "openSettings", label: "Open settings", description: "Foreground app shortcut.", category: "app", nativeBackground: false },
   { id: "openDebug", label: "Open debug", description: "Visible when developer options are enabled.", category: "app", nativeBackground: false },
   { id: "toggleSourceScreen", label: "Toggle screen for the next recording", description: "Available while recording is stopped.", category: "app", nativeBackground: false },
@@ -242,6 +245,7 @@ export function getShortcutBinding(settings: KeyboardBindingsSettings, id: Edita
     case "toggleRecording": return settings.globalShortcuts.bindings.toggleRecording;
     case "pauseResumeRecording": return settings.globalShortcuts.bindings.pauseResumeRecording;
     case "toggleMainWindow": return settings.globalShortcuts.bindings.toggleMainWindow;
+    case "toggleQuickRecall": return settings.globalShortcuts.bindings.quickRecall;
     case "openSettings": return settings.appShortcuts.openSettings;
     case "openDebug": return settings.appShortcuts.openDebug;
     case "toggleSourceScreen": return settings.appShortcuts.toggleSourceScreen;
@@ -269,6 +273,7 @@ export function setShortcutBinding(settings: KeyboardBindingsSettings, id: Edita
     case "toggleRecording": next.globalShortcuts.bindings.toggleRecording = binding; break;
     case "pauseResumeRecording": next.globalShortcuts.bindings.pauseResumeRecording = binding; break;
     case "toggleMainWindow": next.globalShortcuts.bindings.toggleMainWindow = binding; break;
+    case "toggleQuickRecall": next.globalShortcuts.bindings.quickRecall = binding; break;
     case "openSettings": next.appShortcuts.openSettings = binding; break;
     case "openDebug": next.appShortcuts.openDebug = binding; break;
     case "toggleSourceScreen": next.appShortcuts.toggleSourceScreen = binding; break;

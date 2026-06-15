@@ -30,6 +30,14 @@ const MAX_SEARCH_LIMIT: u32 = 100;
 const OPAQUE_SIGNATURE_HEX_LEN: usize = 32;
 const DEFAULT_APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
 
+/// Stable grant id for the in-app Ask AI agent's All Retained Broker Scope access.
+///
+/// Ask AI is authorized by the Ask AI Setting at the Tauri layer rather than by a
+/// persisted, user-approved broker grant, so its scope is represented by a synthetic
+/// in-memory grant. The id is a constant (not generated per call) so opaque ids issued
+/// by a `search` call re-authorize on a later `show-text` call.
+pub const ASK_AI_BROKER_GRANT_ID: &str = "ask-ai-all-retained";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BrokerAuthStatusKind {
@@ -210,6 +218,15 @@ pub struct BrokerSearchResult {
     pub ended_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<BrokerSearchResultContext>,
+    // Audio Search Result Anchor: sub-segment match timing + aligned frame for
+    // audio results so consumers can land on the cited moment rather than the
+    // segment start. Always `None` for frame results (no sub-segment anchor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_start_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_end_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aligned_frame_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -397,6 +414,36 @@ impl BrokeredCaptureAccess {
         Ok(response)
     }
 
+    /// Execute a brokered query at All Retained Broker Scope for the in-app Ask AI agent.
+    ///
+    /// Unlike [`execute_for_identity`], Ask AI access is gated by the Ask AI Setting at the
+    /// Tauri layer (fail-closed) rather than by a persisted broker grant, so this path injects
+    /// a synthetic All Retained grant instead of loading disk grants. Only the agent's data
+    /// tools are permitted; `OpenInMnema` is an app-mediated handoff (ADR 0024) and is rejected.
+    pub async fn execute_for_ask_ai(
+        &self,
+        identity: BrokerClientIdentity,
+        request: BrokeredCaptureRequest,
+    ) -> Result<BrokeredCaptureResponse> {
+        if matches!(request, BrokeredCaptureRequest::OpenInMnema { .. }) {
+            return Ok(BrokeredCaptureResponse::Error(
+                BrokerErrorResponse::authorization_required(),
+            ));
+        }
+        if matches!(&request, BrokeredCaptureRequest::AuthStatus) {
+            return Ok(BrokeredCaptureResponse::AuthStatus(
+                BrokerAuthStatus::authorized(1),
+            ));
+        }
+        let command_type = request.command_type();
+        let grants = vec![ask_ai_all_retained_grant(&identity)];
+        let response = self.execute_authorized_request(&grants, request).await?;
+        if let Some(command_type) = command_type {
+            self.audit_result(&grants, identity, command_type, response.result_count())?;
+        }
+        Ok(response)
+    }
+
     pub fn list_grants(&self) -> Result<BrokerGrantFile> {
         load_grants(&self.config_dir)
     }
@@ -499,7 +546,10 @@ impl BrokeredCaptureAccess {
                     "failed to resolve Mnema saveDirectory from recording settings".to_string(),
                 )
             })?;
-        AppInfra::initialize(save_directory).await
+        // Brokered access is a read-only consumer that never spawns workers, so it
+        // must not run startup maintenance (orphaned-job reconciliation) against a
+        // database the live desktop app may be actively processing. See ADR 0020.
+        AppInfra::initialize_read_only(save_directory).await
     }
 
     fn audit_result(
@@ -1042,6 +1092,20 @@ fn create_grant_from_request(
     )
 }
 
+fn ask_ai_all_retained_grant(identity: &BrokerClientIdentity) -> BrokerGrant {
+    BrokerGrant {
+        id: ASK_AI_BROKER_GRANT_ID.to_string(),
+        label: identity.label.clone(),
+        normalized_label: identity.normalized_label.clone(),
+        identity_source: identity.source.clone(),
+        created_at_unix_ms: 0,
+        expires_at_unix_ms: u64::MAX,
+        scope: BrokerGrantScope::AllRetainedHistory,
+        revoked: false,
+        revoked_at_unix_ms: None,
+    }
+}
+
 fn revoke_grant(config_dir: &Path, grant_id: &str) -> Result<bool> {
     with_grants_lock(config_dir, |grants| {
         let mut changed = false;
@@ -1229,7 +1293,9 @@ pub async fn authorize_active_opaque_capture_reference(
     let Some(save_directory) = default_save_directory_from_config(config_dir)? else {
         return Ok(None);
     };
-    let infra = AppInfra::initialize(save_directory).await?;
+    // Read-only authorization: skip startup maintenance so this never reconciles
+    // the live desktop app's running jobs (see ADR 0020 / `initialize_read_only`).
+    let infra = AppInfra::initialize_read_only(save_directory).await?;
     match broker_authorize_opaque_reference(config_dir, &infra, &grants, opaque_id).await? {
         Ok(reference) => Ok(Some(reference)),
         Err(_) => Ok(None),
@@ -1611,6 +1677,10 @@ fn map_search_response(
                     frame.app_name,
                     frame.window_title,
                 ),
+                // Frame results have no sub-segment audio anchor.
+                span_start_ms: None,
+                span_end_ms: None,
+                aligned_frame_id: None,
             });
             if results.len() >= limit as usize {
                 break;
@@ -1629,6 +1699,11 @@ fn map_search_response(
                 started_at: audio_result.absolute_start_at,
                 ended_at: audio_result.absolute_end_at,
                 context: None,
+                // Audio Search Result Anchor: carry the match span + aligned
+                // frame so a consumer can land on the cited transcript moment.
+                span_start_ms: Some(audio_result.span_start_ms as i64),
+                span_end_ms: Some(audio_result.span_end_ms as i64),
+                aligned_frame_id: audio_result.aligned_frame.as_ref().map(|frame| frame.id),
             });
         }
         if results.len() == before {
@@ -2189,6 +2264,164 @@ mod tests {
                 .expect("overlapping audio should be authorized");
 
             assert_eq!(response.text, "overlapping transcript");
+        });
+    }
+
+    #[test]
+    fn ask_ai_show_text_authorizes_all_retained_without_persisted_grant() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("ask-ai-show-text");
+            let save_dir = temp_save_dir("ask-ai-show-text");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            write_recording_settings(&config_dir, &save_dir);
+            let now = now_unix_ms();
+            let started_at = format_unix_ms(now.saturating_sub(2 * 24 * 60 * 60 * 1000));
+            let ended_at = format_unix_ms(now.saturating_sub(2 * 24 * 60 * 60 * 1000));
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    save_dir.join("audio.m4a").display().to_string(),
+                    started_at,
+                    ended_at,
+                ))
+                .await
+                .expect("segment should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("job should enqueue");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("job should claim")
+                .expect("job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("all retained transcript"),
+                )
+                .await
+                .expect("job should complete");
+
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+            let opaque_id =
+                encode_signed_opaque_id("audio", segment.id, Some(ASK_AI_BROKER_GRANT_ID), &secret);
+
+            let access = BrokeredCaptureAccess::from_config_dir(config_dir.clone());
+            let identity =
+                BrokerClientIdentity::new("PI", BrokerClientIdentitySource::Inferred).unwrap();
+
+            let response = access
+                .execute_for_ask_ai(identity, BrokeredCaptureRequest::ShowText { opaque_id })
+                .await
+                .unwrap();
+
+            match response {
+                BrokeredCaptureResponse::ShowText(show_text) => {
+                    assert_eq!(show_text.text, "all retained transcript");
+                }
+                other => panic!("expected ShowText response, got {other:?}"),
+            }
+
+            assert!(load_grants(&config_dir).unwrap().grants.is_empty());
+
+            let audit = load_audit_events(&config_dir).unwrap();
+            assert_eq!(audit.events.len(), 1);
+            let event = &audit.events[0];
+            assert_eq!(event.scope_class, "all_retained_history");
+            assert_eq!(event.grant_id, Some(ASK_AI_BROKER_GRANT_ID.to_string()));
+            assert_eq!(event.command_type, "show_text");
+            assert_eq!(event.tool_identity, "PI");
+        });
+    }
+
+    #[test]
+    fn ask_ai_timeline_reaches_all_retained_history() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("ask-ai-timeline");
+            let save_dir = temp_save_dir("ask-ai-timeline");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            write_recording_settings(&config_dir, &save_dir);
+            let now = now_unix_ms();
+            let started_at = format_unix_ms(now.saturating_sub(2 * 24 * 60 * 60 * 1000));
+            let ended_at = format_unix_ms(now.saturating_sub(2 * 24 * 60 * 60 * 1000));
+            infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    save_dir.join("audio.m4a").display().to_string(),
+                    started_at,
+                    ended_at,
+                ))
+                .await
+                .expect("segment should insert");
+
+            let access = BrokeredCaptureAccess::from_config_dir(config_dir.clone());
+            let identity =
+                BrokerClientIdentity::new("PI", BrokerClientIdentitySource::Inferred).unwrap();
+
+            let from = format_unix_ms(now.saturating_sub(3 * 24 * 60 * 60 * 1000));
+            let to = format_unix_ms(now);
+            let response = access
+                .execute_for_ask_ai(
+                    identity,
+                    BrokeredCaptureRequest::Timeline(BrokerTimelineRequest {
+                        from,
+                        to,
+                        limit: Some(50),
+                        app: None,
+                        window_title: None,
+                    }),
+                )
+                .await
+                .unwrap();
+
+            match response {
+                BrokeredCaptureResponse::Timeline(timeline) => {
+                    assert!(!timeline.intervals.is_empty());
+                    assert!(timeline
+                        .intervals
+                        .iter()
+                        .any(|interval| interval.kind == "audio_microphone"));
+                }
+                other => panic!("expected Timeline response, got {other:?}"),
+            }
+
+            assert!(load_grants(&config_dir).unwrap().grants.is_empty());
+        });
+    }
+
+    #[test]
+    fn ask_ai_rejects_open_in_mnema_as_non_data_tool() {
+        run_async_test(async {
+            let access =
+                BrokeredCaptureAccess::from_config_dir(temp_config_dir("ask-ai-open").clone());
+            let identity =
+                BrokerClientIdentity::new("PI", BrokerClientIdentitySource::Inferred).unwrap();
+
+            let response = access
+                .execute_for_ask_ai(
+                    identity,
+                    BrokeredCaptureRequest::OpenInMnema {
+                        opaque_id: "anything".into(),
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response,
+                BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required())
+            );
         });
     }
 
