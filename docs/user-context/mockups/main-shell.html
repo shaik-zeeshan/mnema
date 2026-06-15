@@ -233,10 +233,11 @@
     }
 
     /* ========================================================== INSIGHTS PANEL
-     * The Insights panel now hosts the NEW top-tab workspace (.insights >
-     * .subnav + .insights-main). It defaults to a COMPACT Overview preview —
-     * not the full Overview surface (that's overview.html). The #panel-insights
-     * section must itself be a flex column so the .insights child can fill it. */
+     * The Insights panel hosts the canonical workspace: .insights (flex row) =
+     * .insights-sidebar (left sub-nav rail, styled in app.css) + .insights-main.
+     * It defaults to a COMPACT Overview preview — not the full Split-Briefing
+     * Overview surface (that's overview.html). The #panel-insights section must
+     * itself be a flex column so the .insights child can fill it. */
     #panel-insights {
       display: flex;
       flex-direction: column;
@@ -518,46 +519,92 @@
       </section>
 
       <!-- ========================================================== PANEL B: INSIGHTS -->
-      <!-- NEW top-tab Insights workspace (no left rail). Opens on a compact
-           Overview preview; the full Overview surface lives in overview.html. -->
+      <!-- Insights workspace: a canonical LEFT SIDEBAR sub-nav (.insights-sidebar,
+           copied from _shell.html) beside .insights-main. Opens on a compact
+           Split-Briefing Overview preview; the full Overview surface lives in
+           overview.html. -->
       <section id="panel-insights" aria-label="Insights">
         <div class="insights">
-          <nav class="subnav">
-            <div class="subnav-tabs">
-              <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
-              <a class="subnav-tab" href="subjects-index.html">Subjects</a>
-              <a class="subnav-tab" href="context.html">Context</a>
-              <a class="subnav-tab" href="chat.html">Chat</a>
+          <!-- Canonical LEFT SIDEBAR (copied verbatim from _shell.html). This is
+               the Insights SUB-surface nav (Overview / Subjects / Context) + chat
+               zone — NOT the titlebar surface toggle. Overview row is .active here. -->
+          <aside class="insights-sidebar">
+            <div class="sidebar-head">
+              <span class="sidebar-eyebrow">Insights</span>
+              <!-- ENGINE ON variant (default) -->
+              <span class="sidebar-engine"><span class="sidebar-engine-dot"></span>engine on</span>
+              <!-- ENGINE OFF variant (shown here for reference; in a real surface keep only one):
+              <span class="sidebar-engine sidebar-engine--off"><span class="sidebar-engine-dot"></span>Engine off · <a class="sidebar-engine-enable">Enable</a></span>
+              -->
             </div>
-            <div class="subnav-meta">
-              <div class="subnav-search">
-                <span class="subnav-search-glyph">⌕</span>
-                <span class="subnav-search-text">Jump to a subject or ask…</span>
-                <span class="kbd">⌘K</span>
+
+            <!-- mark ONLY your surface's nav row .active + aria-current="page";
+                 on the Chat surface, NO nav row is active — the open chat row is
+                 active instead. -->
+            <nav class="sidebar-nav">
+              <a class="sidebar-nav-row active" aria-current="page" href="overview.html"><span class="snav-label">Overview</span></a>
+              <a class="sidebar-nav-row" href="subjects-index.html"><span class="snav-label">Subjects</span><span class="snav-count">12</span></a>
+              <a class="sidebar-nav-row" href="context.html"><span class="snav-label">Context</span><span class="snav-count">4</span></a>
+            </nav>
+
+            <div class="sidebar-divider"></div>
+
+            <div class="sidebar-chatzone">
+              <a class="sidebar-newchat" href="chat.html"><span>+ New chat</span></a>
+              <div class="sidebar-search"><span>⌕</span><span>search chats…</span></div>
+
+              <!-- Each chat row links to chat.html; the active row is set on the
+                   Chat surface, not here. -->
+              <div class="sidebar-history">
+                <div class="sidebar-group-label">Today</div>
+                <a class="sidebar-chat-row" href="chat.html">Time spent this week</a>
+                <a class="sidebar-chat-row" href="chat.html">Apple silicon interest over time</a>
+                <a class="sidebar-chat-row" href="chat.html">Where did Tuesday go?</a>
+
+                <div class="sidebar-group-label">Yesterday</div>
+                <a class="sidebar-chat-row" href="chat.html">Rust learning progress</a>
+                <a class="sidebar-chat-row" href="chat.html">Most distracting apps</a>
+
+                <div class="sidebar-group-label">This week</div>
+                <a class="sidebar-chat-row" href="chat.html">Meeting load by day</a>
+                <a class="sidebar-chat-row" href="chat.html">Design vs build split</a>
+                <a class="sidebar-chat-row" href="chat.html">What did I read about WebGPU?</a>
               </div>
-              <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
             </div>
-          </nav>
+
+            <div class="insights-sidebar-foot"><span class="foot-dot"></span>engine · Claude</div>
+          </aside>
 
           <main class="insights-main">
             <!-- BUILD NOTES — main-shell
                  Slice: issue #103 — Main shell + Timeline/Insights toggle.
-                 "dashboard" is RETIRED → Main (the window) hosts two switchable Surfaces:
-                   Timeline (existing capture-inspection view) and Insights (new AI workspace).
-                 Insights is a workspace of sub-surfaces (Overview / Subjects / Context / Chat),
-                   shown here as a COMPACT Overview preview only — the real surfaces live in
-                   overview.html / subjects-index.html / context.html / chat.html.
+                 "dashboard" is RETIRED → Main (the window) hosts two switchable Surfaces,
+                   chosen from the TITLEBAR surface toggle:
+                   Timeline (existing capture-inspection view) and Insights (the AI workspace).
+                 INSIDE Insights, the sub-surface nav is a canonical LEFT SIDEBAR
+                   (.insights-sidebar, defined in app.css; markup copied from _shell.html) —
+                   NOT a horizontal tab bar. The sidebar holds: an INSIGHTS eyebrow + engine
+                   indicator, the surface nav (Overview / Subjects / Context), a divider, and
+                   the CHAT ZONE (+ New chat, search, date-grouped chat history). Note the
+                   two-level model: the titlebar toggle picks Timeline⇄Insights; the sidebar
+                   picks the Insights sub-surface. The sidebar does NOT replace the toggle.
+                 The .insights-main region shown here is a COMPACT Overview preview only — the
+                   real Overview is the glanceable two-column "Split Briefing" in overview.html;
+                   Subjects / Context / Chat live in subjects-index.html / context.html / chat.html.
                  Reuse: existing dashboard Timeline component verbatim for the Timeline panel;
                    ThemeModeControl.svelte for the theme toggle; Switch.svelte where toggles apply.
-                 Interactions: surface toggle swaps panels; Insights tabs route to sub-surfaces.
+                 Interactions: titlebar surface toggle swaps panels; sidebar nav rows route to
+                   sub-surfaces; chat rows open prior conversations in chat.html.
                  Engine = Rust-side rig-core; derived data in Encrypted Capture Index (design-stage,
                    needs new Tauri commands + migrations). ADRs: ../../adr/0028-ai-features-call-models-rust-side-via-rig-core.md
                  Full guide: see README.md
             -->
-            <!-- Compact Overview preview — representative, not the full surface -->
+            <!-- Compact Overview preview — representative, not the full surface.
+                 The real Overview is the glanceable two-column "Split Briefing"
+                 in overview.html; this is just a coherent stand-in beside the sidebar. -->
             <div class="ov-preview-head">
               <h1>Overview</h1>
-              <span class="caption">Insights opens on Overview · full surface in overview.html</span>
+              <span class="caption">Insights opens on the Split-Briefing Overview · full surface in overview.html</span>
             </div>
 
             <!-- bento glance band: 4 small tiles -->

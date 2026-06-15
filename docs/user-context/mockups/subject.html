@@ -433,25 +433,56 @@
 
     <div class="app-body">
       <div class="insights">
-        <nav class="subnav">
-          <div class="subnav-tabs">
-            <a class="subnav-tab" href="overview.html">Overview</a>
-            <a class="subnav-tab active" aria-current="page" href="subjects-index.html">Subjects</a>
-            <a class="subnav-tab" href="context.html">Context</a>
-            <a class="subnav-tab" href="chat.html">Chat</a>
+        <aside class="insights-sidebar">
+          <div class="sidebar-head">
+            <span class="sidebar-eyebrow">Insights</span>
+            <!-- ENGINE ON variant (default) -->
+            <span class="sidebar-engine"><span class="sidebar-engine-dot"></span>engine on</span>
+            <!-- ENGINE OFF variant (shown here for reference; in a real surface keep only one):
+            <span class="sidebar-engine sidebar-engine--off"><span class="sidebar-engine-dot"></span>Engine off · <a class="sidebar-engine-enable">Enable</a></span>
+            -->
           </div>
-          <div class="subnav-meta">
-            <div class="subnav-search">
-              <span class="subnav-search-glyph">⌕</span>
-              <span class="subnav-search-text">Jump to a subject or ask…</span>
-              <span class="kbd">⌘K</span>
+
+          <!-- mark ONLY your surface's nav row .active + aria-current="page";
+               on the Chat surface, NO nav row is active — the open chat row is
+               active instead. -->
+          <nav class="sidebar-nav">
+            <a class="sidebar-nav-row" href="overview.html"><span class="snav-label">Overview</span></a>
+            <a class="sidebar-nav-row active" aria-current="page" href="subjects-index.html"><span class="snav-label">Subjects</span><span class="snav-count">12</span></a>
+            <a class="sidebar-nav-row" href="context.html"><span class="snav-label">Context</span><span class="snav-count">4</span></a>
+          </nav>
+
+          <div class="sidebar-divider"></div>
+
+          <div class="sidebar-chatzone">
+            <a class="sidebar-newchat" href="chat.html"><span>+ New chat</span></a>
+            <div class="sidebar-search"><span>⌕</span><span>search chats…</span></div>
+
+            <!-- Each chat row links to chat.html; the active row is set on the
+                 Chat surface, not here. -->
+            <div class="sidebar-history">
+              <div class="sidebar-group-label">Today</div>
+              <a class="sidebar-chat-row" href="chat.html">Time spent this week</a>
+              <a class="sidebar-chat-row" href="chat.html">Apple silicon interest over time</a>
+              <a class="sidebar-chat-row" href="chat.html">Where did Tuesday go?</a>
+
+              <div class="sidebar-group-label">Yesterday</div>
+              <a class="sidebar-chat-row" href="chat.html">Rust learning progress</a>
+              <a class="sidebar-chat-row" href="chat.html">Most distracting apps</a>
+
+              <div class="sidebar-group-label">This week</div>
+              <a class="sidebar-chat-row" href="chat.html">Meeting load by day</a>
+              <a class="sidebar-chat-row" href="chat.html">Design vs build split</a>
+              <a class="sidebar-chat-row" href="chat.html">What did I read about WebGPU?</a>
             </div>
-            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
           </div>
-        </nav>
+
+          <div class="insights-sidebar-foot"><span class="foot-dot"></span>engine · Claude</div>
+        </aside>
 
         <main class="insights-main">
           <!-- BUILD NOTES — subject (detail)
+               Nav: chrome is now the shared LEFT SIDEBAR (.insights-sidebar from _shell.html), not the old .subnav; the in-body breadcrumb still anchors the drill-in.
                Slice: #106 — single Subject view. Shows its INDIVIDUAL Conclusions, each with its own
                  Confidence-over-time trajectory (Confidence History) — NOT a single rolled-up sentiment score.
                Tier: ENGINE — Conclusions + Confidence History are rig-core-derived, in the Encrypted Capture Index.

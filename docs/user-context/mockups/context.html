@@ -4,8 +4,9 @@
   Two-pane redesign: a MAIN column (composer + authored statement list) beside a
   sticky SIDE PANEL that explains how Mnema uses authored context — authored vs
   inferred, steering links into the inferred dossier, and the sensitive-category
-  guardrail. Shared shell copied verbatim from _shell.html; only .insights-main
-  diverges. All color is token-driven (no hardcoded hex).
+  guardrail. Chrome is the shared LEFT SIDEBAR (.insights-sidebar), copied verbatim
+  from _shell.html — NOT the old top .subnav. Only .insights-main diverges. All
+  color is token-driven (no hardcoded hex).
 -->
 <html lang="en">
 <head>
@@ -436,25 +437,57 @@
 
     <div class="app-body">
       <div class="insights">
-        <nav class="subnav">
-          <div class="subnav-tabs">
-            <a class="subnav-tab" href="overview.html">Overview</a>
-            <a class="subnav-tab" href="subjects-index.html">Subjects</a>
-            <a class="subnav-tab active" aria-current="page" href="context.html">Context</a>
-            <a class="subnav-tab" href="chat.html">Chat</a>
+        <aside class="insights-sidebar">
+          <div class="sidebar-head">
+            <span class="sidebar-eyebrow">Insights</span>
+            <!-- ENGINE ON variant (default) -->
+            <span class="sidebar-engine"><span class="sidebar-engine-dot"></span>engine on</span>
+            <!-- ENGINE OFF variant (shown here for reference; in a real surface keep only one):
+            <span class="sidebar-engine sidebar-engine--off"><span class="sidebar-engine-dot"></span>Engine off · <a class="sidebar-engine-enable">Enable</a></span>
+            -->
           </div>
-          <div class="subnav-meta">
-            <div class="subnav-search">
-              <span class="subnav-search-glyph">⌕</span>
-              <span class="subnav-search-text">Jump to a subject or ask…</span>
-              <span class="kbd">⌘K</span>
+
+          <!-- Context surface: ONLY the Context nav row is .active + aria-current="page";
+               Overview/Subjects plain; NO chat row is active. -->
+          <nav class="sidebar-nav">
+            <a class="sidebar-nav-row" href="overview.html"><span class="snav-label">Overview</span></a>
+            <a class="sidebar-nav-row" href="subjects-index.html"><span class="snav-label">Subjects</span><span class="snav-count">12</span></a>
+            <a class="sidebar-nav-row active" aria-current="page" href="context.html"><span class="snav-label">Context</span><span class="snav-count">4</span></a>
+          </nav>
+
+          <div class="sidebar-divider"></div>
+
+          <div class="sidebar-chatzone">
+            <a class="sidebar-newchat" href="chat.html"><span>+ New chat</span></a>
+            <div class="sidebar-search"><span>⌕</span><span>search chats…</span></div>
+
+            <!-- Each chat row links to chat.html; the active row is set on the
+                 Chat surface, not here. -->
+            <div class="sidebar-history">
+              <div class="sidebar-group-label">Today</div>
+              <a class="sidebar-chat-row" href="chat.html">Time spent this week</a>
+              <a class="sidebar-chat-row" href="chat.html">Apple silicon interest over time</a>
+              <a class="sidebar-chat-row" href="chat.html">Where did Tuesday go?</a>
+
+              <div class="sidebar-group-label">Yesterday</div>
+              <a class="sidebar-chat-row" href="chat.html">Rust learning progress</a>
+              <a class="sidebar-chat-row" href="chat.html">Most distracting apps</a>
+
+              <div class="sidebar-group-label">This week</div>
+              <a class="sidebar-chat-row" href="chat.html">Meeting load by day</a>
+              <a class="sidebar-chat-row" href="chat.html">Design vs build split</a>
+              <a class="sidebar-chat-row" href="chat.html">What did I read about WebGPU?</a>
             </div>
-            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
           </div>
-        </nav>
+
+          <div class="insights-sidebar-foot"><span class="foot-dot"></span>engine · Claude</div>
+        </aside>
 
         <main class="insights-main">
           <!-- BUILD NOTES — context
+               Nav: the chrome is now the shared LEFT SIDEBAR (.insights-sidebar, copied verbatim
+                 from _shell.html), NOT the old top .subnav. The Context nav row is .active +
+                 aria-current="page"; the body below is unchanged and runs in .insights-main.
                Slice: #107 — user-AUTHORED Context. The user tells Mnema about themselves directly
                  ("I'm a designer", "I care about X"); it COMPLEMENTS the inferred Conclusion dossier,
                  steering it up front rather than only correcting after the fact.
