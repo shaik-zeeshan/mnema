@@ -78,39 +78,18 @@ const OCR_RETRY_BACKOFF_SECONDS: [i64; 2] = [30, 120];
 /// failing audio lane does not re-claim ahead of fresh work every cycle.
 const AUDIO_RETRY_BACKOFF_SECONDS: [i64; 2] = [60, 300];
 
-/// Bounded failure-retry policy for one processor kind: how many genuine failures it tolerates
-/// before staying failed, and the per-attempt backoff. Returned by
-/// [`failure_retry_policy_for_processor`] for processors that participate in bounded retry.
-struct FailureRetryPolicy {
-    max_attempts: i64,
-    backoff_seconds: &'static [i64],
-}
-
-impl FailureRetryPolicy {
-    /// The backoff (seconds) before the next attempt, given how many failures have already been
-    /// recorded. Saturates at the last configured step.
-    fn backoff_seconds(&self, failures_recorded: i64) -> i64 {
-        let index = failures_recorded.max(1).saturating_sub(1) as usize;
-        self.backoff_seconds
-            .get(index)
-            .copied()
-            .or_else(|| self.backoff_seconds.last().copied())
-            .unwrap_or(0)
-    }
-}
-
 /// The bounded failure-retry policy for a processor, or `None` for processors that are not
 /// automatically retried on failure. OCR and the three audio processors are retried; anything
 /// else (e.g. ad hoc document processors) stays failed on first failure.
-fn failure_retry_policy_for_processor(processor: &str) -> Option<FailureRetryPolicy> {
+fn failure_retry_policy_for_processor(processor: &str) -> Option<crate::retry_policy::RetryPolicy> {
     match processor {
-        OCR_PROCESSOR => Some(FailureRetryPolicy {
+        OCR_PROCESSOR => Some(crate::retry_policy::RetryPolicy {
             max_attempts: OCR_FAILED_JOB_MAX_ATTEMPTS,
             backoff_seconds: &OCR_RETRY_BACKOFF_SECONDS,
         }),
         AUDIO_TRANSCRIPTION_PROCESSOR
         | SPEAKER_ANALYSIS_PROCESSOR
-        | SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR => Some(FailureRetryPolicy {
+        | SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR => Some(crate::retry_policy::RetryPolicy {
             max_attempts: AUDIO_FAILED_JOB_MAX_ATTEMPTS,
             backoff_seconds: &AUDIO_RETRY_BACKOFF_SECONDS,
         }),

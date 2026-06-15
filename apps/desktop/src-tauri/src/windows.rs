@@ -711,6 +711,7 @@ fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
         "storage" => Some("storage"),
         "appearance" => Some("appearance"),
         "developer" => Some("developer"),
+        "intelligence" | "reasoning" | "ai" | "user-context" => Some("intelligence"),
         _ => None,
     }
 }
@@ -1747,6 +1748,10 @@ mod tests {
             Some("shortcuts")
         );
         assert_eq!(normalize_settings_tab("about"), Some("about"));
+        assert_eq!(normalize_settings_tab("intelligence"), Some("intelligence"));
+        assert_eq!(normalize_settings_tab("reasoning"), Some("intelligence"));
+        assert_eq!(normalize_settings_tab("ai"), Some("intelligence"));
+        assert_eq!(normalize_settings_tab("user-context"), Some("intelligence"));
     }
 
     #[test]

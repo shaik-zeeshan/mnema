@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema · Subjects · Conviction</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* ===================================================================
+       01-conviction.html — the "Conviction View" redesign of Subjects.
+       Organized around the two things in the data that matter: HOW
+       FIRMLY a belief is held, and WHICH WAY it is moving. The movement
+       arc (a static inline-SVG sparkline, one polyline per conclusion)
+       is the hero of every row. Tiers read top-to-bottom like a
+       sentence: sure → forming → tentative → fading.
+
+       Every color comes from app.css / tokens.css custom properties —
+       zero hardcoded hex. Static at rest: the only motion is snappy
+       CSS transitions on hover and expand/collapse. No canvas, no rAF,
+       no loops, no ambient animation.
+       =================================================================== */
+
+    /* ---- Page header ---- */
+    .conv-head { margin-bottom: 14px; }
+    .conv-head h1 {
+      margin: 0 0 4px;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--app-text-strong);
+      letter-spacing: 0.01em;
+    }
+    .conv-head .conv-sub {
+      margin: 0;
+      font-size: 12px;
+      color: var(--app-text-muted);
+      max-width: 760px;
+    }
+    .conv-summary {
+      margin: 8px 0 0;
+      font-size: 12px;
+      color: var(--app-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .conv-summary .num { color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    .conv-summary .up { color: var(--app-accent-strong); }
+    .conv-summary .down { color: var(--app-danger); }
+    .conv-summary .sep { color: var(--app-text-faint); padding: 0 6px; }
+
+    /* ---- Controls row ---- */
+    .conv-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 14px 0 10px;
+    }
+    .conv-search {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      width: 220px;
+      min-width: 150px;
+      height: 28px;
+      padding: 0 10px;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 6px;
+      background: var(--app-surface);
+      transition: border-color 0.12s ease;
+    }
+    .conv-search:focus-within { border-color: var(--app-border-hover); }
+    .conv-search-glyph { color: var(--app-text-subtle); font-size: 12px; }
+    .conv-search input {
+      flex: 1 1 auto;
+      min-width: 0;
+      border: none;
+      outline: none;
+      background: transparent;
+      font: inherit;
+      font-size: 12px;
+      color: var(--app-text-strong);
+    }
+    .conv-search input::placeholder { color: var(--app-text-subtle); }
+    .conv-count {
+      margin-left: auto;
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- Tier section ---- */
+    .conv-tier { margin-top: 16px; }
+    .conv-tier:first-of-type { margin-top: 4px; }
+    .conv-tier-head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .conv-tier-note {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--app-text-faint);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.02em;
+    }
+    .conv-rule {
+      height: 1px;
+      background: var(--app-border);
+      margin-bottom: 10px;
+    }
+    .conv-rows { display: flex; flex-direction: column; gap: 8px; }
+    .conv-tier--faded .conv-tier-head .section-title { color: var(--app-text-subtle); }
+    .conv-tier--faded .conv-rule { background: var(--app-border); opacity: 0.6; }
+
+    /* ---- Subject row ---- */
+    .conv-row {
+      padding: 0;
+      cursor: pointer;
+      overflow: hidden;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .conv-row:hover {
+      background: var(--app-surface-hover);
+      border-color: var(--app-border-hover);
+    }
+    .conv-row.is-faded { opacity: 0.6; }
+    .conv-row.is-dismissed { opacity: 0.4; }
+    .conv-row.is-flash {
+      border-color: var(--app-accent);
+      background: var(--app-accent-bg);
+    }
+
+    .conv-rowmain {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 11px 14px;
+    }
+
+    /* row LEFT — meta */
+    .conv-meta { flex: 1 1 auto; min-width: 0; }
+    .conv-metatop {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .conv-catdot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }
+    .conv-name {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--app-text-strong);
+      letter-spacing: 0.01em;
+    }
+    .conv-pin { font-size: 11px; color: var(--app-accent-strong); }
+    .conv-cc { font-size: 11px; color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
+    .conv-headline {
+      margin-top: 3px;
+      font-size: 12px;
+      color: var(--app-text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 540px;
+    }
+    .is-dismissed .conv-headline { text-decoration: line-through; }
+
+    /* trend pill colors */
+    .pill.trend-up { color: var(--app-accent-strong); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+    .pill.trend-down { color: var(--app-danger); border-color: var(--app-danger-border); background: var(--app-danger-bg); }
+    .pill.trend-steady { color: var(--app-text-muted); }
+
+    /* row RIGHT — hero sparkline + figure */
+    .conv-hero {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 0 0 auto;
+    }
+    .conv-spark { display: block; flex: 0 0 auto; }
+    .conv-figure { text-align: right; min-width: 56px; }
+    .conv-conf {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--app-text-strong);
+      font-variant-numeric: tabular-nums;
+      line-height: 1.2;
+    }
+    .conv-moved {
+      font-size: 10.5px;
+      color: var(--app-text-faint);
+      font-variant-numeric: tabular-nums;
+    }
+    .conv-caret {
+      flex: 0 0 auto;
+      color: var(--app-text-subtle);
+      font-size: 11px;
+      transition: transform 0.12s ease, color 0.12s ease;
+    }
+    .conv-row:hover .conv-caret { color: var(--app-text-muted); }
+    .conv-row.is-open .conv-caret { transform: rotate(90deg); color: var(--app-accent-strong); }
+
+    /* ---- Expanded detail ---- */
+    .conv-detail {
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: max-height 0.18s ease, opacity 0.18s ease;
+    }
+    .conv-row.is-open .conv-detail { max-height: 640px; opacity: 1; }
+    .conv-detail-inner {
+      border-top: 1px solid var(--app-border);
+      padding: 12px 14px 13px;
+    }
+    .conv-detail-label {
+      font-size: 10.5px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--app-text-subtle);
+      margin: 0 0 7px;
+    }
+    .conv-detail-block + .conv-detail-block { margin-top: 13px; }
+
+    /* ranked conclusions */
+    .conv-concl { display: flex; flex-direction: column; gap: 7px; }
+    .conv-concl-row {
+      display: grid;
+      grid-template-columns: 1fr 120px 42px 54px;
+      align-items: center;
+      gap: 10px;
+    }
+    .conv-concl-row.is-faded { opacity: 0.55; }
+    .conv-concl-stmt {
+      font-size: 12px;
+      color: var(--app-text-strong);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .conv-concl-row.is-faded .conv-concl-stmt { color: var(--app-text); }
+    .conv-concl-pct {
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+    /* muted confidence-bar fill for faded conclusions */
+    .conv-concl-row.is-faded .confidence-bar-fill {
+      background: var(--app-text-subtle);
+      box-shadow: none;
+    }
+    .chip.status-active { color: var(--app-accent-strong); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+    .chip.status-faded { color: var(--app-text-faint); }
+
+    /* grounded-in / also-informs chip rows */
+    .conv-chiprow { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .chip.src-screen {
+      color: var(--app-source-screen);
+      background: var(--app-source-screen-bg);
+      border-color: var(--app-source-screen-border);
+    }
+    .chip.src-mic {
+      color: var(--app-source-mic);
+      background: var(--app-source-mic-bg);
+      border-color: var(--app-source-mic-border);
+    }
+    .chip .chip-time { color: var(--app-text-faint); font-variant-numeric: tabular-nums; }
+    .conv-informs-chip { cursor: pointer; }
+    .conv-informs-chip:hover {
+      border-color: var(--app-border-hover);
+      color: var(--app-text-strong);
+    }
+    .conv-detail-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--app-border);
+    }
+    .conv-detail-actions .spacer { flex: 1 1 auto; }
+    .btn.is-pinned { color: var(--app-accent-strong); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+
+    /* empty filter state */
+    .conv-empty {
+      padding: 30px 14px;
+      text-align: center;
+      color: var(--app-text-muted);
+      font-size: 12px;
+    }
+
+    /* footer */
+    .conv-foot {
+      margin-top: 22px;
+      padding-top: 12px;
+      border-top: 1px solid var(--app-border);
+      font-size: 11px;
+      color: var(--app-text-muted);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .conv-row, .conv-caret, .conv-detail, .conv-search { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights"><span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span></div>
+        <span class="wordmark">mnema</span>
+      </div>
+      <div class="surface-toggle">
+        <button type="button">Timeline</button>
+        <button type="button" class="active" aria-current="page">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip"><span class="dot"></span>idle</span>
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+      </div>
+    </header>
+    <div class="app-body">
+      <div class="insights">
+        <nav class="subnav">
+          <div class="subnav-tabs">
+            <a class="subnav-tab" href="overview.html">Overview</a>
+            <a class="subnav-tab active" aria-current="page" href="subjects-index.html">Subjects</a>
+            <a class="subnav-tab" href="context.html">Context</a>
+            <a class="subnav-tab" href="chat.html">Chat</a>
+          </div>
+          <div class="subnav-meta"><span class="engine-status"><span class="dot"></span>Engine: Claude</span></div>
+        </nav>
+        <main class="insights-main">
+          <div class="conv-head">
+            <h1>Subjects</h1>
+            <p class="conv-sub">What Mnema has come to believe about you — and how firmly. Strongest views first; fading ones are kept for history.</p>
+            <p class="conv-summary" id="convSummary"></p>
+          </div>
+
+          <div class="conv-controls">
+            <div class="sort-seg" id="convSort" role="tablist" aria-label="Organize subjects by">
+              <button type="button" class="active" data-axis="conviction" aria-current="true">By conviction</button>
+              <button type="button" data-axis="movement">By movement</button>
+            </div>
+            <label class="conv-search">
+              <span class="conv-search-glyph">⌕</span>
+              <input id="convFilter" type="text" placeholder="Filter…" aria-label="Filter subjects" />
+            </label>
+            <span class="conv-count" id="convCount"></span>
+          </div>
+
+          <div id="convBody"></div>
+
+          <p class="conv-foot">Confidence is recency-weighted — views warm with fresh evidence and cool on their own. Faded views are kept for history, never deleted.</p>
+        </main>
+      </div>
+    </div>
+  </div>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+  <script>
+    (function () {
+      "use strict";
+      var G = window.MNEMA_GRAPH;
+      var subjects = G.subjects;
+      var categories = G.categories;
+      var edges = G.edges;
+
+      var catByKey = {};
+      categories.forEach(function (c) { catByKey[c.key] = c; });
+      var subjById = {};
+      subjects.forEach(function (s) { subjById[s.id] = s; });
+
+      // -------- deterministic helpers --------
+      // String hash → stable integer (FNV-ish), so per-conclusion jitter is
+      // identical every load and survives theme flips. No Math.random anywhere.
+      function hash(str) {
+        var h = 2166136261;
+        for (var i = 0; i < str.length; i++) {
+          h ^= str.charCodeAt(i);
+          h = (h * 16777619) >>> 0;
+        }
+        return h >>> 0;
+      }
+      // map a hash to a deterministic float in [-1, 1]
+      function jitter(seed) {
+        return ((hash(seed) % 2000) / 1000) - 1;
+      }
+      function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+      // -------- synthesize a per-conclusion trajectory --------
+      // 8 points, oldest(left) → now(right). Endpoint = current confidence.
+      // Shape driven by subject trend + faded; small deterministic wobble from
+      // the conclusion statement hash so each line looks distinct but stable.
+      function trajectory(subject, conclusion, idx) {
+        var N = 8;
+        var cur = conclusion.confidence;
+        var seedBase = subject.id + "|" + idx + "|" + conclusion.statement.length;
+        var pts = [];
+        var start, end;
+
+        if (subject.faded || conclusion.status === "faded") {
+          // rose, then decayed; ends LOW (below ~0.15).
+          var peak = clamp(cur + 0.28 + (hash(seedBase) % 12) / 100, 0.35, 0.9);
+          end = clamp(0.05 + (hash(seedBase + "f") % 9) / 100, 0.03, 0.14);
+          for (var i = 0; i < N; i++) {
+            var t = i / (N - 1);
+            var v;
+            if (t < 0.45) {
+              // rise from a low base to the peak
+              v = 0.18 + (peak - 0.18) * (t / 0.45);
+            } else {
+              // decay from peak to the low end
+              v = peak + (end - peak) * ((t - 0.45) / 0.55);
+            }
+            v += jitter(seedBase + i) * 0.018;
+            pts.push(clamp(v, 0.02, 0.97));
+          }
+          pts[N - 1] = end;
+          return pts;
+        }
+
+        if (subject.trend === "up") {
+          start = clamp(cur - 0.30 - (hash(seedBase) % 14) / 100, 0.08, cur - 0.04);
+          end = cur;
+        } else if (subject.trend === "down") {
+          start = clamp(cur + 0.26 + (hash(seedBase) % 12) / 100, cur + 0.04, 0.95);
+          end = cur;
+        } else { // steady — gentle wobble around current
+          start = clamp(cur + (jitter(seedBase) * 0.06), 0.05, 0.95);
+          end = cur;
+        }
+
+        for (var k = 0; k < N; k++) {
+          var tt = k / (N - 1);
+          // ease-in-out interpolation start→end
+          var eased = tt * tt * (3 - 2 * tt);
+          var base = start + (end - start) * eased;
+          // subtle, stable wobble (smaller near the end so endpoint stays exact)
+          var wob = jitter(seedBase + "w" + k) * 0.025 * (1 - tt * 0.6);
+          base += wob;
+          pts.push(clamp(base, 0.02, 0.98));
+        }
+        pts[N - 1] = end; // pin endpoint to the real current confidence
+        return pts;
+      }
+
+      // -------- sparkline SVG (one polyline per conclusion) --------
+      function sparkline(subject) {
+        var W = 160, H = 40, padX = 3, padTop = 4, padBot = 4;
+        var innerH = H - padTop - padBot;
+        var concls = subject.conclusions;
+        var n = concls.length;
+        var catVar = catByKey[subject.category].token;
+
+        function xAt(i, total) { return padX + (W - padX * 2) * (i / (total - 1)); }
+        function yAt(v) { return padTop + innerH * (1 - v); } // invert: high conf = top
+
+        var svg = '<svg class="conv-spark" width="' + W + '" height="' + H +
+          '" viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true">';
+
+        // faint dashed "display floor" reference at confidence 0.15
+        var floorY = yAt(0.15).toFixed(2);
+        svg += '<line x1="' + padX + '" y1="' + floorY + '" x2="' + (W - padX) +
+          '" y2="' + floorY + '" stroke="var(--app-text-faint)" stroke-width="1" ' +
+          'stroke-dasharray="2 3" opacity="0.5" />';
+
+        // one polyline per conclusion, strongest = most opaque
+        concls.forEach(function (c, idx) {
+          var pts = trajectory(subject, c, idx);
+          var total = pts.length;
+          var coords = pts.map(function (v, i) {
+            return xAt(i, total).toFixed(2) + "," + yAt(v).toFixed(2);
+          }).join(" ");
+          // opacity ramp: first (strongest) conclusion most opaque
+          var op = (1 - idx * 0.26);
+          op = op < 0.34 ? 0.34 : op;
+          var faded = subject.faded || c.status === "faded";
+          var dash = faded ? ' stroke-dasharray="3 2.5"' : '';
+          if (faded) op = op * 0.7;
+          svg += '<polyline points="' + coords + '" fill="none" ' +
+            'stroke="var(' + catVar + ')" stroke-width="1.4" ' +
+            'stroke-linecap="round" stroke-linejoin="round" ' +
+            'vector-effect="non-scaling-stroke" opacity="' + op.toFixed(2) + '"' + dash + ' />';
+          // small dot at the current (rightmost) endpoint of the top conclusion
+          if (idx === 0) {
+            var lx = xAt(total - 1, total).toFixed(2);
+            var ly = yAt(pts[total - 1]).toFixed(2);
+            svg += '<circle cx="' + lx + '" cy="' + ly + '" r="1.9" ' +
+              'fill="var(' + catVar + ')" opacity="' + (faded ? 0.5 : 0.95) + '" />';
+          }
+        });
+
+        svg += '</svg>';
+        return svg;
+      }
+
+      // -------- evidence chips (deterministic, plausible) --------
+      var REL_TIMES = ["12m ago", "1h ago", "3h ago", "yesterday", "2d ago", "4d ago", "1w ago"];
+      function evidenceChips(subject) {
+        // derive 2–3 deterministic evidence chips from the subject id
+        var h = hash(subject.id + "ev");
+        var count = 2 + (h % 2); // 2 or 3
+        var out = "";
+        for (var i = 0; i < count; i++) {
+          var seed = hash(subject.id + "src" + i);
+          var isScreen = (seed % 3) !== 0; // mostly screen, some mic
+          var cls = isScreen ? "src-screen" : "src-mic";
+          var label = isScreen ? "screen" : "audio";
+          var time = REL_TIMES[(hash(subject.id + "t" + i)) % REL_TIMES.length];
+          out += '<span class="chip ' + cls + '">' + label +
+            ' <span class="chip-time">' + time + '</span></span>';
+        }
+        return out;
+      }
+
+      // -------- "also informs" from edges --------
+      function relatedSubjects(subject) {
+        var rel = [];
+        edges.forEach(function (e) {
+          if (e.a === subject.id && subjById[e.b]) rel.push({ id: e.b, w: e.weight });
+          else if (e.b === subject.id && subjById[e.a]) rel.push({ id: e.a, w: e.weight });
+        });
+        rel.sort(function (a, b) { return b.w - a.w; });
+        return rel;
+      }
+
+      // -------- build one subject row --------
+      function rowHTML(subject) {
+        var cat = catByKey[subject.category];
+        var trendPill, trendGlyph;
+        if (subject.trend === "up") { trendPill = "trend-up"; trendGlyph = "▲ warming"; }
+        else if (subject.trend === "down") { trendPill = "trend-down"; trendGlyph = "▼ cooling"; }
+        else { trendPill = "trend-steady"; trendGlyph = "– steady"; }
+
+        var conf = subject.confidence.toFixed(2);
+
+        // ranked conclusions detail
+        var conclHTML = subject.conclusions.map(function (c) {
+          var isFaded = c.status === "faded";
+          var pct = Math.round(c.confidence * 100);
+          return '<div class="conv-concl-row' + (isFaded ? " is-faded" : "") + '">' +
+            '<span class="conv-concl-stmt" title="' + esc(c.statement) + '">' + esc(c.statement) + '</span>' +
+            '<span class="confidence-bar"><span class="confidence-bar-fill" style="width:' + pct + '%"></span></span>' +
+            '<span class="conv-concl-pct">' + pct + '%</span>' +
+            '<span class="chip ' + (isFaded ? "status-faded" : "status-active") + '">' +
+              (isFaded ? "faded" : "active") + '</span>' +
+          '</div>';
+        }).join("");
+
+        // also-informs chips
+        var rel = relatedSubjects(subject);
+        var relHTML = rel.length
+          ? rel.map(function (r) {
+              return '<span class="chip conv-informs-chip" data-goto="' + r.id + '">' +
+                esc(subjById[r.id].name) + '</span>';
+            }).join("")
+          : '<span class="faint">No shared evidence yet.</span>';
+
+        return '' +
+        '<div class="card conv-row' + (subject.faded ? " is-faded" : "") + '"' +
+          ' data-id="' + subject.id + '"' +
+          (subject.pinned ? ' data-pinned="1"' : '') + '>' +
+          '<div class="conv-rowmain">' +
+            '<div class="conv-meta">' +
+              '<div class="conv-metatop">' +
+                '<span class="conv-catdot" style="background:var(' + cat.token + ')"></span>' +
+                '<span class="conv-name">' + esc(subject.name) + '</span>' +
+                (subject.pinned ? '<span class="conv-pin" title="Pinned">📌</span>' : '') +
+                '<span class="pill ' + trendPill + '">' + trendGlyph + '</span>' +
+                '<span class="conv-cc">· ' + subject.conclusionCount + ' conclusions</span>' +
+              '</div>' +
+              '<div class="conv-headline">' + esc(subject.headline) + '</div>' +
+            '</div>' +
+            '<div class="conv-hero">' +
+              sparkline(subject) +
+              '<div class="conv-figure">' +
+                '<div class="conv-conf">' + conf + '</div>' +
+                '<div class="conv-moved">' + esc(subject.lastMoved) + '</div>' +
+              '</div>' +
+              '<span class="conv-caret">▶</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="conv-detail">' +
+            '<div class="conv-detail-inner">' +
+              '<div class="conv-detail-block">' +
+                '<p class="conv-detail-label">Conclusions · ranked by confidence</p>' +
+                '<div class="conv-concl">' + conclHTML + '</div>' +
+              '</div>' +
+              '<div class="conv-detail-block">' +
+                '<p class="conv-detail-label">Grounded in</p>' +
+                '<div class="conv-chiprow">' + evidenceChips(subject) +
+                  '<button type="button" class="btn btn--ghost conv-timeline-btn">View in Timeline ›</button>' +
+                '</div>' +
+              '</div>' +
+              '<div class="conv-detail-block">' +
+                '<p class="conv-detail-label">Also informs</p>' +
+                '<div class="conv-chiprow">' + relHTML + '</div>' +
+              '</div>' +
+              '<div class="conv-detail-actions">' +
+                '<button type="button" class="btn conv-pin-btn">' + (subject.pinned ? "Unpin" : "Pin") + '</button>' +
+                '<button type="button" class="btn btn--ghost conv-dismiss-btn">Dismiss</button>' +
+                '<span class="spacer"></span>' +
+                '<span class="faint" style="font-size:11px">' + esc(cat.label) + '</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      }
+
+      function esc(s) {
+        return String(s)
+          .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+
+      // -------- tier definitions per axis --------
+      function convictionTiers(list) {
+        return [
+          { id: "strong", title: "Strongly held", note: "conf ≥ .75",
+            items: list.filter(function (s) { return !s.faded && s.confidence >= 0.75; })
+                       .sort(byConfDesc) },
+          { id: "forming", title: "Forming", note: ".50 – .75",
+            items: list.filter(function (s) { return !s.faded && s.confidence >= 0.50 && s.confidence < 0.75; })
+                       .sort(byConfDesc) },
+          { id: "tentative", title: "Tentative", note: "< .50",
+            items: list.filter(function (s) { return !s.faded && s.confidence < 0.50; })
+                       .sort(byConfDesc) },
+          { id: "fading", title: "Fading · kept for history", note: "below display floor", faded: true,
+            items: list.filter(function (s) { return s.faded; }).sort(byConfDesc) },
+        ];
+      }
+      function movementTiers(list) {
+        return [
+          { id: "warming", title: "Warming", note: "▲ gaining support",
+            items: list.filter(function (s) { return !s.faded && s.trend === "up"; }).sort(byRecency) },
+          { id: "steady", title: "Steady", note: "holding",
+            items: list.filter(function (s) { return !s.faded && s.trend === "steady"; }).sort(byRecency) },
+          { id: "cooling", title: "Cooling", note: "▼ losing support",
+            items: list.filter(function (s) { return !s.faded && s.trend === "down"; }).sort(byRecency) },
+          { id: "fading", title: "Fading · kept for history", note: "below display floor", faded: true,
+            items: list.filter(function (s) { return s.faded; }).sort(byRecency) },
+        ];
+      }
+      function byConfDesc(a, b) { return b.confidence - a.confidence; }
+      function byRecency(a, b) { return a.recencyDays - b.recencyDays; }
+
+      // -------- render the body --------
+      var state = { axis: "conviction", filter: "" };
+      var bodyEl = document.getElementById("convBody");
+      var countEl = document.getElementById("convCount");
+
+      function visibleSubjects() {
+        var f = state.filter.trim().toLowerCase();
+        if (!f) return subjects.slice();
+        return subjects.filter(function (s) {
+          return s.name.toLowerCase().indexOf(f) !== -1 ||
+                 s.headline.toLowerCase().indexOf(f) !== -1;
+        });
+      }
+
+      function render() {
+        var list = visibleSubjects();
+        var tiers = state.axis === "conviction" ? convictionTiers(list) : movementTiers(list);
+        var html = "";
+        tiers.forEach(function (tier) {
+          if (!tier.items.length) return; // empty tiers hide their header
+          html += '<section class="conv-tier' + (tier.faded ? " conv-tier--faded" : "") + '">' +
+            '<div class="conv-tier-head">' +
+              '<span class="section-title">' + esc(tier.title) + '</span>' +
+              '<span class="conv-tier-note">' + esc(tier.note) + '</span>' +
+            '</div>' +
+            '<div class="conv-rule"></div>' +
+            '<div class="conv-rows">' +
+              tier.items.map(rowHTML).join("") +
+            '</div>' +
+          '</section>';
+        });
+        if (!html) {
+          html = '<div class="conv-empty">No subjects match “' + esc(state.filter) + '”.</div>';
+        }
+        bodyEl.innerHTML = html;
+        countEl.textContent = list.length + (list.length === 1 ? " subject" : " subjects");
+      }
+
+      // -------- summary line (honest counts, no rolled-up score) --------
+      function renderSummary() {
+        var active = subjects.filter(function (s) { return !s.faded; });
+        var fading = subjects.filter(function (s) { return s.faded; });
+        var warming = active.filter(function (s) { return s.trend === "up"; }).length;
+        var steady = active.filter(function (s) { return s.trend === "steady"; }).length;
+        var cooling = active.filter(function (s) { return s.trend === "down"; }).length;
+        document.getElementById("convSummary").innerHTML =
+          '<span class="num">' + active.length + '</span> active views · ' +
+          '<span class="num">' + fading.length + '</span> fading' +
+          '<span class="sep">—</span>' +
+          '<span class="num">' + warming + '</span> warming <span class="up">▲</span> · ' +
+          '<span class="num">' + steady + '</span> steady · ' +
+          '<span class="num">' + cooling + '</span> cooling <span class="down">▼</span>';
+      }
+
+      // -------- interactions (delegated, no loops at rest) --------
+      bodyEl.addEventListener("click", function (ev) {
+        var row = ev.target.closest(".conv-row");
+        if (!row) return;
+
+        // "Also informs" chip → scroll to + flash target row
+        var goto = ev.target.closest(".conv-informs-chip");
+        if (goto) {
+          ev.stopPropagation();
+          gotoSubject(goto.getAttribute("data-goto"));
+          return;
+        }
+
+        // Pin toggle
+        if (ev.target.closest(".conv-pin-btn")) {
+          ev.stopPropagation();
+          var pinBtn = ev.target.closest(".conv-pin-btn");
+          var nowPinned = !row.hasAttribute("data-pinned");
+          if (nowPinned) row.setAttribute("data-pinned", "1"); else row.removeAttribute("data-pinned");
+          pinBtn.classList.toggle("is-pinned", nowPinned);
+          pinBtn.textContent = nowPinned ? "Unpin" : "Pin";
+          var nameEl = row.querySelector(".conv-name");
+          var existingPin = row.querySelector(".conv-pin");
+          if (nowPinned && !existingPin) {
+            var span = document.createElement("span");
+            span.className = "conv-pin"; span.title = "Pinned"; span.textContent = "📌";
+            nameEl.insertAdjacentElement("afterend", span);
+          } else if (!nowPinned && existingPin) {
+            existingPin.remove();
+          }
+          return;
+        }
+
+        // Dismiss (mockup affordance — marks the row as forgotten)
+        if (ev.target.closest(".conv-dismiss-btn")) {
+          ev.stopPropagation();
+          row.classList.toggle("is-dismissed");
+          var dbtn = ev.target.closest(".conv-dismiss-btn");
+          dbtn.textContent = row.classList.contains("is-dismissed") ? "Restore" : "Dismiss";
+          return;
+        }
+
+        // View in Timeline — inert mockup affordance
+        if (ev.target.closest(".conv-timeline-btn")) {
+          ev.stopPropagation();
+          return;
+        }
+
+        // otherwise: toggle expand/collapse
+        row.classList.toggle("is-open");
+      });
+
+      function gotoSubject(id) {
+        var target = bodyEl.querySelector('.conv-row[data-id="' + id + '"]');
+        if (!target) return; // may be filtered out
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("is-flash");
+        window.setTimeout(function () { target.classList.remove("is-flash"); }, 900);
+      }
+
+      // sort control (re-group the body)
+      var sortSeg = document.getElementById("convSort");
+      sortSeg.addEventListener("click", function (ev) {
+        var btn = ev.target.closest("button[data-axis]");
+        if (!btn) return;
+        sortSeg.querySelectorAll("button").forEach(function (b) {
+          b.classList.remove("active"); b.removeAttribute("aria-current");
+        });
+        btn.classList.add("active"); btn.setAttribute("aria-current", "true");
+        state.axis = btn.getAttribute("data-axis");
+        render();
+      });
+
+      // live filter
+      document.getElementById("convFilter").addEventListener("input", function (ev) {
+        state.filter = ev.target.value;
+        render();
+      });
+
+      // initial paint
+      renderSummary();
+      render();
+    })();
+  </script>
+</body>
+</html>

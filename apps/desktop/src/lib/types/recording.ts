@@ -19,8 +19,11 @@ export interface AccessSettings {
 	/** Per-question Ask AI tool-call cap. `0` disables the cap (unlimited). */
 	askAiMaxToolCalls: number;
 	/**
-	 * PI model id (`provider:modelId`) Quick Recall should use. `null`/empty lets
-	 * the PI runtime pick its configured default model.
+	 * rig-core model id Quick Recall should use against the default Reasoning
+	 * Engine (e.g. `claude-haiku-4-5`). `null`/empty lets the engine pick its
+	 * configured default model. (Was historically a PI `provider:modelId` pair;
+	 * on the rig-core engine the provider is fixed by the default engine, so this
+	 * is now a bare model id.)
 	 */
 	askAiModel?: string | null;
 }
@@ -34,6 +37,260 @@ export interface ExcludedAppEntry {
 
 export interface PrivacySettings {
 	excludedApps: ExcludedAppEntry[];
+}
+
+/** Stable provider id, matching the Rust `AiProviderKind::id` values. */
+export type AiProviderKind =
+	| "anthropic"
+	| "openai"
+	| "openai_compatible"
+	| "ollama"
+	| "llamafile";
+
+/**
+ * One connected AI provider (ADR 0034, amended by ADR 0035): the provider kind
+ * plus its non-secret connection details. The credential (cloud API key) lives
+ * ONLY in the OS keychain keyed by the provider **instance id**; never here.
+ */
+export interface AiProviderConfig {
+	/**
+	 * Stable per-instance id — the identity used everywhere a provider is
+	 * referenced (keychain account, model-pool `provider` tag, engine pin, and
+	 * default-model `provider`). Multiple instances of one `kind` coexist by
+	 * carrying distinct ids; the first instance of a kind keeps `id === kind`
+	 * so keys/pins recorded before instance ids existed still resolve.
+	 */
+	id: string;
+	kind: AiProviderKind;
+	/**
+	 * Optional user-facing display name distinguishing same-kind instances
+	 * (e.g. "llama-swap box"). Empty falls back to a kind+host label.
+	 */
+	label: string;
+	/**
+	 * Custom base URL / endpoint. Required for `openai_compatible`; ignored for
+	 * the first-party cloud providers; the local endpoint for `ollama` /
+	 * `llamafile` (empty = the kind's default localhost endpoint).
+	 */
+	baseUrl: string;
+}
+
+/**
+ * An engine identity `{provider, model}` (ADR 0034) — the same shape the
+ * conversation engine pin uses. The global default model is one of these.
+ * `provider` is the connected provider **instance id** (`AiProviderConfig.id`).
+ */
+export interface AiEngineRef {
+	provider: string;
+	model: string;
+}
+
+/**
+ * The provider-centric AI settings domain (ADR 0034): a master switch, the
+ * flat list of connected providers, and ONE global default model chosen from
+ * the merged pool. Model resolution is thread pin → feature override → this
+ * global default.
+ */
+export interface AiRuntimeSettings {
+	enabled: boolean;
+	providers: AiProviderConfig[];
+	defaultModel: AiEngineRef | null;
+}
+
+export interface UpdateAiRuntimeSettingsRequest {
+	enabled?: boolean;
+	/** Replacement provider list; omitting leaves the list unchanged. */
+	providers?: AiProviderConfig[];
+	/** Tri-state: absent = unchanged, `null` = clear, object = set. */
+	defaultModel?: AiEngineRef | null;
+}
+
+/** Named Derivation Budget intensity tier for a cloud Reasoning Engine. */
+export type DerivationBudgetTier = "light" | "balanced" | "thorough";
+
+/** Non-secret User Context derivation settings domain. */
+export interface UserContextSettings {
+	/**
+	 * The continuous-derivation opt-in: whether the background User Context
+	 * worker runs at all. Independent of Ask AI; the shared prerequisite is only
+	 * that a usable Reasoning Engine is configured. Off by default.
+	 */
+	enabled: boolean;
+	derivationBudgetTier: DerivationBudgetTier;
+	backfillWindowDays: number;
+	backfillGoDeeper: boolean;
+}
+
+export interface UpdateUserContextSettingsRequest {
+	enabled?: boolean;
+	derivationBudgetTier?: DerivationBudgetTier;
+	backfillWindowDays?: number;
+	backfillGoDeeper?: boolean;
+}
+
+/** Reasoning Engine availability snapshot, mirroring the Rust `AiRuntimeStatus`. */
+export interface AiRuntimeStatus {
+	enabled: boolean;
+	configured: boolean;
+	available: boolean;
+	defaultModel?: AiEngineRef | null;
+	reason?: string | null;
+}
+
+/** Reasoning Engine test-connection round-trip result, mirroring `AiRuntimeTestResult`. */
+export interface AiRuntimeTestResult {
+	ok: boolean;
+	/** Stable provider id of the global default model's provider. */
+	provider: string;
+	model: string;
+	message: string;
+	rawJson: string;
+}
+
+/** Fixed v1 Activity taxonomy (engine-tier; may be absent on a tracer). */
+export type ActivityCategory =
+	| "creating"
+	| "communication"
+	| "meetings"
+	| "research"
+	| "learning"
+	| "organizing"
+	| "personal"
+	| "entertainment";
+
+/** A raw-capture evidence reference grounding an Activity. */
+export interface ActivityEvidenceRef {
+	subjectType: string;
+	subjectId: number;
+	capturedAtMs?: number | null;
+}
+
+/** How engaged the user was during an Activity (issue #109 focus correction). */
+export type ActivityFocus = "deep" | "mixed" | "distracted";
+
+/** A derived episode of what the user did and how (the evidence layer). */
+export interface Activity {
+	id: number;
+	title: string;
+	summary: string;
+	category?: ActivityCategory | null;
+	focus?: ActivityFocus | null;
+	startedAtMs: number;
+	endedAtMs: number;
+	createdAtMs: number;
+	evidence: ActivityEvidenceRef[];
+}
+
+/** One user-authored standing context statement (issue #107 backend DTO). */
+export interface AuthoredContext {
+	id: number;
+	text: string;
+	topic: string | null;
+	createdAtMs: number;
+	updatedAtMs: number;
+}
+
+/** Whether a piece of evidence supports or contradicts a Conclusion. */
+export type EvidenceStance = "support" | "contradict";
+
+/** Visibility status of a Conclusion (`faded` = below the display floor). */
+export type ConclusionStatus = "visible" | "faded" | "dismissed";
+
+/** A reference from a Conclusion to the Activity that is its evidence. */
+export interface ConclusionEvidenceRef {
+	activityId: number;
+	stance: EvidenceStance;
+	activityTitle?: string | null;
+	activityStartedAtMs?: number | null;
+}
+
+/** A distilled, plain-language belief about the user, grounded in Activities. */
+export interface Conclusion {
+	id: number;
+	subject: string;
+	statement: string;
+	confidence: number;
+	status: ConclusionStatus;
+	pinned: boolean;
+	formedAtMs: number;
+	lastSupportedAtMs: number;
+	updatedAtMs: number;
+	evidence: ConclusionEvidenceRef[];
+}
+
+/** A single point on a Conclusion's confidence-over-time line. */
+export interface ConfidenceSnapshot {
+	confidence: number;
+	snapshotAtMs: number;
+}
+
+/** A single Conclusion's confidence trajectory for the Subject page. */
+export interface SubjectTrajectory {
+	conclusionId: number;
+	statement: string;
+	history: ConfidenceSnapshot[];
+}
+
+/** The Subject page: every Conclusion about a Subject plus its trajectories. */
+export interface SubjectView {
+	subject: string;
+	conclusions: Conclusion[];
+	trajectories: SubjectTrajectory[];
+}
+
+/** Aggregated (estimated) token usage across derivation runs. */
+export interface UserContextTokenUsage {
+	inputTokens: number;
+	outputTokens: number;
+	totalTokens: number;
+	runCount: number;
+}
+
+/**
+ * The most recent completed Conclusion-distillation pass with its per-gate
+ * withheld counts (the "why is my dossier thin?" readout line).
+ */
+export interface UserContextDistillationSummary {
+	atMs: number;
+	conclusionsDerived: number;
+	ungrounded: number;
+	guardrailSuppressed: number;
+	belowFormationBar: number;
+	resurfaceBlocked: number;
+}
+
+/** Availability + counts + token usage for the User Context settings surface. */
+export interface UserContextStatus {
+	engineAvailable: boolean;
+	reason?: string | null;
+	activityCount: number;
+	conclusionCount: number;
+	lastDerivedAtMs?: number | null;
+	backfilling: boolean;
+	tokenUsage: UserContextTokenUsage;
+	budgetTier: DerivationBudgetTier;
+	lastDistillation?: UserContextDistillationSummary | null;
+}
+
+/** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */
+export interface UserContextDerivationRunResult {
+	activitiesDerived: number;
+	conclusionsDerived: number;
+	windowStartMs: number;
+	windowEndMs: number;
+	itemsRead: number;
+	message: string;
+}
+
+/** The engine-written narrative lede for an Overview range (story feed). */
+export interface UserContextDigest {
+	rangeKind: string;
+	rangeStartMs: number;
+	rangeEndMs: number;
+	narrative: string;
+	generatedAtMs: number;
+	/** One-line generated headline above the narrative; absent on old cached digests. */
+	headline?: string | null;
 }
 
 export interface RecordingSettings {
@@ -57,6 +314,8 @@ export interface RecordingSettings {
 	metadata: MetadataSettings;
 	privacy: PrivacySettings;
 	access: AccessSettings;
+	aiRuntime: AiRuntimeSettings;
+	userContext: UserContextSettings;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;
@@ -82,6 +341,8 @@ export type SettingsOwnershipDomain =
 	| "microphone_controller"
 	| "app_update"
 	| "access"
+	| "ai_runtime"
+	| "user_context"
 	| "one_time_prompt_state";
 
 export interface RecordingSettingsDomainUpdateResponse {
@@ -133,17 +394,39 @@ export type UpdateDeveloperSettingsRequest = Partial<
 export interface UpdateAccessSettingsRequest {
 	askAiEnabled: boolean;
 	askAiMaxToolCalls: number;
-	/** Selected Quick Recall model (`provider:modelId`); empty clears to default. */
+	/**
+	 * Selected Quick Recall model — a rig-core model id used against the default
+	 * Reasoning Engine (not a PI `provider:modelId` pair); empty clears to the
+	 * engine default.
+	 */
 	askAiModel: string;
 }
 
-/** One PI model selectable for Quick Recall, reported by `ask_ai_list_models`. */
-export interface AskAiModel {
-	/** Stable `provider:modelId` value persisted in settings. */
-	value: string;
-	provider: string;
+/** One model discovered from a connected provider's models route
+ *  (`ai_runtime_list_models`), tagged with the provider it came from. The
+ *  merged pool feeds the default-model picker, the Ask AI override picker,
+ *  and the Chat thread picker. */
+export interface AiRuntimeModel {
 	id: string;
-	name: string;
+	/** Stable provider id (`AiProviderKind`). */
+	provider: string;
+}
+
+/** One connected provider that failed to list its models, surfaced so the
+ *  picker can show it (with a Retry) instead of silently showing fewer models. */
+export interface AiRuntimeProviderFailure {
+	/** The provider instance id that failed. */
+	provider: string;
+	/** Short, human-readable reason (`unreachable`, `missing API key`, …). */
+	reason: string;
+}
+
+/** The result of `ai_runtime_list_models`: the discovered models plus the
+ *  providers that failed to list (best-effort listing never drops a provider
+ *  silently — a transiently-down endpoint rides back here). */
+export interface AiRuntimeModelsResult {
+	models: AiRuntimeModel[];
+	failures: AiRuntimeProviderFailure[];
 }
 
 export interface KeyboardBindingsSettings {

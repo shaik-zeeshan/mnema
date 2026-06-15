@@ -156,6 +156,11 @@ pub struct RetentionCleanupSummary {
     pub deleted_processing_results: i64,
     pub deleted_background_jobs: i64,
     pub deleted_frame_batches: i64,
+    /// Persisted conversations (issue #102) aged out by this cleanup's cutoff.
+    /// Conversations OBEY Retention Policy (unlike the User Context dossier), so
+    /// they are deleted by the same local-calendar cutoff as capture data.
+    #[serde(default)]
+    pub deleted_conversations: u64,
     pub skipped_running_jobs: i64,
     pub skipped_active_segments: i64,
     pub pending_file_tombstones: i64,
@@ -475,6 +480,18 @@ impl CaptureRetentionStore {
             });
         };
         let mut summary = self.plan_cleanup(policy, cutoff.clone(), context).await?;
+
+        // Persistent conversations (issue #102) OBEY Retention Policy: age out
+        // every conversation whose last activity precedes the same local-calendar
+        // cutoff. This runs regardless of whether any capture data is eligible (a
+        // user may have stale conversations but no aged captures), so it is done
+        // BEFORE the no-capture-work early return below. The cutoff is an RFC3339
+        // string; conversations store `last_activity_at_ms` in unix millis.
+        if let Some(cutoff_ms) = rfc3339_to_ms(&cutoff) {
+            summary.deleted_conversations =
+                delete_conversations_older_than(&self.pool, cutoff_ms).await?;
+        }
+
         if summary.eligible_capture_segments == 0
             && summary.deleted_frames == 0
             && summary.deleted_audio_segments == 0
@@ -677,6 +694,14 @@ impl CaptureRetentionStore {
         summary.deleted_audio_segments += orphan_audio_segment_ids(&self.pool, &cutoff, context)
             .await?
             .len() as i64;
+        // Conversations obey the same local-calendar cutoff and are deleted by
+        // run_cleanup, so the pre-confirmation preview must count them too
+        // (mirrors `delete_conversations_older_than`). A cutoff parse failure
+        // yields the same skip semantics as the run path.
+        if let Some(cutoff_ms) = rfc3339_to_ms(&cutoff) {
+            summary.deleted_conversations =
+                count_conversations_older_than(&self.pool, cutoff_ms).await?;
+        }
         Ok(summary)
     }
 
@@ -764,6 +789,43 @@ fn cutoff_ended_before_with_midnight_offset(
             .format(&Rfc3339)
             .expect("RFC3339 formatting should succeed"),
     )
+}
+
+/// Parse an RFC3339 cutoff timestamp (as produced by [`cutoff_ended_before`])
+/// to unix milliseconds, so it can be compared against the conversations'
+/// `last_activity_at_ms` (issue #102). `None` on a parse failure (the
+/// conversation aging is then skipped for that run rather than over-deleting).
+fn rfc3339_to_ms(value: &str) -> Option<i64> {
+    OffsetDateTime::parse(value, &Rfc3339)
+        .ok()
+        .map(|dt| (dt.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+/// Retention aging for persistent conversations (issue #102): delete every
+/// conversation whose `last_activity_at_ms` precedes `cutoff_ms` (its turns
+/// cascade via FK). Returns the deleted-conversation count. This names only the
+/// `conversations` table; the derived User Context dossier deliberately
+/// outlives retention (ADR 0029) and a structural test guards that this file
+/// never names those derived tables.
+async fn delete_conversations_older_than(pool: &SqlitePool, cutoff_ms: i64) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM conversations WHERE last_activity_at_ms < ?1")
+        .bind(cutoff_ms)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Counts (without deleting) the conversations that
+/// [`delete_conversations_older_than`] would age out for `cutoff_ms`, so
+/// `plan_cleanup`/preview reports the same destructive scope the run applies.
+/// Names only the `conversations` table for the same reason as the delete.
+async fn count_conversations_older_than(pool: &SqlitePool, cutoff_ms: i64) -> Result<u64> {
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversations WHERE last_activity_at_ms < ?1")
+            .bind(cutoff_ms)
+            .fetch_one(pool)
+            .await?;
+    Ok(count as u64)
 }
 
 fn local_midnight_offset(date: Date) -> Option<UtcOffset> {
@@ -1659,6 +1721,31 @@ mod tests {
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 resolved_at TEXT
             )",
+            // Persistent conversations (issue #102) — retention deletes aged rows here.
+            "CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                origin TEXT NOT NULL DEFAULT 'quick_recall',
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                last_activity_at_ms INTEGER NOT NULL
+            )",
+            "CREATE TABLE conversation_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_row_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                turn_index INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL DEFAULT '',
+                tool_activities TEXT NOT NULL DEFAULT '[]',
+                sources TEXT NOT NULL DEFAULT '[]',
+                phase TEXT NOT NULL DEFAULT 'streaming',
+                error_message TEXT,
+                seeded_result_count INTEGER,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                UNIQUE (conversation_row_id, turn_index)
+            )",
         ] {
             sqlx::query(statement)
                 .execute(pool)
@@ -2020,6 +2107,79 @@ mod tests {
                     .get("count");
                 assert_eq!(count, 0, "{table} should be empty after cleanup");
             }
+        });
+    }
+
+    #[test]
+    fn cleanup_ages_out_old_conversations_keeps_recent() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+
+            // Derive the actual cutoff the cleanup will use from the same
+            // local-calendar function (NOT a hardcoded UTC instant — the cutoff is
+            // shifted by the test machine's local offset). Place one conversation's
+            // last activity an hour before that cutoff and one an hour after.
+            let now = rfc3339("2026-05-17T15:10:00Z");
+            let cutoff = cutoff_ended_before(RetentionPolicy::Days7, now).expect("cutoff exists");
+            let cutoff_ms = rfc3339_to_ms(&cutoff).expect("cutoff parses");
+            let old_ms = cutoff_ms - 3_600_000;
+            let recent_ms = cutoff_ms + 3_600_000;
+            sqlx::query(
+                "INSERT INTO conversations \
+                    (conversation_id, title, origin, created_at_ms, updated_at_ms, last_activity_at_ms) \
+                 VALUES ('old', 'Old', 'quick_recall', ?1, ?1, ?1), \
+                        ('recent', 'Recent', 'chat', ?2, ?2, ?2)",
+            )
+            .bind(old_ms)
+            .bind(recent_ms)
+            .execute(&pool)
+            .await
+            .expect("conversations should insert");
+            // A turn on the old conversation to confirm the FK cascade fires.
+            sqlx::query(
+                "INSERT INTO conversation_turns \
+                    (conversation_row_id, turn_index, question, created_at_ms, updated_at_ms) \
+                 VALUES ((SELECT id FROM conversations WHERE conversation_id = 'old'), 0, 'q', ?1, ?1)",
+            )
+            .bind(old_ms)
+            .execute(&pool)
+            .await
+            .expect("turn should insert");
+            sqlx::query("PRAGMA foreign_keys = ON")
+                .execute(&pool)
+                .await
+                .expect("enable foreign keys");
+
+            let summary = CaptureRetentionStore::new(pool.clone())
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    now,
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.deleted_conversations, 1, "old conversation aged out");
+
+            let remaining: Vec<String> =
+                sqlx::query("SELECT conversation_id FROM conversations ORDER BY conversation_id")
+                    .fetch_all(&pool)
+                    .await
+                    .expect("query remaining")
+                    .into_iter()
+                    .map(|row| row.get::<String, _>("conversation_id"))
+                    .collect();
+            assert_eq!(remaining, vec!["recent".to_string()], "recent conversation survives");
         });
     }
 

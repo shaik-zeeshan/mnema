@@ -1006,6 +1006,8 @@ mod tests {
             metadata: default_metadata_settings(),
             privacy: default_privacy_settings(),
             access: capture_types::AccessSettings::default(),
+            ai_runtime: capture_types::AiRuntimeSettings::default(),
+            user_context: capture_types::UserContextSettings::default(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

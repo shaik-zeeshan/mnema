@@ -1472,11 +1472,11 @@
                       <Switch
                         bind:checked={draftAskAiEnabled}
                         label="Ask AI"
-                        description="Off by default. After PI is set up, you can enable Ask AI here or later in Access Settings."
+                        description="Off by default. Once the Reasoning Engine is configured, you can enable Ask AI here or later in Access Settings."
                       />
                     </div>
                     <p class="hint">
-                      Ask AI sends your questions plus redacted capture context to your configured PI provider/cloud and can use retained history after redaction. Mnema does not collect provider credentials.
+                      Ask AI answers your questions over your redacted capture history using the Reasoning Engine — a cloud provider with your own key, or a local model that never leaves this machine. Mnema does not collect provider credentials in this flow.
                     </p>
                   </div>
 

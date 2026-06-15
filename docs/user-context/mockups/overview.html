@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<!--
+  overview.html — Insights · Overview ("the Briefing").
+  Full-width single column (capped ~60% and centered) read top → bottom:
+    THE READ      — an AI-narrative hero at the top, the page's lead: eyebrow +
+                    optional headline + prose + a stats footer that is the single
+                    source of truth for the range's headline numbers (Tracked,
+                    Daily avg, Deep focus %, Top category, per-day sparkbar).
+    EXHIBITS      — a demoted supporting-evidence strip below the hero: the
+                    hand-built charts (Time bars FREE, Categories stacked ENGINE,
+                    Focus heatmap ENGINE) in a 2-col grid, Focus spanning both.
+    WHAT CHANGED  — grouped conclusion deltas (new / strengthened / fading),
+                    each row expandable to confidence + Pin/Dismiss + evidence.
+    NEEDS ATTENTION — uncategorized activities + an inline category <select>.
+    ASK           — the "Ask about your history → Opens Chat" bar, docked to the
+                    bottom (position: sticky; bottom: 0). Renders once, both tiers.
+  The FREE-tier (no-engine) variant is shown lower in the page: the same skeleton
+  degraded — a deterministic factual read + Tracked/Daily-avg/sparkbar + a single
+  enable-engine CTA; Categories/Focus exhibits become locked notes; no
+  What-changed / Needs-attention. The old bento glance band + story-rule + the
+  standalone no-engine card are retired. Shared shell copied verbatim from
+  _shell.html; only .insights-main diverges. All color is token-driven; the
+  reusable Briefing styles live in app.css. Full guide: see README.md.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Insights · Overview</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* ====================================================== PAGE LAYOUT
+       Scoped to the Overview surface: the centered reading column, the page
+       header, and the internals of the hand-built charts. The Briefing's
+       reusable components (.entry--lede + stats footer, .exhibits/.exhibit,
+       .delta-*, .entry--attention/.attn-*, the docked .ask-entry, eyebrows,
+       conclusion/evidence rows) live in app.css. Colors stay token-driven. */
+
+    /* The real app caps the Overview column at 60% and centers it; mirror that. */
+    .overview { display: flex; flex-direction: column; gap: 20px; max-width: 60%; margin: 0 auto; }
+    @media (max-width: 1100px) { .overview { max-width: 100%; } }
+
+    /* ---------------------------------------------------- PAGE HEADER */
+    .ov-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .ov-header .titles { flex: 1 1 auto; min-width: 0; }
+    .ov-header h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+    }
+    .ov-header .subtitle {
+      margin: 3px 0 0;
+      font-size: 12px;
+      color: var(--app-text-muted);
+    }
+
+    /* Overview header controls. The .date-range Day/Week/Month segmented control
+       uses the shared canonical rules in app.css (no page-scoped duplicate). */
+    .ov-controls { display: inline-flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+    .date-stepper {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 11.5px; color: var(--app-text-muted);
+    }
+    .date-stepper .nav {
+      width: 20px; height: 20px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--app-border);
+      border-radius: 5px;
+      color: var(--app-text-subtle);
+      cursor: pointer;
+      transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    }
+    .date-stepper .nav:hover {
+      background: var(--app-surface-hover);
+      color: var(--app-text-strong);
+      border-color: var(--app-border-hover);
+    }
+    .date-stepper .range-label { color: var(--app-text); letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+
+    /* A faint divider between the engine Briefing and the free-tier demo lower
+       down; this is a mockup-only seam (the real app shows one tier at a time). */
+    .tier-divider {
+      display: flex; align-items: center; gap: 10px;
+      margin: 10px auto 0; max-width: 100%;
+      font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--app-text-faint);
+    }
+    .tier-divider .line { flex: 1 1 auto; height: 1px; background: var(--app-border); }
+
+    /* ---------------------------------------------------- EXHIBIT CHARTS
+       Hand-built SVG/CSS charts, no library. These live in the demoted Exhibits
+       strip now; the .exhibit shell + grid are shared in app.css. */
+
+    /* Time exhibit: top-apps horizontal bars (FREE, grayscale ramp). */
+    .mini-appbars { display: flex; flex-direction: column; gap: 8px; }
+    .mini-appbar { display: grid; grid-template-columns: 50px 1fr 42px; align-items: center; gap: 8px; }
+    .mini-appbar .label { font-size: 11px; color: var(--app-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mini-appbar .track {
+      height: 8px; border-radius: 999px;
+      background: var(--app-surface-hover);
+      border: 1px solid var(--app-border);
+      overflow: hidden;
+    }
+    .mini-appbar .fill { height: 100%; border-radius: 999px; }
+    .mini-appbar .val { font-size: 10px; color: var(--app-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* Categories exhibit: stacked category bar + legend (ENGINE). */
+    .mini-stack {
+      display: flex; width: 100%; height: 18px;
+      border-radius: 5px; overflow: hidden;
+      border: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+    }
+    .mini-stack > span { display: block; height: 100%; }
+    .mini-cat-legend {
+      margin-top: 10px;
+      display: flex; flex-wrap: wrap; gap: 4px 10px;
+      font-size: 9.5px; color: var(--app-text-muted);
+    }
+    .mini-cat-legend .li { display: inline-flex; align-items: center; gap: 5px; }
+    .mini-cat-legend .li i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: 0 0 auto; }
+    .mini-cat-legend .li b { color: var(--app-text); font-weight: 600; }
+
+    /* Focus exhibit: time-of-day focus heatmap (ENGINE). */
+    .heat {
+      display: grid; grid-template-columns: 40px 1fr;
+      row-gap: 5px; column-gap: 10px; align-items: center;
+    }
+    .heat-label { font-size: 10px; color: var(--app-text-muted); text-align: right; }
+    .heat-cells { display: flex; gap: 4px; }
+    .heat-cell { flex: 1 1 0; height: 13px; border-radius: 3px; border: 1px solid var(--app-border); }
+    .heat-hours {
+      grid-column: 2; display: flex; justify-content: space-between;
+      font-size: 9.5px; letter-spacing: 0.04em; color: var(--app-text-faint); margin-top: 2px;
+    }
+    .heat-deep { background: var(--focus-deep); opacity: 0.85; border-color: transparent; }
+    .heat-mid  { background: var(--focus-mid); opacity: 0.6; border-color: transparent; }
+    .heat-scat { background: var(--focus-distracted); opacity: 0.42; border-color: transparent; }
+    .heat-rest { background: var(--app-surface-hover); }
+    .heat-legend { grid-column: 1 / -1; margin-top: 8px; font-size: 10px; letter-spacing: 0.02em; color: var(--app-text-subtle); }
+  </style>
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">mnema</span>
+      </div>
+      <div class="surface-toggle">
+        <button type="button">Timeline</button>
+        <button type="button" class="active" aria-current="page">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip"><span class="dot"></span>idle</span>
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <div class="insights">
+        <nav class="subnav">
+          <div class="subnav-tabs">
+            <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
+            <a class="subnav-tab" href="subjects-index.html">Subjects</a>
+            <a class="subnav-tab" href="context.html">Context</a>
+            <a class="subnav-tab" href="chat.html">Chat</a>
+          </div>
+          <div class="subnav-meta">
+            <div class="subnav-search">
+              <span class="subnav-search-glyph">⌕</span>
+              <span class="subnav-search-text">Jump to a subject or ask…</span>
+              <span class="kbd">⌘K</span>
+            </div>
+            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+          </div>
+        </nav>
+
+        <main class="insights-main">
+          <!-- BUILD NOTES — overview · the Briefing
+               Slice: #104 (FREE Usage Charts) + #105 (ENGINE categorized/focus charts + dossier).
+               NEW structure (replaces the old bento glance band + story feed):
+                 THE READ (hero) → EXHIBITS (demoted charts) → WHAT CHANGED + NEEDS ATTENTION → docked ASK.
+               THE READ is the page's lead: an AI-narrative hero whose stats footer is the single
+                 source of truth for the range's headline numbers (Tracked, Daily avg, Deep focus %,
+                 Top category w/ swatch, per-day sparkbar). It keeps the lede identity: 2px accent
+                 left edge + accent-bg→surface wash. Reuses .entry--lede from app.css.
+               EXHIBITS are the FREE/ENGINE charts demoted into a quieter supporting strip — no per-tile
+                 tier badges (tier is structural now). 2-col grid; Focus spans both columns.
+                 Time = top-apps bars (FREE); Categories = stacked bar+legend reading as a "category
+                 detail" trigger (ENGINE); Focus = time-of-day heatmap (ENGINE). Hand-built SVG/CSS, no lib.
+               WHAT CHANGED = conclusion deltas grouped new/strengthened/fading; rows expand to
+                 confidence + Pin/Dismiss + supporting/contradicting evidence (Correction UI #108).
+               NEEDS ATTENTION = uncategorized activities + an inline category <select>.
+               ASK is docked to the bottom (position: sticky; bottom: 0), rendered once for both tiers.
+               FREE tier (shown lower in this file): THE READ becomes a deterministic factual read +
+                 Tracked/Daily-avg/sparkbar only + a single "Enable engine" CTA; Categories/Focus
+                 exhibits show locked notes; no What-changed / Needs-attention. (Real app shows one
+                 tier at a time; this mockup shows both, separated by a labeled divider.)
+               Concepts: Conclusion (open-ended belief, Confidence rises/fades), Activity (evidence),
+                 Pin/Dismiss correction, Confidence display floor (faded != deleted).
+               Reuse: SearchResultCard.svelte / AnswerSourceCard.svelte where capture refs appear.
+               Interactions: subject chips → Subjects; "view evidence" → Activity → Timeline span handoff.
+               Engine = rig-core; data in Encrypted Capture Index (design-stage).
+               ADRs: ../../adr/0028-ai-features-call-models-rust-side-via-rig-core.md,
+                     ../../adr/0030-user-context-sensitive-category-guardrail.md
+               Full guide: see README.md
+          -->
+          <!-- ============================================================
+               SURFACE CONTENT START
+               ============================================================ -->
+          <div class="overview">
+
+            <!-- =================================== PAGE HEADER =================================== -->
+            <div class="ov-header">
+              <div class="titles">
+                <h1>Overview</h1>
+                <p class="subtitle">Your week, read as a briefing.</p>
+              </div>
+              <div class="ov-controls">
+                <div class="date-range" role="group" aria-label="Date range">
+                  <button type="button">Day</button>
+                  <button type="button" class="active">Week</button>
+                  <button type="button">Month</button>
+                </div>
+                <div class="date-stepper">
+                  <span class="nav" aria-label="Previous">‹</span>
+                  <span class="range-label">Jun 2–8</span>
+                  <span class="nav" aria-label="Next">›</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- =================================== THE READ (hero) =================================== -->
+            <!-- BUILD: full-width AI-narrative hero; its stats footer is the single source of truth
+                 for the range's headline numbers. Reuses .entry--lede + .lede-stats from app.css. -->
+            <article class="entry entry--lede">
+              <p class="eyebrow">
+                <span class="diamond" aria-hidden="true">◆</span>
+                <span class="tick" aria-hidden="true"></span>
+                The read
+                <span class="rule"></span>
+                <span class="when">2 hours ago</span>
+              </p>
+              <div class="lede-body">
+                <h2 class="lede-headline">Coding dominated your week — afternoons drifted toward Slack and HN.</h2>
+                <p class="lede-text">
+                  You spent <span class="cat-word" style="color:var(--cat-creating)">14 hours</span> creating, most of it
+                  before lunch and most of it in VS&nbsp;Code (3h&nbsp;12m). Communication held steady at
+                  <span class="cat-word" style="color:var(--cat-communication)">6 hours</span>, and research, organizing, and
+                  learning split the rest fairly evenly — a focused, build-heavy week with a softer second half each day.
+                </p>
+              </div>
+              <!-- Stats footer — Tracked, Daily avg, Deep focus %, Top category (swatch), sparkbar. -->
+              <div class="lede-stats" aria-label="Highlights this week">
+                <div class="lede-stat">
+                  <span class="lede-stat-n">33h</span>
+                  <span class="lede-stat-cap">tracked</span>
+                </div>
+                <div class="lede-stat">
+                  <span class="lede-stat-n">5.5h</span>
+                  <span class="lede-stat-cap">daily avg</span>
+                </div>
+                <div class="lede-stat">
+                  <span class="lede-stat-n">42%</span>
+                  <span class="lede-stat-cap">deep focus</span>
+                </div>
+                <div class="lede-stat">
+                  <span class="lede-stat-n lede-stat-n--cat">
+                    <span class="lede-stat-swatch" style="background:var(--cat-creating);" aria-hidden="true"></span>
+                    Creating
+                  </span>
+                  <span class="lede-stat-cap">top category</span>
+                </div>
+                <div class="lede-stat lede-stat--spark">
+                  <div class="sparkbar" aria-hidden="true">
+                    <span style="height:55%;"></span>
+                    <span style="height:80%;"></span>
+                    <span style="height:100%;"></span>
+                    <span style="height:70%;"></span>
+                    <span style="height:90%;"></span>
+                    <span style="height:40%;"></span>
+                    <span style="height:18%;opacity:0.4;"></span>
+                  </div>
+                  <span class="lede-stat-cap">per day</span>
+                </div>
+              </div>
+            </article>
+
+            <!-- =================================== EXHIBITS =================================== -->
+            <!-- BUILD: demoted supporting-evidence strip — the hand-built charts, quieter than the
+                 hero. No per-tile tier badges (tier is structural). Focus spans both columns. -->
+            <section class="exhibits" aria-label="Supporting charts">
+              <p class="eyebrow">
+                <span class="diamond" aria-hidden="true">◆</span>
+                <span class="tick" aria-hidden="true"></span>
+                Exhibits
+                <span class="rule"></span>
+                <button type="button" class="evidence-link">open category detail →</button>
+              </p>
+              <div class="exhibits-grid">
+
+                <!-- Time (FREE) — top-apps horizontal bars -->
+                <div class="exhibit">
+                  <div class="exhibit-head"><span class="exhibit-title">Time</span></div>
+                  <div class="exhibit-body">
+                    <div class="mini-appbars">
+                      <div class="mini-appbar"><span class="label">VS Code</span><span class="track"><span class="fill" style="width:100%;background:var(--chart-grey-5);"></span></span><span class="val">3h12m</span></div>
+                      <div class="mini-appbar"><span class="label">Chrome</span><span class="track"><span class="fill" style="width:56%;background:var(--chart-grey-4);"></span></span><span class="val">1h48m</span></div>
+                      <div class="mini-appbar"><span class="label">Terminal</span><span class="track"><span class="fill" style="width:42%;background:var(--chart-grey-3);"></span></span><span class="val">1h20m</span></div>
+                      <div class="mini-appbar"><span class="label">Figma</span><span class="track"><span class="fill" style="width:27%;background:var(--chart-grey-2);"></span></span><span class="val">52m</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Categories (ENGINE) — stacked bar + legend, reads as a "category detail" trigger -->
+                <div class="exhibit">
+                  <div class="exhibit-head"><span class="exhibit-title">Categories</span></div>
+                  <div class="exhibit-body">
+                    <button type="button" class="cat-bar-trigger" aria-haspopup="dialog" aria-label="View category breakdown">
+                      <div class="mini-stack" role="img"
+                           aria-label="Creating 14h, Communication 6h, Research 4h, Organizing 3h, Learning 2h, Personal 2h, Entertainment 2h">
+                        <span style="width:42.4%;background:var(--cat-creating);"></span>
+                        <span style="width:18.2%;background:var(--cat-communication);"></span>
+                        <span style="width:12.1%;background:var(--cat-research);"></span>
+                        <span style="width:9.1%;background:var(--cat-organizing);"></span>
+                        <span style="width:6.1%;background:var(--cat-learning);"></span>
+                        <span style="width:6.1%;background:var(--cat-personal);"></span>
+                        <span style="width:6.0%;background:var(--cat-entertainment);"></span>
+                      </div>
+                      <div class="mini-cat-legend">
+                        <span class="li"><i style="background:var(--cat-creating);"></i>Creating <b>14h</b></span>
+                        <span class="li"><i style="background:var(--cat-communication);"></i>Comms <b>6h</b></span>
+                        <span class="li"><i style="background:var(--cat-research);"></i>Research <b>4h</b></span>
+                        <span class="li"><i style="background:var(--cat-organizing);"></i>Organizing <b>3h</b></span>
+                      </div>
+                    </button>
+                    <span class="cat-bar-hint">view breakdown →</span>
+                  </div>
+                </div>
+
+                <!-- Focus (ENGINE) — time-of-day focus heatmap; spans both columns -->
+                <div class="exhibit">
+                  <div class="exhibit-head"><span class="exhibit-title">Focus</span></div>
+                  <div class="exhibit-body">
+                    <div class="heat" role="img" aria-label="Focus heatmap: deep mornings, scattered afternoons across the week">
+                      <span class="heat-label">Mon</span>
+                      <div class="heat-cells">
+                        <span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span>
+                        <span class="heat-cell heat-mid"></span><span class="heat-cell heat-scat"></span><span class="heat-cell heat-mid"></span>
+                        <span class="heat-cell heat-scat"></span><span class="heat-cell heat-rest"></span>
+                      </div>
+                      <span class="heat-label">Tue</span>
+                      <div class="heat-cells">
+                        <span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-mid"></span>
+                        <span class="heat-cell heat-deep"></span><span class="heat-cell heat-mid"></span><span class="heat-cell heat-scat"></span>
+                        <span class="heat-cell heat-scat"></span><span class="heat-cell heat-scat"></span>
+                      </div>
+                      <span class="heat-label">Wed</span>
+                      <div class="heat-cells">
+                        <span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span>
+                        <span class="heat-cell heat-deep"></span><span class="heat-cell heat-mid"></span><span class="heat-cell heat-mid"></span>
+                        <span class="heat-cell heat-scat"></span><span class="heat-cell heat-rest"></span>
+                      </div>
+                      <span class="heat-label">Thu</span>
+                      <div class="heat-cells">
+                        <span class="heat-cell heat-mid"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span>
+                        <span class="heat-cell heat-mid"></span><span class="heat-cell heat-scat"></span><span class="heat-cell heat-scat"></span>
+                        <span class="heat-cell heat-mid"></span><span class="heat-cell heat-scat"></span>
+                      </div>
+                      <span class="heat-label">Fri</span>
+                      <div class="heat-cells">
+                        <span class="heat-cell heat-deep"></span><span class="heat-cell heat-deep"></span><span class="heat-cell heat-mid"></span>
+                        <span class="heat-cell heat-scat"></span><span class="heat-cell heat-scat"></span><span class="heat-cell heat-scat"></span>
+                        <span class="heat-cell heat-rest"></span><span class="heat-cell heat-rest"></span>
+                      </div>
+                      <div class="heat-hours">
+                        <span>8a</span><span>10a</span><span>12p</span><span>2p</span><span>4p</span><span>6p</span>
+                      </div>
+                      <div class="heat-legend">
+                        <span style="color:var(--focus-deep)">■</span> deep&nbsp;&nbsp;
+                        <span style="color:var(--focus-mid)">■</span> mixed&nbsp;&nbsp;
+                        <span style="color:var(--focus-distracted)">■</span> scattered
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- =================================== STORY / DOSSIER FEED (ENGINE) =================================== -->
+            <div class="feed-column">
+
+              <!-- WHAT CHANGED — grouped conclusion deltas -->
+              <article class="entry">
+                <p class="eyebrow">
+                  <span class="diamond" aria-hidden="true">◆</span>
+                  <span class="tick" aria-hidden="true"></span>
+                  What changed
+                  <span class="rule"></span>
+                  <span class="when">expand a row for detail</span>
+                </p>
+                <div class="delta-groups">
+
+                  <!-- New -->
+                  <div class="delta-group">
+                    <p class="delta-group-head">New · 1</p>
+                    <div class="delta-row">
+                      <div class="delta-line">
+                        <span class="delta-statement">Is in a Rust learning phase.</span>
+                        <div class="delta-meta">
+                          <button type="button" class="subject-chip"><span class="subject-chip-text">Rust</span></button>
+                          <span class="delta-when">5 days ago</span>
+                          <button type="button" class="delta-toggle open" aria-expanded="true" aria-label="Hide detail">›</button>
+                        </div>
+                      </div>
+                      <div class="delta-detail">
+                        <div class="delta-detail-line">
+                          <span class="conf-wrap">
+                            <span class="conf-quiet">
+                              <span class="conf-num">64%</span><span class="trend-up">▲</span>
+                              <span class="conf-track"><i style="width:64%"></i></span>
+                            </span>
+                          </span>
+                          <span class="gentle-actions">
+                            <button class="gentle-btn" type="button" data-pin>Pin</button>
+                            <button class="gentle-btn" type="button" data-dismiss>Dismiss</button>
+                          </span>
+                        </div>
+                        <div class="evidence-list">
+                          <div class="evidence-row">
+                            <span class="ev-stance">supports</span>
+                            <span class="ev-title">Reading the Rust async book</span>
+                            <span class="ev-time">9:42a</span>
+                          </div>
+                          <div class="evidence-row">
+                            <span class="ev-stance">supports</span>
+                            <span class="ev-title">Re-reading ownership notes in crates/app-infra</span>
+                            <span class="ev-time">2:15p</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Strengthened — collapses to its header (the head is the expander) -->
+                  <div class="delta-group">
+                    <button type="button" class="delta-group-head delta-group-head--toggle" aria-expanded="false">
+                      Strengthened · 2
+                      <span class="delta-head-hint">show</span>
+                    </button>
+                  </div>
+
+                  <!-- Fading -->
+                  <div class="delta-group">
+                    <p class="delta-group-head">Fading · 1</p>
+                    <div class="delta-row delta-row--faded">
+                      <div class="delta-line">
+                        <span class="delta-statement">Cooled on switching away from Apple.</span>
+                        <div class="delta-meta">
+                          <button type="button" class="subject-chip"><span class="subject-chip-text">Apple silicon</span></button>
+                          <span class="delta-when">2 weeks ago</span>
+                          <button type="button" class="delta-toggle" aria-expanded="false" aria-label="Show detail">›</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <!-- NEEDS ATTENTION — uncategorized activities + inline category picker -->
+              <article class="entry entry--attention">
+                <p class="eyebrow">
+                  <span class="diamond" aria-hidden="true">◆</span>
+                  <span class="tick" aria-hidden="true"></span>
+                  Needs attention
+                  <span class="rule"></span>
+                  <span class="when">tag what the engine missed</span>
+                </p>
+                <div class="attn-list">
+                  <div class="attn-row">
+                    <div class="attn-main">
+                      <span class="attn-title">unknown-app · localhost:5173</span>
+                      <span class="attn-time">10:18a · 42m</span>
+                    </div>
+                    <label class="attn-pick">
+                      <span class="attn-pick-label">Category</span>
+                      <select class="corr-select">
+                        <option value="">Uncategorized</option>
+                        <option value="creating">Creating</option>
+                        <option value="communication">Communication</option>
+                        <option value="meetings">Meetings</option>
+                        <option value="research">Research</option>
+                        <option value="learning">Learning</option>
+                        <option value="organizing">Organizing</option>
+                        <option value="personal">Personal</option>
+                        <option value="entertainment">Entertainment</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="attn-row">
+                    <div class="attn-main">
+                      <span class="attn-title">Preview · scan-2026-06-05.pdf</span>
+                      <span class="attn-time">3:51p · 18m</span>
+                    </div>
+                    <label class="attn-pick">
+                      <span class="attn-pick-label">Category</span>
+                      <select class="corr-select">
+                        <option value="">Uncategorized</option>
+                        <option value="creating">Creating</option>
+                        <option value="communication">Communication</option>
+                        <option value="meetings">Meetings</option>
+                        <option value="research">Research</option>
+                        <option value="learning">Learning</option>
+                        <option value="organizing">Organizing</option>
+                        <option value="personal">Personal</option>
+                        <option value="entertainment">Entertainment</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </article>
+
+              <div class="feed-end">— you're all caught up —</div>
+            </div>
+
+            <!-- =================================== ASK (docked bottom) =================================== -->
+            <button class="ask-entry" type="button" onclick="location.href='chat.html'">
+              <span class="glyph" aria-hidden="true">◇</span>
+              <span class="label">Ask about your history</span>
+              <span class="hint">Opens Chat →</span>
+            </button>
+
+            <!-- ============================================================
+                 FREE-TIER VARIANT (mockup-only demo)
+                 The real app shows ONE tier at a time. Here the engine Briefing
+                 above is the primary content; below is the same skeleton degraded
+                 for the no-engine (FREE) tier, kept for reference like the old
+                 no-engine section. THE READ becomes a deterministic factual read +
+                 Tracked/Daily-avg/sparkbar only + a single enable-engine CTA;
+                 Categories/Focus exhibits become locked notes; no What-changed /
+                 Needs-attention; the Ask bar still docks at the bottom.
+                 ============================================================ -->
+            <div class="tier-divider"><span class="line"></span>Free tier — no engine<span class="line"></span></div>
+
+            <!-- THE READ (free) — deterministic factual read -->
+            <article class="entry entry--lede">
+              <p class="eyebrow">
+                <span class="diamond" aria-hidden="true">◆</span>
+                <span class="tick" aria-hidden="true"></span>
+                This week
+                <span class="rule"></span>
+              </p>
+              <div class="lede-body">
+                <p class="lede-text">
+                  31h&nbsp;12m tracked across 5 apps. Most of it in VS&nbsp;Code.
+                </p>
+              </div>
+              <!-- Stats footer — Tracked + Daily avg + sparkbar only (Deep focus % and
+                   Top category are engine-only and intentionally omitted here). -->
+              <div class="lede-stats" aria-label="Highlights this week">
+                <div class="lede-stat">
+                  <span class="lede-stat-n">31h 12m</span>
+                  <span class="lede-stat-cap">tracked</span>
+                </div>
+                <div class="lede-stat">
+                  <span class="lede-stat-n">5.2h</span>
+                  <span class="lede-stat-cap">daily avg</span>
+                </div>
+                <div class="lede-stat lede-stat--spark">
+                  <div class="sparkbar" aria-hidden="true">
+                    <span style="height:52%;"></span>
+                    <span style="height:78%;"></span>
+                    <span style="height:96%;"></span>
+                    <span style="height:66%;"></span>
+                    <span style="height:88%;"></span>
+                    <span style="height:38%;"></span>
+                    <span style="height:16%;opacity:0.4;"></span>
+                  </div>
+                  <span class="lede-stat-cap">per day</span>
+                </div>
+              </div>
+              <!-- Single enable-engine CTA -->
+              <div class="lede-invite">
+                <p class="lede-invite-text">
+                  Turn on the Engine for the story behind these hours — categories, focus, and what changed.
+                </p>
+                <a class="btn btn--accent" href="#">Enable engine</a>
+              </div>
+            </article>
+
+            <!-- EXHIBITS (free) — Time live; Categories + Focus locked -->
+            <section class="exhibits" aria-label="Supporting charts">
+              <p class="eyebrow">
+                <span class="diamond" aria-hidden="true">◆</span>
+                <span class="tick" aria-hidden="true"></span>
+                Exhibits
+                <span class="rule"></span>
+              </p>
+              <div class="exhibits-grid">
+                <!-- Time (FREE) — live bars -->
+                <div class="exhibit">
+                  <div class="exhibit-head"><span class="exhibit-title">Time</span></div>
+                  <div class="exhibit-body">
+                    <div class="mini-appbars">
+                      <div class="mini-appbar"><span class="label">VS Code</span><span class="track"><span class="fill" style="width:100%;background:var(--chart-grey-5);"></span></span><span class="val">3h12m</span></div>
+                      <div class="mini-appbar"><span class="label">Chrome</span><span class="track"><span class="fill" style="width:56%;background:var(--chart-grey-4);"></span></span><span class="val">1h48m</span></div>
+                      <div class="mini-appbar"><span class="label">Terminal</span><span class="track"><span class="fill" style="width:42%;background:var(--chart-grey-3);"></span></span><span class="val">1h20m</span></div>
+                      <div class="mini-appbar"><span class="label">Figma</span><span class="track"><span class="fill" style="width:27%;background:var(--chart-grey-2);"></span></span><span class="val">52m</span></div>
+                    </div>
+                  </div>
+                </div>
+                <!-- Categories (locked) -->
+                <div class="exhibit">
+                  <div class="exhibit-head"><span class="exhibit-title">Categories</span></div>
+                  <div class="exhibit-body">
+                    <p class="tile-note tile-note--locked">Enable the engine to light up categories.</p>
+                  </div>
+                </div>
+                <!-- Focus (locked) — spans both columns -->
+                <div class="exhibit">
+                  <div class="exhibit-head"><span class="exhibit-title">Focus</span></div>
+                  <div class="exhibit-body">
+                    <p class="tile-note tile-note--locked">Enable the engine to see focus.</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- ASK (free) — still docked at the bottom -->
+            <button class="ask-entry" type="button" onclick="location.href='chat.html'">
+              <span class="glyph" aria-hidden="true">◇</span>
+              <span class="label">Ask about your history</span>
+              <span class="hint">Opens Chat →</span>
+            </button>
+
+          </div>
+          <!-- ============================================================
+               SURFACE CONTENT END
+               ============================================================ -->
+        </main>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+  <script>
+    /* Cosmetic-only wiring for the Overview surface. */
+    (function () {
+      "use strict";
+
+      // (date-range Day/Week/Month segment toggle is wired generically in app.js)
+
+      // gentle Pin / Dismiss inline actions in the "What changed" delta rows
+      document.addEventListener("click", function (ev) {
+        var pin = ev.target.closest("[data-pin]");
+        if (pin) {
+          var on = pin.classList.toggle("is-pinned");
+          pin.textContent = on ? "Pinned ◆" : "Pin";
+          return;
+        }
+        var dis = ev.target.closest("[data-dismiss]");
+        if (dis) {
+          var row = dis.closest(".delta-row");
+          if (row) {
+            row.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+            row.style.opacity = "0";
+            row.style.transform = "translateY(-4px)";
+            setTimeout(function () { row.remove(); }, 200);
+          }
+          return;
+        }
+        // delta-row expand / collapse toggle
+        var tog = ev.target.closest(".delta-toggle");
+        if (tog) {
+          var open = tog.classList.toggle("open");
+          tog.setAttribute("aria-expanded", open ? "true" : "false");
+          tog.setAttribute("aria-label", open ? "Hide detail" : "Show detail");
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

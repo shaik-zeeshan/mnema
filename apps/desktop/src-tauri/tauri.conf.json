@@ -40,7 +40,6 @@
     "createUpdaterArtifacts": true,
     "targets": "all",
     "externalBin": ["binaries/mnema-cli"],
-    "resources": ["resources/pi-ask-ai-shim.mjs"],
     "macOS": {
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"

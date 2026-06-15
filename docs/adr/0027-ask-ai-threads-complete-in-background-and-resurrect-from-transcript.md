@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded by [ADR 0033](0033-ask-ai-migrates-onto-shared-reasoning-engine.md) (background-completion intent retained, reframed onto the persistent conversation store)
 ---
 
 # Ask AI threads complete in the background and resurrect from their transcript
+
+> **Superseded in part by [ADR 0031](0031-quick-recall-and-chat-share-one-persistent-conversation-store.md):** this ADR's **disk-ephemerality** ("persists nothing to disk") no longer holds — **Quick Recall** conversations now persist to the shared conversation store so a thread can be opened/continued in the Insights **Chat** workspace. The in-memory background-completion / resurrect lifetime described below is unchanged and still applies.
 
 **Quick Recall**'s **Ask AI Thread** no longer dies the moment the panel is dismissed. An **unseen** conversation — one still streaming, or finished but never looked at while the panel was focused — now **survives dismiss/blur** so a re-summon lands back on it, completes in the background while the webview is hidden, and stays readable. A finished-but-unseen thread keeps its resident PI helper for a bounded **30-minute unseen window**; past that the helper is released (the idle Node/PI process is reclaimed) but the rendered transcript stays intact and the thread is marked **expired**. A follow-up question on a **dead** thread (expired, or whose last turn errored — an error already kills the helper Rust-side) **resurrects** it: a fresh PI session is started and re-fed the prior question/answer turns as `priorTranscript`, continuing into the same visible transcript.
 

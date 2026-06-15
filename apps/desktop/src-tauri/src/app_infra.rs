@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -48,9 +48,6 @@ const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 const MNEMA_CLI_COMMAND_NAME: &str = "mnema";
 const MNEMA_CLI_SIDECAR_NAME: &str = "mnema-cli";
-const PI_COMMAND_NAME: &str = "pi";
-const PI_CODING_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
-const MIN_PI_VERSION: &str = "0.65.0";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppInfraInitializeError {
     AlreadyRunning,
@@ -154,7 +151,7 @@ impl Default for BackgroundWorkersControl {
 }
 
 impl BackgroundWorkersControl {
-    fn subscribe(&self) -> watch::Receiver<bool> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
         self.inner.shutdown_tx.subscribe()
     }
 
@@ -171,7 +168,7 @@ impl BackgroundWorkersControl {
         let _ = self.inner.retention_schedule_tx.send(version);
     }
 
-    fn track(&self, handle: JoinHandle<()>) {
+    pub(crate) fn track(&self, handle: JoinHandle<()>) {
         if self.inner.shutdown_requested.load(Ordering::SeqCst) {
             handle.abort();
             return;
@@ -1783,6 +1780,12 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    crate::user_context::worker::spawn_user_context_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
     spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
 }
 
@@ -2318,7 +2321,10 @@ impl ProcessingWorkerKind {
     }
 }
 
-async fn shutdown_aware_sleep(shutdown_rx: &mut watch::Receiver<bool>, duration: Duration) -> bool {
+pub(crate) async fn shutdown_aware_sleep(
+    shutdown_rx: &mut watch::Receiver<bool>,
+    duration: Duration,
+) -> bool {
     if *shutdown_rx.borrow() {
         return true;
     }
@@ -3118,6 +3124,11 @@ struct DeleteRecentCaptureDeletion {
     deleted_background_jobs: i64,
     deleted_frame_batches: i64,
     deleted_search_documents: i64,
+    // Derived **User Context** cascade (ADR 0029), purged in the SAME
+    // transaction as the raw rows so a privacy-panic delete and its derived
+    // cascade commit (or roll back) together — never raw-gone-but-dossier-left.
+    deleted_user_context_activities: i64,
+    deleted_user_context_conclusions: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3507,6 +3518,38 @@ fn dedupe_delete_recent_paths(paths: &mut Vec<DeleteRecentCapturePath>) {
     paths.retain(|path| seen.insert(path.path.clone()));
 }
 
+/// **Delete Recent Capture** derived-data cascade (ADR 0029), run INSIDE the
+/// raw-delete transaction so the privacy panic button's raw delete and its
+/// derived purge are atomic. This is a thin adapter: it delegates to the
+/// **canonical** cascade
+/// [`::app_infra::user_context::cascade_derived_for_deleted_subjects_in`]
+/// (`crates/app-infra/src/user_context/store.rs`), passing the SAME `tx` that
+/// deleted the raw frames/audio so raw-delete + derived-purge commit or roll
+/// back as one — something the pooled
+/// `UserContextStore::delete_derived_for_capture_subjects` wrapper cannot do
+/// because it owns its own transaction. There is now ONE copy of the cascade SQL
+/// (and one chunk size), so the two paths can no longer drift. Returns the
+/// dropped (activities, conclusions) counts; digests are purged too but their
+/// count isn't surfaced to callers (matches the store summary's use).
+async fn cascade_user_context_for_deleted_subjects(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    frame_ids: &[i64],
+    audio_segment_ids: &[i64],
+) -> Result<(i64, i64), ::app_infra::AppInfraError> {
+    if frame_ids.is_empty() && audio_segment_ids.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let summary = ::app_infra::user_context::cascade_derived_for_deleted_subjects_in(
+        &mut *tx,
+        frame_ids,
+        audio_segment_ids,
+    )
+    .await?;
+
+    Ok((summary.deleted_activities, summary.deleted_conclusions))
+}
+
 async fn delete_recent_capture_rows(
     infra: &::app_infra::AppInfra,
     started_at: &str,
@@ -3715,6 +3758,18 @@ async fn delete_recent_capture_rows(
             .map_err(|error| format!("failed to delete capture segments: {error}"))?
             .rows_affected() as i64;
 
+    // ADR 0029: the privacy panic button cascades into derived **User Context**,
+    // and that cascade MUST be atomic with the raw delete — a crash or error
+    // between committing the raw delete and running the cascade would leave the
+    // dossier describing content that no longer exists ("spent 5 minutes on [the
+    // sensitive thing]"). Folding it into THIS transaction makes raw-delete +
+    // derived-purge commit or roll back as one. (Time-based Retention Policy
+    // deliberately does NOT take this path — it never touches user_context_*.)
+    let (deleted_user_context_activities, deleted_user_context_conclusions) =
+        cascade_user_context_for_deleted_subjects(&mut tx, &frame_ids, &audio_segment_ids)
+            .await
+            .map_err(|error| format!("failed to cascade user-context deletion: {error}"))?;
+
     tx.commit()
         .await
         .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
@@ -3732,6 +3787,8 @@ async fn delete_recent_capture_rows(
         deleted_background_jobs,
         deleted_frame_batches,
         deleted_search_documents,
+        deleted_user_context_activities,
+        deleted_user_context_conclusions,
     })
 }
 
@@ -3864,6 +3921,17 @@ async fn delete_recent_capture_inner(
             deleted_audio_segment_ids: deletion.audio_segment_ids.clone(),
         },
     );
+
+    // ADR 0029: the derived **User Context** cascade already ran atomically with
+    // the raw delete inside `delete_recent_capture_rows` (so a failure rolls back
+    // the whole privacy delete rather than leaving the dossier describing deleted
+    // content). All that's left here is to notify any open Insights surface.
+    if deletion.deleted_user_context_activities > 0
+        || deletion.deleted_user_context_conclusions > 0
+    {
+        let _ = app_handle.emit(crate::user_context::worker::USER_CONTEXT_CHANGED_EVENT, ());
+    }
+
     let post_delete_result = async {
         let file_delete_errors =
             delete_recent_capture_files_and_tombstone(infra, &deletion, &retention_context).await?;
@@ -3934,31 +4002,6 @@ pub struct MnemaCliStatus {
     pub installed: bool,
     pub install_dir_in_path: bool,
     pub existing_target: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PiRuntimeSource {
-    Managed,
-    Path,
-    Unmanaged,
-    Missing,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PiRuntimeStatus {
-    pub source: PiRuntimeSource,
-    pub executable_path: Option<String>,
-    pub version: Option<String>,
-    pub minimum_version: String,
-    pub version_ok: bool,
-    pub auth_json_path: String,
-    pub auth_json_exists: bool,
-    pub provider_configured: bool,
-    pub provider_count: usize,
-    pub ready: bool,
-    pub reason: Option<String>,
 }
 
 fn mnema_cli_sidecar_name() -> String {
@@ -4087,15 +4130,10 @@ fn mnema_cli_install_path_for_home(home_dir: &Path) -> PathBuf {
         .join(MNEMA_CLI_COMMAND_NAME)
 }
 
-// Resolving the login-shell PATH spawns the user's full profile (100ms-1s) and is
-// invoked many times per Ask AI session (pi/node resolution, ~8+/session). PATH is
+// Resolving the login-shell PATH spawns the user's full profile (100ms-1s). PATH is
 // stable for the life of the process under normal use (nothing in this tree calls
 // std::env::set_var), so the resolved dirs are memoized once and cloned on later
-// calls. The one exception is the user fixing their setup *after* launch (e.g.
-// adding a new dir to their shell profile so pi/node land on PATH) and then hitting
-// Settings → "Refresh PI status": that explicit user action recomputes the PATH via
-// `refresh_terminal_shell_path_dirs` so the cached fast path cannot strand a now-fixed
-// setup as `pi_not_found`/`node_unavailable` until app restart.
+// calls. Used by Mnema CLI install-dir-on-PATH detection.
 #[cfg(not(windows))]
 static TERMINAL_SHELL_PATH_DIRS_CACHE: OnceLock<Mutex<Option<Vec<PathBuf>>>> = OnceLock::new();
 
@@ -4134,321 +4172,11 @@ fn terminal_shell_path_dirs() -> Vec<PathBuf> {
         .clone()
 }
 
-// Force a re-read of the login-shell PATH, overwriting the memoized value. Reserved
-// for the explicit user-driven "Refresh PI status" path so a setup fixed after launch
-// is reflected without an app restart; hot paths keep using the cached fast path.
-#[cfg(not(windows))]
-fn refresh_terminal_shell_path_dirs() -> Vec<PathBuf> {
-    let dirs = compute_terminal_shell_path_dirs();
-    let cache = TERMINAL_SHELL_PATH_DIRS_CACHE.get_or_init(|| Mutex::new(None));
-    *cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(dirs.clone());
-    dirs
-}
-
 #[cfg(windows)]
 fn terminal_shell_path_dirs() -> Vec<PathBuf> {
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default()
-}
-
-// On Windows the process PATH is the source of truth and is not memoized, so there is
-// nothing to invalidate; the refresh path resolves the same way as the hot path.
-#[cfg(windows)]
-fn refresh_terminal_shell_path_dirs() -> Vec<PathBuf> {
-    terminal_shell_path_dirs()
-}
-
-// On Windows a command on PATH can be exposed under any of the PATHEXT
-// extensions, not just `.exe`. npm in particular installs CLI shims as
-// `<command>.cmd` (e.g. `pi.cmd`), so probing `<command>.exe` alone would
-// report `pi_not_found` even when `pi` runs fine from the user's shell.
-// We honor the PATHEXT env var when present and fall back to the standard
-// Windows default list otherwise. Bare `<command>` (no extension) is also
-// tried so an already-suffixed input or extension-less executable resolves.
-#[cfg(windows)]
-fn executable_name_candidates(command: &str) -> Vec<String> {
-    const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
-
-    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| DEFAULT_PATHEXT.to_string());
-
-    let mut candidates = Vec::new();
-    candidates.push(command.to_string());
-    for ext in pathext.split(';') {
-        let ext = ext.trim();
-        if ext.is_empty() {
-            continue;
-        }
-        // PATHEXT entries are conventionally written with a leading dot.
-        let ext = ext.strip_prefix('.').unwrap_or(ext);
-        candidates.push(format!("{command}.{ext}"));
-    }
-    candidates
-}
-
-#[cfg(not(windows))]
-fn executable_name_candidates(command: &str) -> Vec<String> {
-    vec![command.to_string()]
-}
-
-fn find_executable_in_dirs(command: &str, dirs: Vec<PathBuf>) -> Option<PathBuf> {
-    let candidates = executable_name_candidates(command);
-    dirs.into_iter().find_map(|dir| {
-        candidates
-            .iter()
-            .map(|executable| dir.join(executable))
-            .find(|candidate| candidate.is_file())
-    })
-}
-
-pub(crate) fn executable_in_shell_path(command: &str) -> Option<PathBuf> {
-    find_executable_in_dirs(command, terminal_shell_path_dirs())
-}
-
-// Like `executable_in_shell_path` but forces a fresh login-shell PATH read first, so a
-// setup the user fixed after launch is seen. Reserved for the explicit "Refresh PI
-// status" path; everything else should use the cached `executable_in_shell_path`.
-fn executable_in_refreshed_shell_path(command: &str) -> Option<PathBuf> {
-    find_executable_in_dirs(command, refresh_terminal_shell_path_dirs())
-}
-
-fn pi_agent_dir_for_home_and_env(
-    home_dir: &Path,
-    env_agent_dir: Option<&std::ffi::OsStr>,
-) -> PathBuf {
-    env_agent_dir
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir.join(".pi").join("agent"))
-}
-
-fn pi_auth_json_path_for_home_and_env(
-    home_dir: &Path,
-    env_agent_dir: Option<&std::ffi::OsStr>,
-) -> PathBuf {
-    pi_agent_dir_for_home_and_env(home_dir, env_agent_dir).join("auth.json")
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PiAuthProviderStatus {
-    Missing,
-    Empty,
-    Malformed,
-    Misconfigured,
-    Configured(usize),
-}
-
-impl PiAuthProviderStatus {
-    fn provider_count(self) -> usize {
-        match self {
-            Self::Configured(count) => count,
-            Self::Missing | Self::Empty | Self::Malformed | Self::Misconfigured => 0,
-        }
-    }
-
-    fn configured(self) -> bool {
-        matches!(self, Self::Configured(_))
-    }
-
-    fn reason(self) -> Option<&'static str> {
-        match self {
-            Self::Missing => Some("pi_auth_missing"),
-            Self::Empty => Some("pi_auth_empty"),
-            Self::Malformed => Some("pi_auth_malformed"),
-            Self::Misconfigured => Some("pi_auth_misconfigured"),
-            Self::Configured(_) => None,
-        }
-    }
-}
-
-fn pi_auth_provider_status(auth_json_path: &Path) -> PiAuthProviderStatus {
-    let Ok(raw) = fs::read_to_string(auth_json_path) else {
-        return PiAuthProviderStatus::Missing;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return PiAuthProviderStatus::Malformed;
-    };
-    let Some(providers) = value.as_object() else {
-        return PiAuthProviderStatus::Malformed;
-    };
-    if providers.is_empty() {
-        return PiAuthProviderStatus::Empty;
-    }
-
-    let provider_count = providers
-        .values()
-        .filter(|value| pi_auth_provider_entry_configured(value))
-        .count();
-    if provider_count == 0 {
-        PiAuthProviderStatus::Misconfigured
-    } else {
-        PiAuthProviderStatus::Configured(provider_count)
-    }
-}
-
-fn pi_auth_credential_value_present(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Null => false,
-        serde_json::Value::Bool(value) => *value,
-        serde_json::Value::Number(_) => true,
-        serde_json::Value::String(value) => !value.trim().is_empty(),
-        serde_json::Value::Array(values) => values.iter().any(pi_auth_credential_value_present),
-        serde_json::Value::Object(values) => values.values().any(pi_auth_credential_value_present),
-    }
-}
-
-fn pi_auth_provider_entry_configured(value: &serde_json::Value) -> bool {
-    let Some(entry) = value.as_object() else {
-        return false;
-    };
-    let Some(entry_type) = entry.get("type").and_then(|value| value.as_str()) else {
-        return false;
-    };
-    if entry_type.trim().is_empty() {
-        return false;
-    }
-    entry
-        .iter()
-        .any(|(key, value)| key != "type" && pi_auth_credential_value_present(value))
-}
-
-fn pi_runtime_version(executable_path: &Path) -> Option<String> {
-    pi_runtime_version_with_path_dirs(executable_path, terminal_shell_path_dirs())
-}
-
-fn pi_runtime_version_with_path_dirs(
-    executable_path: &Path,
-    path_dirs: Vec<PathBuf>,
-) -> Option<String> {
-    let mut command = std::process::Command::new(executable_path);
-    command.arg("--version");
-    if let Ok(path) = std::env::join_paths(path_dirs) {
-        command.env("PATH", path);
-    }
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let mut version_text = String::from_utf8_lossy(&output.stdout).into_owned();
-    version_text.push_str(&String::from_utf8_lossy(&output.stderr));
-    parse_semver_from_text(&version_text)
-}
-
-fn parse_semver_from_text(text: &str) -> Option<String> {
-    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '+'))
-        .filter_map(|part| {
-            let core = part.split(['-', '+']).next().unwrap_or(part);
-            if core.split('.').count() == 3
-                && core
-                    .split('.')
-                    .all(|piece| !piece.is_empty() && piece.chars().all(|ch| ch.is_ascii_digit()))
-            {
-                Some(core.to_string())
-            } else {
-                None
-            }
-        })
-        .next()
-}
-
-fn version_tuple(version: &str) -> Option<[u64; 3]> {
-    let mut parts = version.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some([major, minor, patch])
-}
-
-fn version_meets_minimum(version: &str, minimum: &str) -> bool {
-    match (version_tuple(version), version_tuple(minimum)) {
-        (Some(version), Some(minimum)) => version >= minimum,
-        _ => false,
-    }
-}
-
-fn pi_runtime_status_for_candidates(
-    home_dir: &Path,
-    unmanaged_path: Option<PathBuf>,
-    managed_path: Option<PathBuf>,
-    path_runtime: Option<PathBuf>,
-    version_lookup: impl Fn(&Path) -> Option<String>,
-) -> PiRuntimeStatus {
-    pi_runtime_status_for_candidates_with_auth_dir_env(
-        home_dir,
-        unmanaged_path,
-        managed_path,
-        path_runtime,
-        std::env::var_os(PI_CODING_AGENT_DIR_ENV).as_deref(),
-        version_lookup,
-    )
-}
-
-fn pi_runtime_status_for_candidates_with_auth_dir_env(
-    home_dir: &Path,
-    unmanaged_path: Option<PathBuf>,
-    managed_path: Option<PathBuf>,
-    path_runtime: Option<PathBuf>,
-    env_agent_dir: Option<&std::ffi::OsStr>,
-    version_lookup: impl Fn(&Path) -> Option<String>,
-) -> PiRuntimeStatus {
-    let selected = unmanaged_path
-        .filter(|path| path.is_file())
-        .map(|path| (PiRuntimeSource::Unmanaged, path))
-        .or_else(|| {
-            managed_path
-                .filter(|path| path.is_file())
-                .map(|path| (PiRuntimeSource::Managed, path))
-        })
-        .or_else(|| {
-            path_runtime
-                .filter(|path| path.is_file())
-                .map(|path| (PiRuntimeSource::Path, path))
-        });
-    let auth_json_path = pi_auth_json_path_for_home_and_env(home_dir, env_agent_dir);
-    let auth_json_exists = auth_json_path.is_file();
-    let auth_provider_status = pi_auth_provider_status(&auth_json_path);
-    let (source, executable_path, version) = match selected {
-        Some((source, path)) => {
-            let version = version_lookup(&path);
-            (source, Some(path), version)
-        }
-        None => (PiRuntimeSource::Missing, None, None),
-    };
-    let version_ok = version
-        .as_deref()
-        .is_some_and(|version| version_meets_minimum(version, MIN_PI_VERSION));
-    let reason = if executable_path.is_none() {
-        Some("pi_not_found".to_string())
-    } else if version.is_none() {
-        Some("pi_version_unavailable".to_string())
-    } else if !version_ok {
-        Some("pi_version_too_old".to_string())
-    } else if let Some(auth_reason) = auth_provider_status.reason() {
-        Some(auth_reason.to_string())
-    } else {
-        None
-    };
-    let provider_configured = auth_provider_status.configured();
-    let provider_count = auth_provider_status.provider_count();
-    let ready = reason.is_none() && provider_configured;
-
-    PiRuntimeStatus {
-        source,
-        executable_path: executable_path.map(|path| path.display().to_string()),
-        version,
-        minimum_version: MIN_PI_VERSION.to_string(),
-        version_ok,
-        auth_json_path: auth_json_path.display().to_string(),
-        auth_json_exists,
-        provider_configured,
-        provider_count,
-        ready,
-        reason,
-    }
 }
 
 fn resolve_link_target(link_path: &Path, target: PathBuf) -> PathBuf {
@@ -4541,71 +4269,6 @@ pub async fn get_cli_status_inner(app_handle: tauri::AppHandle) -> Result<MnemaC
     let install_path = mnema_cli_install_path(&app_handle)?;
     let bundled_cli_path = bundled_mnema_cli_path()?;
     Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
-}
-
-// `get_pi_runtime_status_inner` is called per brokered Ask AI tool call (default up to
-// 12/question) plus on seeding and several times at startup. Each computation spawns a
-// login shell (now cached, see TERMINAL_SHELL_PATH_DIRS_CACHE), runs `pi --version`
-// (subprocess), and reads auth.json — all genuinely blocking. A short TTL collapses the
-// repeated within-an-answer checks onto one computation while staying short enough that a
-// user fixing their pi/node/auth setup sees the change reflected within a few seconds.
-const PI_RUNTIME_STATUS_CACHE_TTL: Duration = Duration::from_secs(3);
-
-static PI_RUNTIME_STATUS_CACHE: OnceLock<Mutex<Option<(Instant, PiRuntimeStatus)>>> =
-    OnceLock::new();
-
-pub async fn get_pi_runtime_status_inner(
-    app_handle: tauri::AppHandle,
-) -> Result<PiRuntimeStatus, String> {
-    get_pi_runtime_status_inner_with_options(app_handle, false).await
-}
-
-// `force_refresh` is set only by the explicit user-driven "Refresh PI status" action:
-// it bypasses the short TTL cache AND re-reads the login-shell PATH (the cached PATH
-// otherwise persists for the life of the process), so a pi/node setup the user fixed
-// after launch is reflected without an app restart. Background/hot callers leave it
-// false and ride both caches.
-pub async fn get_pi_runtime_status_inner_with_options(
-    app_handle: tauri::AppHandle,
-    force_refresh: bool,
-) -> Result<PiRuntimeStatus, String> {
-    // Resolve the home dir up front: `app_handle` is not safe to move into spawn_blocking,
-    // but the derived `PathBuf` is Send and is the only app-handle input the blocking work
-    // needs.
-    let home_dir = app_handle
-        .path()
-        .home_dir()
-        .map_err(|error| format!("failed to resolve home dir: {error}"))?;
-
-    let cache = PI_RUNTIME_STATUS_CACHE.get_or_init(|| Mutex::new(None));
-    if !force_refresh {
-        if let Some((computed_at, status)) = cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-        {
-            if computed_at.elapsed() < PI_RUNTIME_STATUS_CACHE_TTL {
-                return Ok(status.clone());
-            }
-        }
-    }
-
-    let status = tokio::task::spawn_blocking(move || {
-        let pi_executable = if force_refresh {
-            executable_in_refreshed_shell_path(PI_COMMAND_NAME)
-        } else {
-            executable_in_shell_path(PI_COMMAND_NAME)
-        };
-        pi_runtime_status_for_candidates(&home_dir, None, None, pi_executable, pi_runtime_version)
-    })
-    .await
-    .map_err(|error| format!("failed to resolve pi runtime status: {error}"))?;
-
-    *cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((Instant::now(), status.clone()));
-
-    Ok(status)
 }
 
 pub async fn install_cli_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
@@ -5391,269 +5054,6 @@ mod tests {
     }
 
     #[test]
-    fn pi_auth_json_path_uses_default_agent_dir() {
-        assert_eq!(
-            pi_auth_json_path_for_home_and_env(Path::new("/Users/tester"), None),
-            PathBuf::from("/Users/tester/.pi/agent/auth.json")
-        );
-    }
-
-    #[test]
-    fn pi_auth_json_path_honors_pi_agent_dir_override() {
-        assert_eq!(
-            pi_auth_json_path_for_home_and_env(
-                Path::new("/Users/tester"),
-                Some(std::ffi::OsStr::new("/tmp/pi-agent"))
-            ),
-            PathBuf::from("/tmp/pi-agent/auth.json")
-        );
-    }
-
-    #[test]
-    fn pi_version_parser_finds_semver_in_cli_output() {
-        assert_eq!(
-            parse_semver_from_text("pi 0.78.0\n").as_deref(),
-            Some("0.78.0")
-        );
-        assert_eq!(
-            parse_semver_from_text("@earendil-works/pi-coding-agent 1.2.3-beta.1").as_deref(),
-            Some("1.2.3")
-        );
-        assert!(parse_semver_from_text("pi dev").is_none());
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn pi_runtime_version_uses_resolved_shell_path_for_env_shebang() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = TestDir::new("pi-version-env-shebang");
-        let bin_dir = dir.path().join("bin");
-        fs::create_dir_all(&bin_dir).expect("bin dir should be created");
-
-        let interpreter = bin_dir.join("mnema-test-node");
-        fs::write(&interpreter, b"#!/bin/sh\nprintf '0.73.1\\n'\n")
-            .expect("interpreter should be written");
-        let mut permissions = fs::metadata(&interpreter)
-            .expect("interpreter metadata should be readable")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&interpreter, permissions).expect("interpreter should be executable");
-
-        let pi = dir.path().join("pi");
-        fs::write(&pi, b"#!/usr/bin/env mnema-test-node\n").expect("pi shim should be written");
-        let mut permissions = fs::metadata(&pi)
-            .expect("pi shim metadata should be readable")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&pi, permissions).expect("pi shim should be executable");
-
-        assert_eq!(
-            pi_runtime_version_with_path_dirs(&pi, vec![bin_dir]).as_deref(),
-            Some("0.73.1")
-        );
-    }
-
-    #[test]
-    fn pi_version_comparison_uses_numeric_semver_parts() {
-        assert!(version_meets_minimum("0.65.0", MIN_PI_VERSION));
-        assert!(version_meets_minimum("0.78.0", MIN_PI_VERSION));
-        assert!(version_meets_minimum("1.0.0", MIN_PI_VERSION));
-        assert!(!version_meets_minimum("0.64.9", MIN_PI_VERSION));
-    }
-
-    #[test]
-    fn pi_runtime_status_prefers_unmanaged_then_managed_then_path() {
-        let dir = TestDir::new("pi-runtime-priority");
-        let unmanaged = dir.path().join("unmanaged-pi");
-        let managed = dir.path().join("managed-pi");
-        let path_runtime = dir.path().join("path-pi");
-        fs::write(&unmanaged, b"").expect("unmanaged runtime should be written");
-        fs::write(&managed, b"").expect("managed runtime should be written");
-        fs::write(&path_runtime, b"").expect("path runtime should be written");
-        let auth_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
-        fs::write(
-            auth_dir.join("auth.json"),
-            br#"{ "anthropic": { "type": "api_key", "key": "test-key" } }"#,
-        )
-        .expect("pi auth should be written");
-
-        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
-            dir.path(),
-            Some(unmanaged.clone()),
-            Some(managed),
-            Some(path_runtime),
-            None,
-            |_| Some(MIN_PI_VERSION.to_string()),
-        );
-
-        assert_eq!(status.source, PiRuntimeSource::Unmanaged);
-        assert_eq!(
-            status.executable_path,
-            Some(unmanaged.display().to_string())
-        );
-        assert!(status.ready);
-        assert!(status.provider_configured);
-        assert_eq!(status.provider_count, 1);
-        assert!(status.reason.is_none());
-    }
-
-    #[test]
-    fn pi_runtime_status_reports_missing_auth_after_valid_runtime() {
-        let dir = TestDir::new("pi-runtime-missing-auth");
-        let path_runtime = dir.path().join("pi");
-        fs::write(&path_runtime, b"").expect("path runtime should be written");
-
-        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
-            dir.path(),
-            None,
-            None,
-            Some(path_runtime),
-            None,
-            |_| Some(MIN_PI_VERSION.to_string()),
-        );
-
-        assert_eq!(status.source, PiRuntimeSource::Path);
-        assert_eq!(status.reason.as_deref(), Some("pi_auth_missing"));
-        assert!(!status.ready);
-        assert!(!status.provider_configured);
-        assert_eq!(status.provider_count, 0);
-    }
-
-    #[test]
-    fn pi_runtime_status_reports_empty_auth_after_valid_runtime() {
-        let dir = TestDir::new("pi-runtime-empty-auth");
-        let path_runtime = dir.path().join("pi");
-        fs::write(&path_runtime, b"").expect("path runtime should be written");
-        let auth_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
-        fs::write(auth_dir.join("auth.json"), b"{}").expect("pi auth should be written");
-
-        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
-            dir.path(),
-            None,
-            None,
-            Some(path_runtime),
-            None,
-            |_| Some(MIN_PI_VERSION.to_string()),
-        );
-
-        assert_eq!(status.reason.as_deref(), Some("pi_auth_empty"));
-        assert!(!status.provider_configured);
-        assert_eq!(status.provider_count, 0);
-        assert!(!status.ready);
-    }
-
-    #[test]
-    fn pi_runtime_status_reports_malformed_auth_after_valid_runtime() {
-        let dir = TestDir::new("pi-runtime-malformed-auth");
-        let path_runtime = dir.path().join("pi");
-        fs::write(&path_runtime, b"").expect("path runtime should be written");
-        let auth_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
-        fs::write(auth_dir.join("auth.json"), b"not json").expect("pi auth should be written");
-
-        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
-            dir.path(),
-            None,
-            None,
-            Some(path_runtime),
-            None,
-            |_| Some(MIN_PI_VERSION.to_string()),
-        );
-
-        assert_eq!(status.reason.as_deref(), Some("pi_auth_malformed"));
-        assert!(!status.provider_configured);
-        assert_eq!(status.provider_count, 0);
-        assert!(!status.ready);
-    }
-
-    #[test]
-    fn pi_runtime_status_reports_misconfigured_auth_after_valid_runtime() {
-        let dir = TestDir::new("pi-runtime-misconfigured-auth");
-        let path_runtime = dir.path().join("pi");
-        fs::write(&path_runtime, b"").expect("path runtime should be written");
-        let auth_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
-        fs::write(
-            auth_dir.join("auth.json"),
-            br#"{ "anthropic": { "type": "api_key", "key": "" } }"#,
-        )
-        .expect("pi auth should be written");
-
-        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
-            dir.path(),
-            None,
-            None,
-            Some(path_runtime),
-            None,
-            |_| Some(MIN_PI_VERSION.to_string()),
-        );
-
-        assert_eq!(status.reason.as_deref(), Some("pi_auth_misconfigured"));
-        assert!(!status.provider_configured);
-        assert_eq!(status.provider_count, 0);
-        assert!(!status.ready);
-    }
-
-    #[test]
-    fn pi_runtime_status_reports_configured_auth_after_valid_runtime() {
-        let dir = TestDir::new("pi-runtime-configured-auth");
-        let path_runtime = dir.path().join("pi");
-        fs::write(&path_runtime, b"").expect("path runtime should be written");
-        let auth_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
-        fs::write(
-            auth_dir.join("auth.json"),
-            br#"{ "anthropic": { "type": "api_key", "key": "test-key" } }"#,
-        )
-        .expect("pi auth should be written");
-
-        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
-            dir.path(),
-            None,
-            None,
-            Some(path_runtime),
-            None,
-            |_| Some(MIN_PI_VERSION.to_string()),
-        );
-
-        assert!(status.reason.is_none());
-        assert!(status.provider_configured);
-        assert_eq!(status.provider_count, 1);
-        assert!(status.ready);
-    }
-
-    #[test]
-    fn pi_runtime_status_counts_nested_oauth_auth_after_valid_runtime() {
-        let dir = TestDir::new("pi-runtime-oauth-auth");
-        let path_runtime = dir.path().join("pi");
-        fs::write(&path_runtime, b"").expect("path runtime should be written");
-        let auth_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
-        fs::write(
-            auth_dir.join("auth.json"),
-            br#"{ "anthropic": { "type": "oauth", "tokens": { "accessToken": "test-token" } } }"#,
-        )
-        .expect("pi auth should be written");
-
-        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
-            dir.path(),
-            None,
-            None,
-            Some(path_runtime),
-            None,
-            |_| Some(MIN_PI_VERSION.to_string()),
-        );
-
-        assert!(status.reason.is_none());
-        assert!(status.provider_configured);
-        assert_eq!(status.provider_count, 1);
-        assert!(status.ready);
-    }
-
-    #[test]
     fn bundled_mnema_cli_path_uses_plain_sidecar_name_when_present() {
         let dir = TestDir::new("mnema-cli-plain-sidecar");
         let plain_cli = dir.path().join(mnema_cli_sidecar_name());
@@ -5995,6 +5395,111 @@ mod tests {
         });
     }
 
+    /// ADR 0029 + atomicity: the derived **User Context** cascade must commit in
+    /// the SAME transaction as the raw delete, so a single
+    /// `delete_recent_capture_rows` call leaves neither the raw rows NOR the
+    /// dossier rows derived from them behind. Seeds a frame inside the window, an
+    /// Activity grounded in it, an overlapping Digest, and a Conclusion grounded
+    /// only by that Activity, then asserts all are gone and the counts surface.
+    #[test]
+    fn delete_recent_capture_rows_cascades_user_context_in_one_transaction() {
+        run_async_test(async {
+            let dir = TestDir::new("delete-recent-user-context-cascade");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let pool = infra.pool();
+
+            // A frame inside the delete window — the cascade keys off its id.
+            let frame_id: i64 = sqlx::query_scalar(
+                "INSERT INTO frames (session_id, file_path, captured_at)
+                 VALUES ('screen-uc', '/tmp/uc-frame.jpg', '2026-05-19T10:00:05Z')
+                 RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("frame should insert");
+
+            // An Activity grounded in that frame, plus an overlapping Digest.
+            let activity_id: i64 = sqlx::query_scalar(
+                "INSERT INTO user_context_activities (
+                    title, summary, started_at_ms, ended_at_ms, created_at_ms
+                 ) VALUES ('Worked on the spec', 'spec work', 1000, 2000, 1000)
+                 RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("activity should insert");
+            sqlx::query(
+                "INSERT INTO user_context_activity_evidence (activity_id, subject_type, subject_id)
+                 VALUES (?1, 'frame', ?2)",
+            )
+            .bind(activity_id)
+            .bind(frame_id)
+            .execute(pool)
+            .await
+            .expect("activity evidence should insert");
+            sqlx::query(
+                "INSERT INTO user_context_digests (
+                    range_kind, range_start_ms, range_end_ms, narrative, input_fingerprint,
+                    generated_at_ms
+                 ) VALUES ('day', 0, 5000, 'a day of spec work', 'fp', 1000)",
+            )
+            .execute(pool)
+            .await
+            .expect("digest should insert");
+
+            // A Conclusion grounded ONLY by that Activity -> zero surviving
+            // support once the Activity is gone -> dropped by the formation bar.
+            let conclusion_id: i64 = sqlx::query_scalar(
+                "INSERT INTO user_context_conclusions (
+                    subject, statement, confidence, formed_at_ms, last_supported_at_ms,
+                    updated_at_ms, created_at_ms
+                 ) VALUES ('Spec', 'Cares about the spec', 0.7, 1000, 1000, 1000, 1000)
+                 RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("conclusion should insert");
+            sqlx::query(
+                "INSERT INTO user_context_conclusion_evidence (
+                    conclusion_id, activity_id, stance, created_at_ms
+                 ) VALUES (?1, ?2, 'support', 1000)",
+            )
+            .bind(conclusion_id)
+            .bind(activity_id)
+            .execute(pool)
+            .await
+            .expect("conclusion evidence should insert");
+
+            let deletion =
+                delete_recent_capture_rows(&infra, "2026-05-19T09:59:00Z", "2026-05-19T10:01:00Z")
+                    .await
+                    .expect("delete recent rows should complete");
+
+            assert_eq!(deletion.deleted_frames, 1);
+            assert_eq!(deletion.deleted_user_context_activities, 1);
+            assert_eq!(deletion.deleted_user_context_conclusions, 1);
+
+            // The raw frame AND every derived row committed away together.
+            for table in [
+                "frames",
+                "user_context_activities",
+                "user_context_activity_evidence",
+                "user_context_conclusions",
+                "user_context_conclusion_evidence",
+                "user_context_digests",
+            ] {
+                let sql = format!("SELECT COUNT(*) FROM {table}");
+                let count: i64 = sqlx::query_scalar(&sql)
+                    .fetch_one(pool)
+                    .await
+                    .expect("row count should load");
+                assert_eq!(count, 0, "{table} should be purged atomically with the raw delete");
+            }
+        });
+    }
+
     #[test]
     fn delete_recent_capture_rows_prunes_empty_frame_batches() {
         run_async_test(async {
@@ -6126,6 +5631,8 @@ mod tests {
                 deleted_background_jobs: 0,
                 deleted_frame_batches: 0,
                 deleted_search_documents: 0,
+                deleted_user_context_activities: 0,
+                deleted_user_context_conclusions: 0,
             };
             let context = ::app_infra::RetentionCleanupContext {
                 save_directory: Some(save_dir.path().display().to_string()),

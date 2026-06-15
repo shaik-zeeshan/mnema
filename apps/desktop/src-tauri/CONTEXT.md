@@ -50,6 +50,10 @@ _Avoid_: recording settings, browser local storage, one-time prompt state
 The native window backing **Quick Recall**, implemented as a macOS non-activating `NSPanel` at floating level, summoned by global shortcut so it floats over the frontmost app, takes key input without making Mnema frontmost, appears on the active Space, and dismisses on blur or Escape.
 _Avoid_: standard always-on-top window, activating window, dashboard popover
 
+**User Context Derivation**:
+The desktop-owned **Reasoning Engine** orchestration for the User Context dossier (`apps/desktop/src-tauri/src/user_context/`): `derivation.rs` builds the prompts and calls `ai_engine::extract_with_preamble`, mapping results through the Sensitive Category Guardrail / formation-bar / resurface gates before persisting through the app-infra `UserContextStore`; `worker.rs` runs the background derivation loop (`spawn_user_context_worker`); `commands.rs` exposes the Tauri command surface. The model call lives here, not in app-infra, so `rig-core` stays out of the storage crate.
+_Avoid_: app-infra inference, dossier service, ai-runtime-in-storage
+
 ## Relationships
 
 - **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.
@@ -135,6 +139,13 @@ _Avoid_: standard always-on-top window, activating window, dashboard popover
 - The **Quick Recall Panel** configures its panel class/level/activation through the same native window machinery precedent in `windows.rs` (Objective-C corner radius, dock-icon control) rather than a Svelte-driven overlay, and window ownership stays in that shared window helper module like the **CLI Access Request** window.
 - The **Quick Recall Panel** is summoned by a global **Keyboard Binding** and dismisses on blur or Escape; global summon requires the Mnema process to be resident (menu-bar/hidden), and a fully quit app is not cold-launched by the shortcut in V1.
 - The **Quick Recall Panel** is macOS-first, consistent with Mnema's native capture orientation.
+- **User Context Derivation** is spawned by `spawn_user_context_worker` in deferred startup, beside the retention worker and off the capture hot path (the **OCR Catch-Up** pattern), so derivation never competes with live capture.
+- The **User Context Derivation** worker runs three cadences: a frequent Activity beat (forward catch-up plus newest-first History Backfill bounded by the Derivation Budget, paced per cloud tier or fixed for local), a slower Conclusion-distillation beat, and a slowest Confidence-decay-and-snapshot beat.
+- The worker resolves an `ai_engine::EngineConfig` from `AiRuntimeSettings` plus the bring-your-own-key loaded from the OS keychain (`app_infra::load_ai_provider_key`); with no usable engine, derivation is simply unavailable rather than erroring.
+- **User Context Derivation** runs only redacted OCR/transcript text past a cloud Reasoning Engine — never frame images or audio — and the assembled dossier is persisted on-device through the app-infra `UserContextStore`; a local engine sends nothing off the machine.
+- The Sensitive Category Guardrail's hard `is_sensitive` post-filter is applied at derivation time before persist, so a sensitive Conclusion never reaches the store.
+- The Tauri command surface (`get_user_context_status`, `list_user_context_activities`, `list_user_context_conclusions`, `get_user_context_subject`, `user_context_run_derivation_now`, `user_context_dismiss_conclusion`, `user_context_set_pinned`, `wipe_user_context`, and `update_user_context_settings`) is registered in `lib.rs`; the frontend refreshes off the `user_context_changed` event.
+- Token usage shown on the settings surface is a best-effort estimate (≈4 chars/token), not a billed figure, because rig-core's extractor does not return provider usage.
 
 ## Example Dialogue
 

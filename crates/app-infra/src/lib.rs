@@ -1,9 +1,11 @@
+mod ai_provider_key_store;
 mod audio_segments;
 pub mod brokered_access;
 mod capture_index_key_store;
 mod capture_retention;
 mod captured_frame_equivalence;
 mod captured_frame_pipeline;
+pub mod conversation;
 mod db;
 pub mod error;
 mod frame_batch_artifact_cleanup;
@@ -13,14 +15,20 @@ mod hidden_segment_workspace;
 pub mod jobs;
 mod ocr_budget;
 pub mod processing;
+pub mod retry_policy;
 mod search;
 pub mod status;
+pub mod usage_charts;
+pub mod user_context;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 
 use sqlx::SqlitePool;
 
+pub use ai_provider_key_store::{
+    delete_ai_provider_key, has_ai_provider_key, load_ai_provider_key, store_ai_provider_key,
+};
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
@@ -79,7 +87,15 @@ pub use search::{
     SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
     SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
 };
+pub use conversation::ConversationStore;
 pub use status::AppInfraStatus;
+pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
+pub use user_context::{
+    digest_input_fingerprint, evidence_fingerprint, ActivityCorrection, CaptureWindow,
+    CaptureWindowItem, DistillationGateDrops, FailedDerivationWindow, NewActivity,
+    NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
+    UserContextCascadeSummary, UserContextStore,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSegmentTranscriptionAdmission {
@@ -256,6 +272,9 @@ pub struct AppInfra {
     capture_retention: CaptureRetentionStore,
     processing: ProcessingStore,
     search: SearchStore,
+    usage_charts: UsageChartsStore,
+    user_context: UserContextStore,
+    conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
     runtime: JobRuntime,
@@ -315,6 +334,9 @@ impl AppInfra {
         let capture_retention = CaptureRetentionStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
         let search = SearchStore::new(database.pool().clone());
+        let usage_charts = UsageChartsStore::new(database.pool().clone());
+        let user_context = UserContextStore::new(database.pool().clone());
+        let conversation = ConversationStore::new(database.pool().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
@@ -330,6 +352,9 @@ impl AppInfra {
             capture_retention,
             processing,
             search,
+            usage_charts,
+            user_context,
+            conversation,
             captured_frame_equivalence,
             captured_frame_pipeline,
             runtime,
@@ -399,6 +424,18 @@ impl AppInfra {
 
     pub fn capture_retention(&self) -> &CaptureRetentionStore {
         &self.capture_retention
+    }
+
+    pub fn user_context(&self) -> &user_context::UserContextStore {
+        &self.user_context
+    }
+
+    pub fn conversation(&self) -> &conversation::ConversationStore {
+        &self.conversation
+    }
+
+    pub fn usage_charts(&self) -> &UsageChartsStore {
+        &self.usage_charts
     }
 
     pub async fn frame_secret_redaction_count(&self, frame_id: i64) -> Result<u32> {

@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Insights · Chat</title>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* ===== Chat surface: Claude/ChatGPT layout, Mnema terminal skin ===== */
+    /* Override the default scroll padding so we can lay out a full-height app. */
+    .insights-main {
+      padding: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: row;
+    }
+
+    /* ---------- A) CHAT-LIST SIDEBAR ---------- */
+    .chat-list {
+      flex: 0 0 230px;
+      width: 230px;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+      min-height: 0;
+    }
+    .chat-list-top {
+      padding: 12px 12px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-bottom: 1px solid var(--app-border);
+    }
+    .chat-newbtn { width: 100%; justify-content: center; }
+    .chat-search {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border: 1px solid var(--app-border);
+      border-radius: 6px;
+      background: var(--app-surface);
+      color: var(--app-text-muted);
+      font-size: 11.5px;
+    }
+    .chat-search .s-glyph { color: var(--app-text-subtle); }
+    .chat-search input {
+      flex: 1 1 auto;
+      min-width: 0;
+      border: none;
+      background: transparent;
+      font: inherit;
+      font-size: 11.5px;
+      color: var(--app-text);
+      outline: none;
+    }
+    .chat-search input::placeholder { color: var(--app-text-faint); }
+
+    .chat-history {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 8px 8px 0;
+    }
+    .chat-group-label {
+      font-size: 9.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--app-text-faint);
+      padding: 10px 8px 5px;
+    }
+    .chat-row {
+      display: block;
+      padding: 6px 9px;
+      border: 1px solid transparent;
+      border-left: 2px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 1px;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .chat-row:hover { background: var(--app-surface-hover); }
+    .chat-row .ct {
+      font-size: 12px;
+      color: var(--app-text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .chat-row .cs {
+      font-size: 10px;
+      color: var(--app-text-faint);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 1px;
+    }
+    .chat-row.active {
+      background: var(--app-accent-bg);
+      border-color: var(--app-accent-border);
+      border-left-color: var(--app-accent);
+    }
+    .chat-row.active .ct { color: var(--app-accent-strong); }
+
+    .chat-list-foot {
+      border-top: 1px solid var(--app-border);
+      padding: 9px 12px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 10px;
+      color: var(--app-text-muted);
+    }
+    .chat-list-foot .doors {
+      flex: 0 0 auto;
+      color: var(--app-accent-strong);
+      font-size: 12px;
+      letter-spacing: -2px;
+    }
+
+    /* ---------- B) CONVERSATION COLUMN ---------- */
+    .chat-conv {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--app-bg);
+    }
+
+    /* thread header */
+    .thread-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+    }
+    .thread-head .th-title {
+      font-size: 13px;
+      color: var(--app-text-strong);
+      font-weight: 600;
+    }
+    .thread-head .th-sub {
+      font-size: 10.5px;
+      color: var(--app-text-muted);
+      margin-top: 1px;
+    }
+    .thread-head .th-sub .dotsep { color: var(--app-text-faint); margin: 0 5px; }
+
+    /* scrollable message area */
+    .thread-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 22px 0 16px;
+    }
+    .thread-col {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 0 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 26px;
+    }
+
+    /* message rows */
+    .msg { display: flex; gap: 12px; }
+    .msg-user { justify-content: flex-end; }
+    .avatar {
+      flex: 0 0 auto;
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background: var(--app-accent-bg);
+      border: 1px solid var(--app-accent-border);
+      color: var(--app-accent-strong);
+      font-size: 13px;
+      margin-top: 1px;
+    }
+    .msg-body { min-width: 0; flex: 1 1 auto; }
+    .msg-prose {
+      font-size: 13px;
+      color: var(--app-text);
+      line-height: 1.65;
+    }
+    .msg-prose .strong { color: var(--app-text-strong); }
+
+    /* user bubble */
+    .user-bubble {
+      max-width: 78%;
+      background: var(--app-surface-raised);
+      border: 1px solid var(--app-border-strong);
+      border-radius: 10px;
+      padding: 9px 13px;
+      font-size: 13px;
+      color: var(--app-text-strong);
+    }
+
+    /* ---------- INLINE GRAPHICAL ANSWER blocks ---------- */
+    .answer-block {
+      margin-top: 12px;
+      border: 1px solid var(--app-border);
+      border-radius: 9px;
+      background: var(--app-surface);
+      padding: 13px 14px 14px;
+    }
+    .answer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .answer-takeaway {
+      margin-top: 12px;
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+      border-top: 1px solid var(--app-border);
+      padding-top: 9px;
+    }
+    .answer-takeaway b { color: var(--app-text-strong); font-weight: 600; }
+
+    /* categorized horizontal bar chart */
+    .barchart { display: flex; flex-direction: column; gap: 9px; }
+    .bar-row { display: grid; grid-template-columns: 96px 1fr 42px; align-items: center; gap: 10px; }
+    .bar-label { font-size: 11px; color: var(--app-text); display: flex; align-items: center; gap: 6px; }
+    .bar-swatch { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+    .bar-track {
+      position: relative;
+      height: 14px;
+      border-radius: 3px;
+      background: var(--app-surface-hover);
+      border: 1px solid var(--app-border);
+      overflow: hidden;
+    }
+    .bar-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 2px 0 0 2px; }
+    .bar-val { font-size: 11px; color: var(--app-text-muted); text-align: right; }
+
+    /* trajectory line chart frame */
+    .traj-frame {
+      border: 1px solid var(--app-border);
+      border-radius: 6px;
+      background: var(--app-surface-subtle);
+      padding: 10px 12px 6px;
+    }
+    .traj-axis-x {
+      display: flex; justify-content: space-between;
+      font-size: 9px; color: var(--app-text-faint);
+      margin-top: 4px; letter-spacing: 0.04em;
+    }
+
+    /* inline dossier conclusion card */
+    .dossier-card {
+      margin-top: 12px;
+      border: 1px solid var(--app-border);
+      border-left: 2px solid var(--app-accent);
+      border-radius: 7px;
+      background: var(--app-surface-raised);
+      padding: 11px 13px;
+    }
+    .dossier-card .dc-claim { font-size: 12.5px; color: var(--app-text-strong); }
+    .dossier-card .dc-meta {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-top: 9px;
+    }
+    .dossier-card .dc-conf { flex: 1 1 auto; display: flex; align-items: center; gap: 8px; }
+    .dossier-card .dc-conf .lab { font-size: 9.5px; letter-spacing: 0.08em; color: var(--app-text-faint); text-transform: uppercase; }
+    .dossier-link {
+      flex: 0 0 auto;
+      font-size: 11px;
+      color: var(--app-accent-strong);
+      border-bottom: 1px dotted var(--app-accent-border);
+      white-space: nowrap;
+    }
+    .dossier-link:hover { color: var(--app-accent); }
+
+    /* ---------- ANSWER SOURCES strip ---------- */
+    .sources {
+      margin-top: 14px;
+    }
+    .sources-label {
+      font-size: 9.5px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--app-text-faint);
+      margin-bottom: 8px;
+    }
+    .sources-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .source-card {
+      flex: 1 1 0;
+      min-width: 150px;
+      max-width: 220px;
+      border: 1px solid var(--app-border);
+      border-radius: 7px;
+      overflow: hidden;
+      background: var(--app-surface);
+      cursor: pointer;
+      transition: border-color 0.12s ease, transform 0.12s ease;
+    }
+    .source-card:hover { border-color: var(--app-border-hover); transform: translateY(-1px); }
+    .source-card--screen { border-color: var(--app-source-screen-border); }
+    .source-card--mic { border-color: var(--app-source-mic-border); }
+    .source-thumb {
+      height: 64px;
+      position: relative;
+      background: var(--app-surface-hover);
+      border-bottom: 1px solid var(--app-border);
+      overflow: hidden;
+    }
+    /* CSS placeholder "screenshot" — striped editor-ish blocks */
+    .thumb-code {
+      background:
+        repeating-linear-gradient(
+          0deg,
+          var(--app-surface-raised) 0 7px,
+          transparent 7px 12px
+        );
+    }
+    .thumb-bar {
+      position: absolute; left: 8px; height: 5px; border-radius: 2px;
+      background: var(--app-source-screen);
+      opacity: 0.55;
+    }
+    .source-meta { padding: 7px 9px; }
+    .source-app { font-size: 11px; color: var(--app-text); display: flex; align-items: center; gap: 6px; }
+    .source-app .src-dot { width: 7px; height: 7px; border-radius: 2px; flex: 0 0 auto; }
+    .source-time { font-size: 9.5px; color: var(--app-text-faint); margin-top: 2px; }
+
+    /* audio waveform source card */
+    .thumb-audio {
+      display: flex; align-items: center; justify-content: center; gap: 3px;
+      background: var(--app-source-mic-bg);
+    }
+    .thumb-audio span {
+      width: 3px; border-radius: 2px;
+      background: var(--app-source-mic);
+      opacity: 0.85;
+    }
+
+    /* ---------- tool-activity working line (in-progress turn) ---------- */
+    .tool-activity { display: flex; flex-direction: column; gap: 6px; }
+    .tool-line {
+      display: flex; align-items: center; gap: 9px;
+      font-size: 12px; color: var(--app-text-muted);
+    }
+    .tool-line .tl-glyph {
+      display: inline-block;
+      color: var(--app-accent-strong);
+      animation: spin 1.4s linear infinite;
+    }
+    .tool-line.subline { color: var(--app-text-subtle); font-size: 11.5px; padding-left: 4px; }
+    .tool-line.subline .arrow { color: var(--app-text-faint); }
+    .tool-line.subline code {
+      color: var(--app-accent-strong);
+      background: var(--app-accent-bg);
+      border: 1px solid var(--app-accent-border);
+      border-radius: 4px;
+      padding: 0 5px;
+      font-size: 10.5px;
+    }
+    .pulse { animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+    /* ---------- C) COMPOSER ---------- */
+    .composer-wrap {
+      flex: 0 0 auto;
+      border-top: 1px solid var(--app-border);
+      background: var(--app-bg);
+      padding: 12px 24px 14px;
+    }
+    .composer {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    .composer-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 10px;
+      background: var(--app-surface);
+      padding: 7px 8px 7px 10px;
+      transition: border-color 0.12s ease;
+    }
+    .composer-row:focus-within { border-color: var(--app-border-hover); }
+    .composer-left {
+      display: inline-flex; align-items: center; gap: 6px;
+      flex: 0 0 auto;
+    }
+    .model-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 10.5px;
+      padding: 3px 8px;
+      border: 1px solid var(--app-accent-border);
+      border-radius: 6px;
+      background: var(--app-accent-bg);
+      color: var(--app-accent-strong);
+      cursor: pointer;
+    }
+    .model-chip .mc-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); }
+    .composer input.composer-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      border: none;
+      background: transparent;
+      font: inherit;
+      font-size: 13px;
+      color: var(--app-text-strong);
+      outline: none;
+    }
+    .composer input.composer-input::placeholder { color: var(--app-text-faint); }
+    .send-btn {
+      flex: 0 0 auto;
+      width: 30px; height: 30px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      border: 1px solid var(--app-accent-border);
+      background: var(--app-accent-bg);
+      color: var(--app-accent-strong);
+      font-size: 15px;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .send-btn:hover { border-color: var(--app-accent); color: var(--app-accent); }
+    .composer-hint {
+      max-width: 760px;
+      margin: 7px auto 0;
+      font-size: 10px;
+      color: var(--app-text-faint);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">mnema</span>
+      </div>
+      <div class="surface-toggle">
+        <button type="button">Timeline</button>
+        <button type="button" class="active" aria-current="page">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip"><span class="dot"></span>idle</span>
+        <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme">☀</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <div class="insights">
+        <nav class="subnav">
+          <div class="subnav-tabs">
+            <a class="subnav-tab" href="overview.html">Overview</a>
+            <a class="subnav-tab" href="subjects-index.html">Subjects</a>
+            <a class="subnav-tab" href="context.html">Context</a>
+            <a class="subnav-tab active" aria-current="page" href="chat.html">Chat</a>
+          </div>
+          <div class="subnav-meta">
+            <div class="subnav-search">
+              <span class="subnav-search-glyph">⌕</span>
+              <span class="subnav-search-text">Jump to a subject or ask…</span>
+              <span class="kbd">⌘K</span>
+            </div>
+            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+          </div>
+        </nav>
+
+        <main class="insights-main">
+          <!-- BUILD NOTES — chat
+               Slice: Insights Chat sub-surface. Engine-tier (rig-core).
+               Shares ONE engine AND ONE conversation store with Quick Recall (apps/desktop/src/routes/quick-recall/+page.svelte):
+                 two doors into the SAME persistent threads — a thread started in one resumes in the other.
+                 This REVERSES ADR 0027's disk-ephemerality: conversations now persist in the Encrypted Capture Index,
+                 under Retention Policy and cleared by Wipe User Context.
+               Answers render GRAPHICALLY inline (same chart/dossier components as Overview/Subject, not just prose).
+               Personalization is on-request only: the recall_context broker tool returns ONLY the question-relevant
+                 Conclusion/Activity pieces (redacted, All-Retained broker scope) — never the whole dossier.
+               Reuse: AnswerSourceCard.svelte for the Answer Sources strip; chart components from Overview/Subject.
+               ADRs: ../../adr/0031-quick-recall-and-chat-share-one-persistent-conversation-store.md,
+                     ../../adr/0028-ai-features-call-models-rust-side-via-rig-core.md
+               Full guide: see README.md
+          -->
+          <!-- ============================================================
+               SURFACE CONTENT START
+               ============================================================ -->
+
+          <!-- ================= A) CHAT-LIST SIDEBAR ================= -->
+          <aside class="chat-list">
+            <div class="chat-list-top">
+              <button class="btn btn--accent chat-newbtn" type="button">+ New chat</button>
+              <label class="chat-search">
+                <span class="s-glyph">⌕</span>
+                <input type="text" placeholder="search chats…" />
+              </label>
+            </div>
+
+            <div class="chat-history">
+              <div class="chat-group-label">Today</div>
+              <a class="chat-row active">
+                <div class="ct">Time spent this week</div>
+                <div class="cs">Coding led at 14h — here's where…</div>
+              </a>
+              <a class="chat-row">
+                <div class="ct">Apple silicon interest over time</div>
+                <div class="cs">Trending up since late April</div>
+              </a>
+              <a class="chat-row">
+                <div class="ct">Where did Tuesday go?</div>
+                <div class="cs">Mostly Slack + context switches</div>
+              </a>
+
+              <div class="chat-group-label">Yesterday</div>
+              <a class="chat-row">
+                <div class="ct">Rust learning progress</div>
+                <div class="cs">Borrow-checker sessions up 2×</div>
+              </a>
+              <a class="chat-row">
+                <div class="ct">Most distracting apps</div>
+                <div class="cs">X and YouTube top the list</div>
+              </a>
+
+              <div class="chat-group-label">Last 7 days</div>
+              <a class="chat-row">
+                <div class="ct">Meeting load by day</div>
+                <div class="cs">Wed is your heaviest</div>
+              </a>
+              <a class="chat-row">
+                <div class="ct">Design vs build split</div>
+                <div class="cs">Build 3.7× design this sprint</div>
+              </a>
+              <a class="chat-row">
+                <div class="ct">What did I read about WebGPU?</div>
+                <div class="cs">6 articles, 2 specs</div>
+              </a>
+            </div>
+
+            <div class="chat-list-foot">
+              <span class="doors">◫◫</span>
+              <span>Shared with <span class="strong" style="font-weight:600;">Quick Recall</span> — same threads open there.</span>
+            </div>
+          </aside>
+
+          <!-- ================= B) CONVERSATION COLUMN ================= -->
+          <section class="chat-conv">
+            <!-- thread header -->
+            <div class="thread-head">
+              <div>
+                <div class="th-title">Time spent this week</div>
+                <div class="th-sub">Engine: Claude<span class="dotsep">·</span>also openable from Quick Recall</div>
+              </div>
+              <button class="btn btn--ghost" type="button">⤓ export</button>
+            </div>
+
+            <!-- scrollable messages -->
+            <!-- BUILD: message stream shares the persistent Quick Recall conversation store — ADR ../../adr/0031-quick-recall-and-chat-share-one-persistent-conversation-store.md -->
+            <div class="thread-scroll">
+              <div class="thread-col">
+
+                <!-- 1) USER -->
+                <div class="msg msg-user">
+                  <div class="user-bubble">What have I spent the most time on this week?</div>
+                </div>
+
+                <!-- 2) ASSISTANT: prose + bar chart + sources -->
+                <div class="msg">
+                  <div class="avatar">◈</div>
+                  <div class="msg-body">
+                    <div class="msg-prose">
+                      Here's where your week went — <span class="strong">Coding</span> dominated,
+                      with the rest spread across talking to people and reading.
+                    </div>
+
+                    <div class="answer-block">
+                      <div class="answer-head">
+                        <div class="section-title">
+                          Hours by category
+                          <span class="tier-badge tier-badge--engine">Engine</span>
+                        </div>
+                        <span class="muted" style="font-size:10.5px;">Jun 2 – Jun 8</span>
+                      </div>
+
+                      <div class="barchart">
+                        <div class="bar-row">
+                          <div class="bar-label"><span class="bar-swatch" style="background:var(--cat-coding);"></span>Coding</div>
+                          <div class="bar-track"><span class="bar-fill" style="width:100%;background:var(--cat-coding);"></span></div>
+                          <div class="bar-val">14h</div>
+                        </div>
+                        <div class="bar-row">
+                          <div class="bar-label"><span class="bar-swatch" style="background:var(--cat-communication);"></span>Communication</div>
+                          <div class="bar-track"><span class="bar-fill" style="width:43%;background:var(--cat-communication);"></span></div>
+                          <div class="bar-val">6h</div>
+                        </div>
+                        <div class="bar-row">
+                          <div class="bar-label"><span class="bar-swatch" style="background:var(--cat-research);"></span>Research</div>
+                          <div class="bar-track"><span class="bar-fill" style="width:29%;background:var(--cat-research);"></span></div>
+                          <div class="bar-val">4h</div>
+                        </div>
+                        <div class="bar-row">
+                          <div class="bar-label"><span class="bar-swatch" style="background:var(--cat-design);"></span>Design</div>
+                          <div class="bar-track"><span class="bar-fill" style="width:21%;background:var(--cat-design);"></span></div>
+                          <div class="bar-val">3h</div>
+                        </div>
+                        <div class="bar-row">
+                          <div class="bar-label"><span class="bar-swatch" style="background:var(--cat-distractions);"></span>Distractions</div>
+                          <div class="bar-track"><span class="bar-fill" style="width:14%;background:var(--cat-distractions);"></span></div>
+                          <div class="bar-val">2h</div>
+                        </div>
+                      </div>
+
+                      <div class="answer-takeaway">
+                        <b>Coding was 48%</b> of tracked time — more than Communication, Research and Design combined.
+                      </div>
+                    </div>
+
+                    <!-- Answer Sources strip -->
+                    <!-- BUILD: reuse AnswerSourceCard.svelte; cards hand off to Timeline for capture inspection. -->
+                    <div class="sources">
+                      <div class="sources-label">Answer sources · most relevant first</div>
+                      <div class="sources-row">
+                        <div class="source-card source-card--screen">
+                          <div class="source-thumb thumb-code">
+                            <span class="thumb-bar" style="top:10px;width:62%;"></span>
+                            <span class="thumb-bar" style="top:24px;width:44%;"></span>
+                            <span class="thumb-bar" style="top:38px;width:71%;"></span>
+                          </div>
+                          <div class="source-meta">
+                            <div class="source-app"><span class="src-dot" style="background:var(--app-source-screen);"></span>VS Code — capture-screen</div>
+                            <div class="source-time">Thu 14:20 · 1h 12m block</div>
+                          </div>
+                        </div>
+
+                        <div class="source-card source-card--screen">
+                          <div class="source-thumb thumb-code">
+                            <span class="thumb-bar" style="top:8px;width:48%;"></span>
+                            <span class="thumb-bar" style="top:22px;width:66%;"></span>
+                            <span class="thumb-bar" style="top:36px;width:39%;"></span>
+                          </div>
+                          <div class="source-meta">
+                            <div class="source-app"><span class="src-dot" style="background:var(--app-source-screen);"></span>Terminal — cargo test</div>
+                            <div class="source-time">Wed 10:05 · 48m block</div>
+                          </div>
+                        </div>
+
+                        <div class="source-card source-card--mic">
+                          <div class="source-thumb thumb-audio">
+                            <span style="height:14px;"></span><span style="height:28px;"></span><span style="height:20px;"></span>
+                            <span style="height:36px;"></span><span style="height:18px;"></span><span style="height:30px;"></span>
+                            <span style="height:12px;"></span><span style="height:24px;"></span><span style="height:34px;"></span>
+                            <span style="height:16px;"></span>
+                          </div>
+                          <div class="source-meta">
+                            <div class="source-app"><span class="src-dot" style="background:var(--app-source-mic);"></span>Standup — mic</div>
+                            <div class="source-time">Mon 09:30 · 22m call</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 3) USER -->
+                <div class="msg msg-user">
+                  <div class="user-bubble">How has my interest in Apple silicon changed?</div>
+                </div>
+
+                <!-- 4) ASSISTANT: prose + trajectory line + dossier + sources -->
+                <div class="msg">
+                  <div class="avatar">◈</div>
+                  <div class="msg-body">
+                    <div class="msg-prose">
+                      It's grown steadily. Early mentions were casual, but over the last six weeks
+                      you've been reading benchmarks and architecture write-ups with real intent.
+                    </div>
+
+                    <div class="answer-block">
+                      <div class="answer-head">
+                        <div class="section-title">
+                          Confidence trajectory
+                          <span class="tier-badge tier-badge--engine">Engine</span>
+                        </div>
+                        <span class="muted" style="font-size:10.5px;">last 6 weeks</span>
+                      </div>
+
+                      <div class="traj-frame">
+                        <svg viewBox="0 0 320 96" width="100%" height="96" preserveAspectRatio="none" aria-hidden="true">
+                          <!-- gridlines -->
+                          <line x1="0" y1="24" x2="320" y2="24" style="stroke:var(--app-border);" stroke-width="1" />
+                          <line x1="0" y1="48" x2="320" y2="48" style="stroke:var(--app-border);" stroke-width="1" />
+                          <line x1="0" y1="72" x2="320" y2="72" style="stroke:var(--app-border);" stroke-width="1" />
+                          <!-- area under curve -->
+                          <path d="M0,82 L55,74 L110,66 L165,50 L220,36 L275,24 L320,18 L320,96 L0,96 Z"
+                                style="fill:var(--app-accent-glow);" />
+                          <!-- warm→cool arc: rising confidence line -->
+                          <polyline points="0,82 55,74 110,66 165,50 220,36 275,24 320,18"
+                                    fill="none" style="stroke:var(--focus-mid);" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                          <polyline points="165,50 220,36 275,24 320,18"
+                                    fill="none" style="stroke:var(--focus-deep);" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                          <!-- data points -->
+                          <circle cx="0" cy="82" r="2.5" style="fill:var(--focus-mid);" />
+                          <circle cx="110" cy="66" r="2.5" style="fill:var(--focus-mid);" />
+                          <circle cx="220" cy="36" r="2.5" style="fill:var(--focus-deep);" />
+                          <circle cx="320" cy="18" r="3" style="fill:var(--focus-deep);" />
+                        </svg>
+                        <div class="traj-axis-x">
+                          <span>Apr 28</span><span>May 12</span><span>May 26</span><span>Jun 8</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- inline dossier conclusion card -->
+                    <div class="dossier-card">
+                      <div class="dc-claim">Has been increasingly interested in <span class="strong">Apple silicon</span>.</div>
+                      <div class="dc-meta">
+                        <div class="dc-conf">
+                          <span class="lab">Confidence</span>
+                          <span class="confidence-bar" style="max-width:160px;">
+                            <span class="confidence-bar-fill" style="width:81%;"></span>
+                          </span>
+                        </div>
+                        <a class="dossier-link" href="subject.html">view Subject →</a>
+                      </div>
+                    </div>
+
+                    <!-- Answer Sources strip (2 sources) -->
+                    <div class="sources">
+                      <div class="sources-label">Answer sources · most relevant first</div>
+                      <div class="sources-row">
+                        <div class="source-card source-card--screen">
+                          <div class="source-thumb thumb-code">
+                            <span class="thumb-bar" style="top:10px;width:70%;background:var(--app-source-screen);"></span>
+                            <span class="thumb-bar" style="top:24px;width:52%;background:var(--app-source-screen);"></span>
+                            <span class="thumb-bar" style="top:38px;width:60%;background:var(--app-source-screen);"></span>
+                          </div>
+                          <div class="source-meta">
+                            <div class="source-app"><span class="src-dot" style="background:var(--app-source-screen);"></span>Safari — M-series deep dive</div>
+                            <div class="source-time">Jun 6 16:48 · 34m read</div>
+                          </div>
+                        </div>
+
+                        <div class="source-card source-card--screen">
+                          <div class="source-thumb thumb-code">
+                            <span class="thumb-bar" style="top:8px;width:55%;background:var(--app-source-screen);"></span>
+                            <span class="thumb-bar" style="top:22px;width:73%;background:var(--app-source-screen);"></span>
+                            <span class="thumb-bar" style="top:36px;width:41%;background:var(--app-source-screen);"></span>
+                          </div>
+                          <div class="source-meta">
+                            <div class="source-app"><span class="src-dot" style="background:var(--app-source-screen);"></span>Safari — GPU benchmarks</div>
+                            <div class="source-time">May 24 21:12 · 19m read</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 5) IN-PROGRESS assistant turn: tool-activity working line -->
+                <!-- BUILD: recall_context broker tool — returns only question-relevant Conclusion/Activity pieces (redacted), never the whole dossier. -->
+                <div class="msg">
+                  <div class="avatar pulse">◈</div>
+                  <div class="msg-body">
+                    <div class="tool-activity">
+                      <div class="tool-line">
+                        <span class="tl-glyph">⟳</span>
+                        <span class="pulse">searching your history…</span>
+                      </div>
+                      <div class="tool-line subline">
+                        <span class="arrow">↳</span>
+                        <code>recall_context</code>
+                        <span class="muted">· Apple silicon · screen + reading windows</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- ================= C) COMPOSER ================= -->
+            <div class="composer-wrap">
+              <div class="composer">
+                <div class="composer-row">
+                  <div class="composer-left">
+                    <button class="model-chip" type="button"><span class="mc-dot"></span>Claude ▾</button>
+                  </div>
+                  <input class="composer-input" type="text" placeholder="Ask about your history…" />
+                  <button class="send-btn" type="button" aria-label="Send">↑</button>
+                </div>
+              </div>
+              <div class="composer-hint">
+                Answers can include charts. Mnema only sends the engine the pieces relevant to your question.
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================================================
+               SURFACE CONTENT END
+               ============================================================ -->
+        </main>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
