@@ -1648,7 +1648,6 @@ impl RecordingLifecycle {
                 self.runtime.segment_schedule.as_ref(),
                 self.runtime.current_segment_index,
                 previous_segment_output_files.as_ref(),
-                &std::collections::HashMap::new(),
             );
             #[cfg(target_os = "macos")]
             super::segments::warm_scrub_previews_for_committed_screen_outputs(

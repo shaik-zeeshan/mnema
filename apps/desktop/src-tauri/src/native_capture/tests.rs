@@ -44,8 +44,6 @@ use super::runtime::{
     CaptureSuspensionKind, PrivacyCaptureSuspension,
 };
 #[cfg(target_os = "macos")]
-use super::runtime::{CaptureSuspensionKind, PrivacyCaptureSuspension};
-#[cfg(target_os = "macos")]
 use super::segments::{
     apply_microphone_output_finalization, audio_duration_time_to_ms,
     audio_segment_started_at_unix_ms_for_file, audio_segment_window_from_duration_ms,
@@ -859,6 +857,7 @@ fn audio_segment_start_uses_reanchored_session_timing_for_contiguous_late_segmen
         Some(schedule),
         runtime.current_segment_index,
         Some(&output_files),
+        &std::collections::HashMap::new(),
     );
 
     assert_eq!(segments.len(), 2);
@@ -907,6 +906,7 @@ fn fresh_start_inactivity_empty_audio_outputs_leave_no_output_or_db_payloads() {
         Some(&SegmentSchedule::new(std::time::Duration::from_secs(60))),
         1,
         Some(&output_files),
+        &std::collections::HashMap::new(),
     );
 
     assert!(output_files.microphone_file.is_none());
@@ -933,6 +933,7 @@ fn committed_audio_segments_skip_missing_output_files() {
         Some(&SegmentSchedule::new(std::time::Duration::from_secs(60))),
         1,
         Some(&output_files),
+        &std::collections::HashMap::new(),
     );
 
     assert!(
@@ -963,6 +964,7 @@ fn fresh_start_inactivity_valid_active_audio_outputs_survive_db_payload_planning
         Some(&SegmentSchedule::new(std::time::Duration::from_secs(60))),
         1,
         Some(&output_files),
+        &std::collections::HashMap::new(),
     );
 
     assert_eq!(segments.len(), 2);
