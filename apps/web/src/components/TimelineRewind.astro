@@ -1,14 +1,15 @@
 ---
 ---
 
-<section class="rewind">
+<section class="rewind" id="recall">
   <div class="rewind-sticky">
     <div class="rewind-inner">
-      <p class="kicker">// rewind</p>
-      <h2 class="rewind-heading">Scrub back to the exact moment.</h2>
+      <p class="kicker">// recall</p>
+      <h2 class="rewind-heading">Find the one moment in a year of them.</h2>
       <p class="rewind-sub">
-        A full day of screen, audio, and activity — narrowed to the one thing
-        you need.
+        Search by what you saw or heard, filter by app or time, then scrub a
+        live timeline of your day to the exact frame — full-res screen, audio,
+        and transcript.
       </p>
 
       <div class="rewind-vis">
@@ -405,6 +406,19 @@
   .rw-row--match.rw-row--found {
     border-color: var(--accent-border);
     background: var(--accent-bg);
+    animation: rw-match-lock 1.2s var(--ease-out-quart) 1;
+  }
+
+  @keyframes rw-match-lock {
+    0% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+    35% {
+      box-shadow: 0 0 16px 1px var(--accent-glow);
+    }
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
   }
 
   /* ── Fragments ── */

@@ -18,11 +18,14 @@ const lightScreenshot = await getImage({
 
 <section class="hero">
   <div class="hero-inner">
-    <p class="kicker">// total recall, fully private</p>
-    <h1 class="headline">Search everything you've ever seen.</h1>
+    <p class="kicker">// total recall · fully private</p>
+    <h1 class="headline">
+      Perfect memory for everything you've seen, heard, and done.
+    </h1>
     <p class="subhead">
-      Mnema captures your screen, audio, and activity into a searchable record
-      that never leaves your Mac.
+      Mnema quietly records your screen, audio, and activity — then lets you
+      search it, scrub back to any moment, and ask an AI about your own past.
+      All of it stays on your Mac.
     </p>
     <div class="hero-actions">
       <a href={DOWNLOAD_URL} class="btn-primary" data-latest-download-link>
@@ -54,6 +57,10 @@ const lightScreenshot = await getImage({
         />
       </picture>
     </div>
+    <p class="showcase-status">
+      <span class="showcase-dot" aria-hidden="true"></span>
+      Capturing · on-device
+    </p>
   </div>
 </section>
 
@@ -218,6 +225,45 @@ const lightScreenshot = await getImage({
     display: block;
   }
 
+  .showcase-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    margin: var(--space-sm) var(--space-lg) 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+
+  .showcase-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    animation: hero-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes hero-pulse {
+    0%,
+    100% {
+      opacity: 1;
+      box-shadow: 0 0 0 0 var(--accent-glow);
+    }
+    50% {
+      opacity: 0.6;
+      box-shadow: 0 0 8px 3px var(--accent-glow);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .showcase-dot {
+      animation: none;
+    }
+  }
+
   @media (max-width: 768px) {
     .hero {
       padding-top: calc(56px + var(--space-lg));
@@ -230,6 +276,11 @@ const lightScreenshot = await getImage({
 
     .showcase-frame {
       margin: 0;
+    }
+
+    .showcase-status {
+      margin-left: 0;
+      margin-right: 0;
     }
   }
 </style>
