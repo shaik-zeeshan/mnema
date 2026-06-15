@@ -1,24 +1,34 @@
 ---
 const points = [
   {
-    label: "On-device OCR",
-    detail: "Screen text is extracted by macOS Vision framework. No cloud API, no upload.",
+    label: "Stays on your Mac",
+    detail:
+      "Capture, text extraction, transcription, and search all run on-device. No account, no servers, no telemetry — there's no Mnema cloud to send anything to.",
   },
   {
-    label: "Local transcription",
-    detail: "Audio is transcribed using on-device Whisper. Your conversations stay on your machine.",
+    label: "Secrets auto-redacted",
+    detail:
+      "Passwords, keys, and tokens are detected and stripped out before anything is ever shown to a cloud AI model.",
   },
   {
-    label: "Local SQLite",
-    detail: "All data lives in a local database. No sync, no telemetry, no account required.",
+    label: "Encrypted at rest",
+    detail:
+      "Your record is encrypted on disk, so it's protected even if your machine isn't.",
   },
   {
-    label: "Secret redaction",
-    detail: "Sensitive patterns (passwords, tokens, keys) are detected and redacted before indexing.",
+    label: "You choose what's kept",
+    detail:
+      "Keep history forever or auto-delete after 7, 14, or 30 days. It's your call, changeable any time.",
   },
   {
-    label: "No network required",
-    detail: "Mnema works offline after setup. On first use of local transcription, model files are downloaded once from Hugging Face. The only other outbound request is an optional update check.",
+    label: "Delete in one click",
+    detail:
+      "Wipe the last few hours instantly, or clear the AI's entire understanding of you — without losing your recordings.",
+  },
+  {
+    label: "Hide anything sensitive",
+    detail:
+      "Exclude any app from recording, or pause capture entirely whenever you want privacy.",
   },
 ];
 ---
@@ -26,10 +36,11 @@ const points = [
 <section class="privacy" id="privacy">
   <div class="section-inner">
     <p class="kicker">// private by construction</p>
-    <h2 class="section-heading">Your data never leaves your machine.</h2>
+    <h2 class="section-heading">It all stays on your machine.</h2>
     <p class="section-sub">
-      Privacy is not a setting you toggle on. It is how Mnema is built. Every
-      operation — capture, OCR, transcription, search — runs locally.
+      Privacy isn't a setting you switch on. It's how Mnema is built. Recording,
+      reading text from your screen, transcribing audio, and search all happen
+      on your Mac — and you hold every control.
     </p>
 
     <ul class="privacy-list">
