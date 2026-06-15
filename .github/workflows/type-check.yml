@@ -77,6 +77,17 @@ jobs:
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
 
+      - name: Set up MSVC developer environment
+        # `tesseract-rs` (the Windows `ocr` feature) only selects the single-config
+        # NMake generator — the one that honors its `CMAKE_BUILD_TYPE=Release` and
+        # emits `leptonica-1.84.1.lib` / `tesseract53.lib` — when `VSINSTALLDIR` is
+        # set (build.rs gates on it). Without a developer environment it falls back
+        # to the multi-config Visual Studio generator, which ignores
+        # `CMAKE_BUILD_TYPE` and builds the debug `…d.lib` variants that the crate's
+        # own link-search list never matches, failing the native link. This also
+        # puts `nmake`/`cl` on PATH for every subsequent compile and test step.
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Cache Rust dependencies
         uses: actions/cache@v4
         with:
