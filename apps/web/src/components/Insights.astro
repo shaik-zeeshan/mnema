@@ -1,0 +1,519 @@
+---
+const conclusions = [
+  {
+    text: "You've been heads-down on the Q3 dashboard launch for two weeks straight.",
+    because: "// based on 14h in Figma, Linear, and 6 launch meetings",
+  },
+  {
+    text: "Your deepest focus is in the morning — afternoons skew toward meetings and Slack.",
+    because: "// based on 9 days of activity",
+  },
+];
+
+const categories = [
+  { label: "creating", percent: 38, top: true },
+  { label: "meetings", percent: 24, top: false },
+  { label: "research", percent: 18, top: false },
+  { label: "communication", percent: 12, top: false },
+  { label: "learning", percent: 8, top: false },
+];
+
+// Focus heatmap: mon–fri, a handful of intensity steps per day (0 = idle).
+const heatmap = [
+  { day: "M", steps: [0.85, 0.6, 0.35, 0.15] },
+  { day: "T", steps: [0.7, 0.9, 0.4, 0.2] },
+  { day: "W", steps: [0.5, 0.45, 0.25, 0.1] },
+  { day: "T", steps: [0.9, 0.75, 0.55, 0.3] },
+  { day: "F", steps: [0.6, 0.4, 0.2, 0.1] },
+];
+
+const subjects = [
+  { label: "local-first sync", points: "0,12 8,9 16,6 24,3 32,1", trend: "rising" },
+  { label: "type systems", points: "0,2 8,4 16,7 24,9 32,11", trend: "cooling" },
+];
+
+const benefits = [
+  {
+    label: "always-on usage",
+    detail:
+      "See time per app and site, when you're busiest, and how you hop between tools — without lifting a finger.",
+  },
+  {
+    label: "in your own words",
+    detail:
+      "Tell Mnema about yourself and what you're working on, and its picture of you sharpens.",
+  },
+  {
+    label: "yours to correct",
+    detail:
+      "Pin what's right, fix what's off, dismiss what's noise — or wipe the AI's whole understanding without touching a single recording.",
+  },
+];
+---
+
+<section class="insights" id="insights">
+  <div class="section-inner">
+    <p class="kicker">// insights</p>
+    <h2 class="section-heading">An AI that actually understands your work.</h2>
+    <p class="section-sub">
+      From everything it records, Mnema builds a quiet, private picture of how
+      you spend your time — the projects you're deep in, where your focus goes,
+      and what you keep coming back to. It's yours to read, correct, or wipe.
+    </p>
+
+    <div class="dossier">
+      <div class="dossier-chrome" aria-hidden="true">
+        <div class="dossier-dots"><span></span><span></span><span></span></div>
+        <span class="dossier-title">mnema · dossier</span>
+      </div>
+
+      <div class="dossier-body">
+        <!-- Block A: conclusions (real, readable prose) -->
+        <div class="dossier-block">
+          <p class="dossier-eyebrow" aria-hidden="true">// conclusions about you</p>
+          <ul class="conclusions">
+            {
+              conclusions.map((c) => (
+                <li class="conclusion">
+                  <p class="conclusion-text">{c.text}</p>
+                  <p class="conclusion-because" aria-hidden="true">
+                    {c.because}
+                  </p>
+                  <div class="conclusion-acts" aria-hidden="true">
+                    <span class="act act-pin">pin</span>
+                    <span class="act">edit</span>
+                    <span class="act">dismiss</span>
+                  </div>
+                </li>
+              ))
+            }
+          </ul>
+          <p class="dossier-caption" aria-hidden="true">
+            // wrong? correct it in a word, or dismiss it — the AI listens.
+          </p>
+        </div>
+
+        <div class="dossier-grid" aria-hidden="true">
+          <!-- Block B: category bars -->
+          <div class="dossier-block">
+            <p class="dossier-eyebrow">// where your time goes</p>
+            <ul class="cat-bars">
+              {
+                categories.map((cat) => (
+                  <li class="cat-row">
+                    <span class="cat-label">{cat.label}</span>
+                    <span class="cat-track">
+                      <span
+                        class:list={["cat-fill", { "cat-fill--top": cat.top }]}
+                        style={`width:${cat.percent}%`}
+                      />
+                    </span>
+                    <span class="cat-pct">{cat.percent}%</span>
+                  </li>
+                ))
+              }
+            </ul>
+          </div>
+
+          <!-- Block C: focus heatmap -->
+          <div class="dossier-block">
+            <p class="dossier-eyebrow">// focus over time</p>
+            <div class="heatmap">
+              {
+                heatmap.map((col) => (
+                  <div class="heat-col">
+                    {col.steps.map((v) => (
+                      <span
+                        class="heat-cell"
+                        style={`--heat:${v}`}
+                      />
+                    ))}
+                    <span class="heat-day">{col.day}</span>
+                  </div>
+                ))
+              }
+            </div>
+            <p class="dossier-caption">// focus vs. distraction, this week</p>
+          </div>
+        </div>
+
+        <!-- Block D: subject sparklines -->
+        <div class="dossier-block" aria-hidden="true">
+          <p class="dossier-eyebrow">// subjects you keep returning to</p>
+          <ul class="subjects">
+            {
+              subjects.map((s) => (
+                <li class="subject-row">
+                  <span class="subject-label">{s.label}</span>
+                  <svg
+                    class="subject-spark"
+                    viewBox="0 0 32 13"
+                    preserveAspectRatio="none"
+                    role="presentation"
+                  >
+                    <polyline
+                      points={s.points}
+                      fill="none"
+                      stroke="var(--accent)"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <span class="subject-trend">{s.trend}</span>
+                </li>
+              ))
+            }
+          </ul>
+          <p class="dossier-caption">
+            // conviction rises and falls as your attention shifts
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <ul class="insight-benefits">
+      {
+        benefits.map((benefit) => (
+          <li class="insight-benefit">
+            <span class="insight-benefit-label">{benefit.label}</span>
+            <span class="insight-benefit-detail">{benefit.detail}</span>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>
+
+<style>
+  .insights {
+    padding: var(--space-2xl) var(--space-lg);
+    background: var(--surface);
+  }
+
+  .section-inner {
+    max-width: 56rem;
+    margin: 0 auto;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .section-heading {
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-xs);
+  }
+
+  .section-sub {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    max-width: 55ch;
+    margin-bottom: var(--space-lg);
+    line-height: 1.6;
+  }
+
+  /* ── Dossier mock ── */
+
+  .dossier {
+    min-width: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    background: var(--bg);
+    box-shadow: 0 4px 40px rgba(0, 0, 0, 0.25);
+    margin-bottom: var(--space-lg);
+  }
+
+  .dossier-chrome {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .dossier-dots {
+    display: flex;
+    gap: 5px;
+  }
+
+  .dossier-dots span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border-strong);
+  }
+
+  .dossier-title {
+    font-family: var(--font-mono);
+    color: var(--fg-muted);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+  }
+
+  .dossier-body {
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .dossier-block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .dossier-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+
+  .dossier-caption {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+  }
+
+  /* Block A: conclusions */
+
+  .conclusions {
+    list-style: none;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-sm);
+  }
+
+  .conclusion {
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .conclusion-text {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    color: var(--fg);
+  }
+
+  .conclusion-because {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--fg-muted);
+    line-height: 1.5;
+  }
+
+  .conclusion-acts {
+    display: flex;
+    gap: 0.35rem;
+    margin-top: 0.1rem;
+  }
+
+  .act {
+    font-family: var(--font-mono);
+    font-size: 0.58rem;
+    color: var(--fg-muted);
+    padding: 0.1rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    letter-spacing: 0.02em;
+  }
+
+  .act-pin {
+    color: var(--accent);
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+  }
+
+  /* Block B + C grid */
+
+  .dossier-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
+  }
+
+  /* Block B: category bars */
+
+  .cat-bars {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .cat-row {
+    display: grid;
+    grid-template-columns: 7.5em minmax(0, 1fr) 2.5em;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+  }
+
+  .cat-label {
+    color: var(--fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cat-track {
+    height: 7px;
+    background: var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .cat-fill {
+    display: block;
+    height: 100%;
+    background: color-mix(in srgb, var(--accent) 40%, var(--border));
+    border-radius: 999px;
+  }
+
+  .cat-fill--top {
+    background: var(--accent);
+  }
+
+  .cat-pct {
+    color: var(--fg-muted);
+    text-align: right;
+  }
+
+  /* Block C: focus heatmap */
+
+  .heatmap {
+    display: flex;
+    gap: 0.4rem;
+    align-items: flex-end;
+  }
+
+  .heat-col {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+    align-items: stretch;
+  }
+
+  .heat-cell {
+    height: 12px;
+    border-radius: 3px;
+    background: var(--border);
+  }
+
+  .heat-cell[style*="--heat"] {
+    background: color-mix(
+      in srgb,
+      var(--accent) calc(var(--heat) * 100%),
+      var(--border)
+    );
+  }
+
+  [data-theme="light"] .heat-cell[style*="--heat"] {
+    background: color-mix(
+      in srgb,
+      var(--accent) calc((var(--heat) * 0.7 + 0.3) * 100%),
+      var(--border-strong)
+    );
+  }
+
+  .heat-day {
+    font-family: var(--font-mono);
+    font-size: 0.55rem;
+    color: var(--fg-muted);
+    text-align: center;
+    margin-top: 0.15rem;
+  }
+
+  /* Block D: subject sparklines */
+
+  .subjects {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .subject-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 64px 4.5em;
+    align-items: center;
+    gap: 0.65rem;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+  }
+
+  .subject-label {
+    color: var(--fg);
+  }
+
+  .subject-spark {
+    width: 64px;
+    height: 13px;
+    overflow: visible;
+  }
+
+  .subject-trend {
+    color: var(--fg-muted);
+    text-align: right;
+  }
+
+  /* ── Benefit lines ── */
+
+  .insight-benefits {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-md);
+  }
+
+  .insight-benefit {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .insight-benefit-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+  }
+
+  .insight-benefit-detail {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+  }
+
+  @media (max-width: 768px) {
+    .conclusions {
+      grid-template-columns: 1fr;
+    }
+
+    .dossier-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .insight-benefits {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
