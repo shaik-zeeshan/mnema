@@ -19,6 +19,7 @@
   import Context from "$lib/insights/Context.svelte";
   import Chat from "$lib/insights/Chat.svelte";
   import InsightsRail from "$lib/insights/InsightsRail.svelte";
+  import RailResizer from "$lib/insights/RailResizer.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
   type InsightsTab = "overview" | "subjects" | "context" | "chat";
@@ -163,6 +164,49 @@
     }
   }
 
+  // ── Rail width (drag-resize, Slice 7) ───────────────────────────────────
+  // Independent of collapse: the user can drag the rail/main boundary to any
+  // width in [RAIL_MIN_WIDTH, RAIL_MAX_WIDTH], persisted to localStorage and
+  // restored on mount. <RailResizer/> reports a desired px width; the shell is
+  // the single owner that clamps + persists (so storage never holds an out-of-
+  // range value). Only matters while expanded — when collapsed the rail (and the
+  // resizer) aren't rendered, but the saved width is what returns on expand.
+  const RAIL_WIDTH_KEY = "mnema.insights.rail-width";
+  const RAIL_MIN_WIDTH = 180;
+  const RAIL_MAX_WIDTH = 400;
+  const RAIL_DEFAULT_WIDTH = 200;
+
+  function clampRailWidth(px: number): number {
+    return Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(px)));
+  }
+
+  function readPersistedWidth(): number {
+    try {
+      const raw = localStorage.getItem(RAIL_WIDTH_KEY);
+      if (raw === null) return RAIL_DEFAULT_WIDTH;
+      const parsed = Number.parseInt(raw, 10);
+      return Number.isNaN(parsed) ? RAIL_DEFAULT_WIDTH : clampRailWidth(parsed);
+    } catch {
+      // SSR / disabled storage — fall back to the default width.
+      return RAIL_DEFAULT_WIDTH;
+    }
+  }
+
+  let railWidth = $state(readPersistedWidth());
+
+  function setRailWidth(px: number): void {
+    railWidth = clampRailWidth(px);
+    try {
+      localStorage.setItem(RAIL_WIDTH_KEY, String(railWidth));
+    } catch {
+      // Best-effort persistence — a disabled store just won't survive reload.
+    }
+  }
+
+  function resetRailWidth(): void {
+    setRailWidth(RAIL_DEFAULT_WIDTH);
+  }
+
   // Track the narrow-window condition with a matchMedia listener (cheaper than a
   // raw resize handler and fires only on the threshold crossing). Set up in an
   // effect so the listener is cleaned up on unmount.
@@ -253,7 +297,20 @@
     onEnable={enableEngine}
     collapsed={railCollapsed}
     onToggleCollapse={toggleRailCollapsed}
+    width={railWidth}
   />
+
+  <!-- Drag handle between the rail and the active sub-surface. Only present when
+       the rail is (so there is a boundary to drag). -->
+  {#if !railCollapsed}
+    <RailResizer
+      width={railWidth}
+      min={RAIL_MIN_WIDTH}
+      max={RAIL_MAX_WIDTH}
+      onWidth={setRailWidth}
+      onReset={resetRailWidth}
+    />
+  {/if}
 
   <main class="insights-main" class:insights-main--chat={view === "chat"}>
     <!-- When the rail is collapsed, a quiet floating button (top-left, with a

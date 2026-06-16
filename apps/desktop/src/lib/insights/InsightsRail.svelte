@@ -32,6 +32,10 @@
     // `onToggleCollapse` to hide it; the shell owns the persisted state.
     collapsed: boolean;
     onToggleCollapse: () => void;
+    // Drag-resizable width (px). The shell owns the persisted value + clamping;
+    // the rail just renders to it. The neighbouring <RailResizer/> (in the shell)
+    // is the divider/grab handle.
+    width: number;
   }
 
   let {
@@ -43,6 +47,7 @@
     onEnable,
     collapsed,
     onToggleCollapse,
+    width,
   }: Props = $props();
 
   // The nav is the three persistent sub-surfaces only — Chat is reached via
@@ -55,7 +60,7 @@
 </script>
 
 {#if !collapsed}
-<aside class="sidebar" aria-label="Insights">
+<aside class="sidebar" aria-label="Insights" style="width: {width}px;">
   <!-- A quiet collapse chevron, floated into the empty top-right gutter so it
        never claims a full header band of dead space above the nav. Hides the
        rail to give the active sub-surface full width; the shell shows a matching
@@ -114,13 +119,15 @@
      Mirrors the approved mockup's `.sidebar`. */
   .sidebar {
     position: relative;
-    flex: 0 0 200px;
+    /* Width is driven by the shell's persisted `railWidth` (inline `width`); the
+       neighbouring <RailResizer/> renders the divider + drag handle, so the rail
+       no longer carries its own border-right. */
+    flex: 0 0 auto;
     width: 200px;
     display: flex;
     flex-direction: column;
     min-height: 0;
     background: var(--app-surface-subtle);
-    border-right: 1px solid var(--app-border);
   }
   .sidebar-scroll {
     flex: 1 1 auto;
