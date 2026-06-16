@@ -11,7 +11,9 @@
   //
   // The aesthetic is the approved "minimal / quiet" sidebar: hairline dividers +
   // whitespace + a single green accent. Active state is accent TEXT only (no
-  // dot, pill, or box). Lowercase labels, 200px wide, token-driven.
+  // dot, pill, or box). Title-case nav/action labels to match the app's sidebar
+  // typography (date-group headers stay uppercase eyebrows). 200px wide,
+  // token-driven.
   import RailHistory from "$lib/insights/RailHistory.svelte";
   import RailFooter from "$lib/insights/RailFooter.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
@@ -46,9 +48,9 @@
   // The nav is the three persistent sub-surfaces only — Chat is reached via
   // new-chat / a history row, never a nav item.
   const NAV: { id: Exclude<InsightsTab, "chat">; label: string }[] = [
-    { id: "overview", label: "overview" },
-    { id: "subjects", label: "subjects" },
-    { id: "context", label: "context" },
+    { id: "overview", label: "Overview" },
+    { id: "subjects", label: "Subjects" },
+    { id: "context", label: "Context" },
   ];
 </script>
 
@@ -70,7 +72,7 @@
   </button>
 
   <div class="sidebar-scroll">
-    <!-- primary nav — plain lowercase text rows. Active = accent text only. -->
+    <!-- primary nav — plain title-case text rows. Active = accent text only. -->
     <nav class="rail-nav" aria-label="Insights sub-surface">
       {#each NAV as item (item.id)}
         <button
@@ -91,7 +93,7 @@
       class="rail-newchat"
       onclick={() => conversationStore.requestNewChat()}
     >
-      <span class="plus" aria-hidden="true">＋</span> new chat
+      <span class="plus" aria-hidden="true">＋</span> New chat
     </button>
 
     <!-- chat search + time-grouped history (owns its own rename/delete). -->
@@ -108,7 +110,8 @@
      fills, no item borders, no pills; separation comes from 1px hairline
      dividers + whitespace, with a single green accent for the active state
      (accent TEXT only — no leading dot/marker). Even 16px L/R gutters,
-     lowercase labels. Mirrors the approved mockup's `.sidebar`. */
+     title-case nav/action labels (matching the app's sidebar typography).
+     Mirrors the approved mockup's `.sidebar`. */
   .sidebar {
     position: relative;
     flex: 0 0 200px;
@@ -163,7 +166,7 @@
     box-shadow: 0 0 0 2px var(--app-accent-glow);
   }
 
-  /* primary nav — plain lowercase text rows, generous spacing. */
+  /* primary nav — plain title-case text rows, generous spacing. */
   .rail-nav {
     display: flex;
     flex-direction: column;
@@ -176,7 +179,6 @@
     height: 28px;
     font: inherit;
     font-size: 12px;
-    text-transform: lowercase;
     color: var(--app-text-muted);
     transition: color 0.12s ease;
     background: transparent;
@@ -213,7 +215,6 @@
     padding: 0;
     font: inherit;
     font-size: 12px;
-    text-transform: lowercase;
     color: var(--app-text-muted);
     cursor: pointer;
     transition: color 0.12s ease;

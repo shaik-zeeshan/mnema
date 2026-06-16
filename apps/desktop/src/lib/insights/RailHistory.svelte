@@ -36,12 +36,27 @@
   }
 </script>
 
-<!-- search — borderless except a single bottom hairline. -->
+<!-- search — borderless; a clear magnifier glyph carries the "this is search"
+     signal (the app's own search SVG). Focus brightens the glyph to the accent
+     (no box/line). -->
 <div class="rail-search">
-  <span class="glyph" aria-hidden="true">⌕</span>
+  <svg
+    class="icon"
+    width="13"
+    height="13"
+    viewBox="0 0 14 14"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.5"
+    stroke-linecap="round"
+    aria-hidden="true"
+  >
+    <circle cx="6" cy="6" r="4.5" />
+    <path d="M9.5 9.5 13 13" />
+  </svg>
   <input
     type="search"
-    placeholder="search chats…"
+    placeholder="Search chats…"
     aria-label="Search chats"
     autocomplete="off"
     spellcheck="false"
@@ -144,40 +159,47 @@
 
 <style>
   /* search — a quiet borderless row, consistent with the nav / new-chat rows.
-     A persistent bottom hairline made it read as a stray form field amid the
-     otherwise lineless rail; the hairline is now a focus-only cue. Token-driven,
-     lowercase placeholder. */
+     No box, fill, or underline; a clear magnifier glyph (the app's own search
+     SVG) does the "this is search" signalling that the old thin ⌕ couldn't. A
+     focus bottom-hairline read as a stray, lopsided green line, so it's gone —
+     on focus the only cue is the glyph brightening to the accent (plus the
+     caret), matching the nav's box-free focus idiom. Token-driven,
+     sentence-case placeholder. */
   .rail-search {
     display: flex;
     align-items: center;
     gap: 8px;
-    height: 28px;
+    height: 30px;
     margin-top: 16px;
-    border-bottom: 1px solid transparent;
-    transition: border-color 0.12s ease;
   }
-  /* Focus the search → a hairline fades in with the accent + the glyph brightens
-     (a quiet focus cue, no box). */
-  .rail-search:focus-within {
-    border-bottom-color: var(--app-accent-border);
-  }
-  .rail-search:focus-within .glyph {
+  /* Focus the search → the glyph brightens to the accent (quiet, no box/line). */
+  .rail-search:focus-within .icon {
     color: var(--app-accent);
   }
-  .rail-search .glyph {
+  .rail-search .icon {
+    flex: 0 0 auto;
     color: var(--app-text-subtle);
-    font-size: 12px;
     transition: color 0.12s ease;
   }
   .rail-search input {
     flex: 1 1 auto;
     min-width: 0;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    /* Strip WebKit's native search-field chrome. Its intrinsic box grows once
+       the field holds a value, which pushed the whole row — and everything below
+       it — down (the reported layout shift). With appearance:none the row height
+       is purely our fixed 30px, empty or filled. */
+    appearance: none;
+    -webkit-appearance: none;
     background: transparent;
     border: 0;
     outline: 0;
     color: var(--app-text);
     font-family: inherit;
-    font-size: 11.5px;
+    font-size: 12.5px;
+    line-height: 1;
   }
   .rail-search input::placeholder {
     color: var(--app-text-subtle);
@@ -222,11 +244,12 @@
     line-height: 1.5;
   }
 
-  /* group label — tiny, faint, lowercase; hairline above + top spacing. */
+  /* group label — tiny, faint, uppercase eyebrow (matching the app's section
+     markers); hairline above + top spacing. */
   .rail-group {
     font-size: 9px;
     letter-spacing: 0.14em;
-    text-transform: lowercase;
+    text-transform: uppercase;
     color: var(--app-text-subtle);
     margin-top: 14px;
     padding-top: 11px;
