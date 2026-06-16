@@ -247,14 +247,14 @@
   .rail-chat-row {
     position: relative;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     min-height: 24px;
   }
   .rail-chat {
     flex: 1 1 auto;
     min-width: 0;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 8px;
     height: 24px;
     background: transparent;
