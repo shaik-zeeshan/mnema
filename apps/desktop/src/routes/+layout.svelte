@@ -35,7 +35,7 @@
     getGlobalShortcutAction,
     type GlobalShortcutId,
   } from "$lib/global-shortcuts";
-  import { getShortcutBinding, initKeyboardBindings, keyboardBindings, parseShortcutBinding } from "$lib/keyboard-bindings.svelte";
+  import { initKeyboardBindings } from "$lib/keyboard-bindings.svelte";
   import {
     detectKeyboardPlatform,
     formatShortcut,
@@ -383,11 +383,6 @@
     const binding = getEffectiveGlobalShortcut(id).bindings[0];
     return binding ? formatShortcut(binding, windowPlatform).join("") : "—";
   }
-
-  const searchShortcutLabel = $derived.by(() => {
-    const binding = parseShortcutBinding(getShortcutBinding(keyboardBindings.settings, "dashboard.search"));
-    return binding ? formatShortcut(binding, windowPlatform).join("") : "—";
-  });
 
   function shortcutWithLabel(
     definition: ShortcutDefinition,
@@ -948,21 +943,6 @@
           Insights
         </button>
       </div>
-      {#if isMainRoute}
-        <button
-          type="button"
-          class="titlebar__search-trigger"
-          onclick={() => window.dispatchEvent(new CustomEvent("mnema:open-search"))}
-          title={`Search captured frames and audio (${searchShortcutLabel})`}
-        >
-          <svg class="titlebar__search-trigger-icon" width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
-            <circle cx="6" cy="6" r="4.5" />
-            <path d="M9.5 9.5 13 13" />
-          </svg>
-          <span class="titlebar__search-trigger-text">Search</span>
-          <kbd class="titlebar__search-trigger-kbd">{searchShortcutLabel}</kbd>
-        </button>
-      {/if}
     </div>
 
     <div class="titlebar__group titlebar__group--right">
@@ -1570,6 +1550,53 @@
     text-decoration: none;
   }
 
+  /* ── App-wide custom scrollbars ────────────────────────────────
+     A single themed baseline for every scrollable surface. Two goals:
+
+     1. Match the theme. The thumb is tinted from the shared `--app-*`
+        tokens, so it flips with light/dark like the rest of the chrome
+        (quiet border grey at rest → stronger on hover → accent while
+        dragging).
+     2. Never overlay content. macOS WebKit (and Windows WebView2)
+        default to *overlay* scrollbars that float on top of content.
+        Defining a `::-webkit-scrollbar` with an explicit width forces
+        the classic, gutter-reserving scrollbar instead — so it pushes
+        content aside rather than covering it.
+
+     These are `:global` defaults with zero selector specificity, so any
+     component that styles its own scrollbar (settings auto-hide, the
+     hidden rail history, the thin quick-recall row) still wins. */
+  :global(html) {
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-border-strong) transparent;
+  }
+  :global(::-webkit-scrollbar) {
+    width: 12px;
+    height: 12px;
+  }
+  :global(::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+  :global(::-webkit-scrollbar-corner) {
+    background: transparent;
+  }
+  :global(::-webkit-scrollbar-thumb) {
+    /* The 3px transparent border + padding-box clip insets the visible
+       thumb, leaving breathing room on both sides of the gutter. */
+    background-color: var(--app-border-strong);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+  }
+  :global(::-webkit-scrollbar-thumb:hover) {
+    background-color: var(--app-border-hover);
+    background-clip: padding-box;
+  }
+  :global(::-webkit-scrollbar-thumb:active) {
+    background-color: var(--app-accent-strong);
+    background-clip: padding-box;
+  }
+
   .app-shell {
     --app-titlebar-height: 36px;
     --app-window-radius: 10px;
@@ -1745,54 +1772,6 @@
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
     color: var(--app-accent-strong);
-  }
-
-  .titlebar__search-trigger {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 26px;
-    padding: 0 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-subtle);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-    transition:
-      border-color 0.15s,
-      color 0.15s,
-      background 0.15s;
-    min-width: 200px;
-  }
-
-  .titlebar__search-trigger:hover {
-    border-color: var(--app-border-strong);
-    color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-  }
-
-  .titlebar__search-trigger-icon {
-    flex: 0 0 auto;
-    opacity: 0.45;
-  }
-
-  .titlebar__search-trigger-text {
-    flex: 1 1 auto;
-    text-align: left;
-  }
-
-  .titlebar__search-trigger-kbd {
-    flex: 0 0 auto;
-    padding: 1px 5px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: var(--app-bg);
-    color: var(--app-text-faint);
-    font-family: inherit;
-    font-size: 10px;
-    line-height: 1.4;
   }
 
   /* ── Recording status indicator ───────────────────────────── */

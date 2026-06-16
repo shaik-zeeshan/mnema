@@ -18,16 +18,11 @@
   import SubjectDetail from "$lib/insights/SubjectDetail.svelte";
   import Context from "$lib/insights/Context.svelte";
   import Chat from "$lib/insights/Chat.svelte";
-  import Skeleton from "$lib/insights/Skeleton.svelte";
+  import InsightsRail from "$lib/insights/InsightsRail.svelte";
+  import RailResizer from "$lib/insights/RailResizer.svelte";
+  import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
   type InsightsTab = "overview" | "subjects" | "context" | "chat";
-
-  const TABS: { id: InsightsTab; label: string }[] = [
-    { id: "overview", label: "Overview" },
-    { id: "subjects", label: "Subjects" },
-    { id: "context", label: "Context" },
-    { id: "chat", label: "Chat" },
-  ];
 
   // Active sub-surface. Default is Overview. Subject-detail is a drill-in over
   // the Subjects tab held in `selectedSubject` (null = the index).
@@ -37,25 +32,38 @@
   // Quick Recall → Chat handoff (issue #111, ADR 0031). When a Quick Recall
   // thread is promoted into Chat, the main window is shown/navigated here and a
   // conversation id is delivered (a live `insights_open_conversation` event for
-  // a warm window, or the cold-window drain on mount). We switch to the Chat tab
-  // and pass the id down so Chat selects + loads that persisted thread. A
-  // monotonically bumped `nonce` lets Chat re-react when the SAME conversation
-  // is handed off twice in a row (the prop value alone wouldn't change).
-  let openConversationId = $state<string | null>(null);
-  let openConversationNonce = $state(0);
-
+  // a warm window, or the cold-window drain on mount). The handoff now routes
+  // through the shared store's selection BUS (`requestOpen`), which Chat watches;
+  // the effect below switches this shell to the Chat sub-surface when the bus
+  // fires (so a request that arrives while on another tab still lands on Chat).
   function handoffConversation(conversationId: string): void {
-    const id = conversationId.trim();
-    if (id.length === 0) return;
-    openConversationId = id;
-    openConversationNonce += 1;
+    conversationStore.requestOpen(conversationId);
     view = "chat";
     selectedSubject = null;
   }
 
+  // A bus request (from the handoff above, or — in a later slice — the rail
+  // clicking a row from another surface) switches the shell to the Chat
+  // sub-surface. Track the nonce; skip 0 (nothing requested yet on mount).
+  let lastHandoffNonce = 0;
+  $effect(() => {
+    const pending = conversationStore.pendingOpen;
+    untrack(() => {
+      if (pending.nonce === 0 || pending.nonce === lastHandoffNonce) return;
+      lastHandoffNonce = pending.nonce;
+      view = "chat";
+      selectedSubject = null;
+    });
+  });
+
   function openTab(tab: InsightsTab): void {
     view = tab;
     if (tab !== "subjects") selectedSubject = null;
+    // Leaving Chat unmounts it, so its mirror effect can no longer clear the
+    // store's open-thread id — clear it here so the rail stops highlighting the
+    // previously-open row while a non-Chat sub-surface is showing. (Re-entering
+    // Chat remounts it; the bus/handoff sets the active id back as needed.)
+    if (tab !== "chat") conversationStore.activeConversationId = null;
   }
 
   function openSubject(subject: string): void {
@@ -67,10 +75,11 @@
     selectedSubject = null;
   }
 
-  // ── Engine status pill ───────────────────────────────────────────────
-  // Mirrors the mockup's `.engine-status` chip: "Engine: <model>" when the
-  // Reasoning Engine is on/available, or "Engine off · Enable" otherwise. The
-  // Enable link opens the Reasoning Engine settings (Access tab).
+  // ── Engine status ────────────────────────────────────────────────────
+  // The status state stays in this shell; it is passed down to the rail's
+  // footer (<RailFooter> via <InsightsRail>), which renders "engine · <model>"
+  // when the Reasoning Engine is on/available, or "engine off · Enable"
+  // otherwise. The Enable link opens the Reasoning Engine settings (Access tab).
   let aiStatus = $state<AiRuntimeStatus | null>(null);
   let ctxStatus = $state<UserContextStatus | null>(null);
   let modelLabel = $state<string>("");
@@ -116,6 +125,107 @@
     void openSettingsWindow("intelligence");
   }
 
+  // ── Rail collapse / expand (Slice 6) ─────────────────────────────────────
+  // The rail can be collapsed to give the active sub-surface full width. Two
+  // independent inputs decide the EFFECTIVE collapsed state:
+  //   • userCollapsed — the user's EXPLICIT preference, persisted to
+  //     localStorage. Only the toggle button writes this.
+  //   • windowNarrow  — a TRANSIENT, automatic collapse on narrow windows
+  //     (< NARROW_PX). Never persisted; recomputed from a resize listener.
+  // Effective = userCollapsed || windowNarrow. Keeping them separate means an
+  // auto-collapse on a narrow window does NOT clobber the user's saved choice:
+  // widen the window again and the rail returns to whatever the user last set.
+  //
+  // Semantics of the toggle (intuitive, documented per the plan):
+  //   • Collapse  → userCollapsed = true (persisted). Rail hides immediately.
+  //   • Expand    → userCollapsed = false (persisted). If the window is wide the
+  //     rail returns at once. If the window is currently narrow, the rail still
+  //     appears (the user explicitly asked) but may auto-collapse again on the
+  //     next narrow resize — acceptable, and the natural reading of "show it now".
+  const RAIL_COLLAPSED_KEY = "mnema.insights.rail-collapsed";
+  const NARROW_PX = 760;
+
+  function readPersistedCollapsed(): boolean {
+    try {
+      return localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
+    } catch {
+      // SSR / disabled storage — default to expanded.
+      return false;
+    }
+  }
+
+  let userCollapsed = $state(readPersistedCollapsed());
+  let windowNarrow = $state(false);
+  const railCollapsed = $derived(userCollapsed || windowNarrow);
+
+  function toggleRailCollapsed(): void {
+    // Expanding while narrow re-shows the rail by clearing the explicit
+    // preference; collapsing sets it. Either way persist the explicit choice.
+    userCollapsed = !railCollapsed;
+    try {
+      localStorage.setItem(RAIL_COLLAPSED_KEY, userCollapsed ? "1" : "0");
+    } catch {
+      // Best-effort persistence — a disabled store just won't survive reload.
+    }
+  }
+
+  // ── Rail width (drag-resize, Slice 7) ───────────────────────────────────
+  // Independent of collapse: the user can drag the rail/main boundary to any
+  // width in [RAIL_MIN_WIDTH, RAIL_MAX_WIDTH], persisted to localStorage and
+  // restored on mount. <RailResizer/> reports a desired px width; the shell is
+  // the single owner that clamps + persists (so storage never holds an out-of-
+  // range value). Only matters while expanded — when collapsed the rail (and the
+  // resizer) aren't rendered, but the saved width is what returns on expand.
+  const RAIL_WIDTH_KEY = "mnema.insights.rail-width";
+  const RAIL_MIN_WIDTH = 180;
+  const RAIL_MAX_WIDTH = 400;
+  const RAIL_DEFAULT_WIDTH = 200;
+
+  function clampRailWidth(px: number): number {
+    return Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(px)));
+  }
+
+  function readPersistedWidth(): number {
+    try {
+      const raw = localStorage.getItem(RAIL_WIDTH_KEY);
+      if (raw === null) return RAIL_DEFAULT_WIDTH;
+      const parsed = Number.parseInt(raw, 10);
+      return Number.isNaN(parsed) ? RAIL_DEFAULT_WIDTH : clampRailWidth(parsed);
+    } catch {
+      // SSR / disabled storage — fall back to the default width.
+      return RAIL_DEFAULT_WIDTH;
+    }
+  }
+
+  let railWidth = $state(readPersistedWidth());
+
+  function setRailWidth(px: number): void {
+    railWidth = clampRailWidth(px);
+    try {
+      localStorage.setItem(RAIL_WIDTH_KEY, String(railWidth));
+    } catch {
+      // Best-effort persistence — a disabled store just won't survive reload.
+    }
+  }
+
+  function resetRailWidth(): void {
+    setRailWidth(RAIL_DEFAULT_WIDTH);
+  }
+
+  // Track the narrow-window condition with a matchMedia listener (cheaper than a
+  // raw resize handler and fires only on the threshold crossing). Set up in an
+  // effect so the listener is cleaned up on unmount.
+  $effect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mql = window.matchMedia(`(max-width: ${NARROW_PX - 1}px)`);
+    const apply = () => {
+      windowNarrow = mql.matches;
+    };
+    apply();
+    mql.addEventListener("change", apply);
+    return () => mql.removeEventListener("change", apply);
+  });
+
   // Drain any pending Quick Recall → Chat handoff queued before this surface
   // mounted (cold main window): the event may have fired while the window was
   // opening, so the latest queued conversation id lands the Chat tab on the
@@ -138,6 +248,9 @@
   $effect(() => {
     void untrack(() => loadEngineStatus());
     void untrack(() => drainPendingHandoff());
+    // Kick the shared store's first history fetch so the rail populates even
+    // when Chat isn't mounted (idempotent — Chat also calls it on its mount).
+    void conversationStore.ensureStarted();
 
     let unlisten: UnlistenFn | undefined;
     let unlistenSettings: UnlistenFn | undefined;
@@ -179,55 +292,46 @@
   });
 </script>
 
-<div class="insights">
-  <nav class="subnav">
-    <div class="subnav-tabs" role="tablist" aria-label="Insights sub-surface">
-      {#each TABS as tab (tab.id)}
-        <button
-          type="button"
-          role="tab"
-          class="subnav-tab"
-          class:active={view === tab.id}
-          aria-selected={view === tab.id}
-          aria-current={view === tab.id ? "page" : undefined}
-          onclick={() => openTab(tab.id)}
-        >
-          {tab.label}
-        </button>
-      {/each}
-    </div>
-    <div class="subnav-meta">
-      <button
-        type="button"
-        class="subnav-search"
-        title="Jump to a subject or ask"
-        onclick={() => openTab("chat")}
-      >
-        <span class="subnav-search-glyph" aria-hidden="true">⌕</span>
-        <span class="subnav-search-text">Jump to a subject or ask…</span>
-      </button>
-      {#if !statusLoaded}
-        <span class="engine-status-skeleton" aria-label="Loading engine status">
-          <Skeleton width="116px" height="22px" radius="999px" />
-        </span>
-      {:else if engineOn}
-        <span class="engine-status" title="Reasoning Engine is on">
-          <span class="dot" aria-hidden="true"></span>
-          Engine: {modelLabel || "on"}
-        </span>
-      {:else}
-        <span class="engine-status engine-status--off" title="Reasoning Engine is off">
-          <span class="dot" aria-hidden="true"></span>
-          Engine off ·
-          <button type="button" class="engine-status-enable" onclick={enableEngine}>
-            Enable
-          </button>
-        </span>
-      {/if}
-    </div>
-  </nav>
+<div class="insights" class:insights--collapsed={railCollapsed}>
+  <InsightsRail
+    {view}
+    onOpenTab={openTab}
+    {engineOn}
+    {modelLabel}
+    {statusLoaded}
+    onEnable={enableEngine}
+    collapsed={railCollapsed}
+    onToggleCollapse={toggleRailCollapsed}
+    width={railWidth}
+  />
+
+  <!-- Drag handle between the rail and the active sub-surface. Only present when
+       the rail is (so there is a boundary to drag). -->
+  {#if !railCollapsed}
+    <RailResizer
+      width={railWidth}
+      min={RAIL_MIN_WIDTH}
+      max={RAIL_MAX_WIDTH}
+      onWidth={setRailWidth}
+      onReset={resetRailWidth}
+    />
+  {/if}
 
   <main class="insights-main" class:insights-main--chat={view === "chat"}>
+    <!-- When the rail is collapsed, a quiet floating button (top-left, with a
+         subtle backdrop so it reads above sub-surface content) brings it back. -->
+    {#if railCollapsed}
+      <button
+        type="button"
+        class="rail-expand-float"
+        aria-label="Expand sidebar"
+        aria-expanded="false"
+        title="Expand sidebar"
+        onclick={toggleRailCollapsed}
+      >
+        <span aria-hidden="true">»</span>
+      </button>
+    {/if}
     {#if view === "overview"}
       <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
     {:else if view === "subjects"}
@@ -245,166 +349,78 @@
     {:else if view === "context"}
       <Context />
     {:else}
-      <Chat {openConversationId} {openConversationNonce} />
+      <Chat />
     {/if}
   </main>
 </div>
 
 <style>
-  /* Insights workspace shell — mirrors `.insights` + `.subnav` from the mockup
-     (app.css), token-driven. The sub-nav switcher shares the canonical
-     segmented-control look with the titlebar surface toggle. */
+  /* Insights workspace shell — mirrors `.insights` from the mockup (app.css),
+     token-driven. A persistent left rail (<InsightsRail>) sits beside the
+     `.insights-main` scroll column; the rail carries the sub-surface nav,
+     new-chat, chat search/history, and the engine-status footer. */
   .insights {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     flex: 1 1 auto;
     min-height: 0;
     height: 100%;
   }
 
-  .subnav {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex: 0 0 40px;
-    height: 40px;
-    width: 100%;
-    padding: 0 16px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-  }
-
-  /* Segmented control — shared contract with `.surface-toggle`. */
-  .subnav-tabs {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-  }
-  .subnav-tab {
-    font: inherit;
-    font-size: 11.5px;
-    line-height: 1;
-    letter-spacing: 0.02em;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 13px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
-  }
-  .subnav-tab:hover {
-    color: var(--app-text-strong);
-  }
-  .subnav-tab.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
-  }
-
-  .subnav-meta {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 10px;
-  }
-
-  .subnav-search {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    width: 250px;
-    min-width: 0;
-    height: 26px;
-    padding: 0 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 11.5px;
-    cursor: pointer;
-    transition: border-color 0.12s ease, color 0.12s ease;
-  }
-  .subnav-search-glyph {
-    color: var(--app-text-subtle);
-    transition: color 0.12s ease;
-  }
-  .subnav-search-text {
-    color: var(--app-text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition: color 0.12s ease;
-  }
-  .subnav-search:hover {
-    border-color: var(--app-border-hover);
-  }
-  .subnav-search:hover .subnav-search-glyph,
-  .subnav-search:hover .subnav-search-text {
-    color: var(--app-text-strong);
-  }
-
-  .engine-status-skeleton {
-    display: inline-flex;
-    align-items: center;
-  }
-
-  .engine-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    padding: 3px 9px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    white-space: nowrap;
-  }
-  .engine-status .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-  .engine-status--off {
-    border-color: var(--app-border);
-    background: var(--app-surface-subtle);
-    color: var(--app-text-muted);
-  }
-  .engine-status--off .dot {
-    background: var(--app-status-dot);
-    box-shadow: none;
-  }
-  .engine-status-enable {
-    font: inherit;
-    font-size: 11px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--app-accent-strong);
-    cursor: pointer;
-    border-bottom: 1px dotted var(--app-accent-border);
-  }
-  .engine-status-enable:hover {
-    color: var(--app-accent);
-  }
-
   .insights-main {
     flex: 1 1 auto;
     min-width: 0;
+    /* Position context for the floating expand button (collapsed state). */
+    position: relative;
     overflow-y: auto;
     padding: 18px 20px 28px;
+  }
+  /* When the rail is collapsed, the padded sub-surfaces (overview / subjects /
+     context) reserve a little extra top-left room so the floating expand button
+     never sits on top of their content. Chat floats above its own header, so it
+     keeps its edge-to-edge `--chat` padding (the button's backdrop separates
+     it). */
+  .insights--collapsed .insights-main:not(.insights-main--chat) {
+    padding-top: 46px;
+  }
+
+  /* Floating expand affordance — only rendered when the rail is collapsed.
+     Anchored top-left of the content area with a small inset + a subtle backdrop
+     so it reads cleanly above whatever sub-surface is showing. Quiet by default,
+     accent-on-hover, keyboard focusable with a visible focus ring. */
+  .rail-expand-float {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 5;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--app-border);
+    border-radius: 7px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .rail-expand-float:hover {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    background: var(--app-surface-hover);
+  }
+  .rail-expand-float:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
   }
   /* Chat owns its own full-height, edge-to-edge layout and internal scrolling,
      so the shell main drops its padding and outer scroll (mirrors the mockup's

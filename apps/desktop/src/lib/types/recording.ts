@@ -460,7 +460,6 @@ export interface AppShortcutBindings {
 
 export interface DashboardShortcutBindings {
 	openJumpPicker: string;
-	search: string;
 	jumpLatest: string;
 	toggleOcr: string;
 	refreshTimeline: string;

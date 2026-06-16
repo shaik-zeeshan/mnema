@@ -31,7 +31,6 @@ export const DEFAULT_KEYBOARD_BINDINGS: KeyboardBindingsSettings = {
   },
   dashboardShortcuts: {
     openJumpPicker: "J",
-    search: "CommandOrControl+K",
     jumpLatest: "L",
     toggleOcr: "O",
     refreshTimeline: "R",
@@ -59,7 +58,6 @@ export type EditableShortcutActionId =
   | "toggleSourceSystemAudio"
   | "toggleShortcutsHelp"
   | "dashboard.openJumpPicker"
-  | "dashboard.search"
   | "dashboard.jumpLatest"
   | "dashboard.toggleOcr"
   | "dashboard.refreshTimeline"
@@ -142,7 +140,6 @@ export const EDITABLE_SHORTCUT_ACTIONS: EditableShortcutAction[] = [
   { id: "toggleSourceSystemAudio", label: "Toggle system audio for the next recording", description: "Available while recording is stopped.", category: "app", nativeBackground: false },
   { id: "toggleShortcutsHelp", label: "Show keyboard shortcuts", description: "Opens the shortcut help overlay.", category: "app", nativeBackground: false },
   { id: "dashboard.openJumpPicker", label: "Open jump picker", description: "Dashboard timeline navigation.", category: "dashboard", nativeBackground: false },
-  { id: "dashboard.search", label: "Search captured content", description: "Open captured content search.", category: "dashboard", nativeBackground: false },
   { id: "dashboard.jumpLatest", label: "Jump to latest", description: "Move to the newest available frame.", category: "dashboard", nativeBackground: false },
   { id: "dashboard.toggleOcr", label: "Toggle OCR panel", description: "Show or hide OCR for the active frame.", category: "dashboard", nativeBackground: false },
   { id: "dashboard.refreshTimeline", label: "Refresh timeline", description: "Reload timeline and audio data.", category: "dashboard", nativeBackground: false },
@@ -253,7 +250,6 @@ export function getShortcutBinding(settings: KeyboardBindingsSettings, id: Edita
     case "toggleSourceSystemAudio": return settings.appShortcuts.toggleSourceSystemAudio;
     case "toggleShortcutsHelp": return settings.appShortcuts.toggleShortcutsHelp;
     case "dashboard.openJumpPicker": return settings.dashboardShortcuts.openJumpPicker;
-    case "dashboard.search": return settings.dashboardShortcuts.search;
     case "dashboard.jumpLatest": return settings.dashboardShortcuts.jumpLatest;
     case "dashboard.toggleOcr": return settings.dashboardShortcuts.toggleOcr;
     case "dashboard.refreshTimeline": return settings.dashboardShortcuts.refreshTimeline;
@@ -281,7 +277,6 @@ export function setShortcutBinding(settings: KeyboardBindingsSettings, id: Edita
     case "toggleSourceSystemAudio": next.appShortcuts.toggleSourceSystemAudio = binding; break;
     case "toggleShortcutsHelp": next.appShortcuts.toggleShortcutsHelp = binding; break;
     case "dashboard.openJumpPicker": next.dashboardShortcuts.openJumpPicker = binding; break;
-    case "dashboard.search": next.dashboardShortcuts.search = binding; break;
     case "dashboard.jumpLatest": next.dashboardShortcuts.jumpLatest = binding; break;
     case "dashboard.toggleOcr": next.dashboardShortcuts.toggleOcr = binding; break;
     case "dashboard.refreshTimeline": next.dashboardShortcuts.refreshTimeline = binding; break;

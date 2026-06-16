@@ -1,30 +1,22 @@
 <script lang="ts">
-  // Chat — the persistent, searchable conversation workspace of the Insights
-  // surface (issue #110, ADR 0031). Chat is a two-pane workspace whose
-  // conversations are persisted to the shared conversation store (#102) and
-  // answered by the SAME Ask AI engine, which reaches capture data ONLY through
-  // the brokered tools. Quick Recall now persists to that SAME store too (issue
-  // #111), so a launcher thread can be opened/continued here (the "Continue in
-  // Chat" hand-off) under the same conversationId. Answers can additionally
-  // render inline charts / dossier cards (acceptance #2) via the mnema-bars /
+  // Chat — the conversation pane of the Insights surface (issue #110, ADR 0031).
+  // The history list / search / new-chat / rename / delete now live in the
+  // persistent shell rail (<InsightsRail>); Chat is JUST the active-conversation
+  // pane (transcript + composer), driven by the shared conversation store (#102)
+  // via its selection bus. Conversations are persisted to that store and answered
+  // by the SAME Ask AI engine, which reaches capture data ONLY through the
+  // brokered tools. Quick Recall persists to that SAME store too (issue #111), so
+  // a launcher thread can be opened/continued here (the "Continue in Chat"
+  // hand-off) under the same conversationId. Answers can additionally render
+  // inline charts / dossier cards (acceptance #2) via the mnema-bars /
   // mnema-dossier fenced-block post-processor below.
   //
-  // Layout:
-  //   LEFT rail   — "+ New chat", a debounced search over conversations, and the
-  //                 newest-first history list grouped under date headers
-  //                 (Today / Yesterday / This week / earlier months). Rows show
-  //                 the effective title (user-set → generated → first-question
-  //                 fallback, served by the backend); rename (inline, via
-  //                 set_conversation_title) and delete (Tauri confirm) hide
-  //                 behind hover / focus-within. Select → load via
-  //                 get_conversation.
-  //   RIGHT pane  — the active conversation: a vertically-scrolling transcript
-  //                 (ONLY the transcript scrolls, not the page) rendered as a
-  //                 centered column where the user's question is a right-aligned
-  //                 bubble and the engine's answer is left-aligned (with inline
-  //                 charts / dossier cards + Answer Sources), and a bottom
-  //                 composer (Enter sends, Shift+Enter newlines). When the engine
-  //                 is off the composer is replaced by a quiet "enable" card.
+  // Layout: the active conversation fills the surface — a vertically-scrolling
+  // transcript (ONLY the transcript scrolls, not the page) rendered as a centered
+  // column where the user's question is a right-aligned bubble and the engine's
+  // answer is left-aligned (with inline charts / dossier cards + Answer Sources),
+  // and a bottom composer (Enter sends, Shift+Enter newlines). When the engine is
+  // off the composer is replaced by a quiet "enable" card.
   //
   // Persistence is now owned by the Rust host: `ask_ai_start` upserts the
   // conversation row (from `title`/`origin`) and `run_ask_ai_turn` persists each
@@ -38,7 +30,6 @@
   import { onMount, onDestroy, tick, untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { confirm } from "@tauri-apps/plugin-dialog";
   import { openSettingsWindow } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { askAiClock } from "$lib/askAiClock";
@@ -50,7 +41,6 @@
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import {
-    type ConversationSummary,
     type Conversation,
     type ConversationTurn,
     type AskAiAvailability,
@@ -63,6 +53,7 @@
     type AskAiUpdateEvent,
   } from "$lib/insights/conversation";
   import ModelPicker from "$lib/insights/ModelPicker.svelte";
+  import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
     AiRuntimeSettings,
@@ -70,22 +61,13 @@
     RecordingSettingsDomainUpdateResponse,
   } from "$lib/types/recording";
 
-  // Quick Recall → Chat handoff (issue #111, ADR 0031). When the Insights page
-  // receives an `insights_open_conversation` signal it sets `openConversationId`
-  // (the handed-off thread) and bumps `openConversationNonce` so the SAME id
-  // handed off twice still re-triggers the load. We select + load that
-  // conversation via the normal `get_conversation` path; because Quick Recall
-  // persisted it under the same id, the thread continues seamlessly (a follow-up
-  // routes through ask_ai_followup, which reloads history server-side).
-  let {
-    openConversationId = null,
-    openConversationNonce = 0,
-  }: {
-    openConversationId?: string | null;
-    openConversationNonce?: number;
-  } = $props();
-
-  const SEARCH_DEBOUNCE_MS = 220;
+  // Quick Recall → Chat handoff (issue #111, ADR 0031) and the rail's row
+  // selection now route through the shared `conversationStore` selection BUS
+  // (`pendingOpen`): a surface calls `requestOpen(id)` / `requestNewChat()` and
+  // Chat watches the bus to do the actual load. Because Quick Recall persisted a
+  // handed-off thread under the same id, opening it here continues it seamlessly
+  // (a follow-up routes through ask_ai_followup, which reloads history
+  // server-side).
   const TITLE_MAX = 80;
 
   // ── Ask AI availability (engine-off gate) ────────────────────────────────
@@ -108,107 +90,11 @@
   }
 
   // ── History list (left rail) ─────────────────────────────────────────────
-  let conversations = $state<ConversationSummary[]>([]);
-  let historyLoaded = $state(false);
-  let searchQuery = $state("");
-  let searchDebounce: ReturnType<typeof setTimeout> | null = null;
-  // Generation token so a stale (out-of-order) history/search response is dropped.
-  let historyGeneration = 0;
-
-  async function refreshHistory(): Promise<void> {
-    historyGeneration += 1;
-    const generation = historyGeneration;
-    const trimmed = searchQuery.trim();
-    try {
-      const rows =
-        trimmed.length > 0
-          ? await invoke<ConversationSummary[]>("search_conversations", {
-              query: trimmed,
-              limit: 60,
-            })
-          : await invoke<ConversationSummary[]>("list_conversations", {
-              limit: 60,
-              offset: 0,
-            });
-      if (generation !== historyGeneration) return;
-      conversations = rows;
-    } catch {
-      if (generation !== historyGeneration) return;
-      conversations = [];
-    } finally {
-      if (generation === historyGeneration) historyLoaded = true;
-    }
-  }
-
-  function onSearchInput(): void {
-    if (searchDebounce !== null) clearTimeout(searchDebounce);
-    searchDebounce = setTimeout(() => {
-      searchDebounce = null;
-      void refreshHistory();
-    }, SEARCH_DEBOUNCE_MS);
-  }
-
-  function relativeTime(ms: number): string {
-    if (!Number.isFinite(ms) || ms <= 0) return "—";
-    const diff = Date.now() - ms;
-    if (diff < 0) return "just now";
-    const min = Math.floor(diff / 60000);
-    if (min < 1) return "just now";
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    const day = Math.floor(hr / 24);
-    if (day < 7) return `${day}d ago`;
-    const wk = Math.floor(day / 7);
-    if (wk < 5) return `${wk}w ago`;
-    const mo = Math.floor(day / 30);
-    if (mo < 12) return `${mo}mo ago`;
-    return `${Math.floor(day / 365)}y ago`;
-  }
-
-  // ── Date grouping (left rail) ────────────────────────────────────────────
-  // The flat history list renders under quiet section headers computed from
-  // each conversation's last-activity timestamp (`updatedAtMs`, the same field
-  // the list is sorted by): Today / Yesterday / This week (the rest of the
-  // last 7 calendar days) / earlier months ("May 2026"). Buckets are keyed by
-  // label in first-seen order, so the existing sort order is preserved within
-  // each group (and search results never produce a duplicated header).
-  interface HistoryGroup {
-    label: string;
-    items: ConversationSummary[];
-  }
-
-  const DAY_MS = 86_400_000;
-
-  function historyGroupLabel(ms: number, todayStartMs: number): string {
-    if (!Number.isFinite(ms) || ms <= 0) return "Earlier";
-    if (ms >= todayStartMs) return "Today";
-    if (ms >= todayStartMs - DAY_MS) return "Yesterday";
-    if (ms >= todayStartMs - 6 * DAY_MS) return "This week";
-    return new Date(ms).toLocaleDateString(undefined, {
-      month: "long",
-      year: "numeric",
-    });
-  }
-
-  let historyGroups = $derived.by((): HistoryGroup[] => {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayStartMs = todayStart.getTime();
-    const groups: HistoryGroup[] = [];
-    const byLabel = new Map<string, HistoryGroup>();
-    for (const c of conversations) {
-      const label = historyGroupLabel(c.updatedAtMs, todayStartMs);
-      let group = byLabel.get(label);
-      if (group === undefined) {
-        group = { label, items: [] };
-        byLabel.set(label, group);
-        groups.push(group);
-      }
-      group.items.push(c);
-    }
-    return groups;
-  });
+  // The history list, debounced search, date grouping, rename, and delete now
+  // ALL live in the shared `conversationStore` singleton (the rail markup below
+  // binds to it directly). Chat only OWNS the right-pane active thread; it writes
+  // `conversationStore.activeConversationId` (for the rail highlight) and opens a
+  // thread when the store's selection bus (`pendingOpen`) changes.
 
   // ── Active conversation (right pane) ─────────────────────────────────────
   // One assistant turn in the transcript. This is the backend-owned `TurnView`
@@ -248,6 +134,20 @@
   // The active thread id. null when no conversation open.
   let activeConversationId = $state<string | null>(null);
   let activeTitle = $state<string>("");
+  // Mirror the active id UP to the store so the (future) rail can highlight the
+  // open row. One-way: the store value is only READ by the rail, never read back
+  // into Chat's state, so there is no loop.
+  $effect(() => {
+    conversationStore.activeConversationId = activeConversationId;
+  });
+  // The title shown for the active thread: prefer the store's row (so a rename of
+  // the open thread reflects immediately), falling back to the locally hydrated
+  // `activeTitle` for a thread not (yet) in the capped/filtered rail list.
+  const displayTitle = $derived(
+    conversationStore.conversations.find(
+      (c) => c.conversationId === activeConversationId,
+    )?.title ?? activeTitle,
+  );
   let turns = $state<ChatTurn[]>([]);
   let loadingConversation = $state(false);
   // True between a turn starting and that turn's terminal done/error event.
@@ -387,39 +287,6 @@
     void tick().then(() => composerEl?.focus());
   }
 
-  async function selectConversation(summary: ConversationSummary): Promise<void> {
-    if (summary.conversationId === activeConversationId && turns.length > 0) {
-      return;
-    }
-    loadingConversation = true;
-    activeConversationId = summary.conversationId;
-    activeTitle = summary.title;
-    turns = [];
-    streaming = false;
-    liveActivity = null;
-    activePinProvider = null;
-    activePinModel = null;
-    enginePickerOpen = false;
-    try {
-      const convo = await invoke<Conversation | null>("get_conversation", {
-        conversationId: summary.conversationId,
-      });
-      if (convo === null || activeConversationId !== summary.conversationId) {
-        return;
-      }
-      await hydrateConversation(convo);
-      if (activeConversationId !== summary.conversationId) return;
-      await tick();
-      scrollTranscriptToBottom();
-    } catch {
-      // Best-effort: leave the pane empty on a load failure.
-    } finally {
-      if (activeConversationId === summary.conversationId) {
-        loadingConversation = false;
-      }
-    }
-  }
-
   // Load + select a conversation by id (Quick Recall → Chat handoff, #111). The
   // id may not be in the (capped/filtered) left-rail list, so we go straight to
   // get_conversation rather than requiring a ConversationSummary. If the latest
@@ -516,14 +383,21 @@
     void loadSourceThumbnails(turn.sources);
   }
 
-  // React to a handoff from Insights (the prop + nonce bump). Reads the nonce so
-  // the SAME conversation handed off twice in a row still re-loads.
+  // React to the store's selection BUS. Each request (rail row click, "+ New
+  // chat", or a Quick Recall handoff) bumps `pendingOpen.nonce`, so reading the
+  // whole `{id, nonce}` re-runs this on every request — even a repeat of the same
+  // id. `id === null` means "start a fresh empty chat". We track the last-seen
+  // nonce and bail at nonce 0 so initial mount (nothing requested yet) does NOT
+  // fire a spurious startNewChat().
+  let lastOpenNonce = 0;
   $effect(() => {
-    const id = openConversationId;
-    // Touch the nonce so a repeat handoff of the same id re-runs this effect.
-    void openConversationNonce;
-    if (id === null || id.trim().length === 0) return;
-    void untrack(() => loadConversationById(id));
+    const pending = conversationStore.pendingOpen; // track {id, nonce}
+    untrack(() => {
+      if (pending.nonce === 0 || pending.nonce === lastOpenNonce) return;
+      lastOpenNonce = pending.nonce;
+      if (pending.id === null) startNewChat();
+      else void loadConversationById(pending.id);
+    });
   });
 
   // Hydrate a persisted ConversationTurn into a ChatTurn. The backend's
@@ -596,103 +470,6 @@
         ((s as AskAiSource).kind === "frame" || (s as AskAiSource).kind === "audio")
       );
     });
-  }
-
-  // ── Inline rename (left rail hover action) ───────────────────────────────
-  // Clicking ✎ swaps the row's title for a text input pre-filled with the
-  // current title. Enter commits via `set_conversation_title`, Escape cancels,
-  // and blur commits-if-changed-and-non-empty (else cancels). The commit
-  // optimistically rewrites the local row (and `activeTitle` when it's the
-  // open thread) so the rail doesn't flicker while the backend's
-  // `conversation_changed` refresh catches up.
-  let renamingId = $state<string | null>(null);
-  let renameDraft = $state("");
-
-  // Tauri's WKWebView doesn't hand focus around reliably on click, so the
-  // inline input focuses/selects itself programmatically once it's in the DOM
-  // (a Svelte action runs post-mount; inputs DO focus fine — the quirk is
-  // buttons). Keydown is attached on the input itself for the same reason.
-  function autofocusSelect(node: HTMLInputElement): void {
-    node.focus();
-    node.select();
-  }
-
-  function startRename(summary: ConversationSummary, event: MouseEvent): void {
-    event.stopPropagation();
-    renamingId = summary.conversationId;
-    renameDraft = summary.title || summary.preview || "";
-  }
-
-  function cancelRename(): void {
-    renamingId = null;
-    renameDraft = "";
-  }
-
-  async function commitRename(): Promise<void> {
-    const id = renamingId;
-    if (id === null) return;
-    const title = renameDraft.trim();
-    const row = conversations.find((c) => c.conversationId === id);
-    const current = (row?.title || row?.preview || "").trim();
-    renamingId = null;
-    renameDraft = "";
-    // Empty or unchanged → cancel (the less surprising blur behavior).
-    if (title.length === 0 || title === current) return;
-    // Optimistic: rewrite the row text now; `conversation_changed` re-fetches
-    // the authoritative list right after the backend persists.
-    conversations = conversations.map((c) =>
-      c.conversationId === id ? { ...c, title } : c,
-    );
-    if (id === activeConversationId) activeTitle = title;
-    try {
-      await invoke("set_conversation_title", {
-        request: { conversationId: id, title },
-      });
-    } catch {
-      // The rename didn't land (e.g. the row vanished) — no
-      // conversation_changed will fire, so re-fetch to undo the optimism.
-      void refreshHistory();
-    }
-  }
-
-  function onRenameKeydown(event: KeyboardEvent): void {
-    if (event.isComposing) return;
-    if (event.key === "Enter") {
-      event.preventDefault();
-      void commitRename();
-    } else if (event.key === "Escape") {
-      event.stopPropagation();
-      cancelRename();
-    }
-  }
-
-  async function deleteConversationRow(
-    summary: ConversationSummary,
-    event: MouseEvent,
-  ): Promise<void> {
-    event.stopPropagation();
-    const ok = await confirm(
-      `Delete “${summary.title || summary.preview || "this conversation"}”? This can't be undone.`,
-      { title: "Delete conversation", kind: "warning" },
-    );
-    if (!ok) return;
-    try {
-      await invoke("delete_conversation", {
-        conversationId: summary.conversationId,
-      });
-    } catch {
-      // The conversation_changed listener refreshes the list regardless.
-    }
-    if (summary.conversationId === activeConversationId) {
-      // The open conversation was deleted — reset the right pane to empty.
-      activeConversationId = null;
-      activeTitle = "";
-      turns = [];
-      streaming = false;
-      liveActivity = null;
-      activePinProvider = null;
-      activePinModel = null;
-    }
   }
 
   // ── Sending a question ───────────────────────────────────────────────────
@@ -1055,12 +832,14 @@
   // ── Stream event wiring ──────────────────────────────────────────────────
   onMount(() => {
     void loadAskAvailability();
-    void refreshHistory();
+    // The shared store owns the history list + its `conversation_changed`
+    // refresh listener (set up once, lives for the app session); ensureStarted()
+    // is idempotent, so calling it here just kicks the first fetch.
+    void conversationStore.ensureStarted();
     void loadPinnableEngines();
 
     let destroyed = false;
     let unlistenUpdate: (() => void) | undefined;
-    let unlistenChanged: (() => void) | undefined;
     let unlistenCtx: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
 
@@ -1071,14 +850,6 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenUpdate = fn;
-    });
-
-    // Refresh the history list whenever any conversation surface saves/deletes.
-    listen("conversation_changed", () => {
-      void refreshHistory();
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenChanged = fn;
     });
 
     // Re-probe Ask AI availability + the configured engines when the engine
@@ -1111,14 +882,14 @@
     return () => {
       destroyed = true;
       unlistenUpdate?.();
-      unlistenChanged?.();
       unlistenCtx?.();
       unlistenSettings?.();
     };
   });
 
   onDestroy(() => {
-    if (searchDebounce !== null) clearTimeout(searchDebounce);
+    // The history search debounce now lives in the shared store (which outlives
+    // this surface), so there is nothing list-related to tear down here.
     // Intentionally do NOT cancel the in-flight turn here. Under the
     // stateless-per-turn-over-persistent-store model (ADR 0033), a streaming
     // turn outlives this surface: the backend keeps running and persists its
@@ -1147,740 +918,383 @@
   </span>
 {/snippet}
 
+<!-- The active conversation: transcript + composer. The history list / search /
+     new-chat / rename / delete all live in the persistent shell rail
+     (<InsightsRail>); this surface is JUST the conversation pane. -->
 <section class="chat" aria-label="Chat">
-  <!-- LEFT rail: new chat + search + history list -->
-  <aside class="rail" aria-label="Conversations">
-    <div class="rail-top">
-      <button type="button" class="new-chat" onclick={startNewChat}>
-        <span class="plus" aria-hidden="true">＋</span> New chat
+{#if activeConversationId === null}
+  <div class="pane-empty">
+    <p class="pane-empty-title">Ask the engine about your activity</p>
+    <p class="pane-empty-detail">
+      Pick a conversation on the left, or start a new chat. Answers draw on
+      your history through the engine's brokered tools and can include inline
+      charts.
+    </p>
+    {#if askAvailable}
+      <button type="button" class="btn btn--accent" onclick={startNewChat}>
+        ＋ New chat
       </button>
-      <div class="search">
-        <span class="search-glyph" aria-hidden="true">⌕</span>
-        <input
-          type="search"
-          class="search-input"
-          placeholder="Search conversations…"
-          aria-label="Search conversations"
-          autocomplete="off"
-          spellcheck="false"
-          bind:value={searchQuery}
-          oninput={onSearchInput}
-        />
-      </div>
-    </div>
-
-    <div class="history" role="list" aria-label="Conversation history">
-      {#if !historyLoaded}
-        <div class="history-skeleton">
-          {#each Array(5) as _, i (i)}
-            <div class="sk-row">
-              <Skeleton width="70%" height="11px" radius="5px" />
-              <Skeleton width="40%" height="9px" radius="5px" muted />
-            </div>
-          {/each}
+    {/if}
+  </div>
+{:else}
+  <!-- ONLY this transcript scrolls (not the page). -->
+  <div class="transcript" bind:this={transcriptEl} aria-live="polite">
+    <!-- Centered conversation column: user question right, AI answer left. -->
+    <div class="thread-col">
+      {#if loadingConversation}
+        <div class="convo-skeleton">
+          <Skeleton width="55%" height="13px" radius="6px" />
+          <Skeleton width="100%" height="48px" radius="8px" muted />
         </div>
-      {:else if conversations.length === 0}
-        <p class="rail-empty">
-          {searchQuery.trim().length > 0
-            ? "No conversations match."
-            : "No conversations yet. Start one →"}
-        </p>
-      {:else}
-        {#each historyGroups as group (group.label)}
-          <div class="history-group-label" role="presentation">
-            {group.label}
+      {:else if turns.length === 0}
+        <div class="thread-empty">
+          <p class="thread-empty-title">{displayTitle || "New chat"}</p>
+          <p class="thread-empty-detail">
+            Type a question below and press Enter. The engine searches your
+            captures through its brokered tools to answer.
+          </p>
+          <!-- Quiet example questions: tapping one prefills the composer to
+               review/edit (it does NOT auto-send). -->
+          <div class="example-row" role="presentation">
+            {#each EXAMPLE_QUESTIONS as example (example)}
+              <button
+                type="button"
+                class="example-q"
+                onclick={() => useExample(example)}
+              >
+                {example}
+              </button>
+            {/each}
           </div>
-          {#each group.items as c (c.conversationId)}
-            <div
-              class="history-item"
-              class:active={c.conversationId === activeConversationId}
-              role="listitem"
-            >
-              {#if renamingId === c.conversationId}
-                <!-- Inline rename: Enter commits, Escape cancels, blur
-                     commits-if-changed (else cancels). Focus/select is
-                     programmatic (WKWebView focus quirk). -->
-                <input
-                  type="text"
-                  class="history-rename-input"
-                  aria-label="Rename conversation"
-                  spellcheck="false"
-                  autocomplete="off"
-                  bind:value={renameDraft}
-                  use:autofocusSelect
-                  onkeydown={onRenameKeydown}
-                  onblur={() => void commitRename()}
-                />
-              {:else}
-                <button
-                  type="button"
-                  class="history-open"
-                  onclick={() => void selectConversation(c)}
-                  aria-current={c.conversationId === activeConversationId
-                    ? "true"
-                    : undefined}
-                >
-                  <span class="history-title" title={c.title || c.preview}>
-                    {c.title || c.preview || "Untitled chat"}
-                  </span>
-                </button>
-                <!-- Second line: timestamp on the left, quiet row actions on
-                     the right. The actions sit in flow on THIS line (not over
-                     the title) and stay hidden until the row is hovered or holds
-                     keyboard focus (`:focus-within`). -->
-                <div class="history-foot">
-                  <span class="history-time">{relativeTime(c.updatedAtMs)}</span>
-                  <div class="history-actions">
-                    <button
-                      type="button"
-                      class="history-action"
-                      aria-label="Rename conversation"
-                      title="Rename conversation"
-                      onclick={(e) => startRename(c, e)}
-                    >
-                      ✎
-                    </button>
-                    <button
-                      type="button"
-                      class="history-action history-action--delete"
-                      aria-label="Delete conversation"
-                      title="Delete conversation"
-                      onclick={(e) => void deleteConversationRow(c, e)}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              {/if}
-            </div>
-          {/each}
-        {/each}
-      {/if}
-    </div>
-  </aside>
-
-  <!-- RIGHT pane: active conversation transcript + composer -->
-  <div class="pane">
-    {#if activeConversationId === null}
-      <div class="pane-empty">
-        <p class="pane-empty-title">Ask the engine about your activity</p>
-        <p class="pane-empty-detail">
-          Pick a conversation on the left, or start a new chat. Answers draw on
-          your history through the engine's brokered tools and can include inline
-          charts.
-        </p>
-        {#if askAvailable}
-          <button type="button" class="btn btn--accent" onclick={startNewChat}>
-            ＋ New chat
-          </button>
-        {/if}
-      </div>
-    {:else}
-      <!-- ONLY this transcript scrolls (not the page). -->
-      <div class="transcript" bind:this={transcriptEl} aria-live="polite">
-        <!-- Centered conversation column: user question right, AI answer left. -->
-        <div class="thread-col">
-          {#if loadingConversation}
-            <div class="convo-skeleton">
-              <Skeleton width="55%" height="13px" radius="6px" />
-              <Skeleton width="100%" height="48px" radius="8px" muted />
-            </div>
-          {:else if turns.length === 0}
-            <div class="thread-empty">
-              <p class="thread-empty-title">{activeTitle || "New chat"}</p>
-              <p class="thread-empty-detail">
-                Type a question below and press Enter. The engine searches your
-                captures through its brokered tools to answer.
-              </p>
-              <!-- Quiet example questions: tapping one prefills the composer to
-                   review/edit (it does NOT auto-send). -->
-              <div class="example-row" role="presentation">
-                {#each EXAMPLE_QUESTIONS as example (example)}
-                  <button
-                    type="button"
-                    class="example-q"
-                    onclick={() => useExample(example)}
-                  >
-                    {example}
-                  </button>
-                {/each}
+        </div>
+      {:else}
+        {#each turns as turn, ti (ti)}
+          <article class="turn">
+            <!-- USER question: right-aligned bubble -->
+            <div class="msg msg-user">
+              <div class="user-bubble" title={turn.question}>
+                {turn.question}
               </div>
             </div>
-          {:else}
-            {#each turns as turn, ti (ti)}
-              <article class="turn">
-                <!-- USER question: right-aligned bubble -->
-                <div class="msg msg-user">
-                  <div class="user-bubble" title={turn.question}>
-                    {turn.question}
-                  </div>
-                </div>
 
-                <!-- ASSISTANT answer: left-aligned -->
-                <div class="msg msg-assistant">
-                  <div class="answer-col">
-                    {#if turn.phase === "error"}
-                      <p class="state state--error">
-                        {turn.errorMessage ?? "The engine couldn't answer."}
-                      </p>
-                    {:else}
-                      <!-- Thinking disclosure: the model's reasoning, ABOVE the
-                           answer body. Rendered only when reasoning text arrived.
-                           While reasoning streams but the answer hasn't started
-                           (and the turn isn't terminal) it's a LIVE expanded
-                           panel; otherwise it settles into a collapsed "Thought
-                           process" chip. Reasoning is PLAIN TEXT (Svelte-escaped),
-                           never routed through AnswerProse, so it reads as
-                           distinct from the answer. -->
-                      {#if hasReasoning(turn)}
-                        {#if reasoningIsLive(turn)}
-                          <div class="thinking thinking--live">
-                            <p class="state state--working">
-                              <span class="dot" aria-hidden="true"></span>
-                              Thinking…
-                            </p>
-                            <div class="thinking-text">{turn.reasoning}</div>
-                          </div>
-                        {:else}
-                          <div class="thinking">
-                            <button
-                              type="button"
-                              class="activity-chip"
-                              aria-expanded={turn.reasoningExpanded}
-                              onclick={() => toggleReasoning(turn)}
-                            >
-                              <span
-                                class="activity-caret"
-                                class:open={turn.reasoningExpanded}
-                                aria-hidden="true">▸</span
-                              >
-                              <span class="activity-summary">Thought process</span>
-                            </button>
-                            {#if turn.reasoningExpanded}
-                              <div class="thinking-text">{turn.reasoning}</div>
-                            {/if}
-                          </div>
-                        {/if}
-                      {/if}
-
-                      {#if turn.phase === "seeding"}
-                        <p class="state state--working">
-                          <span class="dot" aria-hidden="true"></span>
-                          Searching your captures…
-                        </p>
-                      {:else if turn.phase === "thinking" && turn.liveActivity === null}
+            <!-- ASSISTANT answer: left-aligned -->
+            <div class="msg msg-assistant">
+              <div class="answer-col">
+                {#if turn.phase === "error"}
+                  <p class="state state--error">
+                    {turn.errorMessage ?? "The engine couldn't answer."}
+                  </p>
+                {:else}
+                  <!-- Thinking disclosure: the model's reasoning, ABOVE the
+                       answer body. Rendered only when reasoning text arrived.
+                       While reasoning streams but the answer hasn't started
+                       (and the turn isn't terminal) it's a LIVE expanded
+                       panel; otherwise it settles into a collapsed "Thought
+                       process" chip. Reasoning is PLAIN TEXT (Svelte-escaped),
+                       never routed through AnswerProse, so it reads as
+                       distinct from the answer. -->
+                  {#if hasReasoning(turn)}
+                    {#if reasoningIsLive(turn)}
+                      <div class="thinking thinking--live">
                         <p class="state state--working">
                           <span class="dot" aria-hidden="true"></span>
                           Thinking…
                         </p>
-                      {:else}
-                        {#if turn.phase === "streaming" || turn.phase === "done"}
-                          <!-- Collapsed, expandable tool-activity summary chip. -->
-                          {#if activitySummaryFor(turn.toolActivities) !== null}
-                            <div class="activity">
-                              <button
-                                type="button"
-                                class="activity-chip"
-                                aria-expanded={turn.summaryExpanded}
-                                onclick={() => toggleSummary(turn)}
-                              >
-                                <span
-                                  class="activity-caret"
-                                  class:open={turn.summaryExpanded}
-                                  aria-hidden="true">▸</span
-                                >
-                                <span class="activity-summary"
-                                  >{activitySummaryFor(turn.toolActivities)}</span
-                                >
-                              </button>
-                              {#if turn.summaryExpanded}
-                                <ul class="activity-list">
-                                  {#each turn.toolActivities as activity, ai (ai)}
-                                    <li class="activity-item">
-                                      {activity.label}
-                                      {#if activity.app}
-                                        in {@render toolAppChip(activity)}
-                                      {/if}
-                                    </li>
-                                  {/each}
-                                </ul>
-                              {/if}
-                            </div>
-                          {/if}
-
-                          <!-- The answer body: render-ready blocks streamed from
-                               the backend, switched on `kind`. Prose carries raw
-                               markdown (AnswerProse renders + hardens it); the
-                               graphical blocks carry already-parsed data. The
-                               streaming caret rides only the LAST prose block, and
-                               only until the turn settles. -->
-                          <div class="answer">
-                            {#each turn.blocks as block, bi (bi)}
-                                {#if block.kind === "prose"}
-                                  <AnswerProse
-                                    source={block.markdown}
-                                    isStreaming={turn.phase !== "done" &&
-                                      bi === turn.blocks.length - 1}
-                                  />
-                                {:else if block.kind === "bars"}
-                                  <figure class="graphic">
-                                    {#if block.title}
-                                      <figcaption class="graphic-title">
-                                        {block.title}
-                                      </figcaption>
-                                    {/if}
-                                    <MiniBars items={block.items} />
-                                  </figure>
-                                {:else if block.kind === "dossier"}
-                                  <div class="graphic graphic--dossier">
-                                    {#each block.items as item, di (di)}
-                                      <div class="dossier-card">
-                                        <p class="dossier-statement">
-                                          {item.statement}
-                                        </p>
-                                        <div class="dossier-foot">
-                                          {#if item.subject}
-                                            <span class="subject-chip">
-                                              {item.subject}
-                                            </span>
-                                          {/if}
-                                          <span class="conf-wrap">
-                                            <ConfidenceBar confidence={item.confidence} />
-                                          </span>
-                                        </div>
-                                      </div>
-                                    {/each}
-                                  </div>
-                                {:else if block.kind === "timeline"}
-                                  <!-- Timeline owns its own caption (the same
-                                       uppercase-muted .timeline-title idiom as
-                                       .graphic-title), so the .graphic wrapper
-                                       here doesn't repeat it as a figcaption. -->
-                                  <figure class="graphic">
-                                    <Timeline title={block.title} intervals={block.items} />
-                                  </figure>
-                                {/if}
-                            {/each}
-                          </div>
-
-                          <!-- Answer Sources: the captures this turn drew on. -->
-                          {#if turn.phase === "done" && turn.sources.length > 0}
-                            <div class="sources">
-                              <span class="sources-heading">Sources</span>
-                              {#if turnFrameSources(turn).length > 0}
-                                <div class="source-section" role="presentation">
-                                  <span class="source-label">Screen</span>
-                                  <div class="source-row" role="presentation">
-                                    {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                      <AnswerSourceCard
-                                        kind="frame"
-                                        appName={s.appName}
-                                        windowTitle={s.windowTitle}
-                                        startedAt={s.startedAt}
-                                        endedAt={s.endedAt}
-                                        thumbnailUrl={s.frameId != null
-                                          ? (thumbnailCache.get(s.frameId) ?? null)
-                                          : null}
-                                        onselect={() => void selectSource(s)}
-                                      />
-                                    {/each}
-                                  </div>
-                                </div>
-                              {/if}
-                              {#if turnAudioSources(turn).length > 0}
-                                <div class="source-section" role="presentation">
-                                  <span class="source-label">Audio</span>
-                                  <div class="source-row" role="presentation">
-                                    {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                      <AnswerSourceCard
-                                        kind="audio"
-                                        appName={s.appName}
-                                        windowTitle={s.windowTitle}
-                                        startedAt={s.startedAt}
-                                        endedAt={s.endedAt}
-                                        sourceKind={s.sourceKind}
-                                        onselect={() => void selectSource(s)}
-                                      />
-                                    {/each}
-                                  </div>
-                                </div>
-                              {/if}
-                            </div>
-                          {/if}
+                        <div class="thinking-text">{turn.reasoning}</div>
+                      </div>
+                    {:else}
+                      <div class="thinking">
+                        <button
+                          type="button"
+                          class="activity-chip"
+                          aria-expanded={turn.reasoningExpanded}
+                          onclick={() => toggleReasoning(turn)}
+                        >
+                          <span
+                            class="activity-caret"
+                            class:open={turn.reasoningExpanded}
+                            aria-hidden="true">▸</span
+                          >
+                          <span class="activity-summary">Thought process</span>
+                        </button>
+                        {#if turn.reasoningExpanded}
+                          <div class="thinking-text">{turn.reasoning}</div>
                         {/if}
+                      </div>
+                    {/if}
+                  {/if}
 
-                        {#if turn.liveActivity !== null}
-                          <p class="state state--working">
-                            <span class="dot" aria-hidden="true"></span>
-                            <span class="working-label"
-                              >{turn.liveActivity.label}</span
+                  {#if turn.phase === "seeding"}
+                    <p class="state state--working">
+                      <span class="dot" aria-hidden="true"></span>
+                      Searching your captures…
+                    </p>
+                  {:else if turn.phase === "thinking" && turn.liveActivity === null}
+                    <p class="state state--working">
+                      <span class="dot" aria-hidden="true"></span>
+                      Thinking…
+                    </p>
+                  {:else}
+                    {#if turn.phase === "streaming" || turn.phase === "done"}
+                      <!-- Collapsed, expandable tool-activity summary chip. -->
+                      {#if activitySummaryFor(turn.toolActivities) !== null}
+                        <div class="activity">
+                          <button
+                            type="button"
+                            class="activity-chip"
+                            aria-expanded={turn.summaryExpanded}
+                            onclick={() => toggleSummary(turn)}
+                          >
+                            <span
+                              class="activity-caret"
+                              class:open={turn.summaryExpanded}
+                              aria-hidden="true">▸</span
                             >
-                            {#if turn.liveActivity.app}
-                              in
-                              {@render toolAppChip(turn.liveActivity)}
+                            <span class="activity-summary"
+                              >{activitySummaryFor(turn.toolActivities)}</span
+                            >
+                          </button>
+                          {#if turn.summaryExpanded}
+                            <ul class="activity-list">
+                              {#each turn.toolActivities as activity, ai (ai)}
+                                <li class="activity-item">
+                                  {activity.label}
+                                  {#if activity.app}
+                                    in {@render toolAppChip(activity)}
+                                  {/if}
+                                </li>
+                              {/each}
+                            </ul>
+                          {/if}
+                        </div>
+                      {/if}
+
+                      <!-- The answer body: render-ready blocks streamed from
+                           the backend, switched on `kind`. Prose carries raw
+                           markdown (AnswerProse renders + hardens it); the
+                           graphical blocks carry already-parsed data. The
+                           streaming caret rides only the LAST prose block, and
+                           only until the turn settles. -->
+                      <div class="answer">
+                        {#each turn.blocks as block, bi (bi)}
+                            {#if block.kind === "prose"}
+                              <AnswerProse
+                                source={block.markdown}
+                                isStreaming={turn.phase !== "done" &&
+                                  bi === turn.blocks.length - 1}
+                              />
+                            {:else if block.kind === "bars"}
+                              <figure class="graphic">
+                                {#if block.title}
+                                  <figcaption class="graphic-title">
+                                    {block.title}
+                                  </figcaption>
+                                {/if}
+                                <MiniBars items={block.items} />
+                              </figure>
+                            {:else if block.kind === "dossier"}
+                              <div class="graphic graphic--dossier">
+                                {#each block.items as item, di (di)}
+                                  <div class="dossier-card">
+                                    <p class="dossier-statement">
+                                      {item.statement}
+                                    </p>
+                                    <div class="dossier-foot">
+                                      {#if item.subject}
+                                        <span class="subject-chip">
+                                          {item.subject}
+                                        </span>
+                                      {/if}
+                                      <span class="conf-wrap">
+                                        <ConfidenceBar confidence={item.confidence} />
+                                      </span>
+                                    </div>
+                                  </div>
+                                {/each}
+                              </div>
+                            {:else if block.kind === "timeline"}
+                              <!-- Timeline owns its own caption (the same
+                                   uppercase-muted .timeline-title idiom as
+                                   .graphic-title), so the .graphic wrapper
+                                   here doesn't repeat it as a figcaption. -->
+                              <figure class="graphic">
+                                <Timeline title={block.title} intervals={block.items} />
+                              </figure>
                             {/if}
-                          </p>
-                        {:else if turn.phase === "streaming"}
-                          <!-- Answer text is arriving: label the phase so the
-                               caret in AnswerProse reads as the insertion
-                               point, not an unexplained blink. -->
-                          <p class="state state--working">
-                            <span class="dot" aria-hidden="true"></span>
-                            Writing…
-                          </p>
-                        {/if}
+                        {/each}
+                      </div>
+
+                      <!-- Answer Sources: the captures this turn drew on. -->
+                      {#if turn.phase === "done" && turn.sources.length > 0}
+                        <div class="sources">
+                          <span class="sources-heading">Sources</span>
+                          {#if turnFrameSources(turn).length > 0}
+                            <div class="source-section" role="presentation">
+                              <span class="source-label">Screen</span>
+                              <div class="source-row" role="presentation">
+                                {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+                                  <AnswerSourceCard
+                                    kind="frame"
+                                    appName={s.appName}
+                                    windowTitle={s.windowTitle}
+                                    startedAt={s.startedAt}
+                                    endedAt={s.endedAt}
+                                    thumbnailUrl={s.frameId != null
+                                      ? (thumbnailCache.get(s.frameId) ?? null)
+                                      : null}
+                                    onselect={() => void selectSource(s)}
+                                  />
+                                {/each}
+                              </div>
+                            </div>
+                          {/if}
+                          {#if turnAudioSources(turn).length > 0}
+                            <div class="source-section" role="presentation">
+                              <span class="source-label">Audio</span>
+                              <div class="source-row" role="presentation">
+                                {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+                                  <AnswerSourceCard
+                                    kind="audio"
+                                    appName={s.appName}
+                                    windowTitle={s.windowTitle}
+                                    startedAt={s.startedAt}
+                                    endedAt={s.endedAt}
+                                    sourceKind={s.sourceKind}
+                                    onselect={() => void selectSource(s)}
+                                  />
+                                {/each}
+                              </div>
+                            </div>
+                          {/if}
+                        </div>
                       {/if}
                     {/if}
-                  </div>
-                </div>
-              </article>
-            {/each}
+
+                    {#if turn.liveActivity !== null}
+                      <p class="state state--working">
+                        <span class="dot" aria-hidden="true"></span>
+                        <span class="working-label"
+                          >{turn.liveActivity.label}</span
+                        >
+                        {#if turn.liveActivity.app}
+                          in
+                          {@render toolAppChip(turn.liveActivity)}
+                        {/if}
+                      </p>
+                    {:else if turn.phase === "streaming"}
+                      <!-- Answer text is arriving: label the phase so the
+                           caret in AnswerProse reads as the insertion
+                           point, not an unexplained blink. -->
+                      <p class="state state--working">
+                        <span class="dot" aria-hidden="true"></span>
+                        Writing…
+                      </p>
+                    {/if}
+                  {/if}
+                {/if}
+              </div>
+            </div>
+          </article>
+        {/each}
+      {/if}
+    </div>
+  </div>
+
+  <!-- Composer (engine-on) or quiet enable card (engine-off). -->
+  {#if askAvailable}
+    <div class="composer-wrap">
+      <!-- Live activity line: what the engine is doing right now (seeding →
+           thinking → tool → writing). Space is reserved so the composer
+           doesn't jump when it appears/clears. -->
+      <div class="composer-activity" aria-live="polite">
+        {#if liveActivity !== null}
+          <span class="dot" aria-hidden="true"></span>
+          <span class="working-label">{liveActivity.label}</span>
+          {#if liveActivity.app}
+            in {@render toolAppChip(liveActivity)}
           {/if}
+        {/if}
+      </div>
+      <!-- One bordered composer block: the textarea on top and a slim bottom
+           row inside the same border — model picker left, send/stop right. -->
+      <div class="composer">
+        <textarea
+          bind:this={composerEl}
+          bind:value={composerInput}
+          class="composer-input"
+          rows="1"
+          placeholder="Ask about your activity…"
+          aria-label="Ask about your activity"
+          disabled={streaming}
+          onkeydown={onComposerKeydown}
+        ></textarea>
+        <div class="composer-bar">
+          <!-- Per-thread model pin (searchable, provider-grouped picker).
+               Owns its own UI + model pool; reports the chosen engine up. -->
+          <ModelPicker
+            aiRuntime={aiRuntimeSnapshot}
+            {askAiModelOverride}
+            pinProvider={activePinProvider}
+            pinModel={activePinModel}
+            bind:open={enginePickerOpen}
+            onselect={handleModelSelect}
+          />
+          <!-- Send ⇄ Stop morph: while a turn streams the button becomes a
+               stop control that asks the backend to cancel; the resulting
+               done/error event settles the UI. -->
+          <button
+            type="button"
+            class="composer-send"
+            class:composer-send--stop={streaming}
+            disabled={!streaming && composerInput.trim().length === 0}
+            onclick={() => (streaming ? void stopStreaming() : void send())}
+            aria-label={streaming ? "Stop" : "Send"}
+            title={streaming ? "Stop generating" : "Send (Enter)"}
+          >
+            {#if streaming}
+              ■
+            {:else}
+              ↑
+            {/if}
+          </button>
         </div>
       </div>
-
-      <!-- Composer (engine-on) or quiet enable card (engine-off). -->
-      {#if askAvailable}
-        <div class="composer-wrap">
-          <!-- Live activity line: what the engine is doing right now (seeding →
-               thinking → tool → writing). Space is reserved so the composer
-               doesn't jump when it appears/clears. -->
-          <div class="composer-activity" aria-live="polite">
-            {#if liveActivity !== null}
-              <span class="dot" aria-hidden="true"></span>
-              <span class="working-label">{liveActivity.label}</span>
-              {#if liveActivity.app}
-                in {@render toolAppChip(liveActivity)}
-              {/if}
-            {/if}
-          </div>
-          <!-- One bordered composer block: the textarea on top and a slim bottom
-               row inside the same border — model picker left, send/stop right. -->
-          <div class="composer">
-            <textarea
-              bind:this={composerEl}
-              bind:value={composerInput}
-              class="composer-input"
-              rows="1"
-              placeholder="Ask about your activity…"
-              aria-label="Ask about your activity"
-              disabled={streaming}
-              onkeydown={onComposerKeydown}
-            ></textarea>
-            <div class="composer-bar">
-              <!-- Per-thread model pin (searchable, provider-grouped picker).
-                   Owns its own UI + model pool; reports the chosen engine up. -->
-              <ModelPicker
-                aiRuntime={aiRuntimeSnapshot}
-                {askAiModelOverride}
-                pinProvider={activePinProvider}
-                pinModel={activePinModel}
-                bind:open={enginePickerOpen}
-                onselect={handleModelSelect}
-              />
-              <!-- Send ⇄ Stop morph: while a turn streams the button becomes a
-                   stop control that asks the backend to cancel; the resulting
-                   done/error event settles the UI. -->
-              <button
-                type="button"
-                class="composer-send"
-                class:composer-send--stop={streaming}
-                disabled={!streaming && composerInput.trim().length === 0}
-                onclick={() => (streaming ? void stopStreaming() : void send())}
-                aria-label={streaming ? "Stop" : "Send"}
-                title={streaming ? "Stop generating" : "Send (Enter)"}
-              >
-                {#if streaming}
-                  ■
-                {:else}
-                  ↑
-                {/if}
-              </button>
-            </div>
-          </div>
-        </div>
-      {:else}
-        <div class="composer-wrap">
-          <div class="engine-off">
-            <span class="engine-off-dot" aria-hidden="true"></span>
-            <span class="engine-off-text">
-              The reasoning engine is off. Chat answers over your history once
-              it's enabled.
-            </span>
-            <button type="button" class="engine-off-enable" onclick={enableEngine}>
-              Enable engine
-            </button>
-          </div>
-        </div>
-      {/if}
-    {/if}
-  </div>
+    </div>
+  {:else}
+    <div class="composer-wrap">
+      <div class="engine-off">
+        <span class="engine-off-dot" aria-hidden="true"></span>
+        <span class="engine-off-text">
+          The reasoning engine is off. Chat answers over your history once
+          it's enabled.
+        </span>
+        <button type="button" class="engine-off-enable" onclick={enableEngine}>
+          Enable engine
+        </button>
+      </div>
+    </div>
+  {/if}
+{/if}
 </section>
 
 <style>
-  /* Two-pane workspace filling the insights surface. Mirrors the terminal/green
-     token system (--app-* / --cat-*) used across Overview/Subjects/Context.
-     The surface fills the full height and OWNS its scrolling: only `.history`
-     and `.transcript` scroll — the page itself never does (the Insights shell
-     drops its padding/overflow for the chat tab via `.insights-main--chat`). */
+  /* The conversation pane filling the insights surface. Mirrors the terminal/
+     green token system (--app-* / --cat-*) used across Overview/Subjects/Context.
+     The surface fills the full height and OWNS its scrolling: only `.transcript`
+     scrolls — the page itself never does (the Insights shell drops its padding/
+     overflow for the chat tab via `.insights-main--chat`). The history list now
+     lives in the persistent shell rail, so this is a single column. */
   .chat {
-    display: grid;
-    grid-template-columns: 260px 1fr;
-    gap: 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
     /* Fill the flex-column parent (`.insights-main--chat`) via flex-grow, NOT a
        percentage height — WKWebView (Tauri) drops `height: 100%` against a
        flex-stretched ancestor, which collapsed the surface to content height. */
     flex: 1 1 auto;
     min-height: 0;
-    height: 100%;
     border-top: 1px solid var(--app-border);
     overflow: hidden;
-    background: var(--app-surface);
-  }
-
-  /* ── LEFT rail ───────────────────────────────────────────────────────── */
-  .rail {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    border-right: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-  }
-  .rail-top {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    border-bottom: 1px solid var(--app-border);
-  }
-  .new-chat {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    height: 30px;
-    font: inherit;
-    font-size: 11.5px;
-    letter-spacing: 0.02em;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 7px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    cursor: pointer;
-    transition: border-color 0.12s ease, background 0.12s ease;
-  }
-  .new-chat:hover {
-    border-color: var(--app-accent);
-  }
-  .new-chat .plus {
-    font-size: 13px;
-    line-height: 1;
-  }
-
-  .search {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    height: 28px;
-    padding: 0 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-  }
-  .search:focus-within {
-    border-color: var(--app-border-hover);
-  }
-  .search-glyph {
-    color: var(--app-text-subtle);
-    font-size: 12px;
-  }
-  .search-input {
-    flex: 1 1 auto;
-    min-width: 0;
-    font: inherit;
-    font-size: 11.5px;
-    border: none;
-    background: transparent;
-    color: var(--app-text);
-    outline: none;
-  }
-  .search-input::placeholder {
-    color: var(--app-text-faint);
-  }
-  /* Hide the native search clear affordance for a consistent terminal look. */
-  .search-input::-webkit-search-cancel-button {
-    -webkit-appearance: none;
-    appearance: none;
-  }
-
-  .history {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .history-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 4px;
-  }
-  .sk-row {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .rail-empty {
-    font-size: 11px;
-    color: var(--app-text-faint);
-    padding: 10px 6px;
-    line-height: 1.5;
-  }
-
-  .history-item {
-    /* Two stacked lines: the title fills line 1; the timestamp + row actions
-       share line 2. Stacking (rather than a title/actions row) keeps the
-       actions off the title entirely — they live beside the time, not over it. */
-    display: flex;
-    flex-direction: column;
-    padding: 7px 6px 6px 9px;
-    border: 1px solid transparent;
-    border-radius: 7px;
-    transition: background 0.12s ease, border-color 0.12s ease;
-  }
-  .history-item:hover {
-    background: var(--app-surface-hover);
-  }
-  .history-item.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-  }
-  .history-open {
-    width: 100%;
-    min-width: 0;
-    display: block;
-    padding: 0;
-    border: none;
-    background: transparent;
-    text-align: left;
-    cursor: pointer;
-    font: inherit;
-  }
-  .history-title {
-    /* Fill the rail's available width so the ellipsis only kicks in at the true
-       right edge of the 260px rail, not early while dead space sits beside it. */
-    display: block;
-    width: 100%;
-    font-size: 11.5px;
-    color: var(--app-text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .history-item:hover .history-title {
-    color: var(--app-text-strong);
-  }
-  .history-item.active .history-title {
-    color: var(--app-accent-strong);
-  }
-  /* Second line: timestamp (left) + row actions (right). min-height holds the
-     line steady whether or not the actions are showing, so rows don't jump. */
-  .history-foot {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 22px;
-    margin-top: 2px;
-  }
-  .history-time {
-    font-size: 9.5px;
-    color: var(--app-text-faint);
-    letter-spacing: 0.02em;
-    line-height: 1;
-  }
-  /* Quiet date-section headers (Today / Yesterday / This week / "May 2026"),
-     in the same uppercase-faint idiom as .sources-heading. */
-  .history-group-label {
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-faint);
-    padding: 8px 6px 3px;
-  }
-  .history-group-label:first-child {
-    padding-top: 2px;
-  }
-  /* Row actions (rename + delete): pinned to the right end of the foot line
-     (margin-left:auto), hidden until the row is hovered or holds keyboard focus
-     — pure hover-only would lock keyboard users out. They sit in flow on the
-     foot line, so they never overlap the title above. */
-  .history-actions {
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.12s ease;
-  }
-  .history-item:hover .history-actions,
-  .history-item:focus-within .history-actions {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .history-action {
-    width: 26px;
-    height: 22px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font-size: 13px;
-    line-height: 1;
-    cursor: pointer;
-    transition: color 0.12s ease, background 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .history-action:hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-    border-color: var(--app-border);
-  }
-  .history-action--delete:hover {
-    color: var(--app-danger);
-    border-color: var(--app-danger);
-  }
-  /* Inline rename input: replaces the row content while editing. The row is a
-     column flex now, so fill the width and sit flush within the item padding. */
-  .history-rename-input {
-    width: 100%;
-    min-width: 0;
-    margin: 1px 0;
-    padding: 4px 6px;
-    font: inherit;
-    font-size: 11.5px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 5px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    outline: none;
-  }
-  .history-rename-input:focus {
-    border-color: var(--app-accent);
-  }
-
-  /* ── RIGHT pane ──────────────────────────────────────────────────────── */
-  .pane {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    min-height: 0;
     background: var(--app-surface);
   }
   .pane-empty {

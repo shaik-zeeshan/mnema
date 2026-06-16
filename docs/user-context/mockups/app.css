@@ -87,10 +87,9 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* ---------------------------------------------------------- SEGMENTED CONTROL
- * One canonical segmented-control look, shared by ALL three segmented controls
- * so they can never drift:
+ * One canonical segmented-control look, shared by the segmented controls so they
+ * can never drift:
  *   .surface-toggle  — titlebar "Timeline" / "Insights".
- *   .subnav-tabs     — Insights surface switcher (Overview/Subjects/Context/Chat).
  *   .date-range      — Overview "Day" / "Week" / "Month".
  *   .sort-seg        — Subjects index "Most active" / "Recently moved" / "A–Z".
  * Active segment is signalled by the accent fill alone (no glyph), so every
@@ -99,7 +98,6 @@ a { color: inherit; text-decoration: none; }
  *
  * CONTAINER. */
 .surface-toggle,
-.subnav-tabs,
 .date-range,
 .sort-seg {
   display: inline-flex;
@@ -112,7 +110,6 @@ a { color: inherit; text-decoration: none; }
 }
 /* ITEM. */
 .surface-toggle button,
-.subnav-tab,
 .date-range button,
 .sort-seg button {
   font: inherit;
@@ -133,12 +130,10 @@ a { color: inherit; text-decoration: none; }
 }
 /* ITEM hover — color only, no background change. */
 .surface-toggle button:hover,
-.subnav-tab:hover,
 .date-range button:hover,
 .sort-seg button:hover { color: var(--app-text-strong); }
 /* ITEM active — accent fill is the only active signal. */
 .surface-toggle button.active,
-.subnav-tab.active,
 .date-range button.active,
 .sort-seg button.active {
   background: var(--app-accent-bg);
@@ -213,80 +208,208 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* ============================================================ INSIGHTS WORKSPACE
- * .insights = .subnav (top sub-surface tab bar) stacked over .insights-main
- * (full-width scroll content). The old left .insights-rail is retired in favor
- * of the horizontal top nav (matches the bento direction). */
+ * .insights = a persistent left rail (.sidebar) beside the .insights-main
+ * scroll column. The rail is a "minimal / quiet" surface — hairline dividers and
+ * whitespace, a single green accent, lowercase labels — and carries the
+ * sub-surface nav, new-chat, chat search/history, and a footer engine status.
+ * Content runs in the right column. */
 .insights {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   flex: 1 1 auto;
   min-height: 0;
 }
 
-/* ---------------------------------------------------------- SUB-NAV (TOP TAB BAR)
- * Slim horizontal bar directly under the titlebar: the sub-surface switcher is a
- * SEGMENTED CONTROL on the left (shares the canonical segmented look with
- * .surface-toggle and .date-range, filled accent for the active segment) +
- * engine status / global actions on the right. The .subnav is space-between, so
- * tabs sit left and .subnav-meta sits right. */
-.subnav {
+/* ---------------------------------------------------------- LEFT RAIL
+ * Persistent left navigation rail — the "minimal / quiet" sidebar. No card
+ * fills, no item borders, no pills; separation comes from 1px hairline dividers
+ * + generous whitespace, with a single green accent for the active state (accent
+ * TEXT only — no leading dot/marker). Even 16px L/R gutters, lowercase labels.
+ * Class names are rail-scoped to avoid colliding with other surfaces' chrome.
+ * Sections: scrollable upper region (nav, new-chat, search, chat history) +
+ * a pinned footer engine status. */
+.sidebar {
+  flex: 0 0 200px;
+  width: 200px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex: 0 0 40px;
-  height: 40px;
-  width: 100%;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--app-border);
+  flex-direction: column;
+  min-height: 0;
   background: var(--app-surface-subtle);
+  border-right: 1px solid var(--app-border);
+}
+.sidebar-scroll {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 18px 16px 0;
 }
 
-/* The .subnav-tabs container and .subnav-tab segments use the shared segmented
- * control rules above (SEGMENTED CONTROL) — no per-control overrides here, so
- * the switcher is pixel-identical to .surface-toggle and .date-range. */
-
-.subnav-meta {
+/* primary nav — plain lowercase text rows, generous spacing. */
+.rail-nav {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
+  flex-direction: column;
+  gap: 1px;
 }
-
-/* ---------------------------------------------------------- SUBNAV SEARCH
- * .subnav-search — compact global jump/command field living in .subnav-meta, to
- * the LEFT of .engine-status. Static mockup affordance (a styled div): magnifier
- * glyph + placeholder text + trailing ⌘K .kbd chip. Shrinks on narrow windows. */
-.subnav-search {
+.rail-nav-item {
   display: flex;
   align-items: center;
-  gap: 7px;
-  width: 250px;
-  min-width: 0;
-  height: 26px;
-  padding: 0 9px;
-  border: 1px solid var(--app-border);
-  border-radius: 6px;
-  background: var(--app-surface);
+  gap: 8px;
+  height: 28px;
+  font-size: 12px;
+  text-transform: lowercase;
+  text-decoration: none;
   color: var(--app-text-muted);
-  font-size: 11.5px;
-  cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
-}
-.subnav-search-glyph {
-  color: var(--app-text-subtle);
   transition: color 0.12s ease;
 }
-.subnav-search-text {
+.rail-nav-item:hover { color: var(--app-text-strong); }
+.rail-nav-item .rail-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--app-text-faint);
+}
+/* active = accent text only (no leading marker). */
+.rail-nav-item.active { color: var(--app-accent-strong); }
+.rail-nav-item.active .rail-count { color: var(--app-accent-strong); }
+
+/* new chat — quiet borderless text link. */
+.rail-newchat {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 18px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 12px;
+  text-transform: lowercase;
+  text-decoration: none;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.rail-newchat .plus { color: var(--app-text-subtle); transition: color 0.12s ease; }
+.rail-newchat:hover { color: var(--app-accent); }
+.rail-newchat:hover .plus { color: var(--app-accent); }
+
+/* search — borderless except a single bottom hairline. */
+.rail-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  margin-top: 14px;
+  border-bottom: 1px solid var(--app-border);
+}
+.rail-search .glyph {
+  color: var(--app-text-subtle);
+  font-size: 12px;
+}
+.rail-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--app-text);
+  font-family: inherit;
+  font-size: 11.5px;
+}
+.rail-search input::placeholder { color: var(--app-text-subtle); }
+
+/* chat history — ultra-compact single-line rows, no chrome. */
+.rail-history {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 16px;
+}
+.rail-history::-webkit-scrollbar { width: 5px; }
+.rail-history::-webkit-scrollbar-thumb {
+  background: var(--app-border);
+  border-radius: 999px;
+}
+/* group label — tiny, faint, lowercase; hairline above + top spacing. */
+.rail-group {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: lowercase;
+  color: var(--app-text-subtle);
+  margin-top: 14px;
+  padding-top: 11px;
+  padding-bottom: 8px;
+  border-top: 1px solid var(--app-border);
+}
+/* first group: sits clean below the search's bottom hairline — no double line. */
+.rail-group:first-child {
+  border-top: none;
+  margin-top: 12px;
+  padding-top: 0;
+}
+.rail-chat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  height: 24px;
+  text-decoration: none;
+}
+.rail-chat .t {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
   color: var(--app-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   transition: color 0.12s ease;
 }
-.subnav-search .kbd { margin-left: auto; }
-.subnav-search:hover { border-color: var(--app-border-hover); }
-.subnav-search:hover .subnav-search-glyph,
-.subnav-search:hover .subnav-search-text { color: var(--app-text-strong); }
+.rail-chat:hover .t { color: var(--app-text-strong); }
+.rail-chat .when {
+  font-size: 9.5px;
+  color: var(--app-text-faint);
+  flex: 0 0 auto;
+}
+/* active row — accent title only (matches active nav). */
+.rail-chat.active .t { color: var(--app-accent-strong); }
+
+/* footer — pinned single faint line carrying the engine status. */
+.rail-foot {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--app-border);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  color: var(--app-text-muted);
+}
+/* footer engine status — minimal, two variants:
+ *   .rail-engine        — engine ON  (accent dot, muted label).
+ *   .rail-engine--off   — engine OFF (grey dot, tiny "Enable" link). */
+.rail-engine {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--app-text-muted);
+}
+.rail-engine .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--app-accent);
+  flex: 0 0 auto;
+}
+.rail-engine .sep { color: var(--app-text-faint); }
+.rail-engine .model { color: var(--app-text-muted); }
+.rail-engine--off .dot { background: var(--app-status-dot); }
+.rail-enable {
+  color: var(--app-accent-strong);
+  cursor: pointer;
+  border-bottom: 1px dotted var(--app-accent-border);
+}
+.rail-enable:hover { color: var(--app-accent); }
 
 /* .kbd — tiny keyboard-shortcut chip (reusable). */
 .kbd {
@@ -300,47 +423,8 @@ a { color: inherit; text-decoration: none; }
   color: var(--app-text-subtle);
 }
 
-/* ---------------------------------------------------------- ENGINE STATUS
- * Compact inline reasoning-engine chip in the sub-nav meta cluster (replaces the
- * old bottom-of-rail .engine-chip). Two variants:
- *   .engine-status        — engine ON  (accent dot + glow, accent styling).
- *   .engine-status--off   — engine OFF (grey dot, muted, tiny "Enable" link). */
-.engine-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  padding: 3px 9px;
-  border: 1px solid var(--app-accent-border);
-  border-radius: 999px;
-  background: var(--app-accent-bg);
-  color: var(--app-accent-strong);
-}
-.engine-status .dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--app-accent);
-  box-shadow: 0 0 0 3px var(--app-accent-glow);
-}
-.engine-status--off {
-  border-color: var(--app-border);
-  background: var(--app-surface-subtle);
-  color: var(--app-text-muted);
-}
-.engine-status--off .dot {
-  background: var(--app-status-dot);
-  box-shadow: none;
-}
-.engine-status-enable {
-  color: var(--app-accent-strong);
-  cursor: pointer;
-  border-bottom: 1px dotted var(--app-accent-border);
-}
-.engine-status-enable:hover { color: var(--app-accent); }
-
 /* ---------------------------------------------------------- MAIN CONTENT
- * Full-width scroll region; second row of the .insights column. */
+ * Right column: the full-width scroll region beside the rail. */
 .insights-main {
   flex: 1 1 auto;
   min-width: 0;
