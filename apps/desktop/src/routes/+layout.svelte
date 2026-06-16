@@ -1550,6 +1550,53 @@
     text-decoration: none;
   }
 
+  /* ── App-wide custom scrollbars ────────────────────────────────
+     A single themed baseline for every scrollable surface. Two goals:
+
+     1. Match the theme. The thumb is tinted from the shared `--app-*`
+        tokens, so it flips with light/dark like the rest of the chrome
+        (quiet border grey at rest → stronger on hover → accent while
+        dragging).
+     2. Never overlay content. macOS WebKit (and Windows WebView2)
+        default to *overlay* scrollbars that float on top of content.
+        Defining a `::-webkit-scrollbar` with an explicit width forces
+        the classic, gutter-reserving scrollbar instead — so it pushes
+        content aside rather than covering it.
+
+     These are `:global` defaults with zero selector specificity, so any
+     component that styles its own scrollbar (settings auto-hide, the
+     hidden rail history, the thin quick-recall row) still wins. */
+  :global(html) {
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-border-strong) transparent;
+  }
+  :global(::-webkit-scrollbar) {
+    width: 12px;
+    height: 12px;
+  }
+  :global(::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+  :global(::-webkit-scrollbar-corner) {
+    background: transparent;
+  }
+  :global(::-webkit-scrollbar-thumb) {
+    /* The 3px transparent border + padding-box clip insets the visible
+       thumb, leaving breathing room on both sides of the gutter. */
+    background-color: var(--app-border-strong);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+  }
+  :global(::-webkit-scrollbar-thumb:hover) {
+    background-color: var(--app-border-hover);
+    background-clip: padding-box;
+  }
+  :global(::-webkit-scrollbar-thumb:active) {
+    background-color: var(--app-accent-strong);
+    background-clip: padding-box;
+  }
+
   .app-shell {
     --app-titlebar-height: 36px;
     --app-window-radius: 10px;
