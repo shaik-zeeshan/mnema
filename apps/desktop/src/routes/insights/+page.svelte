@@ -59,6 +59,11 @@
   function openTab(tab: InsightsTab): void {
     view = tab;
     if (tab !== "subjects") selectedSubject = null;
+    // Leaving Chat unmounts it, so its mirror effect can no longer clear the
+    // store's open-thread id — clear it here so the rail stops highlighting the
+    // previously-open row while a non-Chat sub-surface is showing. (Re-entering
+    // Chat remounts it; the bus/handoff sets the active id back as needed.)
+    if (tab !== "chat") conversationStore.activeConversationId = null;
   }
 
   function openSubject(subject: string): void {
