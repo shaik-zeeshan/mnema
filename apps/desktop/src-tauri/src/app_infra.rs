@@ -2478,13 +2478,25 @@ fn spawn_hidden_segment_workspace_repair_worker(
             let active_workspace_dirs =
                 active_workspace_dirs_for_hidden_workspace_repair(&app_handle);
 
-            match repair_hidden_segment_workspaces_once(
+            // Abandon an in-flight repair pass the instant shutdown is requested
+            // so quit never blocks on a full scan. The pass only reads from the DB
+            // and removes whole workspace dirs between awaits, so dropping the
+            // future mid-pass leaves no partial state. `select` polls the shutdown
+            // future first, so it also resolves immediately if shutdown was already
+            // requested while computing `active_workspace_dirs`.
+            let shutdown_changed = shutdown_rx.changed();
+            let repair = repair_hidden_segment_workspaces_once(
                 &infra,
                 &recordings_root,
                 &active_workspace_dirs,
-            )
-            .await
-            {
+            );
+            pin_mut!(shutdown_changed, repair);
+            let repair_result = match select(shutdown_changed, repair).await {
+                Either::Left((_, _)) => break,
+                Either::Right((result, _)) => result,
+            };
+
+            match repair_result {
                 Ok(result) => {
                     crate::native_capture::debug_log::log_info(format!(
                         "hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
