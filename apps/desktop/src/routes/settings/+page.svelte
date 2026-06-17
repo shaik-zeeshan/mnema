@@ -933,8 +933,8 @@
   // model row mirroring the guided-tier layout.
   let semanticSearchSupportedModels = $state<SemanticSearchSupportedModel[]>([]);
   // The single "picked" (focused) model id driving the shared status + action
-  // region. The guided SelectMenu and the custom Combobox are two views of this
-  // same id; picking in one clears the other. Initialized to the active model.
+  // region. One combined Combobox writes this id (guided tiers + full catalog in
+  // one list). Initialized to the active model.
   let semanticSearchPickedModelId = $state<string | null>("nomic-embed-text-v1.5");
   let loadingSemanticSearchSupportedModels = $state(false);
   let semanticSearchSupportedModelsError = $state<string | null>(null);
@@ -2897,21 +2897,20 @@
     ),
   );
 
-  // The guided SelectMenu value = the picked id only when it names a guided
-  // model; the custom Combobox value = the picked id only when it names a custom
-  // model. Picking in one therefore visually clears the other.
-  let semanticSearchGuidedSelectValue = $derived(
-    semanticSearchPickedModelId &&
-      semanticSearchGuidedModels.some((m) => m.modelId === semanticSearchPickedModelId)
-      ? semanticSearchPickedModelId
-      : null,
-  );
-  let semanticSearchCustomSelectValue = $derived(
-    semanticSearchPickedModelId &&
-      semanticSearchCustomOptions.some((m) => m.modelId === semanticSearchPickedModelId)
-      ? semanticSearchPickedModelId
-      : null,
-  );
+  // The single combined picker list: guided/recommended tiers first (deduped by
+  // modelId, guided wins), then the rest of the fastembed catalog. One control,
+  // one value (`semanticSearchPickedModelId`); each option labels its tier so
+  // the distinction stays clear without a second selector.
+  let semanticSearchModelOptions = $derived([
+    ...semanticSearchGuidedModels.map((m) => ({
+      value: m.modelId,
+      label: `${m.displayName} · ${m.dimension}d${m.tier === "multilingual" ? " · multilingual" : ""} · recommended`,
+    })),
+    ...semanticSearchCustomOptions.map((m) => ({
+      value: m.modelId,
+      label: `${m.displayName} — ${m.dimension}d${m.multilingual ? " · multilingual" : ""}`,
+    })),
+  ]);
 
   // The render-ready view of the picked model for the shared status + action
   // region. Resolve live status first (carries provider + available + status),
@@ -6464,7 +6463,7 @@
         <div class="card__heading">
           <h2 class="card__title">Semantic Search Model</h2>
           <p class="card__subtitle">
-            Meaning-based search runs fully on-device. Pick a model tier, then Mnema
+            Meaning-based search runs fully on-device. Pick any on-device model, then Mnema
             embeds your captures in the background. Nothing is downloaded until you choose a model.
           </p>
         </div>
@@ -6499,29 +6498,20 @@
         {/if}
 
         {#if semanticSearchModelStatus}
-          <div class="settings-group ss-model-picker">
-            <SelectMenu
-              label="Model"
-              placeholder="Choose a guided tier…"
-              value={semanticSearchGuidedSelectValue}
-              onValueChange={(v) => (semanticSearchPickedModelId = v)}
-              options={semanticSearchGuidedModels.map((m) => ({
-                value: m.modelId,
-                label: `${m.displayName} · ${m.dimension}d`,
-              }))}
-            />
-
+          <div class="settings-group">
+            <span class="group-label">Model</span>
             <Combobox
-              label="Custom model"
-              placeholder="Search fastembed models…"
+              label=""
+              placeholder="Search models — recommended tiers first…"
               emptyText="No matching models"
-              value={semanticSearchCustomSelectValue}
+              value={semanticSearchPickedModelId}
               onValueChange={(v) => (semanticSearchPickedModelId = v)}
-              options={semanticSearchCustomOptions.map((m) => ({
-                value: m.modelId,
-                label: `${m.displayName} — ${m.dimension}d${m.multilingual ? " · multilingual" : ""}`,
-              }))}
+              options={semanticSearchModelOptions}
             />
+            <p class="group-hint">
+              Recommended tiers are listed first. Search the full on-device catalog to pick any
+              fastembed model; multilingual models are marked. Nothing downloads until you choose below.
+            </p>
           </div>
 
           {#if semanticSearchSupportedModelsError}
@@ -6571,37 +6561,37 @@
                 </div>
               {/if}
 
-              <div class="row-actions">
-                {#if downloading}
-                  <button class="btn btn--ghost btn--sm" onclick={() => void cancelSemanticSearchModelDownload()}>
-                    Cancel
-                  </button>
-                {:else if !installed}
-                  <!-- Step 1: download. Mnema never auto-downloads (ADR 0036). -->
-                  <button
-                    class="btn btn--primary btn--sm"
-                    onclick={() => void startSemanticSearchPickedDownload(picked)}
-                    disabled={!picked.provider}
-                  >
-                    {picked.approxDownloadBytes != null
-                      ? `Download (${formatBytes(picked.approxDownloadBytes)})`
-                      : "Download"}
-                  </button>
-                {:else if !selected}
-                  <!-- Step 2: use (installed, not yet active). -->
-                  <button
-                    class="btn btn--primary btn--sm"
-                    onclick={() => void chooseSemanticSearchPickedModel(picked)}
-                  >
-                    Use this model
-                  </button>
-                {:else}
-                  <span class="badge badge--ok badge--sm">Active model</span>
-                {/if}
-                {#if !installed && !downloading}
-                  <span class="action-hint">Step 1: download · Step 2: use this model</span>
-                {/if}
-              </div>
+              {#if downloading || !installed || !selected}
+                <div class="row-actions">
+                  {#if downloading}
+                    <button class="btn btn--ghost btn--sm" onclick={() => void cancelSemanticSearchModelDownload()}>
+                      Cancel
+                    </button>
+                  {:else if !installed}
+                    <!-- Step 1: download. Mnema never auto-downloads (ADR 0036). -->
+                    <button
+                      class="btn btn--primary btn--sm"
+                      onclick={() => void startSemanticSearchPickedDownload(picked)}
+                      disabled={!picked.provider}
+                    >
+                      {picked.approxDownloadBytes != null
+                        ? `Download (${formatBytes(picked.approxDownloadBytes)})`
+                        : "Download"}
+                    </button>
+                  {:else if !selected}
+                    <!-- Step 2: use (installed, not yet active). -->
+                    <button
+                      class="btn btn--primary btn--sm"
+                      onclick={() => void chooseSemanticSearchPickedModel(picked)}
+                    >
+                      Use this model
+                    </button>
+                  {/if}
+                  {#if !installed && !downloading}
+                    <span class="action-hint">Step 1: download · Step 2: use this model</span>
+                  {/if}
+                </div>
+              {/if}
             </div>
           {/if}
 
@@ -7658,21 +7648,8 @@
     outline: none;
   }
 
-  /* Semantic-search model picker: the two selectors sit side by side on wide
-     panels, stacking on narrow ones; the shared status region reads as one
-     contained block under them. */
-  .ss-model-picker {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 12px;
-  }
-
-  .ss-model-picker > :global(.select-wrapper) {
-    flex: 1 1 220px;
-    min-width: 0;
-  }
-
+  /* Semantic-search picked-model status: a single contained block under the one
+     model picker, mirroring the Speaker card's .model-status look. */
   .ss-picked {
     padding: 12px;
     border: 1px solid var(--app-border);
