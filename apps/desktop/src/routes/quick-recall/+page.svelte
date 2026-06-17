@@ -8,7 +8,8 @@
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
-  import { closeCurrentWindow } from "$lib/surface-windows";
+  import { closeCurrentWindow, openSettingsWindow } from "$lib/surface-windows";
+  import type { SemanticSearchModelStatusResponse } from "$lib/types";
   import { askAiClock } from "$lib/askAiClock";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
@@ -3016,6 +3017,35 @@
       resultsQuery.length > 0,
   );
 
+  // In-search discoverability hint (issue #125): when no Semantic Search Model is
+  // installed, search is keyword-only. Surface a one-time hint pointing the user
+  // to Settings so they can turn on meaning-based search. We load the model
+  // status lazily and treat "no model installed" as "no model available".
+  let semanticSearchModelInstalled = $state<boolean | null>(null);
+  async function loadSemanticSearchModelInstalled(): Promise<void> {
+    try {
+      const status = await invoke<SemanticSearchModelStatusResponse>(
+        "get_semantic_search_model_status",
+      );
+      semanticSearchModelInstalled = status.models.some((model) => model.available);
+    } catch {
+      // Best-effort: a failure just suppresses the hint (never blocks search).
+      semanticSearchModelInstalled = null;
+    }
+  }
+  async function openSemanticSearchSettings(): Promise<void> {
+    await openSettingsWindow("processing");
+  }
+  // Show the hint once results have run and no model is installed — the hint is
+  // most useful exactly when keyword-only search underwhelms.
+  let showSemanticSearchHint = $derived(
+    semanticSearchModelInstalled === false &&
+      !belowMinimum &&
+      !loading &&
+      parseErrorMessage === null &&
+      resultsQuery.length > 0,
+  );
+
   // Slice 3: results are PAUSED (not empty, not errored) when the backend
   // returned a parse error for an at/above-minimum query that isn't mid-flight.
   // The backend suppresses results in this case; this branch renders a calm
@@ -3202,6 +3232,7 @@
   onMount(() => {
     void focusQuickRecall();
     void loadAskAvailability();
+    void loadSemanticSearchModelInstalled();
     // Warm the captured-app catalog up front so the App value list (whether
     // reached by typing `app:` or via the picker) has selectable rows on first
     // open — the source/date lists are static, so only App needs the head start.
@@ -3706,7 +3737,27 @@
             </p>
           {:else if showEmpty}
             <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
+            {#if showSemanticSearchHint}
+              <button
+                type="button"
+                class="quick-recall__semantic-hint"
+                onclick={() => void openSemanticSearchSettings()}
+              >
+                Searching keywords only. Turn on meaning-based search in Settings →
+                Processing to also find results by meaning.
+              </button>
+            {/if}
           {:else}
+            {#if showSemanticSearchHint}
+              <button
+                type="button"
+                class="quick-recall__semantic-hint"
+                onclick={() => void openSemanticSearchSettings()}
+              >
+                Searching keywords only. Turn on meaning-based search in Settings →
+                Processing to also find results by meaning.
+              </button>
+            {/if}
             {#if frames.length > 0}
               <div class="quick-recall__section" role="presentation">
                 <span class="quick-recall__section-label">Screen</span>
@@ -4356,6 +4407,27 @@
 
   .quick-recall__state--error {
     color: var(--app-accent);
+  }
+
+  /* In-search discoverability hint (issue #125): keyword-only search → Settings. */
+  .quick-recall__semantic-hint {
+    display: block;
+    width: 100%;
+    margin: 4px 0 8px;
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--app-text-muted);
+    background: var(--app-surface-raised, rgba(127, 127, 127, 0.08));
+    border: 1px solid var(--app-border, rgba(127, 127, 127, 0.2));
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .quick-recall__semantic-hint:hover {
+    color: var(--app-text);
+    border-color: var(--app-accent);
   }
 
   /* Slice 4: feature-teaching orientation view shown pre-query (belowMinimum).
