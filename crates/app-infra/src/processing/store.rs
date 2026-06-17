@@ -566,6 +566,9 @@ impl ProcessingStore {
         &self,
         workspace_prefix: &str,
     ) -> Result<Vec<SegmentWorkspaceOcrReference>> {
+        // Range bounds (not `LIKE`) so SQLite can use the `frames_file_path_idx`
+        // index instead of a full table scan: range-scan `frames` by path prefix,
+        // then index into each frame's OCR jobs. See migration 0038.
         let rows = sqlx::query(
             "SELECT \
                 frames.id AS frame_id, \
@@ -573,12 +576,15 @@ impl ProcessingStore {
                 processing_jobs.status AS job_status \
              FROM frames \
              INNER JOIN processing_jobs ON processing_jobs.subject_id = frames.id \
-                 AND processing_jobs.subject_type = ?2 \
-                 AND processing_jobs.processor = ?3 \
-             WHERE frames.file_path LIKE ?1 ESCAPE '\\' \
+                 AND processing_jobs.subject_type = ?3 \
+                 AND processing_jobs.processor = ?4 \
+             WHERE frames.file_path >= ?1 AND frames.file_path < ?2 \
              ORDER BY frames.id ASC, processing_jobs.id ASC",
         )
-        .bind(Self::workspace_like_pattern(workspace_prefix))
+        .bind(workspace_prefix)
+        .bind(crate::frame_batch_store::workspace_path_prefix_upper_bound(
+            workspace_prefix,
+        ))
         .bind(super::FRAME_SUBJECT_TYPE)
         .bind(super::OCR_PROCESSOR)
         .fetch_all(&self.pool)
