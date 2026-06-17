@@ -1259,6 +1259,9 @@ async fn broker_search(
             audio_offset: Some(0),
             snapshot_document_id: None,
             refinements: Some(refinements),
+            // Brokered access is keyword-only: the broker never runs the local
+            // **Semantic Search Model**, so it passes no query vector.
+            query_embedding: None,
         })
         .await?;
     let opaque_secret = load_or_create_opaque_secret(config_dir)?;
@@ -3146,6 +3149,7 @@ mod tests {
                     text_source_kind: "direct".to_string(),
                     secret_redaction_count: 0,
                     has_secret_redactions: false,
+                    found_by_meaning: false,
                 },
                 crate::FrameSearchResult {
                     group_key: "frame:12".to_string(),
@@ -3161,6 +3165,7 @@ mod tests {
                     text_source_kind: "direct".to_string(),
                     secret_redaction_count: 0,
                     has_secret_redactions: false,
+                    found_by_meaning: false,
                 },
             ],
             audio: vec![crate::AudioSearchResult {
@@ -3176,6 +3181,7 @@ mod tests {
                 aligned_frame: None,
                 secret_redaction_count: 0,
                 has_secret_redactions: false,
+                found_by_meaning: false,
             }],
             has_more_frames: false,
             has_more_audio: false,

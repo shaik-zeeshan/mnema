@@ -18,7 +18,27 @@ const HIT_FETCH_OVERFETCH_PER_GROUP: i64 = 50;
 const AUDIO_GROUP_GAP_MS: u64 = 2_000;
 const AUDIO_FRAME_ALIGNMENT_WINDOW_SECONDS: i64 = 10;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Reciprocal rank fusion constant. The textbook `k = 60` from the TREC RRF
+/// paper (Cormack et al. 2009): it damps the contribution of low-ranked tail
+/// hits so the top of each list dominates the fused order without one list's
+/// long tail swamping the other's head. `1 / (k + rank)` per list, summed.
+const RRF_K: f64 = 60.0;
+
+/// How many nearest **Semantic Search Vector**s the `vec0` KNN returns per query.
+/// This is the meaning-tier candidate budget that RRF fuses with the **Text
+/// Search** list; it is intentionally generous (there is no ANN in v1, so the
+/// scan is already a filtered brute force) but bounded so an unrefined query
+/// over a large index stays a fixed-cost top-k rather than a full table scan.
+const SEMANTIC_KNN_LIMIT: i64 = 200;
+
+/// Character budget for a meaning-only **Search Snippet**: the leading
+/// `body_text` excerpt rendered when a hit matched the query vector but carries
+/// no **Text Search** term to highlight. Sized to roughly match the FTS
+/// `snippet(...)` 12-token window so a "found by meaning" card reads at the same
+/// length as a keyword card.
+const MEANING_SNIPPET_CHAR_BUDGET: usize = 120;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchCaptureRequest {
     pub query: String,
@@ -28,6 +48,15 @@ pub struct SearchCaptureRequest {
     pub audio_offset: Option<u32>,
     pub snapshot_document_id: Option<i64>,
     pub refinements: Option<SearchCaptureRefinements>,
+    /// The **Semantic Search** query vector, pre-computed by the caller (the
+    /// desktop layer embeds the query string with the loaded **Semantic Search
+    /// Model**; app-infra takes no `ort`/`fastembed` dependency). When `Some`,
+    /// **Hybrid Search** fuses a `vec0` KNN over this vector with the FTS5
+    /// **Text Search** ranking by reciprocal rank fusion. When `None` — no model
+    /// installed, no vectors, or a query that produced no embedding — search
+    /// degrades to today's keyword-only behavior with no regression.
+    #[serde(default)]
+    pub query_embedding: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -139,6 +168,12 @@ pub struct FrameSearchResult {
     pub text_source_kind: String,
     pub secret_redaction_count: u32,
     pub has_secret_redactions: bool,
+    /// A meaning-only **Semantic Search** hit: the group matched the query
+    /// vector but no **Text Search** term, so `snippet` is a leading `body_text`
+    /// excerpt tagged "found by meaning" rather than a highlighted FTS snippet.
+    /// `false` whenever any grouped anchor also matched **Text Search**.
+    #[serde(default)]
+    pub found_by_meaning: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,6 +191,9 @@ pub struct AudioSearchResult {
     pub aligned_frame: Option<Frame>,
     pub secret_redaction_count: u32,
     pub has_secret_redactions: bool,
+    /// A meaning-only **Semantic Search** hit (see [`FrameSearchResult::found_by_meaning`]).
+    #[serde(default)]
+    pub found_by_meaning: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -349,6 +387,15 @@ impl SearchStore {
             None => fetch_search_document_high_water_mark(&self.pool).await?,
         };
 
+        // **Hybrid Search** runs only when the caller supplied a non-empty query
+        // vector (the desktop layer embedded the query with the installed
+        // **Semantic Search Model**). An absent or empty vector — no model, no
+        // backfilled vectors — leaves search keyword-only with no regression.
+        let query_embedding = request
+            .query_embedding
+            .as_deref()
+            .filter(|embedding| !embedding.is_empty());
+
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
         let all_frame_groups = if frame_limit == 0 || !refinements.audio_sources.is_empty() {
@@ -361,6 +408,7 @@ impl SearchStore {
                 frame_offset,
                 frame_limit,
                 &refinements,
+                query_embedding,
             )
             .await?
         };
@@ -371,8 +419,14 @@ impl SearchStore {
         {
             Vec::new()
         } else {
-            fetch_grouped_audio_hits(&self.pool, &fts_query, snapshot_document_id, &refinements)
-                .await?
+            fetch_grouped_audio_hits(
+                &self.pool,
+                &fts_query,
+                snapshot_document_id,
+                &refinements,
+                query_embedding,
+            )
+            .await?
         };
         let frames = all_frame_groups
             .iter()
@@ -2317,19 +2371,32 @@ fn search_context_text(
 
 #[derive(Debug, Clone)]
 struct FrameHit {
+    /// `search_documents.id` of this **Search Result Anchor** — the fusion key
+    /// for RRF and the `vec0` rowid. One anchor can surface from both the
+    /// **Text Search** and the **Semantic Search** candidate lists; fusion
+    /// dedups on this id before grouping.
+    anchor_id: i64,
     group_key: String,
     frame: Frame,
     snippet: String,
+    /// The hit's ranking score, **lower is better**. For an FTS-only path this
+    /// is BM25; once **Hybrid Search** fuses, it is the negated RRF score so the
+    /// existing ASC sort keeps the best hit first.
     rank: f64,
     app_bundle_id: Option<String>,
     app_name: Option<String>,
     window_title: Option<String>,
     text_source_kind: String,
     secret_redaction_count: u32,
+    /// True when this anchor entered via the `vec0` KNN with no **Text Search**
+    /// term to highlight, so `snippet` is a leading `body_text` excerpt.
+    found_by_meaning: bool,
 }
 
 #[derive(Debug, Clone)]
 struct AudioHit {
+    /// `search_documents.id` — the RRF fusion key and `vec0` rowid (see [`FrameHit::anchor_id`]).
+    anchor_id: i64,
     audio_segment: AudioSegment,
     source_kind: AudioSegmentSourceKind,
     span_start_ms: u64,
@@ -2337,6 +2404,8 @@ struct AudioHit {
     snippet: String,
     rank: f64,
     secret_redaction_count: u32,
+    /// True for a meaning-only hit (see [`FrameHit::found_by_meaning`]).
+    found_by_meaning: bool,
 }
 
 async fn fetch_search_document_high_water_mark(pool: &SqlitePool) -> Result<i64> {
@@ -2436,7 +2505,8 @@ async fn fetch_frame_hits(
     refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<FrameHit>> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
+        "SELECT search_documents.id AS document_id, \
+                search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
                 search_documents.text_source_kind, \
                 CASE \
                     WHEN instr(snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12), '<mark>') > 0 \
@@ -2487,6 +2557,7 @@ async fn fetch_frame_hits(
     rows.into_iter()
         .map(|row| {
             Ok(FrameHit {
+                anchor_id: row.get("document_id"),
                 group_key: row.get("group_key"),
                 app_bundle_id: row.get("app_bundle_id"),
                 app_name: row.get("app_name"),
@@ -2496,6 +2567,9 @@ async fn fetch_frame_hits(
                 rank: row.get("rank"),
                 secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
                     .unwrap_or(u32::MAX),
+                // A `MATCH` hit is by definition a **Text Search** match, never
+                // meaning-only.
+                found_by_meaning: false,
                 frame: map_frame_for_search(row)?,
             })
         })
@@ -2509,11 +2583,23 @@ async fn fetch_grouped_frame_hits(
     offset: usize,
     limit: u32,
     refinements: &NormalizedSearchRefinements,
+    query_embedding: Option<&[f32]>,
 ) -> Result<Vec<FrameSearchResult>> {
+    // **Hybrid Search**: when a query vector is present, fetch the meaning-tier
+    // candidates once (a bounded top-k `vec0` KNN) and RRF-fuse them into the
+    // **Text Search** list *before* grouping/pagination. With no vector the
+    // fused list is just the FTS list, so keyword-only behavior is unchanged.
+    let semantic_hits = match query_embedding {
+        Some(embedding) => {
+            fetch_semantic_frame_hits(pool, embedding, snapshot_document_id, refinements).await?
+        }
+        None => Vec::new(),
+    };
+
     let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
     let mut hit_limit = hit_fetch_limit(offset, limit);
     let mut hit_offset = 0_i64;
-    let mut all_hits = Vec::new();
+    let mut text_hits = Vec::new();
     loop {
         let hits = fetch_frame_hits(
             pool,
@@ -2525,8 +2611,9 @@ async fn fetch_grouped_frame_hits(
         )
         .await?;
         let hit_count = hits.len() as i64;
-        all_hits.extend(hits);
-        let groups = group_frame_hits(&all_hits);
+        text_hits.extend(hits);
+        let fused = rrf_fuse_frame_hits(&text_hits, &semantic_hits);
+        let groups = group_frame_hits(&fused);
         if groups.len() >= needed_groups || hit_count < hit_limit {
             return Ok(groups);
         }
@@ -2591,11 +2678,19 @@ async fn fetch_grouped_audio_hits(
     fts_query: &str,
     snapshot_document_id: i64,
     refinements: &NormalizedSearchRefinements,
+    query_embedding: Option<&[f32]>,
 ) -> Result<Vec<AudioSearchResult>> {
+    let semantic_hits = match query_embedding {
+        Some(embedding) => {
+            fetch_semantic_audio_hits(pool, embedding, snapshot_document_id, refinements).await?
+        }
+        None => Vec::new(),
+    };
+
     // Audio grouping is transitive by time adjacency, so a lower-ranked hit can
     // bridge two higher-ranked groups. Drain the snapshot before paginating.
     let mut hit_offset = 0_i64;
-    let mut all_hits = Vec::new();
+    let mut text_hits = Vec::new();
     loop {
         let hits = fetch_audio_hits(
             pool,
@@ -2607,12 +2702,238 @@ async fn fetch_grouped_audio_hits(
         )
         .await?;
         let hit_count = hits.len() as i64;
-        all_hits.extend(hits);
+        text_hits.extend(hits);
         if hit_count < MAX_HIT_FETCH_LIMIT {
-            return group_audio_hits(&all_hits);
+            // RRF-fuse before grouping, exactly as the frame path does.
+            let fused = rrf_fuse_audio_hits(&text_hits, &semantic_hits);
+            return group_audio_hits(&fused);
         }
         hit_offset = hit_offset.saturating_add(hit_count);
     }
+}
+
+/// A leading `body_text` excerpt for a meaning-only **Search Snippet**: the hit
+/// matched the query vector but has no **Text Search** term to mark, so we show
+/// the start of the captured text rather than an FTS `snippet(...)`. Whitespace
+/// is collapsed and the excerpt is char-bounded (never byte-sliced through a
+/// multibyte scalar) with an ellipsis when truncated. Redaction is *not* applied
+/// here: the `secret_redactions` rollup carried on the result drives the same
+/// masking a **Text Search** snippet uses, at the same egress boundary.
+fn meaning_snippet(body_text: &str) -> String {
+    let collapsed = body_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= MEANING_SNIPPET_CHAR_BUDGET {
+        return collapsed;
+    }
+    let truncated: String = collapsed.chars().take(MEANING_SNIPPET_CHAR_BUDGET).collect();
+    format!("{}…", truncated.trim_end())
+}
+
+/// Fetch the meaning-tier **Search Result Anchor**s for a frame query: the
+/// `vec0` KNN nearest to `query_embedding`, **filter-then-rank**. The KNN is
+/// constrained to the **Search Refinement**-scoped rowid set with
+/// `MATCH … AND rowid IN (…)` so a refined query never drops an in-scope meaning
+/// match a post-filter would have lost (ADR 0036). An unrefined query reuses the
+/// same shape with an all-frames in-scope set, which degenerates to a plain
+/// `vec0` KNN `LIMIT k`. Returned in KNN (ascending distance) order; each hit is
+/// `found_by_meaning` with a leading `body_text` excerpt for its snippet.
+async fn fetch_semantic_frame_hits(
+    pool: &SqlitePool,
+    query_embedding: &[f32],
+    snapshot_document_id: i64,
+    refinements: &NormalizedSearchRefinements,
+) -> Result<Vec<FrameHit>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT search_documents.id AS document_id, \
+                search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
+                search_documents.text_source_kind, search_documents.body_text AS body_text, \
+                frames.id, frames.session_id, frames.file_path, frames.captured_at, frames.width, frames.height, \
+                frames.equivalence_hint, frames.equivalence_proof, frames.equivalence_version, \
+                frames.equivalence_status, frames.equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'frame' \
+                      AND (\
+                        (search_documents.text_source_kind = 'equivalent_reuse' \
+                         AND search_documents.processing_result_id IS NOT NULL \
+                         AND secret_redactions.processing_result_id = search_documents.processing_result_id) \
+                        OR ((search_documents.text_source_kind != 'equivalent_reuse' \
+                             OR search_documents.processing_result_id IS NULL) \
+                            AND secret_redactions.frame_id = frames.id)\
+                      )\
+                ), 0) AS secret_redaction_count \
+         FROM search_document_vectors \
+         JOIN search_documents ON search_documents.id = search_document_vectors.rowid \
+         JOIN frames ON frames.id = search_documents.frame_id \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE search_document_vectors.embedding MATCH ",
+    );
+    query.push_bind(crate::semantic_search::vector_to_le_bytes(query_embedding));
+    // sqlite-vec requires an explicit `k = ?` (or LIMIT) KNN constraint. Pair it
+    // with the in-scope `rowid IN (…)` set so this is filter-then-rank: the
+    // top-k is computed over the refined slice, not post-filtered after ranking
+    // the whole corpus (ADR 0036; no ANN in v1, so this is a brute-force scan of
+    // the filtered set). Results come back ascending by distance.
+    query.push(" AND k = ");
+    query.push_bind(SEMANTIC_KNN_LIMIT);
+    query.push(" AND search_document_vectors.rowid IN (");
+    push_in_scope_anchor_rowids(&mut query, "frame", snapshot_document_id, refinements);
+    query.push(")");
+
+    let rows = query.build().fetch_all(pool).await?;
+
+    let mut hits = Vec::with_capacity(rows.len());
+    for row in rows {
+        let body_text: String = row.get("body_text");
+        hits.push(FrameHit {
+            anchor_id: row.get("document_id"),
+            group_key: row.get("group_key"),
+            app_bundle_id: row.get("app_bundle_id"),
+            app_name: row.get("app_name"),
+            window_title: row.get("window_title"),
+            text_source_kind: row.get("text_source_kind"),
+            snippet: meaning_snippet(&body_text),
+            // Placeholder; RRF overwrites `rank` for every fused hit.
+            rank: f64::INFINITY,
+            secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
+                .unwrap_or(u32::MAX),
+            found_by_meaning: true,
+            frame: map_frame_for_search(row)?,
+        });
+    }
+    Ok(hits)
+}
+
+/// Fetch the meaning-tier **Search Result Anchor**s for an audio query — the
+/// audio counterpart of [`fetch_semantic_frame_hits`], same filter-then-rank
+/// `vec0` KNN constrained to the in-scope rowid set.
+async fn fetch_semantic_audio_hits(
+    pool: &SqlitePool,
+    query_embedding: &[f32],
+    snapshot_document_id: i64,
+    refinements: &NormalizedSearchRefinements,
+) -> Result<Vec<AudioHit>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT search_documents.id AS document_id, search_documents.group_key, \
+                search_documents.span_start_ms, search_documents.span_end_ms, \
+                search_documents.absolute_start_at, search_documents.absolute_end_at, \
+                search_documents.body_text AS body_text, \
+                audio_segments.id, audio_segments.source_kind, audio_segments.source_session_id, \
+                audio_segments.segment_index, audio_segments.file_path, audio_segments.started_at, \
+                audio_segments.ended_at, audio_segments.capture_segment_id, audio_segments.created_at, audio_segments.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'audio' \
+                      AND secret_redactions.audio_segment_id = audio_segments.id\
+                ), 0) AS secret_redaction_count \
+         FROM search_document_vectors \
+         JOIN search_documents ON search_documents.id = search_document_vectors.rowid \
+         JOIN audio_segments ON audio_segments.id = search_documents.audio_segment_id \
+         WHERE search_document_vectors.embedding MATCH ",
+    );
+    query.push_bind(crate::semantic_search::vector_to_le_bytes(query_embedding));
+    query.push(" AND k = ");
+    query.push_bind(SEMANTIC_KNN_LIMIT);
+    query.push(" AND search_document_vectors.rowid IN (");
+    push_in_scope_anchor_rowids(&mut query, "audio", snapshot_document_id, refinements);
+    query.push(")");
+
+    let rows = query.build().fetch_all(pool).await?;
+
+    let mut hits = Vec::with_capacity(rows.len());
+    for row in rows {
+        let body_text: String = row.get("body_text");
+        let mut hit = map_audio_hit(row)?;
+        hit.snippet = meaning_snippet(&body_text);
+        hit.rank = f64::INFINITY; // Placeholder; RRF overwrites it.
+        hit.found_by_meaning = true;
+        hits.push(hit);
+    }
+    Ok(hits)
+}
+
+/// Push the in-scope **Search Result Anchor** rowid sub-select that constrains a
+/// `vec0` KNN to the **Search Refinement** scope. This reuses the exact same
+/// `push_search_refinement_predicates` `WHERE` that the **Text Search** path
+/// builds (date range, app, window-title, source) plus the `anchor_type` and
+/// snapshot bound, so the meaning tier scopes identically to the keyword tier.
+/// An unrefined query yields the all-anchors-of-this-type set, so the KNN
+/// becomes a plain top-k.
+fn push_in_scope_anchor_rowids(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    anchor_type: &str,
+    snapshot_document_id: i64,
+    refinements: &NormalizedSearchRefinements,
+) {
+    query.push("SELECT search_documents.id FROM search_documents WHERE search_documents.anchor_type = ");
+    query.push_bind(anchor_type.to_string());
+    query.push(" AND search_documents.id <= ");
+    query.push_bind(snapshot_document_id);
+    push_search_refinement_predicates(query, refinements);
+}
+
+/// Reciprocal rank fusion of the **Text Search** and **Semantic Search** anchor
+/// lists into one re-ranked list, **rank-only** (BM25 and vector distance are
+/// incomparable scales, so no score is combined — only list positions). Each
+/// input list must already be in its own best-first order. The fused score for
+/// an anchor is `Σ 1 / (RRF_K + position)` over the lists it appears in; the
+/// returned `rank` is the *negated* fused score so the existing ascending sort
+/// (lower = better) keeps the strongest hit first.
+///
+/// Dedup is at the **Search Result Anchor** (`anchor_id`) level: an anchor that
+/// surfaced in both lists is emitted once, keeping the **Text Search** row (so a
+/// hit that also matched a query term renders its highlighted FTS snippet, not
+/// the meaning excerpt) with the fused rank. This fusion runs *before* grouping
+/// and pagination, slotting in exactly where the BM25 `rank` sat.
+fn rrf_fuse_frame_hits(text_hits: &[FrameHit], semantic_hits: &[FrameHit]) -> Vec<FrameHit> {
+    let mut scores: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+    for (position, hit) in text_hits.iter().enumerate() {
+        *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
+    }
+    for (position, hit) in semantic_hits.iter().enumerate() {
+        *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
+    }
+
+    // Prefer the Text Search row for an anchor present in both lists, so a
+    // keyword-and-meaning hit keeps its highlighted snippet. Borrow both inputs
+    // and clone only the deduped hits we keep — the frame path re-fuses on every
+    // pagination page, so cloning the whole inputs per call would be wasteful.
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut fused = Vec::with_capacity(text_hits.len() + semantic_hits.len());
+    for hit in text_hits.iter().chain(semantic_hits.iter()) {
+        if !seen.insert(hit.anchor_id) {
+            continue;
+        }
+        let mut hit = hit.clone();
+        // Negate so lower = better, matching the BM25 ASC ordering grouping uses.
+        hit.rank = -scores.get(&hit.anchor_id).copied().unwrap_or(0.0);
+        fused.push(hit);
+    }
+    fused
+}
+
+/// Audio counterpart of [`rrf_fuse_frame_hits`].
+fn rrf_fuse_audio_hits(text_hits: &[AudioHit], semantic_hits: &[AudioHit]) -> Vec<AudioHit> {
+    let mut scores: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+    for (position, hit) in text_hits.iter().enumerate() {
+        *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
+    }
+    for (position, hit) in semantic_hits.iter().enumerate() {
+        *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
+    }
+
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut fused = Vec::with_capacity(text_hits.len() + semantic_hits.len());
+    for hit in text_hits.iter().chain(semantic_hits.iter()) {
+        if !seen.insert(hit.anchor_id) {
+            continue;
+        }
+        let mut hit = hit.clone();
+        hit.rank = -scores.get(&hit.anchor_id).copied().unwrap_or(0.0);
+        fused.push(hit);
+    }
+    fused
 }
 
 fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
@@ -2663,6 +2984,14 @@ fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
                 .map(|hit| hit.secret_redaction_count)
                 .max()
                 .unwrap_or(0);
+            // The group is meaning-only when no grouped anchor matched **Text
+            // Search**: then there is no FTS term to highlight, so the snippet is
+            // the leading `body_text` excerpt the semantic fetch carried. As soon
+            // as any anchor matched a query term we prefer that highlighted
+            // snippet and the group is a normal **Text Search** result.
+            let text_hit = hits.iter().find(|hit| !hit.found_by_meaning);
+            let found_by_meaning = text_hit.is_none();
+            let snippet = text_hit.unwrap_or(&hits[0]).snippet.clone();
             Some((
                 best_rank,
                 FrameSearchResult {
@@ -2671,7 +3000,7 @@ fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
                     group_start_at,
                     group_end_at,
                     match_count: hits.len() as u32,
-                    snippet: hits[0].snippet.clone(),
+                    snippet,
                     app_bundle_id: representative.app_bundle_id.clone(),
                     app_name: representative.app_name.clone(),
                     window_title: representative.window_title.clone(),
@@ -2679,6 +3008,7 @@ fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
                     text_source_kind: representative.text_source_kind.clone(),
                     secret_redaction_count,
                     has_secret_redactions: secret_redaction_count > 0,
+                    found_by_meaning,
                 },
             ))
         })
@@ -2761,6 +3091,12 @@ fn group_audio_hits(hits: &[AudioHit]) -> Result<Vec<AudioSearchResult>> {
             .map(|hit| hit.secret_redaction_count)
             .max()
             .unwrap_or(0);
+        // Meaning-only when no grouped span matched **Text Search** (see
+        // `group_frame_hits`): then the snippet is the leading `body_text`
+        // excerpt the semantic fetch carried, not a highlighted FTS snippet.
+        let text_hit = group.iter().find(|hit| !hit.found_by_meaning);
+        let found_by_meaning = text_hit.is_none();
+        let snippet = text_hit.unwrap_or(first).snippet.clone();
         results.push((
             first.rank,
             AudioSearchResult {
@@ -2775,10 +3111,11 @@ fn group_audio_hits(hits: &[AudioHit]) -> Result<Vec<AudioSearchResult>> {
                 absolute_start_at,
                 absolute_end_at,
                 match_count: group.len() as u32,
-                snippet: first.snippet.clone(),
+                snippet,
                 aligned_frame: None,
                 secret_redaction_count,
                 has_secret_redactions: secret_redaction_count > 0,
+                found_by_meaning,
             },
         ));
     }
@@ -2988,6 +3325,7 @@ fn map_audio_hit(row: SqliteRow) -> Result<AudioHit> {
         updated_at: row.get("updated_at"),
     };
     Ok(AudioHit {
+        anchor_id: row.get("document_id"),
         audio_segment,
         source_kind,
         span_start_ms: row
@@ -2999,6 +3337,9 @@ fn map_audio_hit(row: SqliteRow) -> Result<AudioHit> {
         rank: row.get("rank"),
         secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
             .unwrap_or(u32::MAX),
+        // An FTS `MATCH` hit is a **Text Search** match; the semantic fetch path
+        // builds its own `AudioHit`s with `found_by_meaning: true`.
+        found_by_meaning: false,
     })
 }
 
@@ -3182,6 +3523,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3240,6 +3582,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("stale search should succeed");
@@ -3254,6 +3597,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("fresh search should succeed");
@@ -3307,6 +3651,7 @@ mod tests {
                 audio_offset: None,
                 snapshot_document_id: None,
                 refinements: None,
+                query_embedding: None,
             };
 
             // The fast init path opens the index but must NOT run the projection
@@ -3463,6 +3808,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3657,6 +4003,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3725,6 +4072,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3816,6 +4164,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3883,6 +4232,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3910,6 +4260,7 @@ mod tests {
             updated_at: "2026-05-17T10:00:00Z".to_string(),
         };
         let hit = |span_start_ms, span_end_ms, rank| AudioHit {
+            anchor_id: span_start_ms as i64,
             audio_segment: segment.clone(),
             source_kind: AudioSegmentSourceKind::Microphone,
             span_start_ms,
@@ -3917,6 +4268,7 @@ mod tests {
             snippet: format!("hit {span_start_ms}"),
             rank,
             secret_redaction_count: 0,
+            found_by_meaning: false,
         };
 
         let hits = vec![
@@ -3947,6 +4299,7 @@ mod tests {
             updated_at: "2026-05-17T10:00:00Z".to_string(),
         };
         let hit = |span_start_ms, rank| AudioHit {
+            anchor_id: span_start_ms as i64,
             audio_segment: segment.clone(),
             source_kind: AudioSegmentSourceKind::Microphone,
             span_start_ms,
@@ -3954,6 +4307,7 @@ mod tests {
             snippet: format!("hit {span_start_ms}"),
             rank,
             secret_redaction_count: 0,
+            found_by_meaning: false,
         };
 
         let hits = vec![hit(10_000, -1.0), hit(1_000, -10.0)];
@@ -3985,6 +4339,7 @@ mod tests {
             updated_at: captured_at.to_string(),
         };
         let hit = |id, captured_at, rank| FrameHit {
+            anchor_id: id,
             group_key: format!("frame:{id}"),
             frame: frame(id, captured_at),
             snippet: format!("hit {id}"),
@@ -3994,6 +4349,7 @@ mod tests {
             window_title: None,
             text_source_kind: "direct".to_string(),
             secret_redaction_count: 0,
+            found_by_meaning: false,
         };
 
         let hits = vec![
@@ -4056,6 +4412,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4198,6 +4555,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4261,6 +4619,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4284,6 +4643,7 @@ mod tests {
                         audio_sources: vec![AudioSegmentSourceKind::SystemAudio],
                         screen_source: false,
                     }),
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4353,6 +4713,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4449,6 +4810,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4540,6 +4902,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4585,6 +4948,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4663,6 +5027,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4745,6 +5110,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -4830,6 +5196,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("stale search should succeed");
@@ -4844,6 +5211,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("fresh search should succeed");
@@ -4928,6 +5296,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("old search should succeed");
@@ -4952,6 +5321,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("fresh search should succeed");
@@ -5029,6 +5399,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("stale search should succeed");
@@ -5117,6 +5488,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("source context search should succeed");
@@ -5136,6 +5508,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("target context search should succeed");
@@ -5223,6 +5596,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5295,6 +5669,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5353,6 +5728,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5422,6 +5798,7 @@ mod tests {
                     audio_offset: Some(0),
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5489,6 +5866,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5561,6 +5939,7 @@ mod tests {
                     audio_offset: Some(5_000),
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5670,6 +6049,7 @@ mod tests {
                     audio_offset: Some(0),
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5746,6 +6126,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5821,6 +6202,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5901,6 +6283,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -5953,6 +6336,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("first page search should succeed");
@@ -5986,6 +6370,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: Some(first_page.snapshot_document_id),
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("second page search should succeed");
@@ -6091,6 +6476,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6103,6 +6489,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6158,6 +6545,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6236,6 +6624,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6611,6 +7000,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6655,6 +7045,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6708,6 +7099,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6779,6 +7171,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6823,6 +7216,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -6868,6 +7262,7 @@ mod tests {
                         audio_offset: None,
                         snapshot_document_id: None,
                         refinements: None,
+                        query_embedding: None,
                     })
                     .await
                     .unwrap_or_else(|error| panic!("`{query}` should not throw, got {error:?}"));
@@ -7030,6 +7425,383 @@ mod tests {
                 "the later real instant must rank first regardless of text offset"
             );
             assert_eq!(apps[1].bundle_id.as_deref(), Some("com.example.Earlier"));
+        });
+    }
+
+    // ----------------------------------------------------------------------
+    // Hybrid Search: filter-then-rank + RRF fusion + "found by meaning" snippet
+    // ----------------------------------------------------------------------
+
+    /// The default English tier (`nomic-embed-text-v1.5`) embedding width — the
+    /// dimension of the slice-1 `search_document_vectors vec0(embedding float[768])`
+    /// table. Test vectors must match it or `store_vector` errors.
+    const TEST_EMBED_DIM: usize = 768;
+
+    /// Build a deterministic unit f32 vector keyed to `seed`, so two distinct
+    /// seeds are far apart in L2 distance and a query close to one seed's vector
+    /// is nearest to that anchor's stored vector under the brute-force KNN.
+    fn seeded_vector(seed: usize) -> Vec<f32> {
+        let mut v = vec![0.0_f32; TEST_EMBED_DIM];
+        // One-hot in a slot chosen by the seed: orthogonal vectors are maximally
+        // separated, so KNN nearest-neighbor order is unambiguous.
+        v[seed % TEST_EMBED_DIM] = 1.0;
+        v
+    }
+
+    /// Seed a `direct` frame anchor with OCR `text` and return its
+    /// `search_documents.id` (the `vec0` rowid). The completed OCR projects the
+    /// anchor on write, exactly as production does.
+    async fn seed_frame_anchor(infra: &AppInfra, captured_at: &str, text: &str) -> i64 {
+        let frame = infra
+            .insert_frame(&NewFrame::new(
+                "screen-session",
+                &format!("/tmp/hybrid-{captured_at}.jpg"),
+                captured_at,
+            ))
+            .await
+            .expect("frame should insert");
+        let job = infra
+            .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+            .await
+            .expect("ocr job should enqueue");
+        complete_job(
+            infra,
+            job,
+            ProcessingResultDraft::new().with_result_text(text),
+        )
+        .await;
+        sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM search_documents WHERE frame_id = ?1 AND text_source_kind = 'direct' LIMIT 1",
+        )
+        .bind(frame.id)
+        .fetch_one(infra.pool())
+        .await
+        .expect("direct anchor id should load")
+    }
+
+    #[test]
+    fn meaning_snippet_collapses_whitespace_and_bounds_length() {
+        let short = meaning_snippet("  hello   world  ");
+        assert_eq!(short, "hello world", "whitespace collapses, no truncation");
+
+        let long_word = "lorem ".repeat(60);
+        let bounded = meaning_snippet(&long_word);
+        assert!(
+            bounded.chars().count() <= MEANING_SNIPPET_CHAR_BUDGET + 1,
+            "excerpt is char-bounded (+1 for the ellipsis)"
+        );
+        assert!(bounded.ends_with('…'), "a truncated excerpt ends with an ellipsis");
+    }
+
+    #[test]
+    fn rrf_fuses_rank_only_and_dedups_anchors_keeping_the_text_row() {
+        // A: text-only (FTS rank 0). B: in both lists. C: semantic-only.
+        let text = vec![
+            frame_hit_for_fusion(1, "alpha snippet", false),
+            frame_hit_for_fusion(2, "<mark>bravo</mark> keyword", false),
+        ];
+        let semantic = vec![
+            frame_hit_for_fusion(2, "bravo meaning excerpt", true),
+            frame_hit_for_fusion(3, "charlie meaning excerpt", true),
+        ];
+
+        let fused = rrf_fuse_frame_hits(&text, &semantic);
+
+        // Three distinct anchors after dedup, none duplicated.
+        let ids: Vec<i64> = fused.iter().map(|hit| hit.anchor_id).collect();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&1) && ids.contains(&2) && ids.contains(&3));
+
+        // Anchor 2 surfaced in both lists, so it keeps the Text Search row (the
+        // highlighted snippet), not the meaning excerpt.
+        let anchor_two = fused.iter().find(|hit| hit.anchor_id == 2).unwrap();
+        assert!(!anchor_two.found_by_meaning);
+        assert_eq!(anchor_two.snippet, "<mark>bravo</mark> keyword");
+
+        // RRF is rank-only: anchor 2 (in both lists, both near the head) outscores
+        // the single-list anchors, and the fused `rank` is negated so lower wins.
+        let rank_two = anchor_two.rank;
+        let rank_one = fused.iter().find(|hit| hit.anchor_id == 1).unwrap().rank;
+        let rank_three = fused.iter().find(|hit| hit.anchor_id == 3).unwrap().rank;
+        assert!(rank_two < rank_one && rank_two < rank_three);
+    }
+
+    fn frame_hit_for_fusion(anchor_id: i64, snippet: &str, found_by_meaning: bool) -> FrameHit {
+        FrameHit {
+            anchor_id,
+            group_key: format!("frame:{anchor_id}"),
+            frame: Frame {
+                id: anchor_id,
+                session_id: "screen-session".to_string(),
+                file_path: format!("/tmp/fuse-{anchor_id}.jpg"),
+                captured_at: "2026-05-17T10:00:00Z".to_string(),
+                width: None,
+                height: None,
+                equivalence: crate::FrameEquivalence {
+                    hint: None,
+                    proof: None,
+                    version: None,
+                    status: None,
+                    error: None,
+                },
+                metadata_snapshot: None,
+                created_at: "2026-05-17T10:00:00Z".to_string(),
+                updated_at: "2026-05-17T10:00:00Z".to_string(),
+            },
+            snippet: snippet.to_string(),
+            rank: 0.0,
+            app_bundle_id: None,
+            app_name: None,
+            window_title: None,
+            text_source_kind: "direct".to_string(),
+            secret_redaction_count: 0,
+            found_by_meaning,
+        }
+    }
+
+    #[test]
+    fn meaning_only_hit_is_fused_with_keyword_hits_and_tagged_found_by_meaning() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-meaning-fused");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // One anchor contains the literal keyword; one is only related by
+            // meaning (no shared term). Both get a vector.
+            let keyword_id =
+                seed_frame_anchor(&infra, "2026-05-17T10:00:00Z", "quarterly budget keyword").await;
+            let meaning_id =
+                seed_frame_anchor(&infra, "2026-05-17T10:05:00Z", "fiscal spending plan").await;
+            infra
+                .semantic_search()
+                .store_vector(keyword_id, &seeded_vector(1))
+                .await
+                .expect("keyword vector stores");
+            infra
+                .semantic_search()
+                .store_vector(meaning_id, &seeded_vector(2))
+                .await
+                .expect("meaning vector stores");
+
+            // The query vector is closest to the meaning anchor; the FTS term
+            // "keyword" only matches the keyword anchor.
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(seeded_vector(2)),
+                })
+                .await
+                .expect("search should succeed");
+
+            // Both surface: the keyword hit via Text Search, the related anchor
+            // via Semantic Search — fused into one list.
+            let frame_ids: Vec<i64> = response
+                .frames
+                .iter()
+                .map(|frame| frame.representative_frame.id)
+                .collect();
+            assert_eq!(response.frames.len(), 2, "keyword + meaning hits fuse");
+
+            // The keyword anchor matched a term, so it is NOT tagged found_by_meaning.
+            let keyword_result = response
+                .frames
+                .iter()
+                .find(|frame| frame.snippet.contains("keyword"))
+                .expect("keyword hit present");
+            assert!(!keyword_result.found_by_meaning);
+
+            // The meaning-only anchor carries a leading body_text excerpt tagged
+            // found_by_meaning (no FTS <mark> to highlight).
+            let meaning_result = response
+                .frames
+                .iter()
+                .find(|frame| frame.found_by_meaning)
+                .expect("a meaning-only hit is present");
+            assert!(meaning_result.snippet.contains("fiscal spending plan"));
+            assert!(!meaning_result.snippet.contains("<mark>"));
+            assert!(frame_ids.iter().any(|&id| id == keyword_result.thumbnail_frame_id));
+        });
+    }
+
+    #[test]
+    fn refined_semantic_query_pre_filters_to_the_refinement_scope() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-prefilter");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // Two anchors, same meaning vector neighborhood, different apps. A
+            // post-filter that ranked first and filtered second could drop the
+            // in-scope answer; the pre-filter (rowid IN scope) must not.
+            let in_scope_id =
+                seed_frame_anchor_with_app(&infra, "2026-05-17T10:00:00Z", "kept by meaning", "com.example.Keep", "Keep").await;
+            let out_scope_id =
+                seed_frame_anchor_with_app(&infra, "2026-05-17T10:05:00Z", "dropped by scope", "com.example.Drop", "Drop").await;
+            // Give the OUT-of-scope anchor the vector nearest the query, so a
+            // post-filter would have ranked it #1 and then discarded it, leaving
+            // the in-scope answer unreturned. The pre-filter excludes it up front.
+            infra
+                .semantic_search()
+                .store_vector(out_scope_id, &seeded_vector(5))
+                .await
+                .expect("out-of-scope vector stores");
+            infra
+                .semantic_search()
+                .store_vector(in_scope_id, &seeded_vector(6))
+                .await
+                .expect("in-scope vector stores");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "meaning".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: None,
+                        apps: vec![SearchAppRefinement {
+                            kind: SearchAppRefinementKind::BundleId,
+                            value: "com.example.Keep".to_string(),
+                            display_name: "Keep".to_string(),
+                        }],
+                        window_title: None,
+                        audio_sources: Vec::new(),
+                        screen_source: false,
+                    }),
+                    // Query vector nearest the OUT-of-scope anchor's vector.
+                    query_embedding: Some(seeded_vector(5)),
+                })
+                .await
+                .expect("search should succeed");
+
+            // Only the in-scope anchor is returned; the out-of-scope nearest
+            // neighbor is pre-filtered out, never ranked-then-dropped.
+            let ids: Vec<i64> = response
+                .frames
+                .iter()
+                .map(|frame| frame.representative_frame.id)
+                .collect();
+            assert!(!ids.is_empty(), "the in-scope meaning answer is returned");
+            for frame in &response.frames {
+                assert_eq!(
+                    frame.app_bundle_id.as_deref(),
+                    Some("com.example.Keep"),
+                    "no out-of-scope anchor leaks past the pre-filter"
+                );
+            }
+            let _ = out_scope_id;
+        });
+    }
+
+    async fn seed_frame_anchor_with_app(
+        infra: &AppInfra,
+        captured_at: &str,
+        text: &str,
+        bundle_id: &str,
+        app_name: &str,
+    ) -> i64 {
+        let frame = infra
+            .insert_frame(
+                &NewFrame::new(
+                    "screen-session",
+                    &format!("/tmp/hybrid-app-{captured_at}.jpg"),
+                    captured_at,
+                )
+                .with_metadata_snapshot(capture_metadata::FrameMetadataSnapshot {
+                    app_bundle_id: Some(bundle_id.to_string()),
+                    app_name: Some(app_name.to_string()),
+                    window_title: None,
+                    window_id: None,
+                    browser_url: None,
+                    display_id: None,
+                    metadata_redaction_reason: None,
+                    metadata_redaction_source_id: None,
+                }),
+            )
+            .await
+            .expect("frame should insert");
+        let job = infra
+            .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+            .await
+            .expect("ocr job should enqueue");
+        complete_job(
+            infra,
+            job,
+            ProcessingResultDraft::new().with_result_text(text),
+        )
+        .await;
+        sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM search_documents WHERE frame_id = ?1 AND text_source_kind = 'direct' LIMIT 1",
+        )
+        .bind(frame.id)
+        .fetch_one(infra.pool())
+        .await
+        .expect("direct anchor id should load")
+    }
+
+    #[test]
+    fn no_vectors_degrades_to_keyword_only_with_no_regression() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-keyword-only");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            seed_frame_anchor(&infra, "2026-05-17T10:00:00Z", "alpha keyword document").await;
+            seed_frame_anchor(&infra, "2026-05-17T10:05:00Z", "unrelated meaning text").await;
+
+            // No vectors backfilled, no query embedding: pure Text Search.
+            let baseline = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            // Exactly the keyword anchor, no found_by_meaning tagging anywhere.
+            assert_eq!(baseline.frames.len(), 1);
+            assert!(baseline.frames[0].snippet.contains("keyword"));
+            assert!(!baseline.frames[0].found_by_meaning);
+
+            // A query embedding present but NO vectors stored: the KNN returns
+            // nothing, so the result is identical to the keyword-only baseline.
+            let with_embedding = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(seeded_vector(9)),
+                })
+                .await
+                .expect("search should succeed");
+            assert_eq!(with_embedding.frames.len(), 1);
+            assert!(!with_embedding.frames[0].found_by_meaning);
+            assert_eq!(
+                with_embedding.frames[0].representative_frame.id,
+                baseline.frames[0].representative_frame.id,
+                "no vectors => identical to keyword-only ranking"
+            );
         });
     }
 }
