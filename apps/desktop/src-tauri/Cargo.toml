@@ -50,6 +50,10 @@ ai-engine = { package = "ai-runtime", path = "../../../crates/ai-runtime" }
 audio-transcription = { path = "../../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }
 speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["sherpa-onnx"] }
 ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
+# fastembed reuses the shared `ort` ONNX runtime (pinned `=2.0.0-rc.12`) that
+# `audio-transcription`'s parakeet-onnx feature also enables — one runtime,
+# bumped in lockstep (ADR 0036).
+semantic-search = { path = "../../../crates/semantic-search", features = ["fastembed"] }
 capture-types = { path = "../../../crates/capture-types" }
 capture-metadata = { path = "../../../crates/capture-metadata" }
 capture-runtime = { path = "../../../crates/capture-runtime" }

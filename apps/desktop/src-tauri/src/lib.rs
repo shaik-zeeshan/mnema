@@ -14,6 +14,9 @@ mod ocr_budget;
 mod ocr_models;
 mod one_time_prompts;
 mod privacy_redaction_sources;
+mod semantic_search_models;
+mod semantic_search_query;
+mod semantic_search_worker;
 mod sensitive_capture_recommendations;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
@@ -383,11 +386,13 @@ pub fn run() {
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
         .manage(ocr_models::OcrModelDownloadState::default())
+        .manage(semantic_search_models::SemanticSearchModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
         .manage(BrokerOpenCaptureResultState::default())
         .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
+        .manage(semantic_search_query::SemanticQueryEmbedderState::new())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if notify_pending_broker_authorization_request_if_onboarded(app) {
                 return;
@@ -477,6 +482,12 @@ pub fn run() {
             audio_transcription_models::delete_unused_audio_transcription_models,
             audio_transcription_models::request_apple_speech_recognition_permission,
             audio_transcription_models::open_apple_speech_recognition_privacy_settings,
+            semantic_search_models::get_semantic_search_model_status,
+            semantic_search_models::list_semantic_search_supported_models,
+            semantic_search_models::start_semantic_search_model_download,
+            semantic_search_models::cancel_semantic_search_model_download,
+            semantic_search_models::reindex_semantic_search,
+            native_capture::update_semantic_search_settings,
             speaker_analysis_models::get_speaker_analysis_model_status,
             speaker_analysis_models::start_speaker_analysis_model_download,
             speaker_analysis_models::cancel_speaker_analysis_model_download,

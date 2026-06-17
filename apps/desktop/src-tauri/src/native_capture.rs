@@ -2773,6 +2773,25 @@ pub fn update_user_context_settings(
     )
 }
 
+/// Update the selected **Semantic Search Model Tier** (issue #125). A model
+/// switch is a deliberate, confirmed action in the Settings UI — the frontend
+/// shows a `@tauri-apps/plugin-dialog` confirm and only then calls this, then
+/// `reindex_semantic_search` to re-derive every **Semantic Search Vector** under
+/// the new model. The **Semantic Index Backfill** worker reloads the embedder on
+/// its next pass when the provider/model id changes.
+#[tauri::command]
+pub fn update_semantic_search_settings(
+    request: capture_types::UpdateSemanticSearchSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::SemanticSearch(request),
+    )
+}
+
 #[tauri::command]
 pub fn start_native_capture(
     request: StartNativeCaptureRequest,

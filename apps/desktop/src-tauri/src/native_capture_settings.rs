@@ -17,8 +17,9 @@ use capture_types::{
     UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
     UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
-    UpdateStorageSettingsRequest, UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest,
-    UserContextSettings, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    UpdateSemanticSearchSettingsRequest, UpdateStorageSettingsRequest,
+    UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest, UserContextSettings,
+    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -101,6 +102,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         access: AccessSettings::default(),
         ai_runtime: AiRuntimeSettings::default(),
         user_context: UserContextSettings::default(),
+        semantic_search: capture_types::default_semantic_search_settings(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -638,6 +640,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         access: request.access,
         ai_runtime: normalize_ai_runtime_settings(request.ai_runtime),
         user_context: request.user_context,
+        semantic_search: request.semantic_search,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -744,6 +747,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             access: parsed.access,
             ai_runtime: parsed.ai_runtime,
             user_context: parsed.user_context,
+            semantic_search: parsed.semantic_search,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -871,6 +875,7 @@ pub(crate) enum RecordingSettingsDomainPatch {
     Access(UpdateAccessSettingsRequest),
     AiRuntime(UpdateAiRuntimeSettingsRequest),
     UserContext(UpdateUserContextSettingsRequest),
+    SemanticSearch(UpdateSemanticSearchSettingsRequest),
 }
 
 impl RecordingSettingsDomainPatch {
@@ -888,6 +893,7 @@ impl RecordingSettingsDomainPatch {
             Self::Access(_) => SettingsOwnershipDomain::Access,
             Self::AiRuntime(_) => SettingsOwnershipDomain::AiRuntime,
             Self::UserContext(_) => SettingsOwnershipDomain::UserContext,
+            Self::SemanticSearch(_) => SettingsOwnershipDomain::SemanticSearch,
         }
     }
 }
@@ -927,6 +933,7 @@ fn recording_settings_request_from_settings(
         access: settings.access,
         ai_runtime: settings.ai_runtime,
         user_context: settings.user_context,
+        semantic_search: settings.semantic_search,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -1103,6 +1110,21 @@ fn apply_domain_patch_to_settings(
             }
             if let Some(value) = request.backfill_go_deeper {
                 settings.user_context.backfill_go_deeper = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::SemanticSearch(request) => {
+            if let Some(value) = request.enabled {
+                settings.semantic_search.enabled = value;
+                touched = true;
+            }
+            if let Some(value) = request.provider {
+                settings.semantic_search.provider = value;
+                touched = true;
+            }
+            if let Some(value) = request.model_id {
+                // Double-Option: an explicit `null` clears the selected model.
+                settings.semantic_search.model_id = value;
                 touched = true;
             }
         }
@@ -1505,6 +1527,75 @@ mod tests {
         assert_eq!(updated.ocr, base.ocr);
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
+    }
+
+    #[test]
+    fn semantic_search_domain_update_switches_model_and_preserves_other_fields() {
+        let mut base = default_recording_settings();
+        base.capture_microphone = true;
+        base.save_directory = "/tmp/mnema-before".to_string();
+        assert_eq!(
+            base.semantic_search.model_id.as_deref(),
+            Some("nomic-embed-text-v1.5")
+        );
+
+        // Switch to the Multilingual tier (the confirmed model switch the UI runs
+        // before re-indexing).
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::SemanticSearch(
+                capture_types::UpdateSemanticSearchSettingsRequest {
+                    enabled: None,
+                    provider: None,
+                    model_id: Some(Some("multilingual-e5-small".to_string())),
+                },
+            ),
+        )
+        .expect("semantic search patch should validate");
+
+        assert_eq!(
+            updated.semantic_search.model_id.as_deref(),
+            Some("multilingual-e5-small")
+        );
+        // Unrelated fields are untouched.
+        assert!(updated.capture_microphone);
+        assert_eq!(updated.save_directory, base.save_directory);
+        assert_eq!(updated.ocr, base.ocr);
+    }
+
+    #[test]
+    fn semantic_search_domain_update_can_clear_and_toggle() {
+        let base = default_recording_settings();
+
+        // An explicit null clears the selected model; disabling the feature flips
+        // `enabled`.
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::SemanticSearch(
+                capture_types::UpdateSemanticSearchSettingsRequest {
+                    enabled: Some(false),
+                    provider: None,
+                    model_id: Some(None),
+                },
+            ),
+        )
+        .expect("semantic search patch should validate");
+
+        assert!(!updated.semantic_search.enabled);
+        assert_eq!(updated.semantic_search.model_id, None);
+    }
+
+    #[test]
+    fn empty_semantic_search_patch_is_rejected() {
+        let mut base = default_recording_settings();
+        let error = apply_domain_patch_to_settings(
+            &mut base,
+            RecordingSettingsDomainPatch::SemanticSearch(
+                capture_types::UpdateSemanticSearchSettingsRequest::default(),
+            ),
+        )
+        .expect_err("an empty patch must be rejected");
+        assert_eq!(error.code, "empty_settings_patch");
     }
 
     #[test]
@@ -1932,6 +2023,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: capture_types::default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1991,6 +2083,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: capture_types::default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -2066,6 +2159,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: capture_types::default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -2115,6 +2209,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: capture_types::default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -2215,6 +2310,7 @@ mod tests {
             access: AccessSettings::default(),
             ai_runtime: AiRuntimeSettings::default(),
             user_context: UserContextSettings::default(),
+            semantic_search: capture_types::default_semantic_search_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
