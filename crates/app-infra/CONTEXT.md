@@ -159,6 +159,18 @@ _Avoid_: embedding support, vector lookup, AI search
 A local model asset used to derive meaning vectors for **Semantic Search**.
 _Avoid_: cloud embedding service, embedding API, vector model
 
+**Semantic Search Vector**:
+A local meaning vector derived for one **Search Result Anchor** and stored inside the **Encrypted Capture Index**. Computed only for direct (non-reused) anchors; equivalent anchors reuse their group's vector.
+_Avoid_: embedding blob, vector row, anchor embedding
+
+**Semantic Index Backfill**:
+The background sweep that derives a **Semantic Search Vector** for anchors that have searchable text but no vector yet, covering live and historical capture in one pass. It runs only on idle/background capacity, prioritizes freshly captured anchors over backlog, and is pausable and resumable.
+_Avoid_: reindex job, embedding queue, vector worker
+
+**Semantic Search Model Tier**:
+The user-facing model choice for **Semantic Search**: guided tiers (an English default and a Multilingual option) plus a Custom selection over the locally supported models. Model choice is a deliberate setup decision because changing it re-derives every **Semantic Search Vector**.
+_Avoid_: model dropdown, preset list, embedding provider
+
 **Hybrid Search**:
 The product search policy that combines **Text Search** and **Semantic Search** so literal and meaning-based matches can rank together.
 _Avoid_: search mode toggle, vector-only search, fuzzy search
@@ -239,7 +251,7 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
 - Mnema sanitizes browser URL metadata before persistence; full URL metadata remains an explicit user choice because query strings and fragments may contain secrets.
 - Search ranking may use redaction categories conservatively, but should not strongly boost results merely because a secret was redacted.
-- Future **Semantic Search** embeddings should be derived from redacted text and stored under the **Encrypted Capture Index** boundary.
+- A **Semantic Search Vector** is derived from the same body text that **Text Search** indexes (not a separately-redacted copy) and is stored inside the **Encrypted Capture Index**; because both tiers live inside that boundary, the vector's at-rest exposure equals **Text Search**'s, and redaction for **Semantic Search** is enforced at any boundary that takes a vector or its text out of the index (export, external index, cloud reranker), not by redacting the at-rest vector.
 - **Encrypted Capture Index** protects SQLite-backed searchable and contextual capture data, not original frame, video, or audio media.
 - Original media files remain sensitive even when **Encrypted Capture Index** is enabled, and raw media encryption is out of scope for the first storage-security phase.
 - **Encrypted Capture Index** should use maintained page-level SQLite encryption rather than hand-rolled field encryption.
@@ -270,6 +282,17 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Semantic Search** indexing may run as separate background work because embedding generation is model work, not simple projection maintenance.
 - **Semantic Search** uses a **Semantic Search Model** rather than sending searchable capture content to a cloud embedding service.
 - **Hybrid Search** is the product direction once **Semantic Search** exists.
+- A **Semantic Search Vector** is derived per **Search Result Anchor** (one vector per searchable document), computed only for direct anchors while equivalent anchors reuse their group's vector.
+- A **Semantic Search Vector** is stored inside the **Encrypted Capture Index** (a `vec0` table in the encrypted database), never in a plaintext sidecar file.
+- **Hybrid Search** fuses **Text Search** and **Semantic Search** by rank (reciprocal rank fusion) rather than by combining their raw scores, at the **Search Result Anchor** level before **Search Result Group** creation and pagination.
+- **Semantic Search** ranks only within the **Search Refinement**-scoped candidate set (filter-then-rank), which is required for correct top-k results, not merely faster.
+- A **Search Snippet** for a meaning-only **Semantic Search** hit shows a leading body-text excerpt marked as a meaning match and reuses the same redaction masking as a **Text Search** snippet.
+- **Hybrid Search** keeps recency as a tie-break only and adds no time-decay ranking boost in its first version.
+- **Semantic Search** is default-on but inert without an installed **Semantic Search Model**: the same "no model means the feature is unavailable" shape as local transcription, and Mnema never auto-downloads a model nor blocks capture on its absence.
+- **Semantic Index Backfill** prioritizes newly projected anchors over historical backlog, drains backlog newest-first, and never runs on the capture hot path.
+- A **Search Index Projection** delete removes the matching **Semantic Search Vector** in the same cleanup, and reprocessing a **Captured Frame** or **Audio Segment** replaces its **Semantic Search Vector** when the new result completes.
+- Changing the selected **Semantic Search Model Tier** re-derives every **Semantic Search Vector**, because vectors from different models are not comparable; model choice is therefore a confirmed action rather than a casual toggle.
+- The default **Semantic Search Model Tier** is English; multilingual capture is served by an explicit Multilingual tier or a Custom model so a non-English user is guided to a fitting model rather than silently degraded.
 - A **Search Index Projection** should produce one mixed result stream over typed **Search Result Anchor** values.
 - **Search Result Group** creation should happen before result pagination is presented to the user.
 - **Search Refinement** should apply to **Search Result Anchor** values before choosing the representative anchor for a **Search Result Group**.
@@ -481,3 +504,4 @@ _Avoid_: duplicate result, grouped row, result cluster
 - "search support" was used to mean both literal matching and embedding-based retrieval; resolved: **Text Search** is the first tier, while **Hybrid Search** is the direction once **Semantic Search** exists.
 - "query syntax" was listed only as something a **Search Refinement** avoids; resolved: typed **Search Query Syntax** is supported as an opt-in input path whose **Field Operator** tokens desugar into **Search Refinement** values, while a **Search Refinement** itself remains a UI control rather than a syntax mode.
 - "running forever" meant a job stuck in `running` that never completes; resolved: this is an **Orphaned Processing Job** (execution abandoned at quit/crash), addressed by **Processing Job Reclamation** (requeue, not fail) per [ADR 0020](../../docs/adr/0020-reclaim-orphaned-processing-jobs-by-requeue.md), not by a job-execution timeout or an audio throughput budget.
+- "Semantic Search embeddings from redacted text" was the early privacy stance; resolved per [ADR 0036](../../docs/adr/0036-semantic-search-v1-hybrid-fastembed-vectors-with-fts5.md): a **Semantic Search Vector** is derived from the same raw body text **Text Search** indexes and protected at rest by the **Encrypted Capture Index**, while redaction is enforced at any boundary that takes a vector or its text out of that index — embeddings are not separately redacted at rest.
