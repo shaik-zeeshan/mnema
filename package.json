@@ -16,6 +16,7 @@
     "build:web": "turbo run build --filter=web",
     "check:web": "turbo run check --filter=web",
     "build:macos-local-sign": "./scripts/build-macos-local-sign.sh",
+    "build:windows-local": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-local.ps1",
     "release": "./scripts/release.sh"
   },
   "devDependencies": {
