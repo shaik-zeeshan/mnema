@@ -258,6 +258,20 @@ impl HiddenSegmentWorkspaceRepair {
             };
 
             if info.safe_to_remove {
+                // A reclaimed dead-segment husk leaves its truncated, unplayable
+                // `.mov` sibling behind. Delete it too, otherwise removing the
+                // workspace dir below makes the husk undetectable on the next pass
+                // and the dead `.mov` leaks forever. Gated strictly to
+                // DeadSegmentWithoutArtifacts: the only safe-to-remove disposition
+                // whose visible segment was classified as permanently dead. Other
+                // safe dispositions (CompletedOnly / NoReferences) may have a real,
+                // openable recording that must never be touched.
+                if matches!(
+                    info.disposition,
+                    SegmentWorkspaceCleanupDisposition::DeadSegmentWithoutArtifacts
+                ) {
+                    reclaim_dead_visible_segment(&info.paths.visible_segment_path)?;
+                }
                 match std::fs::remove_dir_all(&workspace_dir) {
                     Ok(()) => {
                         capture_runtime::debug_log!(
@@ -294,6 +308,44 @@ impl HiddenSegmentWorkspaceRepair {
         }
 
         Ok(result)
+    }
+}
+
+/// Delete the dead, never-finalized `.mov` sibling of a reclaimable husk.
+///
+/// Only ever called for [`SegmentWorkspaceCleanupDisposition::DeadSegmentWithoutArtifacts`],
+/// where the visible recording was already classified as permanently dead
+/// (missing or never finalized — no `moov` atom) and the frame artifacts are
+/// gone, so there is nothing left to preserve. The file is re-confirmed
+/// un-openable immediately before unlinking — defense in depth, so that a
+/// recording somehow finalized between classification and now is left intact
+/// rather than destroyed. A missing file reads as not-openable and the unlink
+/// resolves to a no-op `NotFound`.
+///
+/// Removing the `.mov` *before* the workspace dir keeps reclamation crash-safe:
+/// if we stop in between, the dir survives and the husk is re-detected and
+/// reclaimed on the next pass.
+fn reclaim_dead_visible_segment(visible_segment_path: &str) -> Result<()> {
+    let path = Path::new(visible_segment_path);
+
+    if visible_segment_appears_openable(path) {
+        capture_runtime::debug_log!(
+            "[app-infra][hidden-segment-workspaces] preserved now-openable visible segment {} (skipped husk .mov deletion)",
+            visible_segment_path
+        );
+        return Ok(());
+    }
+
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            capture_runtime::debug_log!(
+                "[app-infra][hidden-segment-workspaces] removed dead visible segment {}",
+                visible_segment_path
+            );
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppInfraError::Io(error)),
     }
 }
 
@@ -1121,6 +1173,100 @@ mod tests {
                 "dead-segment husk with consumed artifacts should be reclaimed"
             );
         });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_deletes_dead_visible_segment_sibling() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-dead-segment-mov");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let processing = crate::ProcessingStore::new(pool.clone());
+            let repair = HiddenSegmentWorkspaceRepair::new(
+                crate::FrameBatchStore::new(pool.clone()),
+                processing.clone(),
+            );
+            let recordings_root = dir.path().join("recordings");
+            let day_dir = recordings_root.join("2026/04/12");
+
+            // Dead segment: a truncated, never-finalized .mov (no moov atom), an
+            // empty frames/ dir (artifacts already consumed), and a lingering DB
+            // frame row. Reclaiming the husk must take the dead .mov sibling with
+            // it, otherwise the file leaks once the workspace dir disappears.
+            let workspace_dir = day_dir.join(".session-dead-segment-0001");
+            std::fs::create_dir_all(workspace_dir.join("frames"))
+                .expect("frames dir should exist");
+            let dead_mov = day_dir.join("session-dead-segment-0001.mov");
+            std::fs::write(&dead_mov, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk")
+                .expect("dead visible segment should exist");
+            processing
+                .insert_frame(&NewFrame::new(
+                    "session-dead",
+                    workspace_dir
+                        .join("frames/frame-1.png")
+                        .to_string_lossy()
+                        .to_string(),
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+
+            let result = repair
+                .repair_hidden_segment_workspaces_with_context(
+                    &recordings_root,
+                    &HiddenSegmentWorkspaceRepairContext::default(),
+                )
+                .await
+                .expect("repair should succeed");
+
+            assert_eq!(result.removed_workspace_count, 1);
+            assert!(!workspace_dir.exists(), "husk dir should be reclaimed");
+            assert!(
+                !dead_mov.exists(),
+                "dead .mov sibling should be deleted alongside the husk"
+            );
+        });
+    }
+
+    #[test]
+    fn reclaim_dead_visible_segment_removes_unopenable_file() {
+        let dir = TestDir::new("reclaim-dead-mov");
+        let mov = dir.path().join("session-dead-segment-0001.mov");
+        std::fs::write(&mov, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk")
+            .expect("dead visible segment should exist");
+
+        reclaim_dead_visible_segment(&mov.to_string_lossy())
+            .expect("reclaiming a dead segment should succeed");
+
+        assert!(!mov.exists(), "an unopenable .mov should be removed");
+    }
+
+    #[test]
+    fn reclaim_dead_visible_segment_preserves_openable_file() {
+        let dir = TestDir::new("reclaim-openable-mov");
+        let mov = dir.path().join("session-live-segment-0001.mov");
+        write_openable_visible_segment(&mov);
+
+        reclaim_dead_visible_segment(&mov.to_string_lossy())
+            .expect("reclaim should succeed without touching an openable recording");
+
+        assert!(
+            mov.exists(),
+            "a now-openable recording must never be deleted (defense in depth)"
+        );
+    }
+
+    #[test]
+    fn reclaim_dead_visible_segment_is_noop_when_missing() {
+        let dir = TestDir::new("reclaim-missing-mov");
+        let mov = dir.path().join("session-gone-segment-0001.mov");
+
+        reclaim_dead_visible_segment(&mov.to_string_lossy())
+            .expect("reclaiming a missing segment should be a no-op");
+
+        assert!(!mov.exists());
     }
 
     #[test]
