@@ -1138,6 +1138,100 @@ mod tests {
     }
 
     #[test]
+    fn finalize_stays_gated_while_failed_ocr_is_retrying() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-retrying");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let processing = crate::ProcessingStore::new(pool.clone());
+            let store = FrameBatchStore::new(pool.clone());
+
+            let batch = store
+                .upsert_open_batch_for_frame("session-retry", "2026-04-12T10:01:00Z")
+                .await
+                .expect("batch should exist");
+            let frame = processing
+                .insert_frame(&NewFrame::new(
+                    "session-retry",
+                    "/tmp/session-retry-segment-0001/frames/frame-1.png",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            store
+                .attach_frame_to_batch(frame.id, batch.id, &frame.captured_at)
+                .await
+                .expect("frame should attach");
+            let job = processing
+                .enqueue_job(&crate::ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should queue");
+
+            let closed = store
+                .close_completed_batches_for_session("session-retry", None)
+                .await
+                .expect("batch should close");
+            assert_eq!(closed.len(), 1);
+            let finalize_job = store
+                .enqueue_finalize_job_if_needed(batch.id)
+                .await
+                .expect("finalize job should queue")
+                .expect("finalize job should exist");
+
+            // Drive the OCR job's failure through the same store path the processing
+            // runtime uses (see `ProcessingRuntime::process_claimed_job`): record a
+            // genuine failure, then bounded failure-retry requeues the job within its
+            // attempt cap rather than leaving it terminally failed.
+            let claimed = processing
+                .claim_queued_job(job.id)
+                .await
+                .expect("ocr job should claim")
+                .expect("ocr job should exist");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+            processing
+                .mark_job_failed(job.id, Some("expected failure"))
+                .await
+                .expect("ocr job should fail");
+            let requeued = processing
+                .requeue_failed_job_within_attempt_cap(job.id)
+                .await
+                .expect("failed ocr job should requeue cleanly")
+                .expect("a sub-cap failure should be requeued, not left terminal");
+
+            // The OCR job is back to queued (non-terminal) with the single failure
+            // recorded, so it is awaiting another attempt rather than done.
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(requeued.failure_count, 1);
+
+            // The finalize gate must stay closed while that OCR job is mid-retry: a
+            // queued (non-terminal) OCR job is neither completed nor failed, so the
+            // batch must not be claimable for finalization ahead of it.
+            let claimed_finalize = store
+                .claim_next_finalize_job()
+                .await
+                .expect("finalize claim should query cleanly");
+            assert!(
+                claimed_finalize.is_none(),
+                "finalize must not be claimable while the batch's OCR job is retrying"
+            );
+
+            // The runtime likewise refuses to finalize the batch directly, for the
+            // same reason, instead of completing it ahead of the retrying OCR job.
+            let runtime = FrameBatchRuntime::new(store.clone());
+            let error = runtime
+                .process_job(finalize_job.id)
+                .await
+                .expect_err("finalization should wait for OCR to reach a terminal state");
+            assert!(matches!(
+                error,
+                AppInfraError::FrameBatchOcrPending { batch_id } if batch_id == batch.id
+            ));
+        });
+    }
+
+    #[test]
     fn claim_next_finalize_job_only_returns_ready_batches() {
         run_async_test(async {
             let dir = TestDir::new("ready-finalize-job");

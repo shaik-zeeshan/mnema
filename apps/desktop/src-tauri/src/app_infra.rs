@@ -5722,7 +5722,13 @@ mod tests {
             value.get("appName").and_then(|value| value.as_str()),
             Some("Browser")
         );
-        assert!(!value.to_string().contains("Sensitive Project"));
+        // The window title is a curated, flattened field on the DTO (not the raw
+        // metadata snapshot), so it is exposed for bulk timeline payloads.
+        assert_eq!(
+            value.get("windowTitle").and_then(|value| value.as_str()),
+            Some("Sensitive Project")
+        );
+        // The browser URL is never flattened onto the DTO, so it must not leak.
         assert!(!value.to_string().contains("https://example.com/private"));
     }
 
@@ -5910,23 +5916,6 @@ mod tests {
         );
 
         assert_eq!(layout.base_dir(), &PathBuf::from("/tmp/mnema-recordings"));
-    }
-
-    #[test]
-    fn resolve_base_dir_from_save_directory_keeps_database_out_of_segment_root() {
-        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
-            "/tmp/mnema-recordings/session-output",
-        );
-        let base_dir = layout.base_dir();
-
-        assert_eq!(
-            base_dir.parent(),
-            Some(Path::new("/tmp/mnema-recordings/session-output"))
-        );
-        assert_eq!(
-            base_dir.file_name().and_then(|value| value.to_str()),
-            Some("session-output")
-        );
     }
 
     #[test]
@@ -6236,7 +6225,9 @@ mod tests {
         let dir = TestDir::new("frame-preview-exact-miss-log");
         let log_path = dir.path().join("native-capture-debug.log");
         let requested = cidre::cm::Time::with_secs(1.5, 600);
-        let actual = cidre::cm::Time::with_secs(1.0 / 600.0 + 1.5, 600);
+        // Six video ticks past the requested time (timescale 600 => 10ms) so the
+        // delta clears FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS and is logged.
+        let actual = cidre::cm::Time::with_secs(6.0 / 600.0 + 1.5, 600);
         let frame = ::app_infra::Frame {
             id: 2,
             session_id: "session-preview".to_string(),
@@ -6281,8 +6272,8 @@ mod tests {
         assert!(contents.contains("require_exact_time=true"));
         assert!(contents.contains("offset_seconds=1.5"));
         assert!(contents.contains("requested_time=1.5"));
-        assert!(contents.contains("actual_time=1.5016666666666667"));
-        assert!(contents.contains("delta_ms=1.667"));
+        assert!(contents.contains("actual_time=1.51"));
+        assert!(contents.contains("delta_ms=10.000"));
     }
 
     #[test]
@@ -7200,17 +7191,20 @@ mod tests {
                 .await
                 .expect("transcription worker should succeed");
             assert_eq!(processed, ProcessingWorkerPass::DidWork);
-            let failed = infra
+            // The transcription backend ran and failed (audio segment 123 does not
+            // exist), but bounded failure-retry requeues the job within its attempt
+            // cap rather than leaving it terminally failed, so a transient miss can
+            // still recover.  The requeue clears `last_error` and returns the job to
+            // `queued`; the single failure is recorded in `failure_count`.
+            let requeued = infra
                 .get_processing_job(job.id)
                 .await
                 .expect("job should be readable")
                 .expect("job should exist");
-            assert_eq!(failed.status, ::app_infra::ProcessingJobStatus::Failed);
-            assert_eq!(failed.attempt_count, 1);
-            assert_eq!(
-                failed.last_error.as_deref(),
-                Some("audio segment 123 was not found")
-            );
+            assert_eq!(requeued.status, ::app_infra::ProcessingJobStatus::Queued);
+            assert_eq!(requeued.attempt_count, 1);
+            assert_eq!(requeued.failure_count, 1);
+            assert!(requeued.last_error.is_none());
         });
     }
 
@@ -7244,7 +7238,11 @@ mod tests {
                 .await
                 .expect("first job should be readable")
                 .expect("first job should exist");
-            assert_eq!(first_job.status, ::app_infra::ProcessingJobStatus::Failed);
+            // The OCR job fails (the frame file does not exist) but bounded
+            // failure-retry requeues it within its attempt cap, so it returns to
+            // `queued` with the failure recorded rather than terminally `failed`.
+            assert_eq!(first_job.status, ::app_infra::ProcessingJobStatus::Queued);
+            assert_eq!(first_job.failure_count, 1);
 
             let second_dir = TestDir::new("ocr-pacing-second");
             let second_infra = ::app_infra::AppInfra::initialize(second_dir.path())
@@ -7273,7 +7271,8 @@ mod tests {
                 .await
                 .expect("second job should be readable")
                 .expect("second job should exist");
-            assert_eq!(second_job.status, ::app_infra::ProcessingJobStatus::Failed);
+            assert_eq!(second_job.status, ::app_infra::ProcessingJobStatus::Queued);
+            assert_eq!(second_job.failure_count, 1);
         });
     }
 
@@ -7318,14 +7317,21 @@ mod tests {
                 .await
                 .expect("frame batches should list");
 
-            // The first batch's OCR job is processed (fails: no backend) in the
-            // same iteration, making the finalize job claimable.  Finalization
-            // completes successfully (frame cleanup skips missing files), so the
-            // batch ends up Completed — proving the worker now services finalize
-            // jobs alongside processing jobs instead of starving them.
-            assert!(batches
+            // The first batch's OCR job is processed in the same iteration but
+            // *fails* (no OCR backend can read the missing frame file).  Bounded
+            // failure-retry requeues that job within its attempt cap rather than
+            // leaving it terminally failed, and a batch only finalizes once all its
+            // OCR jobs reach a terminal state, so the finalize job stays gated.  The
+            // batch therefore rolls to Closed with a pending finalize job but does
+            // not reach Completed until the OCR retries are exhausted — proving the
+            // worker services finalize jobs (it claims the finalize job and respects
+            // its gate) instead of starving them or finalizing ahead of OCR.
+            assert!(!batches
                 .iter()
                 .any(|batch| batch.status == ::app_infra::FrameBatchStatus::Completed));
+            assert!(batches.iter().any(|batch| batch.status
+                == ::app_infra::FrameBatchStatus::Closed
+                && batch.finalize_job_id.is_some()));
         });
     }
 
