@@ -883,6 +883,15 @@ fn frame_batch_window(captured_at: &str) -> Result<FrameBatchWindow> {
 /// loop normally bumps `/` to `0` on the first iteration; the fallback only
 /// matters for pathological inputs (empty / un-incrementable trailing chars).
 pub(crate) fn workspace_path_prefix_upper_bound(prefix: &str) -> String {
+    // The range bound only replicates `LIKE 'prefix%'` when `prefix` ends in `/`
+    // (callers pass `format!("{}/", workspace_dir)`). A non-slash prefix still
+    // yields a valid pure-prefix range, but would silently diverge from the
+    // deleted `workspace_like_pattern`'s `/%` separator and could bleed a sibling
+    // workspace's frames in — so pin the contract.
+    debug_assert!(
+        prefix.ends_with('/'),
+        "workspace path prefix must be slash-terminated: {prefix:?}"
+    );
     let mut chars: Vec<char> = prefix.chars().collect();
     while let Some(last) = chars.pop() {
         if let Some(next) = char::from_u32(last as u32 + 1) {
