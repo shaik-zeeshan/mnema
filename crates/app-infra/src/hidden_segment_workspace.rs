@@ -64,6 +64,12 @@ pub enum SegmentWorkspaceCleanupDisposition {
     ReferencedByIncompleteBatch,
     ReferencedByNonterminalOcr,
     MissingVisibleSegmentSibling,
+    /// The visible recording is permanently dead (missing or never finalized —
+    /// no `moov` atom, e.g. a segment abandoned when a display went unavailable
+    /// mid-capture, see ADR 0021) AND the frame artifacts have already been
+    /// consumed from disk. Nothing remains to preserve, so the husk workspace is
+    /// safe to reclaim instead of being skipped forever.
+    DeadSegmentWithoutArtifacts,
     PendingFrameArtifacts,
     CompletedOnly,
     NoReferences,
@@ -185,7 +191,16 @@ impl HiddenSegmentWorkspaceRepair {
         }) {
             SegmentWorkspaceCleanupDisposition::ReferencedByIncompleteBatch
         } else if !visible_segment_usable {
-            SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
+            // Dead visible recording (missing or never finalized). Keep the
+            // workspace only while its frame artifacts still exist on disk as the
+            // sole surviving record; once they've been consumed (all batches and
+            // OCR here are already terminal) there is nothing left to protect, so
+            // reclaim the husk instead of skipping it forever.
+            if hidden_workspace_has_frame_artifacts(Path::new(&paths.frames_dir)) {
+                SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
+            } else {
+                SegmentWorkspaceCleanupDisposition::DeadSegmentWithoutArtifacts
+            }
         } else if !batch_references.is_empty() {
             SegmentWorkspaceCleanupDisposition::CompletedOnly
         } else {
@@ -198,6 +213,7 @@ impl HiddenSegmentWorkspaceRepair {
                 disposition,
                 SegmentWorkspaceCleanupDisposition::CompletedOnly
                     | SegmentWorkspaceCleanupDisposition::NoReferences
+                    | SegmentWorkspaceCleanupDisposition::DeadSegmentWithoutArtifacts
             ),
             disposition,
             visible_segment_exists,
@@ -456,6 +472,9 @@ mod tests {
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should exist");
             let frame_path = frames_dir.join("frame-1.png");
+            // The frame artifact still on disk is the only surviving record of the
+            // dead segment, so the workspace must be preserved.
+            fs::write(&frame_path, b"png").expect("frame artifact should exist");
 
             processing
                 .insert_frame(&NewFrame::new(
@@ -481,6 +500,51 @@ mod tests {
             assert_eq!(info.frame_count, 1);
             assert!(info.batch_references.is_empty());
             assert!(info.nonterminal_ocr_references.is_empty());
+        });
+    }
+
+    #[test]
+    fn classify_hidden_segment_workspace_reclaims_dead_segment_when_artifacts_are_consumed() {
+        run_async_test(async {
+            let dir = TestDir::new("classify-dead-segment-husk");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let processing = crate::ProcessingStore::new(pool.clone());
+            let store = crate::FrameBatchStore::new(pool.clone());
+            let repair = HiddenSegmentWorkspaceRepair::new(store, processing.clone());
+
+            // Dead segment (no visible .mov) whose frame artifacts have already
+            // been consumed: the frames/ dir exists but holds no frame images, and
+            // a DB frame row lingers pointing at the deleted artifact. There is
+            // nothing left to protect, so the husk should be reclaimable.
+            let workspace_dir = dir.path().join("2026/04/12/.session-preview-segment-0009");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("frames dir should exist");
+            let frame_path = frames_dir.join("frame-1.png");
+            processing
+                .insert_frame(&NewFrame::new(
+                    "session-preview",
+                    frame_path.to_string_lossy().to_string(),
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+
+            let info = repair
+                .classify_hidden_segment_workspace(&workspace_dir)
+                .await
+                .expect("classification should succeed")
+                .expect("classification should exist");
+
+            assert_eq!(
+                info.disposition,
+                SegmentWorkspaceCleanupDisposition::DeadSegmentWithoutArtifacts
+            );
+            assert!(info.safe_to_remove);
+            assert!(!info.visible_segment_exists);
+            assert_eq!(info.frame_count, 1);
         });
     }
 
@@ -770,6 +834,8 @@ mod tests {
             )
             .expect("invalid visible segment should exist");
             let frame_path = frames_dir.join("frame-1.png");
+            // Frame artifact still on disk: the dead-video workspace is preserved.
+            std::fs::write(&frame_path, b"png").expect("frame artifact should exist");
 
             let batch = store
                 .upsert_open_batch_for_frame("session-preview", "2026-04-12T10:00:00Z")
@@ -1002,6 +1068,57 @@ mod tests {
             assert!(
                 !workspace_dir.exists(),
                 "empty workspace without visible segment should be removed"
+            );
+        });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_reclaims_dead_segment_husk() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-dead-segment-husk");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let processing = crate::ProcessingStore::new(pool.clone());
+            let repair = HiddenSegmentWorkspaceRepair::new(
+                crate::FrameBatchStore::new(pool.clone()),
+                processing.clone(),
+            );
+            let recordings_root = dir.path().join("recordings");
+
+            // Dead segment: no visible .mov, a lingering DB frame row, and an empty
+            // frames/ dir (artifacts already consumed). Nothing left to protect, so
+            // the periodic repair should reclaim the husk rather than skip it.
+            let workspace_dir = recordings_root.join("2026/04/12/.session-dead-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            std::fs::create_dir_all(&frames_dir).expect("frames dir should exist");
+            processing
+                .insert_frame(&NewFrame::new(
+                    "session-dead",
+                    frames_dir
+                        .join("frame-1.png")
+                        .to_string_lossy()
+                        .to_string(),
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+
+            let result = repair
+                .repair_hidden_segment_workspaces_with_context(
+                    &recordings_root,
+                    &HiddenSegmentWorkspaceRepairContext::default(),
+                )
+                .await
+                .expect("repair should succeed");
+
+            assert_eq!(result.scanned_workspace_count, 1);
+            assert_eq!(result.removed_workspace_count, 1);
+            assert_eq!(result.skipped_workspace_count, 0);
+            assert!(
+                !workspace_dir.exists(),
+                "dead-segment husk with consumed artifacts should be reclaimed"
             );
         });
     }

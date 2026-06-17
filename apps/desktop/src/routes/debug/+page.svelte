@@ -727,6 +727,8 @@
       case "referenced_by_incomplete_batch": return "referenced by incomplete batch";
       case "referenced_by_nonterminal_ocr": return "referenced by non-terminal OCR";
       case "missing_visible_segment_sibling": return "missing visible segment sibling";
+      case "dead_segment_without_artifacts": return "dead segment without artifacts";
+      case "pending_frame_artifacts": return "pending frame artifacts";
       case "completed_only": return "completed only";
       case "no_references": return "no references";
       default: return d;
@@ -737,9 +739,11 @@
     switch (d) {
       case "completed_only":
       case "no_references":
+      case "dead_segment_without_artifacts":
         return "badge badge--ok badge--sm";
       case "referenced_by_incomplete_batch":
       case "referenced_by_nonterminal_ocr":
+      case "pending_frame_artifacts":
         return "badge badge--warn badge--sm";
       case "missing_visible_segment_sibling":
         return "badge badge--err badge--sm";

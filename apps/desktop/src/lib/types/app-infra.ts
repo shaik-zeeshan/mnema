@@ -379,6 +379,8 @@ export type SegmentWorkspaceCleanupDisposition =
 	| "referenced_by_incomplete_batch"
 	| "referenced_by_nonterminal_ocr"
 	| "missing_visible_segment_sibling"
+	| "dead_segment_without_artifacts"
+	| "pending_frame_artifacts"
 	| "completed_only"
 	| "no_references";
 
