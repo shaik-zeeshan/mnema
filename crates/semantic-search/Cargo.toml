@@ -1,0 +1,38 @@
+[package]
+name = "semantic-search"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+# The embedding runtime. fastembed reuses the same ONNX runtime (`ort`) shipped
+# for Parakeet transcription — there is no second native runtime. The direct
+# `ort` dependency is pinned `=2.0.0-rc.12` to fastembed's exact version: the two
+# MUST bump in lockstep (see the `ort` dependency note below and ADR 0036).
+fastembed = ["dep:fastembed", "dep:ort", "dep:tokenizers"]
+
+[dependencies]
+capture-types = { path = "../capture-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Embedding runtime. Default features are disabled so we never pull fastembed's
+# `hf-hub` online model fetcher (ADR 0036: Mnema never auto-downloads a Semantic
+# Search Model); we keep only the shared `ort` ONNX backend and load every model
+# from the on-disk `semantic_search_models/{provider}/{model_id}/` layout via
+# fastembed's "bring your own" (user-defined) path.
+fastembed = { version = "=5.17.2", default-features = false, features = [
+    "ort-download-binaries-native-tls",
+], optional = true }
+# LOCKSTEP PIN: this exact `ort` version is shared with Parakeet transcription
+# (`crates/audio-transcription`). fastembed `=5.17.2` resolves against exactly
+# this `ort`, so there is a single ONNX runtime in the build. If you bump one,
+# bump the other — fastembed and Parakeet must always agree on `ort`.
+ort = { version = "=2.0.0-rc.12", optional = true }
+# Used to count tokens up front so overflowing text is auto-split (never silently
+# truncated) before it reaches fastembed's truncating tokenizer.
+tokenizers = { version = "0.22", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
