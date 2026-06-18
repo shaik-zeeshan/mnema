@@ -56,6 +56,26 @@ const SWEEP_BATCH_SIZE: i64 = 16;
 /// a just-installed model promptly, but it does no work on these ticks.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(20);
 
+/// Consecutive idle passes (backlog drained) before the loaded embedder is
+/// dropped to return its resident memory to the OS — the "decay to idle" lever.
+///
+/// The **Semantic Search Model** weights are large and resident for the whole
+/// time the embedder is held (nomic fp32 ≈ 522 MB), so a caught-up worker that
+/// keeps the embedder loaded pins that floor forever. Disabling the `ort` CPU
+/// arena (see `semantic-search` runtime) means a session drop now actually
+/// returns that memory to the OS — which it did not while the arena retained a
+/// process-global high-water buffer — so dropping the embedder on a sustained
+/// idle is finally effective.
+///
+/// A grace period (not an immediate drop on the first empty peek) avoids
+/// thrashing: live capture trickles fresh anchors in, and reloading the model
+/// costs ~1–2 s + a 522 MB read. At [`IDLE_POLL_INTERVAL`] = 20 s, 3 passes is
+/// ~60 s of being caught up before the weights are released; the next anchor
+/// pays one reload. This is the cheap, in-process approximation of the F2
+/// sidecar (a process that exits when drained returns *everything*, including
+/// the base runtime, and also escapes the QoS trap — this only frees the model).
+const IDLE_PASSES_BEFORE_EMBEDDER_DROP: u32 = 3;
+
 /// Backoff after a batch error (a DB hiccup or an embed failure). Embedding never
 /// blocks capture, so a failure just retries later rather than surfacing.
 const ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(30);
@@ -234,6 +254,11 @@ struct SweepState {
     /// so the worker idles quietly rather than re-emitting every tick. Cleared
     /// when the selection changes or a load later succeeds.
     corrupt_model_signalled: bool,
+    /// Consecutive idle passes since the last pass that embedded something. Drives
+    /// the idle-drop ([`IDLE_PASSES_BEFORE_EMBEDDER_DROP`]): once a caught-up
+    /// worker has idled this many passes in a row, the embedder is dropped to
+    /// return the model weights to the OS. Reset to 0 by any pass that does work.
+    consecutive_idles: u32,
 }
 
 impl SweepState {
@@ -244,6 +269,7 @@ impl SweepState {
             anchor_failures: HashMap::new(),
             consecutive_load_failures: 0,
             corrupt_model_signalled: false,
+            consecutive_idles: 0,
         }
     }
 
@@ -308,13 +334,36 @@ pub fn spawn_semantic_index_backfill_worker(
             let pass = run_sweep_pass(&infra, &app_handle, &mut state, &mut shutdown_rx).await;
             let sleep = match pass {
                 SweepPass::DidWork(cooldown) => {
+                    // Work happened: reset the idle streak so the embedder stays warm
+                    // for the rest of the drain (work never releases — returns false).
+                    advance_idle_drop(&mut state.consecutive_idles, true, state.embedder.is_some());
                     // Drain the rest of the backlog, but pace it: a work-time-scaled
                     // inter-batch cooldown (the CPU-pacing gate) keeps the sweep from
                     // a back-to-back multi-core burn. The shutdown watch is still
                     // polled across the cooldown so a quit mid-backfill is honored.
                     cooldown
                 }
-                SweepPass::Idle => IDLE_POLL_INTERVAL,
+                SweepPass::Idle => {
+                    // Idle-drop ("decay to idle"): once the backlog has stayed drained
+                    // for a grace period, release the embedder so the model weights are
+                    // returned to the OS instead of pinning the floor while caught up.
+                    // Fires (and logs) exactly once per idle stretch; with the `ort` CPU
+                    // arena now disabled the session drop actually reclaims the memory,
+                    // and the next anchor pays one reload (`embedder_matches(&None, ..)`
+                    // is false). See [`advance_idle_drop`].
+                    if advance_idle_drop(
+                        &mut state.consecutive_idles,
+                        false,
+                        state.embedder.is_some(),
+                    ) {
+                        state.embedder = None;
+                        crate::native_capture::debug_log::log_info(format!(
+                            "semantic index backfill released the embedder after {} idle passes (model weights returned to the OS; reloads on next anchor)",
+                            state.consecutive_idles
+                        ));
+                    }
+                    IDLE_POLL_INTERVAL
+                }
                 SweepPass::Error => ERROR_RETRY_INTERVAL,
                 SweepPass::Shutdown => break,
             };
@@ -774,6 +823,27 @@ fn embedder_matches(
     })
 }
 
+/// Advance the idle-drop state machine for one completed sweep pass and report
+/// whether the embedder should be released now (the "decay to idle" lever).
+///
+/// `did_work` (a `DidWork` pass) resets the streak to 0 — the embedder stays warm
+/// for the rest of the drain, and work never triggers a release (returns `false`).
+/// Otherwise the pass was a caught-up `Idle`: the streak grows, and once it
+/// reaches [`IDLE_PASSES_BEFORE_EMBEDDER_DROP`] *with a model still loaded* the
+/// embedder is released. It returns `true` exactly **once per idle stretch** —
+/// the caller drops the embedder, so the next idle pass has `has_embedder = false`
+/// and returns `false` (no re-drop, no re-log) until work reloads it. `Error`
+/// passes don't call this, so a transient error neither grows nor resets the
+/// streak.
+fn advance_idle_drop(consecutive_idles: &mut u32, did_work: bool, has_embedder: bool) -> bool {
+    if did_work {
+        *consecutive_idles = 0;
+        return false;
+    }
+    *consecutive_idles = consecutive_idles.saturating_add(1);
+    *consecutive_idles >= IDLE_PASSES_BEFORE_EMBEDDER_DROP && has_embedder
+}
+
 /// Resolve the ONNX intra-op thread cap for embedding from the user's
 /// `embed_threads` setting.
 ///
@@ -933,6 +1003,74 @@ mod tests {
 
         // No loaded embedder => never matches.
         assert!(!embedder_matches(&None, nomic));
+    }
+
+    #[test]
+    fn idle_drop_releases_the_embedder_exactly_once_after_the_grace_period() {
+        // The "decay to idle" lever: a caught-up worker holds the model weights
+        // resident, so after a grace period of consecutive idle passes the embedder
+        // must be released — but only once per idle stretch, not every tick.
+        let mut idles = 0u32;
+
+        // Idle passes short of the grace threshold keep the embedder warm.
+        for _ in 1..IDLE_PASSES_BEFORE_EMBEDDER_DROP {
+            assert!(
+                !advance_idle_drop(&mut idles, false, true),
+                "must not release before the grace threshold"
+            );
+        }
+        // The Nth consecutive idle pass releases it (caller drops the embedder).
+        assert_eq!(idles, IDLE_PASSES_BEFORE_EMBEDDER_DROP - 1);
+        assert!(
+            advance_idle_drop(&mut idles, false, true),
+            "releases exactly at the grace threshold"
+        );
+
+        // After the drop the embedder is gone: further idle passes must NOT signal a
+        // release again (no re-drop, no re-log) — once per idle stretch.
+        assert!(
+            !advance_idle_drop(&mut idles, false, false),
+            "no second release while already unloaded"
+        );
+        assert!(!advance_idle_drop(&mut idles, false, false));
+    }
+
+    #[test]
+    fn idle_drop_streak_resets_on_any_work_pass() {
+        // A single pass that embeds something resets the streak, so a worker that is
+        // still trickling through a backlog never sheds the warm embedder mid-drain.
+        let mut idles = 0u32;
+
+        // Idle right up to the brink...
+        for _ in 1..IDLE_PASSES_BEFORE_EMBEDDER_DROP {
+            assert!(!advance_idle_drop(&mut idles, false, true));
+        }
+        // ...then a work pass resets the streak (and never releases on work).
+        assert!(!advance_idle_drop(&mut idles, true, true));
+        assert_eq!(idles, 0, "work resets the idle streak");
+
+        // The next idle stretch must start counting from zero, not fire immediately.
+        for _ in 1..IDLE_PASSES_BEFORE_EMBEDDER_DROP {
+            assert!(
+                !advance_idle_drop(&mut idles, false, true),
+                "post-work idle streak restarts from zero"
+            );
+        }
+        assert!(advance_idle_drop(&mut idles, false, true));
+    }
+
+    #[test]
+    fn idle_drop_never_fires_without_a_loaded_embedder() {
+        // The no-model / already-unloaded idle path: a worker with nothing loaded
+        // (e.g. no Semantic Search Model installed) idles forever without ever
+        // signalling a release, no matter how long the streak grows.
+        let mut idles = 0u32;
+        for _ in 0..(IDLE_PASSES_BEFORE_EMBEDDER_DROP + 5) {
+            assert!(
+                !advance_idle_drop(&mut idles, false, false),
+                "nothing to release when no embedder is loaded"
+            );
+        }
     }
 
     #[test]
