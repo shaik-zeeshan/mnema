@@ -2596,20 +2596,9 @@ async fn fetch_frame_hits(
 /// instead fail keyword results too. So a semantic error here is swallowed to an
 /// empty meaning list (the fusion of `[]` semantic with the text hits is exactly
 /// the keyword-only ordering), and the failure is surfaced only as a diagnostic.
-/// Whether the live `vec0` column dimension matches `query_embedding`'s length —
-/// the query-side check of the single dimension authority. `false` (skip the
-/// KNN, degrade to keyword-only) when the table is absent or its width differs
-/// from the query vector. An `Err` here is a real DB failure, surfaced for the
-/// degrade wrapper to swallow.
-async fn semantic_index_dimension_matches(
-    pool: &SqlitePool,
-    query_embedding: &[f32],
-) -> Result<bool> {
-    Ok(crate::semantic_search::live_vector_dimension(pool)
-        .await?
-        .is_some_and(|dimension| dimension == query_embedding.len()))
-}
-
+/// The dimension gate itself lives in the store seam (`knn_in_scope_anchors`),
+/// which returns a clean empty candidate set on a mismatch — so a mismatch never
+/// reaches this wrapper as an `Err`; only a real DB failure does.
 fn degrade_to_keyword_only<T>(kind: &str, result: Result<Vec<T>>) -> Vec<T> {
     match result {
         Ok(hits) => hits,
@@ -2802,30 +2791,52 @@ fn meaning_snippet(body_text: &str) -> String {
     format!("{}…", truncated.trim_end())
 }
 
-/// Fetch the meaning-tier **Search Result Anchor**s for a frame query: the
-/// `vec0` KNN nearest to `query_embedding`, **filter-then-rank**. The KNN is
-/// constrained to the **Search Refinement**-scoped rowid set with
-/// `MATCH … AND rowid IN (…)` so a refined query never drops an in-scope meaning
-/// match a post-filter would have lost (ADR 0036). An unrefined query reuses the
-/// same shape with an all-frames in-scope set, which degenerates to a plain
-/// `vec0` KNN `LIMIT k`. Returned in KNN (ascending distance) order; each hit is
-/// `found_by_meaning` with a leading `body_text` excerpt for its snippet.
+/// Re-impose the **Semantic Candidate Set** order (nearest-first) on hydrated
+/// hits. The seam returns ordered `anchor_id`s, but the hydration projection
+/// (`WHERE id IN (…)`) returns rows in an arbitrary order, so the candidate-set
+/// position — the entire rank-only payload **Hybrid Search** RRF fuses on — is
+/// restored here from the candidate list, keyed by `anchor_id`. Hits whose anchor
+/// somehow fell out between the KNN and the hydration (a delete racing the read)
+/// sort to the tail and are harmless.
+fn order_by_candidate_set<T>(mut hits: Vec<T>, candidate_set: &[i64], key: impl Fn(&T) -> i64) -> Vec<T> {
+    let position: std::collections::HashMap<i64, usize> = candidate_set
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (*id, index))
+        .collect();
+    hits.sort_by_key(|hit| position.get(&key(hit)).copied().unwrap_or(usize::MAX));
+    hits
+}
+
+/// Fetch the meaning-tier **Search Result Anchor**s for a frame query. The
+/// `vec0` KNN, blob serialization, and the live-dimension gate live in the store
+/// seam ([`crate::semantic_search::knn_in_scope_anchors`]); this function passes
+/// the in-scope rowid sub-select as the `push_scope` closure (so a refined query
+/// never drops an in-scope meaning match a post-filter would have lost — ADR
+/// 0036, filter-then-rank), then plainly hydrates the returned **Semantic
+/// Candidate Set** into `FrameHit`s with no vec0/KNN/blob of its own, re-imposing
+/// the candidate order before RRF. Each hit is `found_by_meaning` with a leading
+/// `body_text` excerpt for its snippet.
 async fn fetch_semantic_frame_hits(
     pool: &SqlitePool,
     query_embedding: &[f32],
     snapshot_document_id: i64,
     refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<FrameHit>> {
-    // Live-dimension authority: the query embedder emits a vector sized for the
-    // *selected model*, but the `vec0` column only changes when the table is
-    // rebuilt. If they disagree (a model switch in flight, or stuck after a failed
-    // rebuild) skip the KNN — feeding vec0 a wrong-length blob would error and the
-    // degrade wrapper would then drop semantic anyway. Returning early keeps the
-    // degrade deterministic and off the vec0 error path.
-    if !semantic_index_dimension_matches(pool, query_embedding).await? {
+    let candidate_set = crate::semantic_search::knn_in_scope_anchors(
+        pool,
+        query_embedding,
+        SEMANTIC_KNN_LIMIT,
+        |query| push_in_scope_anchor_rowids(query, "frame", snapshot_document_id, refinements),
+    )
+    .await?;
+    if candidate_set.is_empty() {
         return Ok(Vec::new());
     }
 
+    // Plain hydration — a `search_documents JOIN frames` projection with no
+    // vec0/KNN/blob — of the candidate anchors. The candidate set is the single
+    // source of order (re-imposed below); the `IN (…)` set returns rows arbitrarily.
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_documents.id AS document_id, \
                 search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
@@ -2847,22 +2858,15 @@ async fn fetch_semantic_frame_hits(
                             AND secret_redactions.frame_id = frames.id)\
                       )\
                 ), 0) AS secret_redaction_count \
-         FROM search_document_vectors \
-         JOIN search_documents ON search_documents.id = search_document_vectors.rowid \
+         FROM search_documents \
          JOIN frames ON frames.id = search_documents.frame_id \
          LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-         WHERE search_document_vectors.embedding MATCH ",
+         WHERE search_documents.id IN (",
     );
-    query.push_bind(crate::semantic_search::vector_to_le_bytes(query_embedding));
-    // sqlite-vec requires an explicit `k = ?` (or LIMIT) KNN constraint. Pair it
-    // with the in-scope `rowid IN (…)` set so this is filter-then-rank: the
-    // top-k is computed over the refined slice, not post-filtered after ranking
-    // the whole corpus (ADR 0036; no ANN in v1, so this is a brute-force scan of
-    // the filtered set). Results come back ascending by distance.
-    query.push(" AND k = ");
-    query.push_bind(SEMANTIC_KNN_LIMIT);
-    query.push(" AND search_document_vectors.rowid IN (");
-    push_in_scope_anchor_rowids(&mut query, "frame", snapshot_document_id, refinements);
+    let mut separated = query.separated(", ");
+    for anchor_id in &candidate_set {
+        separated.push_bind(*anchor_id);
+    }
     query.push(")");
 
     let rows = query.build().fetch_all(pool).await?;
@@ -2886,25 +2890,32 @@ async fn fetch_semantic_frame_hits(
             frame: map_frame_for_search(row)?,
         });
     }
-    Ok(hits)
+    Ok(order_by_candidate_set(hits, &candidate_set, |hit| hit.anchor_id))
 }
 
 /// Fetch the meaning-tier **Search Result Anchor**s for an audio query — the
-/// audio counterpart of [`fetch_semantic_frame_hits`], same filter-then-rank
-/// `vec0` KNN constrained to the in-scope rowid set.
+/// audio counterpart of [`fetch_semantic_frame_hits`]. The KNN/blob/dimension
+/// gate live in the same store seam; this passes the audio in-scope rowid
+/// sub-select and plainly hydrates the **Semantic Candidate Set** with a
+/// `search_documents JOIN audio_segments` projection, re-imposing candidate order.
 async fn fetch_semantic_audio_hits(
     pool: &SqlitePool,
     query_embedding: &[f32],
     snapshot_document_id: i64,
     refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<AudioHit>> {
-    // Live-dimension authority — see `fetch_semantic_frame_hits`. Skip the KNN on
-    // a query-vector/table dimension mismatch so the search degrades to
-    // keyword-only deterministically instead of via a vec0 error.
-    if !semantic_index_dimension_matches(pool, query_embedding).await? {
+    let candidate_set = crate::semantic_search::knn_in_scope_anchors(
+        pool,
+        query_embedding,
+        SEMANTIC_KNN_LIMIT,
+        |query| push_in_scope_anchor_rowids(query, "audio", snapshot_document_id, refinements),
+    )
+    .await?;
+    if candidate_set.is_empty() {
         return Ok(Vec::new());
     }
 
+    // Plain hydration — `search_documents JOIN audio_segments`, no vec0/KNN/blob.
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_documents.id AS document_id, search_documents.group_key, \
                 search_documents.span_start_ms, search_documents.span_end_ms, \
@@ -2918,25 +2929,24 @@ async fn fetch_semantic_audio_hits(
                     WHERE secret_redactions.anchor_type = 'audio' \
                       AND secret_redactions.audio_segment_id = audio_segments.id\
                 ), 0) AS secret_redaction_count \
-         FROM search_document_vectors \
-         JOIN search_documents ON search_documents.id = search_document_vectors.rowid \
+         FROM search_documents \
          JOIN audio_segments ON audio_segments.id = search_documents.audio_segment_id \
-         WHERE search_document_vectors.embedding MATCH ",
+         WHERE search_documents.id IN (",
     );
-    query.push_bind(crate::semantic_search::vector_to_le_bytes(query_embedding));
-    query.push(" AND k = ");
-    query.push_bind(SEMANTIC_KNN_LIMIT);
-    query.push(" AND search_document_vectors.rowid IN (");
-    push_in_scope_anchor_rowids(&mut query, "audio", snapshot_document_id, refinements);
+    let mut separated = query.separated(", ");
+    for anchor_id in &candidate_set {
+        separated.push_bind(*anchor_id);
+    }
     query.push(")");
 
     let rows = query.build().fetch_all(pool).await?;
 
     // Build each `AudioHit` field-by-field, mirroring `fetch_semantic_frame_hits`.
-    // The semantic SELECT does NOT project `snippet`/`rank` columns (the meaning
-    // tier has no FTS term to highlight and no BM25 score), so routing through
-    // `map_audio_hit` — which `row.get("snippet")`/`row.get("rank")` — would panic
-    // with `ColumnNotFound` on the first row (sqlx `Row::get` = `try_get().unwrap()`).
+    // The semantic hydration does NOT project `snippet`/`rank` columns (the
+    // meaning tier has no FTS term to highlight and no BM25 score), so routing
+    // through `map_audio_hit` — which `row.get("snippet")`/`row.get("rank")` —
+    // would panic with `ColumnNotFound` on the first row (sqlx `Row::get` =
+    // `try_get().unwrap()`).
     let mut hits = Vec::with_capacity(rows.len());
     for row in rows {
         let body_text: String = row.get("body_text");
@@ -2971,7 +2981,7 @@ async fn fetch_semantic_audio_hits(
             found_by_meaning: true,
         });
     }
-    Ok(hits)
+    Ok(order_by_candidate_set(hits, &candidate_set, |hit| hit.anchor_id))
 }
 
 /// Push the in-scope **Search Result Anchor** rowid sub-select that constrains a

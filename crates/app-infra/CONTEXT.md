@@ -175,6 +175,10 @@ _Avoid_: model dropdown, preset list, embedding provider
 The product search policy that combines **Text Search** and **Semantic Search** so literal and meaning-based matches can rank together.
 _Avoid_: search mode toggle, vector-only search, fuzzy search
 
+**Semantic Candidate Set**:
+The in-scope **Search Result Anchor**s the **Semantic Search** tier returns at query time, ordered nearest-first, before **Hybrid Search** RRF fusion. It is produced by a filter-then-rank `vec0` KNN constrained to the active **Search Refinement** scope and is the read-time counterpart to **Semantic Index Backfill**'s write. The set carries only anchor *order* (rank-only) — never a vector distance score — because **Hybrid Search** fuses by rank, and it is empty whenever the live `vec0` column dimension disagrees with the query vector so a dimension mismatch degrades to keyword-only.
+_Avoid_: knn results, vector matches, nearest neighbors, candidate list
+
 **Search Index Projection**:
 A durable derived view of searchable capture content used to answer search queries.
 _Avoid_: search cache, search result table, indexing job output
@@ -286,6 +290,9 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Semantic Search Vector** is stored inside the **Encrypted Capture Index** (a `vec0` table in the encrypted database), never in a plaintext sidecar file.
 - **Hybrid Search** fuses **Text Search** and **Semantic Search** by rank (reciprocal rank fusion) rather than by combining their raw scores, at the **Search Result Anchor** level before **Search Result Group** creation and pagination.
 - **Semantic Search** ranks only within the **Search Refinement**-scoped candidate set (filter-then-rank), which is required for correct top-k results, not merely faster.
+- The **Semantic Search** read path returns a **Semantic Candidate Set** (the in-scope anchors, nearest-first) from one seam that owns the `vec0` substrate — the query-vector serialization, the `MATCH … k … rowid IN (…)` KNN, and the live-dimension gate — so the meaning tier's vector format and KNN live in one place beside the **Semantic Index Backfill** write serializer, and a future int8/binary/ANN change is a single-module edit rather than a fusion-SQL edit.
+- A **Semantic Candidate Set** carries only anchor order (rank-only), never a vector distance, because **Hybrid Search** fuses by rank; surfacing a distance would invite the weighted-score fusion ADR 0036 rejected. Adding a distance later is a deliberate, ADR-touching change, not a default.
+- A **Semantic Candidate Set** is empty when the live `vec0` column dimension disagrees with the query vector, so the single dimension authority gates the read at its source and a mismatch degrades to keyword-only without ever reaching the `vec0` error path.
 - A **Search Snippet** for a meaning-only **Semantic Search** hit shows a leading body-text excerpt marked as a meaning match and reuses the same redaction masking as a **Text Search** snippet.
 - **Hybrid Search** keeps recency as a tie-break only and adds no time-decay ranking boost in its first version.
 - **Semantic Search** is default-on but inert without an installed **Semantic Search Model**: the same "no model means the feature is unavailable" shape as local transcription, and Mnema never auto-downloads a model nor blocks capture on its absence.

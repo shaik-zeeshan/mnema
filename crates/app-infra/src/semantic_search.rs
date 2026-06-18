@@ -22,7 +22,7 @@
 //! reinsert with a new id, dropping the old vec0 row via the slice-1 `AFTER
 //! DELETE` trigger) reappears in the query automatically.
 
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 use crate::Result;
 
@@ -299,6 +299,78 @@ pub(crate) fn vector_to_le_bytes(vector: &[f32]) -> Vec<u8> {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
     bytes
+}
+
+/// The **Semantic Search** read seam: run the `vec0` KNN nearest to
+/// `query_embedding`, **filter-then-rank**, and return the **Semantic Candidate
+/// Set** — the in-scope **Search Result Anchor** rowids, nearest-first.
+///
+/// This is the read-time counterpart to [`SemanticSearchStore::store_vector`]'s
+/// write, and it owns everything `vec0`-substrate-specific so the meaning tier's
+/// vector format and KNN live in one place beside the write serializer (ADR 0036;
+/// a future int8/binary/ANN change is then a single-module edit, not a fusion-SQL
+/// edit in `search.rs`). It owns:
+///
+/// - **Blob serialization** of the f32-LE query vector (via [`vector_to_le_bytes`],
+///   the same byte layout the store writes) — `search.rs` never touches the format.
+/// - **The KNN SQL**: `embedding MATCH ? AND k = ? AND rowid IN (<subquery>)`.
+///   sqlite-vec requires an explicit `k` (or LIMIT); pairing it with the in-scope
+///   `rowid IN (…)` set makes this filter-then-rank — the top-k is computed over
+///   the refined slice, not post-filtered after ranking the whole corpus (ADR
+///   0036; no ANN in v1, so this is a brute-force scan of the filtered set). The
+///   `push_scope` callback appends the in-scope rowid sub-select, keeping
+///   `push_search_refinement_predicates` (shared with **Text Search**) living in
+///   `search.rs`. The seam never takes a materialized id list — only the closure
+///   that appends the `rowid IN (<subquery>)` predicate — so filter-then-rank
+///   stays a single SQL pass.
+/// - **The live-dimension gate**: the query embedder emits a vector sized for the
+///   *selected model*, but the `vec0` column only changes when the table is
+///   rebuilt. If they disagree (a model switch in flight, or stuck after a failed
+///   rebuild) the KNN is skipped and an **empty candidate set** is returned —
+///   feeding vec0 a wrong-length blob would error, so gating at the single
+///   dimension authority keeps the read off the vec0 error path and lets the
+///   degrade-to-keyword wrapper in `search.rs` see a clean empty list.
+///
+/// Returns **order-only** `Vec<i64>` (rank-only, no distance): **Hybrid Search**
+/// fuses by rank, so list *position* is the entire payload; surfacing a distance
+/// would invite the weighted-score fusion ADR 0036 rejected. `Ok(vec![])` on a
+/// dimension mismatch (a clean empty set, degrade-to-keyword); `Err` only on a
+/// real DB failure (which the wrapper swallows).
+pub(crate) async fn knn_in_scope_anchors<F>(
+    pool: &SqlitePool,
+    query_embedding: &[f32],
+    k: i64,
+    push_scope: F,
+) -> Result<Vec<i64>>
+where
+    F: FnOnce(&mut QueryBuilder<'_, Sqlite>),
+{
+    // Live-dimension authority: skip the KNN (returning a clean empty candidate
+    // set) on a query-vector/table dimension mismatch, so the read degrades to
+    // keyword-only deterministically instead of via a vec0 length error.
+    if !live_vector_dimension(pool)
+        .await?
+        .is_some_and(|dimension| dimension == query_embedding.len())
+    {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT search_document_vectors.rowid \
+         FROM search_document_vectors \
+         WHERE search_document_vectors.embedding MATCH ",
+    );
+    query.push_bind(vector_to_le_bytes(query_embedding));
+    query.push(" AND k = ");
+    query.push_bind(k);
+    query.push(" AND search_document_vectors.rowid IN (");
+    push_scope(&mut query);
+    query.push(")");
+
+    // The KNN returns rows ascending by distance, so the rowids come back
+    // nearest-first — the Semantic Candidate Set's order is the whole payload.
+    let rows = query.build().fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|row| row.get::<i64, _>(0)).collect())
 }
 
 /// Read the **live `vec0` column dimension** of `search_document_vectors` from a
@@ -962,6 +1034,169 @@ mod tests {
                 .await
                 .expect("dimension-guarded store returns cleanly for a deleted anchor");
             assert!(!stored, "the dimension-guarded path also writes no orphan");
+        });
+    }
+
+    // ----------------------------------------------------------------------
+    // Read seam: `knn_in_scope_anchors` — the Semantic Candidate Set
+    // ----------------------------------------------------------------------
+
+    use sqlx::{QueryBuilder, Sqlite};
+
+    /// A one-hot unit vector keyed to `seed`: two distinct seeds are orthogonal,
+    /// so L2-distance KNN order between stored anchors is unambiguous. Mirrors the
+    /// `search.rs` integration test's `seeded_vector` helper.
+    fn seeded_vector(dim: usize, seed: usize) -> Vec<f32> {
+        let mut v = vec![0.0_f32; dim];
+        v[seed % dim] = 1.0;
+        v
+    }
+
+    /// Append the in-scope rowid sub-select that `knn_in_scope_anchors` constrains
+    /// the KNN to. This is the store-test stand-in for `search.rs`'s
+    /// `push_in_scope_anchor_rowids` closure: with no refinement scope it selects
+    /// every `direct` anchor (the unrefined "all in scope" set); when
+    /// `only_anchor_id` is set it narrows to that single anchor, exercising
+    /// filter-then-rank without pulling in FTS/grouping.
+    fn push_direct_scope(query: &mut QueryBuilder<'_, Sqlite>, only_anchor_id: Option<i64>) {
+        query.push(
+            "SELECT search_documents.id FROM search_documents \
+             WHERE search_documents.text_source_kind = 'direct'",
+        );
+        if let Some(anchor_id) = only_anchor_id {
+            query.push(" AND search_documents.id = ");
+            query.push_bind(anchor_id);
+        }
+    }
+
+    #[test]
+    fn knn_returns_in_scope_anchors_nearest_first() {
+        run_async_test(async {
+            let dir = test_dir("knn-nearest-first");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+            seed_frame_with_text(&infra, "2026-05-17T10:05:00Z", "bravo").await;
+            seed_frame_with_text(&infra, "2026-05-17T10:10:00Z", "charlie").await;
+
+            let store = infra.semantic_search();
+            // Store three orthogonal vectors, one per anchor, at distinct seeds.
+            let mut anchors = store.anchors_missing_vector(10).await.expect("query");
+            anchors.sort_by_key(|a| a.anchor_id);
+            for (offset, anchor) in anchors.iter().enumerate() {
+                store
+                    .store_vector(anchor.anchor_id, &seeded_vector(768, offset + 1))
+                    .await
+                    .expect("vector stores");
+            }
+
+            // Query exactly the second anchor's vector: it must come back first,
+            // and every in-scope anchor is present (the KNN ranks the whole set).
+            let query_vector = seeded_vector(768, 2);
+            let candidates =
+                super::knn_in_scope_anchors(infra.pool(), &query_vector, 200, |q| {
+                    push_direct_scope(q, None)
+                })
+                .await
+                .expect("knn succeeds");
+
+            assert_eq!(candidates.len(), 3, "all in-scope anchors are ranked");
+            assert_eq!(
+                candidates[0], anchors[1].anchor_id,
+                "the anchor whose vector equals the query is nearest-first"
+            );
+        });
+    }
+
+    #[test]
+    fn knn_filter_then_rank_excludes_out_of_scope_anchors() {
+        run_async_test(async {
+            let dir = test_dir("knn-filter-then-rank");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "in scope").await;
+            seed_frame_with_text(&infra, "2026-05-17T10:05:00Z", "out of scope").await;
+
+            let store = infra.semantic_search();
+            let mut anchors = store.anchors_missing_vector(10).await.expect("query");
+            anchors.sort_by_key(|a| a.anchor_id);
+            let in_scope_id = anchors[0].anchor_id;
+            let out_scope_id = anchors[1].anchor_id;
+
+            // Give the OUT-of-scope anchor the vector nearest the query, so a
+            // post-filter (rank first, filter second) would rank it #1 and then
+            // drop it — leaving the in-scope answer lost. The seam's `rowid IN
+            // (<scope>)` runs *before* ranking, so it never enters the candidate set.
+            store
+                .store_vector(out_scope_id, &seeded_vector(768, 5))
+                .await
+                .expect("out-of-scope vector stores");
+            store
+                .store_vector(in_scope_id, &seeded_vector(768, 6))
+                .await
+                .expect("in-scope vector stores");
+
+            let query_vector = seeded_vector(768, 5);
+            let candidates =
+                super::knn_in_scope_anchors(infra.pool(), &query_vector, 200, |q| {
+                    push_direct_scope(q, Some(in_scope_id))
+                })
+                .await
+                .expect("knn succeeds");
+
+            assert_eq!(
+                candidates,
+                vec![in_scope_id],
+                "only the in-scope anchor is returned; the nearer out-of-scope \
+                 neighbor is pre-filtered, never ranked-then-dropped"
+            );
+        });
+    }
+
+    #[test]
+    fn knn_returns_an_empty_set_on_a_dimension_mismatch() {
+        run_async_test(async {
+            let dir = test_dir("knn-dimension-mismatch");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .store_vector(anchor.anchor_id, &seeded_vector(768, 1))
+                .await
+                .expect("vector stores into the float[768] table");
+
+            // The live column is float[768]. A 1024-dim query vector (a model
+            // switch in flight, or stuck after a failed rebuild) disagrees with the
+            // single dimension authority, so the seam returns a CLEAN EMPTY set
+            // (Ok(vec![])) rather than erroring on a wrong-length blob — the read
+            // degrades to keyword-only at the source.
+            let mismatched_query = seeded_vector(1024, 1);
+            let candidates =
+                super::knn_in_scope_anchors(infra.pool(), &mismatched_query, 200, |q| {
+                    push_direct_scope(q, None)
+                })
+                .await
+                .expect("a dimension mismatch is a clean empty set, not an error");
+            assert!(
+                candidates.is_empty(),
+                "a dimension mismatch yields an empty Semantic Candidate Set"
+            );
+
+            // A correctly-sized query reaches the KNN and returns the anchor.
+            let matched_query = seeded_vector(768, 1);
+            let candidates =
+                super::knn_in_scope_anchors(infra.pool(), &matched_query, 200, |q| {
+                    push_direct_scope(q, None)
+                })
+                .await
+                .expect("matching dimension queries the KNN");
+            assert_eq!(candidates, vec![anchor.anchor_id]);
         });
     }
 
