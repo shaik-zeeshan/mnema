@@ -9,7 +9,10 @@
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow, openSettingsWindow } from "$lib/surface-windows";
-  import type { SemanticSearchModelStatusResponse } from "$lib/types";
+  import type {
+    SemanticSearchModelStatusResponse,
+    RecordingSettingsDomainUpdateResponse,
+  } from "$lib/types";
   import { askAiClock } from "$lib/askAiClock";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
@@ -3255,6 +3258,7 @@
     let unlistenUpdate: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
     let unlistenDismiss: (() => void) | undefined;
+    let unlistenSettings: (() => void) | undefined;
 
     // The window is hidden/re-shown rather than recreated across summons, so
     // re-grab focus each time it becomes key — onMount alone fires only once.
@@ -3267,6 +3271,11 @@
           // and the user may have enabled Ask AI or fixed PI/auth since the last
           // summon. Without this the stale disabled hint would persist forever.
           void loadAskAvailability();
+          // Same staleness applies to the "turn on meaning search" hint: a model
+          // can be installed/removed in Settings while this (reused) window stays
+          // hidden, so re-probe model status on focus too — otherwise the hint
+          // keeps showing keyword-only long after a model is installed.
+          void loadSemanticSearchModelInstalled();
           // Re-summon hydration: if an ask thread is armed but its in-memory
           // transcript was cleared, reload it from the store so a finished (or
           // still-streaming) answer reappears. Background completion is
@@ -3318,6 +3327,25 @@
       else unlistenDismiss = fn;
     });
 
+    // Settings saved in the Settings window broadcast
+    // `recording_settings_domain_changed` ({ domain, settings }). The Semantic
+    // Search toggle + model selection live in the `semantic_search` domain, so a
+    // model selection/toggle made while this (reused) window stays focused must
+    // re-probe model status — otherwise the "turn on meaning search" hint goes
+    // stale exactly as the onFocusChanged re-probe of Ask AI availability would
+    // (focus never changes in this in-place case). The focus re-probe above
+    // covers the download-then-refocus case; this covers the focus-stays case.
+    listen<RecordingSettingsDomainUpdateResponse>(
+      "recording_settings_domain_changed",
+      (event) => {
+        if (event.payload.domain !== "semantic_search") return;
+        void loadSemanticSearchModelInstalled();
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSettings = fn;
+    });
+
     return () => {
       destroyed = true;
       window.removeEventListener("keydown", handleLauncherCaptureKeydown, {
@@ -3327,6 +3355,7 @@
       unlistenUpdate?.();
       unlistenFocus?.();
       unlistenDismiss?.();
+      unlistenSettings?.();
     };
   });
 

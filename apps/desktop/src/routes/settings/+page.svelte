@@ -934,8 +934,14 @@
   let semanticSearchSupportedModels = $state<SemanticSearchSupportedModel[]>([]);
   // The single "picked" (focused) model id driving the shared status + action
   // region. One combined Combobox writes this id (guided tiers + full catalog in
-  // one list). Initialized to the active model.
-  let semanticSearchPickedModelId = $state<string | null>("nomic-embed-text-v1.5");
+  // one list). Initialized to `null` (not a literal default) so the load path's
+  // pre-focus guard (`picked === null && selected !== null`) actually fires and
+  // opens the card focused on the *active* model — guided tier OR a persisted
+  // custom selection — instead of always snapping to the nomic default. Every
+  // reader tolerates null: the picked-view derivation returns null (no card),
+  // the progress derivation returns null, and the Combobox accepts `string |
+  // null` (shows its placeholder until a value is picked).
+  let semanticSearchPickedModelId = $state<string | null>(null);
   let loadingSemanticSearchSupportedModels = $state(false);
   let semanticSearchSupportedModelsError = $state<string | null>(null);
   // The OS UI locale, used to recommend the Multilingual tier to non-English
@@ -2813,18 +2819,30 @@
     }
 
     semanticSearchModelError = null;
+    semanticSearchReindexing = true;
+    semanticSearchReindexMessage = null;
     try {
-      await invoke<RecordingSettingsDomainUpdateResponse>("update_semantic_search_settings", {
-        request: { modelId: model.modelId },
+      // One atomic backend command rebuilds the vec0 table at the new model's
+      // dimension AND persists the selection together, so the persisted model and
+      // the live table dimension can never disagree. If it throws, the backend
+      // state is unchanged (old model still selected, old-dim table intact) — so we
+      // only adopt the new selection on success.
+      const cleared = await invoke<number>("select_semantic_search_model", {
+        modelId: model.modelId,
       });
       semanticSearchSelectedModelId = model.modelId;
-      // Only an actual switch (not the first selection) clears existing vectors.
+      // Only an actual switch (not the first selection) had vectors to clear.
       if (!isFirstSelection) {
-        await runSemanticSearchReindex();
+        semanticSearchReindexMessage =
+          cleared > 0
+            ? `Cleared ${cleared} vector${cleared === 1 ? "" : "s"}; re-indexing in the background.`
+            : "Re-index started in the background.";
       }
       await loadSemanticSearchModelStatus();
     } catch (err) {
       semanticSearchModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      semanticSearchReindexing = false;
     }
   }
 
@@ -2839,22 +2857,6 @@
       semanticSearchModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
       // Revert the toggle to the persisted value on failure.
       draftSemanticSearchEnabled = !enabled;
-    }
-  }
-
-  async function runSemanticSearchReindex() {
-    semanticSearchReindexing = true;
-    semanticSearchReindexMessage = null;
-    try {
-      const cleared = await invoke<number>("reindex_semantic_search");
-      semanticSearchReindexMessage =
-        cleared > 0
-          ? `Cleared ${cleared} vector${cleared === 1 ? "" : "s"}; re-indexing in the background.`
-          : "Re-index started in the background.";
-    } catch (err) {
-      semanticSearchModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    } finally {
-      semanticSearchReindexing = false;
     }
   }
 
