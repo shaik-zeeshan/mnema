@@ -112,24 +112,133 @@ impl SemanticSearchStore {
     }
 
     /// Store one **Semantic Search Vector** for `anchor_id` into the
-    /// `search_document_vectors` vec0 table. `vector` is the model's f32 output;
-    /// it is serialized little-endian, the byte layout vec0 expects.
+    /// `search_document_vectors` vec0 table, **conditioned on the `direct`
+    /// `search_documents` row still existing**. `vector` is the model's f32
+    /// output; it is serialized little-endian, the byte layout vec0 expects.
+    /// Returns whether a row was actually written.
     ///
-    /// Uses `INSERT OR REPLACE` so a reprocess that re-derives the same anchor id
-    /// overwrites cleanly. In the normal sweep the anchor has no row yet (the
-    /// query already filtered vectored anchors out), so this is an insert; the
-    /// `OR REPLACE` is belt-and-braces for the reprocess race the re-check above
-    /// guards.
-    pub async fn store_vector(&self, anchor_id: i64, vector: &[f32]) -> Result<()> {
+    /// The insert is a single atomic `INSERT OR REPLACE … SELECT … WHERE` over
+    /// `search_documents`: the rowid and the existence predicate are evaluated in
+    /// the same statement, so there is **no re-check-then-store gap**. If a
+    /// retention / Delete Recent cascade removed the anchor between the worker's
+    /// embed and this store (the `AFTER DELETE` trigger having dropped nothing,
+    /// since no vec0 row existed yet), the `SELECT` matches zero rows and **no
+    /// orphan vector is inserted** — a meaning vector of deleted captured content
+    /// can never persist at rest (M1 / privacy concern #6, ADR 0036). The worker's
+    /// preceding `anchor_still_missing_vector` re-check is now an optimization, not
+    /// the correctness boundary; this statement is.
+    ///
+    /// `OR REPLACE` still covers the reprocess race (a re-derived anchor id
+    /// overwrites cleanly); in the normal sweep the anchor has no row yet, so this
+    /// is an insert.
+    ///
+    /// Rejects a non-finite vector (any `NaN`/`±inf` component) before touching
+    /// the table: vec0 stores such a blob silently, but a `NaN` distance sorts
+    /// non-deterministically under the KNN order and `anchor_still_missing_vector`
+    /// would treat the poisoned vector as done and never retry it (L1). The
+    /// in-tree pipeline cannot produce one (every embedding is L2-normalized over
+    /// guaranteed-non-empty text), so this is defensive against a corrupt/
+    /// pathological ONNX graph only.
+    pub async fn store_vector(&self, anchor_id: i64, vector: &[f32]) -> Result<bool> {
+        if vector.iter().any(|component| !component.is_finite()) {
+            return Err(crate::AppInfraError::InvalidSearchRequest(format!(
+                "refusing to store a non-finite Semantic Search Vector for anchor {anchor_id} \
+                 (a NaN/inf component would poison KNN ordering)"
+            )));
+        }
         let blob = vector_to_le_bytes(vector);
-        sqlx::query(
-            "INSERT OR REPLACE INTO search_document_vectors (rowid, embedding) VALUES (?1, ?2)",
+        let result = sqlx::query(
+            "INSERT OR REPLACE INTO search_document_vectors (rowid, embedding) \
+             SELECT search_documents.id, ?2 \
+             FROM search_documents \
+             WHERE search_documents.id = ?1 \
+               AND search_documents.text_source_kind = 'direct'",
         )
         .bind(anchor_id)
         .bind(blob)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Store a vector **only if its length matches the live `vec0` column
+    /// dimension**, returning whether it was stored.
+    ///
+    /// This is the worker-side half of the single dimension authority (the live
+    /// `vec0` column width is the one source of truth — see
+    /// [`live_vector_dimension`]). The two-step model switch (persist `model_id`,
+    /// then recreate the table) is non-atomic across the worker: between the
+    /// embedder reloading at the new dimension and the table being rebuilt — and
+    /// **permanently** if the rebuild ever fails — an embedded vector would be the
+    /// wrong length for the table. A raw [`store_vector`] would have vec0 reject
+    /// the blob and the sweep would error-loop that doomed batch every retry
+    /// forever. Here a mismatch is a **skip, not an error**: the anchor stays in
+    /// the missing set and is re-embedded once the dimensions agree (after the
+    /// rebuild lands, or after startup reconciliation self-heals a stuck table),
+    /// so the worker idles instead of error-looping.
+    ///
+    /// `Ok(true)` — stored. `Ok(false)` — skipped: either on a dimension mismatch
+    /// (or the table is absent), **or** because the `direct` anchor row no longer
+    /// exists (a delete raced the store — [`store_vector`] inserts nothing, so no
+    /// orphan is left). `Err` — a non-finite vector (L1) or a real DB failure.
+    pub async fn store_vector_if_dimension_matches(
+        &self,
+        anchor_id: i64,
+        vector: &[f32],
+    ) -> Result<bool> {
+        match self.live_vector_dimension().await? {
+            // Length matches the live column: attempt the atomic row-conditioned
+            // store. It still returns `false` if the anchor vanished mid-embed, so
+            // a delete racing this store leaves nothing behind.
+            Some(dimension) if dimension == vector.len() => {
+                self.store_vector(anchor_id, vector).await
+            }
+            // Mismatch or no table: skip without error so the sweep idles rather
+            // than error-looping a vector the live column can never accept.
+            _ => Ok(false),
+        }
+    }
+
+    /// The **live `vec0` column dimension** of `search_document_vectors` — the
+    /// single source of truth for the active vector width, read straight from the
+    /// table definition rather than inferred from the (separately persisted)
+    /// selected model.
+    ///
+    /// Parses the `float[N]` declared in the `CREATE VIRTUAL TABLE … USING
+    /// vec0(embedding float[N])` DDL stored in `sqlite_master`. Returns `None`
+    /// when the table is absent or its DDL is unexpectedly shaped (treated as
+    /// "no usable dimension" — the worker idles and the query path degrades to
+    /// keyword-only rather than erroring).
+    pub async fn live_vector_dimension(&self) -> Result<Option<usize>> {
+        live_vector_dimension(&self.pool).await
+    }
+
+    /// Reconcile the live `vec0` table dimension against `expected_dimension`,
+    /// recreating the table only when they disagree. Returns `Some(discarded)`
+    /// with the number of vectors dropped if a recreate happened, or `None` if
+    /// the table already matched (no-op).
+    ///
+    /// This is the **startup self-heal** for a permanently-stuck switch: if a
+    /// model switch persisted a new `model_id` but the table recreate failed (DB
+    /// busy under the worker's concurrent writes — `DROP TABLE` needs an exclusive
+    /// lock), the table is left at the old dimension while the selection names a
+    /// new-dimension model. Both the worker (`store_vector_if_dimension_matches`)
+    /// and the query path then read the live column and skip/idle — search never
+    /// hard-fails, but the index also never rebuilds. Running this on the
+    /// deferred-startup seam with the selected model's expected dimension brings
+    /// the table back into agreement so the sweep can backfill under the new
+    /// model. Idempotent: a matching table is left untouched.
+    pub async fn reconcile_vectors_table(
+        &self,
+        expected_dimension: usize,
+    ) -> Result<Option<u64>> {
+        match self.live_vector_dimension().await? {
+            Some(dimension) if dimension == expected_dimension => Ok(None),
+            // Mismatched OR absent: rebuild at the expected dimension so the
+            // worker/query path's live-dimension authority agrees with the
+            // selected model again.
+            _ => Ok(Some(self.recreate_vectors_table(expected_dimension).await?)),
+        }
     }
 
     /// Drop and recreate the `search_document_vectors` vec0 table at `dimension`,
@@ -190,6 +299,36 @@ pub(crate) fn vector_to_le_bytes(vector: &[f32]) -> Vec<u8> {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
     bytes
+}
+
+/// Read the **live `vec0` column dimension** of `search_document_vectors` from a
+/// raw pool — the single source of truth for the active vector width. Shared by
+/// the store seam ([`SemanticSearchStore::live_vector_dimension`]) and the query
+/// path (`search.rs`), which holds only a `&SqlitePool`. Returns `None` when the
+/// table is absent or its DDL is unexpectedly shaped (treated as "no usable
+/// dimension" — caller idles / degrades to keyword-only rather than erroring).
+pub(crate) async fn live_vector_dimension(pool: &SqlitePool) -> Result<Option<usize>> {
+    let sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master \
+         WHERE type = 'table' AND name = 'search_document_vectors'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(sql.as_deref().and_then(parse_vec0_dimension))
+}
+
+/// Parse the declared dimension `N` out of a `vec0(embedding float[N])` table
+/// DDL (`sqlite_master.sql`). The whole feature keys its dimension authority off
+/// this — the recreate writes exactly this shape (see
+/// [`SemanticSearchStore::recreate_vectors_table`]), so the parse is the inverse
+/// of that format. Returns `None` on any shape it does not recognize, so an
+/// unexpected DDL degrades to "no usable dimension" rather than a wrong guess.
+fn parse_vec0_dimension(sql: &str) -> Option<usize> {
+    // Tolerate arbitrary whitespace/casing around the `float[N]` declaration.
+    let lowered = sql.to_ascii_lowercase();
+    let open = lowered.find("float[")? + "float[".len();
+    let close = lowered[open..].find(']')? + open;
+    lowered[open..close].trim().parse::<usize>().ok()
 }
 
 #[cfg(test)]
@@ -592,6 +731,162 @@ mod tests {
     }
 
     #[test]
+    fn live_vector_dimension_reads_the_actual_vec0_column_width() {
+        run_async_test(async {
+            let dir = test_dir("live-dimension");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let store = infra.semantic_search();
+
+            // The migration ships a float[768] table.
+            assert_eq!(
+                store.live_vector_dimension().await.expect("dim reads"),
+                Some(768)
+            );
+
+            // Recreating at a new dimension is reflected immediately by the live
+            // read — the single source of truth is the table, not any persisted
+            // model selection.
+            store
+                .recreate_vectors_table(1024)
+                .await
+                .expect("recreate at 1024");
+            assert_eq!(
+                store.live_vector_dimension().await.expect("dim reads"),
+                Some(1024)
+            );
+        });
+    }
+
+    #[test]
+    fn store_vector_skips_a_wrong_dimension_vector_without_erroring() {
+        run_async_test(async {
+            let dir = test_dir("store-wrong-dim-skips");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "vectorize me").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+
+            // The live table is float[768]. A 1024-dim vector (an embedder reloaded
+            // at a new dimension before the table was rebuilt — the non-atomic
+            // switch window, or a permanently-stuck table) does NOT fatally error:
+            // it is skipped (`Ok(false)`), so the worker idles instead of
+            // error-looping a doomed batch every 30s.
+            let stored = store
+                .store_vector_if_dimension_matches(anchor.anchor_id, &unit_vector(1024, 0.5))
+                .await
+                .expect("a dimension mismatch is a skip, not a fatal error");
+            assert!(!stored, "the wrong-dimension vector is skipped");
+
+            // The anchor stays in the missing set: it is re-embedded once the
+            // dimensions agree (after the rebuild / startup reconciliation).
+            assert!(store
+                .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
+
+            // A correctly-sized 768-dim vector stores normally and clears the anchor.
+            let stored = store
+                .store_vector_if_dimension_matches(anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("matching dimension stores");
+            assert!(stored, "the matching-dimension vector is stored");
+            assert!(!store
+                .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
+        });
+    }
+
+    #[test]
+    fn reconcile_rebuilds_a_table_whose_dimension_disagrees_with_the_model() {
+        run_async_test(async {
+            let dir = test_dir("reconcile-mismatch");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            // Simulate a permanently-stuck state: the live table is float[768] (the
+            // migration default) but the selected model now expects 1024 dims (the
+            // rebuild failed at switch time, leaving the table at the old width).
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .store_vector(anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("store a stale 768-dim vector");
+            assert_eq!(store.live_vector_dimension().await.expect("dim"), Some(768));
+
+            // Startup reconciliation against the selected model's expected 1024 dims
+            // rebuilds the table (discarding the stale vector) so the live dimension
+            // agrees with the model again and the sweep can backfill under it.
+            let discarded = store
+                .reconcile_vectors_table(1024)
+                .await
+                .expect("reconcile succeeds");
+            assert_eq!(discarded, Some(1), "the stale 768-dim vector is discarded");
+            assert_eq!(store.live_vector_dimension().await.expect("dim"), Some(1024));
+            // The anchor is re-exposed for re-embedding under the new model.
+            assert!(store
+                .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
+        });
+    }
+
+    #[test]
+    fn reconcile_is_a_no_op_when_the_dimension_already_matches() {
+        run_async_test(async {
+            let dir = test_dir("reconcile-match");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .store_vector(anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("store a 768-dim vector");
+
+            // The migration default (768) already matches the default model's
+            // dimension: reconciliation is a no-op and the existing vector survives.
+            let discarded = store
+                .reconcile_vectors_table(768)
+                .await
+                .expect("reconcile succeeds");
+            assert_eq!(discarded, None, "a matching table is left untouched");
+            assert!(!store
+                .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
+        });
+    }
+
+    #[test]
+    fn parse_vec0_dimension_extracts_the_declared_width() {
+        assert_eq!(
+            super::parse_vec0_dimension(
+                "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding float[768])"
+            ),
+            Some(768)
+        );
+        // Tolerates casing/whitespace variation in the stored DDL.
+        assert_eq!(
+            super::parse_vec0_dimension("create virtual table x using vec0(embedding FLOAT[ 1024 ])"),
+            Some(1024)
+        );
+        // Unrecognized shapes degrade to None (no usable dimension).
+        assert_eq!(super::parse_vec0_dimension("CREATE TABLE other (id INTEGER)"), None);
+    }
+
+    #[test]
     fn deleting_an_anchor_mid_embed_is_caught_by_the_recheck() {
         run_async_test(async {
             let dir = test_dir("delete-mid-embed");
@@ -616,6 +911,100 @@ mod tests {
                 .anchor_still_missing_vector(anchor_id)
                 .await
                 .expect("recheck succeeds"));
+        });
+    }
+
+    #[test]
+    fn storing_for_a_deleted_anchor_inserts_no_orphan_vector() {
+        run_async_test(async {
+            let dir = test_dir("store-deleted-no-orphan");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "soon to be deleted").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+
+            // Simulate the M1 delete-races-store window: the anchor's
+            // search_documents row is removed (retention / Delete Recent cascade)
+            // AFTER the worker passed its re-check but BEFORE the store lands. The
+            // AFTER DELETE trigger drops nothing because no vec0 row exists yet.
+            sqlx::query("DELETE FROM search_documents WHERE id = ?1")
+                .bind(anchor.anchor_id)
+                .execute(infra.pool())
+                .await
+                .expect("anchor deletes");
+
+            // The atomic row-conditioned store inserts NOTHING for a vanished
+            // anchor and returns cleanly (no orphan, no error): a meaning vector of
+            // deleted content can never persist at rest.
+            let stored = store
+                .store_vector(anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("store returns cleanly for a deleted anchor");
+            assert!(!stored, "no row is written for a deleted anchor");
+
+            // Prove no vec0 row exists for the gone anchor id.
+            let orphan: Option<i64> = sqlx::query_scalar(
+                "SELECT rowid FROM search_document_vectors WHERE rowid = ?1",
+            )
+            .bind(anchor.anchor_id)
+            .fetch_optional(infra.pool())
+            .await
+            .expect("orphan probe");
+            assert!(orphan.is_none(), "no orphan vector was inserted");
+
+            // The dimension-guarded path is just as safe (it routes through the
+            // same atomic store): a delete racing it also leaves nothing.
+            let stored = store
+                .store_vector_if_dimension_matches(anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("dimension-guarded store returns cleanly for a deleted anchor");
+            assert!(!stored, "the dimension-guarded path also writes no orphan");
+        });
+    }
+
+    #[test]
+    fn storing_a_non_finite_vector_is_rejected_and_writes_nothing() {
+        run_async_test(async {
+            let dir = test_dir("store-non-finite-rejected");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "vectorize me").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+
+            // A vector with a NaN component (only producible by a corrupt/
+            // pathological ONNX graph, never the in-tree L2-normalized pipeline) is
+            // rejected before the INSERT, so it never poisons the KNN order.
+            let mut poisoned = unit_vector(768, 0.5);
+            poisoned[3] = f32::NAN;
+            assert!(
+                store.store_vector(anchor.anchor_id, &poisoned).await.is_err(),
+                "a NaN component is rejected"
+            );
+
+            // An infinite component is rejected the same way.
+            let mut poisoned = unit_vector(768, 0.5);
+            poisoned[3] = f32::INFINITY;
+            assert!(
+                store.store_vector(anchor.anchor_id, &poisoned).await.is_err(),
+                "an inf component is rejected"
+            );
+
+            // Nothing was written: the anchor is still in the missing set and is
+            // retried (rather than being silently marked done with a poison vector).
+            assert!(store
+                .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
+            assert_eq!(
+                store.count_anchors_missing_vector().await.expect("count"),
+                1
+            );
         });
     }
 }

@@ -369,12 +369,25 @@ impl SearchStore {
             return Ok(empty_response(0));
         }
 
-        if normalized_query.chars().count() < 2 {
-            return Ok(empty_response(0));
-        }
+        // **Hybrid Search** runs only when the caller supplied a non-empty query
+        // vector (the desktop layer embedded the query with the installed
+        // **Semantic Search Model**). An absent or empty vector — no model, no
+        // backfilled vectors — leaves search keyword-only with no regression.
+        // Resolved before the short/empty-FTS gates below so a meaning-only query
+        // (e.g. a single CJK concept char, or a residual with no FTS-indexable
+        // term) can still reach the semantic path on the strength of its vector.
+        let query_embedding = request
+            .query_embedding
+            .as_deref()
+            .filter(|embedding| !embedding.is_empty());
 
         let fts_query = fts_body;
-        if fts_query.is_empty() {
+        // The FTS body is too thin to run **Text Search** when it is under two
+        // chars or has no indexable term. With a usable query vector the
+        // **Semantic Search** tier can still answer, so only short-circuit when
+        // there is *also* no embedding to fall back on.
+        let fts_is_searchable = normalized_query.chars().count() >= 2 && !fts_query.is_empty();
+        if !fts_is_searchable && query_embedding.is_none() {
             return Ok(empty_response(0));
         }
 
@@ -387,15 +400,6 @@ impl SearchStore {
             None => fetch_search_document_high_water_mark(&self.pool).await?,
         };
 
-        // **Hybrid Search** runs only when the caller supplied a non-empty query
-        // vector (the desktop layer embedded the query with the installed
-        // **Semantic Search Model**). An absent or empty vector — no model, no
-        // backfilled vectors — leaves search keyword-only with no regression.
-        let query_embedding = request
-            .query_embedding
-            .as_deref()
-            .filter(|embedding| !embedding.is_empty());
-
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
         let all_frame_groups = if frame_limit == 0 || !refinements.audio_sources.is_empty() {
@@ -404,6 +408,7 @@ impl SearchStore {
             fetch_grouped_frame_hits(
                 &self.pool,
                 &fts_query,
+                fts_is_searchable,
                 snapshot_document_id,
                 frame_offset,
                 frame_limit,
@@ -422,6 +427,7 @@ impl SearchStore {
             fetch_grouped_audio_hits(
                 &self.pool,
                 &fts_query,
+                fts_is_searchable,
                 snapshot_document_id,
                 &refinements,
                 query_embedding,
@@ -2576,9 +2582,53 @@ async fn fetch_frame_hits(
         .collect()
 }
 
+/// Fuse a semantic-fetch result into the keyword-only fallback: on `Ok`, return
+/// the meaning hits; on `Err`, **log and yield an empty list** so search degrades
+/// to keyword-only rather than failing the whole `search_capture`.
+///
+/// This is the query-side half of the single dimension authority. The dominant
+/// failure mode is a `vec0` dimension mismatch — the query embedder emits a
+/// vector at the *selected model's* dimension, but the live `search_document_vectors`
+/// column only changes when the table is rebuilt; whenever a model switch left
+/// the two disagreeing (mid-switch, or permanently after a failed rebuild) the
+/// KNN raises a dimension error. ADR 0036 promises "no usable runtime → feature
+/// unavailable, keyword-only with no regression"; propagating the error would
+/// instead fail keyword results too. So a semantic error here is swallowed to an
+/// empty meaning list (the fusion of `[]` semantic with the text hits is exactly
+/// the keyword-only ordering), and the failure is surfaced only as a diagnostic.
+/// Whether the live `vec0` column dimension matches `query_embedding`'s length —
+/// the query-side check of the single dimension authority. `false` (skip the
+/// KNN, degrade to keyword-only) when the table is absent or its width differs
+/// from the query vector. An `Err` here is a real DB failure, surfaced for the
+/// degrade wrapper to swallow.
+async fn semantic_index_dimension_matches(
+    pool: &SqlitePool,
+    query_embedding: &[f32],
+) -> Result<bool> {
+    Ok(crate::semantic_search::live_vector_dimension(pool)
+        .await?
+        .is_some_and(|dimension| dimension == query_embedding.len()))
+}
+
+fn degrade_to_keyword_only<T>(kind: &str, result: Result<Vec<T>>) -> Vec<T> {
+    match result {
+        Ok(hits) => hits,
+        Err(error) => {
+            // app-infra carries no logging crate; this diagnostic goes to stderr,
+            // which the desktop log target captures. It is a degrade signal, never
+            // a user-facing error — search proceeds keyword-only.
+            eprintln!(
+                "semantic {kind} search degraded to keyword-only (semantic fetch failed: {error})"
+            );
+            Vec::new()
+        }
+    }
+}
+
 async fn fetch_grouped_frame_hits(
     pool: &SqlitePool,
     fts_query: &str,
+    fts_is_searchable: bool,
     snapshot_document_id: i64,
     offset: usize,
     limit: u32,
@@ -2591,10 +2641,22 @@ async fn fetch_grouped_frame_hits(
     // fused list is just the FTS list, so keyword-only behavior is unchanged.
     let semantic_hits = match query_embedding {
         Some(embedding) => {
-            fetch_semantic_frame_hits(pool, embedding, snapshot_document_id, refinements).await?
+            degrade_to_keyword_only(
+                "frame",
+                fetch_semantic_frame_hits(pool, embedding, snapshot_document_id, refinements).await,
+            )
         }
         None => Vec::new(),
     };
+
+    // A meaning-only query (no FTS-searchable body) skips the **Text Search**
+    // loop entirely — an empty `MATCH` would error — and groups the semantic-only
+    // fused list. `fts_is_searchable` is false only when there is a usable query
+    // vector (the empty-everything case short-circuits earlier in `search_capture`).
+    if !fts_is_searchable {
+        let fused = rrf_fuse_frame_hits(&[], &semantic_hits);
+        return Ok(group_frame_hits(&fused));
+    }
 
     let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
     let mut hit_limit = hit_fetch_limit(offset, limit);
@@ -2676,16 +2738,28 @@ async fn fetch_audio_hits(
 async fn fetch_grouped_audio_hits(
     pool: &SqlitePool,
     fts_query: &str,
+    fts_is_searchable: bool,
     snapshot_document_id: i64,
     refinements: &NormalizedSearchRefinements,
     query_embedding: Option<&[f32]>,
 ) -> Result<Vec<AudioSearchResult>> {
     let semantic_hits = match query_embedding {
         Some(embedding) => {
-            fetch_semantic_audio_hits(pool, embedding, snapshot_document_id, refinements).await?
+            degrade_to_keyword_only(
+                "audio",
+                fetch_semantic_audio_hits(pool, embedding, snapshot_document_id, refinements).await,
+            )
         }
         None => Vec::new(),
     };
+
+    // A meaning-only query (no FTS-searchable body) skips the **Text Search**
+    // loop entirely — an empty `MATCH` would error — and groups the semantic-only
+    // fused list, exactly as the frame path does.
+    if !fts_is_searchable {
+        let fused = rrf_fuse_audio_hits(&[], &semantic_hits);
+        return group_audio_hits(&fused);
+    }
 
     // Audio grouping is transitive by time adjacency, so a lower-ranked hit can
     // bridge two higher-ranked groups. Drain the snapshot before paginating.
@@ -2742,6 +2816,16 @@ async fn fetch_semantic_frame_hits(
     snapshot_document_id: i64,
     refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<FrameHit>> {
+    // Live-dimension authority: the query embedder emits a vector sized for the
+    // *selected model*, but the `vec0` column only changes when the table is
+    // rebuilt. If they disagree (a model switch in flight, or stuck after a failed
+    // rebuild) skip the KNN — feeding vec0 a wrong-length blob would error and the
+    // degrade wrapper would then drop semantic anyway. Returning early keeps the
+    // degrade deterministic and off the vec0 error path.
+    if !semantic_index_dimension_matches(pool, query_embedding).await? {
+        return Ok(Vec::new());
+    }
+
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_documents.id AS document_id, \
                 search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
@@ -2814,6 +2898,13 @@ async fn fetch_semantic_audio_hits(
     snapshot_document_id: i64,
     refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<AudioHit>> {
+    // Live-dimension authority — see `fetch_semantic_frame_hits`. Skip the KNN on
+    // a query-vector/table dimension mismatch so the search degrades to
+    // keyword-only deterministically instead of via a vec0 error.
+    if !semantic_index_dimension_matches(pool, query_embedding).await? {
+        return Ok(Vec::new());
+    }
+
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_documents.id AS document_id, search_documents.group_key, \
                 search_documents.span_start_ms, search_documents.span_end_ms, \
@@ -2841,14 +2932,44 @@ async fn fetch_semantic_audio_hits(
 
     let rows = query.build().fetch_all(pool).await?;
 
+    // Build each `AudioHit` field-by-field, mirroring `fetch_semantic_frame_hits`.
+    // The semantic SELECT does NOT project `snippet`/`rank` columns (the meaning
+    // tier has no FTS term to highlight and no BM25 score), so routing through
+    // `map_audio_hit` — which `row.get("snippet")`/`row.get("rank")` — would panic
+    // with `ColumnNotFound` on the first row (sqlx `Row::get` = `try_get().unwrap()`).
     let mut hits = Vec::with_capacity(rows.len());
     for row in rows {
         let body_text: String = row.get("body_text");
-        let mut hit = map_audio_hit(row)?;
-        hit.snippet = meaning_snippet(&body_text);
-        hit.rank = f64::INFINITY; // Placeholder; RRF overwrites it.
-        hit.found_by_meaning = true;
-        hits.push(hit);
+        let source_kind =
+            AudioSegmentSourceKind::from_str(row.get::<String, _>("source_kind").as_str());
+        let audio_segment = AudioSegment {
+            id: row.get("id"),
+            source_kind: source_kind.clone(),
+            source_session_id: row.get("source_session_id"),
+            segment_index: row.get("segment_index"),
+            file_path: row.get("file_path"),
+            started_at: row.get("started_at"),
+            ended_at: row.get("ended_at"),
+            capture_segment_id: row.get("capture_segment_id"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        };
+        hits.push(AudioHit {
+            anchor_id: row.get("document_id"),
+            audio_segment,
+            source_kind,
+            span_start_ms: row
+                .get::<Option<i64>, _>("span_start_ms")
+                .unwrap_or(0)
+                .max(0) as u64,
+            span_end_ms: row.get::<Option<i64>, _>("span_end_ms").unwrap_or(0).max(0) as u64,
+            snippet: meaning_snippet(&body_text),
+            // Placeholder; RRF overwrites `rank` for every fused hit.
+            rank: f64::INFINITY,
+            secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
+                .unwrap_or(u32::MAX),
+            found_by_meaning: true,
+        });
     }
     Ok(hits)
 }
@@ -2887,6 +3008,15 @@ fn push_in_scope_anchor_rowids(
 /// the meaning excerpt) with the fused rank. This fusion runs *before* grouping
 /// and pagination, slotting in exactly where the BM25 `rank` sat.
 fn rrf_fuse_frame_hits(text_hits: &[FrameHit], semantic_hits: &[FrameHit]) -> Vec<FrameHit> {
+    // Keyword-only path: with no meaning tier to fuse, return the **Text Search**
+    // list untouched so its raw BM25 `rank` (the grouping tie-break key) is
+    // preserved exactly. Overwriting every hit's `rank` with a position-derived
+    // RRF score here would change equal-BM25 group tie-break ordering, so skipping
+    // fusion keeps the keyword-only path byte-identical to pre-Semantic-Search.
+    if semantic_hits.is_empty() {
+        return text_hits.to_vec();
+    }
+
     let mut scores: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
     for (position, hit) in text_hits.iter().enumerate() {
         *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
@@ -2915,6 +3045,12 @@ fn rrf_fuse_frame_hits(text_hits: &[FrameHit], semantic_hits: &[FrameHit]) -> Ve
 
 /// Audio counterpart of [`rrf_fuse_frame_hits`].
 fn rrf_fuse_audio_hits(text_hits: &[AudioHit], semantic_hits: &[AudioHit]) -> Vec<AudioHit> {
+    // Keyword-only path: see `rrf_fuse_frame_hits` — return the **Text Search**
+    // list untouched so the keyword-only path stays byte-identical.
+    if semantic_hits.is_empty() {
+        return text_hits.to_vec();
+    }
+
     let mut scores: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
     for (position, hit) in text_hits.iter().enumerate() {
         *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
@@ -7479,6 +7615,62 @@ mod tests {
         .expect("direct anchor id should load")
     }
 
+    /// Seed a `direct` audio (transcription) anchor with transcript `text` and
+    /// return its `search_documents.id` (the `vec0` rowid). A single-segment
+    /// transcription projects one `direct` `anchor_type = 'audio'` document on
+    /// write, exactly as production does — the audio counterpart of
+    /// [`seed_frame_anchor`].
+    async fn seed_audio_anchor(infra: &AppInfra, started_at: &str, ended_at: &str, text: &str) -> i64 {
+        let segment = infra
+            .upsert_audio_segment(&NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "mic-session",
+                1,
+                &format!("/tmp/hybrid-audio-{started_at}.m4a"),
+                started_at,
+                ended_at,
+            ))
+            .await
+            .expect("segment should insert");
+        let metadata = TranscriptionMetadata {
+            provider: "test".to_string(),
+            model_id: None,
+            language: "en".to_string(),
+            segments: vec![TranscriptionSegment {
+                start_ms: 0,
+                end_ms: 2_000,
+                text: text.to_string(),
+                confidence: None,
+            }],
+            words: Vec::new(),
+            provenance: Default::default(),
+        };
+        let job = infra
+            .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                segment.id,
+            ))
+            .await
+            .expect("transcription job should enqueue");
+        complete_job(
+            infra,
+            job,
+            ProcessingResultDraft::new()
+                .with_result_text(text)
+                .with_structured_payload_json(
+                    serde_json::to_string(&metadata).expect("metadata should serialize"),
+                ),
+        )
+        .await;
+        sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM search_documents \
+             WHERE audio_segment_id = ?1 AND text_source_kind = 'direct' AND anchor_type = 'audio' LIMIT 1",
+        )
+        .bind(segment.id)
+        .fetch_one(infra.pool())
+        .await
+        .expect("direct audio anchor id should load")
+    }
+
     #[test]
     fn meaning_snippet_collapses_whitespace_and_bounds_length() {
         let short = meaning_snippet("  hello   world  ");
@@ -7627,6 +7819,143 @@ mod tests {
             assert!(meaning_result.snippet.contains("fiscal spending plan"));
             assert!(!meaning_result.snippet.contains("<mark>"));
             assert!(frame_ids.iter().any(|&id| id == keyword_result.thumbnail_frame_id));
+        });
+    }
+
+    /// The audio counterpart of the frame fusion test, and the regression guard
+    /// for C1: a semantic **audio** hit must surface `found_by_meaning` without
+    /// panicking. Every other hybrid test seeds frame anchors only and sets
+    /// `audio_limit: Some(0)`, so the semantic audio path — which the always-on
+    /// sweep exercises in the default steady state once any transcription anchor
+    /// is embedded — was never covered.
+    #[test]
+    fn meaning_only_audio_hit_is_fused_and_tagged_found_by_meaning() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-audio-meaning");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // One audio anchor contains the literal keyword; one is only related
+            // by meaning (no shared term). Both get a vector.
+            let keyword_id = seed_audio_anchor(
+                &infra,
+                "2026-05-17T10:00:00Z",
+                "2026-05-17T10:00:02Z",
+                "quarterly budget keyword",
+            )
+            .await;
+            let meaning_id = seed_audio_anchor(
+                &infra,
+                "2026-05-17T10:05:00Z",
+                "2026-05-17T10:05:02Z",
+                "fiscal spending plan",
+            )
+            .await;
+            infra
+                .semantic_search()
+                .store_vector(keyword_id, &seeded_vector(1))
+                .await
+                .expect("keyword vector stores");
+            infra
+                .semantic_search()
+                .store_vector(meaning_id, &seeded_vector(2))
+                .await
+                .expect("meaning vector stores");
+
+            // The query vector is closest to the meaning anchor; the FTS term
+            // "keyword" only matches the keyword anchor. With `audio_limit > 0`
+            // this drives `fetch_semantic_audio_hits` — the C1 panic path.
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(10),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(seeded_vector(2)),
+                })
+                .await
+                .expect("search should succeed without panicking");
+
+            // Both surface: the keyword hit via Text Search, the related anchor
+            // via Semantic Search — fused into one audio list.
+            assert_eq!(response.audio.len(), 2, "keyword + meaning audio hits fuse");
+
+            // The keyword anchor matched a term, so it is NOT found_by_meaning.
+            let keyword_result = response
+                .audio
+                .iter()
+                .find(|audio| audio.snippet.contains("keyword"))
+                .expect("keyword audio hit present");
+            assert!(!keyword_result.found_by_meaning);
+
+            // The meaning-only anchor carries a leading body_text excerpt tagged
+            // found_by_meaning (no FTS <mark> to highlight).
+            let meaning_result = response
+                .audio
+                .iter()
+                .find(|audio| audio.found_by_meaning)
+                .expect("a meaning-only audio hit is present");
+            assert!(meaning_result.snippet.contains("fiscal spending plan"));
+            assert!(!meaning_result.snippet.contains("<mark>"));
+        });
+    }
+
+    /// Degrade-to-keyword-only (H1): when the semantic fetch cannot run — here a
+    /// query embedding whose width disagrees with the live `vec0` column, the
+    /// dominant real-world failure during/after a model switch — the whole search
+    /// must NOT fail. It must return the keyword (FTS) hits, never an `Err`. This
+    /// is the ADR-0036 "no usable runtime → keyword-only, no regression" promise:
+    /// a dimension disagreement degrades, it does not break search.
+    #[test]
+    fn a_dimension_mismatched_query_degrades_to_keyword_only_not_an_error() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-degrade-keyword");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // A keyword anchor with a correctly-sized stored vector (the live table
+            // is float[768]).
+            let keyword_id =
+                seed_frame_anchor(&infra, "2026-05-17T10:00:00Z", "quarterly budget keyword").await;
+            infra
+                .semantic_search()
+                .store_vector(keyword_id, &seeded_vector(1))
+                .await
+                .expect("keyword vector stores");
+
+            // The query embedding is the WRONG width for the live table (4 dims vs
+            // 768) — exactly the shape an embedder reloaded at a new model emits
+            // before the table is rebuilt, or permanently after a failed rebuild.
+            // The live-dimension guard skips the KNN, and the degrade wrapper fuses
+            // an empty semantic list, so the search stays keyword-only.
+            let wrong_dimension_query = vec![1.0_f32, 0.0, 0.0, 0.0];
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(wrong_dimension_query),
+                })
+                .await
+                .expect("a dimension mismatch degrades to keyword-only, never an Err");
+
+            // The keyword hit still surfaces (degrade, not fail), and nothing is
+            // tagged found_by_meaning because the semantic path was skipped.
+            assert_eq!(response.frames.len(), 1, "the keyword hit still returns");
+            assert!(response.frames[0].snippet.contains("keyword"));
+            assert!(
+                !response.frames.iter().any(|frame| frame.found_by_meaning),
+                "no meaning hits when the semantic fetch is skipped"
+            );
         });
     }
 
