@@ -23,13 +23,66 @@ use tokenizers::Tokenizer;
 
 use crate::models::{
     builtin_model_manifest, find_model_descriptor, InstalledModelLayout, SemanticSearchModelDescriptor,
-    SemanticSearchModelTier, CONFIG_FILE_NAME, FASTEMBED_PROVIDER_ID, SPECIAL_TOKENS_MAP_FILE_NAME,
-    TOKENIZER_CONFIG_FILE_NAME, TOKENIZER_FILE_NAME,
+    SemanticSearchModelTier, SemanticSearchOutputKey, SemanticSearchPooling, CONFIG_FILE_NAME,
+    FASTEMBED_PROVIDER_ID, SPECIAL_TOKENS_MAP_FILE_NAME, TOKENIZER_CONFIG_FILE_NAME,
+    TOKENIZER_FILE_NAME,
 };
 
 /// Special-token budget reserved per chunk (e.g. `[CLS]`/`[SEP]`) so a split
 /// chunk plus its special tokens still fits the model window.
 const SPECIAL_TOKEN_HEADROOM: usize = 2;
+
+/// Map the serde-friendly descriptor pooling onto fastembed's `Pooling`. Lives
+/// here (behind the `fastembed` feature) so the descriptor module needs no
+/// fastembed dependency, while the runtime still loads each model with the exact
+/// pooling fastembed assigns it. Exported so the desktop worker can pass
+/// `descriptor.pooling` straight through to [`SemanticSearchEmbedder::load_from_dir`]
+/// instead of re-deriving pooling from the model id.
+pub fn fastembed_pooling(pooling: SemanticSearchPooling) -> Pooling {
+    match pooling {
+        SemanticSearchPooling::Mean => Pooling::Mean,
+        SemanticSearchPooling::Cls => Pooling::Cls,
+    }
+}
+
+/// Capture fastembed's own pooling for a model into the serde-friendly mirror.
+/// `get_default_pooling_method` is `Option`; every text-embedding model in
+/// fastembed 5.17.2 returns `Some`, but we fall back to `Mean` (the BERT-family
+/// sentence default) rather than panic if a future model returns `None`.
+fn pooling_from_fastembed(pooling: Option<Pooling>) -> SemanticSearchPooling {
+    match pooling {
+        Some(Pooling::Cls) => SemanticSearchPooling::Cls,
+        Some(Pooling::Mean) | None => SemanticSearchPooling::Mean,
+    }
+}
+
+/// Map the serde-friendly descriptor output key onto fastembed's `OutputKey`.
+/// Exported alongside [`fastembed_pooling`] so the desktop worker passes
+/// `descriptor.output_key` through unchanged.
+pub fn fastembed_output_key(output_key: &Option<SemanticSearchOutputKey>) -> Option<OutputKey> {
+    output_key.as_ref().map(|key| match key {
+        SemanticSearchOutputKey::OnlyOne => OutputKey::OnlyOne,
+        SemanticSearchOutputKey::ByOrder(index) => OutputKey::ByOrder(*index),
+        // fastembed's `ByName` is `&'static str`. The only named outputs in the
+        // 5.17.2 catalog are the gated EmbeddingGemma variants (excluded from
+        // synthesis), so this maps the known static names; an unknown name falls
+        // back to the default single output rather than leaking memory.
+        SemanticSearchOutputKey::ByName(name) => match name.as_str() {
+            "sentence_embedding" => OutputKey::ByName("sentence_embedding"),
+            "last_hidden_state" => OutputKey::ByName("last_hidden_state"),
+            _ => OutputKey::OnlyOne,
+        },
+    })
+}
+
+/// Capture fastembed's `ModelInfo.output_key` into the serde-friendly mirror.
+fn output_key_from_fastembed(output_key: Option<OutputKey>) -> Option<SemanticSearchOutputKey> {
+    output_key.map(|key| match key {
+        OutputKey::OnlyOne => SemanticSearchOutputKey::OnlyOne,
+        OutputKey::ByOrder(index) => SemanticSearchOutputKey::ByOrder(index),
+        OutputKey::ByName(name) => SemanticSearchOutputKey::ByName(name.to_string()),
+    })
+}
 
 #[derive(Debug, Error)]
 pub enum EmbeddingError {
@@ -231,6 +284,13 @@ pub struct SupportedEmbeddingModel {
     pub external_data_files: Vec<String>,
     /// Cheap multilingual heuristic from the model code (e5 / bge-m3 / "multilingual").
     pub multilingual: bool,
+    /// fastembed's own pooling for this model (`get_default_pooling_method`), so a
+    /// Custom pick carries the right strategy through the same path the guided
+    /// tiers do — CLS for mxbai / gte / snowflake-arctic, Mean for nomic / e5.
+    pub pooling: SemanticSearchPooling,
+    /// fastembed's `ModelInfo.output_key` for this model (`None` for the default
+    /// single output).
+    pub output_key: Option<SemanticSearchOutputKey>,
 }
 
 /// The canonical (full-precision) ONNX file name we standardize on.
@@ -293,6 +353,10 @@ pub fn list_fastembed_supported_models() -> Vec<SupportedEmbeddingModel> {
         .into_iter()
         .map(|info| {
             let model_id = slug_from_model_code(&info.model_code);
+            let pooling = pooling_from_fastembed(
+                TextEmbedding::get_default_pooling_method(&info.model),
+            );
+            let output_key = output_key_from_fastembed(info.output_key.clone());
             SupportedEmbeddingModel {
                 display_name: humanize_model_code(&info.model_code),
                 multilingual: looks_multilingual(&info.model_code),
@@ -302,6 +366,8 @@ pub fn list_fastembed_supported_models() -> Vec<SupportedEmbeddingModel> {
                 external_data_files: info.additional_files.clone(),
                 model_code: info.model_code.clone(),
                 model_id,
+                pooling,
+                output_key,
             }
         })
         .collect()
@@ -362,6 +428,14 @@ fn synthesize_fastembed_descriptor(model_id: &str) -> Option<SemanticSearchModel
                 info.model_file.clone(),
                 info.additional_files.clone(),
             );
+            // Read pooling + output key from fastembed's own metadata for this
+            // exact model, NOT a guess from the id: `get_default_pooling_method`
+            // assigns CLS to mxbai / gte / snowflake-arctic (none start with
+            // "bge"), so guessing by prefix silently mean-pooled them.
+            let pooling = pooling_from_fastembed(
+                TextEmbedding::get_default_pooling_method(&info.model),
+            );
+            let output_key = output_key_from_fastembed(info.output_key.clone());
             SemanticSearchModelDescriptor {
                 provider: FASTEMBED_PROVIDER_ID.to_string(),
                 model_id: model_id.to_string(),
@@ -375,6 +449,8 @@ fn synthesize_fastembed_descriptor(model_id: &str) -> Option<SemanticSearchModel
                 max_tokens: CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
                 // Unknown up front; the streaming download reports real content-length.
                 approx_download_bytes: 0,
+                pooling,
+                output_key,
                 expected_layout,
             }
         })
@@ -602,10 +678,103 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_pooling_is_read_from_fastembed_not_guessed_from_the_id() {
+        // The retired pooling-by-id-prefix guess (`if id.starts_with("bge")`)
+        // silently mean-pooled CLS-trained models that don't start with "bge".
+        // This pins the real fastembed assignment per model: across the guided
+        // tiers AND the Custom-pickable CLS models the prefix guess got wrong
+        // (mxbai / gte / snowflake-arctic). Slugs are the picker's lowercased last
+        // path-segment of the HF model_code.
+        let cls_models = [
+            "bge-m3",                   // guided tier (BAAI/bge-m3)
+            "bge-small-en-v1.5",        // BGE small (CLS in fastembed)
+            "mxbai-embed-large-v1",     // mixedbread-ai/mxbai-embed-large-v1
+            "gte-base-en-v1.5",         // Alibaba-NLP/gte-base-en-v1.5
+            "gte-large-en-v1.5",        // Alibaba-NLP/gte-large-en-v1.5
+            "snowflake-arctic-embed-m", // Snowflake/snowflake-arctic-embed-m
+        ];
+        let mean_models = [
+            "nomic-embed-text-v1.5", // guided English tier
+            "multilingual-e5-small", // guided Multilingual tier
+        ];
+
+        for slug in cls_models {
+            let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, slug)
+                .unwrap_or_else(|| panic!("{slug} must resolve to a descriptor"));
+            assert_eq!(
+                descriptor.pooling,
+                SemanticSearchPooling::Cls,
+                "{slug} is CLS-pooled in fastembed and must not be silently mean-pooled"
+            );
+        }
+        for slug in mean_models {
+            let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, slug)
+                .unwrap_or_else(|| panic!("{slug} must resolve to a descriptor"));
+            assert_eq!(
+                descriptor.pooling,
+                SemanticSearchPooling::Mean,
+                "{slug} is mean-pooled in fastembed"
+            );
+        }
+
+        // The picker catalog rows carry the same pooling as the resolved descriptors.
+        let supported = list_fastembed_supported_models();
+        for slug in cls_models {
+            if let Some(model) = supported.iter().find(|m| m.model_id == slug) {
+                assert_eq!(
+                    model.pooling,
+                    SemanticSearchPooling::Cls,
+                    "supported-model row for {slug} must report CLS pooling"
+                );
+            }
+        }
+
+        // The conversion onto fastembed's own Pooling holds for both arms.
+        assert_eq!(fastembed_pooling(SemanticSearchPooling::Cls), Pooling::Cls);
+        assert_eq!(fastembed_pooling(SemanticSearchPooling::Mean), Pooling::Mean);
+    }
+
+    #[test]
     fn resolve_descriptor_rejects_unknown_and_non_fastembed_provider() {
         assert!(resolve_descriptor(FASTEMBED_PROVIDER_ID, "not-a-real-model").is_none());
         // A non-fastembed provider never synthesizes, even for a real slug.
         assert!(resolve_descriptor("some-other-provider", "nomic-embed-text-v1.5").is_none());
+    }
+
+    #[test]
+    fn slug_from_model_code_is_unique_across_the_fastembed_catalog() {
+        // Custom-model identity is keyed off `slug_from_model_code` (the lowercased
+        // last path segment of the HF model_code): the picker shows it as `model_id`
+        // and `synthesize_fastembed_descriptor` resolves it back via a first-match
+        // `.find(...)`. Two enumerable models sharing a final path segment would
+        // collide onto one slug and silently resolve to whichever the catalog lists
+        // first. The pinned fastembed catalog has no collision today; this guards the
+        // next lockstep fastembed bump — a future catalog adding a colliding repo
+        // fails here loudly instead of mis-resolving a Custom pick.
+        use std::collections::HashMap;
+
+        let mut by_slug: HashMap<String, Vec<String>> = HashMap::new();
+        for info in canonical_fastembed_models() {
+            by_slug
+                .entry(slug_from_model_code(&info.model_code))
+                .or_default()
+                .push(info.model_code.clone());
+        }
+
+        let collisions: Vec<(String, Vec<String>)> = by_slug
+            .into_iter()
+            .filter(|(_, codes)| codes.len() > 1)
+            .map(|(slug, mut codes)| {
+                codes.sort();
+                (slug, codes)
+            })
+            .collect();
+
+        assert!(
+            collisions.is_empty(),
+            "slug_from_model_code must be unique across the fastembed catalog; \
+             colliding slugs (slug -> model_codes): {collisions:?}"
+        );
     }
 
     #[test]

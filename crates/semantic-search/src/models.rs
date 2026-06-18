@@ -62,6 +62,35 @@ pub enum SemanticSearchModelTier {
     Custom,
 }
 
+/// The sentence-pooling strategy a **Semantic Search Model** reads its single
+/// vector with: `Mean`-pool `last_hidden_state` (nomic / e5) or read the `[CLS]`
+/// token (bge / mxbai / gte / snowflake-arctic). A serde-friendly mirror of
+/// fastembed's `Pooling` so the descriptor carries pooling **without** this
+/// (non-`fastembed`-feature) module taking a fastembed dependency; the runtime
+/// converts to/from `fastembed::Pooling` behind the feature. Getting this wrong
+/// silently mean-pools a CLS-trained model — a wrong, lower-quality vector — so a
+/// model's pooling is captured from fastembed's own `get_default_pooling_method`,
+/// never guessed from the id.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSearchPooling {
+    Mean,
+    Cls,
+}
+
+/// Which session output a model reads its embedding from — a serde-friendly
+/// mirror of fastembed's `OutputKey`. Almost every sentence model uses the
+/// default (`OnlyOne`); a few name a specific tensor (e.g. `sentence_embedding`).
+/// Carried through the descriptor so a model that names its output stays correct,
+/// matching fastembed's own `ModelInfo.output_key`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum SemanticSearchOutputKey {
+    OnlyOne,
+    ByOrder(usize),
+    ByName(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticSearchModelManifest {
@@ -92,6 +121,18 @@ pub struct SemanticSearchModelDescriptor {
     /// before choosing a tier. Approximate because it is the quantized ONNX size,
     /// not a network-measured total.
     pub approx_download_bytes: u64,
+    /// The sentence-pooling strategy the runtime loads this model with. Captured
+    /// from fastembed's `get_default_pooling_method` for synthesized Custom picks
+    /// and hand-set on the guided tiers — never guessed from the id, so a
+    /// CLS-trained model (mxbai / gte / snowflake-arctic) is read at the `[CLS]`
+    /// token instead of being silently mean-pooled into a wrong, lower-quality
+    /// vector.
+    pub pooling: SemanticSearchPooling,
+    /// The session output the model reads its embedding from (fastembed's
+    /// `ModelInfo.output_key`). `None` for the default single output; carried
+    /// through so a model that names a specific output tensor stays correct.
+    #[serde(default)]
+    pub output_key: Option<SemanticSearchOutputKey>,
     pub expected_layout: InstalledModelLayout,
 }
 
@@ -220,6 +261,9 @@ pub fn builtin_model_manifest() -> SemanticSearchModelManifest {
                 max_tokens: 8192,
                 // ~140 MB quantized ONNX.
                 approx_download_bytes: 140_000_000,
+                // nomic is mean-pooled (fastembed `get_default_pooling_method`).
+                pooling: SemanticSearchPooling::Mean,
+                output_key: None,
                 expected_layout: InstalledModelLayout::default(),
             },
             SemanticSearchModelDescriptor {
@@ -238,6 +282,9 @@ pub fn builtin_model_manifest() -> SemanticSearchModelManifest {
                 max_tokens: 512,
                 // ~465 MB on disk.
                 approx_download_bytes: 465_000_000,
+                // multilingual-e5-small is mean-pooled.
+                pooling: SemanticSearchPooling::Mean,
+                output_key: None,
                 // Self-contained `onnx/model.onnx`, no `*.onnx_data` sibling.
                 expected_layout: InstalledModelLayout::default(),
             },
@@ -256,6 +303,9 @@ pub fn builtin_model_manifest() -> SemanticSearchModelManifest {
                 // ~2.3 GB: the `onnx/model.onnx` graph plus its `onnx/model.onnx_data`
                 // external-data sibling and `onnx/Constant_7_attr__value`.
                 approx_download_bytes: 2_300_000_000,
+                // bge-m3 is CLS-pooled (fastembed `get_default_pooling_method`).
+                pooling: SemanticSearchPooling::Cls,
+                output_key: None,
                 // bge-m3 ships external data: the ONNX graph references
                 // `onnx/model.onnx_data` (and `onnx/Constant_7_attr__value`), so they
                 // are part of the install layout and the completeness check.
@@ -668,5 +718,116 @@ mod tests {
             error,
             ModelStatusError::UnsafePathComponent { field: "model_id", .. }
         ));
+    }
+
+    /// Extract the `version = "..."` pin from a crate's `ort = { ... }` (or
+    /// `ort = "..."`) dependency line in a Cargo.toml. fastembed (here) and
+    /// Parakeet (`crates/audio-transcription`) must pin the SAME `ort` so the
+    /// workspace links exactly one native ONNX runtime — see the lockstep note in
+    /// both Cargo.toml files and ADR 0036. Returns `None` if no `ort` pin is found.
+    fn ort_version_pin(cargo_toml: &str) -> Option<String> {
+        for line in cargo_toml.lines() {
+            let trimmed = line.trim_start();
+            // The `ort` dependency key, not a substring of some other key
+            // (e.g. `ort-sys`): `ort` followed by optional whitespace then `=`.
+            let Some(rest) = trimmed.strip_prefix("ort") else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let Some(rest) = rest.strip_prefix('=') else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            // Inline-table form: `ort = { version = "=X", ... }`.
+            if let Some(after_version) = rest.find("version") {
+                let after = &rest[after_version + "version".len()..];
+                if let Some(pin) = first_quoted(after) {
+                    return Some(pin);
+                }
+            }
+            // Shorthand form: `ort = "=X"`.
+            if let Some(pin) = first_quoted(rest) {
+                return Some(pin);
+            }
+        }
+        None
+    }
+
+    /// The first double-quoted string in `s`, if any.
+    fn first_quoted(s: &str) -> Option<String> {
+        let start = s.find('"')? + 1;
+        let end = s[start..].find('"')? + start;
+        Some(s[start..end].to_string())
+    }
+
+    #[test]
+    fn first_quoted_extracts_version_string() {
+        assert_eq!(
+            first_quoted(r#" = "=2.0.0-rc.12", optional = true }"#).as_deref(),
+            Some("=2.0.0-rc.12")
+        );
+        assert_eq!(first_quoted("no quotes here"), None);
+    }
+
+    #[test]
+    fn ort_version_pin_parses_inline_and_shorthand_forms() {
+        let inline = r#"ort = { version = "=2.0.0-rc.12", optional = true }"#;
+        assert_eq!(ort_version_pin(inline).as_deref(), Some("=2.0.0-rc.12"));
+
+        let shorthand = r#"ort = "=2.0.0-rc.12""#;
+        assert_eq!(ort_version_pin(shorthand).as_deref(), Some("=2.0.0-rc.12"));
+
+        // A lookalike key (`ort-sys`) must not be mistaken for the `ort` dependency.
+        let lookalike = r#"ort-sys = { version = "=9.9.9" }"#;
+        assert_eq!(ort_version_pin(lookalike), None);
+    }
+
+    /// Mechanical lockstep guard (cross-cutting Low finding on PR #126): the `ort`
+    /// pin in `semantic-search` (used by fastembed) and in `audio-transcription`
+    /// (used by Parakeet) MUST stay string-equal so the workspace links exactly one
+    /// native ONNX runtime. Today they match and `cargo check` is green, but nothing
+    /// previously asserted the two pins stay equal — only matching human comments. A
+    /// future bump to one and not the other would diverge silently. This test parses
+    /// both Cargo.toml files (located relative to this crate's manifest dir, so it
+    /// runs in CI under plain `cargo test -p semantic-search` with no feature gate)
+    /// and fails loudly naming both pins if they ever drift.
+    #[test]
+    fn ort_pin_is_in_lockstep_with_audio_transcription() {
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let self_cargo_toml_path = crate_dir.join("Cargo.toml");
+        // `crates/semantic-search` -> `crates/audio-transcription`.
+        let audio_cargo_toml_path = crate_dir
+            .parent()
+            .expect("semantic-search crate dir has a parent (crates/)")
+            .join("audio-transcription")
+            .join("Cargo.toml");
+
+        let self_toml = std::fs::read_to_string(&self_cargo_toml_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", self_cargo_toml_path.display()));
+        let audio_toml = std::fs::read_to_string(&audio_cargo_toml_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", audio_cargo_toml_path.display()));
+
+        let self_pin = ort_version_pin(&self_toml).unwrap_or_else(|| {
+            panic!(
+                "could not find an `ort` version pin in {}",
+                self_cargo_toml_path.display()
+            )
+        });
+        let audio_pin = ort_version_pin(&audio_toml).unwrap_or_else(|| {
+            panic!(
+                "could not find an `ort` version pin in {}",
+                audio_cargo_toml_path.display()
+            )
+        });
+
+        assert_eq!(
+            self_pin, audio_pin,
+            "`ort` pin drift: semantic-search pins `ort = \"{self_pin}\"` ({}) but \
+             audio-transcription pins `ort = \"{audio_pin}\"` ({}). fastembed and \
+             Parakeet must share ONE `ort` so the workspace links a single native \
+             ONNX runtime — bump both pins together (see ADR 0036).",
+            self_cargo_toml_path.display(),
+            audio_cargo_toml_path.display(),
+        );
     }
 }

@@ -23,15 +23,15 @@ pub use models::{
     selected_semantic_search_model_available, semantic_search_models_dir, write_installed_marker,
     InstalledModelLayout, ModelStatusError, ModelStatusKind, SemanticSearchModelDescriptor,
     SemanticSearchModelManifest, SemanticSearchModelStatus, SemanticSearchModelTier,
-    CONFIG_FILE_NAME, FASTEMBED_PROVIDER_ID, INSTALLED_MARKER_FILE_NAME, MODEL_ONNX_FILE_NAME,
-    MODEL_STORE_DIR_NAME, SPECIAL_TOKENS_MAP_FILE_NAME, TOKENIZER_CONFIG_FILE_NAME,
-    TOKENIZER_FILE_NAME,
+    SemanticSearchOutputKey, SemanticSearchPooling, CONFIG_FILE_NAME, FASTEMBED_PROVIDER_ID,
+    INSTALLED_MARKER_FILE_NAME, MODEL_ONNX_FILE_NAME, MODEL_STORE_DIR_NAME,
+    SPECIAL_TOKENS_MAP_FILE_NAME, TOKENIZER_CONFIG_FILE_NAME, TOKENIZER_FILE_NAME,
 };
 
 #[cfg(feature = "fastembed")]
 pub use runtime::{
-    list_fastembed_supported_models, resolve_descriptor, EmbeddingError, SemanticSearchEmbedder,
-    SupportedEmbeddingModel,
+    fastembed_output_key, fastembed_pooling, list_fastembed_supported_models, resolve_descriptor,
+    EmbeddingError, SemanticSearchEmbedder, SupportedEmbeddingModel,
 };
 
 /// Re-export of fastembed's pooling strategy and named-output key so callers
