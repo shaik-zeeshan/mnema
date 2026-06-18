@@ -215,7 +215,22 @@ impl SemanticSearchEmbedder {
         // builder for it in fastembed 5.17.2).
         user_model.output_key = output_key;
 
-        let mut init_options = InitOptionsUserDefined::new().with_max_length(max_tokens);
+        // Register the CPU execution provider explicitly with its memory arena
+        // **disabled**. Left to fastembed's default (an empty execution-providers
+        // vec), `ort` falls back to its implicit CPU EP, which keeps the arena ON:
+        // the arena pre-allocates one large buffer per input shape and, by design,
+        // *never returns that memory to the OS* while the process lives — so the
+        // resident footprint sits at its high-water mark (~1.1 GB measured) and
+        // dropping/reloading the session reclaims none of it. With the arena off,
+        // each batch's tensors are malloc'd and freed per `session.run`, so the
+        // floor collapses toward the model weights alone (ONNX #11627: ~6 GB →
+        // ~217 MB). This complements the window cap ([`MAX_EMBED_WINDOW_TOKENS`]),
+        // which bounds the *peak* shape; the arena toggle bounds what's *retained*.
+        let mut init_options = InitOptionsUserDefined::new()
+            .with_max_length(max_tokens)
+            .with_execution_providers(vec![
+                ort::ep::CPU::default().with_arena_allocator(false).build()
+            ]);
         // Without this, fastembed defaults the ONNX intra-op pool to every CPU
         // core, so one embedding fans across all cores — most of it spin-wait on
         // these small encoders. A cap keeps embedding a good background citizen.
