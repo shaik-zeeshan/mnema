@@ -6,13 +6,15 @@ use capture_types::{
     default_ocr_settings, default_ocr_tesseract_char_whitelist,
     default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
-    default_preview_cache_ttl_seconds, default_privacy_settings, default_speaker_analysis_model_id,
+    default_preview_cache_ttl_seconds, default_privacy_settings, default_semantic_search_model_id,
+    default_semantic_search_provider, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AccessSettings,
     AiRuntimeSettings, AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionProvider,
     AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
     RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
-    SettingsOwnershipDomain, SpeakerAnalysisSettings, UpdateAccessSettingsRequest,
+    SemanticSearchSettings, SettingsOwnershipDomain, SpeakerAnalysisSettings,
+    UpdateAccessSettingsRequest,
     UpdateAiRuntimeSettingsRequest, UpdateCaptureSourceSettingsRequest,
     UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
@@ -323,6 +325,64 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
                 .timeout_seconds
                 .clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS)
         },
+    }
+}
+
+/// Normalize the **Semantic Search** settings before they are persisted, mirroring
+/// [`validate_speaker_analysis_settings`] (finding L4): every other model-bearing
+/// domain trims/normalizes its provider + model id, but `semantic_search` was
+/// persisted raw, so a whitespace/empty/incoherent `provider`+`model_id` (a
+/// hand-edited config, or a future free-text Custom picker) would land verbatim,
+/// `resolve_selected_descriptor` would return `None`, and the worker + query would
+/// silently no-op forever while the toggle still read enabled.
+///
+/// Like the speaker-analysis validator this is **infallible** (it normalizes rather
+/// than rejecting):
+/// - `provider`: trimmed; reset to the default (`"fastembed"`) if it is not the one
+///   recognized provider, exactly as the speaker validator resets an unrecognized
+///   provider to `"sherpa_onnx"`.
+/// - `model_id`: an explicit `None` is the legitimate **"no model selected"**
+///   sentinel (the feature is default-on but model-gated, so cleared → keyword-only)
+///   and is kept as `None` — this is the one deliberate divergence from the speaker
+///   validator, whose `None` resets to a default because speaker analysis has no
+///   "no model" off-state. A **present** id is trimmed; an empty/whitespace or
+///   unknown/unsupported id (the actual L4 hazard — garbage persisting verbatim)
+///   falls back to the default model (`nomic-embed-text-v1.5`); a present-and-known
+///   id is kept. `resolve_descriptor` is the validity gate (the role
+///   `find_model_descriptor` plays in the speaker validator) and also covers
+///   Custom-picked fastembed models, so a real Custom selection survives.
+/// - `enabled`: a plain bool, carried through unchanged (the speaker validator
+///   likewise carries its bool flags through).
+fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticSearchSettings {
+    let provider = if value.provider.trim() == semantic_search::FASTEMBED_PROVIDER_ID {
+        semantic_search::FASTEMBED_PROVIDER_ID.to_string()
+    } else {
+        default_semantic_search_provider()
+    };
+
+    let model_id = match value.model_id {
+        // Explicitly cleared — keep "no model selected" (keyword-only) rather than
+        // resurrecting the default. This is the intentional model-gated off-state.
+        None => None,
+        // A present id: trim; an empty or unknown id falls back to the default so
+        // garbage never persists verbatim and leaves the worker/query silently
+        // no-op'ing forever while the toggle reads enabled.
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty()
+                && semantic_search::resolve_descriptor(&provider, trimmed).is_some()
+            {
+                Some(trimmed.to_string())
+            } else {
+                default_semantic_search_model_id()
+            }
+        }
+    };
+
+    SemanticSearchSettings {
+        enabled: value.enabled,
+        provider,
+        model_id,
     }
 }
 
@@ -640,7 +700,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         access: request.access,
         ai_runtime: normalize_ai_runtime_settings(request.ai_runtime),
         user_context: request.user_context,
-        semantic_search: request.semantic_search,
+        semantic_search: validate_semantic_search_settings(request.semantic_search),
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -2367,5 +2427,81 @@ mod tests {
         let validated = validate_speaker_analysis_settings(settings);
 
         assert_eq!(validated.model_id, default_speaker_analysis_model_id());
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_trims_and_keeps_known_model() {
+        // L4: an untrimmed but otherwise-known guided-tier provider + model is
+        // trimmed and kept (mirrors validate_speaker_analysis_settings keeping a
+        // known model). The default model id is a known guided tier.
+        let known_model = default_semantic_search_model_id().expect("a default model id");
+        let settings = SemanticSearchSettings {
+            enabled: true,
+            provider: format!("  {}  ", semantic_search::FASTEMBED_PROVIDER_ID),
+            model_id: Some(format!("  {known_model}  ")),
+        };
+
+        let validated = validate_semantic_search_settings(settings);
+
+        assert_eq!(validated.provider, semantic_search::FASTEMBED_PROVIDER_ID);
+        assert_eq!(validated.model_id.as_deref(), Some(known_model.as_str()));
+        assert!(validated.enabled, "the enabled flag is carried through");
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_resets_unknown_provider_to_default() {
+        // L4: an unrecognized provider resets to the default ("fastembed"), exactly
+        // as the speaker validator resets an unknown provider to "sherpa_onnx".
+        let settings = SemanticSearchSettings {
+            enabled: false,
+            provider: "made-up-provider".to_string(),
+            model_id: default_semantic_search_model_id(),
+        };
+
+        let validated = validate_semantic_search_settings(settings);
+
+        assert_eq!(validated.provider, default_semantic_search_provider());
+        // The model still resolves under the reset default provider, so it survives.
+        assert_eq!(validated.model_id, default_semantic_search_model_id());
+        assert!(!validated.enabled, "the enabled flag is carried through");
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_falls_back_for_empty_and_unknown_model() {
+        // L4: a PRESENT but empty/whitespace or unknown model id falls back to the
+        // default model (mirrors validate_speaker_analysis_settings_falls_back) —
+        // this is the garbage-persisting-verbatim hazard the finding describes.
+        for raw_model in ["   ", "", "bogus-model-xyz"] {
+            let settings = SemanticSearchSettings {
+                enabled: true,
+                provider: semantic_search::FASTEMBED_PROVIDER_ID.to_string(),
+                model_id: Some(raw_model.to_string()),
+            };
+
+            let validated = validate_semantic_search_settings(settings);
+
+            assert_eq!(
+                validated.model_id,
+                default_semantic_search_model_id(),
+                "a present empty/unknown model {raw_model:?} must fall back to the default"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_keeps_an_explicitly_cleared_model() {
+        // L4 boundary: an explicit `None` is the legitimate "no model selected"
+        // (keyword-only) sentinel and must NOT be resurrected to the default — this
+        // is the one deliberate divergence from the speaker-analysis validator, and
+        // it preserves the model-gated clear semantics the domain patch relies on.
+        let settings = SemanticSearchSettings {
+            enabled: false,
+            provider: semantic_search::FASTEMBED_PROVIDER_ID.to_string(),
+            model_id: None,
+        };
+
+        let validated = validate_semantic_search_settings(settings);
+
+        assert_eq!(validated.model_id, None);
     }
 }
