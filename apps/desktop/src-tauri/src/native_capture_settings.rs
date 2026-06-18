@@ -66,6 +66,16 @@ pub(crate) struct AppliedRecordingSettingsUpdate {
 }
 
 pub(crate) fn default_save_directory() -> String {
+    // Honor MNEMA_SAVE_DIRECTORY verbatim when set, matching the broker/CLI
+    // read-only resolver in `crates/app-infra/src/brokered_access.rs`
+    // (`default_save_directory_from_config`): any set value is taken as the
+    // directory path with no trimming, no `~` expansion, and no emptiness
+    // filtering. This keeps the dev sandbox (`dev:sandbox` sets the env var to
+    // `$HOME/.mnema-dev`) isolated from the production `~/.mnema` root.
+    if let Ok(path) = std::env::var("MNEMA_SAVE_DIRECTORY") {
+        return PathBuf::from(path).to_string_lossy().to_string();
+    }
+
     std::env::var("HOME")
         .map(|home| Path::new(&home).join(".mnema"))
         .unwrap_or_else(|_| PathBuf::from(".mnema"))
