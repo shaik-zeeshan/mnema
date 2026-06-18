@@ -77,3 +77,7 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 cidre = { version = "0.15", default-features = false, features = ["app", "async", "av", "blocks", "cf", "cg", "cm", "iio", "ns", "ut", "macos_15_0"] }
 objc = "0.2"
+# Direct dep for the per-thread QoS FFI the backfill embed uses to background
+# itself onto efficiency cores (pthread_set/get_qos_class_self_np). Already a
+# transitive dep; this just makes the FFI available to our code.
+libc = "0.2"

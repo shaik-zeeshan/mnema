@@ -117,6 +117,10 @@ pub async fn embed_search_query(
                 }
             },
         };
+        // Deliberately runs at the thread's DEFAULT QoS — NOT backgrounded like the
+        // backfill embed (see `BackfillEmbedQosGuard` in semantic_search_worker.rs).
+        // Search is user-initiated and latency-sensitive, so a future reader should
+        // not "fix" this path by adding a background-QoS guard here.
         let vector = loaded
             .embedder
             .embed_text(&query)

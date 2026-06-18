@@ -4093,6 +4093,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "image",
+ "libc",
  "objc",
  "ocr",
  "reqwest 0.12.28",

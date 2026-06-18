@@ -28,7 +28,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Audio transcription: Apple Speech | [x] | [ ] | [ ] | Apple-only provider. |
 | Audio transcription: Local Whisper/Parakeet | [x] | [~] | [~] | Models are cross-platform-ish, but audio decode is AVFoundation-only today. |
 | Speaker analysis | [x] | [~] | [~] | Model runtime is cross-platform-ish, but audio decode is AVFoundation-only today. |
-| Semantic Search (local embeddings + vec0) | [x] | [~] | [~] | Built and tested on macOS only. Embeddings run in-process via `fastembed` on the ONNX runtime (`ort`), and `sqlite-vec` (`vec0`) is statically linked into the SQLCipher amalgamation — both cross-platform in principle and free of native capture/audio-decode dependencies. Model download is a desktop-owned `reqwest` fetch from Hugging Face, also platform-agnostic. Windows/Linux are **unverified**: the ONNX/`ort` build (incl. its `native-tls` linkage) and the static `vec0` link need a real build/run on those platforms before claiming support. |
+| Semantic Search (local embeddings + vec0) | [x] | [~] | [~] | Built and tested on macOS only. Embeddings run in-process via `fastembed` on the ONNX runtime (`ort`), and `sqlite-vec` (`vec0`) is statically linked into the SQLCipher amalgamation — both cross-platform in principle and free of native capture/audio-decode dependencies. Model download is a desktop-owned `reqwest` fetch from Hugging Face, also platform-agnostic. On macOS the **backfill** embed runs at **background QoS** (per-thread, restored on drop) so the scheduler steers it onto efficiency cores and yields it to foreground work; the **query/search** embed stays at default QoS because it is user-initiated and latency-sensitive. Windows/Linux are **unverified**: the ONNX/`ort` build (incl. its `native-tls` linkage) and the static `vec0` link need a real build/run on those platforms before claiming support (and the QoS downclock is macOS-only — a no-op elsewhere). |
 | Inactivity detection | [x] | [ ] | [ ] | macOS uses CoreGraphics input idle plus capture-sourced screen/audio activity. |
 | Sleep/wake recovery | [x] | [ ] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. |
 | Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
@@ -74,7 +74,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Local Whisper/Parakeet provider integration using AVFoundation decode.
 - [x] Speaker analysis using AVFoundation decode.
 - [x] System-audio speech activity using AVFoundation-backed audio decode.
-- [x] Semantic Search: in-process `fastembed`/`ort` embeddings, `vec0` vectors inside the SQLCipher-encrypted Capture Index, deferred-startup backfill sweep, and desktop-owned model download from Hugging Face. No native capture or audio-decode dependency, so the runtime itself is platform-neutral; only verified on macOS today.
+- [x] Semantic Search: in-process `fastembed`/`ort` embeddings, `vec0` vectors inside the SQLCipher-encrypted Capture Index, deferred-startup backfill sweep, and desktop-owned model download from Hugging Face. No native capture or audio-decode dependency, so the runtime itself is platform-neutral; only verified on macOS today. The backfill sweep embeds a whole batch in one fastembed call at **background QoS** (efficiency cores, yields to foreground) while the user-initiated query embed stays at default QoS — the QoS downclock is macOS-only.
 
 ### Privacy, metadata, and UX
 

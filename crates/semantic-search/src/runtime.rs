@@ -206,22 +206,97 @@ impl SemanticSearchEmbedder {
     /// overflows the window is auto-split into token-window chunks (never
     /// silently truncated), each chunk embedded, and the chunk vectors mean-
     /// pooled and L2-normalized into one vector.
+    ///
+    /// Delegates to [`embed_texts`](Self::embed_texts) so the single-text query
+    /// path and the batched backfill path share one set of semantics (overflow
+    /// split, single-chunk passthrough, multi-chunk mean-pool). The extra
+    /// `String`/`Vec` allocation for a one-element batch is negligible next to a
+    /// model forward pass.
     pub fn embed_text(&mut self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        let chunks = self.split_on_overflow(text)?;
-        if chunks.len() <= 1 {
-            let single = chunks.into_iter().next().unwrap_or_default();
-            let mut vectors = self
-                .embedder
-                .embed(vec![single], None)
-                .map_err(|error| EmbeddingError::Embed(error.to_string()))?;
-            return vectors.pop().ok_or(EmbeddingError::EmptyEmbedding);
+        self.embed_texts(&[text])
+            .into_iter()
+            .next()
+            // `embed_texts` returns exactly one result per input, so a 1-element
+            // input always yields a 1-element output; this is unreachable.
+            .unwrap_or(Err(EmbeddingError::EmptyEmbedding))
+    }
+
+    /// Derive a **Semantic Search Vector** for each input text in one batched
+    /// fastembed call — the backfill hot path. Returns exactly one result per
+    /// input, in input order.
+    ///
+    /// Why batch: the backfill worker drains a batch of anchors per pass. Calling
+    /// [`embed_text`](Self::embed_text) per anchor runs one ONNX forward pass per
+    /// text; folding the whole batch into a single `embedder.embed(...)` cuts the
+    /// total CPU-seconds (fewer session entries/exits, better internal batching)
+    /// so the backlog drains sooner.
+    ///
+    /// The catch is overflow splitting: a single text can fan into several
+    /// token-window chunks (see [`split_on_overflow`](Self::split_on_overflow)),
+    /// so a naive `embed(texts)` would mis-align chunks to texts. Instead we fan
+    /// every text's chunks into one flat batch, record each text's chunk count,
+    /// run one embed, then [`fan_in_chunk_vectors`] regroups the flat vectors back
+    /// into one vector per text (single chunk passes through unchanged — byte-for-
+    /// byte parity with `embed_text`'s single-chunk path; multiple chunks
+    /// mean-pool).
+    pub fn embed_texts(&mut self, texts: &[&str]) -> Vec<Result<Vec<f32>, EmbeddingError>> {
+        if texts.is_empty() {
+            return Vec::new();
         }
 
-        let vectors = self
-            .embedder
-            .embed(chunks, None)
-            .map_err(|error| EmbeddingError::Embed(error.to_string()))?;
-        mean_pool_l2(&vectors).ok_or(EmbeddingError::EmptyEmbedding)
+        // Split every text up front. A split failure is recorded as that text's
+        // result slot (`Some(Err(..))`) and contributes ZERO chunks to the batch;
+        // a success records `None` here and pushes its chunks (tracking the count)
+        // so the fan-in can slice the flat vectors back per text. `split_results`
+        // is one entry per input text, in order, so the slots interleave back
+        // around the fan-in output below.
+        let mut split_results: Vec<Option<EmbeddingError>> = Vec::with_capacity(texts.len());
+        let mut chunk_counts: Vec<usize> = Vec::new();
+        let mut all_chunks: Vec<String> = Vec::new();
+        for text in texts {
+            match self.split_on_overflow(text) {
+                Ok(chunks) => {
+                    split_results.push(None);
+                    chunk_counts.push(chunks.len());
+                    all_chunks.extend(chunks);
+                }
+                Err(error) => split_results.push(Some(error)),
+            }
+        }
+
+        // One embed for the whole batch. `None` = fastembed's internal default
+        // batching over the flat chunk list.
+        let embed_result = self.embedder.embed(all_chunks, None);
+
+        // Fan the flat vectors back into one result per successfully-split text.
+        // On an embed error every successfully-split text fails identically; texts
+        // that already failed splitting keep their own split error below.
+        let mut fanned_in = match embed_result {
+            Ok(vectors) => fan_in_chunk_vectors(&chunk_counts, vectors).into_iter(),
+            Err(error) => {
+                // One `Err` per successfully-split text. `EmbeddingError` is not
+                // `Clone`, so the message is rebuilt per slot rather than `vec![..; n]`.
+                let message = error.to_string();
+                chunk_counts
+                    .iter()
+                    .map(|_| Err(EmbeddingError::Embed(message.clone())))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            }
+        };
+
+        // Interleave: a split-failure slot keeps its error; every other slot draws
+        // the next fan-in result, in the same order the chunk counts were pushed.
+        split_results
+            .into_iter()
+            .map(|split_error| match split_error {
+                Some(error) => Err(error),
+                None => fanned_in
+                    .next()
+                    // One fan-in result per successfully-split text by construction.
+                    .unwrap_or(Err(EmbeddingError::EmptyEmbedding)),
+            })
+            .collect()
     }
 
     /// Split `text` into chunks that each fit the model's token window. Returns a
@@ -509,6 +584,44 @@ fn looks_multilingual(model_code: &str) -> bool {
     lower.contains("multilingual") || lower.contains("e5") || lower.contains("bge-m3")
 }
 
+/// Regroup the flat list of chunk vectors a batched embed produced back into one
+/// vector per text, given each (successfully-split) text's chunk count in order.
+///
+/// This is the pure fan-in half of [`SemanticSearchEmbedder::embed_texts`],
+/// factored out so the indexing + per-text pooling is unit-testable without a
+/// real ONNX model. `chunk_counts[i]` is text `i`'s number of chunks; the helper
+/// walks `vectors` in lockstep, taking each text's contiguous slice. A text with
+/// exactly one chunk passes its single vector through unchanged (byte-for-byte
+/// parity with `embed_text`'s single-chunk path — fastembed already L2-normalized
+/// it, so re-pooling would be a no-op at best and a precision drift at worst); a
+/// text with more than one chunk is `mean_pool_l2`'d (→ `EmptyEmbedding` if
+/// pooling returns `None`, e.g. a ragged/empty slice).
+///
+/// The vector total is expected to equal `chunk_counts.sum()`; should the batch
+/// under-deliver, a slice that runs past the end yields fewer vectors than
+/// `count`, which `mean_pool_l2` rejects (→ `EmptyEmbedding`) rather than panic.
+fn fan_in_chunk_vectors(
+    chunk_counts: &[usize],
+    vectors: Vec<Vec<f32>>,
+) -> Vec<Result<Vec<f32>, EmbeddingError>> {
+    let mut results = Vec::with_capacity(chunk_counts.len());
+    let mut cursor = 0usize;
+    for &count in chunk_counts {
+        // Clamp the slice end so an under-delivered batch can't index out of
+        // bounds; the short slice falls through to the pooling check below.
+        let end = (cursor + count).min(vectors.len());
+        let slice = &vectors[cursor.min(vectors.len())..end];
+        cursor += count;
+        if count == 1 && slice.len() == 1 {
+            // Single chunk: pass the already-normalized vector through untouched.
+            results.push(Ok(slice[0].clone()));
+        } else {
+            results.push(mean_pool_l2(slice).ok_or(EmbeddingError::EmptyEmbedding));
+        }
+    }
+    results
+}
+
 /// Mean-pool a set of chunk vectors and L2-normalize the result, matching the
 /// per-vector normalization fastembed applies, so a split text is comparable to
 /// an unsplit one.
@@ -615,6 +728,65 @@ mod tests {
         assert!(mean_pool_l2(&[]).is_none());
         assert!(mean_pool_l2(&[vec![1.0, 2.0], vec![1.0]]).is_none());
         assert!(mean_pool_l2(&[vec![], vec![]]).is_none());
+    }
+
+    #[test]
+    fn fan_in_regroups_single_and_multi_chunk_texts() {
+        // chunk_counts [1,2,1] over 4 flat vectors: text0 = v0 passthrough,
+        // text1 = mean_pool_l2(v1,v2), text2 = v3 passthrough.
+        let v0 = vec![1.0, 0.0];
+        let v1 = vec![3.0, 0.0];
+        let v2 = vec![0.0, 3.0];
+        let v3 = vec![0.0, 1.0];
+        let results = fan_in_chunk_vectors(
+            &[1, 2, 1],
+            vec![v0.clone(), v1.clone(), v2.clone(), v3.clone()],
+        );
+        assert_eq!(results.len(), 3);
+
+        // Single-chunk slots pass the original vector through byte-for-byte (NOT
+        // re-pooled), matching `embed_text`'s single-chunk path exactly.
+        assert_eq!(results[0].as_ref().expect("text0"), &v0);
+        assert_eq!(results[2].as_ref().expect("text2"), &v3);
+
+        // The 2-chunk slot is mean_pool_l2(v1,v2): the same value the standalone
+        // helper produces, so a batched split text matches an unbatched one.
+        let pooled = results[1].as_ref().expect("text1");
+        assert_eq!(pooled, &mean_pool_l2(&[v1, v2]).expect("pool"));
+    }
+
+    #[test]
+    fn fan_in_on_empty_input_is_empty() {
+        let results = fan_in_chunk_vectors(&[], Vec::new());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn fan_in_rejects_ragged_or_under_delivered_slices() {
+        // A multi-chunk text whose chunk vectors are ragged (different dims) can't
+        // be pooled → EmptyEmbedding, while the well-formed neighbor still passes.
+        let results = fan_in_chunk_vectors(
+            &[2, 1],
+            vec![vec![1.0, 2.0], vec![1.0], vec![9.0, 9.0]],
+        );
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], Err(EmbeddingError::EmptyEmbedding)));
+        assert_eq!(results[1].as_ref().expect("text1"), &vec![9.0, 9.0]);
+
+        // An under-delivered batch (fewer vectors than chunk_counts.sum()) clamps
+        // its slice instead of panicking. A 2-chunk text handed only 1 vector still
+        // pools that one survivor (mean_pool over a 1-element slice succeeds) — no
+        // panic, no dropped text.
+        let short = fan_in_chunk_vectors(&[2], vec![vec![1.0, 0.0]]);
+        assert_eq!(short.len(), 1);
+        assert!(short[0].is_ok());
+
+        // A FULLY starved text (its whole slice clamped to empty) can't pool and
+        // fails cleanly: text0 consumed the only vector, leaving text1 nothing.
+        let starved = fan_in_chunk_vectors(&[1, 1], vec![vec![1.0, 0.0]]);
+        assert_eq!(starved.len(), 2);
+        assert!(starved[0].is_ok());
+        assert!(matches!(starved[1], Err(EmbeddingError::EmptyEmbedding)));
     }
 
     #[test]

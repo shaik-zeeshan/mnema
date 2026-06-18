@@ -91,6 +91,90 @@ const MAX_CONSECUTIVE_ANCHOR_FAILURES: u32 = 3;
 /// channel and idles instead of hammering the doomed load.
 const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
 
+/// The macOS QoS class the backfill embed runs at while it holds the blocking
+/// thread. `QOS_CLASS_BACKGROUND` is the most aggressive background citizen: the
+/// scheduler steers it onto efficiency cores and yields it to anything
+/// foreground, which is exactly what a converging backlog should be. The A/B
+/// alternative to test is `QOS_CLASS_UTILITY` (a hair more eager, still below
+/// the user-initiated default) — flipping this one line is the whole experiment.
+#[cfg(target_os = "macos")]
+const BACKFILL_EMBED_QOS_CLASS: libc::qos_class_t = libc::qos_class_t::QOS_CLASS_BACKGROUND;
+
+/// RAII guard that runs the backfill embed at background QoS on the current
+/// (blocking) thread and **restores the prior QoS on drop**.
+///
+/// Restore-on-drop is load-bearing, not hygiene: `spawn_blocking` draws from
+/// Tokio's **shared** blocking-thread pool, and the query/search embed
+/// (`semantic_search_query.rs`) hops the same pool. If we set background QoS and
+/// never put it back, a later user-initiated search task that happened to reuse
+/// this pooled thread would inherit BACKGROUND and feel sluggish. Capturing the
+/// prior class in the constructor and restoring it in `drop` confines the
+/// downclock to exactly the backfill batch that set it.
+///
+/// QoS is **per-thread** state, so the guard must be created on the blocking
+/// thread itself (the first statement inside the `spawn_blocking` closure), not
+/// on the async loop that spawns it.
+#[cfg(target_os = "macos")]
+struct BackfillEmbedQosGuard {
+    prior_class: libc::qos_class_t,
+    prior_priority: libc::c_int,
+    /// `false` when we could not read the prior QoS, so `drop` leaves the thread
+    /// alone rather than restoring a bogus class.
+    restore: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl BackfillEmbedQosGuard {
+    /// Capture the current QoS, then downclock this thread to the backfill class.
+    fn activate() -> Self {
+        let mut prior_class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+        let mut prior_priority: libc::c_int = 0;
+        // SAFETY: both calls are the documented per-thread QoS FFI. `pthread_self`
+        // is infallible; `pthread_get_qos_class_np` writes through the two out
+        // pointers (both valid, stack-local) and `pthread_set_qos_class_self_np`
+        // mutates only the calling thread's QoS. No memory is shared or retained.
+        let restore = unsafe {
+            let read =
+                libc::pthread_get_qos_class_np(libc::pthread_self(), &mut prior_class, &mut prior_priority);
+            // Set background regardless; a failed read just means we don't restore.
+            libc::pthread_set_qos_class_self_np(BACKFILL_EMBED_QOS_CLASS, 0);
+            read == 0
+        };
+        Self {
+            prior_class,
+            prior_priority,
+            restore,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for BackfillEmbedQosGuard {
+    fn drop(&mut self) {
+        if !self.restore {
+            return;
+        }
+        // SAFETY: restores only the calling thread's QoS to the class/priority we
+        // read in `activate`; no shared or retained memory.
+        unsafe {
+            libc::pthread_set_qos_class_self_np(self.prior_class, self.prior_priority);
+        }
+    }
+}
+
+/// Non-macOS fallback: a zero-sized no-op so the worker compiles and the closure
+/// calls the guard identically on every platform. QoS-class scheduling is a
+/// Darwin concept; Windows/Linux thread-priority knobs are out of scope here.
+#[cfg(not(target_os = "macos"))]
+struct BackfillEmbedQosGuard;
+
+#[cfg(not(target_os = "macos"))]
+impl BackfillEmbedQosGuard {
+    fn activate() -> Self {
+        Self
+    }
+}
+
 /// CPU pacing (the "Backfill CPU pacing" cross-cutting concern): a minimum
 /// inter-batch cooldown so a large historical backfill does not sustain a
 /// multi-core burn back-to-back concurrent with active OCR/transcription. This
@@ -404,16 +488,25 @@ async fn run_sweep_pass(
     // first, so an already-requested shutdown also wins immediately. The embedder
     // moved into the abandoned task is lost; the worker is exiting anyway.
     let embed_task = tauri::async_runtime::spawn_blocking(move || {
+        // Background the embed onto efficiency cores for the life of this batch.
+        // First statement in the closure because QoS is per-thread and must be set
+        // on this blocking thread; the guard restores the prior QoS on drop so a
+        // later search task reusing this pooled thread is not left backgrounded.
+        let _qos_guard = BackfillEmbedQosGuard::activate();
         let mut loaded = loaded;
-        let mut out: Vec<(i64, std::result::Result<Vec<f32>, String>)> =
-            Vec::with_capacity(texts.len());
-        for (anchor_id, body_text) in texts {
-            let result = loaded
-                .embedder
-                .embed_text(&body_text)
-                .map_err(|error| error.to_string());
-            out.push((anchor_id, result));
-        }
+        // One batched fastembed call for the whole batch (vs one `embed_text` per
+        // anchor): fewer total CPU-seconds, so the backlog drains sooner.
+        // `embed_texts` returns exactly one result per text, in order, with the
+        // same overflow-split/single-passthrough/multi-mean-pool semantics as
+        // `embed_text`. `bodies` borrows `texts`, so build `out` after it returns.
+        let bodies: Vec<&str> = texts.iter().map(|(_, body)| body.as_str()).collect();
+        let results = loaded.embedder.embed_texts(&bodies);
+        let out: Vec<(i64, std::result::Result<Vec<f32>, String>)> = texts
+            .iter()
+            .map(|(anchor_id, _)| *anchor_id)
+            .zip(results)
+            .map(|(anchor_id, result)| (anchor_id, result.map_err(|error| error.to_string())))
+            .collect();
         (loaded, out)
     });
     let shutdown_changed = shutdown_rx.changed();
