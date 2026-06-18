@@ -836,4 +836,7 @@ export interface SemanticSearchSettings {
 	enabled: boolean;
 	provider: string;
 	modelId: string | null;
+	// Intra-op ONNX thread cap for embedding; 0 = auto (a conservative cap so a
+	// single embedding never fans across every CPU core).
+	embedThreads: number;
 }

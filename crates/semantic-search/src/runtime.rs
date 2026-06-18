@@ -137,12 +137,19 @@ impl SemanticSearchEmbedder {
     /// models (nomic / e5 / bge) use the default mean/CLS-pooled output, but
     /// passing it through keeps any model that names a specific output tensor
     /// correct.
+    ///
+    /// `intra_threads` caps the ONNX intra-op thread pool for this session.
+    /// `Some(n)` pins it to `n`; `None` leaves fastembed's default, which is to
+    /// fan a single embedding across **every** CPU core (the source of the
+    /// many-core CPU spikes during backfill). Callers that embed in the
+    /// background pass a small cap; tests that don't care pass `None`.
     pub fn load_from_dir(
         model_dir: impl AsRef<Path>,
         max_tokens: usize,
         pooling: Pooling,
         layout: &InstalledModelLayout,
         output_key: Option<OutputKey>,
+        intra_threads: Option<usize>,
     ) -> Result<Self, EmbeddingError> {
         let model_dir = model_dir.as_ref();
         let onnx_file = read_file(model_dir, &layout.onnx_relative_path)?;
@@ -171,11 +178,15 @@ impl SemanticSearchEmbedder {
         // builder for it in fastembed 5.17.2).
         user_model.output_key = output_key;
 
-        let embedder = TextEmbedding::try_new_from_user_defined(
-            user_model,
-            InitOptionsUserDefined::new().with_max_length(max_tokens),
-        )
-        .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?;
+        let mut init_options = InitOptionsUserDefined::new().with_max_length(max_tokens);
+        // Without this, fastembed defaults the ONNX intra-op pool to every CPU
+        // core, so one embedding fans across all cores — most of it spin-wait on
+        // these small encoders. A cap keeps embedding a good background citizen.
+        if let Some(threads) = intra_threads {
+            init_options = init_options.with_intra_threads(threads.max(1));
+        }
+        let embedder = TextEmbedding::try_new_from_user_defined(user_model, init_options)
+            .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?;
 
         // A separate, untruncated tokenizer so we can see the *full* token count
         // and slice the original text on token boundaries.

@@ -442,6 +442,19 @@ pub fn default_semantic_search_model_id() -> Option<String> {
     Some("nomic-embed-text-v1.5".to_string())
 }
 
+/// Intra-op ONNX thread cap for deriving one **Semantic Search Vector**.
+///
+/// `0` (the default) means **auto**: at load the runtime caps a single embedding
+/// to a conservative slice of the machine's cores instead of letting fastembed's
+/// ONNX session fan it across *every* core — the latter is what spikes CPU to
+/// many cores during backfill, mostly in ONNX thread-pool spin-wait, for little
+/// throughput on these small encoders. A positive value pins the cap explicitly
+/// (clamped to the core count at load). Embedding is a self-paced background job,
+/// so the default favors leaving cores for the rest of the app over raw speed.
+pub fn default_semantic_search_embed_threads() -> usize {
+    0
+}
+
 /// User-facing selection of the **Semantic Search Model** (a **Semantic Search
 /// Model Tier**). This is the minimal shape the embedding runtime and its
 /// model-gating need; the Settings slice extends it (guided tiers + Custom
@@ -455,6 +468,10 @@ pub struct SemanticSearchSettings {
     pub provider: String,
     #[serde(default = "default_semantic_search_model_id")]
     pub model_id: Option<String>,
+    /// Intra-op ONNX thread cap for embedding; `0` = auto. See
+    /// [`default_semantic_search_embed_threads`].
+    #[serde(default = "default_semantic_search_embed_threads")]
+    pub embed_threads: usize,
 }
 
 pub fn default_semantic_search_settings() -> SemanticSearchSettings {
@@ -462,6 +479,7 @@ pub fn default_semantic_search_settings() -> SemanticSearchSettings {
         enabled: default_semantic_search_enabled(),
         provider: default_semantic_search_provider(),
         model_id: default_semantic_search_model_id(),
+        embed_threads: default_semantic_search_embed_threads(),
     }
 }
 
@@ -1137,6 +1155,9 @@ pub struct UpdateSemanticSearchSettingsRequest {
     /// selects a model, `None` leaves the selection unchanged.
     #[serde(default, deserialize_with = "deserialize_optional_optional_string")]
     pub model_id: Option<Option<String>>,
+    /// Intra-op ONNX thread cap for embedding (`0` = auto). `None` leaves it
+    /// unchanged. Unlike a model switch, changing this does not re-derive vectors.
+    pub embed_threads: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -356,7 +356,7 @@ async fn run_sweep_pass(
         return SweepPass::Idle;
     };
     if !embedder_matches(&state.embedder, &descriptor) {
-        match load_embedder(&app_data_dir, &descriptor) {
+        match load_embedder(&app_data_dir, &descriptor, resolve_embed_intra_threads(&settings)) {
             Ok(loaded) => {
                 state.embedder = Some(loaded);
                 // A successful load proves the graph is not corrupt: reset CT3.
@@ -681,11 +681,35 @@ fn embedder_matches(
     })
 }
 
+/// Resolve the ONNX intra-op thread cap for embedding from the user's
+/// `embed_threads` setting.
+///
+/// `0` means **auto**: cap a single embedding to 2 threads (or fewer on a
+/// 1-core machine) so neither backfill nor a query fans across every core — the
+/// cause of the many-core CPU spike, most of it ONNX thread-pool spin-wait on
+/// these small encoders. 2 keeps the burst near ~200% of one core: embedding is
+/// a self-paced background job, so the default favors staying unnoticeable over
+/// raw throughput. A positive value is honored, clamped to the machine's core
+/// count. Always returns a positive cap (never "all cores"), which is the whole
+/// point of the knob.
+pub(crate) fn resolve_embed_intra_threads(settings: &SemanticSearchSettings) -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1)
+        .max(1);
+    match settings.embed_threads {
+        0 => 2.min(cores),
+        explicit => explicit.min(cores),
+    }
+}
+
 /// Load the embedder for `descriptor` from its install directory under
-/// `semantic_search_models/{provider}/{model_id}/`.
+/// `semantic_search_models/{provider}/{model_id}/`. `intra_threads` is the
+/// resolved ONNX intra-op cap (see [`resolve_embed_intra_threads`]).
 pub(crate) fn load_embedder(
     app_data_dir: &std::path::Path,
     descriptor: &SemanticSearchModelDescriptor,
+    intra_threads: usize,
 ) -> Result<LoadedEmbedder, String> {
     let models_dir = semantic_search_models_dir(app_data_dir);
     let install_dir = model_install_dir(&models_dir, &descriptor.provider, &descriptor.model_id)
@@ -704,6 +728,7 @@ pub(crate) fn load_embedder(
         // descriptor: `None` for the default single output, or a named tensor for a
         // model that declares one.
         fastembed_output_key(&descriptor.output_key),
+        Some(intra_threads),
     )
     .map_err(|error| error.to_string())?;
     Ok(LoadedEmbedder {
@@ -775,6 +800,33 @@ mod tests {
         // No model selected => no descriptor.
         settings.model_id = None;
         assert!(resolve_selected_descriptor(&settings).is_none());
+    }
+
+    #[test]
+    fn resolve_embed_intra_threads_caps_auto_and_clamps_explicit() {
+        let cores = std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or(1)
+            .max(1);
+        let with_threads = |embed_threads: usize| SemanticSearchSettings {
+            embed_threads,
+            ..Default::default()
+        };
+
+        // Auto (`0`) never resolves to "all cores": it caps at 2 (fewer only on a
+        // 1-core machine), keeping the backfill burst near ~200% of one core
+        // instead of fanning across every core.
+        let auto = resolve_embed_intra_threads(&with_threads(0));
+        assert_eq!(auto, 2.min(cores));
+        assert!((1..=2).contains(&auto) && auto <= cores);
+
+        // An explicit value above the core count clamps to the cores (we never
+        // ask ONNX for more intra-op threads than the machine has).
+        assert_eq!(resolve_embed_intra_threads(&with_threads(cores + 16)), cores);
+
+        // An explicit, in-range value is honored verbatim.
+        let in_range = cores.clamp(1, 2);
+        assert_eq!(resolve_embed_intra_threads(&with_threads(in_range)), in_range);
     }
 
     #[test]

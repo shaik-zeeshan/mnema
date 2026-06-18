@@ -383,6 +383,9 @@ fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticS
         enabled: value.enabled,
         provider,
         model_id,
+        // A performance knob, not a model selection; carried through unchanged
+        // (`0` = auto is resolved to a real cap at embedder load, not here).
+        embed_threads: value.embed_threads,
     }
 }
 
@@ -1187,6 +1190,10 @@ fn apply_domain_patch_to_settings(
                 settings.semantic_search.model_id = value;
                 touched = true;
             }
+            if let Some(value) = request.embed_threads {
+                settings.semantic_search.embed_threads = value;
+                touched = true;
+            }
         }
         RecordingSettingsDomainPatch::Developer(request) => {
             if let Some(value) = request.developer_options_enabled {
@@ -1608,6 +1615,7 @@ mod tests {
                     enabled: None,
                     provider: None,
                     model_id: Some(Some("multilingual-e5-small".to_string())),
+                    embed_threads: None,
                 },
             ),
         )
@@ -1636,6 +1644,7 @@ mod tests {
                     enabled: Some(false),
                     provider: None,
                     model_id: Some(None),
+                    embed_threads: None,
                 },
             ),
         )
@@ -2439,6 +2448,7 @@ mod tests {
             enabled: true,
             provider: format!("  {}  ", semantic_search::FASTEMBED_PROVIDER_ID),
             model_id: Some(format!("  {known_model}  ")),
+            ..Default::default()
         };
 
         let validated = validate_semantic_search_settings(settings);
@@ -2456,6 +2466,7 @@ mod tests {
             enabled: false,
             provider: "made-up-provider".to_string(),
             model_id: default_semantic_search_model_id(),
+            ..Default::default()
         };
 
         let validated = validate_semantic_search_settings(settings);
@@ -2476,6 +2487,7 @@ mod tests {
                 enabled: true,
                 provider: semantic_search::FASTEMBED_PROVIDER_ID.to_string(),
                 model_id: Some(raw_model.to_string()),
+                ..Default::default()
             };
 
             let validated = validate_semantic_search_settings(settings);
@@ -2498,6 +2510,7 @@ mod tests {
             enabled: false,
             provider: semantic_search::FASTEMBED_PROVIDER_ID.to_string(),
             model_id: None,
+            ..Default::default()
         };
 
         let validated = validate_semantic_search_settings(settings);

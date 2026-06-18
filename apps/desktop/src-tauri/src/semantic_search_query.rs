@@ -21,8 +21,8 @@ use std::sync::Mutex;
 use tauri::Manager;
 
 use crate::semantic_search_worker::{
-    effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
-    selected_model_available, LoadedEmbedder,
+    effective_semantic_search_settings, load_embedder, resolve_embed_intra_threads,
+    resolve_selected_descriptor, selected_model_available, LoadedEmbedder,
 };
 
 /// The cached query embedder, shared as Tauri managed state across `search_capture`
@@ -78,6 +78,10 @@ pub async fn embed_search_query(
     }
 
     let descriptor = resolve_selected_descriptor(&settings)?;
+    // Same ONNX intra-op cap as backfill, so a search keystroke can't fan one
+    // query embed across every core. Resolved here (Copy) and moved into the
+    // blocking task below, which may reload the embedder on a model switch.
+    let intra_threads = resolve_embed_intra_threads(&settings);
 
     // Take the cached embedder out of the mutex for the blocking task (so we never
     // hold a std Mutex across an await), reloading if the selection changed, then
@@ -102,7 +106,7 @@ pub async fn embed_search_query(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut loaded = match cached {
             Some(loaded) => loaded,
-            None => match load_embedder(&app_data_dir, &descriptor) {
+            None => match load_embedder(&app_data_dir, &descriptor, intra_threads) {
                 Ok(loaded) => loaded,
                 Err(error) => {
                     crate::native_capture::debug_log::log_error(format!(

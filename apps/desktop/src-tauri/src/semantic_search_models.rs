@@ -415,6 +415,7 @@ pub async fn select_semantic_search_model(
             enabled: None,
             provider: None,
             model_id: Some(Some(model_id.clone())),
+            embed_threads: None,
         },
     )
     .map_err(|error| {
