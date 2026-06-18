@@ -19,18 +19,22 @@ mod models;
 mod runtime;
 
 pub use models::{
-    builtin_model_manifest, detect_model_status, find_model_descriptor, model_install_dir,
-    selected_semantic_search_model_available, semantic_search_models_dir, write_installed_marker,
-    InstalledModelLayout, ModelStatusError, ModelStatusKind, SemanticSearchModelDescriptor,
-    SemanticSearchModelManifest, SemanticSearchModelStatus, SemanticSearchModelTier,
-    SemanticSearchOutputKey, SemanticSearchPooling, CONFIG_FILE_NAME, FASTEMBED_PROVIDER_ID,
-    INSTALLED_MARKER_FILE_NAME, MODEL_ONNX_FILE_NAME, MODEL_STORE_DIR_NAME,
+    detect_model_status, find_model_descriptor, model_install_dir, semantic_search_models_dir,
+    write_installed_marker, InstalledModelLayout, ModelStatusError, ModelStatusKind,
+    SemanticSearchModelDescriptor, SemanticSearchModelManifest, SemanticSearchModelStatus,
+    SemanticSearchModelTier, SemanticSearchOutputKey, SemanticSearchPooling, CONFIG_FILE_NAME,
+    FASTEMBED_PROVIDER_ID, INSTALLED_MARKER_FILE_NAME, MODEL_ONNX_FILE_NAME, MODEL_STORE_DIR_NAME,
     SPECIAL_TOKENS_MAP_FILE_NAME, TOKENIZER_CONFIG_FILE_NAME, TOKENIZER_FILE_NAME,
 };
 
+// `builtin_model_manifest` (the curation overlay that synthesizes its facts from
+// fastembed) and `selected_semantic_search_model_available` (the model-gating
+// wrapper, which resolves the selection through the fastembed-backed
+// `resolve_descriptor`) live behind the `fastembed` feature alongside the runtime.
 #[cfg(feature = "fastembed")]
 pub use runtime::{
-    fastembed_output_key, fastembed_pooling, list_fastembed_supported_models, resolve_descriptor,
+    builtin_model_manifest, fastembed_output_key, fastembed_pooling,
+    list_fastembed_supported_models, resolve_descriptor, selected_semantic_search_model_available,
     EmbeddingError, SemanticSearchEmbedder, SupportedEmbeddingModel,
 };
 

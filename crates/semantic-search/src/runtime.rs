@@ -21,11 +21,14 @@ use fastembed::{
 use thiserror::Error;
 use tokenizers::Tokenizer;
 
+use capture_types::SemanticSearchSettings;
+
 use crate::models::{
-    builtin_model_manifest, find_model_descriptor, InstalledModelLayout, SemanticSearchModelDescriptor,
+    detect_model_status, find_model_descriptor, semantic_search_models_dir, InstalledModelLayout,
+    ModelStatusError, SemanticSearchModelDescriptor, SemanticSearchModelManifest,
     SemanticSearchModelTier, SemanticSearchOutputKey, SemanticSearchPooling, CONFIG_FILE_NAME,
-    FASTEMBED_PROVIDER_ID, SPECIAL_TOKENS_MAP_FILE_NAME, TOKENIZER_CONFIG_FILE_NAME,
-    TOKENIZER_FILE_NAME,
+    FASTEMBED_PROVIDER_ID, MANIFEST_VERSION, SPECIAL_TOKENS_MAP_FILE_NAME,
+    TOKENIZER_CONFIG_FILE_NAME, TOKENIZER_FILE_NAME,
 };
 
 /// Special-token budget reserved per chunk (e.g. `[CLS]`/`[SEP]`) so a split
@@ -590,6 +593,175 @@ pub fn list_fastembed_supported_models() -> Vec<SupportedEmbeddingModel> {
 /// only costs extra (still-correct) chunks, never dropped content.
 const CUSTOM_MODEL_DEFAULT_MAX_TOKENS: usize = 512;
 
+/// The curation for one guided **Semantic Search Model Tier** (ADR 0036): the
+/// fields a human chooses, NOT the intrinsic facts fastembed already knows.
+///
+/// Each tier's `dimension`, `pooling`, `output_key`, and on-disk `expected_layout`
+/// are SYNTHESIZED from fastembed's own `ModelInfo` (the same path the **Custom**
+/// picker uses via [`synthesize_fastembed_descriptor`]) — never restated here, so a
+/// fastembed version bump can't leave a stale hand-coded dimension or the wrong
+/// pooling behind. This struct carries only the editorial overlay: which fastembed
+/// model to feature ([`model_code`](Self::model_code)), the tier badge, the token
+/// window, the license, the display copy, and the disk-cost disclosure. The
+/// [`guided_tier_to_descriptor`] join applies these over the synthesized facts.
+///
+/// There is deliberately NO `dimension`/`pooling`/`external_data_files` field: the
+/// B0 probe proved fastembed 5.17.2 reports bge-m3's full external-data set
+/// (`onnx/model.onnx_data` AND the unusual `onnx/Constant_7_attr__value`), so no
+/// guided model under-reports and no per-model layout-override hatch is needed.
+/// Everything is catalog-derived. (Were a future fastembed bump to drop a file, the
+/// fail-loud [`tests::guided_tiers_agree_with_fastembed`] guard would catch it — and
+/// only then would an explicit override field be justified.)
+struct GuidedTier {
+    /// The fastembed/HuggingFace repo id whose `ModelInfo` supplies the intrinsic
+    /// facts. Must resolve in fastembed or [`builtin_model_manifest`] fails loud.
+    model_code: &'static str,
+    /// The user-facing tier badge (English / Multilingual / Custom).
+    tier: SemanticSearchModelTier,
+    /// The model's token window. fastembed's `ModelInfo` carries no window, so this
+    /// is curated per tier (overflowing text is auto-split, never truncated).
+    max_tokens: usize,
+    /// The SPDX license label surfaced in Settings (fastembed carries no license).
+    license_label: Option<&'static str>,
+    /// The Settings display name (curated copy, not fastembed's terse description).
+    display_name: &'static str,
+    /// The Settings description / rationale copy.
+    description: &'static str,
+    /// Approximate on-disk footprint in bytes — the disk-cost disclosure.
+    approx_download_bytes: u64,
+}
+
+/// The curated guided-tier overlay. The default English tier is
+/// `nomic-embed-text-v1.5` (768-dim, 8192-token, Apache-2.0) per ADR 0036; the
+/// Multilingual tier is `multilingual-e5-small`; bge-m3 is a Custom multilingual
+/// option surfaced through the picker. Intrinsic facts (dimension/pooling/layout)
+/// are synthesized from fastembed — see [`GuidedTier`].
+const GUIDED_TIERS: &[GuidedTier] = &[
+    GuidedTier {
+        model_code: "nomic-ai/nomic-embed-text-v1.5",
+        tier: SemanticSearchModelTier::English,
+        max_tokens: 8192,
+        license_label: Some("Apache-2.0"),
+        display_name: "Nomic Embed Text v1.5 (English)",
+        description: "Default English tier: long-context (8192 tokens), \
+            Apache-2.0, 768-dimensional. Long context makes truncation a \
+            non-issue and the permissive license keeps the default path \
+            obligation-free.",
+        // ~140 MB quantized ONNX.
+        approx_download_bytes: 140_000_000,
+    },
+    GuidedTier {
+        model_code: "intfloat/multilingual-e5-small",
+        tier: SemanticSearchModelTier::Multilingual,
+        max_tokens: 512,
+        license_label: Some("MIT"),
+        display_name: "Multilingual E5 Small (Multilingual)",
+        description: "Multilingual tier: covers 100+ languages, non-gated \
+            (MIT), 384-dimensional. A non-English user is guided here rather \
+            than silently degraded by the English default, and it serves \
+            English well too. Self-contained ONNX (no external data).",
+        // ~465 MB on disk.
+        approx_download_bytes: 465_000_000,
+    },
+    GuidedTier {
+        model_code: "BAAI/bge-m3",
+        tier: SemanticSearchModelTier::Custom,
+        max_tokens: 8192,
+        license_label: Some("MIT"),
+        display_name: "BGE-M3 (Multilingual, Custom)",
+        description: "Custom multilingual option (BAAI/bge-m3), 1024-dimensional, \
+            8192-token. Available via the Custom picker.",
+        // ~2.3 GB: the `onnx/model.onnx` graph plus its `onnx/model.onnx_data`
+        // external-data sibling and `onnx/Constant_7_attr__value`.
+        approx_download_bytes: 2_300_000_000,
+    },
+];
+
+/// The catalog of guided **Semantic Search Model Tiers** — a thin **curation
+/// overlay** over fastembed's catalog (ADR 0036).
+///
+/// Each tier's intrinsic facts (`dimension`, `pooling`, `output_key`,
+/// `expected_layout`) are SYNTHESIZED from fastembed's own `ModelInfo` via the same
+/// path the **Custom** picker uses; only the curated fields ([`GuidedTier`]) are
+/// applied on top. There is no hand-restated `768`/`Mean`/`default()` to drift out
+/// of sync with fastembed.
+///
+/// **Fail-loud on absence:** a curated `model_code` that no longer enumerates in
+/// fastembed (a removed model, a renamed repo) is a hard `panic`, not a silent
+/// skip — the default English model must never silently vanish, and a hand-coded
+/// fallback here would resurrect exactly the restatement this overlay deletes. The
+/// [`tests::guided_tiers_agree_with_fastembed`] guard catches the drift in CI before
+/// it can ship; this panic is the last-resort runtime guarantee.
+pub fn builtin_model_manifest() -> SemanticSearchModelManifest {
+    SemanticSearchModelManifest {
+        version: MANIFEST_VERSION,
+        models: GUIDED_TIERS
+            .iter()
+            .map(|tier| {
+                guided_tier_to_descriptor(tier).unwrap_or_else(|| {
+                    panic!(
+                        "guided Semantic Search Model '{}' no longer resolves in fastembed \
+                         {} — a curated tier must always enumerate (a removed/renamed repo \
+                         would silently drop the default model). Update GUIDED_TIERS or the \
+                         fastembed pin together; see ADR 0036.",
+                        tier.model_code,
+                        env!("CARGO_PKG_VERSION"),
+                    )
+                })
+            })
+            .collect(),
+    }
+}
+
+/// Join one curated [`GuidedTier`] over the fastembed-synthesized facts for its
+/// `model_code`: synthesize the descriptor exactly as a Custom pick would (the
+/// SAME `synthesize_fastembed_descriptor` path — dimension, pooling, output key,
+/// and on-disk layout all from fastembed's `ModelInfo`), then overwrite only the
+/// curated overlay fields. Returns `None` when the curated `model_code` does not
+/// enumerate in fastembed (handled fail-loud by the caller).
+fn guided_tier_to_descriptor(tier: &GuidedTier) -> Option<SemanticSearchModelDescriptor> {
+    let model_id = slug_from_model_code(tier.model_code);
+    // Synthesize the intrinsic facts from fastembed, keyed by the tier's slug —
+    // the very path a Custom pick takes, so guided and Custom descriptors are
+    // byte-identical except for the curated overlay applied below.
+    let mut descriptor = synthesize_fastembed_descriptor(&model_id)?;
+    // Apply ONLY the curated overlay; everything else stays catalog-derived.
+    descriptor.tier = tier.tier;
+    descriptor.model_id = model_id;
+    descriptor.display_name = tier.display_name.to_string();
+    descriptor.description = tier.description.to_string();
+    descriptor.max_tokens = tier.max_tokens;
+    descriptor.license_label = tier.license_label.map(str::to_string);
+    descriptor.approx_download_bytes = tier.approx_download_bytes;
+    Some(descriptor)
+}
+
+/// Model-gating: is the user's selected **Semantic Search Model** installed?
+///
+/// Returns `false` (a silent no-op admission, never an error) when the feature
+/// is disabled, no model is selected, the selection is not a resolvable model, or
+/// the model is not yet installed. The only `Err` path is a corrupt marker file.
+///
+/// Resolves the selection through [`resolve_descriptor`] (manifest-first, then
+/// fastembed synthesis), so a **Custom** pick gates exactly like a guided tier;
+/// then reuses the pure [`detect_model_status`] detector.
+pub fn selected_semantic_search_model_available(
+    app_data_dir: impl AsRef<Path>,
+    settings: &SemanticSearchSettings,
+) -> Result<bool, ModelStatusError> {
+    if !settings.enabled {
+        return Ok(false);
+    }
+    let Some(model_id) = settings.model_id.as_deref() else {
+        return Ok(false);
+    };
+    let Some(descriptor) = resolve_descriptor(&settings.provider, model_id) else {
+        return Ok(false);
+    };
+    let status = detect_model_status(semantic_search_models_dir(app_data_dir), &descriptor)?;
+    Ok(status.is_available())
+}
+
 /// Resolve a **Semantic Search Model** descriptor for a `{provider}/{model_id}`
 /// selection, including **Custom**-picked fastembed models outside the guided
 /// manifest.
@@ -1097,5 +1269,263 @@ mod tests {
                 "gated model {slug} must not resolve"
             );
         }
+    }
+
+    /// Fail-loud catalog guard (mirrors the spirit of the `ort` version-pin
+    /// lockstep guard in `models.rs`): every guided `model_code` MUST resolve in
+    /// the pinned fastembed catalog, and its catalog-DERIVED facts must match the
+    /// pinned per-tier expectations. This is the single defense against silent
+    /// drift now that the manifest synthesizes its facts from fastembed instead of
+    /// hand-restating them — a fastembed bump that changed a guided model's
+    /// dimension, pooling, or required-file set fails HERE, loudly, rather than
+    /// shipping a stale dimension or an incomplete download list.
+    #[test]
+    fn guided_tiers_agree_with_fastembed() {
+        use crate::models::{
+            CONFIG_FILE_NAME, SPECIAL_TOKENS_MAP_FILE_NAME, TOKENIZER_CONFIG_FILE_NAME,
+            TOKENIZER_FILE_NAME,
+        };
+
+        // The pinned, known-correct facts per guided tier (the values fastembed
+        // 5.17.2 reports, confirmed by the B0 probe). bge-m3 pins the full external
+        // data set INCLUDING the unusual `onnx/Constant_7_attr__value` — fastembed
+        // reports it, so synthesizing the layout drops nothing.
+        struct Expected {
+            model_id: &'static str,
+            model_code: &'static str,
+            tier: SemanticSearchModelTier,
+            dimension: usize,
+            pooling: SemanticSearchPooling,
+            // The full repo-relative required-file set, sorted, that the catalog
+            // must derive (ONNX + external data + the four root tokenizer files).
+            required_files: &'static [&'static str],
+        }
+        let root_tokenizers = [
+            "onnx/model.onnx",
+            TOKENIZER_FILE_NAME,
+            TOKENIZER_CONFIG_FILE_NAME,
+            SPECIAL_TOKENS_MAP_FILE_NAME,
+            CONFIG_FILE_NAME,
+        ];
+        // Sanity: the constant set the assertions below assume.
+        assert_eq!(
+            root_tokenizers,
+            [
+                "onnx/model.onnx",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "special_tokens_map.json",
+                "config.json"
+            ]
+        );
+
+        let expectations = [
+            Expected {
+                model_id: "nomic-embed-text-v1.5",
+                model_code: "nomic-ai/nomic-embed-text-v1.5",
+                tier: SemanticSearchModelTier::English,
+                dimension: 768,
+                pooling: SemanticSearchPooling::Mean,
+                required_files: &[
+                    "config.json",
+                    "onnx/model.onnx",
+                    "special_tokens_map.json",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                ],
+            },
+            Expected {
+                model_id: "multilingual-e5-small",
+                model_code: "intfloat/multilingual-e5-small",
+                tier: SemanticSearchModelTier::Multilingual,
+                dimension: 384,
+                pooling: SemanticSearchPooling::Mean,
+                required_files: &[
+                    "config.json",
+                    "onnx/model.onnx",
+                    "special_tokens_map.json",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                ],
+            },
+            Expected {
+                model_id: "bge-m3",
+                model_code: "BAAI/bge-m3",
+                tier: SemanticSearchModelTier::Custom,
+                dimension: 1024,
+                pooling: SemanticSearchPooling::Cls,
+                // Catalog-derived, including bge-m3's external data — fastembed
+                // reports BOTH siblings, so neither is silently dropped.
+                required_files: &[
+                    "config.json",
+                    "onnx/Constant_7_attr__value",
+                    "onnx/model.onnx",
+                    "onnx/model.onnx_data",
+                    "special_tokens_map.json",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                ],
+            },
+        ];
+
+        let manifest = builtin_model_manifest();
+        assert_eq!(
+            manifest.models.len(),
+            expectations.len(),
+            "the guided manifest must carry exactly the curated tiers"
+        );
+
+        for expected in expectations {
+            // 1. The curated model_code MUST enumerate in fastembed (fail-loud:
+            //    `builtin_model_manifest` already panics otherwise, but assert the
+            //    enumeration directly so a drift names the model.)
+            assert!(
+                canonical_fastembed_models()
+                    .iter()
+                    .any(|info| info.model_code == expected.model_code),
+                "guided model_code '{}' must resolve in the pinned fastembed catalog",
+                expected.model_code
+            );
+
+            let descriptor = find_model_descriptor(
+                &manifest,
+                FASTEMBED_PROVIDER_ID,
+                expected.model_id,
+            )
+            .unwrap_or_else(|| panic!("guided tier {} must be in the manifest", expected.model_id));
+
+            // 2. Curated overlay is applied.
+            assert_eq!(descriptor.tier, expected.tier, "{}", expected.model_id);
+            assert_eq!(descriptor.model_code, expected.model_code, "{}", expected.model_id);
+
+            // 3. Catalog-DERIVED facts match the pinned expectations (drift guard).
+            assert_eq!(
+                descriptor.dimension, expected.dimension,
+                "{} dimension drifted from fastembed",
+                expected.model_id
+            );
+            assert_eq!(
+                descriptor.pooling, expected.pooling,
+                "{} pooling drifted from fastembed",
+                expected.model_id
+            );
+            let mut got_files = descriptor.expected_layout.required_files.clone();
+            got_files.sort();
+            let mut want_files: Vec<String> =
+                expected.required_files.iter().map(|s| s.to_string()).collect();
+            want_files.sort();
+            assert_eq!(
+                got_files, want_files,
+                "{} required-file set drifted from fastembed (a bump may have added/removed an \
+                 external-data file — bump the pin and these expectations together)",
+                expected.model_id
+            );
+        }
+    }
+
+    /// The catalog-derived guided manifest matches what the **Custom** synthesis
+    /// path produces for the same model, save for the curated overlay — proving the
+    /// overlay reuses the synthesize path rather than re-deriving facts.
+    #[test]
+    fn guided_descriptor_facts_equal_the_custom_synthesis_path() {
+        let manifest = builtin_model_manifest();
+        for guided in &manifest.models {
+            let synthesized = synthesize_fastembed_descriptor(&guided.model_id)
+                .unwrap_or_else(|| panic!("{} must synthesize", guided.model_id));
+            // Intrinsic facts come from fastembed and so must be identical.
+            assert_eq!(guided.dimension, synthesized.dimension, "{}", guided.model_id);
+            assert_eq!(guided.pooling, synthesized.pooling, "{}", guided.model_id);
+            assert_eq!(guided.output_key, synthesized.output_key, "{}", guided.model_id);
+            assert_eq!(
+                guided.expected_layout, synthesized.expected_layout,
+                "{} layout must be catalog-derived, byte-identical to a Custom pick",
+                guided.model_id
+            );
+            assert_eq!(guided.model_code, synthesized.model_code, "{}", guided.model_id);
+        }
+    }
+
+    #[test]
+    fn default_english_tier_is_nomic_768_dim() {
+        // The curation overlay over fastembed's catalog: the English tier's curated
+        // facts (tier, token window, license) and its catalog-derived dimension.
+        let manifest = builtin_model_manifest();
+        let default = find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5")
+            .expect("english tier");
+        assert_eq!(default.tier, SemanticSearchModelTier::English);
+        assert_eq!(default.dimension, 768);
+        assert_eq!(default.max_tokens, 8192);
+        assert_eq!(default.license_label.as_deref(), Some("Apache-2.0"));
+    }
+
+    // ---- model-gating wrapper (moved here from models.rs: it resolves the
+    // selection through the fastembed-backed `resolve_descriptor`) ----
+
+    fn install_model_on_disk(
+        models_dir: &std::path::Path,
+        descriptor: &SemanticSearchModelDescriptor,
+    ) {
+        use crate::models::{model_install_dir, write_installed_marker};
+        let install_dir =
+            model_install_dir(models_dir, &descriptor.provider, &descriptor.model_id).expect("dir");
+        std::fs::create_dir_all(&install_dir).expect("install dir");
+        for file_name in &descriptor.expected_layout.required_files {
+            let path = install_dir.join(file_name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("parent dir");
+            }
+            std::fs::write(path, b"x").expect("model file");
+        }
+        write_installed_marker(models_dir, &descriptor.provider, &descriptor.model_id)
+            .expect("marker");
+    }
+
+    #[test]
+    fn no_installed_model_makes_feature_a_silent_no_op_not_an_error() {
+        use capture_types::default_semantic_search_settings;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = default_semantic_search_settings();
+        assert!(settings.enabled, "default settings are on");
+        let available = selected_semantic_search_model_available(temp.path(), &settings)
+            .expect("availability check must not error when the model is absent");
+        assert!(!available, "no installed model => silent no-op (false)");
+    }
+
+    #[test]
+    fn selected_model_available_only_once_installed() {
+        use capture_types::default_semantic_search_settings;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = default_semantic_search_settings();
+        let models_dir = semantic_search_models_dir(temp.path());
+        let descriptor = resolve_descriptor(
+            &settings.provider,
+            settings.model_id.as_deref().expect("default selects a model"),
+        )
+        .expect("selected descriptor resolves");
+
+        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
+        install_model_on_disk(&models_dir, &descriptor);
+        assert!(selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
+    }
+
+    #[test]
+    fn disabled_settings_are_never_available_even_with_a_model() {
+        use capture_types::default_semantic_search_settings;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = default_semantic_search_settings();
+        let models_dir = semantic_search_models_dir(temp.path());
+        install_model_on_disk(&models_dir, &builtin_model_manifest().models[0]);
+
+        settings.enabled = false;
+        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
+    }
+
+    #[test]
+    fn unknown_selected_model_is_not_available() {
+        use capture_types::default_semantic_search_settings;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = default_semantic_search_settings();
+        settings.model_id = Some("not-a-real-model".to_string());
+        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
     }
 }

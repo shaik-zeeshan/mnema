@@ -8,7 +8,6 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use capture_types::SemanticSearchSettings;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -32,7 +31,7 @@ pub const TOKENIZER_CONFIG_FILE_NAME: &str = "tokenizer_config.json";
 pub const SPECIAL_TOKENS_MAP_FILE_NAME: &str = "special_tokens_map.json";
 pub const CONFIG_FILE_NAME: &str = "config.json";
 
-const MANIFEST_VERSION: u32 = 1;
+pub(crate) const MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Error)]
 pub enum ModelStatusError {
@@ -238,88 +237,15 @@ struct InstalledModelMarker {
     model_id: String,
 }
 
-/// The catalog of guided **Semantic Search Model Tiers** plus the Custom
-/// fallback. The default English tier is `nomic-embed-text-v1.5` (768-dim,
-/// 8192-token, Apache-2.0) per ADR 0036.
-pub fn builtin_model_manifest() -> SemanticSearchModelManifest {
-    SemanticSearchModelManifest {
-        version: MANIFEST_VERSION,
-        models: vec![
-            SemanticSearchModelDescriptor {
-                provider: FASTEMBED_PROVIDER_ID.to_string(),
-                model_id: "nomic-embed-text-v1.5".to_string(),
-                display_name: "Nomic Embed Text v1.5 (English)".to_string(),
-                description: "Default English tier: long-context (8192 tokens), \
-                    Apache-2.0, 768-dimensional. Long context makes truncation a \
-                    non-issue and the permissive license keeps the default path \
-                    obligation-free."
-                    .to_string(),
-                tier: SemanticSearchModelTier::English,
-                model_code: "nomic-ai/nomic-embed-text-v1.5".to_string(),
-                license_label: Some("Apache-2.0".to_string()),
-                dimension: 768,
-                max_tokens: 8192,
-                // ~140 MB quantized ONNX.
-                approx_download_bytes: 140_000_000,
-                // nomic is mean-pooled (fastembed `get_default_pooling_method`).
-                pooling: SemanticSearchPooling::Mean,
-                output_key: None,
-                expected_layout: InstalledModelLayout::default(),
-            },
-            SemanticSearchModelDescriptor {
-                provider: FASTEMBED_PROVIDER_ID.to_string(),
-                model_id: "multilingual-e5-small".to_string(),
-                display_name: "Multilingual E5 Small (Multilingual)".to_string(),
-                description: "Multilingual tier: covers 100+ languages, non-gated \
-                    (MIT), 384-dimensional. A non-English user is guided here rather \
-                    than silently degraded by the English default, and it serves \
-                    English well too. Self-contained ONNX (no external data)."
-                    .to_string(),
-                tier: SemanticSearchModelTier::Multilingual,
-                model_code: "intfloat/multilingual-e5-small".to_string(),
-                license_label: Some("MIT".to_string()),
-                dimension: 384,
-                max_tokens: 512,
-                // ~465 MB on disk.
-                approx_download_bytes: 465_000_000,
-                // multilingual-e5-small is mean-pooled.
-                pooling: SemanticSearchPooling::Mean,
-                output_key: None,
-                // Self-contained `onnx/model.onnx`, no `*.onnx_data` sibling.
-                expected_layout: InstalledModelLayout::default(),
-            },
-            SemanticSearchModelDescriptor {
-                provider: FASTEMBED_PROVIDER_ID.to_string(),
-                model_id: "bge-m3".to_string(),
-                display_name: "BGE-M3 (Multilingual, Custom)".to_string(),
-                description: "Custom multilingual option (BAAI/bge-m3), 1024-dimensional, \
-                    8192-token. Available via the Custom picker."
-                    .to_string(),
-                tier: SemanticSearchModelTier::Custom,
-                model_code: "BAAI/bge-m3".to_string(),
-                license_label: Some("MIT".to_string()),
-                dimension: 1024,
-                max_tokens: 8192,
-                // ~2.3 GB: the `onnx/model.onnx` graph plus its `onnx/model.onnx_data`
-                // external-data sibling and `onnx/Constant_7_attr__value`.
-                approx_download_bytes: 2_300_000_000,
-                // bge-m3 is CLS-pooled (fastembed `get_default_pooling_method`).
-                pooling: SemanticSearchPooling::Cls,
-                output_key: None,
-                // bge-m3 ships external data: the ONNX graph references
-                // `onnx/model.onnx_data` (and `onnx/Constant_7_attr__value`), so they
-                // are part of the install layout and the completeness check.
-                expected_layout: InstalledModelLayout::from_fastembed_files(
-                    "onnx/model.onnx",
-                    vec![
-                        "onnx/model.onnx_data".to_string(),
-                        "onnx/Constant_7_attr__value".to_string(),
-                    ],
-                ),
-            },
-        ],
-    }
-}
+// The guided **Semantic Search Model** catalog (`builtin_model_manifest`) now
+// lives in `runtime.rs` (behind the `fastembed` feature): it is a thin curation
+// overlay that SYNTHESIZES each guided tier's intrinsic facts (dimension,
+// pooling, output key, on-disk layout) from fastembed's own `ModelInfo` — the
+// same synthesize path the **Custom** picker uses via `resolve_descriptor` — and
+// applies only the curated fields (tier, token window, license, display copy,
+// disk size). The hand-restated `768`/`Mean`/`default()` values that used to live
+// here are deleted: a single source (fastembed) plus a fail-loud guard test
+// replaces the silent-drift hazard of restating facts fastembed already knows.
 
 pub fn find_model_descriptor<'a>(
     manifest: &'a SemanticSearchModelManifest,
@@ -374,29 +300,10 @@ pub fn detect_model_status(
     })
 }
 
-/// Model-gating: is the user's selected **Semantic Search Model** installed?
-///
-/// Returns `false` (a silent no-op admission, never an error) when the feature
-/// is disabled, no model is selected, the selection is not a known model, or the
-/// model is not yet installed. The only `Err` path is a corrupt marker file.
-pub fn selected_semantic_search_model_available(
-    app_data_dir: impl AsRef<Path>,
-    settings: &SemanticSearchSettings,
-) -> Result<bool, ModelStatusError> {
-    if !settings.enabled {
-        return Ok(false);
-    }
-    let Some(model_id) = settings.model_id.as_deref() else {
-        return Ok(false);
-    };
-    let manifest = builtin_model_manifest();
-    let Some(descriptor) = find_model_descriptor(&manifest, &settings.provider, model_id) else {
-        return Ok(false);
-    };
-    let status =
-        detect_model_status(semantic_search_models_dir(app_data_dir), descriptor)?;
-    Ok(status.is_available())
-}
+// `selected_semantic_search_model_available` (the model-gating wrapper) now lives
+// in `runtime.rs` (behind the `fastembed` feature): it resolves the selected model
+// through `resolve_descriptor` — the manifest-first-then-synthesize path — which
+// needs fastembed, then reuses the pure `detect_model_status` detector below.
 
 /// Write the `.installed.json` marker into a freshly-downloaded model directory,
 /// mirroring the transcription installer. The detector only treats a model as
@@ -470,8 +377,56 @@ fn assert_safe_path_component(field: &'static str, value: &str) -> Result<(), Mo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capture_types::default_semantic_search_settings;
     use std::fs;
+
+    /// A self-contained nomic-shaped descriptor (`onnx/model.onnx`, no external
+    /// data) built inline so the **pure detector** is exercised without depending
+    /// on the fastembed-synthesized `builtin_model_manifest` (which lives behind
+    /// the `fastembed` feature in `runtime.rs`). The manifest↔fastembed agreement
+    /// is guarded separately by the feature-on guard test in `runtime.rs`.
+    fn nomic_test_descriptor() -> SemanticSearchModelDescriptor {
+        SemanticSearchModelDescriptor {
+            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            model_id: "nomic-embed-text-v1.5".to_string(),
+            display_name: "Nomic Embed Text v1.5 (English)".to_string(),
+            description: "Default English tier".to_string(),
+            tier: SemanticSearchModelTier::English,
+            model_code: "nomic-ai/nomic-embed-text-v1.5".to_string(),
+            license_label: Some("Apache-2.0".to_string()),
+            dimension: 768,
+            max_tokens: 8192,
+            approx_download_bytes: 140_000_000,
+            pooling: SemanticSearchPooling::Mean,
+            output_key: None,
+            expected_layout: InstalledModelLayout::default(),
+        }
+    }
+
+    /// A bge-m3-shaped descriptor with external-data siblings, built inline to
+    /// exercise the external-data completeness path in the pure detector.
+    fn bge_m3_test_descriptor() -> SemanticSearchModelDescriptor {
+        SemanticSearchModelDescriptor {
+            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            model_id: "bge-m3".to_string(),
+            display_name: "BGE-M3".to_string(),
+            description: "Custom multilingual option".to_string(),
+            tier: SemanticSearchModelTier::Custom,
+            model_code: "BAAI/bge-m3".to_string(),
+            license_label: Some("MIT".to_string()),
+            dimension: 1024,
+            max_tokens: 8192,
+            approx_download_bytes: 2_300_000_000,
+            pooling: SemanticSearchPooling::Cls,
+            output_key: None,
+            expected_layout: InstalledModelLayout::from_fastembed_files(
+                "onnx/model.onnx",
+                vec![
+                    "onnx/model.onnx_data".to_string(),
+                    "onnx/Constant_7_attr__value".to_string(),
+                ],
+            ),
+        }
+    }
 
     /// Write a (possibly nested, e.g. `onnx/model.onnx`) required file, creating
     /// its parent directory so the repo-relative layout is reproduced on disk.
@@ -513,21 +468,25 @@ mod tests {
     }
 
     #[test]
-    fn default_english_tier_is_nomic_768_dim() {
-        let manifest = builtin_model_manifest();
-        let default = find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5")
-            .expect("english tier");
-        assert_eq!(default.tier, SemanticSearchModelTier::English);
-        assert_eq!(default.dimension, 768);
-        assert_eq!(default.max_tokens, 8192);
-        assert_eq!(default.license_label.as_deref(), Some("Apache-2.0"));
+    fn find_model_descriptor_matches_on_provider_and_id() {
+        // The pure lookup over a passed-in manifest (no fastembed): a matching
+        // provider+id returns the descriptor; a non-match returns None.
+        let manifest = SemanticSearchModelManifest {
+            version: MANIFEST_VERSION,
+            models: vec![nomic_test_descriptor(), bge_m3_test_descriptor()],
+        };
+        let found = find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "bge-m3")
+            .expect("bge-m3 present");
+        assert_eq!(found.model_id, "bge-m3");
+        assert!(find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "nope").is_none());
+        assert!(find_model_descriptor(&manifest, "other-provider", "bge-m3").is_none());
     }
 
     #[test]
     fn missing_model_is_not_available_and_lists_missing_files() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let manifest = builtin_model_manifest();
-        let descriptor = &manifest.models[0];
+        let descriptor = nomic_test_descriptor();
+        let descriptor = &descriptor;
         let status = detect_model_status(semantic_search_models_dir(temp.path()), descriptor)
             .expect("status");
         assert_eq!(status.status, ModelStatusKind::Missing);
@@ -543,8 +502,8 @@ mod tests {
     fn installed_model_requires_marker_and_every_file() {
         let temp = tempfile::tempdir().expect("tempdir");
         let models_dir = semantic_search_models_dir(temp.path());
-        let manifest = builtin_model_manifest();
-        let descriptor = &manifest.models[0];
+        let descriptor = nomic_test_descriptor();
+        let descriptor = &descriptor;
 
         // Files present but no marker => still Missing.
         let install_dir =
@@ -581,9 +540,8 @@ mod tests {
         // the ONNX graph, tokenizers, and marker present.
         let temp = tempfile::tempdir().expect("tempdir");
         let models_dir = semantic_search_models_dir(temp.path());
-        let manifest = builtin_model_manifest();
-        let descriptor = find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "bge-m3")
-            .expect("bge-m3 descriptor");
+        let descriptor = bge_m3_test_descriptor();
+        let descriptor = &descriptor;
         assert!(
             !descriptor.expected_layout.external_data_files.is_empty(),
             "bge-m3 must declare external-data files"
@@ -638,8 +596,8 @@ mod tests {
     fn marker_for_another_model_does_not_count() {
         let temp = tempfile::tempdir().expect("tempdir");
         let models_dir = semantic_search_models_dir(temp.path());
-        let manifest = builtin_model_manifest();
-        let descriptor = &manifest.models[0];
+        let descriptor = nomic_test_descriptor();
+        let descriptor = &descriptor;
         let install_dir =
             model_install_dir(&models_dir, &descriptor.provider, &descriptor.model_id).expect("dir");
         fs::create_dir_all(&install_dir).expect("install dir");
@@ -663,51 +621,23 @@ mod tests {
     }
 
     #[test]
-    fn no_installed_model_makes_feature_a_silent_no_op_not_an_error() {
-        // Mirrors the transcription backfill skip: default-on settings with no
-        // model on disk resolve to "unavailable" (Ok(false)) — never Err, never
-        // a capture-blocking failure.
+    fn install_model_then_detect_reports_installed() {
+        // The detector's happy path over an inline descriptor: a fully-written
+        // model dir + marker reports Installed; an empty one reports Missing.
+        // (The model-gating wrapper `selected_semantic_search_model_available`,
+        // which resolves the selection through fastembed, is tested in `runtime.rs`.)
         let temp = tempfile::tempdir().expect("tempdir");
-        let settings = default_semantic_search_settings();
-        assert!(settings.enabled, "default settings are on");
-        let available = selected_semantic_search_model_available(temp.path(), &settings)
-            .expect("availability check must not error when the model is absent");
-        assert!(!available, "no installed model => silent no-op (false)");
-    }
-
-    #[test]
-    fn selected_model_available_only_once_installed() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let settings = default_semantic_search_settings();
         let models_dir = semantic_search_models_dir(temp.path());
-        let manifest = builtin_model_manifest();
-        let descriptor =
-            find_model_descriptor(&manifest, &settings.provider, settings.model_id.as_deref().unwrap())
-                .expect("selected descriptor");
+        let descriptor = nomic_test_descriptor();
 
-        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
-        install_model(&models_dir, descriptor);
-        assert!(selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
-    }
-
-    #[test]
-    fn disabled_settings_are_never_available_even_with_a_model() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let mut settings = default_semantic_search_settings();
-        let models_dir = semantic_search_models_dir(temp.path());
-        let manifest = builtin_model_manifest();
-        install_model(&models_dir, &manifest.models[0]);
-
-        settings.enabled = false;
-        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
-    }
-
-    #[test]
-    fn unknown_selected_model_is_not_available() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let mut settings = default_semantic_search_settings();
-        settings.model_id = Some("not-a-real-model".to_string());
-        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
+        assert_eq!(
+            detect_model_status(&models_dir, &descriptor).expect("status").status,
+            ModelStatusKind::Missing
+        );
+        install_model(&models_dir, &descriptor);
+        assert!(detect_model_status(&models_dir, &descriptor)
+            .expect("status")
+            .is_available());
     }
 
     #[test]

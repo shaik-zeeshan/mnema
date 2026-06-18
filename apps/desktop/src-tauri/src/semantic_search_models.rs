@@ -20,9 +20,7 @@ use sha2::{Digest, Sha256};
 use semantic_search::{
     builtin_model_manifest, detect_model_status, list_fastembed_supported_models, model_install_dir,
     resolve_descriptor, semantic_search_models_dir, write_installed_marker, ModelStatusError,
-    ModelStatusKind,
-    SemanticSearchModelDescriptor, SemanticSearchModelTier, CONFIG_FILE_NAME, FASTEMBED_PROVIDER_ID,
-    SPECIAL_TOKENS_MAP_FILE_NAME, TOKENIZER_CONFIG_FILE_NAME, TOKENIZER_FILE_NAME,
+    ModelStatusKind, SemanticSearchModelDescriptor, SemanticSearchModelTier, FASTEMBED_PROVIDER_ID,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -576,43 +574,26 @@ fn installed_custom_model_ids(models_dir: &Path) -> Vec<String> {
 
 /// The list of files to download for a model, as **repo-relative paths**.
 ///
-/// The list is driven by fastembed's own `ModelInfo` (matched by `model_code`):
-/// `[model_file] + additional_files + the four root tokenizer files`. This is
-/// what fixes external data — a model like bge-m3 lists `onnx/model.onnx_data`
-/// (its 2 GB weights) in `additional_files`, so it is fetched and the model
-/// actually produces embeddings instead of "installing" but staying empty.
+/// **Single file-list authority** (ADR 0036 deepening #4): download and
+/// completeness now read the SAME list — `descriptor.expected_layout.required_files`
+/// — so a model can never download "successfully" yet report broken. That list is
+/// catalog-derived (synthesized from fastembed's own `ModelInfo` for BOTH guided
+/// tiers and Custom picks, via the shared `resolve_descriptor`), so it already
+/// carries the ONNX graph, every external-data sibling (e.g. bge-m3's 2 GB
+/// `onnx/model.onnx_data` and `onnx/Constant_7_attr__value`), and the four root
+/// tokenizer files — there is no second derivation here to drift out of sync, and
+/// the desktop-side tokenizer constants / re-union are gone.
 ///
-/// When the `model_code` is not found in fastembed's list (defensive; should not
-/// happen for catalog models), we fall back to the descriptor's
-/// `expected_layout.required_files`, which is itself derived from the same
-/// fastembed facts.
+/// Each path is zipped with its pinned SHA256 (when known) for the integrity gate.
 fn model_file_specs(descriptor: &SemanticSearchModelDescriptor) -> Vec<ModelFileSpec> {
-    let relative_paths = match list_fastembed_supported_models()
-        .into_iter()
-        .find(|model| model.model_code == descriptor.model_code)
-    {
-        Some(model) => {
-            let mut files = Vec::new();
-            files.push(model.onnx_relative_path);
-            files.extend(model.external_data_files);
-            files.extend(root_tokenizer_relative_paths());
-            files
-        }
-        None => {
-            log_info(format!(
-                "semantic search model '{}' (code '{}') not found in fastembed list; \
-                 falling back to descriptor expected_layout for the download file list",
-                descriptor.model_id, descriptor.model_code
-            ));
-            descriptor.expected_layout.required_files.clone()
-        }
-    };
-    relative_paths
-        .into_iter()
+    descriptor
+        .expected_layout
+        .required_files
+        .iter()
         .map(|relative_path| ModelFileSpec {
-            expected_sha256: pinned_file_sha256(&descriptor.model_code, &relative_path)
+            expected_sha256: pinned_file_sha256(&descriptor.model_code, relative_path)
                 .map(str::to_owned),
-            relative_path,
+            relative_path: relative_path.clone(),
         })
         .collect()
 }
@@ -703,16 +684,6 @@ fn sha256_of_file(file_path: &Path) -> Result<String, ModelDownloadError> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
-}
-
-/// The four tokenizer/config files fastembed always fetches from the repo root.
-fn root_tokenizer_relative_paths() -> Vec<String> {
-    vec![
-        TOKENIZER_FILE_NAME.to_string(),
-        TOKENIZER_CONFIG_FILE_NAME.to_string(),
-        SPECIAL_TOKENS_MAP_FILE_NAME.to_string(),
-        CONFIG_FILE_NAME.to_string(),
-    ]
 }
 
 /// The HuggingFace `resolve/main` URL for one file in a model repo.
