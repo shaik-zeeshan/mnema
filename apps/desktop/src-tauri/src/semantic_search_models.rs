@@ -16,6 +16,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
+use sha2::{Digest, Sha256};
 use semantic_search::{
     builtin_model_manifest, detect_model_status, list_fastembed_supported_models, model_install_dir,
     resolve_descriptor, semantic_search_models_dir, write_installed_marker, ModelStatusError,
@@ -151,6 +152,17 @@ impl SemanticSearchModelDownloadProgressDto {
 #[derive(Debug, Clone)]
 struct ModelFileSpec {
     relative_path: String,
+    /// The pinned SHA256 of this file, when known. Mirrors the
+    /// **speaker-analysis** downloader's `ModelArtifactFile.sha256: Option<String>`
+    /// policy: a `Some(_)` hash is verified against the downloaded bytes and a
+    /// mismatch fails the install (a tampered/truncated/corrupt file is never
+    /// marked Installed); a `None` hash means the file is **not yet pinned** —
+    /// it installs but is logged as "integrity unverified" so the supply-chain gap
+    /// is visible rather than silently trusted.
+    ///
+    /// Guided-tier hashes are pinned in [`pinned_file_sha256`]. **Custom**
+    /// (user-picked) models have no pinned digest and always download unverified.
+    expected_sha256: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -185,6 +197,24 @@ enum ModelDownloadError {
     },
     #[error("downloaded model is missing required files: {0:?}")]
     IncompleteLayout(Vec<String>),
+    #[error("downloaded file {relative_path} checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        relative_path: String,
+        expected: String,
+        actual: String,
+    },
+    #[error("server advertised {expected} bytes for {relative_path} but {actual} were written (truncated download)")]
+    ContentLengthMismatch {
+        relative_path: String,
+        expected: u64,
+        actual: u64,
+    },
+    #[error("failed to read file {path} for checksum: {source}")]
+    ReadFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -322,41 +352,121 @@ pub fn cancel_semantic_search_model_download(
 /// selected, so the table matches a fresh-migration DB.
 const DEFAULT_SEMANTIC_SEARCH_DIMENSION: usize = 768;
 
-/// Re-derive the entire Semantic Search index after a confirmed model switch.
+/// **Atomically switch the Semantic Search Model**: rebuild the `vec0` table at
+/// the newly-selected model's dimension AND persist the selection as one
+/// operation, so the persisted `model_id` and the live table dimension can never
+/// disagree.
+///
+/// This collapses what used to be a non-atomic two-step (persist `model_id`,
+/// *then* re-index) that was the root of three faces of one bug (H1/H2 + the
+/// re-index race): if the re-index failed after the persist, the table stayed at
+/// the old dimension while the selection named a new-dimension model — every
+/// search hard-failed and the backfill worker error-looped forever, with no
+/// recovery by re-selecting the same model (the UI early-returns on an unchanged
+/// pick). Here the **table rebuild — the step that can fail — happens first**;
+/// the selection is persisted only after it commits. So a failed rebuild leaves
+/// the old model selected and the old-dim table intact (the recreate runs in its
+/// own transaction and rolls back), and the frontend surfaces the error against a
+/// consistent backend state.
 ///
 /// Different **Semantic Search Model Tier**s produce incomparable vectors and
-/// `vec0` is a fixed-dim table, so switching the model means re-indexing every
-/// **Search Result Anchor** (ADR 0036). Because a switch can also change the
-/// vector *dimension* (e.g. 768-dim `nomic` → 1024-dim `bge-m3`), this rebuilds
-/// the `vec0` table at the newly-selected model's dimension — not merely clears
-/// its rows — so the worker's first store under the new model cannot fail on a
-/// length mismatch. The **Semantic Index Backfill** worker then re-derives every
-/// `direct` anchor under the new model (newest-first), with progress living
+/// `vec0` is a fixed-dim table, so a switch re-derives every **Search Result
+/// Anchor** (ADR 0036); a switch can also change the dimension (768-dim `nomic` →
+/// 1024-dim `bge-m3`), so the table is rebuilt, not merely cleared. Recreating it
+/// re-exposes every `direct` anchor to the **Semantic Index Backfill** worker,
+/// which re-derives each under the new model (newest-first), progress living
 /// entirely in the DB. Returns the number of vectors discarded.
 ///
-/// The caller (Settings UI) persists the new model selection FIRST (behind a
-/// `@tauri-apps/plugin-dialog` confirm) and only then invokes this — so both the
-/// resolved dimension here and the worker's reloaded embedder match the new
-/// model on its next pass.
+/// The caller (Settings UI) gates the switch behind a `@tauri-apps/plugin-dialog`
+/// confirm; this command owns the persist+rebuild ordering so the frontend no
+/// longer makes two separate invokes that could leave state half-applied.
 #[tauri::command]
-pub async fn reindex_semantic_search(
+pub async fn select_semantic_search_model(
+    model_id: String,
     app_handle: tauri::AppHandle,
     infra: tauri::State<'_, crate::app_infra::AppInfraState>,
+    settings_state: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
 ) -> Result<u64, String> {
-    let settings =
-        crate::semantic_search_worker::effective_semantic_search_settings(&app_handle);
-    let dimension = crate::semantic_search_worker::resolve_selected_descriptor(&settings)
-        .map(|descriptor| descriptor.dimension)
-        .unwrap_or(DEFAULT_SEMANTIC_SEARCH_DIMENSION);
+    // Resolve the target model's dimension up front. An unresolvable id (legacy /
+    // not enumerated) aborts BEFORE touching the table or the persisted selection,
+    // so a bad pick is a clean no-op.
+    let current = crate::semantic_search_worker::effective_semantic_search_settings(&app_handle);
+    let descriptor = resolve_descriptor(&current.provider, &model_id)
+        .ok_or_else(|| format!("unknown semantic search model '{model_id}'"))?;
+    let dimension = descriptor.dimension;
+
+    // Rebuild the table FIRST (the step that can fail under the worker's
+    // concurrent writes). Only on success do we persist the new selection, so the
+    // persisted `model_id` and the live table dimension stay in lockstep.
     let cleared = infra
         .semantic_search()
         .recreate_vectors_table(dimension)
         .await
         .map_err(|error| format!("failed to rebuild semantic search vectors: {error}"))?;
+
+    // Persist the selection now that the table matches. A persist failure here is
+    // reported to the caller; the table is already at the new dimension, and the
+    // next startup reconciliation would re-align it to whatever model remained
+    // selected, so there is no permanently-stuck state.
+    crate::native_capture::persist_semantic_search_settings(
+        &app_handle,
+        settings_state.inner(),
+        capture_types::UpdateSemanticSearchSettingsRequest {
+            enabled: None,
+            provider: None,
+            model_id: Some(Some(model_id.clone())),
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "rebuilt the semantic search index but failed to persist the model selection: {}",
+            error.message
+        )
+    })?;
+
     crate::native_capture::debug_log::log_info(format!(
-        "semantic search re-index requested: rebuilt vector table at {dimension} dims, discarded {cleared} vector(s); the backfill worker will re-derive every anchor under the new model"
+        "semantic search model switched to '{model_id}': rebuilt vector table at {dimension} dims, discarded {cleared} vector(s); the backfill worker will re-derive every anchor under the new model"
     ));
     Ok(cleared)
+}
+
+/// Reconcile the `vec0` table dimension against the selected model's expected
+/// dimension on startup — the **self-heal** for a permanently-stuck switch.
+///
+/// If a model switch ever left the table at the old dimension while the selection
+/// named a new-dimension model (e.g. a rebuild that failed under DB contention in
+/// an older build, or a hand-edited config), every search degrades to
+/// keyword-only and the worker idles forever — recovery cannot come from
+/// re-selecting the same model (the UI early-returns on an unchanged pick). Run
+/// once on the deferred-startup seam, this rebuilds the table to the selected
+/// model's dimension so the worker can backfill under it again. Idempotent: a
+/// table that already matches is left untouched (the common case — no rebuild, no
+/// vectors discarded). When no model is selected, the table is reconciled to the
+/// migration default so a fresh/disabled state stays at `float[768]`.
+pub(crate) async fn reconcile_semantic_search_index_on_startup(
+    infra: &crate::app_infra::AppInfraState,
+    settings: &capture_types::SemanticSearchSettings,
+) {
+    let expected_dimension =
+        crate::semantic_search_worker::resolve_selected_descriptor(settings)
+            .map(|descriptor| descriptor.dimension)
+            .unwrap_or(DEFAULT_SEMANTIC_SEARCH_DIMENSION);
+    match infra
+        .semantic_search()
+        .reconcile_vectors_table(expected_dimension)
+        .await
+    {
+        Ok(Some(discarded)) => crate::native_capture::debug_log::log_info(format!(
+            "semantic search startup reconciliation: live vec0 dimension disagreed with the selected model; rebuilt the table at {expected_dimension} dims (discarded {discarded} stale vector(s)); the backfill worker will re-derive every anchor"
+        )),
+        Ok(None) => {
+            // The common case: the table already matches the selected model. No log
+            // so a default/Anthropic-only user sees nothing on every launch.
+        }
+        Err(error) => crate::native_capture::debug_log::log_error(format!(
+            "semantic search startup reconciliation failed to read/rebuild the vec0 table (search stays keyword-only until it succeeds): {error}"
+        )),
+    }
 }
 
 /// Build one status DTO for a descriptor by detecting its on-disk state.
@@ -383,15 +493,24 @@ fn status_dto_for(
     })
 }
 
-/// Report the 3 guided manifest tiers, plus the currently-selected model when it
-/// is a **Custom** pick outside the manifest.
+/// Report the 3 guided manifest tiers, plus every **Custom** model that is
+/// already downloaded on disk, plus the currently-selected Custom model.
 ///
 /// `selected_model_id` is the persisted `RecordingSettings.semantic_search`
-/// selection (always the fastembed provider in v1). When it names a model not in
-/// the manifest, the resolver synthesizes its descriptor from fastembed and its
-/// detected status is appended — so the Settings UI can show that Custom model's
-/// installed/selected state alongside the guided tiers. An unresolvable selection
-/// (legacy id no longer enumerated) is simply omitted, never an error.
+/// selection (always the fastembed provider in v1).
+///
+/// A Custom model (any fastembed model outside the 3 guided tiers) must be able to
+/// be **activated after it is downloaded**. The Settings UI's "Use this model"
+/// action only appears once the picked model's status row reports `available`, and
+/// the picked-model view only carries a real `available` when the model is present
+/// in this response (the catalog fallback is structurally unavailable). So a
+/// Custom model that was downloaded but not yet selected MUST appear here with its
+/// real on-disk status — otherwise it is a dead end (downloadable, never
+/// activatable). We enumerate the on-disk install dirs and append any installed
+/// Custom model not already listed; the selected model is appended last even if it
+/// is not yet installed, so its "Not installed → Download" state stays visible.
+/// Unresolvable ids (legacy, no longer enumerated) are simply omitted, never an
+/// error.
 fn build_semantic_search_model_status_response(
     app_data_dir: &Path,
     selected_model_id: Option<&str>,
@@ -404,8 +523,21 @@ fn build_semantic_search_model_status_response(
         models.push(status_dto_for(&models_dir, descriptor)?);
     }
 
-    // Append the selected Custom model (one outside the manifest) so its status is
-    // visible. Manifest selections are already covered above.
+    // Append every Custom model already downloaded on disk (not just the selected
+    // one), so a downloaded-but-unselected Custom pick carries a real `available`
+    // and the UI's "Use this model" activation becomes reachable.
+    for model_id in installed_custom_model_ids(&models_dir) {
+        if models.iter().any(|model| model.model_id == model_id) {
+            continue;
+        }
+        if let Some(descriptor) = resolve_descriptor(FASTEMBED_PROVIDER_ID, &model_id) {
+            models.push(status_dto_for(&models_dir, &descriptor)?);
+        }
+    }
+
+    // Append the selected Custom model even when it is NOT yet installed, so its
+    // Download state is visible. (An installed selection was already covered by the
+    // disk scan above; this `already_listed` guard prevents a duplicate.)
     if let Some(model_id) = selected_model_id {
         let already_listed = models.iter().any(|model| model.model_id == model_id);
         if !already_listed {
@@ -419,6 +551,26 @@ fn build_semantic_search_model_status_response(
         models_directory: models_dir.to_string_lossy().into_owned(),
         models,
     })
+}
+
+/// Enumerate the `model_id`s of every **fastembed-provider** model directory that
+/// exists on disk under `semantic_search_models/fastembed/`. This is a cheap
+/// directory listing (no per-model status detection yet): each id is a candidate
+/// Custom model the caller resolves + status-checks. A model that has a directory
+/// but is incomplete (no marker / missing files) still surfaces — its
+/// `detect_model_status` will report it Missing, which is correct (it shows as
+/// "Not installed" rather than vanishing). Returns an empty list when the install
+/// directory does not exist or cannot be read (a fresh profile), never an error.
+fn installed_custom_model_ids(models_dir: &Path) -> Vec<String> {
+    let provider_dir = models_dir.join(FASTEMBED_PROVIDER_ID);
+    let Ok(entries) = std::fs::read_dir(&provider_dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect()
 }
 
 /// The list of files to download for a model, as **repo-relative paths**.
@@ -456,8 +608,100 @@ fn model_file_specs(descriptor: &SemanticSearchModelDescriptor) -> Vec<ModelFile
     };
     relative_paths
         .into_iter()
-        .map(|relative_path| ModelFileSpec { relative_path })
+        .map(|relative_path| ModelFileSpec {
+            expected_sha256: pinned_file_sha256(&descriptor.model_code, &relative_path)
+                .map(str::to_owned),
+            relative_path,
+        })
         .collect()
+}
+
+/// The pinned SHA256 for one repo-relative file of a **guided-tier** model, when
+/// known. Returns `None` for any file we have not yet sourced a real hash for —
+/// including every **Custom** (user-picked) model, which has no pinned digest by
+/// definition. A `None` here is a deliberate "integrity unverified" signal, not a
+/// silent trust: [`download_and_install_model`] logs it and `verify_file_checksum`
+/// skips verification for it.
+///
+/// Mirrors the other model downloaders, which pin per-file SHA256 in their
+/// manifests (`ModelArtifactFile.sha256`). The semantic-search downloader fetches
+/// directly from each model's HuggingFace repo (`…/resolve/main/<path>`), so the
+/// hashes below are keyed by `(model_code, repo-relative path)`.
+///
+/// NOTE (residual gap for the docs agent): the real per-file digests for the three
+/// guided tiers are **not yet pinned** here — they require downloading + hashing
+/// each ~hundreds-of-MB-to-2GB ONNX artifact from HuggingFace, which is out of
+/// scope for this change. Every guided-tier file therefore currently returns
+/// `None` (installs but logs "integrity unverified"). The verification plumbing is
+/// in place: filling in the constants below later turns on fail-closed checking
+/// with no further code change. Pin them as `(path, "<64-hex sha256>")` tuples per
+/// `model_code` in the match arms below.
+fn pinned_file_sha256(model_code: &str, relative_path: &str) -> Option<&'static str> {
+    let pinned: &[(&str, &str)] = match model_code {
+        // TODO(docs/follow-up): pin the real SHA256 of each guided-tier file. The
+        // arms are wired so adding `("onnx/model.onnx", "<sha256>")` entries here
+        // immediately enables fail-on-mismatch verification for that tier.
+        "nomic-ai/nomic-embed-text-v1.5" => &[],
+        "BAAI/bge-m3" => &[],
+        "intfloat/multilingual-e5-small" => &[],
+        _ => &[],
+    };
+    pinned
+        .iter()
+        .find(|(path, _)| *path == relative_path)
+        .map(|(_, sha256)| *sha256)
+}
+
+/// Verify a downloaded file's SHA256 against its pinned digest.
+///
+/// Mirrors the **speaker-analysis** `validate_artifact_sha256(path, Option<&str>)`:
+/// a `None`/empty pinned hash is a no-op success (the file is **not yet pinned** —
+/// integrity unverified, logged by the caller); a present hash is hashed from disk
+/// and compared case-insensitively, returning [`ModelDownloadError::ChecksumMismatch`]
+/// on disagreement so a tampered/corrupt file fails the install before the
+/// `.installed.json` marker is ever written.
+fn verify_file_checksum(
+    file_path: &Path,
+    relative_path: &str,
+    expected_sha256: Option<&str>,
+) -> Result<(), ModelDownloadError> {
+    let Some(expected) = expected_sha256.filter(|value| !value.trim().is_empty()) else {
+        return Ok(());
+    };
+    let actual = sha256_of_file(file_path)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(ModelDownloadError::ChecksumMismatch {
+            relative_path: relative_path.to_string(),
+            expected: expected.to_string(),
+            actual,
+        });
+    }
+    Ok(())
+}
+
+/// Stream the file through SHA256 in 8 KiB chunks so a multi-GB ONNX graph never
+/// loads into memory. Returns the lowercase hex digest.
+fn sha256_of_file(file_path: &Path) -> Result<String, ModelDownloadError> {
+    let mut file =
+        std::fs::File::open(file_path).map_err(|source| ModelDownloadError::ReadFile {
+            path: file_path.to_path_buf(),
+            source,
+        })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer).map_err(|source| {
+            ModelDownloadError::ReadFile {
+                path: file_path.to_path_buf(),
+                source,
+            }
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// The four tokenizer/config files fastembed always fetches from the repo root.
@@ -704,12 +948,39 @@ async fn download_and_install_model(
             app_handle,
             plan,
             &url,
+            &spec.relative_path,
             &destination,
             downloaded_total,
             cancel_requested,
         )
         .await?;
         downloaded_total = downloaded_total.saturating_add(file_bytes);
+
+        // Integrity gate (ADR 0036 / finding L5): verify the bytes we just wrote
+        // BEFORE the `.installed.json` marker, so a tampered/corrupt file fails the
+        // install rather than being silently loaded by ort. A pinned hash that
+        // mismatches aborts here (the partial install dir is then removed by the
+        // task runner); an unpinned file installs but is recorded as "integrity
+        // unverified" so the supply-chain gap is visible.
+        match spec.expected_sha256.as_deref() {
+            Some(_) => {
+                verify_file_checksum(&destination, &spec.relative_path, spec.expected_sha256.as_deref())?;
+                log_info(format!(
+                    "semantic search model download verified '{}' against pinned SHA256 for {}/{}",
+                    spec.relative_path, plan.provider, plan.model_id
+                ));
+            }
+            None => {
+                // Not an error — just an honest signal that no digest is pinned for
+                // this file (every Custom pick, and any guided-tier file not yet
+                // sourced). The model still installs.
+                log_info(format!(
+                    "semantic search model download integrity UNVERIFIED for '{}' ({}/{}): no pinned SHA256 — trusting TLS only",
+                    spec.relative_path, plan.provider, plan.model_id
+                ));
+            }
+        }
+
         log_info(format!(
             "semantic search model download saved '{}' ({file_bytes} bytes) for {}/{}",
             spec.relative_path, plan.provider, plan.model_id
@@ -757,6 +1028,7 @@ async fn download_file_to(
     app_handle: &tauri::AppHandle,
     plan: &DownloadPlan,
     url: &str,
+    relative_path: &str,
     destination: &Path,
     already_downloaded_bytes: u64,
     cancel_requested: &AtomicBool,
@@ -818,6 +1090,27 @@ async fn download_file_to(
             ),
         );
     }
+
+    // Truncation guard (finding CT3): if the server advertised a Content-Length,
+    // the fully-written byte count MUST equal it. A short stream (dropped
+    // connection mid-download) otherwise produces a truncated file that passes the
+    // is_file() existence check and gets marked Installed — then fails to load as a
+    // corrupt ONNX graph. Failing here removes the partial install instead.
+    if let Some(expected_len) = content_length {
+        if file_downloaded != expected_len {
+            log_error(format!(
+                "semantic search model download truncated for {}/{} at {url}: wrote {file_downloaded} of {expected_len} advertised bytes",
+                plan.provider, plan.model_id
+            ));
+            return Err(ModelDownloadError::ContentLengthMismatch {
+                relative_path: relative_path.to_string(),
+                expected: expected_len,
+                actual: file_downloaded,
+            }
+            .into());
+        }
+    }
+
     Ok(file_downloaded)
 }
 
@@ -876,6 +1169,101 @@ mod tests {
         assert_eq!(custom_row.model_code, custom.model_code);
         // Not installed on disk => Missing / unavailable, but still surfaced.
         assert!(!custom_row.available);
+    }
+
+    /// Install a Custom (non-manifest) fastembed model on disk: every required
+    /// file from its resolved layout plus the `.installed.json` marker, so
+    /// `detect_model_status` reports it Installed.
+    fn install_custom_model_on_disk(models_dir: &Path, descriptor: &SemanticSearchModelDescriptor) {
+        let install_dir =
+            model_install_dir(models_dir, &descriptor.provider, &descriptor.model_id)
+                .expect("install dir");
+        std::fs::create_dir_all(&install_dir).expect("install dir");
+        for file_name in &descriptor.expected_layout.required_files {
+            let path = install_dir.join(file_name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("parent dir");
+            }
+            std::fs::write(path, b"x").expect("model file");
+        }
+        write_installed_marker(models_dir, &descriptor.provider, &descriptor.model_id)
+            .expect("marker");
+    }
+
+    #[test]
+    fn status_response_surfaces_a_downloaded_but_unselected_custom_model_as_available() {
+        // H3 regression: a Custom model downloaded on disk but NOT yet the persisted
+        // selection must appear in the status response with a real `available` true,
+        // so the Settings UI can offer "Use this model". Without this it was a dead
+        // end — downloadable, never activatable.
+        let manifest_ids: Vec<String> = builtin_model_manifest()
+            .models
+            .into_iter()
+            .map(|model| model.model_id)
+            .collect();
+        let custom = list_fastembed_supported_models()
+            .into_iter()
+            .find(|model| !manifest_ids.contains(&model.model_id))
+            .expect("a non-manifest fastembed model");
+        let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, &custom.model_id)
+            .expect("custom descriptor");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let models_dir = semantic_search_models_dir(temp.path());
+        install_custom_model_on_disk(&models_dir, &descriptor);
+
+        // No selection at all — the model is merely downloaded.
+        let response = build_semantic_search_model_status_response(temp.path(), None)
+            .expect("status response");
+        let custom_row = response
+            .models
+            .iter()
+            .find(|model| model.model_id == custom.model_id)
+            .expect("downloaded custom model must be listed even when unselected");
+        assert_eq!(custom_row.tier, SemanticSearchModelTier::Custom);
+        assert!(
+            custom_row.available,
+            "a fully-downloaded custom model must report available so it can be activated"
+        );
+        // The guided tiers are unaffected (still listed, all unavailable on disk).
+        assert!(response
+            .models
+            .iter()
+            .any(|model| model.model_id == "nomic-embed-text-v1.5"));
+    }
+
+    #[test]
+    fn status_response_does_not_duplicate_a_downloaded_custom_model() {
+        // A downloaded Custom model that is ALSO the selection must appear exactly
+        // once (the disk scan covers it; the selected-append must not re-add it).
+        let manifest_ids: Vec<String> = builtin_model_manifest()
+            .models
+            .into_iter()
+            .map(|model| model.model_id)
+            .collect();
+        let custom = list_fastembed_supported_models()
+            .into_iter()
+            .find(|model| !manifest_ids.contains(&model.model_id))
+            .expect("a non-manifest fastembed model");
+        let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, &custom.model_id)
+            .expect("custom descriptor");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let models_dir = semantic_search_models_dir(temp.path());
+        install_custom_model_on_disk(&models_dir, &descriptor);
+
+        let response =
+            build_semantic_search_model_status_response(temp.path(), Some(&custom.model_id))
+                .expect("status response");
+        assert_eq!(
+            response
+                .models
+                .iter()
+                .filter(|model| model.model_id == custom.model_id)
+                .count(),
+            1,
+            "a downloaded + selected custom model must appear exactly once"
+        );
     }
 
     #[test]
@@ -1041,5 +1429,86 @@ mod tests {
             .expect("nomic model");
         assert_eq!(nomic.model_code, "nomic-ai/nomic-embed-text-v1.5");
         assert!(nomic.approx_download_bytes > 0);
+    }
+
+    #[test]
+    fn semantic_search_checksum_mismatch_fails_before_install_completes() {
+        // L5: a file whose bytes do not match a pinned SHA256 must fail verification
+        // (the install must NOT complete / the marker must not be written). We hash
+        // a file on disk against a deliberately-wrong pinned digest and assert the
+        // verifier returns ChecksumMismatch.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("model.onnx");
+        std::fs::write(&file_path, b"the wrong bytes").expect("write file");
+
+        // The matching path: hashing then pinning the real digest verifies cleanly.
+        let real_sha256 = sha256_of_file(&file_path).expect("sha256");
+        verify_file_checksum(&file_path, "onnx/model.onnx", Some(&real_sha256))
+            .expect("a matching pinned hash verifies");
+
+        // The mismatch path: an unrelated pinned hash fails the install.
+        let error = verify_file_checksum(&file_path, "onnx/model.onnx", Some(&"0".repeat(64)))
+            .expect_err("a mismatched pinned hash must fail verification");
+        match error {
+            ModelDownloadError::ChecksumMismatch {
+                relative_path,
+                actual,
+                ..
+            } => {
+                assert_eq!(relative_path, "onnx/model.onnx");
+                assert_eq!(actual, real_sha256);
+            }
+            other => panic!("expected ChecksumMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn semantic_search_unpinned_file_installs_but_is_flagged_unverified() {
+        // L5: a file with NO pinned hash (every Custom pick, and any guided-tier
+        // file not yet sourced) is a no-op success — it installs, integrity
+        // unverified. `verify_file_checksum(None)` must return Ok without touching
+        // the bytes, and the guided tiers currently have no pinned hashes so their
+        // file specs carry `expected_sha256: None`.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("model.onnx");
+        std::fs::write(&file_path, b"unpinned but trusted").expect("write file");
+
+        verify_file_checksum(&file_path, "onnx/model.onnx", None)
+            .expect("an unpinned file is accepted (integrity unverified)");
+        // An empty pinned string is treated as unpinned too (mirrors speaker-analysis).
+        verify_file_checksum(&file_path, "onnx/model.onnx", Some("  "))
+            .expect("a blank pinned hash is treated as unpinned");
+
+        // Until the real guided-tier digests are sourced, every guided-tier file
+        // spec is unpinned — pinning a hash in `pinned_file_sha256` turns on
+        // fail-closed verification for that file with no further code change.
+        let manifest = builtin_model_manifest();
+        for descriptor in &manifest.models {
+            for spec in model_file_specs(descriptor) {
+                assert!(
+                    spec.expected_sha256.is_none(),
+                    "guided-tier file {} for {} has no pinned hash yet (residual L5 gap)",
+                    spec.relative_path,
+                    descriptor.model_id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pinned_hash_lookup_resolves_when_a_constant_is_present() {
+        // Guards the verification plumbing: `pinned_file_sha256` returns the digest
+        // for a known (model_code, path) and None otherwise. Because no real hashes
+        // are pinned yet, every current lookup is None; this test documents the
+        // contract so a future docs/follow-up agent that pins a constant can flip a
+        // file to verified.
+        assert!(
+            pinned_file_sha256("nomic-ai/nomic-embed-text-v1.5", "onnx/model.onnx").is_none(),
+            "no guided-tier hashes are pinned yet (residual L5 gap, see pinned_file_sha256)"
+        );
+        assert!(
+            pinned_file_sha256("some/unknown-model", "onnx/model.onnx").is_none(),
+            "an unknown model code (Custom pick) is never pinned"
+        );
     }
 }

@@ -2773,12 +2773,13 @@ pub fn update_user_context_settings(
     )
 }
 
-/// Update the selected **Semantic Search Model Tier** (issue #125). A model
-/// switch is a deliberate, confirmed action in the Settings UI — the frontend
-/// shows a `@tauri-apps/plugin-dialog` confirm and only then calls this, then
-/// `reindex_semantic_search` to re-derive every **Semantic Search Vector** under
-/// the new model. The **Semantic Index Backfill** worker reloads the embedder on
-/// its next pass when the provider/model id changes.
+/// Update the **Semantic Search** settings that do NOT change the active vector
+/// dimension: the enabled toggle (issue #125). A model *switch* goes through the
+/// atomic `select_semantic_search_model` command instead — it rebuilds the `vec0`
+/// table at the new model's dimension and persists the selection together, so the
+/// persisted model and the live table dimension can never disagree. The
+/// **Semantic Index Backfill** worker reloads the embedder on its next pass when
+/// the provider/model id changes.
 #[tauri::command]
 pub fn update_semantic_search_settings(
     request: capture_types::UpdateSemanticSearchSettingsRequest,
@@ -2788,6 +2789,23 @@ pub fn update_semantic_search_settings(
     update_recording_settings_domain(
         &app_handle,
         state.inner(),
+        RecordingSettingsDomainPatch::SemanticSearch(request),
+    )
+}
+
+/// Persist a **Semantic Search Model Tier** patch from outside the command layer
+/// (the atomic `select_semantic_search_model` switch, which rebuilds the `vec0`
+/// table *before* persisting so the persisted `model_id` and the live table
+/// dimension never disagree). Reuses the same domain-update path as
+/// [`update_semantic_search_settings`].
+pub(crate) fn persist_semantic_search_settings(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    request: capture_types::UpdateSemanticSearchSettingsRequest,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        app_handle,
+        state,
         RecordingSettingsDomainPatch::SemanticSearch(request),
     )
 }
