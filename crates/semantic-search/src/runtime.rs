@@ -32,6 +32,38 @@ use crate::models::{
 /// chunk plus its special tokens still fits the model window.
 const SPECIAL_TOKEN_HEADROOM: usize = 2;
 
+/// Maximum chunks handed to one fastembed `embed` call. fastembed pads every row
+/// in a batch to the *longest* sequence in that batch (`BatchLongest`), and the
+/// default English model has an 8192-token window — so folding a whole backfill
+/// batch's chunks into one `embed` let a single long OCR/transcript chunk drag
+/// every sibling up to its width, ballooning the transient ONNX tensors and the
+/// CPU memory arena `ort` retains at its high-water mark. A small, length-sorted
+/// sub-batch keeps the padded width — and the peak per `session.run` — bounded.
+/// See [`SemanticSearchEmbedder::embed_chunks_bounded`].
+const EMBED_SUB_BATCH_SIZE: usize = 8;
+
+/// Hard cap on the embedding window, regardless of a model's advertised window
+/// (nomic = 8192). This is the **primary memory bound** for Semantic Search.
+///
+/// `ort`'s `memory_pattern` + CPU arena pre-allocate and *retain* one large
+/// contiguous buffer per distinct input shape `(batch, padded_seq_len)`. The
+/// sequence dim scales with the model window, so a single long anchor at 8192
+/// mints a multi-GB arena — and that memory lives in `ort`'s **process-global**
+/// allocator, so dropping/reloading the session does not return it to the OS
+/// (measured: a long-text batch sat at ~9.9 GB at 8192, flat ~1.7 GB at 256,
+/// and the footprint never fell on session drop). fastembed 5.17.2 only disables
+/// `memory_pattern` on the DirectML path and exposes no override, so we bound the
+/// *shape* instead: capping the window bounds every tensor `ort` can allocate.
+///
+/// 256 keeps the memory floor low (measured: a worst-case all-long-text backfill
+/// holds flat at ~1.7 GB, vs ~2.5 GB at 512 and 9.9 GB-and-climbing at 8192).
+/// Text longer than this is split into capped chunks and mean-pooled — the same
+/// overflow path as before, just a smaller window — so short anchors (the vast
+/// majority of OCR/transcript anchors) embed identically and only long ones are
+/// chunked more finely. Raise toward 512 (the standard sentence window the e5
+/// tier uses) if long-passage fidelity matters more than the lower floor.
+const MAX_EMBED_WINDOW_TOKENS: usize = 256;
+
 /// Map the serde-friendly descriptor pooling onto fastembed's `Pooling`. Lives
 /// here (behind the `fastembed` feature) so the descriptor module needs no
 /// fastembed dependency, while the runtime still loads each model with the exact
@@ -152,6 +184,11 @@ impl SemanticSearchEmbedder {
         intra_threads: Option<usize>,
     ) -> Result<Self, EmbeddingError> {
         let model_dir = model_dir.as_ref();
+        // Memory bound: clamp the window before it reaches BOTH the fastembed
+        // session (`with_max_length`) and the overflow-split tokenizer (both read
+        // the value stored in `self.max_tokens`). This is the load-bearing fix for
+        // the embed RSS leak — see [`MAX_EMBED_WINDOW_TOKENS`].
+        let max_tokens = max_tokens.min(MAX_EMBED_WINDOW_TOKENS);
         let onnx_file = read_file(model_dir, &layout.onnx_relative_path)?;
         let tokenizer_bytes = read_file(model_dir, TOKENIZER_FILE_NAME)?;
         let tokenizer_files = TokenizerFiles {
@@ -264,9 +301,12 @@ impl SemanticSearchEmbedder {
             }
         }
 
-        // One embed for the whole batch. `None` = fastembed's internal default
-        // batching over the flat chunk list.
-        let embed_result = self.embedder.embed(all_chunks, None);
+        // Embed the flat chunk list in bounded, length-sorted sub-batches (see
+        // `embed_chunks_bounded`) instead of one wide batch: this caps the peak
+        // ONNX tensor shape so one long chunk can't balloon the whole batch's
+        // memory. Returns vectors in the same flat order the chunks were pushed,
+        // so the fan-in below is unaffected.
+        let embed_result = self.embed_chunks_bounded(all_chunks);
 
         // Fan the flat vectors back into one result per successfully-split text.
         // On an embed error every successfully-split text fails identically; texts
@@ -297,6 +337,73 @@ impl SemanticSearchEmbedder {
                     .unwrap_or(Err(EmbeddingError::EmptyEmbedding)),
             })
             .collect()
+    }
+
+    /// Embed every chunk in `chunks`, returning one vector per chunk **in input
+    /// order**, while bounding the work shape so one long chunk can't blow up the
+    /// whole batch (the memory-leak guard).
+    ///
+    /// fastembed pads each batch to its longest sequence (`BatchLongest`) and the
+    /// default English model has an 8192-token window, so handing it a backfill
+    /// batch's chunks all at once meant a single long chunk dragged every sibling
+    /// up to its width — inflating the transient ONNX tensors and the CPU arena
+    /// `ort` keeps at its high-water mark (fastembed 5.17.2 hard-codes ort's
+    /// `memory_pattern` ON for the CPU path with no override). Here we sort chunks
+    /// by length and embed them in [`EMBED_SUB_BATCH_SIZE`]-wide sub-batches, so
+    /// each sub-batch pads close to its own members' width and the peak per
+    /// `session.run` is bounded by the sub-batch, not the whole batch. Vectors are
+    /// scattered back to input order so the caller's chunk→text fan-in is unchanged.
+    fn embed_chunks_bounded(
+        &mut self,
+        chunks: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let total = chunks.len();
+        if total == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Sort *indices* by chunk byte length (a cheap proxy for token length) so
+        // similar-length chunks share a sub-batch and short chunks are never padded
+        // up to a long one. `order` is a permutation of `0..total`.
+        let mut order: Vec<usize> = (0..total).collect();
+        order.sort_unstable_by_key(|&index| chunks[index].len());
+
+        // Take each chunk out as it is placed into a sub-batch so fastembed gets
+        // owned `String`s without a clone; `order` visits every index exactly once.
+        let mut chunks: Vec<Option<String>> = chunks.into_iter().map(Some).collect();
+        let mut out: Vec<Option<Vec<f32>>> = (0..total).map(|_| None).collect();
+
+        for window in order.chunks(EMBED_SUB_BATCH_SIZE) {
+            let sub_batch: Vec<String> = window
+                .iter()
+                .map(|&index| {
+                    chunks[index]
+                        .take()
+                        // `order` is a permutation, so each index is taken once.
+                        .expect("each chunk index is embedded exactly once")
+                })
+                .collect();
+            let vectors = self
+                .embedder
+                .embed(sub_batch, None)
+                .map_err(|error| EmbeddingError::Embed(error.to_string()))?;
+            if vectors.len() != window.len() {
+                return Err(EmbeddingError::Embed(format!(
+                    "fastembed returned {} vectors for {} chunks",
+                    vectors.len(),
+                    window.len()
+                )));
+            }
+            for (&index, vector) in window.iter().zip(vectors) {
+                out[index] = Some(vector);
+            }
+        }
+
+        // Every position is filled because `order` covers `0..total` exactly once.
+        Ok(out
+            .into_iter()
+            .map(|vector| vector.expect("every chunk position embedded"))
+            .collect())
     }
 
     /// Split `text` into chunks that each fit the model's token window. Returns a
