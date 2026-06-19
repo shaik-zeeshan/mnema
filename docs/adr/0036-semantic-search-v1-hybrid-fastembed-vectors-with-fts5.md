@@ -4,6 +4,8 @@ status: accepted
 
 # Semantic Search v1 is local Hybrid Search: fastembed vectors fused with FTS5 inside the Encrypted Capture Index
 
+> **Partially superseded by [ADR 0037](0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md).** The **"Runtime"** and **"Model selection"** sections below are superseded: embeddings now run on **candle** (on-device GPU/CPU) behind a pluggable **Semantic Search Backend** rather than `fastembed`/ONNX, and the model catalog is hand-maintained rather than synthesized from fastembed's `ModelInfo`. Everything else in this ADR — the hybrid FTS5 ⊕ `vec0` RRF substrate, filter-then-rank, the atomic model-switch + dimension authority, the encrypted-at-rest + egress-redaction privacy model, and model-gated default-on rollout — still holds.
+
 Mnema adds **Semantic Search** as a local meaning tier that fuses with the existing FTS5
 **Text Search** into **Hybrid Search**, completing the direction deferred in
 [ADR 0007](0007-search-v1-text-search-in-app-db.md). Everything runs on-device; no captured
