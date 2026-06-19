@@ -29,7 +29,7 @@ import json
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -102,6 +102,60 @@ class Components:
         }
 
 
+@dataclass
+class SpeakerCountStats:
+    """Aggregates speaker-count error across clips.
+
+    DER alone hides over-/under-clustering: a run can land a low DER while
+    predicting the wrong number of speakers (e.g. splitting one speaker into
+    several near-identical clusters). This tracks, per clip, the signed count
+    error (predicted - reference) and rolls it up so experiments can report
+    whether a change pushes the pipeline toward over- or under-clustering.
+
+    Reusable by later experiments (e.g. NME-SC): feed each clip's
+    (reference, hypothesis) speaker counts via `add` and read `as_dict`.
+    """
+
+    errors: list[int] = field(default_factory=list)  # signed: pred - ref, per clip
+
+    def add(self, reference_speakers: int, hypothesis_speakers: int) -> int:
+        """Record one clip; returns the signed count error (pred - ref)."""
+        error = hypothesis_speakers - reference_speakers
+        self.errors.append(error)
+        return error
+
+    def as_dict(self) -> dict:
+        n = len(self.errors)
+        if n == 0:
+            return {
+                "clips": 0,
+                "mean_signed_error": 0.0,
+                "mean_abs_error": 0.0,
+                "over_count": 0,
+                "under_count": 0,
+                "exact_count": 0,
+                "pct_over_estimate": 0.0,
+                "pct_under_estimate": 0.0,
+                "pct_exact": 0.0,
+            }
+        over = sum(1 for e in self.errors if e > 0)
+        under = sum(1 for e in self.errors if e < 0)
+        exact = sum(1 for e in self.errors if e == 0)
+        return {
+            "clips": n,
+            # mean signed error: sign tells direction (positive => over-clusters).
+            "mean_signed_error": sum(self.errors) / n,
+            # mean absolute error: magnitude of miscounting regardless of sign.
+            "mean_abs_error": sum(abs(e) for e in self.errors) / n,
+            "over_count": over,
+            "under_count": under,
+            "exact_count": exact,
+            "pct_over_estimate": over / n * 100.0,
+            "pct_under_estimate": under / n * 100.0,
+            "pct_exact": exact / n * 100.0,
+        }
+
+
 def build_reference(sample, uri: str):
     from pyannote.core import Annotation, Segment
 
@@ -145,6 +199,8 @@ def diarizer_extra_args(args: argparse.Namespace) -> list[str]:
         extra += ["--min-duration-on", str(args.min_duration_on)]
     if args.min_duration_off is not None:
         extra += ["--min-duration-off", str(args.min_duration_off)]
+    if args.safe_chunk_ms is not None:
+        extra += ["--safe-chunk-ms", str(args.safe_chunk_ms)]
     return extra
 
 
@@ -164,6 +220,11 @@ def main() -> int:
     parser.add_argument("--num-clusters", type=int)
     parser.add_argument("--min-duration-on", type=float)
     parser.add_argument("--min-duration-off", type=float)
+    parser.add_argument(
+        "--safe-chunk-ms",
+        type=int,
+        help="safe-chunk diarization window override in ms (default 60000, clamped <=60000)",
+    )
     parser.add_argument("--work-dir", help="keep exported WAV/RTTM here instead of a temp dir")
     parser.add_argument("--json-out", help="write aggregate + per-file results as JSON")
     args = parser.parse_args()
@@ -198,6 +259,7 @@ def main() -> int:
     metric_no_overlap = DiarizationErrorRate(collar=args.collar, skip_overlap=True)
     agg_overlap = Components()
     agg_no_overlap = Components()
+    count_stats = SpeakerCountStats()
     per_file: list[dict] = []
 
     work_ctx = (
@@ -208,7 +270,10 @@ def main() -> int:
     with work_ctx as work_dir:
         work_dir = Path(work_dir)
         extra = diarizer_extra_args(args)
-        header = f"{'uri':<28} {'ref':>3} {'hyp':>3} {'DER%':>7} {'conf%':>7} {'miss%':>7} {'FA%':>7}"
+        header = (
+            f"{'uri':<28} {'ref':>3} {'hyp':>3} {'cnt±':>5} "
+            f"{'DER%':>7} {'conf%':>7} {'miss%':>7} {'FA%':>7}"
+        )
         print(header)
         print("-" * len(header))
 
@@ -245,6 +310,7 @@ def main() -> int:
 
             hypothesis = parse_rttm(result.stdout, uri)
             hyp_speakers = len(set(hypothesis.labels()))
+            count_error = count_stats.add(n_speakers, hyp_speakers)  # signed: hyp - ref
 
             det_o = metric_overlap(reference, hypothesis, detailed=True)
             det_n = metric_no_overlap(reference, hypothesis, detailed=True)
@@ -257,8 +323,8 @@ def main() -> int:
             miss = det_o["missed detection"] / total_o
             fa = det_o["false alarm"] / total_o
             print(
-                f"{uri:<28} {n_speakers:>3} {hyp_speakers:>3} {der_o * 100:>7.2f} "
-                f"{conf * 100:>7.2f} {miss * 100:>7.2f} {fa * 100:>7.2f}"
+                f"{uri:<28} {n_speakers:>3} {hyp_speakers:>3} {count_error:>+5d} "
+                f"{der_o * 100:>7.2f} {conf * 100:>7.2f} {miss * 100:>7.2f} {fa * 100:>7.2f}"
             )
             per_file.append(
                 {
@@ -266,6 +332,7 @@ def main() -> int:
                     "index": idx,
                     "reference_speakers": n_speakers,
                     "hypothesis_speakers": hyp_speakers,
+                    "speaker_count_error": count_error,  # signed: hyp - ref
                     "with_overlap": {
                         "der": der_o,
                         "confusion": conf,
@@ -288,6 +355,16 @@ def main() -> int:
     )
     print(f"AGGREGATE (collar={args.collar}s, excl. overlap): DER={n['der'] * 100:.2f}%")
 
+    c = count_stats.as_dict()
+    print(
+        "SPEAKER COUNT: "
+        f"mean_abs_err={c['mean_abs_error']:.2f}  "
+        f"mean_signed_err={c['mean_signed_error']:+.2f}  "
+        f"over={c['pct_over_estimate']:.0f}% ({c['over_count']}/{c['clips']})  "
+        f"under={c['pct_under_estimate']:.0f}% ({c['under_count']}/{c['clips']})  "
+        f"exact={c['pct_exact']:.0f}% ({c['exact_count']}/{c['clips']})"
+    )
+
     if args.json_out:
         payload = {
             "dataset": DATASET_ID,
@@ -302,8 +379,10 @@ def main() -> int:
                 "num_clusters": args.num_clusters,
                 "min_duration_on": args.min_duration_on,
                 "min_duration_off": args.min_duration_off,
+                "safe_chunk_ms": args.safe_chunk_ms,
             },
             "aggregate": {"with_overlap": o, "without_overlap": n},
+            "speaker_count": c,
             "per_file": per_file,
         }
         Path(args.json_out).write_text(json.dumps(payload, indent=2))

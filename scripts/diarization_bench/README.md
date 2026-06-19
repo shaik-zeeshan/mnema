@@ -96,4 +96,39 @@ aggregate DER and its confusion / miss / FA split.
 - VoxConverse is in-the-wild audio (debates, talk shows) and covers Mnema's
   "system audio / video playing" case. For the meeting / call case, the same
   harness works against `diarizers-community/ami` with a few field tweaks.
+
+## NME-SC over-clustering experiment (prototype)
+
+The production cross-chunk clustering is threshold-AHC (`cross_chunk_threshold=0.60`):
+it has no global prior on speaker count and **over-splits** — on this 10-clip
+subset it over-estimates the speaker count on 100% of clips (mean abs error
+~17.9; e.g. 2 real speakers -> 24 predicted), even at DER ~9.7%.
+
+`nme_sc.py` is a self-contained numpy/scipy prototype of **NME-SC** (Normalized
+Maximum Eigengap Spectral Clustering, Park et al. 2019 — what NeMo uses), which
+estimates the speaker count from the maximum eigengap of the normalized Laplacian
+instead of a similarity threshold. `bench_nme_sc.py` measures it against the
+baseline **apples-to-apples**: same subset, same reference, same `pyannote.metrics`
+DER (0.25s collar) and same `SpeakerCountStats` (both imported from `run_der.py`).
+
+This is additive/opt-in and does **not** touch the production Rust clustering:
+`diarize_to_rttm --dump-embeddings <path>` (Rust flag) dumps the
+pre-global-clustering local-cluster centroid embeddings + their pending turns;
+NME-SC re-clusters those centroids; the RTTM is rebuilt from the turns + new
+labels. Everything up to the global cluster-count step is identical to baseline.
+
+Run it (after building the binary + installing deps as above):
+
+```sh
+cd scripts/diarization_bench
+source .venv/bin/activate
+# 1. Export the subset clips once (same pinned revision as run_der.py):
+python export_clips.py --manifest voxconverse_subset.txt --out-dir work
+# 2. Score baseline AHC vs NME-SC on all subset clips:
+python bench_nme_sc.py --manifest voxconverse_subset.txt --work-dir work \
+    --binary ../../target/release/diarize_to_rttm --json-out nme_sc_compare.json
+```
+
+`--max-speakers` (default 20) bounds the eigengap search; keep it generous so the
+eigengap, not the cap, drives the count.
 ```

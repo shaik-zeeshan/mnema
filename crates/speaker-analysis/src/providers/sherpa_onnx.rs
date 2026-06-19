@@ -24,9 +24,48 @@ const CROSS_CHUNK_THRESHOLD_OPTION: &str = "crossChunkThreshold";
 const NUM_CLUSTERS_OPTION: &str = "numClusters";
 const MIN_DURATION_ON_OPTION: &str = "minDurationOn";
 const MIN_DURATION_OFF_OPTION: &str = "minDurationOff";
+/// Request-option (camelCase) that overrides the safe-chunk diarization window
+/// for experiments (DER sweep). Additive/opt-in: when absent, the production
+/// default `SAFE_SINGLE_CHUNK_DIARIZATION_MS` is used and behavior is
+/// byte-identical. See `sanitize_safe_chunk_ms` for the accepted range.
+const SAFE_CHUNK_MS_OPTION: &str = "safeChunkMs";
 const MIN_DIARIZATION_AUDIO_MS: u64 = 1_000;
 const MIN_DIARIZATION_PEAK: f32 = 1.0e-5;
-const SAFE_SINGLE_CHUNK_DIARIZATION_MS: u64 = 10_000;
+/// Production default safe-chunk diarization window. **Tuned to 60s and must
+/// stay within the `[2×SAFE_CHUNK_OVERLAP_MS ..= MAX_SAFE_CHUNK_DIARIZATION_MS]`
+/// bounds — do not tune it outside that range.**
+///
+/// Why 60s: a VoxConverse 10-clip DER benchmark chunk-size sweep (10s vs 60s)
+/// showed 60s cuts over-clustering — mean absolute speaker-count error
+/// 17.90 → 12.30 (−31%) — *and* slightly improves DER (9.71% → 8.87% including
+/// overlap). Larger windows yield cleaner per-speaker embeddings and leave the
+/// cross-chunk agglomeration (`agglomerate_local_clusters`) fewer fragments to
+/// stitch.
+///
+/// Why not lower (e.g. 30s): 30s deterministically crashes sherpa-onnx's native
+/// pyannote diarizer (SIGBUS / EXC_BAD_ACCESS — an out-of-bounds read in
+/// `OfflineSpeakerDiarizationPyannoteImpl::FinalizeLabels` → `TopkIndex`) on
+/// long, dense, multi-party audio. This native crash is the (previously
+/// undocumented) reason the window was historically kept small at 10s.
+///
+/// Why not higher: NeMo TitaNet aborts the process when a single embedding call
+/// exceeds ~60s of audio (see `MAX_EMBEDDING_AUDIO_SAMPLES`); 60s sits exactly
+/// at that ceiling. The `safeChunkMs` override is clamped to
+/// `[2×overlap ..= MAX_SAFE_CHUNK_DIARIZATION_MS]` for this reason — keep the
+/// clamp.
+///
+/// Accepted trade-offs: ~+270 MB one-time peak RSS (bounded — windows are
+/// capped ≤60s and the models are tiny) and ~7× slower wall-clock on a
+/// worst-case 1200s clip (still comfortably above realtime for the background
+/// worker).
+const SAFE_SINGLE_CHUNK_DIARIZATION_MS: u64 = 60_000;
+/// Hard ceiling on the safe-chunk window. Each safe chunk is diarized whole and
+/// the whole-chunk fallback embedding in `analyze_single_safe_chunk` can feed a
+/// full chunk's audio to TitaNet; >~123s aborts the process (see
+/// `MAX_EMBEDDING_AUDIO_SAMPLES`). Capping the window at 60s keeps every
+/// per-chunk embedding — including the whole-chunk fallback — at or under the
+/// 60s embedding cap, so the override can never push past TitaNet's limit.
+const MAX_SAFE_CHUNK_DIARIZATION_MS: u64 = 60_000;
 const SAFE_CHUNK_OVERLAP_MS: u64 = 1_000;
 const MERGE_ADJACENT_TURN_GAP_MS: u64 = 250;
 /// Maximum audio (in samples) fed to the speaker-embedding extractor in a single
@@ -64,6 +103,12 @@ struct SherpaModelSelection {
     /// Per-model minimum speaker-turn duration in milliseconds (accuracy #2);
     /// turns shorter than this are skipped when forming per-chunk embeddings.
     min_turn_ms: u64,
+    /// Safe-chunk diarization window in milliseconds. Defaults to
+    /// `SAFE_SINGLE_CHUNK_DIARIZATION_MS` (60s) but is request-overridable
+    /// (`safeChunkMs`, capped at `MAX_SAFE_CHUNK_DIARIZATION_MS`) so the DER
+    /// benchmark can sweep chunk size without rebuilding. The chunk overlap
+    /// (`SAFE_CHUNK_OVERLAP_MS`) stays fixed across the sweep.
+    safe_chunk_ms: u64,
 }
 
 impl SherpaOnnxSpeakerAnalysisProvider {
@@ -237,14 +282,14 @@ fn run_sherpa_on_samples(
         message: "failed to create sherpa-onnx speaker embedding extractor".to_string(),
     })?;
 
-    if samples.len() > safe_single_chunk_sample_limit() {
+    if samples.len() > safe_single_chunk_sample_limit(selection.safe_chunk_ms) {
         output
             .metadata
             .provenance
             .insert("chunkingMode".to_string(), json!("safe_chunked"));
         output.metadata.provenance.insert(
             "safeChunkDurationMs".to_string(),
-            json!(SAFE_SINGLE_CHUNK_DIARIZATION_MS),
+            json!(selection.safe_chunk_ms),
         );
         return analyze_long_audio_with_safe_chunking(
             &request, &samples, &selection, &diarizer, &extractor, output,
@@ -315,7 +360,7 @@ fn analyze_long_audio_with_safe_chunking(
     extractor: &sherpa_onnx_runtime::SpeakerEmbeddingExtractor,
     mut output: SpeakerAnalysisOutput,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
-    let chunk_len = safe_single_chunk_sample_limit();
+    let chunk_len = safe_single_chunk_sample_limit(selection.safe_chunk_ms);
     let mut local_clusters = Vec::new();
     let mut pending_turns = Vec::new();
     let mut next_local_cluster_key = 0usize;
@@ -438,6 +483,220 @@ fn analyze_long_audio_with_safe_chunking(
     finalize_provenance_counts(&mut output);
 
     Ok(output)
+}
+
+// ---------------------------------------------------------------------------
+// PROTOTYPE-ONLY: pre-global-clustering embedding dump (NME-SC experiment).
+//
+// This block is *additive and opt-in*. It exists so the DER benchmark harness
+// can extract the exact per-(chunk, sherpa-speaker) "local cluster" centroid
+// embeddings + their turn time-ranges that production feeds into
+// `agglomerate_local_clusters` (the threshold-AHC global cluster-count step).
+// A Python prototype can then re-cluster those centroids with NME-SC and score
+// the result against the same DER baseline.
+//
+// It does NOT touch the production analyze path: `analyze_long_audio_with_safe_chunking`
+// and `agglomerate_local_clusters` are unchanged. This entry point re-runs the
+// same safe-chunk loop and stops *before* global clustering, returning the raw
+// local clusters + pending turns. The chunk-loop logic is intentionally mirrored
+// (not refactored out) to keep the production path bit-identical.
+// ---------------------------------------------------------------------------
+
+/// One pre-global-clustering local cluster: a single (chunk, sherpa-speaker)
+/// centroid embedding plus the bookkeeping a re-clustering experiment needs.
+///
+/// This is the finest embedding granularity available *before* the cross-chunk
+/// agglomeration step — one centroid per speaker per 10s safe chunk.
+#[cfg(feature = "sherpa-onnx")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LocalClusterDump {
+    /// Stable local-cluster key; `PendingTurnDump.local_cluster_key` references it.
+    pub key: usize,
+    /// Centroid speaker embedding (the same vector production feeds to AHC).
+    pub embedding: Vec<f32>,
+    /// Cross-chunk blend weight = number of 16 kHz samples behind the embedding.
+    pub total_samples: usize,
+    /// Total speech duration (ms) behind the embedding, derived from `total_samples`.
+    pub duration_ms: u64,
+}
+
+/// One pending speaker turn mapped to the local cluster that produced it. The
+/// experiment rebuilds an RTTM from these + the NME-SC `local_key -> global_id`
+/// relabeling.
+#[cfg(feature = "sherpa-onnx")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingTurnDump {
+    pub local_cluster_key: usize,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+/// Full pre-global-clustering dump for one clip.
+#[cfg(feature = "sherpa-onnx")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PreClusteringDump {
+    pub uri: String,
+    pub embedding_dim: usize,
+    pub chunk_count: usize,
+    pub cross_chunk_threshold: f32,
+    pub warning_reasons: Vec<String>,
+    /// Empty for short (single-chunk) audio that never reaches the chunk loop —
+    /// the experiment targets the multi-chunk agglomeration path.
+    pub local_clusters: Vec<LocalClusterDump>,
+    pub turns: Vec<PendingTurnDump>,
+}
+
+/// PROTOTYPE: decode + diarize one clip and return the pre-global-clustering
+/// local clusters and pending turns, *without* running the production
+/// `agglomerate_local_clusters` global-count step.
+///
+/// Mirrors `run_sherpa_on_samples` setup + the `analyze_long_audio_with_safe_chunking`
+/// chunk loop, then stops. Used only by the `--dump-embeddings` flag of the
+/// `diarize_to_rttm` bench binary.
+#[cfg(feature = "sherpa-onnx")]
+pub fn dump_pre_clustering_locals(
+    request: SpeakerAnalysisRequest,
+    models_dir: &Path,
+    uri: &str,
+) -> SpeakerAnalysisResult<PreClusteringDump> {
+    let samples = decode_audio_to_mono_16khz(&request.audio_path)?;
+    let selection = resolve_model_selection(&request, models_dir)?;
+    if !selection.segmentation_model_path.is_file() {
+        return Err(SpeakerAnalysisError::MissingModel {
+            model_kind: "segmentation".to_string(),
+            path: selection.segmentation_model_path.clone(),
+        });
+    }
+    if !selection.embedding_model_path.is_file() {
+        return Err(SpeakerAnalysisError::MissingModel {
+            model_kind: "embedding".to_string(),
+            path: selection.embedding_model_path.clone(),
+        });
+    }
+    validate_decoded_samples(&samples)?;
+
+    let config = diarization_config(&request, &selection);
+    let _guard = SHERPA_DIARIZATION_LOCK
+        .lock()
+        .map_err(|_| SpeakerAnalysisError::Runtime {
+            stage: "create_diarizer".to_string(),
+            message: "sherpa-onnx diarization lock was poisoned".to_string(),
+        })?;
+    let diarizer =
+        sherpa_onnx_runtime::OfflineSpeakerDiarization::create(&config).ok_or_else(|| {
+            SpeakerAnalysisError::Runtime {
+                stage: "create_diarizer".to_string(),
+                message: "failed to create sherpa-onnx speaker diarizer".to_string(),
+            }
+        })?;
+    let extractor = sherpa_onnx_runtime::SpeakerEmbeddingExtractor::create(
+        &sherpa_onnx_runtime::SpeakerEmbeddingExtractorConfig {
+            model: Some(selection.embedding_model_path.display().to_string()),
+            num_threads: 1,
+            debug: false,
+            provider: Some("cpu".to_string()),
+        },
+    )
+    .ok_or_else(|| SpeakerAnalysisError::Runtime {
+        stage: "create_embedding_extractor".to_string(),
+        message: "failed to create sherpa-onnx speaker embedding extractor".to_string(),
+    })?;
+
+    // Mirror the production safe-chunk loop (analyze_long_audio_with_safe_chunking),
+    // collecting local clusters + pending turns, then STOP before agglomeration.
+    let chunk_len = safe_single_chunk_sample_limit(selection.safe_chunk_ms);
+    let mut local_clusters = Vec::new();
+    let mut pending_turns = Vec::new();
+    let mut next_local_cluster_key = 0usize;
+    let mut chunk_count = 0usize;
+    let mut warning_reasons = Vec::<String>::new();
+
+    if samples.len() <= chunk_len {
+        // Short audio never reaches the chunk loop in production either; the
+        // experiment only targets the multi-chunk path, so report an empty dump.
+        warning_reasons.push("single_chunk_audio_no_local_clusters".to_string());
+    } else {
+        let step_len = chunk_len.saturating_sub(overlap_sample_limit()).max(1);
+        for chunk_start in (0..samples.len()).step_by(step_len) {
+            let chunk_end = (chunk_start + chunk_len).min(samples.len());
+            let trim_start = if chunk_start == 0 {
+                0
+            } else {
+                overlap_sample_limit() / 2
+            };
+            let trim_end = if chunk_end == samples.len() {
+                chunk_end - chunk_start
+            } else {
+                (chunk_end - chunk_start).saturating_sub(overlap_sample_limit() / 2)
+            };
+            let chunk_samples = &samples[chunk_start..chunk_end];
+            let chunk_duration_ms = chunk_samples.len() as u64 * 1000 / SAMPLE_RATE_HZ as u64;
+            if let Some(skip_reason) =
+                speaker_skip_reason(audio_peak(chunk_samples), chunk_duration_ms)
+            {
+                warning_reasons.push(format!("chunk_skipped_{skip_reason}"));
+                continue;
+            }
+            chunk_count += 1;
+
+            let result =
+                diarizer
+                    .process(chunk_samples)
+                    .ok_or_else(|| SpeakerAnalysisError::Runtime {
+                        stage: "diarize_safe_chunk".to_string(),
+                        message: "sherpa-onnx diarization returned no result for a safe chunk"
+                            .to_string(),
+                    })?;
+            let segments = result.sort_by_start_time();
+            let (mut chunk_clusters, mut chunk_turns) = analyze_single_safe_chunk(
+                &samples,
+                chunk_start,
+                chunk_samples.len(),
+                trim_start,
+                trim_end,
+                &segments,
+                &extractor,
+                next_local_cluster_key,
+                selection.min_turn_ms,
+                &mut warning_reasons,
+            )?;
+            next_local_cluster_key += chunk_clusters.len();
+            local_clusters.append(&mut chunk_clusters);
+            pending_turns.append(&mut chunk_turns);
+        }
+    }
+
+    let embedding_dim = local_clusters
+        .first()
+        .map(|c| c.embedding.len())
+        .unwrap_or(0);
+    let dump_locals = local_clusters
+        .into_iter()
+        .map(|c| LocalClusterDump {
+            key: c.key,
+            duration_ms: c.total_samples as u64 * 1000 / SAMPLE_RATE_HZ as u64,
+            total_samples: c.total_samples,
+            embedding: c.embedding,
+        })
+        .collect();
+    let dump_turns = pending_turns
+        .into_iter()
+        .map(|t| PendingTurnDump {
+            local_cluster_key: t.local_cluster_key,
+            start_ms: t.start_ms,
+            end_ms: t.end_ms,
+        })
+        .collect();
+
+    Ok(PreClusteringDump {
+        uri: uri.to_string(),
+        embedding_dim,
+        chunk_count,
+        cross_chunk_threshold: selection.cross_chunk_threshold,
+        warning_reasons,
+        local_clusters: dump_locals,
+        turns: dump_turns,
+    })
 }
 
 /// Which audio source produced a chunk-local cluster embedding, recorded so the
@@ -890,8 +1149,21 @@ fn merge_adjacent_turns(mut turns: Vec<SpeakerTurn>) -> Vec<SpeakerTurn> {
     merged
 }
 
-fn safe_single_chunk_sample_limit() -> usize {
-    SAMPLE_RATE_HZ as usize * SAFE_SINGLE_CHUNK_DIARIZATION_MS as usize / 1000
+fn safe_single_chunk_sample_limit(safe_chunk_ms: u64) -> usize {
+    SAMPLE_RATE_HZ as usize * safe_chunk_ms as usize / 1000
+}
+
+/// Clamp an overridden safe-chunk window to a safe range. The floor keeps a
+/// chunk longer than the fixed overlap (so the loop's `step_len` stays >0 and
+/// trimming is meaningful) and the ceiling (`MAX_SAFE_CHUNK_DIARIZATION_MS`,
+/// 60s) keeps every per-chunk embedding within TitaNet's input limit. The
+/// production default (`SAFE_SINGLE_CHUNK_DIARIZATION_MS`, 60s) is unaffected:
+/// it is only applied when the request omits the override.
+fn sanitize_safe_chunk_ms(value: u64) -> u64 {
+    value.clamp(
+        SAFE_CHUNK_OVERLAP_MS.saturating_mul(2),
+        MAX_SAFE_CHUNK_DIARIZATION_MS,
+    )
 }
 
 /// Convert a per-model minimum turn duration (ms) into a sample count at the
@@ -1173,6 +1445,16 @@ fn resolve_model_selection(
         .and_then(serde_json::Value::as_f64)
         .map(|value| sanitize_threshold(value as f32))
         .unwrap_or(params.cross_chunk_threshold);
+    // Safe-chunk diarization window: defaults to the production 60s constant and
+    // is request-overridable (`safeChunkMs`) for the DER chunk-size sweep. When
+    // the option is absent this is exactly `SAFE_SINGLE_CHUNK_DIARIZATION_MS`, so
+    // the production path is byte-identical without the flag.
+    let safe_chunk_ms = request
+        .options
+        .get(SAFE_CHUNK_MS_OPTION)
+        .and_then(serde_json::Value::as_u64)
+        .map(sanitize_safe_chunk_ms)
+        .unwrap_or(SAFE_SINGLE_CHUNK_DIARIZATION_MS);
     Ok(SherpaModelSelection {
         model_id,
         segmentation_model_path: install_dir.join(&params.segmentation_relative_path),
@@ -1180,6 +1462,7 @@ fn resolve_model_selection(
         clustering_threshold: params.clustering_threshold,
         cross_chunk_threshold,
         min_turn_ms: params.min_turn_ms,
+        safe_chunk_ms,
     })
 }
 
@@ -1410,6 +1693,45 @@ mod tests {
             crate::BALANCED_CROSS_CHUNK_THRESHOLD
         );
         assert_eq!(selection.min_turn_ms, crate::DEFAULT_MIN_TURN_MS);
+        // Without the `safeChunkMs` override the safe-chunk window is exactly the
+        // production default, so flag-absent behavior is byte-identical.
+        assert_eq!(selection.safe_chunk_ms, SAFE_SINGLE_CHUNK_DIARIZATION_MS);
+    }
+
+    #[test]
+    fn safe_chunk_ms_override_is_resolved_and_clamped() {
+        let resolve = |value: serde_json::Value| {
+            let mut request = SpeakerAnalysisRequest::new(
+                "/tmp/audio.m4a",
+                SHERPA_ONNX_PROVIDER_ID,
+                Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+                "session-a",
+                7,
+            );
+            request.options.insert(SAFE_CHUNK_MS_OPTION.to_string(), value);
+            resolve_model_selection(&request, Path::new("/tmp/models"))
+                .expect("model")
+                .safe_chunk_ms
+        };
+
+        // In-range sweep values pass through unchanged.
+        assert_eq!(resolve(json!(30_000)), 30_000);
+        assert_eq!(resolve(json!(60_000)), 60_000);
+        // Above the 60s ceiling is clamped down (TitaNet input-size guard).
+        assert_eq!(resolve(json!(120_000)), MAX_SAFE_CHUNK_DIARIZATION_MS);
+        // Below the 2*overlap floor is clamped up so step_len stays positive.
+        assert_eq!(resolve(json!(100)), SAFE_CHUNK_OVERLAP_MS * 2);
+    }
+
+    #[test]
+    fn sanitize_safe_chunk_ms_clamps_to_safe_range() {
+        assert_eq!(sanitize_safe_chunk_ms(10_000), 10_000);
+        assert_eq!(sanitize_safe_chunk_ms(60_000), 60_000);
+        assert_eq!(sanitize_safe_chunk_ms(0), SAFE_CHUNK_OVERLAP_MS * 2);
+        assert_eq!(
+            sanitize_safe_chunk_ms(u64::MAX),
+            MAX_SAFE_CHUNK_DIARIZATION_MS
+        );
     }
 
     #[test]

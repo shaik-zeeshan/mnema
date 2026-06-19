@@ -26,9 +26,9 @@ use std::{
 };
 
 use speaker_analysis::{
-    providers::sherpa_onnx::analyze_sherpa_request_blocking, SpeakerAnalysisOutput,
-    SpeakerAnalysisRequest, DEFAULT_SHERPA_ONNX_MODEL_ID, MODEL_STORE_DIR_NAME,
-    SHERPA_ONNX_PROVIDER_ID,
+    providers::sherpa_onnx::{analyze_sherpa_request_blocking, dump_pre_clustering_locals},
+    SpeakerAnalysisOutput, SpeakerAnalysisRequest, DEFAULT_SHERPA_ONNX_MODEL_ID,
+    MODEL_STORE_DIR_NAME, SHERPA_ONNX_PROVIDER_ID,
 };
 
 struct Args {
@@ -42,6 +42,16 @@ struct Args {
     num_clusters: Option<i64>,
     min_duration_on: Option<f64>,
     min_duration_off: Option<f64>,
+    /// EXPERIMENT (chunk-size sweep): override the safe-chunk diarization window
+    /// in milliseconds. Additive/opt-in — absent leaves the production default
+    /// (60s) untouched. Clamped server-side to <= 60s. See
+    /// `scripts/diarization_bench/`.
+    safe_chunk_ms: Option<u64>,
+    /// PROTOTYPE (NME-SC experiment): when set, write the pre-global-clustering
+    /// local-cluster embeddings + pending turns to this JSON path and skip RTTM.
+    /// Additive/opt-in — does not affect normal RTTM output. See
+    /// `scripts/diarization_bench/nme_sc.py`.
+    dump_embeddings: Option<PathBuf>,
 }
 
 const USAGE: &str = "diarize_to_rttm — emit hypothesis RTTM for one audio file
@@ -61,6 +71,15 @@ OPTIONS:
   --num-clusters <n>          Force speaker count (-1 = automatic).
   --min-duration-on <s>       pyannote segmentation min-duration-on (seconds).
   --min-duration-off <s>      pyannote segmentation min-duration-off (seconds).
+  --safe-chunk-ms <ms>        EXPERIMENT (chunk-size sweep): override the
+                              safe-chunk diarization window (default 60000;
+                              clamped to <= 60000). Additive/opt-in. See
+                              scripts/diarization_bench/.
+  --dump-embeddings <path>    PROTOTYPE (NME-SC experiment): write the
+                              pre-global-clustering local-cluster embeddings +
+                              pending turns to <path> as JSON and exit without
+                              emitting RTTM. Additive/opt-in. See
+                              scripts/diarization_bench/.
   -h, --help                  Print this help.";
 
 fn default_models_dir() -> PathBuf {
@@ -83,6 +102,8 @@ fn parse_args() -> Result<Args, String> {
     let mut num_clusters: Option<i64> = None;
     let mut min_duration_on: Option<f64> = None;
     let mut min_duration_off: Option<f64> = None;
+    let mut safe_chunk_ms: Option<u64> = None;
+    let mut dump_embeddings: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -113,6 +134,8 @@ fn parse_args() -> Result<Args, String> {
             "--min-duration-off" => {
                 min_duration_off = Some(value()?.parse().map_err(|e| format!("{e}"))?)
             }
+            "--safe-chunk-ms" => safe_chunk_ms = Some(value()?.parse().map_err(|e| format!("{e}"))?),
+            "--dump-embeddings" => dump_embeddings = Some(PathBuf::from(value()?)),
             other if audio.is_none() && !other.starts_with('-') => {
                 audio = Some(PathBuf::from(other))
             }
@@ -139,6 +162,8 @@ fn parse_args() -> Result<Args, String> {
         num_clusters,
         min_duration_on,
         min_duration_off,
+        safe_chunk_ms,
+        dump_embeddings,
     })
 }
 
@@ -201,6 +226,30 @@ fn run(args: &Args) -> Result<(), String> {
         request
             .options
             .insert("minDurationOff".to_string(), v.into());
+    }
+    if let Some(ms) = args.safe_chunk_ms {
+        request.options.insert("safeChunkMs".to_string(), ms.into());
+    }
+
+    // PROTOTYPE (NME-SC experiment): dump pre-global-clustering local clusters +
+    // pending turns as JSON and exit, leaving normal RTTM output untouched.
+    if let Some(dump_path) = &args.dump_embeddings {
+        let dump = dump_pre_clustering_locals(request, Path::new(&args.models_dir), &args.uri)
+            .map_err(|e| format!("embedding dump failed: {e}"))?;
+        let json = serde_json::to_string(&dump)
+            .map_err(|e| format!("failed to serialize embedding dump: {e}"))?;
+        fs::write(dump_path, json)
+            .map_err(|e| format!("failed to write {}: {e}", dump_path.display()))?;
+        eprintln!(
+            "[diarize_to_rttm] uri={} dumped {} local clusters, {} turns (dim={}, chunks={}) -> {}",
+            args.uri,
+            dump.local_clusters.len(),
+            dump.turns.len(),
+            dump.embedding_dim,
+            dump.chunk_count,
+            dump_path.display(),
+        );
+        return Ok(());
     }
 
     let output = analyze_sherpa_request_blocking(request, Path::new(&args.models_dir))
