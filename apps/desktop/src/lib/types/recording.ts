@@ -818,9 +818,9 @@ export interface SemanticSearchModelDownloadProgress {
 }
 
 // One entry in the Custom-picker catalog returned by
-// `list_semantic_search_supported_models` — the full set of fastembed-supported
-// models (gated models excluded server-side). Hand-mirrored to the Rust serde
-// shape (camelCase). `approxDownloadBytes` may be null when the size is unknown.
+// `list_semantic_search_supported_models` — the curated set of candle-supported
+// on-device models (gated models excluded server-side). Hand-mirrored to the Rust
+// serde shape (camelCase). `approxDownloadBytes` may be null when the size is unknown.
 export interface SemanticSearchSupportedModel {
 	modelId: string;
 	displayName: string;
@@ -836,7 +836,8 @@ export interface SemanticSearchSettings {
 	enabled: boolean;
 	provider: string;
 	modelId: string | null;
-	// Intra-op ONNX thread cap for embedding; 0 = auto (a conservative cap so a
-	// single embedding never fans across every CPU core).
+	// Retained for serde compatibility but dormant under the candle backend: candle
+	// has no ONNX intra-op thread pool, so this field's only consumer was removed.
+	// Kept (not deleted) to preserve the on-wire shape; left at its existing value.
 	embedThreads: number;
 }

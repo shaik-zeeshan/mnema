@@ -19,9 +19,14 @@
 //! tracked for graceful shutdown, that selects between an idle sleep and the
 //! shutdown watch.
 //!
-//! CPU placement: the fastembed/ort embed is blocking model work, so it runs on a
+//! Compute placement: the candle embed is blocking model work (the forward pass
+//! runs on the Apple GPU via Metal on macOS, or candle-CPU elsewhere — either way
+//! a synchronous call that must not occupy the async reactor), so it runs on a
 //! blocking thread (never the tokio reactor, never the capture hot path). DB
-//! reads/writes stay on the async loop.
+//! reads/writes stay on the async loop. Unlike the retired fastembed/ort path,
+//! candle on Metal frees the P-cores by construction, so the embed no longer needs
+//! a per-thread background-QoS downclock (ADR 0037); the tokio-level inter-batch
+//! cooldown is kept (still useful to pace candle-CPU on non-macOS).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,9 +38,8 @@ use futures_util::{
     pin_mut,
 };
 use semantic_search::{
-    detect_model_status, fastembed_output_key, fastembed_pooling, model_install_dir,
-    resolve_descriptor, semantic_search_models_dir, SemanticSearchEmbedder,
-    SemanticSearchModelDescriptor,
+    detect_model_status, model_install_dir, resolve_descriptor, semantic_search_models_dir,
+    SemanticSearchEmbedder, SemanticSearchModelDescriptor,
 };
 use tauri::{Emitter, Manager};
 use tokio::sync::watch;
@@ -60,20 +64,18 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(20);
 /// dropped to return its resident memory to the OS — the "decay to idle" lever.
 ///
 /// The **Semantic Search Model** weights are large and resident for the whole
-/// time the embedder is held (nomic fp32 ≈ 522 MB), so a caught-up worker that
-/// keeps the embedder loaded pins that floor forever. Disabling the `ort` CPU
-/// arena (see `semantic-search` runtime) means a session drop now actually
-/// returns that memory to the OS — which it did not while the arena retained a
-/// process-global high-water buffer — so dropping the embedder on a sustained
-/// idle is finally effective.
+/// time the embedder is held, so a caught-up worker that keeps the embedder
+/// loaded pins that floor forever. candle has no process-global memory arena to
+/// retain (the retired `ort` path did), so dropping the embedder on a sustained
+/// idle actually returns its weights (and GPU buffers) to the OS.
 ///
 /// A grace period (not an immediate drop on the first empty peek) avoids
 /// thrashing: live capture trickles fresh anchors in, and reloading the model
-/// costs ~1–2 s + a 522 MB read. At [`IDLE_POLL_INTERVAL`] = 20 s, 3 passes is
-/// ~60 s of being caught up before the weights are released; the next anchor
-/// pays one reload. This is the cheap, in-process approximation of the F2
-/// sidecar (a process that exits when drained returns *everything*, including
-/// the base runtime, and also escapes the QoS trap — this only frees the model).
+/// costs a model read + device init. At [`IDLE_POLL_INTERVAL`] = 20 s, 3 passes
+/// is ~60 s of being caught up before the weights are released; the next anchor
+/// pays one reload. This is the cheap, in-process approximation of a sidecar (a
+/// process that exits when drained returns *everything*, including the base
+/// runtime — this only frees the model).
 const IDLE_PASSES_BEFORE_EMBEDDER_DROP: u32 = 3;
 
 /// Backoff after a batch error (a DB hiccup or an embed failure). Embedding never
@@ -104,101 +106,21 @@ const MAX_CONSECUTIVE_ANCHOR_FAILURES: u32 = 3;
 /// Maximum **consecutive** embedder LOAD failures before the model is treated as
 /// corrupt/unavailable and the worker stops the tight 30s load-retry loop (CT3).
 /// Reuses L3's bounded-retry convention. A model marker says "installed" on
-/// presence alone — it never validates that the ONNX graph actually loads — so a
-/// truncated/bit-rotted graph would otherwise fail `load_embedder` every 30s
-/// forever. After this many consecutive load failures the worker surfaces a
+/// presence alone — it never validates that the safetensors weights actually load
+/// into candle — so a truncated/bit-rotted model would otherwise fail
+/// `load_embedder` every 30s forever. After this many consecutive load failures
+/// the worker surfaces a
 /// "model appears corrupt — reinstall" signal on the model-status telemetry
 /// channel and idles instead of hammering the doomed load.
 const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
 
-/// The macOS QoS class the backfill embed runs at while it holds the blocking
-/// thread. `QOS_CLASS_BACKGROUND` is the most aggressive background citizen: the
-/// scheduler steers it onto efficiency cores and yields it to anything
-/// foreground, which is exactly what a converging backlog should be. The A/B
-/// alternative to test is `QOS_CLASS_UTILITY` (a hair more eager, still below
-/// the user-initiated default) — flipping this one line is the whole experiment.
-#[cfg(target_os = "macos")]
-const BACKFILL_EMBED_QOS_CLASS: libc::qos_class_t = libc::qos_class_t::QOS_CLASS_BACKGROUND;
-
-/// RAII guard that runs the backfill embed at background QoS on the current
-/// (blocking) thread and **restores the prior QoS on drop**.
-///
-/// Restore-on-drop is load-bearing, not hygiene: `spawn_blocking` draws from
-/// Tokio's **shared** blocking-thread pool, and the query/search embed
-/// (`semantic_search_query.rs`) hops the same pool. If we set background QoS and
-/// never put it back, a later user-initiated search task that happened to reuse
-/// this pooled thread would inherit BACKGROUND and feel sluggish. Capturing the
-/// prior class in the constructor and restoring it in `drop` confines the
-/// downclock to exactly the backfill batch that set it.
-///
-/// QoS is **per-thread** state, so the guard must be created on the blocking
-/// thread itself (the first statement inside the `spawn_blocking` closure), not
-/// on the async loop that spawns it.
-#[cfg(target_os = "macos")]
-struct BackfillEmbedQosGuard {
-    prior_class: libc::qos_class_t,
-    prior_priority: libc::c_int,
-    /// `false` when we could not read the prior QoS, so `drop` leaves the thread
-    /// alone rather than restoring a bogus class.
-    restore: bool,
-}
-
-#[cfg(target_os = "macos")]
-impl BackfillEmbedQosGuard {
-    /// Capture the current QoS, then downclock this thread to the backfill class.
-    fn activate() -> Self {
-        let mut prior_class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
-        let mut prior_priority: libc::c_int = 0;
-        // SAFETY: both calls are the documented per-thread QoS FFI. `pthread_self`
-        // is infallible; `pthread_get_qos_class_np` writes through the two out
-        // pointers (both valid, stack-local) and `pthread_set_qos_class_self_np`
-        // mutates only the calling thread's QoS. No memory is shared or retained.
-        let restore = unsafe {
-            let read =
-                libc::pthread_get_qos_class_np(libc::pthread_self(), &mut prior_class, &mut prior_priority);
-            // Set background regardless; a failed read just means we don't restore.
-            libc::pthread_set_qos_class_self_np(BACKFILL_EMBED_QOS_CLASS, 0);
-            read == 0
-        };
-        Self {
-            prior_class,
-            prior_priority,
-            restore,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Drop for BackfillEmbedQosGuard {
-    fn drop(&mut self) {
-        if !self.restore {
-            return;
-        }
-        // SAFETY: restores only the calling thread's QoS to the class/priority we
-        // read in `activate`; no shared or retained memory.
-        unsafe {
-            libc::pthread_set_qos_class_self_np(self.prior_class, self.prior_priority);
-        }
-    }
-}
-
-/// Non-macOS fallback: a zero-sized no-op so the worker compiles and the closure
-/// calls the guard identically on every platform. QoS-class scheduling is a
-/// Darwin concept; Windows/Linux thread-priority knobs are out of scope here.
-#[cfg(not(target_os = "macos"))]
-struct BackfillEmbedQosGuard;
-
-#[cfg(not(target_os = "macos"))]
-impl BackfillEmbedQosGuard {
-    fn activate() -> Self {
-        Self
-    }
-}
-
 /// CPU pacing (the "Backfill CPU pacing" cross-cutting concern): a minimum
 /// inter-batch cooldown so a large historical backfill does not sustain a
-/// multi-core burn back-to-back concurrent with active OCR/transcription. This
-/// mirrors the *shape* of OCR's Execution Budget governor
+/// multi-core burn back-to-back concurrent with active OCR/transcription. It is
+/// kept under candle (ADR 0037): on macOS the Metal forward leaves the CPU mostly
+/// idle, but on candle-CPU (non-macOS) the forward is the CPU burn the cooldown
+/// paces, so the inter-batch yield still earns its place. This mirrors the *shape*
+/// of OCR's Execution Budget governor
 /// (`ocr_budget::cooldown_duration`) — a cooldown scaled off the just-finished
 /// batch's wall time and clamped to a [min, max] band — rather than the old
 /// 0ms `SweepPass::DidWork` yield. The OCR governor lives in the desktop layer
@@ -489,19 +411,20 @@ async fn run_sweep_pass(
         return SweepPass::Idle;
     };
     if !embedder_matches(&state.embedder, &descriptor) {
-        match load_embedder(&app_data_dir, &descriptor, resolve_embed_intra_threads(&settings)) {
+        match load_embedder(&app_data_dir, &descriptor) {
             Ok(loaded) => {
                 state.embedder = Some(loaded);
-                // A successful load proves the graph is not corrupt: reset CT3.
+                // A successful load proves the weights are not corrupt: reset CT3.
                 state.consecutive_load_failures = 0;
                 state.corrupt_model_signalled = false;
             }
             Err(error) => {
                 // CT3: availability is presence+marker only — it never validates that
-                // the ONNX graph actually loads. A truncated / bit-rotted graph fails
-                // here every 30s forever. Count consecutive load failures; once they
-                // hit the cap, surface a "reinstall" signal on the model-status
-                // telemetry channel and idle instead of hammering the doomed load.
+                // the safetensors weights actually load into candle. A truncated /
+                // bit-rotted model fails here every 30s forever. Count consecutive
+                // load failures; once they hit the cap, surface a "reinstall" signal
+                // on the model-status telemetry channel and idle instead of hammering
+                // the doomed load.
                 state.consecutive_load_failures =
                     state.consecutive_load_failures.saturating_add(1);
                 crate::native_capture::debug_log::log_error(format!(
@@ -519,10 +442,12 @@ async fn run_sweep_pass(
         }
     }
 
-    // Embed the batch on a blocking thread (fastembed/ort is CPU model work), then
-    // store each vector. The embedder is moved into the blocking task and back out
-    // so it survives across passes. The batch is wall-timed to scale the CPU-pacing
-    // cooldown that follows.
+    // Embed the batch on a blocking thread: the candle forward is synchronous model
+    // work (Metal GPU on macOS / candle-CPU elsewhere) that must stay off the tokio
+    // reactor, then store each vector. The embedder is moved into the blocking task
+    // and back out so it survives across passes (it is shared `&self`-immutable for
+    // the embed itself). The batch is wall-timed to scale the CPU-pacing cooldown
+    // that follows.
     let loaded = state.embedder.take().expect("embedder loaded above");
     let texts: Vec<(i64, String)> = batch
         .iter()
@@ -537,14 +462,13 @@ async fn run_sweep_pass(
     // first, so an already-requested shutdown also wins immediately. The embedder
     // moved into the abandoned task is lost; the worker is exiting anyway.
     let embed_task = tauri::async_runtime::spawn_blocking(move || {
-        // Background the embed onto efficiency cores for the life of this batch.
-        // First statement in the closure because QoS is per-thread and must be set
-        // on this blocking thread; the guard restores the prior QoS on drop so a
-        // later search task reusing this pooled thread is not left backgrounded.
-        let _qos_guard = BackfillEmbedQosGuard::activate();
-        let mut loaded = loaded;
-        // One batched fastembed call for the whole batch (vs one `embed_text` per
-        // anchor): fewer total CPU-seconds, so the backlog drains sooner.
+        // candle on Metal frees the P-cores by construction, so the retired
+        // per-thread background-QoS downclock is gone (ADR 0037); the embed runs at
+        // the blocking thread's default QoS. The embedder is `&self`-immutable for
+        // embedding, so no `mut` is needed — it is still owned by (and returned out
+        // of) this task so it survives across passes.
+        // One batched candle call for the whole batch (vs one `embed_text` per
+        // anchor): fewer total forward passes, so the backlog drains sooner.
         // `embed_texts` returns exactly one result per text, in order, with the
         // same overflow-split/single-passthrough/multi-mean-pool semantics as
         // `embed_text`. `bodies` borrows `texts`, so build `out` after it returns.
@@ -582,7 +506,7 @@ async fn run_sweep_pass(
     let mut stored = 0u64;
     // Transient errors (DB re-check / store failures): worth a 30s retry.
     let mut transient_errors = 0u64;
-    // Deterministic embed failures (a fastembed/ort error on this exact input):
+    // Deterministic embed failures (a candle error on this exact input):
     // counted toward per-anchor quarantine, NOT toward the transient retry loop.
     let mut embed_failures = 0u64;
     let mut quarantined = 0u64;
@@ -777,11 +701,12 @@ pub(crate) fn effective_semantic_search_settings(
 /// Resolve the catalog descriptor for the selected model, or `None` when the
 /// selection is disabled / unset / unknown.
 ///
-/// Goes through the shared resolver, so a **Custom**-picked fastembed model
-/// (synthesized from fastembed's `ModelInfo`) resolves to a descriptor with the
-/// correct dimension/window/layout — not just the 3 guided manifest tiers. This
-/// is what lets the worker load + embed under a Custom model and the query path
-/// embed the search text with the same model.
+/// Goes through the shared resolver, which is now a pure manifest lookup over the
+/// hand-coded candle catalog (ADR 0037): a known id resolves to a descriptor with
+/// the right architecture/dimension/window/pooling/layout, and an unknown id is
+/// simply `None` (there is no fastembed synthesis to fall back on). This is what
+/// lets the worker load + embed under the selected model and the query path embed
+/// the search text with the same model.
 pub(crate) fn resolve_selected_descriptor(
     settings: &SemanticSearchSettings,
 ) -> Option<SemanticSearchModelDescriptor> {
@@ -844,56 +769,23 @@ fn advance_idle_drop(consecutive_idles: &mut u32, did_work: bool, has_embedder: 
     *consecutive_idles >= IDLE_PASSES_BEFORE_EMBEDDER_DROP && has_embedder
 }
 
-/// Resolve the ONNX intra-op thread cap for embedding from the user's
-/// `embed_threads` setting.
-///
-/// `0` means **auto**: cap a single embedding to 2 threads (or fewer on a
-/// 1-core machine) so neither backfill nor a query fans across every core — the
-/// cause of the many-core CPU spike, most of it ONNX thread-pool spin-wait on
-/// these small encoders. 2 keeps the burst near ~200% of one core: embedding is
-/// a self-paced background job, so the default favors staying unnoticeable over
-/// raw throughput. A positive value is honored, clamped to the machine's core
-/// count. Always returns a positive cap (never "all cores"), which is the whole
-/// point of the knob.
-pub(crate) fn resolve_embed_intra_threads(settings: &SemanticSearchSettings) -> usize {
-    let cores = std::thread::available_parallelism()
-        .map(|parallelism| parallelism.get())
-        .unwrap_or(1)
-        .max(1);
-    match settings.embed_threads {
-        0 => 2.min(cores),
-        explicit => explicit.min(cores),
-    }
-}
-
 /// Load the embedder for `descriptor` from its install directory under
-/// `semantic_search_models/{provider}/{model_id}/`. `intra_threads` is the
-/// resolved ONNX intra-op cap (see [`resolve_embed_intra_threads`]).
+/// `semantic_search_models/{provider}/{model_id}/`.
+///
+/// The candle backend (built inside `load_from_dir`) reads everything it needs —
+/// architecture, dimension, window, pooling, on-disk layout — from the one
+/// `descriptor`. There is no ONNX intra-op thread cap to resolve anymore (the
+/// retired `embed_threads` knob, ADR 0037): candle runs the forward on the Metal
+/// GPU on macOS / candle-CPU elsewhere, with no thread-pool spin-wait to clamp.
 pub(crate) fn load_embedder(
     app_data_dir: &std::path::Path,
     descriptor: &SemanticSearchModelDescriptor,
-    intra_threads: usize,
 ) -> Result<LoadedEmbedder, String> {
     let models_dir = semantic_search_models_dir(app_data_dir);
     let install_dir = model_install_dir(&models_dir, &descriptor.provider, &descriptor.model_id)
         .map_err(|error| error.to_string())?;
-    let embedder = SemanticSearchEmbedder::load_from_dir(
-        &install_dir,
-        descriptor.max_tokens,
-        // Pooling comes from the descriptor (captured from fastembed's own
-        // `get_default_pooling_method`), NOT a guess from the model id. CLS-trained
-        // Custom picks (mxbai / gte / snowflake-arctic) don't start with "bge", so
-        // the old prefix guess silently mean-pooled them; carrying pooling through
-        // the descriptor reads them at the `[CLS]` token correctly.
-        fastembed_pooling(descriptor.pooling),
-        &descriptor.expected_layout,
-        // The output key (fastembed's `ModelInfo.output_key`) also rides the
-        // descriptor: `None` for the default single output, or a named tensor for a
-        // model that declares one.
-        fastembed_output_key(&descriptor.output_key),
-        Some(intra_threads),
-    )
-    .map_err(|error| error.to_string())?;
+    let embedder = SemanticSearchEmbedder::load_from_dir(&install_dir, descriptor)
+        .map_err(|error| error.to_string())?;
     Ok(LoadedEmbedder {
         provider: descriptor.provider.clone(),
         model_id: descriptor.model_id.clone(),
@@ -904,43 +796,24 @@ pub(crate) fn load_embedder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use semantic_search::{builtin_model_manifest, Pooling, SemanticSearchPooling};
+    use semantic_search::{builtin_model_manifest, SemanticSearchPooling};
 
     #[test]
-    fn descriptor_pooling_drives_the_loader_for_guided_and_custom_models() {
-        // The worker loads each model with `fastembed_pooling(descriptor.pooling)`
-        // — the pooling fastembed itself assigns — not a guess from the id. This
-        // pins both the guided tiers AND the Custom-pickable CLS models the old
-        // `starts_with("bge")` guess silently mean-pooled.
-        let pooling_for = |slug: &str| -> Pooling {
-            let descriptor = resolve_descriptor(semantic_search::FASTEMBED_PROVIDER_ID, slug)
-                .unwrap_or_else(|| panic!("{slug} must resolve"));
-            fastembed_pooling(descriptor.pooling)
+    fn descriptor_pooling_is_hand_coded_per_model() {
+        // Pooling rides the hand-coded descriptor (ADR 0037), never a guess from the
+        // model id: nomic/e5 are Mean, bge-m3 is Cls. The worker loads each model
+        // through `load_from_dir(&install_dir, descriptor)`, so the candle backend
+        // pools with exactly `descriptor.pooling` — this pins the declared value the
+        // loader is handed.
+        let pooling_for = |slug: &str| -> SemanticSearchPooling {
+            resolve_descriptor(semantic_search::FASTEMBED_PROVIDER_ID, slug)
+                .unwrap_or_else(|| panic!("{slug} must resolve"))
+                .pooling
         };
 
-        // Guided tiers: nomic/e5 are Mean, bge-m3 is Cls.
-        assert!(matches!(pooling_for("nomic-embed-text-v1.5"), Pooling::Mean));
-        assert!(matches!(pooling_for("multilingual-e5-small"), Pooling::Mean));
-        assert!(matches!(pooling_for("bge-m3"), Pooling::Cls));
-
-        // Custom-pickable CLS models that do NOT start with "bge" — the exact set
-        // the prefix guess got wrong. All must be Cls, never Mean.
-        for slug in [
-            "mxbai-embed-large-v1",
-            "gte-base-en-v1.5",
-            "gte-large-en-v1.5",
-            "snowflake-arctic-embed-m",
-        ] {
-            assert!(
-                matches!(pooling_for(slug), Pooling::Cls),
-                "{slug} is CLS-pooled in fastembed; the loader must not mean-pool it"
-            );
-        }
-
-        // The descriptor's serde-mirror pooling matches the resolved fastembed one.
-        let bge = resolve_descriptor(semantic_search::FASTEMBED_PROVIDER_ID, "bge-m3")
-            .expect("bge-m3");
-        assert_eq!(bge.pooling, SemanticSearchPooling::Cls);
+        assert_eq!(pooling_for("nomic-embed-text-v1.5"), SemanticSearchPooling::Mean);
+        assert_eq!(pooling_for("multilingual-e5-small"), SemanticSearchPooling::Mean);
+        assert_eq!(pooling_for("bge-m3"), SemanticSearchPooling::Cls);
     }
 
     #[test]
@@ -963,33 +836,6 @@ mod tests {
         // No model selected => no descriptor.
         settings.model_id = None;
         assert!(resolve_selected_descriptor(&settings).is_none());
-    }
-
-    #[test]
-    fn resolve_embed_intra_threads_caps_auto_and_clamps_explicit() {
-        let cores = std::thread::available_parallelism()
-            .map(|parallelism| parallelism.get())
-            .unwrap_or(1)
-            .max(1);
-        let with_threads = |embed_threads: usize| SemanticSearchSettings {
-            embed_threads,
-            ..Default::default()
-        };
-
-        // Auto (`0`) never resolves to "all cores": it caps at 2 (fewer only on a
-        // 1-core machine), keeping the backfill burst near ~200% of one core
-        // instead of fanning across every core.
-        let auto = resolve_embed_intra_threads(&with_threads(0));
-        assert_eq!(auto, 2.min(cores));
-        assert!((1..=2).contains(&auto) && auto <= cores);
-
-        // An explicit value above the core count clamps to the cores (we never
-        // ask ONNX for more intra-op threads than the machine has).
-        assert_eq!(resolve_embed_intra_threads(&with_threads(cores + 16)), cores);
-
-        // An explicit, in-range value is honored verbatim.
-        let in_range = cores.clamp(1, 2);
-        assert_eq!(resolve_embed_intra_threads(&with_threads(in_range)), in_range);
     }
 
     #[test]

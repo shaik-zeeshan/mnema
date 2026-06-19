@@ -928,7 +928,7 @@
   let semanticSearchDownloadError = $state<string | null>(null);
   let semanticSearchReindexing = $state(false);
   let semanticSearchReindexMessage = $state<string | null>(null);
-  // The full fastembed-supported catalog for the Custom picker, loaded on mount
+  // The curated candle-supported catalog for the Custom picker, loaded on mount
   // via `list_semantic_search_supported_models`. The picked entry is shown as a
   // model row mirroring the guided-tier layout.
   let semanticSearchSupportedModels = $state<SemanticSearchSupportedModel[]>([]);
@@ -2750,7 +2750,7 @@
     }
   }
 
-  // Load the full fastembed-supported catalog for the Custom picker. Gated
+  // Load the curated candle-supported catalog for the Custom picker. Gated
   // models (e.g. gemma) are already excluded server-side.
   async function loadSemanticSearchSupportedModels() {
     loadingSemanticSearchSupportedModels = true;
@@ -2879,8 +2879,8 @@
 
   // ─── Picked model (shared between the guided SelectMenu + custom Combobox) ───
 
-  // The fastembed provider id. Custom models share the same provider as the
-  // guided tiers, so reuse the provider field carried on the status rows.
+  // The semantic-search provider id. Custom models share the same provider as
+  // the guided tiers, so reuse the provider field carried on the status rows.
   let semanticSearchFastembedProvider = $derived(
     (semanticSearchModelStatus?.models ?? [])[0]?.provider ?? null,
   );
@@ -2900,7 +2900,7 @@
   );
 
   // The single combined picker list: guided/recommended tiers first (deduped by
-  // modelId, guided wins), then the rest of the fastembed catalog. One control,
+  // modelId, guided wins), then the rest of the supported on-device catalog. One control,
   // one value (`semanticSearchPickedModelId`); each option labels its tier so
   // the distinction stays clear without a second selector.
   let semanticSearchModelOptions = $derived([
@@ -2937,7 +2937,7 @@
         provider: live.provider,
         displayName: live.displayName,
         description: live.description,
-        metaLine: `${semanticSearchTierLabel(live.tier)} · ${formatBytes(live.approxDownloadBytes)} on disk · ${live.dimension}-dim · runs on CPU${live.licenseLabel ? ` · ${live.licenseLabel}` : ""}`,
+        metaLine: `${semanticSearchTierLabel(live.tier)} · ${formatBytes(live.approxDownloadBytes)} on disk · ${live.dimension}-dim · runs on-device${live.licenseLabel ? ` · ${live.licenseLabel}` : ""}`,
         available: live.available,
         approxDownloadBytes: live.approxDownloadBytes,
       };
@@ -2953,7 +2953,7 @@
         provider: semanticSearchFastembedProvider,
         displayName: catalog.displayName,
         description: catalog.description,
-        metaLine: `${semanticSearchTierLabel("custom")} · ${size}${catalog.dimension}-dim · runs on CPU${catalog.multilingual ? " · multilingual" : ""}`,
+        metaLine: `${semanticSearchTierLabel("custom")} · ${size}${catalog.dimension}-dim · runs on-device${catalog.multilingual ? " · multilingual" : ""}`,
         available: false,
         approxDownloadBytes: catalog.approxDownloadBytes,
       };
@@ -2970,7 +2970,7 @@
   });
 
   // Download the picked model, reusing the shared download command. The resolved
-  // view already carries the right provider (live row's, else fastembed); build
+  // view already carries the right provider (live row's, else the catalog's); build
   // the minimal status-shaped object `startSemanticSearchModelDownload` reads.
   async function startSemanticSearchPickedDownload(model: SemanticSearchPickedView) {
     if (!model.provider) return;
@@ -6465,8 +6465,9 @@
         <div class="card__heading">
           <h2 class="card__title">Semantic Search Model</h2>
           <p class="card__subtitle">
-            Meaning-based search runs fully on-device. Pick any on-device model, then Mnema
-            embeds your captures in the background. Nothing is downloaded until you choose a model.
+            Meaning-based search runs fully on-device — on the GPU where available, otherwise the CPU.
+            Pick a supported model, then Mnema embeds your captures in the background. Nothing is
+            downloaded until you choose a model.
           </p>
         </div>
         <button
@@ -6511,8 +6512,8 @@
               options={semanticSearchModelOptions}
             />
             <p class="group-hint">
-              Recommended tiers are listed first. Search the full on-device catalog to pick any
-              fastembed model; multilingual models are marked. Nothing downloads until you choose below.
+              Recommended tiers are listed first. Pick from the supported on-device models;
+              multilingual models are marked. Nothing downloads until you choose below.
             </p>
           </div>
 

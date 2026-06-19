@@ -2,7 +2,7 @@
 //! query string into a **Semantic Search Vector** so the app-infra search path
 //! can fuse a `vec0` KNN with the FTS5 **Text Search** ranking by RRF.
 //!
-//! app-infra takes no `ort`/`fastembed` dependency (the same boundary that keeps
+//! app-infra takes no embedding-runtime dependency (the same boundary that keeps
 //! `ai-runtime` out of it for User Context), so the *query* is embedded here, in
 //! the desktop layer, and passed into `search_capture` as a pre-computed
 //! `query_embedding`. When no **Semantic Search Model** is installed — the
@@ -11,18 +11,19 @@
 //! shape of local transcription/OCR. Mnema never auto-downloads a model.
 //!
 //! The loaded model is cached in [`SemanticQueryEmbedderState`] so repeated
-//! searches (every keystroke) reuse one embedder rather than reloading the ONNX
-//! session; a Settings model switch reloads it because the cache remembers which
-//! provider/model it holds. The embed runs on a blocking thread (fastembed/ort is
-//! CPU model work, never the tokio reactor).
+//! searches (every keystroke) reuse one embedder rather than reloading the model;
+//! a Settings model switch reloads it because the cache remembers which
+//! provider/model it holds. The embed runs on a blocking thread because the candle
+//! forward is synchronous model work (Metal GPU on macOS / candle-CPU elsewhere)
+//! that must stay off the tokio reactor (ADR 0037).
 
 use std::sync::Mutex;
 
 use tauri::Manager;
 
 use crate::semantic_search_worker::{
-    effective_semantic_search_settings, load_embedder, resolve_embed_intra_threads,
-    resolve_selected_descriptor, selected_model_available, LoadedEmbedder,
+    effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
+    selected_model_available, LoadedEmbedder,
 };
 
 /// The cached query embedder, shared as Tauri managed state across `search_capture`
@@ -46,9 +47,10 @@ impl SemanticQueryEmbedderState {
 /// keyword-only, the same "no usable runtime → feature unavailable" shape as
 /// local transcription.
 ///
-/// The model load and the embed both run on a blocking thread because
-/// fastembed/ort is CPU model work that must stay off the tokio reactor (and off
-/// the capture hot path — this is user-initiated search, not capture).
+/// The model load and the embed both run on a blocking thread because the candle
+/// forward is synchronous model work (Metal GPU on macOS / candle-CPU elsewhere)
+/// that must stay off the tokio reactor (and off the capture hot path — this is
+/// user-initiated search, not capture).
 pub async fn embed_search_query(
     app_handle: &tauri::AppHandle,
     state: &tauri::State<'_, SemanticQueryEmbedderState>,
@@ -78,10 +80,6 @@ pub async fn embed_search_query(
     }
 
     let descriptor = resolve_selected_descriptor(&settings)?;
-    // Same ONNX intra-op cap as backfill, so a search keystroke can't fan one
-    // query embed across every core. Resolved here (Copy) and moved into the
-    // blocking task below, which may reload the embedder on a model switch.
-    let intra_threads = resolve_embed_intra_threads(&settings);
 
     // Take the cached embedder out of the mutex for the blocking task (so we never
     // hold a std Mutex across an await), reloading if the selection changed, then
@@ -104,9 +102,9 @@ pub async fn embed_search_query(
 
     let query = trimmed.to_string();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let mut loaded = match cached {
+        let loaded = match cached {
             Some(loaded) => loaded,
-            None => match load_embedder(&app_data_dir, &descriptor, intra_threads) {
+            None => match load_embedder(&app_data_dir, &descriptor) {
                 Ok(loaded) => loaded,
                 Err(error) => {
                     crate::native_capture::debug_log::log_error(format!(
@@ -117,10 +115,11 @@ pub async fn embed_search_query(
                 }
             },
         };
-        // Deliberately runs at the thread's DEFAULT QoS — NOT backgrounded like the
-        // backfill embed (see `BackfillEmbedQosGuard` in semantic_search_worker.rs).
-        // Search is user-initiated and latency-sensitive, so a future reader should
-        // not "fix" this path by adding a background-QoS guard here.
+        // The query embed runs at the blocking thread's DEFAULT QoS. The retired
+        // backfill per-thread background-QoS downclock is gone under candle (ADR
+        // 0037), so there is no QoS to deliberately leave un-backgrounded here; this
+        // is simply user-initiated, latency-sensitive search work. `embed_text` is
+        // `&self`-immutable, so the embedder needs no `mut`.
         let vector = loaded
             .embedder
             .embed_text(&query)

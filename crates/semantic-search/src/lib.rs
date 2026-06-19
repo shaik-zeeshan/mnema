@@ -1,8 +1,18 @@
 //! Semantic Search embedding runtime and its model-gating.
 //!
 //! This crate derives a **Semantic Search Vector** from raw `body_text` using
-//! `fastembed`, which reuses the ONNX runtime (`ort`) already shipped for
-//! Parakeet transcription — there is no second native runtime (ADR 0036).
+//! **candle** (`candle-core`/`candle-nn`/`candle-transformers`), running the model
+//! on the **Apple GPU via Metal** (when the crate `metal` feature is on and a
+//! Metal device is available) or on the **CPU** otherwise — the runtime tries
+//! Metal then falls back to CPU. candle is the default and only shipped backend,
+//! sitting behind the pluggable [`SemanticSearchBackend`] trait so a future local
+//! Ollama backend (and, opt-in, a cloud backend) can plug in without touching the
+//! storage or query layers (ADR 0037).
+//!
+//! The backend is the **raw model forward** (tokenize, run the architecture, pool,
+//! L2-normalize). The backend-agnostic chunking / length-bucketed sub-batching /
+//! cross-chunk fan-in + mean-pool that turns arbitrary text into one stored vector
+//! per anchor lives ABOVE the trait, in [`SemanticSearchEmbedder`].
 //!
 //! Like local transcription/OCR, **Semantic Search** is default-on but
 //! **model-gated**: with no **Semantic Search Model** installed under
@@ -11,36 +21,25 @@
 //! auto-downloads a model here.
 //!
 //! Mirroring `audio-transcription`, this crate intentionally does not depend on
-//! `app-infra` or Tauri. The desktop app supplies the app data directory and
-//! owns download orchestration.
+//! `app-infra` or Tauri. The desktop app supplies the app data directory and owns
+//! download orchestration.
 
+mod backend;
 mod models;
-#[cfg(feature = "fastembed")]
 mod runtime;
 
+pub use backend::candle::CandleBackend;
+pub use backend::{EmbeddingError, SemanticSearchBackend};
+
 pub use models::{
-    detect_model_status, find_model_descriptor, model_install_dir, semantic_search_models_dir,
-    write_installed_marker, InstalledModelLayout, ModelStatusError, ModelStatusKind,
-    SemanticSearchModelDescriptor, SemanticSearchModelManifest, SemanticSearchModelStatus,
-    SemanticSearchModelTier, SemanticSearchOutputKey, SemanticSearchPooling, CONFIG_FILE_NAME,
-    FASTEMBED_PROVIDER_ID, INSTALLED_MARKER_FILE_NAME, MODEL_ONNX_FILE_NAME, MODEL_STORE_DIR_NAME,
-    SPECIAL_TOKENS_MAP_FILE_NAME, TOKENIZER_CONFIG_FILE_NAME, TOKENIZER_FILE_NAME,
+    builtin_model_manifest, detect_model_status, find_model_descriptor, list_supported_models,
+    model_install_dir, resolve_descriptor, selected_semantic_search_model_available,
+    semantic_search_models_dir, write_installed_marker, InstalledModelLayout, ModelStatusError,
+    ModelStatusKind, SemanticSearchArchitecture, SemanticSearchModelDescriptor,
+    SemanticSearchModelManifest, SemanticSearchModelStatus, SemanticSearchModelTier,
+    SemanticSearchPooling, SupportedEmbeddingModel, CONFIG_FILE_NAME, FASTEMBED_PROVIDER_ID,
+    INSTALLED_MARKER_FILE_NAME, MODEL_SAFETENSORS_FILE_NAME, MODEL_STORE_DIR_NAME,
+    TOKENIZER_FILE_NAME,
 };
 
-// `builtin_model_manifest` (the curation overlay that synthesizes its facts from
-// fastembed) and `selected_semantic_search_model_available` (the model-gating
-// wrapper, which resolves the selection through the fastembed-backed
-// `resolve_descriptor`) live behind the `fastembed` feature alongside the runtime.
-#[cfg(feature = "fastembed")]
-pub use runtime::{
-    builtin_model_manifest, fastembed_output_key, fastembed_pooling,
-    list_fastembed_supported_models, resolve_descriptor, selected_semantic_search_model_available,
-    EmbeddingError, SemanticSearchEmbedder, SupportedEmbeddingModel,
-};
-
-/// Re-export of fastembed's pooling strategy and named-output key so callers
-/// select a model's pooling (Mean for nomic/e5, Cls for bge) and pass through any
-/// `ModelInfo.output_key` without taking a direct `fastembed` dependency. The
-/// embedding runtime lives behind the `fastembed` feature.
-#[cfg(feature = "fastembed")]
-pub use fastembed::{OutputKey, Pooling};
+pub use runtime::SemanticSearchEmbedder;

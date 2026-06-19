@@ -18,7 +18,7 @@ use std::{
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use semantic_search::{
-    builtin_model_manifest, detect_model_status, list_fastembed_supported_models, model_install_dir,
+    builtin_model_manifest, detect_model_status, list_supported_models, model_install_dir,
     resolve_descriptor, semantic_search_models_dir, write_installed_marker, ModelStatusError,
     ModelStatusKind, SemanticSearchModelDescriptor, SemanticSearchModelTier, FASTEMBED_PROVIDER_ID,
 };
@@ -28,9 +28,9 @@ use tauri::{Emitter, Manager};
 use crate::native_capture::debug_log::{log_error, log_info};
 
 /// The frontend event the Settings UI listens on for live download progress.
-/// The bytes/percent in each payload come from the streaming HTTP download of
-/// fastembed's actual model files (per-chunk), not a CLI progress bool — so the
-/// UI receives real programmatic byte progress (ADR 0036 / issue #125).
+/// The bytes/percent in each payload come from the streaming HTTP download of the
+/// model's safetensors files (per-chunk), not a CLI progress bool — so the UI
+/// receives real programmatic byte progress (ADR 0036 / issue #125).
 pub const SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT: &str =
     "semantic_search_model_download_progress";
 
@@ -62,7 +62,9 @@ pub struct SemanticSearchModelStatusDto {
     pub tier: SemanticSearchModelTier,
     pub dimension: usize,
     pub max_tokens: usize,
-    /// The fastembed/HuggingFace repo id the model is downloaded from.
+    /// The HuggingFace repo id the model is downloaded from (sourced from the
+    /// descriptor's `hf_repo`). The DTO field name stays `modelCode` for the stable
+    /// frontend contract.
     pub model_code: String,
     /// Approximate on-disk footprint in bytes — the Settings disk-cost disclosure.
     pub approx_download_bytes: u64,
@@ -102,13 +104,15 @@ pub struct SemanticSearchModelDownloadProgressDto {
     pub message: Option<String>,
 }
 
-/// One fastembed-supported text-embedding model the **Custom** picker can offer,
-/// distilled to the fields the Settings UI needs (serde camelCase to match the
-/// other DTOs). `model_id` is a stable slug from the HF `model_code`'s last
-/// segment, so a Custom pick installs under the same `{provider}/{model_id}`
-/// layout as the guided tiers. `approx_download_bytes` is omitted (None) because
-/// fastembed's `ModelInfo` carries no size; the UI shows the disk cost only once
-/// known.
+/// One curated candle-supported text-embedding model the **Custom** picker can
+/// offer, distilled to the fields the Settings UI needs (serde camelCase to match
+/// the other DTOs). The open "any ONNX model" picker is gone (ADR 0037): this list
+/// is exactly the curated catalog, sourced from the crate's hand-coded
+/// descriptors. `model_id` is the catalog slug, so a Custom pick installs under the
+/// same `{provider}/{model_id}` layout as the guided tiers. The DTO field name
+/// stays `modelCode` for the stable frontend contract (sourced from the
+/// descriptor's `hf_repo`). `approx_download_bytes` is omitted (None) here; the UI
+/// shows the disk cost from the status DTO once known.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportedModelDto {
@@ -141,12 +145,14 @@ impl SemanticSearchModelDownloadProgressDto {
     }
 }
 
-/// One file fastembed loads from disk and the HuggingFace path it is fetched
-/// from. Both are the **same repo-relative path** (e.g. `onnx/model.onnx`): the
-/// file is fetched from `…/resolve/main/<path>` and written to `<install>/<path>`,
-/// preserving the `onnx/` subdirectory so an ONNX graph's external-data sibling
-/// (`onnx/model.onnx_data`) stays resolvable. The detector requires this same
-/// relative path, so the download, on-disk, and completeness views all agree.
+/// One file the candle backend loads from disk and the HuggingFace path it is
+/// fetched from. Both are the **same repo-relative path** (e.g. `model.safetensors`):
+/// the file is fetched from `…/resolve/main/<path>` and written to
+/// `<install>/<path>`. The safetensors layout puts all three required files
+/// (`model.safetensors`, `config.json`, `tokenizer.json`) at the repo root, so the
+/// path preservation is trivial — there is no `onnx/` subdirectory or external-data
+/// sibling anymore (ADR 0037). The detector requires this same relative path, so
+/// the download, on-disk, and completeness views all agree.
 #[derive(Debug, Clone)]
 struct ModelFileSpec {
     relative_path: String,
@@ -250,25 +256,27 @@ pub fn get_semantic_search_model_status(
         .map_err(|error| format!("failed to inspect semantic search models: {error}"))
 }
 
-/// List fastembed's enumerable text-embedding models for the **Custom** picker.
+/// List the curated candle-supported text-embedding models for the **Custom**
+/// picker.
 ///
-/// Drives entirely off fastembed's `ModelInfo` list, excluding gated repos (at
-/// minimum EmbeddingGemma) the manual reqwest downloader cannot fetch. The
-/// frontend Custom picker consumes these to let a user pick any locally-supported
-/// model; downloading one then reuses [`start_semantic_search_model_download`]
-/// once the selection is persisted.
+/// Drives off the crate's hand-coded catalog (ADR 0037) — the open "any ONNX
+/// model" picker is gone, so this is exactly the curated list. The frontend Custom
+/// picker consumes these to let a user pick a supported model; downloading one then
+/// reuses [`start_semantic_search_model_download`] once the selection is persisted.
 #[tauri::command]
 pub fn list_semantic_search_supported_models() -> Result<Vec<SupportedModelDto>, String> {
-    let models = list_fastembed_supported_models()
+    let models = list_supported_models()
         .into_iter()
         .map(|model| SupportedModelDto {
             model_id: model.model_id,
             display_name: model.display_name,
-            model_code: model.model_code,
+            // The DTO field name stays `modelCode` (stable frontend contract); it is
+            // sourced from the descriptor's `hf_repo`.
+            model_code: model.hf_repo,
             dimension: model.dimension,
             description: model.description,
             multilingual: model.multilingual,
-            // fastembed's ModelInfo carries no size; left None until known.
+            // The catalog descriptor's size rides the status DTO; left None here.
             approx_download_bytes: None,
         })
         .collect();
@@ -281,8 +289,8 @@ pub fn list_semantic_search_supported_models() -> Result<Vec<SupportedModelDto>,
 /// returns immediately. Progress arrives as `Downloading` events with real
 /// per-chunk byte counts on [`SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT`].
 ///
-/// Mnema only downloads when the user picks a model here — fastembed's online
-/// fetcher stays disabled, so nothing is auto-downloaded (ADR 0036).
+/// Mnema only downloads when the user picks a model here — there is no
+/// auto-download path, so nothing is fetched unprompted (ADR 0036).
 #[tauri::command]
 pub fn start_semantic_search_model_download(
     app_handle: tauri::AppHandle,
@@ -482,7 +490,7 @@ fn status_dto_for(
         tier: descriptor.tier,
         dimension: descriptor.dimension,
         max_tokens: descriptor.max_tokens,
-        model_code: descriptor.model_code.clone(),
+        model_code: descriptor.hf_repo.clone(),
         approx_download_bytes: descriptor.approx_download_bytes,
         license_label: descriptor.license_label.clone(),
         status: status.status,
@@ -496,10 +504,11 @@ fn status_dto_for(
 /// already downloaded on disk, plus the currently-selected Custom model.
 ///
 /// `selected_model_id` is the persisted `RecordingSettings.semantic_search`
-/// selection (always the fastembed provider in v1).
+/// selection (always the `fastembed` provider namespace in v1).
 ///
-/// A Custom model (any fastembed model outside the 3 guided tiers) must be able to
-/// be **activated after it is downloaded**. The Settings UI's "Use this model"
+/// A Custom model (a curated catalog model surfaced via the Custom picker, e.g.
+/// `bge-m3`) must be able to be **activated after it is downloaded**. The Settings
+/// UI's "Use this model"
 /// action only appears once the picked model's status row reports `available`, and
 /// the picked-model view only carries a real `available` when the model is present
 /// in this response (the catalog fallback is structurally unavailable). So a
@@ -577,12 +586,10 @@ fn installed_custom_model_ids(models_dir: &Path) -> Vec<String> {
 /// **Single file-list authority** (ADR 0036 deepening #4): download and
 /// completeness now read the SAME list — `descriptor.expected_layout.required_files`
 /// — so a model can never download "successfully" yet report broken. That list is
-/// catalog-derived (synthesized from fastembed's own `ModelInfo` for BOTH guided
-/// tiers and Custom picks, via the shared `resolve_descriptor`), so it already
-/// carries the ONNX graph, every external-data sibling (e.g. bge-m3's 2 GB
-/// `onnx/model.onnx_data` and `onnx/Constant_7_attr__value`), and the four root
-/// tokenizer files — there is no second derivation here to drift out of sync, and
-/// the desktop-side tokenizer constants / re-union are gone.
+/// the hand-coded safetensors layout (ADR 0037): the three repo-root files
+/// `model.safetensors`, `config.json`, `tokenizer.json`. The old ONNX graph +
+/// external-data siblings (e.g. bge-m3's `onnx/model.onnx_data`) are gone, so
+/// there is no second derivation here to drift out of sync.
 ///
 /// Each path is zipped with its pinned SHA256 (when known) for the integrity gate.
 fn model_file_specs(descriptor: &SemanticSearchModelDescriptor) -> Vec<ModelFileSpec> {
@@ -591,7 +598,7 @@ fn model_file_specs(descriptor: &SemanticSearchModelDescriptor) -> Vec<ModelFile
         .required_files
         .iter()
         .map(|relative_path| ModelFileSpec {
-            expected_sha256: pinned_file_sha256(&descriptor.model_code, relative_path)
+            expected_sha256: pinned_file_sha256(&descriptor.hf_repo, relative_path)
                 .map(str::to_owned),
             relative_path: relative_path.clone(),
         })
@@ -608,20 +615,20 @@ fn model_file_specs(descriptor: &SemanticSearchModelDescriptor) -> Vec<ModelFile
 /// Mirrors the other model downloaders, which pin per-file SHA256 in their
 /// manifests (`ModelArtifactFile.sha256`). The semantic-search downloader fetches
 /// directly from each model's HuggingFace repo (`…/resolve/main/<path>`), so the
-/// hashes below are keyed by `(model_code, repo-relative path)`.
+/// hashes below are keyed by `(hf_repo, repo-relative path)`.
 ///
 /// NOTE (residual gap for the docs agent): the real per-file digests for the three
 /// guided tiers are **not yet pinned** here — they require downloading + hashing
-/// each ~hundreds-of-MB-to-2GB ONNX artifact from HuggingFace, which is out of
-/// scope for this change. Every guided-tier file therefore currently returns
+/// each safetensors artifact (hundreds of MB to ~2 GB) from HuggingFace, which is
+/// out of scope for this change. Every guided-tier file therefore currently returns
 /// `None` (installs but logs "integrity unverified"). The verification plumbing is
 /// in place: filling in the constants below later turns on fail-closed checking
 /// with no further code change. Pin them as `(path, "<64-hex sha256>")` tuples per
-/// `model_code` in the match arms below.
-fn pinned_file_sha256(model_code: &str, relative_path: &str) -> Option<&'static str> {
-    let pinned: &[(&str, &str)] = match model_code {
+/// `hf_repo` in the match arms below.
+fn pinned_file_sha256(hf_repo: &str, relative_path: &str) -> Option<&'static str> {
+    let pinned: &[(&str, &str)] = match hf_repo {
         // TODO(docs/follow-up): pin the real SHA256 of each guided-tier file. The
-        // arms are wired so adding `("onnx/model.onnx", "<sha256>")` entries here
+        // arms are wired so adding `("model.safetensors", "<sha256>")` entries here
         // immediately enables fail-on-mismatch verification for that tier.
         "nomic-ai/nomic-embed-text-v1.5" => &[],
         "BAAI/bge-m3" => &[],
@@ -661,8 +668,8 @@ fn verify_file_checksum(
     Ok(())
 }
 
-/// Stream the file through SHA256 in 8 KiB chunks so a multi-GB ONNX graph never
-/// loads into memory. Returns the lowercase hex digest.
+/// Stream the file through SHA256 in 8 KiB chunks so a multi-GB safetensors file
+/// never loads into memory. Returns the lowercase hex digest.
 fn sha256_of_file(file_path: &Path) -> Result<String, ModelDownloadError> {
     let mut file =
         std::fs::File::open(file_path).map_err(|source| ModelDownloadError::ReadFile {
@@ -687,17 +694,17 @@ fn sha256_of_file(file_path: &Path) -> Result<String, ModelDownloadError> {
 }
 
 /// The HuggingFace `resolve/main` URL for one file in a model repo.
-fn hf_file_url(model_code: &str, hf_relative_path: &str) -> String {
-    format!("https://huggingface.co/{model_code}/resolve/main/{hf_relative_path}")
+fn hf_file_url(hf_repo: &str, hf_relative_path: &str) -> String {
+    format!("https://huggingface.co/{hf_repo}/resolve/main/{hf_relative_path}")
 }
 
 fn build_download_plan(
     app_handle: &tauri::AppHandle,
     request: &SemanticSearchModelDownloadRequestDto,
 ) -> Result<DownloadPlan, ModelDownloadError> {
-    // Resolve through the shared resolver so a Custom-picked fastembed model
-    // (synthesized from fastembed's ModelInfo) downloads with the right file
-    // list/layout, not just the 3 guided manifest tiers.
+    // Resolve through the shared resolver (a pure catalog lookup under candle, ADR
+    // 0037) so the selected model downloads with the right safetensors file
+    // list/layout. An unknown id resolves to None and fails as ModelNotFound below.
     let descriptor = descriptor_for(&request.provider, &request.model_id).ok_or_else(|| {
         ModelDownloadError::ModelNotFound {
             provider: request.provider.clone(),
@@ -724,9 +731,9 @@ fn build_download_plan(
     })
 }
 
-/// Resolve a descriptor for a `{provider}/{model_id}` selection — manifest first,
-/// then a fastembed-synthesized descriptor for a **Custom**-picked model. Both the
-/// download plan and the install verification go through this so a Custom model
+/// Resolve a descriptor for a `{provider}/{model_id}` selection via the shared
+/// catalog lookup (no synthesis under candle, ADR 0037: an unknown id is `None`).
+/// Both the download plan and the install verification go through this so a model
 /// installs under the same layout the picker advertised.
 fn descriptor_for(provider: &str, model_id: &str) -> Option<SemanticSearchModelDescriptor> {
     resolve_descriptor(provider, model_id)
@@ -902,9 +909,10 @@ async fn download_and_install_model(
         if cancel_requested.load(Ordering::SeqCst) {
             return Err(ModelDownloadTaskError::Cancelled);
         }
-        let url = hf_file_url(&descriptor.model_code, &spec.relative_path);
-        // Preserve the repo-relative subdir on disk (e.g. `onnx/model.onnx`) so an
-        // ONNX graph's external-data sibling resolves at load time.
+        let url = hf_file_url(&descriptor.hf_repo, &spec.relative_path);
+        // Preserve the repo-relative path on disk. The safetensors layout keeps all
+        // three files at the repo root, but joining the relative path keeps this
+        // correct for any future model whose weights live in a subdirectory.
         let destination = plan.install_dir.join(&spec.relative_path);
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent).map_err(|source| ModelDownloadError::CreateDir {
@@ -930,7 +938,7 @@ async fn download_and_install_model(
 
         // Integrity gate (ADR 0036 / finding L5): verify the bytes we just wrote
         // BEFORE the `.installed.json` marker, so a tampered/corrupt file fails the
-        // install rather than being silently loaded by ort. A pinned hash that
+        // install rather than being silently loaded by candle. A pinned hash that
         // mismatches aborts here (the partial install dir is then removed by the
         // task runner); an unpinned file installs but is recorded as "integrity
         // unverified" so the supply-chain gap is visible.
@@ -959,9 +967,9 @@ async fn download_and_install_model(
         ));
     }
 
-    // Verify every required file landed before claiming Installed. This now covers
-    // external-data siblings (e.g. bge-m3's `onnx/model.onnx_data`), so a model
-    // missing its weights is never marked Installed.
+    // Verify every required file landed before claiming Installed. This covers all
+    // three safetensors-layout files (`model.safetensors`, `config.json`,
+    // `tokenizer.json`), so a model missing its weights is never marked Installed.
     let missing: Vec<String> = descriptor
         .expected_layout
         .required_files
@@ -1005,6 +1013,11 @@ async fn download_file_to(
     already_downloaded_bytes: u64,
     cancel_requested: &AtomicBool,
 ) -> Result<u64, ModelDownloadTaskError> {
+    // This HTTPS fetch runs over rustls: with fastembed/ort's `native-tls` gone the
+    // desktop `reqwest` is built with `rustls-tls` (no default-tls), aligning the
+    // downloader with the workspace's other TLS users — sqlx's
+    // `runtime-tokio-rustls` (ADR 0037). `reqwest::get` uses the crate's default
+    // client, which now negotiates TLS via rustls.
     let response = reqwest::get(url).await.map_err(|error| {
         log_error(format!(
             "semantic search model download HTTP request failed for {}/{} at {url}: {error}",
@@ -1066,8 +1079,8 @@ async fn download_file_to(
     // Truncation guard (finding CT3): if the server advertised a Content-Length,
     // the fully-written byte count MUST equal it. A short stream (dropped
     // connection mid-download) otherwise produces a truncated file that passes the
-    // is_file() existence check and gets marked Installed — then fails to load as a
-    // corrupt ONNX graph. Failing here removes the partial install instead.
+    // is_file() existence check and gets marked Installed — then fails to load as
+    // corrupt safetensors. Failing here removes the partial install instead.
     if let Some(expected_len) = content_length {
         if file_downloaded != expected_len {
             log_error(format!(
@@ -1110,41 +1123,47 @@ mod tests {
         assert_eq!(response.models.len(), builtin_model_manifest().models.len());
     }
 
-    #[test]
-    fn status_response_surfaces_a_selected_custom_model_outside_the_manifest() {
-        // A Custom-picked fastembed model (not one of the 3 guided tiers) appears in
-        // the status response when it is the persisted selection, so the Settings UI
-        // can show its installed/selected state.
-        let manifest_ids: Vec<String> = builtin_model_manifest()
+    /// The curated `Custom`-tier catalog model, surfaced via the Custom picker
+    /// (ADR 0037: the open "any model outside the manifest" picker is gone, so the
+    /// Custom tier is now an explicit catalog entry — `bge-m3`).
+    fn custom_tier_descriptor() -> SemanticSearchModelDescriptor {
+        builtin_model_manifest()
             .models
             .into_iter()
-            .map(|model| model.model_id)
-            .collect();
-        let custom = list_fastembed_supported_models()
-            .into_iter()
-            .find(|model| !manifest_ids.contains(&model.model_id))
-            .expect("a non-manifest fastembed model");
+            .find(|model| model.tier == SemanticSearchModelTier::Custom)
+            .expect("a Custom-tier catalog model")
+    }
+
+    #[test]
+    fn status_response_surfaces_the_selected_custom_tier_model() {
+        // The curated Custom-tier model (bge-m3) appears in the status response when
+        // it is the persisted selection, so the Settings UI can show its
+        // installed/selected state. It is an explicit catalog entry now, so it is
+        // already in the manifest list (no extra appended row) — the selected-append
+        // guard must not duplicate it.
+        let custom = custom_tier_descriptor();
 
         let temp = tempfile::tempdir().expect("tempdir");
         let response =
             build_semantic_search_model_status_response(temp.path(), Some(&custom.model_id))
                 .expect("status response");
 
-        // The 3 guided tiers plus the selected Custom model.
-        assert_eq!(response.models.len(), manifest_ids.len() + 1);
+        // The Custom-tier model is one of the 3 guided manifest tiers, so the count
+        // is unchanged (no appended row for an in-catalog selection).
+        assert_eq!(response.models.len(), builtin_model_manifest().models.len());
         let custom_row = response
             .models
             .iter()
             .find(|model| model.model_id == custom.model_id)
-            .expect("selected custom model must be listed");
+            .expect("selected custom-tier model must be listed");
         assert_eq!(custom_row.tier, SemanticSearchModelTier::Custom);
-        assert_eq!(custom_row.model_code, custom.model_code);
+        assert_eq!(custom_row.model_code, custom.hf_repo);
         // Not installed on disk => Missing / unavailable, but still surfaced.
         assert!(!custom_row.available);
     }
 
-    /// Install a Custom (non-manifest) fastembed model on disk: every required
-    /// file from its resolved layout plus the `.installed.json` marker, so
+    /// Install a catalog model on disk: every required file from its resolved
+    /// safetensors layout plus the `.installed.json` marker, so
     /// `detect_model_status` reports it Installed.
     fn install_custom_model_on_disk(models_dir: &Path, descriptor: &SemanticSearchModelDescriptor) {
         let install_dir =
@@ -1164,21 +1183,11 @@ mod tests {
 
     #[test]
     fn status_response_surfaces_a_downloaded_but_unselected_custom_model_as_available() {
-        // H3 regression: a Custom model downloaded on disk but NOT yet the persisted
-        // selection must appear in the status response with a real `available` true,
-        // so the Settings UI can offer "Use this model". Without this it was a dead
-        // end — downloadable, never activatable.
-        let manifest_ids: Vec<String> = builtin_model_manifest()
-            .models
-            .into_iter()
-            .map(|model| model.model_id)
-            .collect();
-        let custom = list_fastembed_supported_models()
-            .into_iter()
-            .find(|model| !manifest_ids.contains(&model.model_id))
-            .expect("a non-manifest fastembed model");
-        let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, &custom.model_id)
-            .expect("custom descriptor");
+        // H3 regression: a Custom-tier model downloaded on disk but NOT yet the
+        // persisted selection must appear in the status response with a real
+        // `available` true, so the Settings UI can offer "Use this model". Without
+        // this it was a dead end — downloadable, never activatable.
+        let descriptor = custom_tier_descriptor();
 
         let temp = tempfile::tempdir().expect("tempdir");
         let models_dir = semantic_search_models_dir(temp.path());
@@ -1190,51 +1199,42 @@ mod tests {
         let custom_row = response
             .models
             .iter()
-            .find(|model| model.model_id == custom.model_id)
-            .expect("downloaded custom model must be listed even when unselected");
+            .find(|model| model.model_id == descriptor.model_id)
+            .expect("downloaded custom-tier model must be listed even when unselected");
         assert_eq!(custom_row.tier, SemanticSearchModelTier::Custom);
         assert!(
             custom_row.available,
-            "a fully-downloaded custom model must report available so it can be activated"
+            "a fully-downloaded custom-tier model must report available so it can be activated"
         );
-        // The guided tiers are unaffected (still listed, all unavailable on disk).
+        // The other guided tiers are unaffected (still listed, all unavailable on disk).
         assert!(response
             .models
             .iter()
-            .any(|model| model.model_id == "nomic-embed-text-v1.5"));
+            .any(|model| model.model_id == "nomic-embed-text-v1.5" && !model.available));
     }
 
     #[test]
     fn status_response_does_not_duplicate_a_downloaded_custom_model() {
-        // A downloaded Custom model that is ALSO the selection must appear exactly
-        // once (the disk scan covers it; the selected-append must not re-add it).
-        let manifest_ids: Vec<String> = builtin_model_manifest()
-            .models
-            .into_iter()
-            .map(|model| model.model_id)
-            .collect();
-        let custom = list_fastembed_supported_models()
-            .into_iter()
-            .find(|model| !manifest_ids.contains(&model.model_id))
-            .expect("a non-manifest fastembed model");
-        let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, &custom.model_id)
-            .expect("custom descriptor");
+        // A downloaded Custom-tier model that is ALSO the selection must appear
+        // exactly once (the manifest list covers it; neither the disk scan nor the
+        // selected-append may re-add it).
+        let descriptor = custom_tier_descriptor();
 
         let temp = tempfile::tempdir().expect("tempdir");
         let models_dir = semantic_search_models_dir(temp.path());
         install_custom_model_on_disk(&models_dir, &descriptor);
 
         let response =
-            build_semantic_search_model_status_response(temp.path(), Some(&custom.model_id))
+            build_semantic_search_model_status_response(temp.path(), Some(&descriptor.model_id))
                 .expect("status response");
         assert_eq!(
             response
                 .models
                 .iter()
-                .filter(|model| model.model_id == custom.model_id)
+                .filter(|model| model.model_id == descriptor.model_id)
                 .count(),
             1,
-            "a downloaded + selected custom model must appear exactly once"
+            "a downloaded + selected custom-tier model must appear exactly once"
         );
     }
 
@@ -1284,26 +1284,22 @@ mod tests {
             }
             std::fs::write(path, b"x").expect("model file");
         }
-        std::fs::write(
-            install_dir.join(".installed.json"),
-            serde_json::json!({
-                "manifestVersion": 1,
-                "provider": FASTEMBED_PROVIDER_ID,
-                "modelId": descriptor.model_id,
-            })
-            .to_string(),
-        )
-        .expect("marker");
+        // Write the marker at the CURRENT manifest version. After the candle
+        // cutover (MANIFEST_VERSION 2) an older `manifestVersion: 1` ONNX-shaped
+        // marker no longer validates — that staleness is what forces the
+        // re-download into the safetensors layout — so a fresh install must stamp
+        // the live version to be recognized as Installed.
+        write_installed_marker(&models_dir, FASTEMBED_PROVIDER_ID, &descriptor.model_id)
+            .expect("marker");
 
         assert!(selected_semantic_search_model_available(temp.path(), &settings).expect("gating check"));
     }
 
     #[test]
     fn file_specs_cover_every_required_layout_file() {
-        // The download spec list (driven by fastembed's ModelInfo) must cover every
-        // file the detector requires for that model — including external-data
-        // siblings like bge-m3's `onnx/model.onnx_data`, so a model never installs
-        // missing its weights.
+        // The download spec list must cover every file the detector requires for that
+        // model — the three safetensors-layout files — so a model never installs
+        // missing its weights. Both views read `expected_layout.required_files`.
         let manifest = builtin_model_manifest();
         for descriptor in &manifest.models {
             let specs = model_file_specs(descriptor);
@@ -1319,36 +1315,44 @@ mod tests {
     }
 
     #[test]
-    fn bge_m3_download_plan_includes_external_data() {
-        // Regression: bge-m3's 2 GB `onnx/model.onnx_data` must be in the download
-        // list (matched from fastembed's ModelInfo), not silently dropped.
+    fn download_plan_covers_the_safetensors_layout() {
+        // ADR 0037: every catalog model downloads the three repo-root safetensors
+        // files (`model.safetensors`, `config.json`, `tokenizer.json`). The old ONNX
+        // graph + external-data siblings (e.g. bge-m3's `onnx/model.onnx_data`) are
+        // gone, so they must NOT appear in the plan.
         let manifest = builtin_model_manifest();
-        let bge =
-            find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "bge-m3").expect("bge-m3");
-        let specs = model_file_specs(bge);
-        let paths: Vec<&str> = specs.iter().map(|s| s.relative_path.as_str()).collect();
-        assert!(paths.contains(&"onnx/model.onnx"));
-        assert!(paths.contains(&"onnx/model.onnx_data"));
-        assert!(paths.contains(&"tokenizer.json"));
+        for descriptor in &manifest.models {
+            let specs = model_file_specs(descriptor);
+            let paths: Vec<&str> = specs.iter().map(|s| s.relative_path.as_str()).collect();
+            assert!(paths.contains(&"model.safetensors"), "{}", descriptor.model_id);
+            assert!(paths.contains(&"config.json"), "{}", descriptor.model_id);
+            assert!(paths.contains(&"tokenizer.json"), "{}", descriptor.model_id);
+            assert!(
+                paths.iter().all(|p| !p.contains("onnx")),
+                "{} must not carry any ONNX file",
+                descriptor.model_id
+            );
+        }
     }
 
     #[test]
-    fn supported_models_list_excludes_gated_gemma_and_slugs_codes() {
+    fn supported_models_list_is_the_curated_catalog() {
         let models = list_semantic_search_supported_models().expect("supported models");
-        assert!(!models.is_empty(), "fastembed should enumerate models");
+        assert!(!models.is_empty(), "the curated catalog must enumerate models");
+        // The open "any ONNX model" picker is gone (ADR 0037); the list is exactly
+        // the curated catalog, so gated/arbitrary repos cannot appear.
         assert!(
             models.iter().all(|m| !m.model_code.to_ascii_lowercase().contains("gemma")),
-            "gated EmbeddingGemma must be excluded from the Custom picker"
+            "gated EmbeddingGemma must never appear in the curated list"
         );
-        // e5-small enumerates with a slugged id and the multilingual flag set.
+        // e5-small carries its catalog slug, hf_repo, dimension, and multilingual flag.
         let e5 = models
             .iter()
-            .find(|m| m.model_code == "intfloat/multilingual-e5-small");
-        if let Some(e5) = e5 {
-            assert_eq!(e5.model_id, "multilingual-e5-small");
-            assert!(e5.multilingual);
-            assert_eq!(e5.dimension, 384);
-        }
+            .find(|m| m.model_id == "multilingual-e5-small")
+            .expect("e5-small must be in the curated catalog");
+        assert_eq!(e5.model_code, "intfloat/multilingual-e5-small");
+        assert!(e5.multilingual);
+        assert_eq!(e5.dimension, 384);
     }
 
     #[test]
@@ -1356,12 +1360,12 @@ mod tests {
         let manifest = builtin_model_manifest();
         let nomic = find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5")
             .expect("nomic descriptor");
-        let onnx_url = hf_file_url(&nomic.model_code, "onnx/model.onnx");
+        let weights_url = hf_file_url(&nomic.hf_repo, "model.safetensors");
         assert_eq!(
-            onnx_url,
-            "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx"
+            weights_url,
+            "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/model.safetensors"
         );
-        let tokenizer_url = hf_file_url(&nomic.model_code, "tokenizer.json");
+        let tokenizer_url = hf_file_url(&nomic.hf_repo, "tokenizer.json");
         assert!(tokenizer_url.ends_with("/resolve/main/tokenizer.json"));
     }
 
@@ -1410,16 +1414,16 @@ mod tests {
         // a file on disk against a deliberately-wrong pinned digest and assert the
         // verifier returns ChecksumMismatch.
         let temp = tempfile::tempdir().expect("tempdir");
-        let file_path = temp.path().join("model.onnx");
+        let file_path = temp.path().join("model.safetensors");
         std::fs::write(&file_path, b"the wrong bytes").expect("write file");
 
         // The matching path: hashing then pinning the real digest verifies cleanly.
         let real_sha256 = sha256_of_file(&file_path).expect("sha256");
-        verify_file_checksum(&file_path, "onnx/model.onnx", Some(&real_sha256))
+        verify_file_checksum(&file_path, "model.safetensors", Some(&real_sha256))
             .expect("a matching pinned hash verifies");
 
         // The mismatch path: an unrelated pinned hash fails the install.
-        let error = verify_file_checksum(&file_path, "onnx/model.onnx", Some(&"0".repeat(64)))
+        let error = verify_file_checksum(&file_path, "model.safetensors", Some(&"0".repeat(64)))
             .expect_err("a mismatched pinned hash must fail verification");
         match error {
             ModelDownloadError::ChecksumMismatch {
@@ -1427,7 +1431,7 @@ mod tests {
                 actual,
                 ..
             } => {
-                assert_eq!(relative_path, "onnx/model.onnx");
+                assert_eq!(relative_path, "model.safetensors");
                 assert_eq!(actual, real_sha256);
             }
             other => panic!("expected ChecksumMismatch, got {other:?}"),
@@ -1442,13 +1446,13 @@ mod tests {
         // the bytes, and the guided tiers currently have no pinned hashes so their
         // file specs carry `expected_sha256: None`.
         let temp = tempfile::tempdir().expect("tempdir");
-        let file_path = temp.path().join("model.onnx");
+        let file_path = temp.path().join("model.safetensors");
         std::fs::write(&file_path, b"unpinned but trusted").expect("write file");
 
-        verify_file_checksum(&file_path, "onnx/model.onnx", None)
+        verify_file_checksum(&file_path, "model.safetensors", None)
             .expect("an unpinned file is accepted (integrity unverified)");
         // An empty pinned string is treated as unpinned too (mirrors speaker-analysis).
-        verify_file_checksum(&file_path, "onnx/model.onnx", Some("  "))
+        verify_file_checksum(&file_path, "model.safetensors", Some("  "))
             .expect("a blank pinned hash is treated as unpinned");
 
         // Until the real guided-tier digests are sourced, every guided-tier file
@@ -1470,17 +1474,17 @@ mod tests {
     #[test]
     fn pinned_hash_lookup_resolves_when_a_constant_is_present() {
         // Guards the verification plumbing: `pinned_file_sha256` returns the digest
-        // for a known (model_code, path) and None otherwise. Because no real hashes
+        // for a known (hf_repo, path) and None otherwise. Because no real hashes
         // are pinned yet, every current lookup is None; this test documents the
         // contract so a future docs/follow-up agent that pins a constant can flip a
         // file to verified.
         assert!(
-            pinned_file_sha256("nomic-ai/nomic-embed-text-v1.5", "onnx/model.onnx").is_none(),
+            pinned_file_sha256("nomic-ai/nomic-embed-text-v1.5", "model.safetensors").is_none(),
             "no guided-tier hashes are pinned yet (residual L5 gap, see pinned_file_sha256)"
         );
         assert!(
-            pinned_file_sha256("some/unknown-model", "onnx/model.onnx").is_none(),
-            "an unknown model code (Custom pick) is never pinned"
+            pinned_file_sha256("some/unknown-model", "model.safetensors").is_none(),
+            "an unknown hf_repo (not in the catalog) is never pinned"
         );
     }
 }

@@ -1,10 +1,19 @@
 //! Semantic Search Model catalog, on-disk layout, and model-gating detector.
 //!
+//! The catalog is **hand-maintained** (ADR 0037): candle has no model registry,
+//! so each model is a hand-coded [`SemanticSearchModelDescriptor`]
+//! (`{ architecture, dimension, pooling, max_tokens, hf_repo, expected_layout }`).
+//! This reverses commit `524975e`'s "synthesize from fastembed, never hand-restate"
+//! overlay — there is no fastembed catalog left to overlay. A `config.json`
+//! cross-check (`tests::descriptor_dimension_matches_config_json`) is the drift
+//! guard that replaces the old `ort` pin-lockstep and fastembed-synthesis guards.
+//!
 //! The detector mirrors the audio-transcription model detector: a model is
 //! Installed when an `.installed.json` marker for that exact provider/model id
 //! sits in `semantic_search_models/{provider}/{model_id}/` alongside every
-//! required file. Anything else is Missing — and a Missing model makes
-//! **Semantic Search** a silent no-op, never an error.
+//! required file (the safetensors weights + `config.json` + `tokenizer.json`).
+//! Anything else is Missing — and a Missing model makes **Semantic Search** a
+//! silent no-op, never an error.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -19,19 +28,30 @@ pub const MODEL_STORE_DIR_NAME: &str = "semantic_search_models";
 /// present, mirroring the transcription installer's `.installed.json`.
 pub const INSTALLED_MARKER_FILE_NAME: &str = ".installed.json";
 
-/// The single embedding provider in v1: fastembed running on the shared `ort`.
+/// The catalog namespace / on-disk provider segment.
+///
+/// **The string value stays `"fastembed"` deliberately**, even though the runtime
+/// is now candle: the persisted user setting `semantic_search.provider` defaults
+/// to `"fastembed"` (`capture-types`), and a capture-types serde test asserts
+/// `json["semanticSearch"]["provider"] == "fastembed"`. Changing the value would
+/// silently break persisted selections and force a settings migration that is out
+/// of scope. It is now just the `{provider}/{model_id}` namespace under which all
+/// candle models install.
 pub const FASTEMBED_PROVIDER_ID: &str = "fastembed";
 
-/// The fastembed model files a user-defined ("bring your own") embedder loads
-/// from disk. These are the file names fastembed expects, so a Semantic Search
-/// Model is only Installed when all of them exist.
-pub const MODEL_ONNX_FILE_NAME: &str = "model.onnx";
+/// The files a candle model loads from disk. A Semantic Search Model is only
+/// Installed when all three exist alongside the marker. (The retired ONNX layout's
+/// `model.onnx`, external-data siblings, `tokenizer_config.json`, and
+/// `special_tokens_map.json` are gone — candle needs only these three.)
+pub const MODEL_SAFETENSORS_FILE_NAME: &str = "model.safetensors";
 pub const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
-pub const TOKENIZER_CONFIG_FILE_NAME: &str = "tokenizer_config.json";
-pub const SPECIAL_TOKENS_MAP_FILE_NAME: &str = "special_tokens_map.json";
 pub const CONFIG_FILE_NAME: &str = "config.json";
 
-pub(crate) const MANIFEST_VERSION: u32 = 1;
+/// Bumped 1 → 2 for the candle cutover: an older ONNX-shaped `.installed.json`
+/// marker (manifest_version 1) no longer matches, so a model installed in the
+/// retired ONNX layout is reported Missing and re-downloads in the safetensors
+/// layout (ADR 0037).
+pub(crate) const MANIFEST_VERSION: u32 = 2;
 
 #[derive(Debug, Error)]
 pub enum ModelStatusError {
@@ -61,33 +81,29 @@ pub enum SemanticSearchModelTier {
     Custom,
 }
 
+/// The candle architecture a **Semantic Search Model** runs through. Dispatched in
+/// the candle backend (`backend/candle.rs`) to the matching
+/// `candle_transformers::models::*` module: `NomicBert` for the English default
+/// (`nomic-embed-text-v1.5`), `XlmRoberta` for the multilingual-e5 family and
+/// `bge-m3`. Hand-coded per model — never inferred from an id.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSearchArchitecture {
+    NomicBert,
+    XlmRoberta,
+}
+
 /// The sentence-pooling strategy a **Semantic Search Model** reads its single
-/// vector with: `Mean`-pool `last_hidden_state` (nomic / e5) or read the `[CLS]`
-/// token (bge / mxbai / gte / snowflake-arctic). A serde-friendly mirror of
-/// fastembed's `Pooling` so the descriptor carries pooling **without** this
-/// (non-`fastembed`-feature) module taking a fastembed dependency; the runtime
-/// converts to/from `fastembed::Pooling` behind the feature. Getting this wrong
-/// silently mean-pools a CLS-trained model — a wrong, lower-quality vector — so a
-/// model's pooling is captured from fastembed's own `get_default_pooling_method`,
-/// never guessed from the id.
+/// vector with: `Mean`-pool the token hidden states over the attention mask
+/// (nomic / e5) or take the `[CLS]` token hidden state (bge-m3). Getting this
+/// wrong silently mean-pools a CLS-trained model — a wrong, lower-quality vector —
+/// so pooling is a **declared descriptor field**, hand-coded per model, never
+/// guessed from the id.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticSearchPooling {
     Mean,
     Cls,
-}
-
-/// Which session output a model reads its embedding from — a serde-friendly
-/// mirror of fastembed's `OutputKey`. Almost every sentence model uses the
-/// default (`OnlyOne`); a few name a specific tensor (e.g. `sentence_embedding`).
-/// Carried through the descriptor so a model that names its output stays correct,
-/// matching fastembed's own `ModelInfo.output_key`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
-pub enum SemanticSearchOutputKey {
-    OnlyOne,
-    ByOrder(usize),
-    ByName(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,6 +113,9 @@ pub struct SemanticSearchModelManifest {
     pub models: Vec<SemanticSearchModelDescriptor>,
 }
 
+/// A hand-coded **Semantic Search Model** descriptor (ADR 0037). Every fact is
+/// stated explicitly here — there is no catalog to synthesize from — and guarded
+/// against the model's own `config.json` by the drift test.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticSearchModelDescriptor {
@@ -105,9 +124,11 @@ pub struct SemanticSearchModelDescriptor {
     pub display_name: String,
     pub description: String,
     pub tier: SemanticSearchModelTier,
-    /// The fastembed model code (HuggingFace repo id) the Settings slice uses to
-    /// fetch the model; recorded here so the catalog is the one source of truth.
-    pub model_code: String,
+    /// The candle architecture this model runs through (dispatched in the backend).
+    pub architecture: SemanticSearchArchitecture,
+    /// The HuggingFace repo id (e.g. `nomic-ai/nomic-embed-text-v1.5`) the Settings
+    /// slice downloads the model from.
+    pub hf_repo: String,
     pub license_label: Option<String>,
     /// Vector dimension this model produces. The default English tier is 768 to
     /// match the `search_document_vectors vec0(embedding float[768])` table.
@@ -115,94 +136,60 @@ pub struct SemanticSearchModelDescriptor {
     /// The model's token window. Text overflowing this is auto-split on overflow
     /// (never silently truncated) before embedding.
     pub max_tokens: usize,
-    /// Approximate on-disk footprint of the downloaded model, in bytes. Surfaced
-    /// in Settings as the disk-cost disclosure (ADR 0036) so a user sees the cost
-    /// before choosing a tier. Approximate because it is the quantized ONNX size,
-    /// not a network-measured total.
+    /// Approximate on-disk footprint of the downloaded safetensors model, in bytes.
+    /// Surfaced in Settings as the disk-cost disclosure (ADR 0036).
     pub approx_download_bytes: u64,
-    /// The sentence-pooling strategy the runtime loads this model with. Captured
-    /// from fastembed's `get_default_pooling_method` for synthesized Custom picks
-    /// and hand-set on the guided tiers — never guessed from the id, so a
-    /// CLS-trained model (mxbai / gte / snowflake-arctic) is read at the `[CLS]`
-    /// token instead of being silently mean-pooled into a wrong, lower-quality
-    /// vector.
+    /// The sentence-pooling strategy the backend pools this model with — Mean for
+    /// nomic / e5, Cls for bge-m3. Hand-coded, never guessed from the id.
     pub pooling: SemanticSearchPooling,
-    /// The session output the model reads its embedding from (fastembed's
-    /// `ModelInfo.output_key`). `None` for the default single output; carried
-    /// through so a model that names a specific output tensor stays correct.
-    #[serde(default)]
-    pub output_key: Option<SemanticSearchOutputKey>,
     pub expected_layout: InstalledModelLayout,
 }
 
-/// The on-disk layout of an installed **Semantic Search Model**.
+/// The on-disk layout of an installed (safetensors) **Semantic Search Model**.
 ///
-/// Every path here is **repo-relative** (the same path used both as the
-/// HuggingFace `resolve/main/<path>` download path AND as the on-disk path under
-/// the model's install dir). Preserving the repo-relative subdirectory matters:
-/// an ONNX graph with external data (`model.onnx_data`) references its sibling by
-/// the relative path stored in the model, so `onnx/model.onnx` and
-/// `onnx/model.onnx_data` MUST stay together under `onnx/`.
+/// Every path is **repo-relative** (the same path used as the HuggingFace
+/// `resolve/main/<path>` download path AND as the on-disk path under the model's
+/// install dir). For the current catalog every weights file sits at the repo root
+/// (`model.safetensors`), but the field is repo-relative so a model whose weights
+/// live in a subdirectory still round-trips.
 ///
-/// A model is **Installed** only when every entry in `required_files` (the ONNX
-/// file, all `external_data_files`, and the four tokenizer/config files) is
-/// present alongside the marker — so a model whose 2 GB `model.onnx_data` is
-/// missing is correctly reported Missing, never a broken "Installed".
+/// A model is **Installed** only when every entry in `required_files` (the
+/// safetensors weights, `config.json`, `tokenizer.json`) is present alongside the
+/// marker.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledModelLayout {
     pub marker_file_name: String,
-    /// Every required file, repo-relative (ONNX + external data + tokenizers).
+    /// Every required file, repo-relative (safetensors + config + tokenizer).
     pub required_files: Vec<String>,
-    /// The repo-relative path of the primary ONNX graph (e.g. `onnx/model.onnx`).
-    /// The runtime loads this from disk and hands it to fastembed in memory.
-    pub onnx_relative_path: String,
-    /// Repo-relative paths of the ONNX external-data siblings (e.g.
-    /// `onnx/model.onnx_data`). For an in-memory ("bring your own") load these are
-    /// passed to fastembed as external initializers, keyed by their **basename**
-    /// (the name the graph references), since the graph is loaded from memory and
-    /// cannot resolve a sibling file by directory.
-    pub external_data_files: Vec<String>,
-}
-
-/// The four tokenizer/config files fastembed always loads from the repo root.
-fn root_tokenizer_files() -> Vec<String> {
-    vec![
-        TOKENIZER_FILE_NAME.to_string(),
-        TOKENIZER_CONFIG_FILE_NAME.to_string(),
-        SPECIAL_TOKENS_MAP_FILE_NAME.to_string(),
-        CONFIG_FILE_NAME.to_string(),
-    ]
+    /// The repo-relative path of the safetensors weights (e.g. `model.safetensors`).
+    /// The candle backend mmaps this from disk.
+    pub weights_relative_path: String,
 }
 
 impl InstalledModelLayout {
-    /// Build a layout from the fastembed `ModelInfo`-derived facts: the ONNX file
-    /// path (`onnx/model.onnx`), any external-data siblings, plus the four root
-    /// tokenizer files. `required_files` is the union, in download order.
-    pub fn from_fastembed_files(
-        onnx_relative_path: impl Into<String>,
-        external_data_files: Vec<String>,
-    ) -> Self {
-        let onnx_relative_path = onnx_relative_path.into();
-        let mut required_files = Vec::new();
-        required_files.push(onnx_relative_path.clone());
-        required_files.extend(external_data_files.iter().cloned());
-        required_files.extend(root_tokenizer_files());
+    /// Build a layout from the safetensors weights path plus the two json files.
+    /// `required_files` is the union: weights, `config.json`, `tokenizer.json`.
+    pub fn from_weights_path(weights_relative_path: impl Into<String>) -> Self {
+        let weights_relative_path = weights_relative_path.into();
+        let required_files = vec![
+            weights_relative_path.clone(),
+            CONFIG_FILE_NAME.to_string(),
+            TOKENIZER_FILE_NAME.to_string(),
+        ];
         Self {
             marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
             required_files,
-            onnx_relative_path,
-            external_data_files,
+            weights_relative_path,
         }
     }
 }
 
 impl Default for InstalledModelLayout {
-    /// The common self-contained layout: `onnx/model.onnx` with no external data,
-    /// plus the four root tokenizer files. Used by models (nomic / e5-small) whose
-    /// ONNX has no `*.onnx_data` sibling.
+    /// The common layout: `model.safetensors` at the repo root, plus `config.json`
+    /// and `tokenizer.json`.
     fn default() -> Self {
-        Self::from_fastembed_files("onnx/model.onnx", Vec::new())
+        Self::from_weights_path(MODEL_SAFETENSORS_FILE_NAME)
     }
 }
 
@@ -237,15 +224,135 @@ struct InstalledModelMarker {
     model_id: String,
 }
 
-// The guided **Semantic Search Model** catalog (`builtin_model_manifest`) now
-// lives in `runtime.rs` (behind the `fastembed` feature): it is a thin curation
-// overlay that SYNTHESIZES each guided tier's intrinsic facts (dimension,
-// pooling, output key, on-disk layout) from fastembed's own `ModelInfo` — the
-// same synthesize path the **Custom** picker uses via `resolve_descriptor` — and
-// applies only the curated fields (tier, token window, license, display copy,
-// disk size). The hand-restated `768`/`Mean`/`default()` values that used to live
-// here are deleted: a single source (fastembed) plus a fail-loud guard test
-// replaces the silent-drift hazard of restating facts fastembed already knows.
+/// A curated **Semantic Search Model** the **Custom** picker can offer, distilled
+/// from a catalog descriptor to just the fields the Settings UI needs. The open
+/// "any ONNX model" picker is gone (ADR 0037): "I want a different model" is served
+/// by a future backend (e.g. local Ollama), not an arbitrary-architecture loader,
+/// so this list is exactly the curated catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportedEmbeddingModel {
+    pub model_id: String,
+    pub display_name: String,
+    pub hf_repo: String,
+    pub dimension: usize,
+    pub description: String,
+    /// Whether the model is multilingual (e5 / bge-m3).
+    pub multilingual: bool,
+    /// The model's hand-coded pooling strategy.
+    pub pooling: SemanticSearchPooling,
+}
+
+/// The hand-coded catalog: the three curated tiers (ADR 0037).
+///
+/// - **English (default):** `nomic-embed-text-v1.5` — NomicBert, 768-dim, Mean,
+///   8192-token, Apache-2.0, ~250 MB. `model.safetensors` at the repo root.
+/// - **Multilingual:** `multilingual-e5-small` — XLM-Roberta, 384-dim, Mean,
+///   512-token, MIT, ~470 MB.
+/// - **Custom multilingual option:** `bge-m3` — XLM-Roberta, 1024-dim, CLS,
+///   8192-token, MIT, ~2.27 GB.
+fn catalog() -> Vec<SemanticSearchModelDescriptor> {
+    vec![
+        SemanticSearchModelDescriptor {
+            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            model_id: "nomic-embed-text-v1.5".to_string(),
+            display_name: "Nomic Embed Text v1.5 (English)".to_string(),
+            description: "Default English tier: long-context (8192 tokens), \
+                Apache-2.0, 768-dimensional. Long context makes truncation a \
+                non-issue and the permissive license keeps the default path \
+                obligation-free."
+                .to_string(),
+            tier: SemanticSearchModelTier::English,
+            architecture: SemanticSearchArchitecture::NomicBert,
+            hf_repo: "nomic-ai/nomic-embed-text-v1.5".to_string(),
+            license_label: Some("Apache-2.0".to_string()),
+            dimension: 768,
+            max_tokens: 8192,
+            // ~250 MB safetensors (F32 weights).
+            approx_download_bytes: 250_000_000,
+            pooling: SemanticSearchPooling::Mean,
+            expected_layout: InstalledModelLayout::default(),
+        },
+        SemanticSearchModelDescriptor {
+            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            model_id: "multilingual-e5-small".to_string(),
+            display_name: "Multilingual E5 Small (Multilingual)".to_string(),
+            description: "Multilingual tier: covers 100+ languages, non-gated \
+                (MIT), 384-dimensional. A non-English user is guided here rather \
+                than silently degraded by the English default, and it serves \
+                English well too."
+                .to_string(),
+            tier: SemanticSearchModelTier::Multilingual,
+            architecture: SemanticSearchArchitecture::XlmRoberta,
+            hf_repo: "intfloat/multilingual-e5-small".to_string(),
+            license_label: Some("MIT".to_string()),
+            dimension: 384,
+            max_tokens: 512,
+            // ~470 MB on disk.
+            approx_download_bytes: 470_000_000,
+            pooling: SemanticSearchPooling::Mean,
+            expected_layout: InstalledModelLayout::default(),
+        },
+        SemanticSearchModelDescriptor {
+            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            model_id: "bge-m3".to_string(),
+            display_name: "BGE-M3 (Multilingual, Custom)".to_string(),
+            description: "Custom multilingual option (BAAI/bge-m3), 1024-dimensional, \
+                8192-token, CLS-pooled. Available via the Custom picker."
+                .to_string(),
+            tier: SemanticSearchModelTier::Custom,
+            architecture: SemanticSearchArchitecture::XlmRoberta,
+            hf_repo: "BAAI/bge-m3".to_string(),
+            license_label: Some("MIT".to_string()),
+            dimension: 1024,
+            max_tokens: 8192,
+            // ~2.27 GB safetensors.
+            approx_download_bytes: 2_270_000_000,
+            pooling: SemanticSearchPooling::Cls,
+            expected_layout: InstalledModelLayout::default(),
+        },
+    ]
+}
+
+/// The hand-maintained guided **Semantic Search Model** manifest (ADR 0037): the
+/// three curated tiers, stated explicitly (no fastembed synthesis, no panic).
+pub fn builtin_model_manifest() -> SemanticSearchModelManifest {
+    SemanticSearchModelManifest {
+        version: MANIFEST_VERSION,
+        models: catalog(),
+    }
+}
+
+/// The curated supported-models list for the **Custom** picker: the same three
+/// catalog descriptors distilled to the picker fields.
+pub fn list_supported_models() -> Vec<SupportedEmbeddingModel> {
+    catalog()
+        .into_iter()
+        .map(|descriptor| SupportedEmbeddingModel {
+            multilingual: matches!(
+                descriptor.tier,
+                SemanticSearchModelTier::Multilingual
+            ) || descriptor.architecture == SemanticSearchArchitecture::XlmRoberta,
+            model_id: descriptor.model_id,
+            display_name: descriptor.display_name,
+            hf_repo: descriptor.hf_repo,
+            dimension: descriptor.dimension,
+            description: descriptor.description,
+            pooling: descriptor.pooling,
+        })
+        .collect()
+}
+
+/// Resolve a **Semantic Search Model** descriptor for a `{provider}/{model_id}`
+/// selection. Manifest lookup only — there is NO synthesis (ADR 0037): an unknown
+/// id returns `None`. The provider must equal the catalog namespace
+/// ([`FASTEMBED_PROVIDER_ID`]).
+pub fn resolve_descriptor(
+    provider: &str,
+    model_id: &str,
+) -> Option<SemanticSearchModelDescriptor> {
+    let manifest = builtin_model_manifest();
+    find_model_descriptor(&manifest, provider, model_id).cloned()
+}
 
 pub fn find_model_descriptor<'a>(
     manifest: &'a SemanticSearchModelManifest,
@@ -256,6 +363,31 @@ pub fn find_model_descriptor<'a>(
         .models
         .iter()
         .find(|descriptor| descriptor.provider == provider && descriptor.model_id == model_id)
+}
+
+/// Model-gating: is the user's selected **Semantic Search Model** installed?
+///
+/// Returns `false` (a silent no-op admission, never an error) when the feature
+/// is disabled, no model is selected, the selection is not a resolvable model, or
+/// the model is not yet installed. The only `Err` path is a corrupt marker file.
+///
+/// Resolves the selection through [`resolve_descriptor`] (manifest lookup), then
+/// reuses the pure [`detect_model_status`] detector.
+pub fn selected_semantic_search_model_available(
+    app_data_dir: impl AsRef<Path>,
+    settings: &capture_types::SemanticSearchSettings,
+) -> Result<bool, ModelStatusError> {
+    if !settings.enabled {
+        return Ok(false);
+    }
+    let Some(model_id) = settings.model_id.as_deref() else {
+        return Ok(false);
+    };
+    let Some(descriptor) = resolve_descriptor(&settings.provider, model_id) else {
+        return Ok(false);
+    };
+    let status = detect_model_status(semantic_search_models_dir(app_data_dir), &descriptor)?;
+    Ok(status.is_available())
 }
 
 /// The app-data directory that holds installed Semantic Search Models.
@@ -300,15 +432,11 @@ pub fn detect_model_status(
     })
 }
 
-// `selected_semantic_search_model_available` (the model-gating wrapper) now lives
-// in `runtime.rs` (behind the `fastembed` feature): it resolves the selected model
-// through `resolve_descriptor` — the manifest-first-then-synthesize path — which
-// needs fastembed, then reuses the pure `detect_model_status` detector below.
-
 /// Write the `.installed.json` marker into a freshly-downloaded model directory,
 /// mirroring the transcription installer. The detector only treats a model as
-/// Installed once this marker (matching the exact provider/model id) sits
-/// alongside every required file, so the downloader writes it last.
+/// Installed once this marker (matching the exact provider/model id and the
+/// current `MANIFEST_VERSION`) sits alongside every required file, so the
+/// downloader writes it last.
 pub fn write_installed_marker(
     models_dir: impl AsRef<Path>,
     provider: &str,
@@ -379,11 +507,9 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// A self-contained nomic-shaped descriptor (`onnx/model.onnx`, no external
-    /// data) built inline so the **pure detector** is exercised without depending
-    /// on the fastembed-synthesized `builtin_model_manifest` (which lives behind
-    /// the `fastembed` feature in `runtime.rs`). The manifest↔fastembed agreement
-    /// is guarded separately by the feature-on guard test in `runtime.rs`.
+    /// A self-contained nomic-shaped descriptor (safetensors at the root, no
+    /// external data) built inline so the **pure detector** is exercised without
+    /// the catalog.
     fn nomic_test_descriptor() -> SemanticSearchModelDescriptor {
         SemanticSearchModelDescriptor {
             provider: FASTEMBED_PROVIDER_ID.to_string(),
@@ -391,45 +517,19 @@ mod tests {
             display_name: "Nomic Embed Text v1.5 (English)".to_string(),
             description: "Default English tier".to_string(),
             tier: SemanticSearchModelTier::English,
-            model_code: "nomic-ai/nomic-embed-text-v1.5".to_string(),
+            architecture: SemanticSearchArchitecture::NomicBert,
+            hf_repo: "nomic-ai/nomic-embed-text-v1.5".to_string(),
             license_label: Some("Apache-2.0".to_string()),
             dimension: 768,
             max_tokens: 8192,
-            approx_download_bytes: 140_000_000,
+            approx_download_bytes: 250_000_000,
             pooling: SemanticSearchPooling::Mean,
-            output_key: None,
             expected_layout: InstalledModelLayout::default(),
         }
     }
 
-    /// A bge-m3-shaped descriptor with external-data siblings, built inline to
-    /// exercise the external-data completeness path in the pure detector.
-    fn bge_m3_test_descriptor() -> SemanticSearchModelDescriptor {
-        SemanticSearchModelDescriptor {
-            provider: FASTEMBED_PROVIDER_ID.to_string(),
-            model_id: "bge-m3".to_string(),
-            display_name: "BGE-M3".to_string(),
-            description: "Custom multilingual option".to_string(),
-            tier: SemanticSearchModelTier::Custom,
-            model_code: "BAAI/bge-m3".to_string(),
-            license_label: Some("MIT".to_string()),
-            dimension: 1024,
-            max_tokens: 8192,
-            approx_download_bytes: 2_300_000_000,
-            pooling: SemanticSearchPooling::Cls,
-            output_key: None,
-            expected_layout: InstalledModelLayout::from_fastembed_files(
-                "onnx/model.onnx",
-                vec![
-                    "onnx/model.onnx_data".to_string(),
-                    "onnx/Constant_7_attr__value".to_string(),
-                ],
-            ),
-        }
-    }
-
-    /// Write a (possibly nested, e.g. `onnx/model.onnx`) required file, creating
-    /// its parent directory so the repo-relative layout is reproduced on disk.
+    /// Write a (possibly nested) required file, creating its parent directory so
+    /// the repo-relative layout is reproduced on disk.
     fn write_required_file(install_dir: &Path, relative_path: &str) {
         let path = install_dir.join(relative_path);
         if let Some(parent) = path.parent() {
@@ -445,16 +545,8 @@ mod tests {
         for file_name in &descriptor.expected_layout.required_files {
             write_required_file(&install_dir, file_name);
         }
-        let marker = InstalledModelMarker {
-            manifest_version: MANIFEST_VERSION,
-            provider: descriptor.provider.clone(),
-            model_id: descriptor.model_id.clone(),
-        };
-        fs::write(
-            install_dir.join(INSTALLED_MARKER_FILE_NAME),
-            serde_json::to_vec(&marker).expect("marker json"),
-        )
-        .expect("marker");
+        write_installed_marker(models_dir, &descriptor.provider, &descriptor.model_id)
+            .expect("marker");
     }
 
     #[test]
@@ -469,12 +561,7 @@ mod tests {
 
     #[test]
     fn find_model_descriptor_matches_on_provider_and_id() {
-        // The pure lookup over a passed-in manifest (no fastembed): a matching
-        // provider+id returns the descriptor; a non-match returns None.
-        let manifest = SemanticSearchModelManifest {
-            version: MANIFEST_VERSION,
-            models: vec![nomic_test_descriptor(), bge_m3_test_descriptor()],
-        };
+        let manifest = builtin_model_manifest();
         let found = find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "bge-m3")
             .expect("bge-m3 present");
         assert_eq!(found.model_id, "bge-m3");
@@ -491,10 +578,10 @@ mod tests {
             .expect("status");
         assert_eq!(status.status, ModelStatusKind::Missing);
         assert!(!status.is_available());
-        // The ONNX file is required at its repo-relative path under `onnx/`.
+        // The safetensors weights are required at their repo-relative path.
         assert!(status
             .missing_files
-            .contains(&descriptor.expected_layout.onnx_relative_path));
+            .contains(&descriptor.expected_layout.weights_relative_path));
         assert!(status.install_path.ends_with("fastembed/nomic-embed-text-v1.5"));
     }
 
@@ -518,74 +605,46 @@ mod tests {
         );
 
         // Add the marker => Installed.
-        let marker = InstalledModelMarker {
-            manifest_version: MANIFEST_VERSION,
-            provider: descriptor.provider.clone(),
-            model_id: descriptor.model_id.clone(),
-        };
-        fs::write(
-            install_dir.join(INSTALLED_MARKER_FILE_NAME),
-            serde_json::to_vec(&marker).expect("marker json"),
-        )
-        .expect("marker");
+        write_installed_marker(&models_dir, &descriptor.provider, &descriptor.model_id)
+            .expect("marker");
         let installed = detect_model_status(&models_dir, descriptor).expect("status");
         assert_eq!(installed.status, ModelStatusKind::Installed);
         assert!(installed.is_available());
     }
 
     #[test]
-    fn model_with_external_data_is_missing_until_onnx_data_is_present() {
-        // bge-m3's `onnx/model.onnx_data` (~2 GB) is part of the layout: a model
-        // whose external data is absent must NOT be reported Installed, even with
-        // the ONNX graph, tokenizers, and marker present.
+    fn model_is_missing_until_every_required_file_is_present() {
+        // A model whose weights file is absent must NOT be Installed, even with the
+        // two json files and the marker present.
         let temp = tempfile::tempdir().expect("tempdir");
         let models_dir = semantic_search_models_dir(temp.path());
-        let descriptor = bge_m3_test_descriptor();
+        let descriptor = nomic_test_descriptor();
         let descriptor = &descriptor;
-        assert!(
-            !descriptor.expected_layout.external_data_files.is_empty(),
-            "bge-m3 must declare external-data files"
-        );
         let install_dir =
             model_install_dir(&models_dir, &descriptor.provider, &descriptor.model_id).expect("dir");
         fs::create_dir_all(&install_dir).expect("install dir");
 
-        // Write every required file EXCEPT the external-data siblings, plus marker.
-        let external: Vec<&String> = descriptor.expected_layout.external_data_files.iter().collect();
+        // Write every required file EXCEPT the weights, plus the marker.
+        let weights = &descriptor.expected_layout.weights_relative_path;
         for file_name in &descriptor.expected_layout.required_files {
-            if external.contains(&file_name) {
+            if file_name == weights {
                 continue;
             }
             write_required_file(&install_dir, file_name);
         }
-        let marker = InstalledModelMarker {
-            manifest_version: MANIFEST_VERSION,
-            provider: descriptor.provider.clone(),
-            model_id: descriptor.model_id.clone(),
-        };
-        fs::write(
-            install_dir.join(INSTALLED_MARKER_FILE_NAME),
-            serde_json::to_vec(&marker).expect("marker json"),
-        )
-        .expect("marker");
+        write_installed_marker(&models_dir, &descriptor.provider, &descriptor.model_id)
+            .expect("marker");
 
         let status = detect_model_status(&models_dir, descriptor).expect("status");
         assert_eq!(
             status.status,
             ModelStatusKind::Missing,
-            "external data missing => Missing, never a broken Installed"
+            "weights missing => Missing, never a broken Installed"
         );
-        for external_file in &descriptor.expected_layout.external_data_files {
-            assert!(
-                status.missing_files.contains(external_file),
-                "external-data file {external_file} must be reported missing"
-            );
-        }
+        assert!(status.missing_files.contains(weights));
 
-        // Now add the external data => Installed.
-        for external_file in &descriptor.expected_layout.external_data_files {
-            write_required_file(&install_dir, external_file);
-        }
+        // Now add the weights => Installed.
+        write_required_file(&install_dir, weights);
         assert_eq!(
             detect_model_status(&models_dir, descriptor).expect("status").status,
             ModelStatusKind::Installed
@@ -621,11 +680,39 @@ mod tests {
     }
 
     #[test]
+    fn stale_onnx_era_marker_invalidates_after_manifest_bump() {
+        // An older ONNX-shaped install wrote manifest_version 1; after the candle
+        // cutover (MANIFEST_VERSION 2) that marker must no longer match, so the
+        // model is reported Missing and re-downloads in the safetensors layout.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let models_dir = semantic_search_models_dir(temp.path());
+        let descriptor = nomic_test_descriptor();
+        let descriptor = &descriptor;
+        let install_dir =
+            model_install_dir(&models_dir, &descriptor.provider, &descriptor.model_id).expect("dir");
+        fs::create_dir_all(&install_dir).expect("install dir");
+        for file_name in &descriptor.expected_layout.required_files {
+            write_required_file(&install_dir, file_name);
+        }
+        let stale = InstalledModelMarker {
+            manifest_version: 1,
+            provider: descriptor.provider.clone(),
+            model_id: descriptor.model_id.clone(),
+        };
+        fs::write(
+            install_dir.join(INSTALLED_MARKER_FILE_NAME),
+            serde_json::to_vec(&stale).expect("marker json"),
+        )
+        .expect("marker");
+        assert_eq!(
+            detect_model_status(&models_dir, descriptor).expect("status").status,
+            ModelStatusKind::Missing,
+            "a manifest_version 1 (ONNX-era) marker must invalidate after the bump to 2"
+        );
+    }
+
+    #[test]
     fn install_model_then_detect_reports_installed() {
-        // The detector's happy path over an inline descriptor: a fully-written
-        // model dir + marker reports Installed; an empty one reports Missing.
-        // (The model-gating wrapper `selected_semantic_search_model_available`,
-        // which resolves the selection through fastembed, is tested in `runtime.rs`.)
         let temp = tempfile::tempdir().expect("tempdir");
         let models_dir = semantic_search_models_dir(temp.path());
         let descriptor = nomic_test_descriptor();
@@ -650,114 +737,192 @@ mod tests {
         ));
     }
 
-    /// Extract the `version = "..."` pin from a crate's `ort = { ... }` (or
-    /// `ort = "..."`) dependency line in a Cargo.toml. fastembed (here) and
-    /// Parakeet (`crates/audio-transcription`) must pin the SAME `ort` so the
-    /// workspace links exactly one native ONNX runtime — see the lockstep note in
-    /// both Cargo.toml files and ADR 0036. Returns `None` if no `ort` pin is found.
-    fn ort_version_pin(cargo_toml: &str) -> Option<String> {
-        for line in cargo_toml.lines() {
-            let trimmed = line.trim_start();
-            // The `ort` dependency key, not a substring of some other key
-            // (e.g. `ort-sys`): `ort` followed by optional whitespace then `=`.
-            let Some(rest) = trimmed.strip_prefix("ort") else {
-                continue;
-            };
-            let rest = rest.trim_start();
-            let Some(rest) = rest.strip_prefix('=') else {
-                continue;
-            };
-            let rest = rest.trim_start();
-            // Inline-table form: `ort = { version = "=X", ... }`.
-            if let Some(after_version) = rest.find("version") {
-                let after = &rest[after_version + "version".len()..];
-                if let Some(pin) = first_quoted(after) {
-                    return Some(pin);
-                }
-            }
-            // Shorthand form: `ort = "=X"`.
-            if let Some(pin) = first_quoted(rest) {
-                return Some(pin);
-            }
+    // ---- catalog + model-gating wrapper (now dependency-free) ----
+
+    #[test]
+    fn resolve_descriptor_returns_manifest_tier() {
+        let descriptor =
+            resolve_descriptor(FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5").expect("nomic");
+        assert_eq!(descriptor.tier, SemanticSearchModelTier::English);
+        assert_eq!(descriptor.architecture, SemanticSearchArchitecture::NomicBert);
+        assert_eq!(descriptor.max_tokens, 8192);
+        assert_eq!(descriptor.license_label.as_deref(), Some("Apache-2.0"));
+    }
+
+    #[test]
+    fn resolve_descriptor_rejects_unknown_and_non_namespace_provider() {
+        // No synthesis: an unknown id returns None.
+        assert!(resolve_descriptor(FASTEMBED_PROVIDER_ID, "not-a-real-model").is_none());
+        // A provider other than the catalog namespace never resolves.
+        assert!(resolve_descriptor("some-other-provider", "nomic-embed-text-v1.5").is_none());
+    }
+
+    #[test]
+    fn default_english_tier_is_nomic_768_dim() {
+        let manifest = builtin_model_manifest();
+        let default =
+            find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5")
+                .expect("english tier");
+        assert_eq!(default.tier, SemanticSearchModelTier::English);
+        assert_eq!(default.dimension, 768);
+        assert_eq!(default.max_tokens, 8192);
+        assert_eq!(default.license_label.as_deref(), Some("Apache-2.0"));
+    }
+
+    #[test]
+    fn pooling_is_a_declared_field_hand_coded_per_model() {
+        // Pooling is hand-coded per model, NEVER inferred from an id prefix (the
+        // historical silent-drift bug). nomic / e5 = Mean; bge-m3 = CLS.
+        let mean = ["nomic-embed-text-v1.5", "multilingual-e5-small"];
+        let cls = ["bge-m3"];
+        for id in mean {
+            let descriptor =
+                resolve_descriptor(FASTEMBED_PROVIDER_ID, id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(
+                descriptor.pooling,
+                SemanticSearchPooling::Mean,
+                "{id} must be Mean-pooled"
+            );
         }
-        None
-    }
-
-    /// The first double-quoted string in `s`, if any.
-    fn first_quoted(s: &str) -> Option<String> {
-        let start = s.find('"')? + 1;
-        let end = s[start..].find('"')? + start;
-        Some(s[start..end].to_string())
+        for id in cls {
+            let descriptor =
+                resolve_descriptor(FASTEMBED_PROVIDER_ID, id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(
+                descriptor.pooling,
+                SemanticSearchPooling::Cls,
+                "{id} must be CLS-pooled"
+            );
+        }
+        // The picker rows carry the same pooling as the resolved descriptors.
+        let supported = list_supported_models();
+        for model in &supported {
+            let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, &model.model_id)
+                .unwrap_or_else(|| panic!("{}", model.model_id));
+            assert_eq!(
+                model.pooling, descriptor.pooling,
+                "picker row {} pooling must match the descriptor",
+                model.model_id
+            );
+        }
     }
 
     #[test]
-    fn first_quoted_extracts_version_string() {
-        assert_eq!(
-            first_quoted(r#" = "=2.0.0-rc.12", optional = true }"#).as_deref(),
-            Some("=2.0.0-rc.12")
-        );
-        assert_eq!(first_quoted("no quotes here"), None);
+    fn supported_models_lists_the_curated_catalog() {
+        let supported = list_supported_models();
+        assert_eq!(supported.len(), 3, "exactly the three curated tiers");
+        let ids: Vec<&str> = supported.iter().map(|m| m.model_id.as_str()).collect();
+        assert!(ids.contains(&"nomic-embed-text-v1.5"));
+        assert!(ids.contains(&"multilingual-e5-small"));
+        assert!(ids.contains(&"bge-m3"));
+        // The English default is not flagged multilingual; the e5/bge tiers are.
+        let nomic = supported.iter().find(|m| m.model_id == "nomic-embed-text-v1.5").unwrap();
+        assert!(!nomic.multilingual);
+        let e5 = supported.iter().find(|m| m.model_id == "multilingual-e5-small").unwrap();
+        assert!(e5.multilingual);
+    }
+
+    /// Drift guard (replaces the retired `ort` pin-lockstep + fastembed-synthesis
+    /// guards): each descriptor's hand-coded `dimension` must equal the model's own
+    /// `config.json` hidden size, and the config's layer count must be sane. Real
+    /// upstream config fixtures are committed under
+    /// `tests/fixtures/{model_id}/config.json`. A hand-coded dimension that drifts
+    /// from the real config fails HERE.
+    #[test]
+    fn descriptor_dimension_matches_config_json() {
+        use serde_json::Value;
+
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures");
+
+        for descriptor in catalog() {
+            let config_path = fixtures_dir.join(&descriptor.model_id).join(CONFIG_FILE_NAME);
+            let bytes = std::fs::read(&config_path).unwrap_or_else(|error| {
+                panic!("read fixture config {}: {error}", config_path.display())
+            });
+            let config: Value = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                panic!("parse fixture config {}: {error}", config_path.display())
+            });
+
+            // nomic config.json names the hidden size `n_embd`; XLM-Roberta configs
+            // name it `hidden_size`. Accept either.
+            let hidden_size = config
+                .get("hidden_size")
+                .or_else(|| config.get("n_embd"))
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| {
+                    panic!("{}: config.json has no hidden_size/n_embd", descriptor.model_id)
+                });
+            assert_eq!(
+                hidden_size as usize, descriptor.dimension,
+                "{}: descriptor.dimension ({}) drifted from config hidden size ({})",
+                descriptor.model_id, descriptor.dimension, hidden_size
+            );
+
+            // nomic names the layer count `n_layer`; XLM-Roberta uses
+            // `num_hidden_layers`. A sane positive count guards against a wrong
+            // fixture/model pairing.
+            let layers = config
+                .get("num_hidden_layers")
+                .or_else(|| config.get("n_layer"))
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| {
+                    panic!("{}: config.json has no layer count", descriptor.model_id)
+                });
+            assert!(
+                (1..=64).contains(&layers),
+                "{}: implausible layer count {layers}",
+                descriptor.model_id
+            );
+        }
     }
 
     #[test]
-    fn ort_version_pin_parses_inline_and_shorthand_forms() {
-        let inline = r#"ort = { version = "=2.0.0-rc.12", optional = true }"#;
-        assert_eq!(ort_version_pin(inline).as_deref(), Some("=2.0.0-rc.12"));
-
-        let shorthand = r#"ort = "=2.0.0-rc.12""#;
-        assert_eq!(ort_version_pin(shorthand).as_deref(), Some("=2.0.0-rc.12"));
-
-        // A lookalike key (`ort-sys`) must not be mistaken for the `ort` dependency.
-        let lookalike = r#"ort-sys = { version = "=9.9.9" }"#;
-        assert_eq!(ort_version_pin(lookalike), None);
+    fn no_installed_model_makes_feature_a_silent_no_op_not_an_error() {
+        use capture_types::default_semantic_search_settings;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = default_semantic_search_settings();
+        assert!(settings.enabled, "default settings are on");
+        let available = selected_semantic_search_model_available(temp.path(), &settings)
+            .expect("availability check must not error when the model is absent");
+        assert!(!available, "no installed model => silent no-op (false)");
     }
 
-    /// Mechanical lockstep guard (cross-cutting Low finding on PR #126): the `ort`
-    /// pin in `semantic-search` (used by fastembed) and in `audio-transcription`
-    /// (used by Parakeet) MUST stay string-equal so the workspace links exactly one
-    /// native ONNX runtime. Today they match and `cargo check` is green, but nothing
-    /// previously asserted the two pins stay equal — only matching human comments. A
-    /// future bump to one and not the other would diverge silently. This test parses
-    /// both Cargo.toml files (located relative to this crate's manifest dir, so it
-    /// runs in CI under plain `cargo test -p semantic-search` with no feature gate)
-    /// and fails loudly naming both pins if they ever drift.
     #[test]
-    fn ort_pin_is_in_lockstep_with_audio_transcription() {
-        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let self_cargo_toml_path = crate_dir.join("Cargo.toml");
-        // `crates/semantic-search` -> `crates/audio-transcription`.
-        let audio_cargo_toml_path = crate_dir
-            .parent()
-            .expect("semantic-search crate dir has a parent (crates/)")
-            .join("audio-transcription")
-            .join("Cargo.toml");
+    fn selected_model_available_only_once_installed() {
+        use capture_types::default_semantic_search_settings;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = default_semantic_search_settings();
+        let models_dir = semantic_search_models_dir(temp.path());
+        let descriptor = resolve_descriptor(
+            &settings.provider,
+            settings.model_id.as_deref().expect("default selects a model"),
+        )
+        .expect("selected descriptor resolves");
 
-        let self_toml = std::fs::read_to_string(&self_cargo_toml_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", self_cargo_toml_path.display()));
-        let audio_toml = std::fs::read_to_string(&audio_cargo_toml_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", audio_cargo_toml_path.display()));
+        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
+        install_model(&models_dir, &descriptor);
+        assert!(selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
+    }
 
-        let self_pin = ort_version_pin(&self_toml).unwrap_or_else(|| {
-            panic!(
-                "could not find an `ort` version pin in {}",
-                self_cargo_toml_path.display()
-            )
-        });
-        let audio_pin = ort_version_pin(&audio_toml).unwrap_or_else(|| {
-            panic!(
-                "could not find an `ort` version pin in {}",
-                audio_cargo_toml_path.display()
-            )
-        });
+    #[test]
+    fn disabled_settings_are_never_available_even_with_a_model() {
+        use capture_types::default_semantic_search_settings;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = default_semantic_search_settings();
+        let models_dir = semantic_search_models_dir(temp.path());
+        install_model(&models_dir, &builtin_model_manifest().models[0]);
 
-        assert_eq!(
-            self_pin, audio_pin,
-            "`ort` pin drift: semantic-search pins `ort = \"{self_pin}\"` ({}) but \
-             audio-transcription pins `ort = \"{audio_pin}\"` ({}). fastembed and \
-             Parakeet must share ONE `ort` so the workspace links a single native \
-             ONNX runtime — bump both pins together (see ADR 0036).",
-            self_cargo_toml_path.display(),
-            audio_cargo_toml_path.display(),
-        );
+        settings.enabled = false;
+        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
+    }
+
+    #[test]
+    fn unknown_selected_model_is_not_available() {
+        use capture_types::default_semantic_search_settings;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = default_semantic_search_settings();
+        settings.model_id = Some("not-a-real-model".to_string());
+        assert!(!selected_semantic_search_model_available(temp.path(), &settings).expect("check"));
     }
 }

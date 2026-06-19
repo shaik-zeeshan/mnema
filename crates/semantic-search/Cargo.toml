@@ -5,11 +5,18 @@ edition = "2021"
 
 [features]
 default = []
-# The embedding runtime. fastembed reuses the same ONNX runtime (`ort`) shipped
-# for Parakeet transcription — there is no second native runtime. The direct
-# `ort` dependency is pinned `=2.0.0-rc.12` to fastembed's exact version: the two
-# MUST bump in lockstep (see the `ort` dependency note below and ADR 0036).
-fastembed = ["dep:fastembed", "dep:ort", "dep:tokenizers"]
+# Apple GPU acceleration. candle's `metal` feature links Metal/MPS; enable it on
+# macOS so the embedding forward pass runs on the GPU. The candle runtime tries
+# `Device::new_metal(0)` and falls back to CPU at load time regardless, so a
+# `metal`-on build still runs on machines without a usable Metal device — but the
+# Metal kernels only LINK when this feature is set, so a non-Metal build (CPU
+# elsewhere) must leave it off. Verified: candle 0.10.2's feature is named `metal`
+# on all three crates.
+metal = [
+    "candle-core/metal",
+    "candle-nn/metal",
+    "candle-transformers/metal",
+]
 
 [dependencies]
 capture-types = { path = "../capture-types" }
@@ -17,22 +24,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
-# Embedding runtime. Default features are disabled so we never pull fastembed's
-# `hf-hub` online model fetcher (ADR 0036: Mnema never auto-downloads a Semantic
-# Search Model); we keep only the shared `ort` ONNX backend and load every model
-# from the on-disk `semantic_search_models/{provider}/{model_id}/` layout via
-# fastembed's "bring your own" (user-defined) path.
-fastembed = { version = "=5.17.2", default-features = false, features = [
-    "ort-download-binaries-native-tls",
-], optional = true }
-# LOCKSTEP PIN: this exact `ort` version is shared with Parakeet transcription
-# (`crates/audio-transcription`). fastembed `=5.17.2` resolves against exactly
-# this `ort`, so there is a single ONNX runtime in the build. If you bump one,
-# bump the other — fastembed and Parakeet must always agree on `ort`.
-ort = { version = "=2.0.0-rc.12", optional = true }
-# Used to count tokens up front so overflowing text is auto-split (never silently
-# truncated) before it reaches fastembed's truncating tokenizer.
-tokenizers = { version = "0.22", optional = true }
+# Embedding runtime. candle runs the SAME model weights as the retired fastembed
+# path on the Apple GPU (Metal) or CPU, behind the pluggable `SemanticSearchBackend`
+# trait. Pinned EXACT `=0.10.2` across the three crates so the architecture modules
+# (`nomic_bert`, `xlm_roberta`) the catalog dispatches to never drift under us.
+candle-core = { version = "=0.10.2" }
+candle-nn = { version = "=0.10.2" }
+candle-transformers = { version = "=0.10.2" }
+# The forward pass tokenizer (loaded with special tokens) and the non-truncating
+# split tokenizer (used to compute the 256-token windows above the trait).
+tokenizers = { version = "0.22" }
 
 [dev-dependencies]
 tempfile = "3"
