@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
     builtin_model_manifest, find_model_descriptor, SpeakerAnalysisProvider, SpeakerAnalysisRequest,
-    SpeakerAnalysisResult as ProviderResult, DEFAULT_SHERPA_ONNX_MODEL_ID, SHERPA_ONNX_PROVIDER_ID,
+    SpeakerAnalysisResult as ProviderResult, SPEAKRS_DEFAULT_MODEL_ID, SPEAKRS_PROVIDER_ID,
 };
 
 use crate::{AppInfraError, AudioSegment, Result};
@@ -38,16 +38,27 @@ impl SpeakerAnalysisJobPayload {
         payload
     }
 
+    /// Normalize a (possibly legacy) speaker-analysis selection onto the sole
+    /// surviving provider. speakrs is the only on-device provider, so any
+    /// non-speakrs provider — including the legacy `sherpa_onnx` literal frozen on
+    /// an in-flight/queued job payload — is remapped to speakrs. After the
+    /// provider is normalized, an unknown/legacy `model_id` for speakrs is reset
+    /// to the speakrs default.
     pub fn normalize_model_selection(&mut self) {
-        if self.provider == SHERPA_ONNX_PROVIDER_ID
-            && find_model_descriptor(
-                &builtin_model_manifest(),
-                SHERPA_ONNX_PROVIDER_ID,
-                self.model_id.as_deref(),
-            )
-            .is_none()
+        if self.provider != SPEAKRS_PROVIDER_ID {
+            self.provider = SPEAKRS_PROVIDER_ID.to_string();
+            // The old model_id belongs to a removed provider's voiceprint space;
+            // drop it so the speakrs default is selected below.
+            self.model_id = None;
+        }
+        if find_model_descriptor(
+            &builtin_model_manifest(),
+            SPEAKRS_PROVIDER_ID,
+            self.model_id.as_deref(),
+        )
+        .is_none()
         {
-            self.model_id = Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string());
+            self.model_id = Some(SPEAKRS_DEFAULT_MODEL_ID.to_string());
         }
     }
 
@@ -95,12 +106,27 @@ impl SpeakerAnalysisProcessorBackend {
         }
     }
 
+    /// Resolve the analysis provider for a (possibly legacy) provider string.
+    ///
+    /// speakrs is the sole on-device provider; sherpa-onnx is removed. A request
+    /// for the exact provider id is used directly. Any other provider string —
+    /// including the legacy `sherpa_onnx` literal on a job payload frozen before
+    /// the removal — falls back to the registered speakrs provider rather than
+    /// erroring, so legacy work re-runs through speakrs. (Payloads are already
+    /// normalized to speakrs in `normalize_model_selection`; this is a defensive
+    /// backstop for any path that bypasses that.)
     fn provider_for(&self, provider: &str) -> Result<Arc<dyn SpeakerAnalysisProvider>> {
-        self.providers.get(provider).cloned().ok_or_else(|| {
-            AppInfraError::SpeakerAnalysisEngine(format!(
-                "speaker analysis provider is not registered for '{provider}'"
-            ))
-        })
+        if let Some(provider) = self.providers.get(provider).cloned() {
+            return Ok(provider);
+        }
+        self.providers
+            .get(SPEAKRS_PROVIDER_ID)
+            .cloned()
+            .ok_or_else(|| {
+                AppInfraError::SpeakerAnalysisEngine(format!(
+                    "speaker analysis provider is not registered for '{provider}' and the speakrs fallback is unavailable"
+                ))
+            })
     }
 
     async fn load_audio_segment(
@@ -182,46 +208,26 @@ fn map_provider_result<T>(result: ProviderResult<T>) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use speaker_analysis::MULTILINGUAL_SHERPA_ONNX_MODEL_ID;
 
     #[test]
-    fn normalize_model_selection_keeps_default_sherpa_model() {
+    fn normalize_model_selection_keeps_default_speakrs_model() {
         let mut payload = SpeakerAnalysisJobPayload {
-            provider: SHERPA_ONNX_PROVIDER_ID.to_string(),
-            model_id: Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            provider: SPEAKRS_PROVIDER_ID.to_string(),
+            model_id: Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
             recognize_people: false,
             options: serde_json::Map::new(),
         };
 
         payload.normalize_model_selection();
 
-        assert_eq!(
-            payload.model_id.as_deref(),
-            Some(DEFAULT_SHERPA_ONNX_MODEL_ID)
-        );
+        assert_eq!(payload.provider, SPEAKRS_PROVIDER_ID);
+        assert_eq!(payload.model_id.as_deref(), Some(SPEAKRS_DEFAULT_MODEL_ID));
     }
 
     #[test]
-    fn normalize_model_selection_keeps_known_non_default_sherpa_model() {
+    fn normalize_model_selection_falls_back_to_default_for_unknown_speakrs_model() {
         let mut payload = SpeakerAnalysisJobPayload {
-            provider: SHERPA_ONNX_PROVIDER_ID.to_string(),
-            model_id: Some(MULTILINGUAL_SHERPA_ONNX_MODEL_ID.to_string()),
-            recognize_people: false,
-            options: serde_json::Map::new(),
-        };
-
-        payload.normalize_model_selection();
-
-        assert_eq!(
-            payload.model_id.as_deref(),
-            Some(MULTILINGUAL_SHERPA_ONNX_MODEL_ID)
-        );
-    }
-
-    #[test]
-    fn normalize_model_selection_falls_back_to_default_for_unknown_sherpa_model() {
-        let mut payload = SpeakerAnalysisJobPayload {
-            provider: SHERPA_ONNX_PROVIDER_ID.to_string(),
+            provider: SPEAKRS_PROVIDER_ID.to_string(),
             model_id: Some("bogus-model-xyz".to_string()),
             recognize_people: false,
             options: serde_json::Map::new(),
@@ -229,9 +235,38 @@ mod tests {
 
         payload.normalize_model_selection();
 
-        assert_eq!(
-            payload.model_id.as_deref(),
-            Some(DEFAULT_SHERPA_ONNX_MODEL_ID)
+        assert_eq!(payload.provider, SPEAKRS_PROVIDER_ID);
+        assert_eq!(payload.model_id.as_deref(), Some(SPEAKRS_DEFAULT_MODEL_ID));
+    }
+
+    /// MIGRATION: a job payload frozen with the removed `sherpa_onnx` provider
+    /// (and a sherpa model id) is remapped onto speakrs + its default model, so
+    /// the queued job re-runs through speakrs rather than against a gone provider.
+    #[test]
+    fn normalize_model_selection_remaps_legacy_sherpa_provider_to_speakrs() {
+        let mut payload = SpeakerAnalysisJobPayload {
+            provider: "sherpa_onnx".to_string(),
+            model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
+            recognize_people: false,
+            options: serde_json::Map::new(),
+        };
+
+        payload.normalize_model_selection();
+
+        assert_eq!(payload.provider, SPEAKRS_PROVIDER_ID);
+        assert_eq!(payload.model_id.as_deref(), Some(SPEAKRS_DEFAULT_MODEL_ID));
+    }
+
+    #[test]
+    fn new_remaps_legacy_sherpa_provider_to_speakrs() {
+        // `new` runs `normalize_model_selection`, so even constructing a payload
+        // with the legacy provider lands on speakrs.
+        let payload = SpeakerAnalysisJobPayload::new(
+            "sherpa_onnx",
+            Some("pyannote-3.0-nemo-titanet-small".to_string()),
         );
+
+        assert_eq!(payload.provider, SPEAKRS_PROVIDER_ID);
+        assert_eq!(payload.model_id.as_deref(), Some(SPEAKRS_DEFAULT_MODEL_ID));
     }
 }

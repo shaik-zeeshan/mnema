@@ -27,7 +27,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | OCR: Tesseract/PaddleOCR | [x] | [~] | [~] | Cross-platform intent, but Windows/Linux packaging/runtime need verification. |
 | Audio transcription: Apple Speech | [x] | [ ] | [ ] | Apple-only provider. |
 | Audio transcription: Local Whisper/Parakeet | [x] | [~] | [~] | Models are cross-platform-ish, but audio decode is AVFoundation-only today. |
-| Speaker analysis | [x] | [~] | [~] | Model runtime is cross-platform-ish, but audio decode is AVFoundation-only today. |
+| Speaker analysis | [x] | [ ] | [ ] | On-device diarization runs through the `speakrs` provider (pure-Rust pyannote-community-1 segmentation + WeSpeaker embedding + VBx clustering on CoreML), which links system OpenBLAS. CoreML ties it to Apple Silicon macOS; audio decode is AVFoundation-only too. |
 | Inactivity detection | [x] | [ ] | [ ] | macOS uses CoreGraphics input idle plus capture-sourced screen/audio activity. |
 | Sleep/wake recovery | [x] | [ ] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. |
 | Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
@@ -71,7 +71,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Tesseract/PaddleOCR provider integration.
 - [x] Apple Speech provider.
 - [x] Local Whisper/Parakeet provider integration using AVFoundation decode.
-- [x] Speaker analysis using AVFoundation decode.
+- [x] Speaker analysis via the `speakrs` provider (CoreML + system OpenBLAS) using AVFoundation decode.
 - [x] System-audio speech activity using AVFoundation-backed audio decode.
 
 ### Privacy, metadata, and UX
@@ -267,7 +267,7 @@ Use this map when turning checklist items into implementation slices.
 | `apps/desktop/src-tauri/src/native_capture_system_idle.rs` | CoreGraphics idle time | `GetLastInputInfo` on Windows; portal/X11/compositor path on Linux |
 | `apps/desktop/src-tauri/src/app_infra/frame_preview.rs` | AVAssetImageGenerator exact/scrub previews | FFmpeg/GStreamer/Media Foundation extractor |
 | `crates/audio-transcription/src/macos_audio_decode.rs` | AVFoundation audio decode for Local Whisper/Parakeet | Cross-platform audio decode module |
-| `crates/speaker-analysis/src/macos_audio_decode.rs` | AVFoundation audio decode for diarization/recognition | Cross-platform audio decode module |
+| `crates/speaker-analysis/src/macos_audio_decode.rs` | AVFoundation audio decode for diarization/recognition; the `speakrs` provider itself is CoreML + OpenBLAS (Apple Silicon only) | Cross-platform audio decode module **and** a non-CoreML diarization provider, since `speakrs` cannot run off Apple Silicon |
 | `crates/ocr/src/lib.rs`, `crates/app-infra/src/processing/apple_vision.rs` | Apple Vision OCR | Disable on non-Apple; default to Tesseract/PaddleOCR |
 | `crates/audio-transcription/src/providers/apple_speech.rs` | Apple Speech | Disable on non-Apple; default to local providers/cloud if introduced |
 | `crates/app-infra/src/capture_index_key_store.rs` | macOS Keychain through `security` CLI | Windows Credential Manager/DPAPI; Linux Secret Service/KWallet |

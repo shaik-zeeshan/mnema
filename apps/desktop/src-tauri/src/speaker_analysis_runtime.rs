@@ -31,15 +31,15 @@ struct SpeakerAnalysisHelperPayload {
     request: SpeakerAnalysisRequest,
 }
 
-/// Provider-agnostic subprocess wrapper for on-device speaker analysis.
+/// Subprocess wrapper for on-device speaker analysis.
 ///
-/// Both on-device diarization engines (sherpa-onnx and speakrs) run in the same
-/// isolated helper subprocess so a native crash or memory blow-up never takes
-/// down the main app. The subprocess itself is engine-agnostic: it forwards the
-/// request whose `request.provider` selects the engine inside the helper (see
-/// [`analyze_request_for_provider`]). One instance of this struct is registered
-/// per provider id, all sharing the same base `speaker-analysis-models` dir (the
-/// per-model subdir is derived inside each `analyze_*_request_blocking`).
+/// The on-device diarization engine (speakrs) runs in an isolated helper
+/// subprocess so a native crash or memory blow-up never takes down the main app.
+/// The subprocess forwards the request to the engine inside the helper (see
+/// [`analyze_request_for_provider`], which remaps any legacy non-speakrs provider
+/// to speakrs). One instance of this struct is registered per provider id,
+/// sharing the same base `speaker-analysis-models` dir (the per-model subdir is
+/// derived inside `analyze_speakrs_request_blocking`).
 #[derive(Debug, Clone)]
 pub struct SubprocessSpeakerAnalysisProvider {
     provider_id: &'static str,
@@ -103,55 +103,42 @@ fn run_subprocess_helper() -> Result<(), String> {
     Ok(())
 }
 
-/// Dispatch a decoded helper request to the on-device engine named by
-/// `request.provider`, all rooted at the same base `speaker-analysis-models` dir.
+/// Dispatch a decoded helper request to the on-device engine, rooted at the base
+/// `speaker-analysis-models` dir.
 ///
-/// Each engine arm is gated on its Cargo feature so this file compiles when a
-/// feature is off; an arm whose feature is disabled falls through to the
-/// `#[cfg(not(...))]` branch that returns a typed `ProviderUnavailable`. An
-/// entirely unknown provider id returns `InvalidRequest`. The desktop crate
-/// enables both `sherpa-onnx` and `speakrs` on the `speaker-analysis` dependency,
-/// so in the shipped build both arms are live.
+/// speakrs is the sole on-device provider. Its arm is gated on the
+/// `speaker-analysis-speakrs` Cargo feature so this file still compiles when the
+/// feature is off (the `#[cfg(not(...))]` branch returns a typed
+/// `ProviderUnavailable`); the desktop crate enables it by default so the shipped
+/// build's arm is live.
+///
+/// MIGRATION: sherpa-onnx is removed. A request that still carries the legacy
+/// `provider = "sherpa_onnx"` (or any other non-speakrs provider) — e.g. an
+/// in-flight/queued **Speaker Analysis Job** frozen before the removal — is
+/// remapped to the speakrs arm rather than erroring, so legacy work re-runs
+/// through speakrs instead of failing with an unknown-provider error.
 fn analyze_request_for_provider(
-    request: SpeakerAnalysisRequest,
+    mut request: SpeakerAnalysisRequest,
     models_dir: &Path,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
-    match request.provider.as_str() {
-        speaker_analysis::SHERPA_ONNX_PROVIDER_ID => {
-            #[cfg(feature = "speaker-analysis-sherpa-onnx")]
-            {
-                speaker_analysis::providers::sherpa_onnx::analyze_sherpa_request_blocking(
-                    request, models_dir,
-                )
-            }
-            #[cfg(not(feature = "speaker-analysis-sherpa-onnx"))]
-            {
-                let _ = models_dir;
-                Err(SpeakerAnalysisError::ProviderUnavailable(format!(
-                    "speaker-analysis provider '{}' was not compiled into this build",
-                    request.provider
-                )))
-            }
-        }
-        speaker_analysis::SPEAKRS_PROVIDER_ID => {
-            #[cfg(feature = "speaker-analysis-speakrs")]
-            {
-                speaker_analysis::providers::speakrs::analyze_speakrs_request_blocking(
-                    request, models_dir,
-                )
-            }
-            #[cfg(not(feature = "speaker-analysis-speakrs"))]
-            {
-                let _ = models_dir;
-                Err(SpeakerAnalysisError::ProviderUnavailable(format!(
-                    "speaker-analysis provider '{}' was not compiled into this build",
-                    request.provider
-                )))
-            }
-        }
-        other => Err(SpeakerAnalysisError::InvalidRequest(format!(
-            "unknown speaker-analysis provider '{other}'"
-        ))),
+    // Legacy remap: anything that is not the speakrs provider id routes to
+    // speakrs (sherpa is gone). Normalize the request's provider so the speakrs
+    // engine sees a consistent provider id in its output metadata.
+    if request.provider != speaker_analysis::SPEAKRS_PROVIDER_ID {
+        request.provider = speaker_analysis::SPEAKRS_PROVIDER_ID.to_string();
+    }
+
+    #[cfg(feature = "speaker-analysis-speakrs")]
+    {
+        speaker_analysis::providers::speakrs::analyze_speakrs_request_blocking(request, models_dir)
+    }
+    #[cfg(not(feature = "speaker-analysis-speakrs"))]
+    {
+        let _ = models_dir;
+        Err(SpeakerAnalysisError::ProviderUnavailable(format!(
+            "speaker-analysis provider '{}' was not compiled into this build",
+            request.provider
+        )))
     }
 }
 
@@ -401,8 +388,8 @@ mod tests {
     fn request_with_timeout(value: Option<serde_json::Value>) -> SpeakerAnalysisRequest {
         let mut request = SpeakerAnalysisRequest::new(
             "/tmp/audio.m4a",
-            speaker_analysis::SHERPA_ONNX_PROVIDER_ID,
-            Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            speaker_analysis::SPEAKRS_PROVIDER_ID,
+            Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string()),
             "session-1",
             42,
         );
@@ -428,34 +415,17 @@ mod tests {
         )
     }
 
-    #[test]
-    fn dispatch_rejects_unknown_provider() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let request = dispatch_request_for("totally-made-up", tempdir.path());
-        let error =
-            analyze_request_for_provider(request, tempdir.path()).expect_err("should reject");
-        match error {
-            SpeakerAnalysisError::InvalidRequest(message) => {
-                assert!(
-                    message.contains("unknown speaker-analysis provider"),
-                    "unexpected message: {message}"
-                );
-            }
-            other => panic!("expected InvalidRequest for unknown provider, got {other:?}"),
-        }
-    }
-
-    /// The routing invariant: any error EXCEPT the dispatcher's own
-    /// `InvalidRequest("unknown speaker-analysis provider ...")` proves the
-    /// request reached the engine arm. The exact engine error varies by input
-    /// validation order and platform (e.g. macOS sherpa surfaces an `Analysis`
-    /// audio-decode error before checking models), and feature-off arms surface
-    /// `ProviderUnavailable` — all of which are valid "reached the arm" outcomes.
-    fn assert_reached_provider_arm(error: &SpeakerAnalysisError) {
+    /// The routing invariant: with sherpa removed, EVERY provider (speakrs,
+    /// legacy sherpa, or any unknown string) routes to the speakrs arm. The only
+    /// failures permitted are the speakrs engine's own input/model errors (or, on
+    /// a misconfigured feature-off build, `ProviderUnavailable`) — never an
+    /// `InvalidRequest("unknown speaker-analysis provider ...")`, because the
+    /// dispatcher no longer has an unknown-provider branch.
+    fn assert_reached_speakrs_arm(error: &SpeakerAnalysisError) {
         if let SpeakerAnalysisError::InvalidRequest(message) = error {
             assert!(
                 !message.contains("unknown speaker-analysis provider"),
-                "request fell through to the unknown-provider branch instead of routing: {message}"
+                "request fell through to an unknown-provider branch instead of routing to speakrs: {message}"
             );
         }
     }
@@ -466,13 +436,13 @@ mod tests {
         // `speaker-analysis-speakrs` feature ON (the shipped build), the speakrs
         // path surfaces an engine error (MissingModel / audio decode). With the
         // feature OFF, the ProviderUnavailable fallthrough fires. Either way the
-        // request reached the arm — never the dispatcher's "unknown" branch.
+        // request reached the arm — never an "unknown" branch.
         let tempdir = tempfile::tempdir().expect("tempdir");
         let nonexistent = tempdir.path().join("does-not-exist");
         let request = dispatch_request_for(speaker_analysis::SPEAKRS_PROVIDER_ID, &nonexistent);
         let error =
             analyze_request_for_provider(request, &nonexistent).expect_err("should fail routing");
-        assert_reached_provider_arm(&error);
+        assert_reached_speakrs_arm(&error);
         // When the feature is off, pin the exact fallthrough so a misconfigured
         // build is caught loudly.
         #[cfg(not(feature = "speaker-analysis-speakrs"))]
@@ -483,20 +453,36 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_routes_sherpa_to_sherpa_arm() {
-        // Same idea for sherpa. Feature ON -> an engine error (on macOS the audio
-        // decode of the missing file fails first, surfacing Analysis); feature
-        // OFF -> ProviderUnavailable. Never the dispatcher's "unknown" branch.
+    fn dispatch_remaps_legacy_sherpa_provider_to_speakrs_arm() {
+        // MIGRATION: a legacy job payload frozen with provider "sherpa_onnx" must
+        // route to the speakrs arm (sherpa is removed), never the old
+        // unknown-provider error.
         let tempdir = tempfile::tempdir().expect("tempdir");
         let nonexistent = tempdir.path().join("does-not-exist");
-        let request = dispatch_request_for(speaker_analysis::SHERPA_ONNX_PROVIDER_ID, &nonexistent);
+        let request = dispatch_request_for("sherpa_onnx", &nonexistent);
         let error =
             analyze_request_for_provider(request, &nonexistent).expect_err("should fail routing");
-        assert_reached_provider_arm(&error);
-        #[cfg(not(feature = "speaker-analysis-sherpa-onnx"))]
+        assert_reached_speakrs_arm(&error);
+        #[cfg(not(feature = "speaker-analysis-speakrs"))]
         assert!(
             matches!(error, SpeakerAnalysisError::ProviderUnavailable(_)),
-            "sherpa feature off should yield ProviderUnavailable, got {error:?}"
+            "speakrs feature off should yield ProviderUnavailable, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_remaps_unknown_provider_to_speakrs_arm() {
+        // Any unknown provider string also remaps to speakrs rather than erroring.
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let nonexistent = tempdir.path().join("does-not-exist");
+        let request = dispatch_request_for("totally-made-up", &nonexistent);
+        let error =
+            analyze_request_for_provider(request, &nonexistent).expect_err("should fail routing");
+        assert_reached_speakrs_arm(&error);
+        #[cfg(not(feature = "speaker-analysis-speakrs"))]
+        assert!(
+            matches!(error, SpeakerAnalysisError::ProviderUnavailable(_)),
+            "speakrs feature off should yield ProviderUnavailable, got {error:?}"
         );
     }
 

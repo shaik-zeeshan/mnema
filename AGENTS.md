@@ -51,7 +51,7 @@ Key invariants:
 - AI runtime: `cargo check -p ai-runtime`. Keychain store: `cargo test -p app-infra ai_provider_key_store`.
 - **`mnema-cli` sidecar required** for any `apps/desktop/src-tauri` cargo invocation: run `bash scripts/prepare-mnema-cli-sidecar.sh debug` first on a clean checkout.
 - `local-whisper` feature requires `cmake` in `PATH`.
-- The `speaker-analysis-speakrs` feature (on by default in `apps/desktop/src-tauri`) links system OpenBLAS (keg-only on Apple Silicon). Before any `apps/desktop/src-tauri` cargo invocation: `brew install openblas pkgconf` and export `PKG_CONFIG_PATH=$(brew --prefix openblas)/lib/pkgconfig` (typically `/opt/homebrew/opt/openblas/lib/pkgconfig`). Do NOT bake this absolute path into a tracked `.cargo/config.toml` — it is machine/arch-specific.
+- `speakrs` is the sole on-device diarization provider (pure-Rust pyannote-community-1 + WeSpeaker on CoreML; see [`crates/speaker-analysis/docs/adr/0003`](crates/speaker-analysis/docs/adr/0003-remove-sherpa-make-speakrs-sole-diarization-provider.md)). Its `speaker-analysis-speakrs` feature (on by default in `apps/desktop/src-tauri`) links system OpenBLAS (keg-only on Apple Silicon), so the default desktop build needs it. Before any `apps/desktop/src-tauri` cargo invocation: `brew install openblas pkgconf` and export `PKG_CONFIG_PATH=$(brew --prefix openblas)/lib/pkgconfig` (typically `/opt/homebrew/opt/openblas/lib/pkgconfig`). Do NOT bake this absolute path into a tracked `.cargo/config.toml` — it is machine/arch-specific.
 
 ## Workflow
 - Use `@tauri-apps/plugin-dialog` for confirmations, alerts, and file dialogs — not browser-native `window.confirm`/`alert`.

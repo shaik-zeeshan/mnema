@@ -2237,6 +2237,21 @@ mod tests {
         out
     }
 
+    /// A speaker-analysis job payload that preserves a synthetic
+    /// `mock_speaker/<model_id>` provider+model pair. Built via a struct literal
+    /// (not `SpeakerAnalysisJobPayload::new`) so the synthetic provider survives:
+    /// `new` runs `normalize_model_selection`, which remaps any non-speakrs
+    /// provider onto speakrs and would collapse the distinct keys these
+    /// job-tracking / cleanup-lock tests rely on.
+    fn mock_speaker_payload(model_id: &str) -> SpeakerAnalysisJobPayload {
+        SpeakerAnalysisJobPayload {
+            provider: "mock_speaker".to_string(),
+            model_id: Some(model_id.to_string()),
+            recognize_people: false,
+            options: serde_json::Map::new(),
+        }
+    }
+
     fn speaker_analysis_output_for_segment(
         session_id: &str,
         audio_segment_id: i64,
@@ -2275,11 +2290,8 @@ mod tests {
         segment: &AudioSegment,
         output: speaker_analysis::SpeakerAnalysisOutput,
     ) -> ProcessingJob {
-        let payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
-            "mock_speaker",
-            Some("voice-model".to_string()),
-        ))
-        .expect("speaker payload should encode");
+        let payload = serde_json::to_string(&mock_speaker_payload("voice-model"))
+            .expect("speaker payload should encode");
         let job = infra
             .enqueue_processing_job(
                 &ProcessingJobDraft::for_audio_segment_speaker_analysis(segment.id)
@@ -2423,7 +2435,10 @@ mod tests {
     #[async_trait]
     impl speaker_analysis::SpeakerAnalysisProvider for CapturingSpeakerAnalysisProvider {
         fn provider(&self) -> &'static str {
-            "mock_speaker"
+            // speakrs is the sole on-device provider; this capturing test double
+            // stands in for it so jobs (whose payloads normalize to speakrs) route
+            // here and enrollment lookups key off the speakrs voiceprint space.
+            speaker_analysis::SPEAKRS_PROVIDER_ID
         }
 
         async fn analyze(
@@ -3513,8 +3528,8 @@ mod tests {
                     &ProcessingJobDraft::for_audio_segment_speaker_analysis(first_segment.id)
                         .with_payload_json(
                             serde_json::to_string(&SpeakerAnalysisJobPayload::new(
-                                "mock_speaker",
-                                Some("voice-model".to_string()),
+                                speaker_analysis::SPEAKRS_PROVIDER_ID,
+                                Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string()),
                             ))
                             .expect("source payload should encode"),
                         ),
@@ -3531,7 +3546,7 @@ mod tests {
                     provider_cluster_id: "speaker_00".to_string(),
                     stable_label: "Unknown Speaker 1".to_string(),
                     embedding: test_embedding_bytes(&[1.0, 0.0]),
-                    embedding_model_id: "voice-model".to_string(),
+                    embedding_model_id: speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string(),
                     suggestion: None,
                 }],
                 turns: vec![speaker_analysis::SpeakerTurn {
@@ -3542,8 +3557,8 @@ mod tests {
                     overlaps: false,
                 }],
                 metadata: speaker_analysis::SpeakerAnalysisMetadata {
-                    provider: "mock_speaker".to_string(),
-                    model_id: Some("voice-model".to_string()),
+                    provider: speaker_analysis::SPEAKRS_PROVIDER_ID.to_string(),
+                    model_id: Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string()),
                     session_id: "speaker-profile-source-session".to_string(),
                     audio_segment_id: first_segment.id,
                     provenance: Default::default(),
@@ -3586,8 +3601,10 @@ mod tests {
                 ))
                 .await
                 .expect("later audio segment should insert");
-            let mut later_payload =
-                SpeakerAnalysisJobPayload::new("mock_speaker", Some("voice-model".to_string()));
+            let mut later_payload = SpeakerAnalysisJobPayload::new(
+                speaker_analysis::SPEAKRS_PROVIDER_ID,
+                Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string()),
+            );
             later_payload.recognize_people = true;
             let later_job = infra
                 .enqueue_processing_job(
@@ -4930,11 +4947,12 @@ mod tests {
                 ))
                 .await
                 .expect("segment should insert");
-            let payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
-                "mock_speaker",
-                Some("voice-model".to_string()),
-            ))
-            .expect("payload should serialize");
+            // Build the payload via a struct literal so the synthetic
+            // `mock_speaker/voice-model` key survives — `SpeakerAnalysisJobPayload::new`
+            // would remap any non-speakrs provider onto speakrs, collapsing the
+            // distinct key this lock/claim test needs.
+            let payload = serde_json::to_string(&mock_speaker_payload("voice-model"))
+                .expect("payload should serialize");
             let job = infra
                 .enqueue_processing_job(
                     &ProcessingJobDraft::for_audio_segment_speaker_analysis(segment.id)
@@ -5009,16 +5027,11 @@ mod tests {
                 ))
                 .await
                 .expect("unlocked segment should insert");
-            let locked_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
-                "mock_speaker",
-                Some("voice-model".to_string()),
-            ))
-            .expect("locked payload should serialize");
-            let unlocked_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
-                "mock_speaker",
-                Some("other-voice-model".to_string()),
-            ))
-            .expect("unlocked payload should serialize");
+            let locked_payload = serde_json::to_string(&mock_speaker_payload("voice-model"))
+                .expect("locked payload should serialize");
+            let unlocked_payload =
+                serde_json::to_string(&mock_speaker_payload("other-voice-model"))
+                    .expect("unlocked payload should serialize");
             let locked_job = infra
                 .enqueue_processing_job(
                     &ProcessingJobDraft::for_audio_segment_speaker_analysis(locked_segment.id)
@@ -5105,21 +5118,12 @@ mod tests {
                 .await
                 .expect("completed segment should insert");
 
-            let queued_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
-                "mock_speaker",
-                Some("queued-model".to_string()),
-            ))
-            .expect("queued payload should serialize");
-            let running_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
-                "mock_speaker",
-                Some("running-model".to_string()),
-            ))
-            .expect("running payload should serialize");
-            let completed_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
-                "mock_speaker",
-                Some("completed-model".to_string()),
-            ))
-            .expect("completed payload should serialize");
+            let queued_payload = serde_json::to_string(&mock_speaker_payload("queued-model"))
+                .expect("queued payload should serialize");
+            let running_payload = serde_json::to_string(&mock_speaker_payload("running-model"))
+                .expect("running payload should serialize");
+            let completed_payload = serde_json::to_string(&mock_speaker_payload("completed-model"))
+                .expect("completed payload should serialize");
 
             infra
                 .enqueue_processing_job(

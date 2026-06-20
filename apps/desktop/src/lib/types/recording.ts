@@ -567,7 +567,7 @@ export interface AudioSpeechDetectionSettings {
 export interface SpeakerAnalysisSettings {
 	separateSpeakers: boolean;
 	recognizeSavedPeople: boolean;
-	provider: "sherpa_onnx" | string;
+	provider: "speakrs" | string;
 	modelId: string | null;
 	timeoutSeconds: number;
 }

@@ -877,8 +877,8 @@
   let draftTranscriptionChunkSeconds = $state(30);
   let draftSpeakerSeparateSpeakers = $state(false);
   let draftSpeakerRecognizeSavedPeople = $state(false);
-  let draftSpeakerProvider = $state("sherpa_onnx");
-  let draftSpeakerModelId = $state<string | null>("pyannote-3.0-nemo-titanet-small");
+  let draftSpeakerProvider = $state("speakrs");
+  let draftSpeakerModelId = $state<string | null>("pyannote-community-1-wespeaker");
   let draftSpeakerTimeoutMinutes = $state(10);
   // Saved-person count drives the preset-switch warning (over-warns for any
   // profile, not strictly the current Voiceprint Space — acceptable for V1).
@@ -1478,8 +1478,17 @@
     draftTranscriptionChunkSeconds = s.transcription?.chunkSeconds ?? 30;
     draftSpeakerSeparateSpeakers = s.speakerAnalysis?.separateSpeakers ?? false;
     draftSpeakerRecognizeSavedPeople = s.speakerAnalysis?.recognizeSavedPeople ?? false;
-    draftSpeakerProvider = s.speakerAnalysis?.provider ?? "sherpa_onnx";
-    draftSpeakerModelId = s.speakerAnalysis?.modelId ?? "pyannote-3.0-nemo-titanet-small";
+    // Coerce legacy saved values: the sherpa_onnx provider (and its model ids)
+    // no longer exist, so old users' saved settings must resolve to the speakrs
+    // default — otherwise the preset picker would select a provider/model the
+    // backend manifest never returns. When the saved provider is legacy (or
+    // absent) we drop its stale model id too and fall back to the speakrs default.
+    const savedSpeakerProvider = s.speakerAnalysis?.provider;
+    const isLegacySpeakerProvider = !savedSpeakerProvider || savedSpeakerProvider === "sherpa_onnx";
+    draftSpeakerProvider = isLegacySpeakerProvider ? "speakrs" : savedSpeakerProvider;
+    draftSpeakerModelId = isLegacySpeakerProvider
+      ? "pyannote-community-1-wespeaker"
+      : (s.speakerAnalysis?.modelId ?? "pyannote-community-1-wespeaker");
     draftSpeakerTimeoutMinutes = Math.round((s.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
   }
 
@@ -3325,17 +3334,16 @@
     return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
   })());
 
-  // A Speaker Model Preset is keyed by (provider, modelId): selecting one can
-  // cross the provider boundary (sherpa ⇄ speakrs), so the picker value encodes
-  // both. `__os_managed__` stands in for a null modelId.
+  // A Speaker Model Preset is keyed by (provider, modelId): the picker value
+  // encodes both so it stays correct if more providers are added later.
+  // `__os_managed__` stands in for a null modelId.
   function speakerPresetKey(provider: string, modelId: string | null): string {
     return `${provider}::${modelId ?? "__os_managed__"}`;
   }
 
-  // Flatten every provider group into one preset list so all presets — sherpa's
-  // Balanced/Multilingual/High-accuracy AND speakrs — appear in the single
-  // picker. Order follows the manifest (sherpa first, then speakrs), keeping the
-  // default (sherpa Balanced) at the top.
+  // Flatten every provider group into one preset list so all presets appear in
+  // the single picker. The backend manifest currently returns only the speakrs
+  // provider; order follows the manifest, keeping the speakrs default at the top.
   const allSpeakerModels = $derived(
     (speakerModelStatus?.providers ?? []).flatMap((provider) => provider.models)
   );
@@ -3521,9 +3529,9 @@
   // Switching Speaker Model Presets is non-destructive and reversible, so the
   // warning is purely informational: it fires only when the user is moving AWAY
   // from the saved preset while saved-person recognition is on and at least one
-  // Person profile exists. A preset switch can change the PROVIDER too (sherpa ⇄
-  // speakrs) — each provider's preset is its own WeSpeaker/embedding Voiceprint
-  // Space, so the warning keys off either the provider OR the modelId changing.
+  // Person profile exists. A preset switch can change the PROVIDER too — each
+  // provider's preset is its own WeSpeaker/embedding Voiceprint Space, so the
+  // warning keys off either the provider OR the modelId changing.
   // Confirming proceeds (the existing autosave persists the new provider+modelId);
   // cancelling leaves the drafts unchanged so the controlled picker reverts to
   // the saved selection. It NEVER auto-migrates, re-enrolls, or blocks the choice.

@@ -84,8 +84,8 @@ fn component_id(provider: &str, model_id: Option<&str>) -> String {
 pub fn collect_third_party_notices() -> ThirdPartyNotices {
     let mut entries = Vec::new();
 
-    // Speaker diarization presets (sherpa-onnx pyannote/NeMo, and any future
-    // on-device provider added to the manifest).
+    // Speaker diarization presets (speakrs pyannote-community-1 + WeSpeaker, and
+    // any future on-device provider added to the manifest).
     for descriptor in speaker_analysis::builtin_model_manifest().models {
         entries.push(make_entry(
             component_id(&descriptor.provider, descriptor.model_id.as_deref()),
@@ -202,12 +202,11 @@ mod tests {
             "every speaker preset should be attributed"
         );
         assert!(
-            speaker.len() >= 3,
-            "expected at least the three built-in speaker presets"
+            !speaker.is_empty(),
+            "expected at least the built-in speakrs speaker preset"
         );
 
-        // The sherpa presets carry no explicit license_label, but each must
-        // still surface a source URL and a non-empty (fallback) license.
+        // Each speaker preset must surface a source URL and a non-empty license.
         for entry in &speaker {
             assert!(
                 entry.source_url.is_some(),

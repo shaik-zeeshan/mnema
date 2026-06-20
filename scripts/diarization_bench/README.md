@@ -1,5 +1,14 @@
 # Speaker diarization DER benchmark
 
+> **Shipped provider:** Mnema ships **`speakrs`** as the sole on-device diarization
+> provider ([ADR 0003](../../crates/speaker-analysis/docs/adr/0003-remove-sherpa-make-speakrs-sole-diarization-provider.md)).
+> Sherpa ONNX has been removed from the app. This harness still documents the
+> historical Sherpa-vs-speakrs comparison (that comparison is *why* speakrs won and
+> sherpa was dropped — keep it as the benchmark record), and it can drive either
+> provider's `diarize_to_rttm*` binary directly for re-measurement, but the Sherpa
+> path no longer reflects what the app runs. Score `speakrs` via the
+> `diarize_to_rttm_speakrs` binary for current numbers.
+
 Measures Mnema's speaker diarization accuracy as **Diarization Error Rate (DER)**
 against the [VoxConverse](https://www.robots.ox.ac.uk/~vgg/data/voxconverse/)
 dataset, so accuracy changes can be tracked and tuned instead of eyeballed.
@@ -24,9 +33,12 @@ overlap-included number is penalized on overlapping speech — track both.
    Streaming reads parquet shards lazily and stops after the requested clips, so
    it avoids the multi-GB Arrow cache that a full `load_dataset` writes to disk —
    important on a near-full disk. Splits are `dev` (216 clips) and `test` (232).
-2. Each clip's audio is written to a temp WAV; the Rust `diarize_to_rttm` binary
-   runs the **real** sherpa-onnx provider (`analyze_sherpa_request_blocking`) and
-   prints a hypothesis RTTM.
+2. Each clip's audio is written to a temp WAV; a Rust `diarize_to_rttm*` binary
+   runs the **real** provider and prints a hypothesis RTTM. The shipped provider is
+   `diarize_to_rttm_speakrs` (`analyze_speakrs_request_blocking`); the legacy
+   `diarize_to_rttm` runs the removed sherpa-onnx provider and is kept only for
+   re-running the historical comparison. Both speak the same `--binary` CLI/RTTM
+   contract `run_der.py` expects, so DER scoring is apples-to-apples.
 3. `pyannote.metrics` scores the hypothesis against the reference.
 
 ## Prerequisites
@@ -36,9 +48,19 @@ desktop app once and let it download a preset, which lands them at
 `~/Library/Application Support/com.shaikzeeshan.mnema/speaker-analysis-models`
 (the binary's default `--models-dir`).
 
-1. Build the Rust binary (macOS; needs the `sherpa-onnx` feature — no `mnema-cli`
-   sidecar required since this targets the `speaker-analysis` crate, not the
-   Tauri app):
+1. Build the Rust binary (macOS; no `mnema-cli` sidecar required since this targets
+   the `speaker-analysis` crate, not the Tauri app).
+
+   For the shipped **speakrs** provider (needs the `speakrs` feature; OpenBLAS must
+   be installed first — `brew install openblas pkgconf` and
+   `export PKG_CONFIG_PATH=$(brew --prefix openblas)/lib/pkgconfig`):
+
+   ```sh
+   cargo build -p speaker-analysis --features speakrs --release --bin diarize_to_rttm_speakrs
+   ```
+
+   For the removed **sherpa-onnx** provider, only to re-run the historical
+   comparison (needs the `sherpa-onnx` feature):
 
    ```sh
    cargo build -p speaker-analysis --features sherpa-onnx --release --bin diarize_to_rttm

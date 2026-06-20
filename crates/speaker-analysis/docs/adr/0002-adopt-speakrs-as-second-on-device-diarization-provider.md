@@ -1,5 +1,7 @@
 # Adopt speakrs as a Second On-Device Diarization Provider, Trending to Replacement
 
+> **Amended by [ADR 0003](0003-remove-sherpa-make-speakrs-sole-diarization-provider.md).** The "eventual replacement" and "default flip" this ADR anticipated have happened: sherpa-onnx is removed and `speakrs` is now the **sole** on-device diarization provider and the default — no longer a second provider beside sherpa. The provider-adoption rationale and benchmark evidence below stand; the coexistence/opt-in framing is superseded.
+
 We add **speakrs** (pure-Rust pyannote `community-1` segmentation + WeSpeaker embedding + VBx clustering, native CoreML) as a second **Speaker Analysis** provider beside the on-device sherpa-onnx runtime, adopted on a measured **accuracy + dependency-simplification** basis: it beat the production baseline on the full 232-clip VoxConverse split (8.35% vs ~10.9% DER), degrades gracefully across speaker counts, and drops the native sherpa-onnx/NeMo dependency. It ships as exactly **one non-default Speaker Model Preset** (sherpa stays the default) and is designed for **eventual replacement** of sherpa, not permanent coexistence — Mnema's release target is Apple Silicon macOS only, so speakrs's CoreML constraint excludes no shipping platform. It runs **whole-segment** through the existing subprocess-per-job helper, its WeSpeaker output forms a new **Voiceprint Space**, and its models load from the existing speaker-analysis model store.
 
 ## Considered Options

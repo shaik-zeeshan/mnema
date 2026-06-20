@@ -290,7 +290,6 @@ pub async fn delete_speaker_analysis_model(
 /// raw provider id for any future provider that lacks a curated label here.
 fn speaker_provider_display_name(provider: &str) -> String {
     match provider {
-        speaker_analysis::SHERPA_ONNX_PROVIDER_ID => "Sherpa ONNX".to_string(),
         speaker_analysis::SPEAKRS_PROVIDER_ID => "speakrs (CoreML)".to_string(),
         other => other.to_string(),
     }
@@ -302,10 +301,9 @@ fn build_speaker_analysis_model_status_response(
     let models_dir = speaker_analysis_models_dir(app_data_dir);
     let manifest = builtin_model_manifest();
 
-    // Group descriptors by their ACTUAL provider (preserving manifest order)
-    // instead of folding everything into a single hardcoded "Sherpa ONNX" group,
-    // so every provider — sherpa today, speakrs (and any future provider) — gets
-    // its own selectable group surfaced to the settings UI.
+    // Group descriptors by their ACTUAL provider (preserving manifest order) so
+    // every provider — speakrs today (and any future provider) — gets its own
+    // selectable group surfaced to the settings UI.
     let mut providers: Vec<SpeakerAnalysisProviderStatusDto> = Vec::new();
 
     for descriptor in &manifest.models {
@@ -820,10 +818,10 @@ mod tests {
         assert!(!dir.path().join("plda_lda.npy").exists());
     }
 
-    /// The status response must surface ONE group per actual provider (sherpa +
-    /// speakrs), each carrying its own descriptors — not a single hardcoded
-    /// "Sherpa ONNX" group folding speakrs in. This is what lets the settings UI
-    /// show the speakrs preset as a selectable, downloadable option.
+    /// The status response surfaces ONE group per actual provider. With sherpa
+    /// removed, speakrs is the sole provider group, carrying its own descriptor.
+    /// This is what lets the settings UI show the speakrs preset as a selectable,
+    /// downloadable option.
     #[test]
     fn status_response_groups_models_by_actual_provider() {
         let dir = TestDir::new("provider-grouping");
@@ -831,22 +829,15 @@ mod tests {
         let response = build_speaker_analysis_model_status_response(dir.path())
             .expect("status response builds for an empty models dir");
 
-        let sherpa = response
-            .providers
-            .iter()
-            .find(|group| group.provider == speaker_analysis::SHERPA_ONNX_PROVIDER_ID)
-            .expect("sherpa group present");
+        // sherpa is gone: speakrs is the only provider group.
+        assert_eq!(response.providers.len(), 1);
         let speakrs = response
             .providers
             .iter()
             .find(|group| group.provider == speaker_analysis::SPEAKRS_PROVIDER_ID)
             .expect("speakrs group present");
 
-        // Every model in a group belongs to that group's provider.
-        assert!(sherpa
-            .models
-            .iter()
-            .all(|model| model.provider == speaker_analysis::SHERPA_ONNX_PROVIDER_ID));
+        // Every model in the group belongs to the speakrs provider.
         assert!(speakrs
             .models
             .iter()
@@ -864,6 +855,5 @@ mod tests {
             .as_deref()
             .is_some_and(|label| label.contains("CC-BY-4.0")));
         assert_eq!(speakrs.display_name, "speakrs (CoreML)");
-        assert_eq!(sherpa.display_name, "Sherpa ONNX");
     }
 }

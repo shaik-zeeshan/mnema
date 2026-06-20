@@ -296,15 +296,16 @@ pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
 
 /// The default `model_id` for a known speaker-analysis provider, or `None` if the
 /// provider is unknown. Drives the validation fallback below: an unknown model_id
-/// for a known provider resets to that provider's default rather than dropping the
-/// provider choice. Resolved from the manifest constants so adding a future
+/// for the known provider resets to that provider's default rather than dropping
+/// the provider choice. Resolved from the manifest constants so adding a future
 /// provider only needs a new arm here (and a manifest descriptor), not changes to
 /// the validation control flow.
+///
+/// speakrs is the sole on-device provider; sherpa-onnx is removed, so any other
+/// provider string (including the legacy `sherpa_onnx` literal) is "unknown" here
+/// and gets remapped to speakrs by the caller.
 fn default_model_id_for_speaker_provider(provider: &str) -> Option<&'static str> {
     match provider {
-        speaker_analysis::SHERPA_ONNX_PROVIDER_ID => {
-            Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID)
-        }
         speaker_analysis::SPEAKRS_PROVIDER_ID => Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID),
         _ => None,
     }
@@ -320,10 +321,12 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
 
     // Dispatch model-id validation BY provider against the manifest:
     //   * a valid (provider, model_id) pair is kept verbatim;
-    //   * an unknown model_id for a KNOWN provider resets to that provider's
-    //     default model (the provider choice is preserved);
-    //   * an unknown provider resets to the global default (sherpa + its default
-    //     model).
+    //   * an unknown model_id for the speakrs provider resets to its default
+    //     model (the provider choice is preserved);
+    //   * ANY non-speakrs provider — including the legacy `sherpa_onnx` literal a
+    //     pre-removal settings file persisted — is remapped to speakrs + the
+    //     speakrs default model. This is the upgrade-migration path: it is
+    //     impossible to leave a user pinned on the removed sherpa provider.
     // Validating against the manifest (rather than a hardcoded id list) means a
     // future preset needs no change here.
     let (provider, model_id) = match default_model_id_for_speaker_provider(requested_provider) {
@@ -341,7 +344,7 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
             (requested_provider.to_string(), Some(model_id.to_string()))
         }
         None => {
-            // Unknown provider → global default (sherpa) + its default model.
+            // Legacy/unknown provider (e.g. `sherpa_onnx`) → speakrs default.
             (
                 default_speaker_analysis_settings().provider,
                 default_speaker_analysis_model_id(),
@@ -2274,30 +2277,16 @@ mod tests {
     #[test]
     fn validate_speaker_analysis_settings_keeps_default_model() {
         let settings = SpeakerAnalysisSettings {
-            model_id: Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            model_id: Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string()),
             ..default_speaker_analysis_settings()
         };
 
         let validated = validate_speaker_analysis_settings(settings);
 
+        assert_eq!(validated.provider, speaker_analysis::SPEAKRS_PROVIDER_ID);
         assert_eq!(
             validated.model_id.as_deref(),
-            Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID)
-        );
-    }
-
-    #[test]
-    fn validate_speaker_analysis_settings_keeps_known_non_default_model() {
-        let settings = SpeakerAnalysisSettings {
-            model_id: Some(speaker_analysis::MULTILINGUAL_SHERPA_ONNX_MODEL_ID.to_string()),
-            ..default_speaker_analysis_settings()
-        };
-
-        let validated = validate_speaker_analysis_settings(settings);
-
-        assert_eq!(
-            validated.model_id.as_deref(),
-            Some(speaker_analysis::MULTILINGUAL_SHERPA_ONNX_MODEL_ID)
+            Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID)
         );
     }
 
@@ -2310,16 +2299,13 @@ mod tests {
 
         let validated = validate_speaker_analysis_settings(settings);
 
-        // Sherpa is the global default provider, so its unknown-model fallback
+        // speakrs is the global default provider, so its unknown-model fallback
         // also coincides with the global default model.
-        assert_eq!(
-            validated.provider,
-            speaker_analysis::SHERPA_ONNX_PROVIDER_ID
-        );
+        assert_eq!(validated.provider, speaker_analysis::SPEAKRS_PROVIDER_ID);
         assert_eq!(validated.model_id, default_speaker_analysis_model_id());
         assert_eq!(
             validated.model_id.as_deref(),
-            Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID)
+            Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID)
         );
     }
 
@@ -2360,31 +2346,29 @@ mod tests {
         );
     }
 
+    /// MIGRATION: a settings file persisted before sherpa removal carries
+    /// `provider = "sherpa_onnx"` (plus a sherpa model id). Because sherpa is no
+    /// longer a known provider, validation must remap it to speakrs + the speakrs
+    /// default model — it must be impossible to leave a user pinned on sherpa.
     #[test]
-    fn validate_speaker_analysis_settings_keeps_sherpa_provider_with_known_model() {
-        // A valid (provider, model_id) pair for a non-default provider/model is
-        // kept verbatim. Here the provider stays sherpa but a non-default sherpa
-        // preset is preserved.
+    fn validate_speaker_analysis_settings_remaps_legacy_sherpa_provider_to_speakrs() {
         let settings = SpeakerAnalysisSettings {
-            provider: speaker_analysis::SHERPA_ONNX_PROVIDER_ID.to_string(),
-            model_id: Some(speaker_analysis::HIGH_ACCURACY_SHERPA_ONNX_MODEL_ID.to_string()),
+            provider: "sherpa_onnx".to_string(),
+            model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
             ..default_speaker_analysis_settings()
         };
 
         let validated = validate_speaker_analysis_settings(settings);
 
-        assert_eq!(
-            validated.provider,
-            speaker_analysis::SHERPA_ONNX_PROVIDER_ID
-        );
+        assert_eq!(validated.provider, speaker_analysis::SPEAKRS_PROVIDER_ID);
         assert_eq!(
             validated.model_id.as_deref(),
-            Some(speaker_analysis::HIGH_ACCURACY_SHERPA_ONNX_MODEL_ID)
+            Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID)
         );
     }
 
     #[test]
-    fn validate_speaker_analysis_settings_unknown_provider_resets_to_sherpa_default() {
+    fn validate_speaker_analysis_settings_unknown_provider_resets_to_speakrs_default() {
         let settings = SpeakerAnalysisSettings {
             provider: "totally-unknown-provider".to_string(),
             model_id: Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string()),
@@ -2395,10 +2379,7 @@ mod tests {
 
         let defaults = default_speaker_analysis_settings();
         assert_eq!(validated.provider, defaults.provider);
-        assert_eq!(
-            validated.provider,
-            speaker_analysis::SHERPA_ONNX_PROVIDER_ID
-        );
+        assert_eq!(validated.provider, speaker_analysis::SPEAKRS_PROVIDER_ID);
         assert_eq!(validated.model_id, defaults.model_id);
     }
 

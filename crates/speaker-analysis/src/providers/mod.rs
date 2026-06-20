@@ -1,10 +1,6 @@
-#[cfg(feature = "sherpa-onnx")]
-pub mod sherpa_onnx;
-
-// Provider-agnostic helpers shared by every on-device diarization provider.
-// Compiled whenever any real provider is enabled so neither has to depend on
-// the other's feature.
-#[cfg(any(feature = "sherpa-onnx", feature = "speakrs"))]
+// Provider-agnostic helpers shared by the on-device diarization provider.
+// Compiled whenever the speakrs provider is enabled.
+#[cfg(feature = "speakrs")]
 pub mod shared;
 
 // Pure, default-compiled speakrs result mapping. Declared unconditionally so its

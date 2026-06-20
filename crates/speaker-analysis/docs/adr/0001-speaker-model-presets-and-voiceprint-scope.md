@@ -1,5 +1,7 @@
 # Speaker Model Presets and Per-Preset Voiceprint Scope
 
+> **Superseded by [ADR 0003](0003-remove-sherpa-make-speakrs-sole-diarization-provider.md).** sherpa-onnx — the runtime this ADR builds on, and its Balanced/Multilingual/High-accuracy presets — has been removed; `speakrs` is now the sole on-device diarization provider and ships as the single remaining preset. The per-preset **Voiceprint Space** scoping and non-destructive switch design described here still hold for the preset machinery, but the multi-preset CPU-runtime framing below is historical. Retained as the record of why presets and per-`model_id` voiceprint scope exist.
+
 We are opening speaker analysis from one fixed model to a small set of curated **Speaker Model Presets** while keeping the on-device sherpa-onnx CPU runtime. Each preset is one combined segmentation+embedding `model_id`; users pick intent ("Balanced", "Multilingual", "High-accuracy"), not raw model files. Recognition stays scoped to one **Voiceprint Space** per preset, and switching presets is non-destructive and warned, not blocked or migrated.
 
 ## Considered Options

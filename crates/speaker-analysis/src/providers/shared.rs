@@ -1,12 +1,10 @@
-//! Provider-agnostic speaker-analysis helpers shared by every on-device
-//! diarization provider (sherpa-onnx and speakrs).
+//! Provider-agnostic speaker-analysis helpers shared by the on-device
+//! diarization provider (speakrs).
 //!
 //! These items hold recognition policy, embedding encoding, turn
 //! post-processing, audio sanity checks, provenance shaping, and the macOS
 //! audio decode entry — none of which are specific to a particular runtime. They
-//! are gated on `any(feature = "sherpa-onnx", feature = "speakrs")` so a
-//! speakrs-only build compiles them without pulling in sherpa-onnx, and a
-//! sherpa-only build is byte-identical to the pre-extraction behavior.
+//! are gated on `feature = "speakrs"`.
 
 use serde_json::json;
 
@@ -158,30 +156,10 @@ pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 // Provider-local cluster ids + time/index helpers
 // ---------------------------------------------------------------------------
 
-// The three helpers below are used only by the sherpa provider's sample-range
-// bookkeeping; the speakrs path goes through the pure `speakrs_mapping` module
-// (which carries its own always-compiled `provider_cluster_id`/`seconds_to_ms`
-// so the highest-value mapping test compiles with no features). They are gated
-// to `sherpa-onnx` so a speakrs-only build stays warning-free.
-
-/// Provider-local cluster id string ("speaker_NN"). These remain provider-local
-/// provenance and are not rewritten to represent stable identity (CONTEXT.md).
-#[cfg(feature = "sherpa-onnx")]
-pub(crate) fn provider_cluster_id(speaker: i32) -> String {
-    format!("speaker_{speaker:02}")
-}
-
-/// Round seconds (clamped non-negative) to whole milliseconds.
-#[cfg(feature = "sherpa-onnx")]
-pub(crate) fn seconds_to_ms(seconds: f32) -> u64 {
-    (seconds.max(0.0) * 1000.0).round() as u64
-}
-
-/// Convert a millisecond timestamp to a sample index, clamped to `sample_len`.
-#[cfg(feature = "sherpa-onnx")]
-pub(crate) fn ms_to_sample_index(ms: u64, sample_len: usize) -> usize {
-    ((ms as usize).saturating_mul(SAMPLE_RATE_HZ as usize) / 1000).min(sample_len)
-}
+// The speakrs path goes through the pure `speakrs_mapping` module (which carries
+// its own always-compiled `provider_cluster_id`/`seconds_to_ms` so the
+// highest-value mapping test compiles with no features), so no provider-local
+// sample-range helpers live here anymore.
 
 // ---------------------------------------------------------------------------
 // Turn post-processing
@@ -356,15 +334,15 @@ pub(crate) fn decode_audio_to_mono_16khz(
 mod tests {
     use super::*;
     use crate::{
-        PersonEnrollment, PersonRecognitionRejection, SpeakerAnalysisRequest, DEFAULT_SHERPA_ONNX_MODEL_ID,
-        SHERPA_ONNX_PROVIDER_ID,
+        PersonEnrollment, PersonRecognitionRejection, SpeakerAnalysisRequest,
+        SPEAKRS_DEFAULT_MODEL_ID, SPEAKRS_PROVIDER_ID,
     };
 
     fn request_with_enrollment(score: f32) -> SpeakerAnalysisRequest {
         let mut request = SpeakerAnalysisRequest::new(
             "/tmp/audio.m4a",
-            SHERPA_ONNX_PROVIDER_ID,
-            Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            SPEAKRS_PROVIDER_ID,
+            Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
             "session-a",
             7,
         );
@@ -372,7 +350,7 @@ mod tests {
             person_id: 1,
             display_name: "Jack".to_string(),
             embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(score)),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
+            embedding_model_id: SPEAKRS_DEFAULT_MODEL_ID.to_string(),
         });
         request
     }
@@ -398,14 +376,14 @@ mod tests {
     #[test]
     fn recognition_skips_weak_best_match() {
         let request = request_with_enrollment(0.59);
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], SPEAKRS_DEFAULT_MODEL_ID);
         assert!(suggestion.is_none());
     }
 
     #[test]
     fn recognition_maps_high_confidence_from_strict_threshold() {
         let request = request_with_enrollment(0.72);
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], SPEAKRS_DEFAULT_MODEL_ID)
             .expect("suggestion");
         assert_eq!(suggestion.confidence, RecognitionConfidence::High);
         assert!(suggestion.score >= 0.72);
@@ -414,7 +392,7 @@ mod tests {
     #[test]
     fn recognition_maps_medium_confidence_from_minimum_threshold() {
         let request = request_with_enrollment(0.60);
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], SPEAKRS_DEFAULT_MODEL_ID)
             .expect("suggestion");
         assert_eq!(suggestion.confidence, RecognitionConfidence::Medium);
         assert!(suggestion.score >= 0.60);
@@ -427,9 +405,9 @@ mod tests {
         request.rejected_people.push(PersonRecognitionRejection {
             person_id: 1,
             embedding: f32_embedding_to_le_bytes(&[1.0, 0.0]),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
+            embedding_model_id: SPEAKRS_DEFAULT_MODEL_ID.to_string(),
         });
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], SPEAKRS_DEFAULT_MODEL_ID);
         assert!(suggestion.is_none());
     }
 
@@ -440,9 +418,9 @@ mod tests {
             person_id: 2,
             display_name: "Jill".to_string(),
             embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(0.68)),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
+            embedding_model_id: SPEAKRS_DEFAULT_MODEL_ID.to_string(),
         });
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], SPEAKRS_DEFAULT_MODEL_ID);
         assert!(suggestion.is_none());
     }
 
@@ -453,9 +431,9 @@ mod tests {
             person_id: 1,
             display_name: "Jack".to_string(),
             embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(0.71)),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
+            embedding_model_id: SPEAKRS_DEFAULT_MODEL_ID.to_string(),
         });
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], SPEAKRS_DEFAULT_MODEL_ID)
             .expect("same-person enrollments should not be ambiguous");
         assert_eq!(suggestion.person_id, 1);
         assert!(suggestion.score >= 0.72);

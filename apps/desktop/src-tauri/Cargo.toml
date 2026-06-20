@@ -16,15 +16,14 @@ name = "mnema_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["speaker-analysis-sherpa-onnx", "speaker-analysis-speakrs"]
+default = ["speaker-analysis-speakrs"]
 cargo-clippy = []
 ocr-budget-trace = []
 privacy-refresh-trace = []
-# Forwarding features: turn the matching `speaker-analysis` engine on AND expose a
-# desktop-crate cfg the subprocess dispatcher gates each arm on (see
-# `speaker_analysis_runtime::analyze_request_for_provider`). Both are default-on,
-# so the shipped build compiles both on-device diarization engines.
-speaker-analysis-sherpa-onnx = ["speaker-analysis/sherpa-onnx"]
+# Forwarding feature: turn the `speaker-analysis` speakrs engine on AND expose a
+# desktop-crate cfg the subprocess dispatcher gates the speakrs arm on (see
+# `speaker_analysis_runtime::analyze_request_for_provider`). Default-on, so the
+# shipped build compiles the on-device diarization engine.
 speaker-analysis-speakrs = ["speaker-analysis/speakrs"]
 
 [build-dependencies]
@@ -55,8 +54,8 @@ app-infra = { path = "../../../crates/app-infra" }
 # Aliased so the Tauri-side `mod ai_runtime;` does not collide with the crate name.
 ai-engine = { package = "ai-runtime", path = "../../../crates/ai-runtime" }
 audio-transcription = { path = "../../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }
-# Engine features (sherpa-onnx / speakrs) are driven by this crate's forwarding
-# features (default-on) so the subprocess dispatcher can gate each arm on a
+# The speakrs engine feature is driven by this crate's forwarding feature
+# (default-on) so the subprocess dispatcher can gate the speakrs arm on a
 # matching desktop-crate cfg. See `[features]` above.
 speaker-analysis = { path = "../../../crates/speaker-analysis", default-features = false }
 ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }

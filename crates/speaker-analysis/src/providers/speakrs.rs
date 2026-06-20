@@ -303,7 +303,7 @@ mod tests {
     fn rejects_request_for_other_provider() {
         let request = SpeakerAnalysisRequest::new(
             "/tmp/audio.m4a",
-            "sherpa_onnx",
+            "some_other_provider",
             Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
             "session-a",
             7,

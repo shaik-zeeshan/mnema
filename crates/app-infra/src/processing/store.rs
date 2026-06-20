@@ -73,7 +73,7 @@ pub(crate) const MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS: i64 = 600;
 const OCR_RETRY_BACKOFF_SECONDS: [i64; 2] = [30, 120];
 
 /// Backoff before a failed audio job may be re-claimed, indexed like [`OCR_RETRY_BACKOFF_SECONDS`].
-/// Audio jobs are minutes-long (a Whisper pass or sherpa diarization), so retries are spaced wider
+/// Audio jobs are minutes-long (a Whisper pass or speaker diarization), so retries are spaced wider
 /// than OCR's so a transient failure (e.g. a model still loading) has real time to clear and so a
 /// failing audio lane does not re-claim ahead of fresh work every cycle.
 const AUDIO_RETRY_BACKOFF_SECONDS: [i64; 2] = [60, 300];
