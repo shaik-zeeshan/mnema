@@ -117,20 +117,25 @@ impl SemanticSearchStore {
     /// output; it is serialized little-endian, the byte layout vec0 expects.
     /// Returns whether a row was actually written.
     ///
-    /// The insert is a single atomic `INSERT OR REPLACE … SELECT … WHERE` over
-    /// `search_documents`: the rowid and the existence predicate are evaluated in
-    /// the same statement, so there is **no re-check-then-store gap**. If a
-    /// retention / Delete Recent cascade removed the anchor between the worker's
-    /// embed and this store (the `AFTER DELETE` trigger having dropped nothing,
-    /// since no vec0 row existed yet), the `SELECT` matches zero rows and **no
-    /// orphan vector is inserted** — a meaning vector of deleted captured content
-    /// can never persist at rest (M1 / privacy concern #6, ADR 0036). The worker's
-    /// preceding `anchor_still_missing_vector` re-check is now an optimization, not
-    /// the correctness boundary; this statement is.
+    /// The write is a **DELETE-then-INSERT in one transaction**, keyed on
+    /// `anchor_id`: vec0 (sqlite-vec 0.1.9) does **not** honor `OR REPLACE` —
+    /// re-inserting an existing rowid raises a `UNIQUE constraint` error rather
+    /// than replacing — so an upsert has to delete any prior vector for the anchor
+    /// first, then insert the new one. Wrapping both in a single transaction makes
+    /// the replace atomic: a re-embed of an already-vectored anchor swaps the
+    /// vector with no constraint error and no torn state if the insert fails
+    /// mid-way (the DELETE rolls back too, leaving the old vector intact).
     ///
-    /// `OR REPLACE` still covers the reprocess race (a re-derived anchor id
-    /// overwrites cleanly); in the normal sweep the anchor has no row yet, so this
-    /// is an insert.
+    /// The INSERT is row-conditioned: the rowid and the existence predicate are
+    /// evaluated in the same `SELECT … WHERE` over `search_documents`, so there is
+    /// **no re-check-then-store gap**. If a retention / Delete Recent cascade
+    /// removed the anchor between the worker's embed and this store (the `AFTER
+    /// DELETE` trigger having dropped the vec0 row, which the DELETE here also
+    /// covers), the `SELECT` matches zero rows and **no orphan vector is
+    /// inserted** — a meaning vector of deleted captured content can never persist
+    /// at rest (M1 / privacy concern #6, ADR 0036). The worker's preceding
+    /// `anchor_still_missing_vector` re-check is now an optimization, not the
+    /// correctness boundary; this transaction is.
     ///
     /// Rejects a non-finite vector (any `NaN`/`±inf` component) before touching
     /// the table: vec0 stores such a blob silently, but a `NaN` distance sorts
@@ -147,8 +152,17 @@ impl SemanticSearchStore {
             )));
         }
         let blob = vector_to_le_bytes(vector);
+        let mut tx = self.pool.begin().await?;
+        // Drop any existing vector for this anchor first — vec0 0.1.9 rejects a
+        // re-insert of the same rowid with a UNIQUE constraint error rather than
+        // replacing, so the upsert must DELETE then INSERT. Harmless when no prior
+        // vector exists (the normal sweep), and atomic with the INSERT below.
+        sqlx::query("DELETE FROM search_document_vectors WHERE rowid = ?1")
+            .bind(anchor_id)
+            .execute(&mut *tx)
+            .await?;
         let result = sqlx::query(
-            "INSERT OR REPLACE INTO search_document_vectors (rowid, embedding) \
+            "INSERT INTO search_document_vectors (rowid, embedding) \
              SELECT search_documents.id, ?2 \
              FROM search_documents \
              WHERE search_documents.id = ?1 \
@@ -156,8 +170,9 @@ impl SemanticSearchStore {
         )
         .bind(anchor_id)
         .bind(blob)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -814,6 +829,65 @@ mod tests {
                 .await
                 .expect("query")
                 .is_empty());
+        });
+    }
+
+    #[test]
+    fn re_storing_a_vector_for_the_same_anchor_replaces_it_without_a_unique_error() {
+        run_async_test(async {
+            let dir = test_dir("re-store-same-anchor-replaces");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "vectorize me").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+
+            // First store: the normal sweep path inserts a fresh vector.
+            let first = seeded_vector(768, 1);
+            let stored = store
+                .store_vector(anchor.anchor_id, &first)
+                .await
+                .expect("first store succeeds");
+            assert!(stored, "the first vector is written");
+
+            // Second store of a DIFFERENT vector for the SAME anchor_id must
+            // succeed (the DELETE+INSERT upsert replaces it). vec0 0.1.9 does not
+            // honor OR REPLACE, so a naive re-insert would raise a UNIQUE
+            // constraint error here — this asserts the upsert path is correct.
+            let second = seeded_vector(768, 5);
+            let stored = store
+                .store_vector(anchor.anchor_id, &second)
+                .await
+                .expect("re-storing the same anchor replaces, never UNIQUE-errors");
+            assert!(stored, "the replacement vector is written");
+
+            // Exactly one row exists for the anchor (the upsert replaced, not
+            // appended).
+            let row_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_document_vectors WHERE rowid = ?1",
+            )
+            .bind(anchor.anchor_id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("count probe");
+            assert_eq!(row_count, 1, "exactly one vector row remains for the anchor");
+
+            // The stored vector is the SECOND one: a KNN query for `second` ranks
+            // this anchor nearest (distance ~0), confirming the replace landed the
+            // new vector, not the old.
+            let candidates =
+                super::knn_in_scope_anchors(infra.pool(), &second, 200, |q| {
+                    push_direct_scope(q, None)
+                })
+                .await
+                .expect("knn succeeds");
+            assert_eq!(
+                candidates,
+                vec![anchor.anchor_id],
+                "the stored vector is the second one (the upsert replaced it)"
+            );
         });
     }
 
