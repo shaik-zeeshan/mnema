@@ -2803,10 +2803,15 @@ pub(crate) fn persist_semantic_search_settings(
     state: &RecordingSettingsState,
     request: capture_types::UpdateSemanticSearchSettingsRequest,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    // Trusted path: the atomic switch has already rebuilt the `vec0` table to the
+    // new model's dimension before this persist, so use the trusted variant that
+    // honors `model_id`/`provider`. The generic IPC command
+    // (`update_semantic_search_settings`) uses `SemanticSearch`, which ignores
+    // those dimension-affecting fields. See review finding low #4 (PR #126).
     update_recording_settings_domain(
         app_handle,
         state,
-        RecordingSettingsDomainPatch::SemanticSearch(request),
+        RecordingSettingsDomainPatch::SemanticSearchModelSwitch(request),
     )
 }
 
