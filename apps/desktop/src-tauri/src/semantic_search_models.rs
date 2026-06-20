@@ -201,6 +201,12 @@ enum ModelDownloadError {
     },
     #[error("downloaded model is missing required files: {0:?}")]
     IncompleteLayout(Vec<String>),
+    #[error("refusing to install guided-tier model {provider}/{model_id}: its weights file {weights_relative_path} has no pinned SHA256 to verify against (fail-closed)")]
+    GuidedTierWeightsUnpinned {
+        provider: String,
+        model_id: String,
+        weights_relative_path: String,
+    },
     #[error("downloaded file {relative_path} checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch {
         relative_path: String,
@@ -213,6 +219,8 @@ enum ModelDownloadError {
         expected: u64,
         actual: u64,
     },
+    #[error("downloaded file {relative_path} is empty (zero bytes) with no Content-Length to check against (dropped/truncated download)")]
+    EmptyDownload { relative_path: String },
     #[error("failed to read file {path} for checksum: {source}")]
     ReadFile {
         path: PathBuf,
@@ -232,6 +240,21 @@ enum ModelDownloadTaskError {
 struct DownloadPlan {
     provider: String,
     model_id: String,
+    /// The HuggingFace repo the files are fetched from (e.g.
+    /// `nomic-ai/nomic-embed-text-v1.5`).
+    hf_repo: String,
+    /// The immutable HuggingFace commit SHA every file is fetched from, so the
+    /// download pins `…/resolve/{hf_revision}/{path}` rather than the mutable
+    /// `main` branch (kills the force-push/mutable-ref surface). Sourced from the
+    /// descriptor's `hf_revision`.
+    hf_revision: String,
+    /// The user-facing model tier. The install is gated fail-closed for the guided
+    /// tiers (`English`/`Multilingual`): their weights MUST verify against a pinned
+    /// digest before the model is marked Installed.
+    tier: SemanticSearchModelTier,
+    /// The repo-relative path of the safetensors weights, used by the guided-tier
+    /// fail-closed gate to confirm the weights file carries a pinned digest.
+    weights_relative_path: String,
     install_dir: PathBuf,
     files: Vec<ModelFileSpec>,
     total_bytes: u64,
@@ -436,6 +459,29 @@ pub async fn select_semantic_search_model(
     Ok(cleared)
 }
 
+/// The vec0 table dimension reconciliation must expect for a settings snapshot —
+/// resolved from the persisted `model_id` **regardless of the `enabled` flag**.
+///
+/// Reconciliation keys off the *selected model*, NOT the *active feature*: a user
+/// on a non-768 tier (Multilingual e5 = 384, Custom bge-m3 = 1024) who toggles
+/// Semantic Search OFF still has that `model_id` persisted (disabling never clears
+/// it), and their vec0 table is at the model's width, not 768. If we resolved the
+/// dimension through the worker's `resolve_selected_descriptor` (which returns
+/// `None` the moment `enabled == false`, BEFORE it even reads `model_id`), startup
+/// would fall back to 768 and `reconcile_vectors_table(768)` would DROP+recreate
+/// their table — wiping the entire vector index and forcing a full re-embed. So we
+/// resolve straight from `model_id` here and only fall back to the migration
+/// default 768 when `model_id` is genuinely `None` (a fresh/never-selected
+/// profile). The `enabled` flag is deliberately ignored.
+fn reconcile_expected_dimension(settings: &capture_types::SemanticSearchSettings) -> usize {
+    settings
+        .model_id
+        .as_deref()
+        .and_then(|model_id| resolve_descriptor(&settings.provider, model_id))
+        .map(|descriptor| descriptor.dimension)
+        .unwrap_or(DEFAULT_SEMANTIC_SEARCH_DIMENSION)
+}
+
 /// Reconcile the `vec0` table dimension against the selected model's expected
 /// dimension on startup — the **self-heal** for a permanently-stuck switch.
 ///
@@ -447,16 +493,19 @@ pub async fn select_semantic_search_model(
 /// once on the deferred-startup seam, this rebuilds the table to the selected
 /// model's dimension so the worker can backfill under it again. Idempotent: a
 /// table that already matches is left untouched (the common case — no rebuild, no
-/// vectors discarded). When no model is selected, the table is reconciled to the
-/// migration default so a fresh/disabled state stays at `float[768]`.
+/// vectors discarded).
+///
+/// The expected dimension is resolved from `model_id` **ignoring `enabled`** (see
+/// [`reconcile_expected_dimension`]): a disabled-but-previously-selected non-768
+/// model must KEEP its table (disabling never clears `model_id`), so reconciliation
+/// only falls back to the migration default 768 when no model was ever selected.
+/// Resolving through the worker's enabled-gated `resolve_selected_descriptor` here
+/// would wipe a disabled non-768 user's index on every restart (B1).
 pub(crate) async fn reconcile_semantic_search_index_on_startup(
     infra: &crate::app_infra::AppInfraState,
     settings: &capture_types::SemanticSearchSettings,
 ) {
-    let expected_dimension =
-        crate::semantic_search_worker::resolve_selected_descriptor(settings)
-            .map(|descriptor| descriptor.dimension)
-            .unwrap_or(DEFAULT_SEMANTIC_SEARCH_DIMENSION);
+    let expected_dimension = reconcile_expected_dimension(settings);
     match infra
         .semantic_search()
         .reconcile_vectors_table(expected_dimension)
@@ -613,25 +662,50 @@ fn model_file_specs(descriptor: &SemanticSearchModelDescriptor) -> Vec<ModelFile
 ///
 /// Mirrors the other model downloaders, which pin per-file SHA256 in their
 /// manifests (`ModelArtifactFile.sha256`). The semantic-search downloader fetches
-/// directly from each model's HuggingFace repo (`…/resolve/main/<path>`), so the
-/// hashes below are keyed by `(hf_repo, repo-relative path)`.
+/// directly from each model's HuggingFace repo at the pinned revision
+/// (`…/resolve/{hf_revision}/<path>`), so the hashes below are keyed by
+/// `(hf_repo, repo-relative path)` and verified against the LFS-published digest.
 ///
-/// NOTE (residual gap for the docs agent): the real per-file digests for the three
-/// guided tiers are **not yet pinned** here — they require downloading + hashing
-/// each safetensors artifact (hundreds of MB to ~2 GB) from HuggingFace, which is
-/// out of scope for this change. Every guided-tier file therefore currently returns
-/// `None` (installs but logs "integrity unverified"). The verification plumbing is
-/// in place: filling in the constants below later turns on fail-closed checking
-/// with no further code change. Pin them as `(path, "<64-hex sha256>")` tuples per
-/// `hf_repo` in the match arms below.
+/// Integrity is now **fail-CLOSED for the two guided tiers**: the real LFS sha256
+/// of each weights file is pinned below for `nomic-embed-text-v1.5` (English) and
+/// `multilingual-e5-small` (Multilingual), so a tampered/truncated weights file
+/// fails verification and never installs (see also the guided-tier gate in
+/// [`download_and_install_model`], which refuses to mark a guided tier Installed
+/// unless its weights matched a pinned digest). The **Custom** tier `BAAI/bge-m3`
+/// ships only a PyTorch `pytorch_model.bin` (no `model.safetensors`); that `.bin`
+/// is its declared weights file, so it now ALSO carries a pinned digest below —
+/// Custom stays exempt from the guided-tier MUST-pin gate, but a present pin makes
+/// its install fail-closed too. Any file still without a digest falls through to
+/// the logged "integrity unverified" path, trusting the revision pin + TLS.
 fn pinned_file_sha256(hf_repo: &str, relative_path: &str) -> Option<&'static str> {
     let pinned: &[(&str, &str)] = match hf_repo {
-        // TODO(docs/follow-up): pin the real SHA256 of each guided-tier file. The
-        // arms are wired so adding `("model.safetensors", "<sha256>")` entries here
-        // immediately enables fail-on-mismatch verification for that tier.
-        "nomic-ai/nomic-embed-text-v1.5" => &[],
-        "BAAI/bge-m3" => &[],
-        "intfloat/multilingual-e5-small" => &[],
+        // English tier — pinned LFS sha256 of the safetensors weights.
+        "nomic-ai/nomic-embed-text-v1.5" => &[(
+            "model.safetensors",
+            "9e7d262b1fe5ea350782829496efa831901b77486bbde1cea54a4c822d010d5c",
+        )],
+        // Multilingual tier — pinned LFS sha256 of the weights + tokenizer.
+        "intfloat/multilingual-e5-small" => &[
+            (
+                "model.safetensors",
+                "1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477",
+            ),
+            (
+                "tokenizer.json",
+                "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+            ),
+        ],
+        // Custom tier — `BAAI/bge-m3` ships only `pytorch_model.bin` (no
+        // `model.safetensors`), and that `.bin` is now the descriptor's weights
+        // file, so we DO have a pinnable weights digest: the LFS sha256 of the
+        // PyTorch checkpoint at the pinned revision. Custom/bge-m3 stays exempt from
+        // the guided-tier MUST-pin gate, but pinning here makes its install
+        // fail-closed too (a tampered/truncated `.bin` fails verification and never
+        // installs).
+        "BAAI/bge-m3" => &[(
+            "pytorch_model.bin",
+            "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38",
+        )],
         _ => &[],
     };
     pinned
@@ -692,9 +766,40 @@ fn sha256_of_file(file_path: &Path) -> Result<String, ModelDownloadError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// The HuggingFace `resolve/main` URL for one file in a model repo.
-fn hf_file_url(hf_repo: &str, hf_relative_path: &str) -> String {
-    format!("https://huggingface.co/{hf_repo}/resolve/main/{hf_relative_path}")
+/// Fail-closed install gate for the **guided tiers** (B2): a model whose `tier` is
+/// `English` or `Multilingual` MUST verify its weights against a pinned digest, so
+/// a guided tier can never install down the unverified "trust TLS only" path. The
+/// per-file checksum loop already ran and a mismatch aborted; this only refuses the
+/// finalize when the guided tier's weights file carries no pinned digest at all
+/// (`pinned_file_sha256` returns `None` for it). Custom tier (and any unpinned file)
+/// is exempt — it keeps the "integrity unverified" path, trusting the revision pin
+/// + TLS — so this is a no-op for it.
+fn guard_guided_tier_weights_pinned(plan: &DownloadPlan) -> Result<(), ModelDownloadError> {
+    let is_guided = matches!(
+        plan.tier,
+        SemanticSearchModelTier::English | SemanticSearchModelTier::Multilingual
+    );
+    if !is_guided {
+        return Ok(());
+    }
+    if pinned_file_sha256(&plan.hf_repo, &plan.weights_relative_path).is_none() {
+        return Err(ModelDownloadError::GuidedTierWeightsUnpinned {
+            provider: plan.provider.clone(),
+            model_id: plan.model_id.clone(),
+            weights_relative_path: plan.weights_relative_path.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// The HuggingFace `resolve/{hf_revision}` URL for one file in a model repo.
+///
+/// Pins the **immutable commit SHA** (the descriptor's `hf_revision`) rather than
+/// the mutable `main` branch, so an upstream force-push / branch rewrite can never
+/// swap the bytes under a pinned-digest verification and every install is
+/// reproducible.
+fn hf_file_url(hf_repo: &str, hf_revision: &str, hf_relative_path: &str) -> String {
+    format!("https://huggingface.co/{hf_repo}/resolve/{hf_revision}/{hf_relative_path}")
 }
 
 fn build_download_plan(
@@ -724,6 +829,10 @@ fn build_download_plan(
     Ok(DownloadPlan {
         provider: request.provider.clone(),
         model_id: request.model_id.clone(),
+        hf_repo: descriptor.hf_repo.clone(),
+        hf_revision: descriptor.hf_revision.clone(),
+        tier: descriptor.tier,
+        weights_relative_path: descriptor.expected_layout.weights_relative_path.clone(),
         install_dir,
         files: model_file_specs(&descriptor),
         total_bytes: descriptor.approx_download_bytes,
@@ -908,7 +1017,7 @@ async fn download_and_install_model(
         if cancel_requested.load(Ordering::SeqCst) {
             return Err(ModelDownloadTaskError::Cancelled);
         }
-        let url = hf_file_url(&descriptor.hf_repo, &spec.relative_path);
+        let url = hf_file_url(&plan.hf_repo, &plan.hf_revision, &spec.relative_path);
         // Preserve the repo-relative path on disk. The safetensors layout keeps all
         // three files at the repo root, but joining the relative path keeps this
         // correct for any future model whose weights live in a subdirectory.
@@ -930,6 +1039,7 @@ async fn download_and_install_model(
             &spec.relative_path,
             &destination,
             downloaded_total,
+            spec.expected_sha256.is_some(),
             cancel_requested,
         )
         .await?;
@@ -984,6 +1094,15 @@ async fn download_and_install_model(
         return Err(ModelDownloadError::IncompleteLayout(missing).into());
     }
 
+    // Fail-closed install policy (B2): a **guided tier** (English / Multilingual)
+    // MUST have verified its weights file against a pinned digest before we mark it
+    // Installed. The per-file loop above already ran `verify_file_checksum` and a
+    // mismatch aborted; here we additionally refuse to finalize if the guided tier's
+    // weights have no pinned digest at all (so a guided tier can never install on the
+    // unverified "trust TLS only" path). Custom/unpinned files keep that path — they
+    // install with the "integrity unverified" log, trusting the revision pin + TLS.
+    guard_guided_tier_weights_pinned(plan)?;
+
     emit_download_progress(
         app_handle,
         &SemanticSearchModelDownloadProgressDto::new(
@@ -1010,6 +1129,7 @@ async fn download_file_to(
     relative_path: &str,
     destination: &Path,
     already_downloaded_bytes: u64,
+    has_pinned_sha256: bool,
     cancel_requested: &AtomicBool,
 ) -> Result<u64, ModelDownloadTaskError> {
     // This HTTPS fetch runs over rustls: with fastembed/ort's `native-tls` gone the
@@ -1093,6 +1213,20 @@ async fn download_file_to(
             }
             .into());
         }
+    } else if !has_pinned_sha256 && file_downloaded == 0 {
+        // No Content-Length to compare against AND no pinned SHA256 to catch a
+        // truncated body (finding L7): this file is otherwise unguarded, so at the
+        // very least reject a zero-byte / fully-dropped stream rather than marking an
+        // empty file Installed. A file WITH a pinned digest is already fully
+        // protected by the post-download checksum (Fix 2), so it is exempt here.
+        log_error(format!(
+            "semantic search model download produced an empty file for {}/{} at {url}: 0 bytes with no Content-Length or pinned SHA256 to verify against",
+            plan.provider, plan.model_id
+        ));
+        return Err(ModelDownloadError::EmptyDownload {
+            relative_path: relative_path.to_string(),
+        }
+        .into());
     }
 
     Ok(file_downloaded)
@@ -1314,16 +1448,23 @@ mod tests {
     }
 
     #[test]
-    fn download_plan_covers_the_safetensors_layout() {
-        // ADR 0037: every catalog model downloads the three repo-root safetensors
-        // files (`model.safetensors`, `config.json`, `tokenizer.json`). The old ONNX
-        // graph + external-data siblings (e.g. bge-m3's `onnx/model.onnx_data`) are
-        // gone, so they must NOT appear in the plan.
+    fn download_plan_covers_each_models_weights_layout() {
+        // ADR 0037: every catalog model downloads its weights file plus the two
+        // repo-root JSON files (`config.json`, `tokenizer.json`). The catalog no
+        // longer downloads `model.safetensors` for every model — nomic/e5 do, but
+        // bge-m3's repo ships no safetensors, so it downloads `pytorch_model.bin`
+        // instead (still no ONNX siblings). Each plan must therefore carry ITS OWN
+        // weights file. The old ONNX graph + external-data siblings (e.g. bge-m3's
+        // `onnx/model.onnx_data`) are gone, so they must NOT appear in the plan.
         let manifest = builtin_model_manifest();
         for descriptor in &manifest.models {
             let specs = model_file_specs(descriptor);
             let paths: Vec<&str> = specs.iter().map(|s| s.relative_path.as_str()).collect();
-            assert!(paths.contains(&"model.safetensors"), "{}", descriptor.model_id);
+            assert!(
+                paths.contains(&descriptor.expected_layout.weights_relative_path.as_str()),
+                "{}",
+                descriptor.model_id
+            );
             assert!(paths.contains(&"config.json"), "{}", descriptor.model_id);
             assert!(paths.contains(&"tokenizer.json"), "{}", descriptor.model_id);
             assert!(
@@ -1355,17 +1496,21 @@ mod tests {
     }
 
     #[test]
-    fn hf_urls_point_at_the_model_repo_resolve_main() {
+    fn hf_urls_point_at_the_model_repo_pinned_revision() {
+        // B2: downloads pin the immutable commit SHA (`hf_revision`), not the mutable
+        // `main` branch — so an upstream force-push can never swap the bytes.
         let manifest = builtin_model_manifest();
         let nomic = find_model_descriptor(&manifest, SEMANTIC_SEARCH_PROVIDER_ID, "nomic-embed-text-v1.5")
             .expect("nomic descriptor");
-        let weights_url = hf_file_url(&nomic.hf_repo, "model.safetensors");
+        let weights_url = hf_file_url(&nomic.hf_repo, &nomic.hf_revision, "model.safetensors");
         assert_eq!(
             weights_url,
-            "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/model.safetensors"
+            "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/e9b6763023c676ca8431644204f50c2b100d9aab/model.safetensors"
         );
-        let tokenizer_url = hf_file_url(&nomic.hf_repo, "tokenizer.json");
-        assert!(tokenizer_url.ends_with("/resolve/main/tokenizer.json"));
+        // The URL must carry the pinned revision, never the mutable `main` branch.
+        assert!(!weights_url.contains("/resolve/main/"));
+        let tokenizer_url = hf_file_url(&nomic.hf_repo, &nomic.hf_revision, "tokenizer.json");
+        assert!(tokenizer_url.ends_with(&format!("/resolve/{}/tokenizer.json", nomic.hf_revision)));
     }
 
     #[test]
@@ -1442,8 +1587,7 @@ mod tests {
         // L5: a file with NO pinned hash (every Custom pick, and any guided-tier
         // file not yet sourced) is a no-op success — it installs, integrity
         // unverified. `verify_file_checksum(None)` must return Ok without touching
-        // the bytes, and the guided tiers currently have no pinned hashes so their
-        // file specs carry `expected_sha256: None`.
+        // the bytes.
         let temp = tempfile::tempdir().expect("tempdir");
         let file_path = temp.path().join("model.safetensors");
         std::fs::write(&file_path, b"unpinned but trusted").expect("write file");
@@ -1454,36 +1598,169 @@ mod tests {
         verify_file_checksum(&file_path, "model.safetensors", Some("  "))
             .expect("a blank pinned hash is treated as unpinned");
 
-        // Until the real guided-tier digests are sourced, every guided-tier file
-        // spec is unpinned — pinning a hash in `pinned_file_sha256` turns on
-        // fail-closed verification for that file with no further code change.
+        // B2: the two guided tiers (nomic, e5) carry a real pinned weights digest —
+        // fail-closed. bge-m3 (Custom) ships only `pytorch_model.bin`, and that
+        // weights file is now pinned too (fail-closed) — even though the Custom tier
+        // is exempt from the MUST-pin gate, bge-m3 happens to satisfy it. The unpinned
+        // no-op path above still exists generically for any not-yet-sourced file.
         let manifest = builtin_model_manifest();
         for descriptor in &manifest.models {
-            for spec in model_file_specs(descriptor) {
-                assert!(
-                    spec.expected_sha256.is_none(),
-                    "guided-tier file {} for {} has no pinned hash yet (residual L5 gap)",
-                    spec.relative_path,
+            let weights = &descriptor.expected_layout.weights_relative_path;
+            let weights_spec = model_file_specs(descriptor)
+                .into_iter()
+                .find(|spec| &spec.relative_path == weights)
+                .expect("a weights file spec");
+            match descriptor.tier {
+                SemanticSearchModelTier::English | SemanticSearchModelTier::Multilingual => assert!(
+                    weights_spec.expected_sha256.is_some(),
+                    "guided-tier {} must pin its weights digest (fail-closed)",
                     descriptor.model_id
-                );
+                ),
+                // Custom is EXEMPT from the MUST-pin gate, but bge-m3's
+                // `pytorch_model.bin` is in fact pinned, so its digest is present.
+                SemanticSearchModelTier::Custom => assert!(
+                    weights_spec.expected_sha256.is_some(),
+                    "custom-tier {} pins its `pytorch_model.bin` weights digest (bge-m3 is exempt but happens to be pinned)",
+                    descriptor.model_id
+                ),
             }
         }
     }
 
     #[test]
     fn pinned_hash_lookup_resolves_when_a_constant_is_present() {
-        // Guards the verification plumbing: `pinned_file_sha256` returns the digest
-        // for a known (hf_repo, path) and None otherwise. Because no real hashes
-        // are pinned yet, every current lookup is None; this test documents the
-        // contract so a future docs/follow-up agent that pins a constant can flip a
-        // file to verified.
+        // Guards the verification plumbing: `pinned_file_sha256` returns the real
+        // pinned LFS digest for a known (hf_repo, path) and None for an unpinned one.
+        let nomic = pinned_file_sha256("nomic-ai/nomic-embed-text-v1.5", "model.safetensors")
+            .expect("nomic weights are pinned (fail-closed)");
+        assert_eq!(
+            nomic,
+            "9e7d262b1fe5ea350782829496efa831901b77486bbde1cea54a4c822d010d5c"
+        );
+        let e5 = pinned_file_sha256("intfloat/multilingual-e5-small", "model.safetensors")
+            .expect("e5 weights are pinned (fail-closed)");
+        assert_eq!(
+            e5,
+            "1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477"
+        );
+        // bge-m3 (Custom) ships no `model.safetensors` — its weights live in
+        // `pytorch_model.bin`, which IS pinned. Looking up the nonexistent
+        // `model.safetensors` is what returns `None`.
         assert!(
-            pinned_file_sha256("nomic-ai/nomic-embed-text-v1.5", "model.safetensors").is_none(),
-            "no guided-tier hashes are pinned yet (residual L5 gap, see pinned_file_sha256)"
+            pinned_file_sha256("BAAI/bge-m3", "model.safetensors").is_none(),
+            "bge-m3 has no `model.safetensors` (its weights are `pytorch_model.bin`)"
+        );
+        let bge_m3 = pinned_file_sha256("BAAI/bge-m3", "pytorch_model.bin")
+            .expect("bge-m3 weights live in `pytorch_model.bin` and are pinned");
+        assert_eq!(
+            bge_m3,
+            "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38"
         );
         assert!(
             pinned_file_sha256("some/unknown-model", "model.safetensors").is_none(),
             "an unknown hf_repo (not in the catalog) is never pinned"
         );
+    }
+
+    /// B1 regression: startup reconciliation resolves the expected vec0 dimension
+    /// from `model_id` IGNORING `enabled`, so a disabled-but-previously-selected
+    /// non-768 model keeps its table instead of being wiped back to `float[768]`.
+    #[test]
+    fn reconcile_dimension_ignores_enabled_and_keys_off_model_id() {
+        // A user on the Multilingual tier (e5-small, 384-dim) who toggled the feature
+        // OFF: `model_id` is still persisted (disabling never clears it), so the
+        // expected dimension must stay 384 — NOT fall back to the 768 default that
+        // would DROP+recreate their vector index.
+        let disabled_e5 = capture_types::SemanticSearchSettings {
+            enabled: false,
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: Some("multilingual-e5-small".to_string()),
+        };
+        assert_eq!(
+            reconcile_expected_dimension(&disabled_e5),
+            384,
+            "a disabled non-768 model must keep its table dimension (B1: never wipe)"
+        );
+
+        // Only a genuinely never-selected profile (model_id == None) falls back to
+        // the migration default 768, so a fresh DB stays at `float[768]`.
+        let never_selected = capture_types::SemanticSearchSettings {
+            enabled: false,
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: None,
+        };
+        assert_eq!(
+            reconcile_expected_dimension(&never_selected),
+            DEFAULT_SEMANTIC_SEARCH_DIMENSION,
+            "no model ever selected => the migration default 768"
+        );
+        assert_eq!(DEFAULT_SEMANTIC_SEARCH_DIMENSION, 768);
+
+        // An enabled non-768 model resolves the same way (enabled is irrelevant here).
+        let enabled_bge = capture_types::SemanticSearchSettings {
+            enabled: true,
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: Some("bge-m3".to_string()),
+        };
+        assert_eq!(reconcile_expected_dimension(&enabled_bge), 1024);
+    }
+
+    /// B2: the guided-tier fail-closed gate refuses to finalize a guided tier whose
+    /// weights have no pinned digest, while leaving the Custom tier on the unpinned
+    /// path.
+    #[test]
+    fn guided_tier_gate_requires_a_pinned_weights_digest() {
+        fn plan_for(
+            hf_repo: &str,
+            tier: SemanticSearchModelTier,
+            weights_relative_path: &str,
+        ) -> DownloadPlan {
+            DownloadPlan {
+                provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+                model_id: "m".to_string(),
+                hf_repo: hf_repo.to_string(),
+                hf_revision: "rev".to_string(),
+                tier,
+                weights_relative_path: weights_relative_path.to_string(),
+                install_dir: PathBuf::from("/tmp/x"),
+                files: Vec::new(),
+                total_bytes: 0,
+            }
+        }
+
+        // Guided tiers with real pinned weights pass the gate.
+        guard_guided_tier_weights_pinned(&plan_for(
+            "nomic-ai/nomic-embed-text-v1.5",
+            SemanticSearchModelTier::English,
+            "model.safetensors",
+        ))
+        .expect("nomic weights are pinned => gate passes");
+        guard_guided_tier_weights_pinned(&plan_for(
+            "intfloat/multilingual-e5-small",
+            SemanticSearchModelTier::Multilingual,
+            "model.safetensors",
+        ))
+        .expect("e5 weights are pinned => gate passes");
+
+        // A guided tier whose weights are NOT pinned is refused (fail-closed).
+        let error = guard_guided_tier_weights_pinned(&plan_for(
+            "BAAI/bge-m3",
+            SemanticSearchModelTier::English,
+            "model.safetensors",
+        ))
+        .expect_err("an unpinned guided tier must be refused");
+        assert!(matches!(
+            error,
+            ModelDownloadError::GuidedTierWeightsUnpinned { .. }
+        ));
+
+        // The Custom tier is exempt: it installs on the unpinned path even though its
+        // weights carry no pinned digest.
+        guard_guided_tier_weights_pinned(&plan_for(
+            "BAAI/bge-m3",
+            SemanticSearchModelTier::Custom,
+            "model.safetensors",
+        ))
+        .expect("custom tier is exempt from the fail-closed gate");
     }
 }

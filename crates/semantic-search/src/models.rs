@@ -128,6 +128,12 @@ pub struct SemanticSearchModelDescriptor {
     /// The HuggingFace repo id (e.g. `nomic-ai/nomic-embed-text-v1.5`) the Settings
     /// slice downloads the model from.
     pub hf_repo: String,
+    /// The immutable HuggingFace commit SHA the model is pinned to. Downloads
+    /// resolve `…/resolve/{hf_revision}/{path}` instead of the mutable `main`
+    /// branch — this kills the force-push / mutable-ref surface (an upstream
+    /// rewrite of `main` can no longer swap the bytes under us) and makes every
+    /// install reproducible (the same revision always yields the same files).
+    pub hf_revision: String,
     pub license_label: Option<String>,
     /// Vector dimension this model produces. The default English tier is 768 to
     /// match the `search_document_vectors vec0(embedding float[768])` table.
@@ -263,6 +269,7 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             tier: SemanticSearchModelTier::English,
             architecture: SemanticSearchArchitecture::NomicBert,
             hf_repo: "nomic-ai/nomic-embed-text-v1.5".to_string(),
+            hf_revision: "e9b6763023c676ca8431644204f50c2b100d9aab".to_string(),
             license_label: Some("Apache-2.0".to_string()),
             dimension: 768,
             max_tokens: 8192,
@@ -283,6 +290,7 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             tier: SemanticSearchModelTier::Multilingual,
             architecture: SemanticSearchArchitecture::XlmRoberta,
             hf_repo: "intfloat/multilingual-e5-small".to_string(),
+            hf_revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3".to_string(),
             license_label: Some("MIT".to_string()),
             dimension: 384,
             max_tokens: 512,
@@ -301,13 +309,21 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             tier: SemanticSearchModelTier::Custom,
             architecture: SemanticSearchArchitecture::XlmRoberta,
             hf_repo: "BAAI/bge-m3".to_string(),
+            hf_revision: "5617a9f61b028005a4858fdac845db406aefb181".to_string(),
             license_label: Some("MIT".to_string()),
             dimension: 1024,
             max_tokens: 8192,
             // ~2.27 GB safetensors.
             approx_download_bytes: 2_270_000_000,
             pooling: SemanticSearchPooling::Cls,
-            expected_layout: InstalledModelLayout::default(),
+            // bge-m3's repo ships ONLY a PyTorch `pytorch_model.bin` (no
+            // `model.safetensors`), so the weights file — and thus the download
+            // path AND the on-disk loader input — is the `.bin`. The candle
+            // backend branches on this extension and reads it via the pickle path
+            // (`VarBuilder::from_pth`) instead of mmaping safetensors. The `.bin`
+            // is an `XLMRobertaModel` state-dict whose keys already sit at the
+            // VarBuilder root (same as e5), so no key remap is needed.
+            expected_layout: InstalledModelLayout::from_weights_path("pytorch_model.bin"),
         },
     ]
 }
@@ -518,6 +534,7 @@ mod tests {
             tier: SemanticSearchModelTier::English,
             architecture: SemanticSearchArchitecture::NomicBert,
             hf_repo: "nomic-ai/nomic-embed-text-v1.5".to_string(),
+            hf_revision: "e9b6763023c676ca8431644204f50c2b100d9aab".to_string(),
             license_label: Some("Apache-2.0".to_string()),
             dimension: 768,
             max_tokens: 8192,
@@ -821,20 +838,73 @@ mod tests {
     }
 
     /// Drift guard (replaces the retired `ort` pin-lockstep + fastembed-synthesis
-    /// guards): each descriptor's hand-coded `dimension` must equal the model's own
-    /// `config.json` hidden size, and the config's layer count must be sane. Real
-    /// upstream config fixtures are committed under
-    /// `tests/fixtures/{model_id}/config.json`. A hand-coded dimension that drifts
-    /// from the real config fails HERE.
+    /// guards): each descriptor's hand-coded `dimension`, `architecture`, and
+    /// `max_tokens` must agree with the model's own `config.json`, and the config's
+    /// layer count must be sane. Real upstream config fixtures are committed under
+    /// `tests/fixtures/{model_id}/config.json`. A hand-coded fact that drifts from
+    /// the real config fails HERE. (Pooling is not in `config.json`, so it is guarded
+    /// separately by `pooling_is_a_declared_field_hand_coded_per_model`.)
     #[test]
     fn descriptor_dimension_matches_config_json() {
         use serde_json::Value;
+
+        /// The per-model reference facts cross-checked against `config.json`. The
+        /// HuggingFace `architectures[0]` class name the descriptor's
+        /// [`SemanticSearchArchitecture`] must map to, and the config field the
+        /// hand-coded `max_tokens` must equal (nomic names it `n_positions`,
+        /// XLM-Roberta `max_position_embeddings`). e5/bge `max_position_embeddings`
+        /// carries the +2 offset for the two special tokens, so the descriptor's
+        /// usable window is the config value minus that offset.
+        struct ConfigReference {
+            model_id: &'static str,
+            architecture: SemanticSearchArchitecture,
+            architectures_class: &'static str,
+            max_tokens_field: &'static str,
+            max_position_offset: u64,
+        }
+        let references = [
+            ConfigReference {
+                model_id: "nomic-embed-text-v1.5",
+                architecture: SemanticSearchArchitecture::NomicBert,
+                architectures_class: "NomicBertModel",
+                max_tokens_field: "n_positions",
+                max_position_offset: 0,
+            },
+            ConfigReference {
+                model_id: "multilingual-e5-small",
+                architecture: SemanticSearchArchitecture::XlmRoberta,
+                architectures_class: "XLMRobertaModel",
+                max_tokens_field: "max_position_embeddings",
+                max_position_offset: 2,
+            },
+            ConfigReference {
+                model_id: "bge-m3",
+                architecture: SemanticSearchArchitecture::XlmRoberta,
+                architectures_class: "XLMRobertaModel",
+                max_tokens_field: "max_position_embeddings",
+                max_position_offset: 2,
+            },
+        ];
 
         let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures");
 
         for descriptor in catalog() {
+            let reference = references
+                .iter()
+                .find(|reference| reference.model_id == descriptor.model_id)
+                .unwrap_or_else(|| {
+                    panic!("{}: no config reference data for descriptor", descriptor.model_id)
+                });
+            // The hand-coded architecture must match its reference (the reference is
+            // in turn cross-checked against config.json's `architectures[0]` below).
+            assert_eq!(
+                descriptor.architecture, reference.architecture,
+                "{}: descriptor.architecture drifted from the config reference",
+                descriptor.model_id
+            );
+
             let config_path = fixtures_dir.join(&descriptor.model_id).join(CONFIG_FILE_NAME);
             let bytes = std::fs::read(&config_path).unwrap_or_else(|error| {
                 panic!("read fixture config {}: {error}", config_path.display())
@@ -856,6 +926,47 @@ mod tests {
                 hidden_size as usize, descriptor.dimension,
                 "{}: descriptor.dimension ({}) drifted from config hidden size ({})",
                 descriptor.model_id, descriptor.dimension, hidden_size
+            );
+
+            // The candle architecture is hand-coded, never inferred from an id — so
+            // the config's `architectures[0]` class name must match the reference we
+            // mapped the descriptor's `SemanticSearchArchitecture` to.
+            let architectures_class = config
+                .get("architectures")
+                .and_then(Value::as_array)
+                .and_then(|classes| classes.first())
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| {
+                    panic!("{}: config.json has no architectures[0]", descriptor.model_id)
+                });
+            assert_eq!(
+                architectures_class, reference.architectures_class,
+                "{}: config architectures[0] ({architectures_class}) disagrees with the descriptor's architecture",
+                descriptor.model_id
+            );
+
+            // The hand-coded `max_tokens` window must equal the config's positional
+            // limit (minus the special-token offset for the XLM-Roberta tiers). A
+            // descriptor that over-states the window would silently feed candle
+            // sequences the model cannot encode.
+            let max_position = config
+                .get(reference.max_tokens_field)
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: config.json has no {}",
+                        descriptor.model_id, reference.max_tokens_field
+                    )
+                });
+            let usable_window = max_position - reference.max_position_offset;
+            assert_eq!(
+                usable_window as usize, descriptor.max_tokens,
+                "{}: descriptor.max_tokens ({}) drifted from config {} ({} - {} offset)",
+                descriptor.model_id,
+                descriptor.max_tokens,
+                reference.max_tokens_field,
+                max_position,
+                reference.max_position_offset
             );
 
             // nomic names the layer count `n_layer`; XLM-Roberta uses
