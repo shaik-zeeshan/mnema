@@ -1,11 +1,14 @@
 //! The candle **Semantic Search Backend** — the raw model forward on the Apple
 //! GPU (Metal) or CPU.
 //!
-//! Ported from the proven `nomic-embed-text-v1.5` reference embedder: load
-//! `model.safetensors` via an mmaped `VarBuilder`, run the architecture the
-//! descriptor names (NomicBert for the English default, XLM-Roberta for the
-//! multilingual-e5 / bge-m3 families), pool per the descriptor (Mean or CLS), and
-//! L2-normalize. Always returns F32 vectors so the scoring path is unchanged.
+//! Ported from the proven `nomic-embed-text-v1.5` reference embedder: load the
+//! descriptor's weights file into a `VarBuilder` — either `model.safetensors` via
+//! an mmaped `VarBuilder` (nomic / e5) or a PyTorch `pytorch_model.bin` / `.pth`
+//! via the safe pickle reader (`VarBuilder::from_pth`, used by bge-m3, whose repo
+//! ships no safetensors) — run the architecture the descriptor names (NomicBert
+//! for the English default, XLM-Roberta for the multilingual-e5 / bge-m3
+//! families), pool per the descriptor (Mean or CLS), and L2-normalize. Always
+//! returns F32 vectors so the scoring path is unchanged.
 //!
 //! **Device & precision.** Tries `Device::new_metal(0)` then falls back to CPU.
 //! Metal kernels only link when the crate `metal` feature is on, so the metal
@@ -57,23 +60,69 @@ pub struct CandleBackend {
     device: Device,
     pooling: SemanticSearchPooling,
     dimension: usize,
-    max_tokens: usize,
     /// True when Metal was unavailable and we fell back to CPU.
     pub cpu_fallback: bool,
 }
 
 impl CandleBackend {
     /// Load the backend from a `semantic_search_models/{provider}/{model_id}/`
-    /// directory and its descriptor: read `config.json`, mmap the safetensors at
-    /// the descriptor's weights path, dispatch the architecture, load the
-    /// forward-pass tokenizer.
+    /// directory and its descriptor: read `config.json`, load the weights at the
+    /// descriptor's weights path (mmaped safetensors for nomic / e5, or the safe
+    /// pickle reader for a PyTorch `.bin` / `.pth` like bge-m3), dispatch the
+    /// architecture, load the forward-pass tokenizer.
     pub fn load_from_dir(
         model_dir: impl AsRef<Path>,
         descriptor: &SemanticSearchModelDescriptor,
     ) -> Result<Self, EmbeddingError> {
+        let (device, cpu_fallback) = pick_device();
+        Self::load_on_device(model_dir, descriptor, device, cpu_fallback)
+    }
+
+    /// Load the backend forced onto the CPU (F32) — the always-available reference
+    /// precision. Exists so the parity gate can load the F32 reference next to the
+    /// Metal (F16) backend and prove the two precisions agree; production always
+    /// goes through [`load_from_dir`](Self::load_from_dir).
+    #[doc(hidden)]
+    pub fn load_cpu(
+        model_dir: impl AsRef<Path>,
+        descriptor: &SemanticSearchModelDescriptor,
+    ) -> Result<Self, EmbeddingError> {
+        Self::load_on_device(model_dir, descriptor, Device::Cpu, false)
+    }
+
+    /// Load the backend forced onto Metal (F16) when one can be acquired (the
+    /// `metal` feature is compiled in AND `Device::new_metal(0)` succeeds), else
+    /// `None`. Mirrors the Metal branch of [`pick_device`]; the parity gate uses the
+    /// `None` to skip the CPU-vs-Metal compare on CI / non-macOS / headless runners
+    /// where Metal is unavailable. Keeps `candle_core::Device` out of the caller.
+    #[doc(hidden)]
+    pub fn try_load_metal(
+        model_dir: impl AsRef<Path>,
+        descriptor: &SemanticSearchModelDescriptor,
+    ) -> Option<Result<Self, EmbeddingError>> {
+        #[cfg(feature = "metal")]
+        {
+            let device = Device::new_metal(0).ok()?;
+            Some(Self::load_on_device(model_dir, descriptor, device, false))
+        }
+        #[cfg(not(feature = "metal"))]
+        {
+            let _ = (model_dir, descriptor);
+            None
+        }
+    }
+
+    /// Load the backend onto a caller-chosen `device` (otherwise identical to
+    /// [`load_from_dir`](Self::load_from_dir), which picks the device itself). The
+    /// shared core behind `load_from_dir`, `load_cpu`, and `try_load_metal`.
+    fn load_on_device(
+        model_dir: impl AsRef<Path>,
+        descriptor: &SemanticSearchModelDescriptor,
+        device: Device,
+        cpu_fallback: bool,
+    ) -> Result<Self, EmbeddingError> {
         let model_dir = model_dir.as_ref();
 
-        let (device, cpu_fallback) = pick_device();
         // F16 on Metal (RAM win, ~11% slower — accepted), F32 on CPU (F16 is
         // emulated/slow there). The on-disk weights are F32; the dtype arg casts
         // them into device memory at load.
@@ -83,15 +132,18 @@ impl CandleBackend {
             DType::F32
         };
 
-        let safetensors_path = model_dir.join(&descriptor.expected_layout.weights_relative_path);
-        // The mmaped weights file must exist before we hand it to candle; surface a
-        // neutral ReadModelFile (not a deep candle string) if it does not.
-        if !safetensors_path.is_file() {
+        let weights_path = model_dir.join(&descriptor.expected_layout.weights_relative_path);
+        // The weights file must exist before we hand it to candle; surface a
+        // neutral ReadModelFile (not a deep candle string) if it does not. The
+        // message names the ACTUAL weights file the descriptor declares
+        // (`model.safetensors` for nomic / e5, `pytorch_model.bin` for bge-m3) so a
+        // missing-file error is honest about what was sought.
+        if !weights_path.is_file() {
             return Err(EmbeddingError::ReadModelFile {
-                path: safetensors_path.clone(),
+                path: weights_path.clone(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    "model.safetensors not found",
+                    format!("{} not found", descriptor.expected_layout.weights_relative_path),
                 ),
             });
         }
@@ -99,13 +151,35 @@ impl CandleBackend {
         let config_path = model_dir.join(CONFIG_FILE_NAME);
         let config_bytes = read_file(&config_path)?;
 
-        // SAFETY: mmap of a trusted local safetensors file; the mapping's lifetime
-        // ends with the VarBuilder and the model copies what it needs at load time.
-        // The dtype arg casts the on-disk F32 tensors into device memory at the
-        // requested precision (F16 ~halves the resident weight bytes on Metal).
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[&safetensors_path], dtype, &device)
+        // Branch on the weights file format. A PyTorch checkpoint (`.bin` / `.pth`,
+        // case-insensitive) goes through the SAFE pickle reader; a safetensors file
+        // goes through the mmap path below.
+        //
+        // SAFETY: the unsafe mmap is reached ONLY on the safetensors branch — it is
+        // an mmap of a trusted local safetensors file; the mapping's lifetime ends
+        // with the VarBuilder and the model copies what it needs at load time. The
+        // `.bin`/`.pth` branch is entirely safe: `VarBuilder::from_pth` is a safe fn
+        // backed by `candle_core::pickle::PthTensors`, which reads tensors lazily
+        // per-name — so a large PyTorch checkpoint like bge-m3's 2.27 GB does NOT
+        // double-load (only the tensors the model actually requests are read, and
+        // any int64 buffers the architecture never asks for are never touched). In
+        // BOTH branches the `dtype` arg casts the on-disk F32 tensors into device
+        // memory at the requested precision (F16 ~halves the resident weight bytes
+        // on Metal).
+        let is_pytorch_checkpoint = weights_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("bin") || ext.eq_ignore_ascii_case("pth")
+            });
+        let vb = if is_pytorch_checkpoint {
+            VarBuilder::from_pth(&weights_path, dtype, &device)
                 .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?
+        } else {
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(&[&weights_path], dtype, &device)
+                    .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?
+            }
         };
 
         let model = match descriptor.architecture {
@@ -135,7 +209,6 @@ impl CandleBackend {
             device,
             pooling: descriptor.pooling,
             dimension: descriptor.dimension,
-            max_tokens: descriptor.max_tokens,
             cpu_fallback,
         })
     }
@@ -232,10 +305,6 @@ impl super::SemanticSearchBackend for CandleBackend {
     fn dimension(&self) -> usize {
         self.dimension
     }
-
-    fn max_tokens(&self) -> usize {
-        self.max_tokens
-    }
 }
 
 /// Try Metal (when the `metal` feature is compiled in), fall back to CPU. Returns
@@ -284,8 +353,14 @@ fn cls_pool(hidden: &Tensor) -> candle_core::Result<Tensor> {
     hidden.get_on_dim(1, 0)?.contiguous()
 }
 
-/// L2-normalize each row of (B,H).
+/// L2-normalize each row of (B,H), in F32.
 fn l2_normalize(x: &Tensor) -> candle_core::Result<Tensor> {
+    // Normalize in F32 regardless of the device dtype: on Metal `x` is F16, where
+    // the `1e-9` zero-guard floor below underflows to 0.0 and stops guarding — a
+    // degenerate all-zero pooled row would then divide by zero and store NaN. The
+    // cast makes the floor effective AND drops F16 norm precision loss; the output
+    // is f32 anyway (the caller casts to F32 before `to_vec2`).
+    let x = x.to_dtype(DType::F32)?;
     // Floor the norm at a tiny positive value so a degenerate all-zero pooled row
     // divides to a finite (zero) vector instead of NaN/Inf — the same guard the
     // wrapper's `mean_pool_l2` applies via its epsilon, and the clamp idiom

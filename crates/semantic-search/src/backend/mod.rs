@@ -21,8 +21,7 @@ use thiserror::Error;
 /// No variant names a specific runtime: the same shape covers candle (and any
 /// future backend). `ReadModelFile` / `LoadModel` / `LoadTokenizer` / `Tokenize`
 /// / `Embed` / `EmptyEmbedding` are carried over unchanged from the fastembed era;
-/// `LoadConfig` and `Device` were added for candle (parsing `config.json` and
-/// acquiring a compute device).
+/// `LoadConfig` was added for candle (parsing `config.json`).
 #[derive(Debug, Error)]
 pub enum EmbeddingError {
     #[error("failed to read model file {path}: {source}")]
@@ -33,8 +32,6 @@ pub enum EmbeddingError {
     },
     #[error("failed to load model config: {0}")]
     LoadConfig(String),
-    #[error("failed to acquire compute device: {0}")]
-    Device(String),
     #[error("failed to load model: {0}")]
     LoadModel(String),
     #[error("failed to load tokenizer: {0}")]
@@ -62,7 +59,4 @@ pub trait SemanticSearchBackend: Send {
 
     /// The vector dimension this backend's model produces.
     fn dimension(&self) -> usize;
-
-    /// The model's token window (used by the wrapper to size its chunk windows).
-    fn max_tokens(&self) -> usize;
 }
