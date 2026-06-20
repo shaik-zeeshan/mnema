@@ -1,13 +1,22 @@
 //! speakrs on-device diarization provider (Slice 2 + 3).
 //!
 //! speakrs is a pure-Rust pyannote community-1 pipeline with native CoreML
-//! acceleration. Unlike the sherpa provider it runs the WHOLE Audio Segment in
-//! one pass — NO safe-chunk window. Rationale: the speaker-analysis helper runs
-//! subprocess-per-job (see CONTEXT.md), so the subprocess exit is the
-//! memory-reclamation boundary; and an Audio Segment is capped at 5 minutes, so
-//! the transient CoreML peak is bounded and length-bounded scratch. Safe-chunking
-//! stays specific to providers with their own per-call ceilings (sherpa's
-//! pyannote/TitaNet runtime). So this module deliberately has no chunking.
+//! acceleration. Segments at or below [`SPEAKRS_SAFE_CHUNK_SECONDS`] are diarized
+//! in a single whole-segment pass; longer segments are diarized in sequential
+//! safe-chunks through the same pipeline and the per-chunk speaker clusters are
+//! stitched back into segment-wide identities by centroid similarity
+//! ([`stitch_chunk_mappings`]).
+//!
+//! Why chunk (measured, not assumed): whole-segment diarization trips a large
+//! transient CoreML buffer past ~3min (~5GB physical footprint at 5min); the same
+//! work in ≤180s chunks through the SAME pipeline peaks ~1.45GB and is *faster*,
+//! because the per-run transients free between calls (the CoreML sessions stay
+//! loaded; only the model weights persist). On the VoxConverse DER bench this is
+//! accuracy-neutral at the tuned stitch threshold (7.56% vs 7.47% whole-segment).
+//! This supersedes the earlier "subprocess exit is the only reclamation boundary,
+//! so never chunk" rationale, which the footprint timeline disproved (the peak is
+//! an upfront transient that frees mid-run, not retained graphics memory). See
+//! ADR 0003.
 
 use std::{
     path::{Path, PathBuf},
@@ -23,7 +32,8 @@ use crate::providers::shared::{
     merge_adjacent_turns, speaker_skip_reason, validate_decoded_samples, SAMPLE_RATE_HZ,
 };
 use crate::providers::speakrs_mapping::{
-    map_speakrs_result, provider_cluster_id, SpeakerClusterCentroid,
+    map_speakrs_result, provider_cluster_id, stitch_chunk_mappings, SpeakerClusterCentroid,
+    SpeakrsMapping,
 };
 use crate::{
     model_install_dir, safe_path_component, SpeakerAnalysisError, SpeakerAnalysisMetadata,
@@ -33,6 +43,24 @@ use crate::{
 
 /// `provider_version` stamp; the crate version is pinned in Cargo.toml.
 const SPEAKRS_PROVIDER_VERSION: &str = concat!("speakrs/", "0.4");
+
+/// Safe-chunk window: segments longer than this are diarized in sequential chunks
+/// of this length (then stitched). Whole-segment diarization spikes a large
+/// transient CoreML buffer past ~3min (~5GB at 5min); chunking at 180s caps the
+/// peak ~1.45GB and is *faster*, while staying DER-neutral on the VoxConverse
+/// bench (7.56% vs 7.47% whole-segment). 180s keeps a max-length 5-minute segment
+/// to two chunks (one stitch boundary). Segments at or below this run whole.
+const SPEAKRS_SAFE_CHUNK_SECONDS: usize = 180;
+
+/// Minimum trailing-chunk length: a final chunk shorter than this is folded into
+/// the previous one so every `pipeline.run` gets at least a few segmentation
+/// windows (the segmentation window is 10s).
+const SPEAKRS_MIN_CHUNK_TAIL_SECONDS: usize = 20;
+
+/// Cosine-similarity threshold for stitching per-chunk speaker clusters back into
+/// segment-wide identities. Tuned on the VoxConverse bench: 0.5 over-merges
+/// distinct speakers (+3.4pp DER), 0.8 over-splits; 0.6 is DER-neutral.
+const SPEAKRS_STITCH_SIMILARITY: f32 = 0.6;
 
 #[derive(Debug, Clone)]
 pub struct SpeakrsSpeakerAnalysisProvider {
@@ -156,7 +184,8 @@ fn run_speakrs_blocking(
         return Ok(output);
     }
 
-    // 5. Run speakrs WHOLE-SEGMENT (no chunking — see module docs). CoreML mode.
+    // 5. Create the CoreML pipeline (compute units left at speakrs's default; the
+    //    GPU-vs-ANE choice was measured not to affect the memory peak).
     let mut pipeline = speakrs::OwnedDiarizationPipeline::from_dir(
         install_dir.clone(),
         speakrs::ExecutionMode::CoreMl,
@@ -165,42 +194,68 @@ fn run_speakrs_blocking(
         stage: "create_pipeline".to_string(),
         message: format!("failed to load speakrs pipeline from {}: {error}", install_dir.display()),
     })?;
-    let result = pipeline
-        .run(&samples)
-        .map_err(|error| SpeakerAnalysisError::Runtime {
-            stage: "diarize".to_string(),
-            message: format!("speakrs diarization failed: {error}"),
-        })?;
 
-    // 6. Decompose the DiarizationResult into the plain inputs the pure mapper
-    //    takes (no speakrs/ndarray types cross this boundary).
-    let segments: Vec<(f64, f64, String)> = result
-        .segments
-        .iter()
-        .map(|segment| (segment.start, segment.end, segment.speaker.clone()))
-        .collect();
+    // 6. Run + map into the provider-neutral turns/centroids contract. Segments
+    //    longer than the safe-chunk window are diarized in sequential chunks through
+    //    the SAME pipeline (CoreML sessions stay loaded) and the per-chunk clusters
+    //    are stitched back into segment-wide identities; shorter segments — the
+    //    common case, since default segments are well under the window — run whole
+    //    with no stitch overhead. Chunking bounds the CoreML memory peak (see
+    //    SPEAKRS_SAFE_CHUNK_SECONDS) and is DER-neutral with the tuned stitch sim.
+    let chunk_samples = SPEAKRS_SAFE_CHUNK_SECONDS * SAMPLE_RATE_HZ as usize;
+    let min_tail_samples = SPEAKRS_MIN_CHUNK_TAIL_SECONDS * SAMPLE_RATE_HZ as usize;
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut range_start = 0usize;
+    while range_start < samples.len() {
+        let range_end = (range_start + chunk_samples).min(samples.len());
+        ranges.push((range_start, range_end));
+        range_start = range_end;
+    }
+    // Fold a too-short trailing chunk into the previous one.
+    if ranges.len() >= 2 {
+        let last = *ranges.last().unwrap();
+        if last.1 - last.0 < min_tail_samples {
+            ranges.pop();
+            ranges.last_mut().unwrap().1 = last.1;
+        }
+    }
 
-    // `ChunkEmbeddings`/`ChunkSpeakerClusters` are newtypes over ndarray arrays
-    // shaped (chunks, speakers, dim) and (chunks, speakers). Read shape + flat
-    // row-major data through the arrays' own public methods (`shape`,
-    // `as_slice`, `iter`) so this file never names an `ndarray` type — that
-    // avoids coupling our signatures to speakrs's ndarray version.
-    let emb_shape = result.embeddings.0.shape();
-    let (chunks, speakers, dim) = if emb_shape.len() == 3 {
-        (emb_shape[0], emb_shape[1], emb_shape[2])
+    let chunk_count = ranges.len();
+    let mapping = if chunk_count <= 1 {
+        let result = pipeline
+            .run(&samples)
+            .map_err(|error| SpeakerAnalysisError::Runtime {
+                stage: "diarize".to_string(),
+                message: format!("speakrs diarization failed: {error}"),
+            })?;
+        map_run_result(result)
     } else {
-        (0, 0, 0)
-    };
-    let embeddings: Vec<f32> = match result.embeddings.0.as_slice() {
-        Some(slice) => slice.to_vec(),
-        None => result.embeddings.0.iter().copied().collect(),
-    };
-    let hard_clusters: Vec<i32> = match result.hard_clusters.0.as_slice() {
-        Some(slice) => slice.to_vec(),
-        None => result.hard_clusters.0.iter().copied().collect(),
+        let mut chunk_mappings: Vec<(u64, SpeakrsMapping)> = Vec::with_capacity(chunk_count);
+        for (start, end) in ranges {
+            let result =
+                pipeline
+                    .run(&samples[start..end])
+                    .map_err(|error| SpeakerAnalysisError::Runtime {
+                        stage: "diarize".to_string(),
+                        message: format!("speakrs diarization failed: {error}"),
+                    })?;
+            let offset_ms = start as u64 * 1000 / SAMPLE_RATE_HZ as u64;
+            chunk_mappings.push((offset_ms, map_run_result(result)));
+        }
+        stitch_chunk_mappings(chunk_mappings, SPEAKRS_STITCH_SIMILARITY)
     };
 
-    let mapping = map_speakrs_result(&segments, chunks, speakers, dim, &embeddings, &hard_clusters);
+    // Record the actual chunking in provenance (the base output is stamped
+    // "single"; override it when the segment was safe-chunked).
+    if chunk_count > 1 {
+        let provenance = &mut output.metadata.provenance;
+        provenance.insert("chunkingMode".to_string(), json!("safe_chunked"));
+        provenance.insert("chunkCount".to_string(), json!(chunk_count));
+        provenance.insert(
+            "safeChunkSeconds".to_string(),
+            json!(SPEAKRS_SAFE_CHUNK_SECONDS),
+        );
+    }
 
     // 7. Build turns (post-process to match sherpa: merge adjacent same-cluster
     //    turns, then mark cross-cluster overlaps).
@@ -219,6 +274,36 @@ fn run_speakrs_blocking(
     finalize_provenance_counts(&mut output, analysis_started.elapsed().as_millis() as u64);
 
     Ok(output)
+}
+
+/// Decompose one speakrs [`speakrs::DiarizationResult`] into the provider-neutral
+/// [`SpeakrsMapping`] (turns + per-cluster centroids). No speakrs/ndarray type
+/// crosses out of this function; it reads array shape + flat row-major data
+/// through the arrays' own public methods so our signatures stay decoupled from
+/// speakrs's ndarray version.
+fn map_run_result(result: speakrs::DiarizationResult) -> SpeakrsMapping {
+    let segments: Vec<(f64, f64, String)> = result
+        .segments
+        .iter()
+        .map(|segment| (segment.start, segment.end, segment.speaker.clone()))
+        .collect();
+
+    let emb_shape = result.embeddings.0.shape();
+    let (chunks, speakers, dim) = if emb_shape.len() == 3 {
+        (emb_shape[0], emb_shape[1], emb_shape[2])
+    } else {
+        (0, 0, 0)
+    };
+    let embeddings: Vec<f32> = match result.embeddings.0.as_slice() {
+        Some(slice) => slice.to_vec(),
+        None => result.embeddings.0.iter().copied().collect(),
+    };
+    let hard_clusters: Vec<i32> = match result.hard_clusters.0.as_slice() {
+        Some(slice) => slice.to_vec(),
+        None => result.hard_clusters.0.iter().copied().collect(),
+    };
+
+    map_speakrs_result(&segments, chunks, speakers, dim, &embeddings, &hard_clusters)
 }
 
 /// Build the [`SpeakerCluster`]s for a speakrs result from the mapped centroids,
@@ -257,8 +342,9 @@ fn speakrs_clusters_from_centroids(
 }
 
 /// Build the base output + provenance for a speakrs job. Mirrors sherpa's
-/// `speaker_output_for_request` provenance keys so downstream is uniform, plus
-/// `chunkingMode = "single"` (speakrs never chunks).
+/// `speaker_output_for_request` provenance keys so downstream is uniform. The
+/// `chunkingMode` is stamped `"single"` here and overridden to `"safe_chunked"`
+/// by the caller when a long segment was diarized in chunks.
 fn speaker_output_for_request(
     request: &SpeakerAnalysisRequest,
     install_dir: &Path,
@@ -282,7 +368,7 @@ fn speaker_output_for_request(
     provenance.insert("audioDurationMs".to_string(), json!(duration_ms));
     provenance.insert("audioPeak".to_string(), json!(audio_peak));
     provenance.insert("skipReason".to_string(), serde_json::Value::Null);
-    // speakrs runs the whole segment in one pass — never safe-chunked.
+    // Default; overridden to "safe_chunked" when a long segment is chunked.
     provenance.insert("chunkingMode".to_string(), json!("single"));
     provenance.insert("executionMode".to_string(), json!("coreml"));
     provenance.insert("turnCount".to_string(), json!(0));

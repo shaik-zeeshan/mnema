@@ -191,6 +191,140 @@ fn l2_normalize(embedding: &mut [f32]) {
     }
 }
 
+/// A running global speaker cluster used while stitching per-chunk mappings.
+struct StitchCluster {
+    /// Sum of the contributing per-chunk centroids (each already L2-normalized).
+    sum: Vec<f32>,
+    count: usize,
+}
+
+impl StitchCluster {
+    /// Mean of the contributing centroids, re-L2-normalized for cosine matching.
+    /// A zero-count cluster (a turn-only placeholder) returns an empty vector.
+    fn normalized_mean(&self) -> Vec<f32> {
+        if self.count == 0 {
+            return Vec::new();
+        }
+        let mut mean: Vec<f32> = self.sum.iter().map(|value| value / self.count as f32).collect();
+        l2_normalize(&mut mean);
+        mean
+    }
+}
+
+/// Cosine similarity of two L2-normalized vectors (a plain dot product). Returns
+/// 0.0 on a length mismatch or an empty (placeholder) centroid.
+fn cosine_normalized(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Stitch per-chunk [`SpeakrsMapping`]s — each with its own local cluster ids and
+/// chunk-relative turn times — into one segment-wide mapping.
+///
+/// Diarizing a long segment in fixed-length chunks bounds the CoreML memory peak
+/// (the whole-segment peak trips a large transient buffer past ~3min), but each
+/// chunk clusters independently, so the same physical speaker gets a different
+/// local id per chunk. This re-unifies identity: each chunk's clusters are greedily
+/// matched to the running global clusters by centroid cosine similarity; a match
+/// `>= sim_threshold` merges (and folds the centroid into the running mean),
+/// otherwise a new global cluster is started. Turn times are shifted by the chunk's
+/// `offset_ms` and relabeled to the stitched global id.
+///
+/// `chunks` is `(offset_ms, mapping)` in time order. The returned turns are sorted
+/// by start time; clusters are emitted in global-id order. With a single chunk this
+/// is an identity relabel (ids stay `0..n` in centroid order).
+pub fn stitch_chunk_mappings(
+    chunks: Vec<(u64, SpeakrsMapping)>,
+    sim_threshold: f32,
+) -> SpeakrsMapping {
+    use std::collections::HashMap;
+
+    let mut globals: Vec<StitchCluster> = Vec::new();
+    let mut out_turns: Vec<SpeakerTurn> = Vec::new();
+
+    for (offset_ms, mapping) in chunks {
+        // local cluster global_id -> stitched global index, for this chunk only.
+        let mut remap: HashMap<usize, usize> = HashMap::new();
+
+        for cluster in &mapping.clusters {
+            let mut best: Option<usize> = None;
+            let mut best_sim = sim_threshold;
+            for (index, global) in globals.iter().enumerate() {
+                let sim = cosine_normalized(&global.normalized_mean(), &cluster.embedding);
+                if sim >= best_sim {
+                    best_sim = sim;
+                    best = Some(index);
+                }
+            }
+            let assigned = match best {
+                Some(index) => {
+                    for (acc, value) in globals[index].sum.iter_mut().zip(&cluster.embedding) {
+                        *acc += *value;
+                    }
+                    globals[index].count += 1;
+                    index
+                }
+                None => {
+                    globals.push(StitchCluster {
+                        sum: cluster.embedding.clone(),
+                        count: 1,
+                    });
+                    globals.len() - 1
+                }
+            };
+            remap.insert(cluster.global_id, assigned);
+        }
+
+        for turn in mapping.turns {
+            let local = parse_speaker_label(&turn.provider_cluster_id).max(0) as usize;
+            // A turn whose cluster had no usable centroid won't be in `remap`; give
+            // it a fresh placeholder global so its label stays unique within the chunk.
+            let global = match remap.get(&local) {
+                Some(&index) => index,
+                None => {
+                    globals.push(StitchCluster {
+                        sum: Vec::new(),
+                        count: 0,
+                    });
+                    let index = globals.len() - 1;
+                    remap.insert(local, index);
+                    index
+                }
+            };
+            out_turns.push(SpeakerTurn {
+                provider_cluster_id: provider_cluster_id(global as i32),
+                start_ms: turn.start_ms + offset_ms,
+                end_ms: turn.end_ms + offset_ms,
+                transcript_text: turn.transcript_text,
+                overlaps: turn.overlaps,
+            });
+        }
+    }
+
+    out_turns.sort_by_key(|turn| (turn.start_ms, turn.end_ms));
+
+    let clusters = globals
+        .into_iter()
+        .enumerate()
+        .filter_map(|(global_id, cluster)| {
+            if cluster.count == 0 {
+                return None;
+            }
+            Some(SpeakerClusterCentroid {
+                global_id,
+                embedding: cluster.normalized_mean(),
+            })
+        })
+        .collect();
+
+    SpeakrsMapping {
+        turns: out_turns,
+        clusters,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +473,105 @@ mod tests {
         assert_eq!(provider_cluster_id(0), "speaker_00");
         assert_eq!(provider_cluster_id(3), "speaker_03");
         assert_eq!(provider_cluster_id(12), "speaker_12");
+    }
+
+    fn turn(local_id: i32, start_ms: u64, end_ms: u64) -> SpeakerTurn {
+        SpeakerTurn {
+            provider_cluster_id: provider_cluster_id(local_id),
+            start_ms,
+            end_ms,
+            transcript_text: None,
+            overlaps: false,
+        }
+    }
+
+    fn centroid(global_id: usize, embedding: Vec<f32>) -> SpeakerClusterCentroid {
+        SpeakerClusterCentroid {
+            global_id,
+            embedding,
+        }
+    }
+
+    #[test]
+    fn stitch_single_chunk_is_identity_relabel() {
+        let mapping = SpeakrsMapping {
+            turns: vec![turn(0, 0, 1_000), turn(1, 1_000, 2_000)],
+            clusters: vec![
+                centroid(0, vec![1.0, 0.0]),
+                centroid(1, vec![0.0, 1.0]),
+            ],
+        };
+        let out = stitch_chunk_mappings(vec![(0, mapping)], 0.6);
+        assert_eq!(out.clusters.len(), 2);
+        assert_eq!(out.turns[0].provider_cluster_id, "speaker_00");
+        assert_eq!(out.turns[1].provider_cluster_id, "speaker_01");
+        // Times unchanged at offset 0.
+        assert_eq!(out.turns[0].start_ms, 0);
+        assert_eq!(out.turns[1].end_ms, 2_000);
+    }
+
+    #[test]
+    fn stitch_merges_same_speaker_across_chunks_and_offsets_time() {
+        // Both chunks have one cluster with the same direction (cosine 1.0 > 0.6):
+        // they must collapse to a single global speaker, and chunk-2 turn times
+        // must be shifted by the 180_000ms offset.
+        let chunk0 = SpeakrsMapping {
+            turns: vec![turn(0, 0, 5_000)],
+            clusters: vec![centroid(0, vec![1.0, 0.0])],
+        };
+        let chunk1 = SpeakrsMapping {
+            turns: vec![turn(0, 0, 5_000)],
+            clusters: vec![centroid(0, vec![1.0, 0.0])],
+        };
+        let out = stitch_chunk_mappings(vec![(0, chunk0), (180_000, chunk1)], 0.6);
+        assert_eq!(out.clusters.len(), 1, "same speaker should stitch to one");
+        assert_eq!(out.turns.len(), 2);
+        assert!(out.turns.iter().all(|t| t.provider_cluster_id == "speaker_00"));
+        // Second chunk's turn was offset.
+        assert_eq!(out.turns[1].start_ms, 180_000);
+        assert_eq!(out.turns[1].end_ms, 185_000);
+    }
+
+    #[test]
+    fn stitch_keeps_distinct_speakers_separate() {
+        // Orthogonal centroids (cosine 0.0 < 0.6) must NOT merge: chunk-2's speaker
+        // becomes a new global id even though its local id is also 0.
+        let chunk0 = SpeakrsMapping {
+            turns: vec![turn(0, 0, 5_000)],
+            clusters: vec![centroid(0, vec![1.0, 0.0])],
+        };
+        let chunk1 = SpeakrsMapping {
+            turns: vec![turn(0, 0, 5_000)],
+            clusters: vec![centroid(0, vec![0.0, 1.0])],
+        };
+        let out = stitch_chunk_mappings(vec![(0, chunk0), (180_000, chunk1)], 0.6);
+        assert_eq!(out.clusters.len(), 2, "distinct speakers stay separate");
+        assert_eq!(out.turns[0].provider_cluster_id, "speaker_00");
+        assert_eq!(out.turns[1].provider_cluster_id, "speaker_01");
+    }
+
+    #[test]
+    fn stitch_threshold_controls_merge_vs_split() {
+        // Centroids with cosine ~0.6: a low threshold merges, a high one splits.
+        // a·b for (1,0) and normalized (0.8,0.6) is 0.8.
+        let make = || {
+            (
+                SpeakrsMapping {
+                    turns: vec![turn(0, 0, 1_000)],
+                    clusters: vec![centroid(0, vec![1.0, 0.0])],
+                },
+                SpeakrsMapping {
+                    turns: vec![turn(0, 0, 1_000)],
+                    clusters: vec![centroid(0, vec![0.8, 0.6])],
+                },
+            )
+        };
+        let (a0, a1) = make();
+        let merged = stitch_chunk_mappings(vec![(0, a0), (10_000, a1)], 0.5);
+        assert_eq!(merged.clusters.len(), 1, "0.8 cosine >= 0.5 -> merge");
+
+        let (b0, b1) = make();
+        let split = stitch_chunk_mappings(vec![(0, b0), (10_000, b1)], 0.9);
+        assert_eq!(split.clusters.len(), 2, "0.8 cosine < 0.9 -> split");
     }
 }

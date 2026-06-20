@@ -17,10 +17,11 @@
 //! The sherpa-specific tuning flags `run_der.py` may pass (`--model-id`,
 //! `--clustering-threshold`, `--cross-chunk-threshold`, `--num-clusters`,
 //! `--min-duration-on`, `--min-duration-off`, `--safe-chunk-ms`) are accepted but
-//! ignored here (except `--model-id`, which is honored): speakrs runs the whole
-//! Audio Segment in one pass with a single curated preset and no safe-chunk
-//! window (see `providers/speakrs.rs`). Accepting-and-ignoring them keeps
-//! `run_der.py`'s shared `extra` args from breaking the speakrs `--binary` path.
+//! ignored here (except `--model-id`, which is honored): speakrs uses a single
+//! curated preset and its own fixed safe-chunk window (see `providers/speakrs.rs`
+//! — segments past ~180s are chunked and stitched internally; the flag does not
+//! tune it). Accepting-and-ignoring them keeps `run_der.py`'s shared `extra` args
+//! from breaking the speakrs `--binary` path.
 //!
 //! stdout is pure RTTM (so it can be piped/redirected); progress and provenance
 //! go to stderr.
