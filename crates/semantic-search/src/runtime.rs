@@ -103,7 +103,14 @@ impl SemanticSearchEmbedder {
                 path: tokenizer_path,
                 source,
             })?;
-        let split_tokenizer = Tokenizer::from_bytes(tokenizer_bytes)
+        let mut split_tokenizer = Tokenizer::from_bytes(tokenizer_bytes)
+            .map_err(|error| EmbeddingError::LoadTokenizer(error.to_string()))?;
+        // Explicitly disable truncation regardless of what `tokenizer.json` declares:
+        // overflow is handled by this wrapper's own token-window chunking
+        // (`split_on_overflow`), so the tokenizer must never silently truncate the
+        // up-front token count it produces.
+        split_tokenizer
+            .with_truncation(None)
             .map_err(|error| EmbeddingError::LoadTokenizer(error.to_string()))?;
 
         Ok(Self {
@@ -275,12 +282,16 @@ fn split_text_on_token_overflow(
     let mut start_token = 0usize;
     while start_token < offsets.len() {
         let end_token = (start_token + budget).min(offsets.len());
-        let char_start = offsets[start_token].0;
-        let char_end = offsets[end_token - 1].1;
-        if let Some(slice) = text.get(char_start..char_end) {
-            if !slice.trim().is_empty() {
-                chunks.push(slice.to_string());
-            }
+        // Snap the token byte offsets to valid UTF-8 char boundaries before slicing:
+        // a `text.get(a..b)` whose `a`/`b` land mid-codepoint returns `None` and would
+        // silently drop the whole chunk's tokens. Floor the start down and ceil the
+        // end up to the nearest boundary so the slice always succeeds and no content
+        // is lost (worst case it widens the chunk by a few bytes, never narrows it).
+        let char_start = floor_char_boundary(text, offsets[start_token].0);
+        let char_end = ceil_char_boundary(text, offsets[end_token - 1].1);
+        let slice = &text[char_start..char_end];
+        if !slice.trim().is_empty() {
+            chunks.push(slice.to_string());
         }
         start_token = end_token;
     }
@@ -289,6 +300,26 @@ fn split_text_on_token_overflow(
         chunks.push(text.to_string());
     }
     Ok(chunks)
+}
+
+/// Largest valid char-boundary index `<= index` in `text` (stable equivalent of the
+/// unstable `str::floor_char_boundary`). Clamps `index` into range first.
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+/// Smallest valid char-boundary index `>= index` in `text` (stable equivalent of the
+/// unstable `str::ceil_char_boundary`). Clamps `index` into range first.
+fn ceil_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 /// Regroup the flat list of chunk vectors a batched embed produced back into one
