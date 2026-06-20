@@ -11,6 +11,7 @@
   import { closeCurrentWindow, openSettingsWindow } from "$lib/surface-windows";
   import type {
     SemanticSearchModelStatusResponse,
+    SemanticSearchModelDownloadProgress,
     RecordingSettingsDomainUpdateResponse,
   } from "$lib/types";
   import { askAiClock } from "$lib/askAiClock";
@@ -3259,6 +3260,7 @@
     let unlistenFocus: (() => void) | undefined;
     let unlistenDismiss: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
+    let unlistenSemanticSearchDownload: (() => void) | undefined;
 
     // The window is hidden/re-shown rather than recreated across summons, so
     // re-grab focus each time it becomes key — onMount alone fires only once.
@@ -3346,6 +3348,28 @@
       else unlistenSettings = fn;
     });
 
+    // A model download started in Settings emits progress here as it runs. The
+    // settings-domain listener above only fires on a settings save, not when a
+    // background download FINISHES — so if a download completes while this
+    // (reused) window stays focused, the "turn on meaning search" hint would keep
+    // showing "download"/keyword-only until the next focus change. Re-probe model
+    // status when the download reaches a terminal state (completed/failed/
+    // cancelled) so the hint reflects the now-installed model live. Mirrors the
+    // settings page handler (`handleSemanticSearchDownloadProgress`).
+    listen<SemanticSearchModelDownloadProgress>(
+      "semantic_search_model_download_progress",
+      (event) => {
+        if (
+          ["completed", "failed", "cancelled"].includes(event.payload.status)
+        ) {
+          void loadSemanticSearchModelInstalled();
+        }
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSemanticSearchDownload = fn;
+    });
+
     return () => {
       destroyed = true;
       window.removeEventListener("keydown", handleLauncherCaptureKeydown, {
@@ -3356,6 +3380,7 @@
       unlistenFocus?.();
       unlistenDismiss?.();
       unlistenSettings?.();
+      unlistenSemanticSearchDownload?.();
     };
   });
 

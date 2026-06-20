@@ -83,7 +83,7 @@
       </BitsCombobox.Trigger>
     </div>
     <BitsCombobox.Portal>
-      <BitsCombobox.Content class="select-content" sideOffset={4}>
+      <BitsCombobox.Content class="select-content combobox-content" sideOffset={4}>
         <BitsCombobox.Viewport class="select-viewport">
           {#each filteredOptions as option (option.value)}
             <BitsCombobox.Item value={option.value} label={option.label} class="select-item">
@@ -169,5 +169,23 @@
     font-size: 12px;
     font-style: italic;
     color: var(--app-text-faint);
+  }
+
+  /* bits-ui's Combobox primitive exposes the anchor width as
+     --bits-combobox-anchor-width (not the Select var the shared .select-content
+     rule reads), so pin the panel to the input width here. */
+  :global(.combobox-content) {
+    min-width: var(--bits-combobox-anchor-width);
+  }
+
+  /* .select-item-check is scoped to Select.svelte, so its check-mark rule does
+     not reach this component. Replicate it locally (same values) so the
+     selected-row check aligns identically. */
+  .select-item-check {
+    width: 12px;
+    font-size: 10px;
+    color: var(--app-accent);
+    flex-shrink: 0;
+    font-family: inherit;
   }
 </style>

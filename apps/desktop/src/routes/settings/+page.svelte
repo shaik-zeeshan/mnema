@@ -920,7 +920,7 @@
   let draftSemanticSearchEnabled = $state(true);
   // The persisted selected model id (the sticky selection). Switching it is a
   // confirmed action that re-indexes, so the draft only moves after the confirm.
-  let semanticSearchSelectedModelId = $state<string | null>("nomic-embed-text-v1.5");
+  let semanticSearchSelectedModelId = $state<string | null>(null);
   let semanticSearchModelStatus = $state<SemanticSearchModelStatusResponse | null>(null);
   let loadingSemanticSearchModelStatus = $state(false);
   let semanticSearchModelError = $state<string | null>(null);
@@ -2792,6 +2792,9 @@
 
   async function handleSemanticSearchDownloadProgress(progress: SemanticSearchModelDownloadProgress) {
     semanticSearchDownloadProgress = progress;
+    if (progress.status === "failed") {
+      semanticSearchDownloadError = progress.message ?? "Download failed.";
+    }
     if (["completed", "failed", "cancelled"].includes(progress.status)) {
       await loadSemanticSearchModelStatus();
     }
@@ -2881,7 +2884,7 @@
 
   // The semantic-search provider id. Custom models share the same provider as
   // the guided tiers, so reuse the provider field carried on the status rows.
-  let semanticSearchFastembedProvider = $derived(
+  let semanticSearchProvider = $derived(
     (semanticSearchModelStatus?.models ?? [])[0]?.provider ?? null,
   );
 
@@ -2955,7 +2958,7 @@
           : "";
       return {
         modelId: catalog.modelId,
-        provider: semanticSearchFastembedProvider,
+        provider: semanticSearchProvider,
         displayName: catalog.displayName,
         description: catalog.description,
         metaLine: `${semanticSearchTierLabel("custom")} · ${size}${catalog.dimension}-dim · runs on-device${catalog.multilingual ? " · multilingual" : ""}`,
