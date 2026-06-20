@@ -774,9 +774,9 @@ fn advance_idle_drop(consecutive_idles: &mut u32, did_work: bool, has_embedder: 
 ///
 /// The candle backend (built inside `load_from_dir`) reads everything it needs —
 /// architecture, dimension, window, pooling, on-disk layout — from the one
-/// `descriptor`. There is no ONNX intra-op thread cap to resolve anymore (the
-/// retired `embed_threads` knob, ADR 0037): candle runs the forward on the Metal
-/// GPU on macOS / candle-CPU elsewhere, with no thread-pool spin-wait to clamp.
+/// `descriptor`. There is no ONNX intra-op thread cap to resolve (ADR 0037):
+/// candle runs the forward on the Metal GPU on macOS / candle-CPU elsewhere, with
+/// no thread-pool spin-wait to clamp.
 pub(crate) fn load_embedder(
     app_data_dir: &std::path::Path,
     descriptor: &SemanticSearchModelDescriptor,
@@ -806,7 +806,7 @@ mod tests {
         // pools with exactly `descriptor.pooling` — this pins the declared value the
         // loader is handed.
         let pooling_for = |slug: &str| -> SemanticSearchPooling {
-            resolve_descriptor(semantic_search::FASTEMBED_PROVIDER_ID, slug)
+            resolve_descriptor(semantic_search::SEMANTIC_SEARCH_PROVIDER_ID, slug)
                 .unwrap_or_else(|| panic!("{slug} must resolve"))
                 .pooling
         };

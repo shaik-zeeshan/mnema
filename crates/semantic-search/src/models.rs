@@ -28,16 +28,15 @@ pub const MODEL_STORE_DIR_NAME: &str = "semantic_search_models";
 /// present, mirroring the transcription installer's `.installed.json`.
 pub const INSTALLED_MARKER_FILE_NAME: &str = ".installed.json";
 
-/// The catalog namespace / on-disk provider segment.
+/// The catalog namespace / on-disk provider segment: the `{provider}/{model_id}`
+/// namespace under which all locally-run candle models install.
 ///
-/// **The string value stays `"fastembed"` deliberately**, even though the runtime
-/// is now candle: the persisted user setting `semantic_search.provider` defaults
-/// to `"fastembed"` (`capture-types`), and a capture-types serde test asserts
-/// `json["semanticSearch"]["provider"] == "fastembed"`. Changing the value would
-/// silently break persisted selections and force a settings migration that is out
-/// of scope. It is now just the `{provider}/{model_id}` namespace under which all
-/// candle models install.
-pub const FASTEMBED_PROVIDER_ID: &str = "fastembed";
+/// `"local"` is backend-neutral on purpose — candle is just today's backend (ADR
+/// 0037 made it pluggable), so the namespace must not name a runtime (the old
+/// `"fastembed"` value did, and was wrong the moment fastembed was dropped). The
+/// persisted user setting `semantic_search.provider` defaults to this value, and a
+/// capture-types serde test pins it.
+pub const SEMANTIC_SEARCH_PROVIDER_ID: &str = "local";
 
 /// The files a candle model loads from disk. A Semantic Search Model is only
 /// Installed when all three exist alongside the marker. (The retired ONNX layout's
@@ -253,7 +252,7 @@ pub struct SupportedEmbeddingModel {
 fn catalog() -> Vec<SemanticSearchModelDescriptor> {
     vec![
         SemanticSearchModelDescriptor {
-            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: "nomic-embed-text-v1.5".to_string(),
             display_name: "Nomic Embed Text v1.5 (English)".to_string(),
             description: "Default English tier: long-context (8192 tokens), \
@@ -273,7 +272,7 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             expected_layout: InstalledModelLayout::default(),
         },
         SemanticSearchModelDescriptor {
-            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: "multilingual-e5-small".to_string(),
             display_name: "Multilingual E5 Small (Multilingual)".to_string(),
             description: "Multilingual tier: covers 100+ languages, non-gated \
@@ -293,7 +292,7 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             expected_layout: InstalledModelLayout::default(),
         },
         SemanticSearchModelDescriptor {
-            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: "bge-m3".to_string(),
             display_name: "BGE-M3 (Multilingual, Custom)".to_string(),
             description: "Custom multilingual option (BAAI/bge-m3), 1024-dimensional, \
@@ -345,7 +344,7 @@ pub fn list_supported_models() -> Vec<SupportedEmbeddingModel> {
 /// Resolve a **Semantic Search Model** descriptor for a `{provider}/{model_id}`
 /// selection. Manifest lookup only — there is NO synthesis (ADR 0037): an unknown
 /// id returns `None`. The provider must equal the catalog namespace
-/// ([`FASTEMBED_PROVIDER_ID`]).
+/// ([`SEMANTIC_SEARCH_PROVIDER_ID`]).
 pub fn resolve_descriptor(
     provider: &str,
     model_id: &str,
@@ -512,7 +511,7 @@ mod tests {
     /// the catalog.
     fn nomic_test_descriptor() -> SemanticSearchModelDescriptor {
         SemanticSearchModelDescriptor {
-            provider: FASTEMBED_PROVIDER_ID.to_string(),
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: "nomic-embed-text-v1.5".to_string(),
             display_name: "Nomic Embed Text v1.5 (English)".to_string(),
             description: "Default English tier".to_string(),
@@ -562,10 +561,10 @@ mod tests {
     #[test]
     fn find_model_descriptor_matches_on_provider_and_id() {
         let manifest = builtin_model_manifest();
-        let found = find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "bge-m3")
+        let found = find_model_descriptor(&manifest, SEMANTIC_SEARCH_PROVIDER_ID, "bge-m3")
             .expect("bge-m3 present");
         assert_eq!(found.model_id, "bge-m3");
-        assert!(find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "nope").is_none());
+        assert!(find_model_descriptor(&manifest, SEMANTIC_SEARCH_PROVIDER_ID, "nope").is_none());
         assert!(find_model_descriptor(&manifest, "other-provider", "bge-m3").is_none());
     }
 
@@ -582,7 +581,7 @@ mod tests {
         assert!(status
             .missing_files
             .contains(&descriptor.expected_layout.weights_relative_path));
-        assert!(status.install_path.ends_with("fastembed/nomic-embed-text-v1.5"));
+        assert!(status.install_path.ends_with("local/nomic-embed-text-v1.5"));
     }
 
     #[test]
@@ -730,7 +729,7 @@ mod tests {
     #[test]
     fn rejects_path_traversal_components() {
         let error =
-            model_install_dir("/tmp/models", FASTEMBED_PROVIDER_ID, "../escape").expect_err("unsafe");
+            model_install_dir("/tmp/models", SEMANTIC_SEARCH_PROVIDER_ID, "../escape").expect_err("unsafe");
         assert!(matches!(
             error,
             ModelStatusError::UnsafePathComponent { field: "model_id", .. }
@@ -742,7 +741,7 @@ mod tests {
     #[test]
     fn resolve_descriptor_returns_manifest_tier() {
         let descriptor =
-            resolve_descriptor(FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5").expect("nomic");
+            resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, "nomic-embed-text-v1.5").expect("nomic");
         assert_eq!(descriptor.tier, SemanticSearchModelTier::English);
         assert_eq!(descriptor.architecture, SemanticSearchArchitecture::NomicBert);
         assert_eq!(descriptor.max_tokens, 8192);
@@ -752,7 +751,7 @@ mod tests {
     #[test]
     fn resolve_descriptor_rejects_unknown_and_non_namespace_provider() {
         // No synthesis: an unknown id returns None.
-        assert!(resolve_descriptor(FASTEMBED_PROVIDER_ID, "not-a-real-model").is_none());
+        assert!(resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, "not-a-real-model").is_none());
         // A provider other than the catalog namespace never resolves.
         assert!(resolve_descriptor("some-other-provider", "nomic-embed-text-v1.5").is_none());
     }
@@ -761,7 +760,7 @@ mod tests {
     fn default_english_tier_is_nomic_768_dim() {
         let manifest = builtin_model_manifest();
         let default =
-            find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5")
+            find_model_descriptor(&manifest, SEMANTIC_SEARCH_PROVIDER_ID, "nomic-embed-text-v1.5")
                 .expect("english tier");
         assert_eq!(default.tier, SemanticSearchModelTier::English);
         assert_eq!(default.dimension, 768);
@@ -777,7 +776,7 @@ mod tests {
         let cls = ["bge-m3"];
         for id in mean {
             let descriptor =
-                resolve_descriptor(FASTEMBED_PROVIDER_ID, id).unwrap_or_else(|| panic!("{id}"));
+                resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, id).unwrap_or_else(|| panic!("{id}"));
             assert_eq!(
                 descriptor.pooling,
                 SemanticSearchPooling::Mean,
@@ -786,7 +785,7 @@ mod tests {
         }
         for id in cls {
             let descriptor =
-                resolve_descriptor(FASTEMBED_PROVIDER_ID, id).unwrap_or_else(|| panic!("{id}"));
+                resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, id).unwrap_or_else(|| panic!("{id}"));
             assert_eq!(
                 descriptor.pooling,
                 SemanticSearchPooling::Cls,
@@ -796,7 +795,7 @@ mod tests {
         // The picker rows carry the same pooling as the resolved descriptors.
         let supported = list_supported_models();
         for model in &supported {
-            let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, &model.model_id)
+            let descriptor = resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, &model.model_id)
                 .unwrap_or_else(|| panic!("{}", model.model_id));
             assert_eq!(
                 model.pooling, descriptor.pooling,

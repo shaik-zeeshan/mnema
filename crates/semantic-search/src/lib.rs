@@ -37,7 +37,7 @@ pub use models::{
     semantic_search_models_dir, write_installed_marker, InstalledModelLayout, ModelStatusError,
     ModelStatusKind, SemanticSearchArchitecture, SemanticSearchModelDescriptor,
     SemanticSearchModelManifest, SemanticSearchModelStatus, SemanticSearchModelTier,
-    SemanticSearchPooling, SupportedEmbeddingModel, CONFIG_FILE_NAME, FASTEMBED_PROVIDER_ID,
+    SemanticSearchPooling, SupportedEmbeddingModel, CONFIG_FILE_NAME, SEMANTIC_SEARCH_PROVIDER_ID,
     INSTALLED_MARKER_FILE_NAME, MODEL_SAFETENSORS_FILE_NAME, MODEL_STORE_DIR_NAME,
     TOKENIZER_FILE_NAME,
 };

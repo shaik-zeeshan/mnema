@@ -286,6 +286,12 @@ fn cls_pool(hidden: &Tensor) -> candle_core::Result<Tensor> {
 
 /// L2-normalize each row of (B,H).
 fn l2_normalize(x: &Tensor) -> candle_core::Result<Tensor> {
-    let norm = x.sqr()?.sum_keepdim(1)?.sqrt()?; // (B,1)
+    // Floor the norm at a tiny positive value so a degenerate all-zero pooled row
+    // divides to a finite (zero) vector instead of NaN/Inf — the same guard the
+    // wrapper's `mean_pool_l2` applies via its epsilon, and the clamp idiom
+    // `mean_pool` above uses for its token counts. A real pooled vector's
+    // pre-normalization norm is O(√H), far above the floor, so a normal embedding
+    // is never perturbed.
+    let norm = x.sqr()?.sum_keepdim(1)?.sqrt()?.clamp(1e-9, f64::INFINITY)?; // (B,1)
     x.broadcast_div(&norm)
 }

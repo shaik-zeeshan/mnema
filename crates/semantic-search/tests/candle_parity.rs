@@ -13,11 +13,11 @@
 //! cleanly when unset. Run it manually with:
 //!
 //! ```text
-//! MNEMA_SEMANTIC_PARITY_MODEL_DIR=~/.mnema/semantic_search_models/fastembed/nomic-embed-text-v1.5 \
+//! MNEMA_SEMANTIC_PARITY_MODEL_DIR=~/.mnema/semantic_search_models/local/nomic-embed-text-v1.5 \
 //!   cargo test -p semantic-search --features metal -- --ignored candle_nomic_parity
 //! ```
 
-use semantic_search::{resolve_descriptor, CandleBackend, SemanticSearchBackend, FASTEMBED_PROVIDER_ID};
+use semantic_search::{resolve_descriptor, CandleBackend, SemanticSearchBackend, SEMANTIC_SEARCH_PROVIDER_ID};
 
 const PARITY_STRINGS: &[&str] = &[
     "the quick brown fox jumps over the lazy dog",
@@ -41,7 +41,7 @@ fn candle_nomic_parity() {
         return;
     };
 
-    let descriptor = resolve_descriptor(FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5")
+    let descriptor = resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, "nomic-embed-text-v1.5")
         .expect("nomic descriptor resolves");
     let backend = CandleBackend::load_from_dir(&model_dir, &descriptor)
         .expect("candle backend loads the nomic model");

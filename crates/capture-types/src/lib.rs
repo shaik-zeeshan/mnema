@@ -250,10 +250,10 @@ mod tests {
             }"#,
         )
         .expect("settings should deserialize");
-        settings.semantic_search.model_id = Some("embeddinggemma-300m".to_string());
+        settings.semantic_search.model_id = Some("bge-m3".to_string());
         let json = serde_json::to_value(&settings).expect("serialize");
-        assert_eq!(json["semanticSearch"]["modelId"], "embeddinggemma-300m");
-        assert_eq!(json["semanticSearch"]["provider"], "fastembed");
+        assert_eq!(json["semanticSearch"]["modelId"], "bge-m3");
+        assert_eq!(json["semanticSearch"]["provider"], "local");
         let back: RecordingSettings =
             serde_json::from_value(json).expect("round-trips back");
         assert_eq!(back.semantic_search, settings.semantic_search);

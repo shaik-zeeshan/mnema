@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use semantic_search::{
     builtin_model_manifest, detect_model_status, list_supported_models, model_install_dir,
     resolve_descriptor, semantic_search_models_dir, write_installed_marker, ModelStatusError,
-    ModelStatusKind, SemanticSearchModelDescriptor, SemanticSearchModelTier, FASTEMBED_PROVIDER_ID,
+    ModelStatusKind, SemanticSearchModelDescriptor, SemanticSearchModelTier, SEMANTIC_SEARCH_PROVIDER_ID,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -421,7 +421,6 @@ pub async fn select_semantic_search_model(
             enabled: None,
             provider: None,
             model_id: Some(Some(model_id.clone())),
-            embed_threads: None,
         },
     )
     .map_err(|error| {
@@ -504,7 +503,7 @@ fn status_dto_for(
 /// already downloaded on disk, plus the currently-selected Custom model.
 ///
 /// `selected_model_id` is the persisted `RecordingSettings.semantic_search`
-/// selection (always the `fastembed` provider namespace in v1).
+/// selection (always the `local` provider namespace in v1).
 ///
 /// A Custom model (a curated catalog model surfaced via the Custom picker, e.g.
 /// `bge-m3`) must be able to be **activated after it is downloaded**. The Settings
@@ -538,7 +537,7 @@ fn build_semantic_search_model_status_response(
         if models.iter().any(|model| model.model_id == model_id) {
             continue;
         }
-        if let Some(descriptor) = resolve_descriptor(FASTEMBED_PROVIDER_ID, &model_id) {
+        if let Some(descriptor) = resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, &model_id) {
             models.push(status_dto_for(&models_dir, &descriptor)?);
         }
     }
@@ -549,7 +548,7 @@ fn build_semantic_search_model_status_response(
     if let Some(model_id) = selected_model_id {
         let already_listed = models.iter().any(|model| model.model_id == model_id);
         if !already_listed {
-            if let Some(descriptor) = resolve_descriptor(FASTEMBED_PROVIDER_ID, model_id) {
+            if let Some(descriptor) = resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, model_id) {
                 models.push(status_dto_for(&models_dir, &descriptor)?);
             }
         }
@@ -561,8 +560,8 @@ fn build_semantic_search_model_status_response(
     })
 }
 
-/// Enumerate the `model_id`s of every **fastembed-provider** model directory that
-/// exists on disk under `semantic_search_models/fastembed/`. This is a cheap
+/// Enumerate the `model_id`s of every **local-provider** model directory that
+/// exists on disk under `semantic_search_models/local/`. This is a cheap
 /// directory listing (no per-model status detection yet): each id is a candidate
 /// Custom model the caller resolves + status-checks. A model that has a directory
 /// but is incomplete (no marker / missing files) still surfaces — its
@@ -570,7 +569,7 @@ fn build_semantic_search_model_status_response(
 /// "Not installed" rather than vanishing). Returns an empty list when the install
 /// directory does not exist or cannot be read (a fresh profile), never an error.
 fn installed_custom_model_ids(models_dir: &Path) -> Vec<String> {
-    let provider_dir = models_dir.join(FASTEMBED_PROVIDER_ID);
+    let provider_dir = models_dir.join(SEMANTIC_SEARCH_PROVIDER_ID);
     let Ok(entries) = std::fs::read_dir(&provider_dir) else {
         return Vec::new();
     };
@@ -1274,7 +1273,7 @@ mod tests {
             .find(|d| d.model_id == settings.model_id.clone().unwrap())
             .expect("selected descriptor");
         let install_dir =
-            model_install_dir(&models_dir, FASTEMBED_PROVIDER_ID, &descriptor.model_id)
+            model_install_dir(&models_dir, SEMANTIC_SEARCH_PROVIDER_ID, &descriptor.model_id)
                 .expect("install dir");
         std::fs::create_dir_all(&install_dir).expect("install dir");
         for file_name in &descriptor.expected_layout.required_files {
@@ -1289,7 +1288,7 @@ mod tests {
         // marker no longer validates — that staleness is what forces the
         // re-download into the safetensors layout — so a fresh install must stamp
         // the live version to be recognized as Installed.
-        write_installed_marker(&models_dir, FASTEMBED_PROVIDER_ID, &descriptor.model_id)
+        write_installed_marker(&models_dir, SEMANTIC_SEARCH_PROVIDER_ID, &descriptor.model_id)
             .expect("marker");
 
         assert!(selected_semantic_search_model_available(temp.path(), &settings).expect("gating check"));
@@ -1358,7 +1357,7 @@ mod tests {
     #[test]
     fn hf_urls_point_at_the_model_repo_resolve_main() {
         let manifest = builtin_model_manifest();
-        let nomic = find_model_descriptor(&manifest, FASTEMBED_PROVIDER_ID, "nomic-embed-text-v1.5")
+        let nomic = find_model_descriptor(&manifest, SEMANTIC_SEARCH_PROVIDER_ID, "nomic-embed-text-v1.5")
             .expect("nomic descriptor");
         let weights_url = hf_file_url(&nomic.hf_repo, "model.safetensors");
         assert_eq!(
@@ -1374,14 +1373,14 @@ mod tests {
         let state = SemanticSearchModelDownloadState::default();
         claim_model_download(
             &state,
-            FASTEMBED_PROVIDER_ID,
+            SEMANTIC_SEARCH_PROVIDER_ID,
             "nomic-embed-text-v1.5",
             Arc::new(AtomicBool::new(false)),
         )
         .expect("first claim");
         let second = claim_model_download(
             &state,
-            FASTEMBED_PROVIDER_ID,
+            SEMANTIC_SEARCH_PROVIDER_ID,
             "multilingual-e5-small",
             Arc::new(AtomicBool::new(false)),
         )

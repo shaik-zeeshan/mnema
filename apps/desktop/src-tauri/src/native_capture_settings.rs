@@ -348,7 +348,7 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
 ///
 /// Like the speaker-analysis validator this is **infallible** (it normalizes rather
 /// than rejecting):
-/// - `provider`: trimmed; reset to the default (`"fastembed"`) if it is not the one
+/// - `provider`: trimmed; reset to the default (`"local"`) if it is not the one
 ///   recognized provider, exactly as the speaker validator resets an unrecognized
 ///   provider to `"sherpa_onnx"`.
 /// - `model_id`: an explicit `None` is the legitimate **"no model selected"**
@@ -360,12 +360,12 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
 ///   falls back to the default model (`nomic-embed-text-v1.5`); a present-and-known
 ///   id is kept. `resolve_descriptor` is the validity gate (the role
 ///   `find_model_descriptor` plays in the speaker validator) and also covers
-///   Custom-picked fastembed models, so a real Custom selection survives.
+///   Custom-picked local models, so a real Custom selection survives.
 /// - `enabled`: a plain bool, carried through unchanged (the speaker validator
 ///   likewise carries its bool flags through).
 fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticSearchSettings {
-    let provider = if value.provider.trim() == semantic_search::FASTEMBED_PROVIDER_ID {
-        semantic_search::FASTEMBED_PROVIDER_ID.to_string()
+    let provider = if value.provider.trim() == semantic_search::SEMANTIC_SEARCH_PROVIDER_ID {
+        semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string()
     } else {
         default_semantic_search_provider()
     };
@@ -393,9 +393,6 @@ fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticS
         enabled: value.enabled,
         provider,
         model_id,
-        // A performance knob, not a model selection; carried through unchanged
-        // (`0` = auto is resolved to a real cap at embedder load, not here).
-        embed_threads: value.embed_threads,
     }
 }
 
@@ -1200,10 +1197,6 @@ fn apply_domain_patch_to_settings(
                 settings.semantic_search.model_id = value;
                 touched = true;
             }
-            if let Some(value) = request.embed_threads {
-                settings.semantic_search.embed_threads = value;
-                touched = true;
-            }
         }
         RecordingSettingsDomainPatch::Developer(request) => {
             if let Some(value) = request.developer_options_enabled {
@@ -1625,7 +1618,6 @@ mod tests {
                     enabled: None,
                     provider: None,
                     model_id: Some(Some("multilingual-e5-small".to_string())),
-                    embed_threads: None,
                 },
             ),
         )
@@ -1654,7 +1646,6 @@ mod tests {
                     enabled: Some(false),
                     provider: None,
                     model_id: Some(None),
-                    embed_threads: None,
                 },
             ),
         )
@@ -2456,21 +2447,21 @@ mod tests {
         let known_model = default_semantic_search_model_id().expect("a default model id");
         let settings = SemanticSearchSettings {
             enabled: true,
-            provider: format!("  {}  ", semantic_search::FASTEMBED_PROVIDER_ID),
+            provider: format!("  {}  ", semantic_search::SEMANTIC_SEARCH_PROVIDER_ID),
             model_id: Some(format!("  {known_model}  ")),
             ..Default::default()
         };
 
         let validated = validate_semantic_search_settings(settings);
 
-        assert_eq!(validated.provider, semantic_search::FASTEMBED_PROVIDER_ID);
+        assert_eq!(validated.provider, semantic_search::SEMANTIC_SEARCH_PROVIDER_ID);
         assert_eq!(validated.model_id.as_deref(), Some(known_model.as_str()));
         assert!(validated.enabled, "the enabled flag is carried through");
     }
 
     #[test]
     fn validate_semantic_search_settings_resets_unknown_provider_to_default() {
-        // L4: an unrecognized provider resets to the default ("fastembed"), exactly
+        // L4: an unrecognized provider resets to the default ("local"), exactly
         // as the speaker validator resets an unknown provider to "sherpa_onnx".
         let settings = SemanticSearchSettings {
             enabled: false,
@@ -2495,7 +2486,7 @@ mod tests {
         for raw_model in ["   ", "", "bogus-model-xyz"] {
             let settings = SemanticSearchSettings {
                 enabled: true,
-                provider: semantic_search::FASTEMBED_PROVIDER_ID.to_string(),
+                provider: semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
                 model_id: Some(raw_model.to_string()),
                 ..Default::default()
             };
@@ -2518,7 +2509,7 @@ mod tests {
         // it preserves the model-gated clear semantics the domain patch relies on.
         let settings = SemanticSearchSettings {
             enabled: false,
-            provider: semantic_search::FASTEMBED_PROVIDER_ID.to_string(),
+            provider: semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: None,
             ..Default::default()
         };

@@ -3017,69 +3017,61 @@ fn push_in_scope_anchor_rowids(
 /// hit that also matched a query term renders its highlighted FTS snippet, not
 /// the meaning excerpt) with the fused rank. This fusion runs *before* grouping
 /// and pagination, slotting in exactly where the BM25 `rank` sat.
-fn rrf_fuse_frame_hits(text_hits: &[FrameHit], semantic_hits: &[FrameHit]) -> Vec<FrameHit> {
-    // Keyword-only path: with no meaning tier to fuse, return the **Text Search**
-    // list untouched so its raw BM25 `rank` (the grouping tie-break key) is
-    // preserved exactly. Overwriting every hit's `rank` with a position-derived
-    // RRF score here would change equal-BM25 group tie-break ordering, so skipping
-    // fusion keeps the keyword-only path byte-identical to pre-Semantic-Search.
+/// RRF-fuse two best-first hit lists into one deduped list, keyed by **Search
+/// Result Anchor** id. The frame and audio paths share this identical fusion
+/// math; `anchor_id` reads the dedup key and `set_rank` writes the negated fused
+/// score, so the one body serves both `FrameHit` and `AudioHit`.
+///
+/// Keyword-only path: with no meaning tier to fuse, return the **Text Search**
+/// list untouched so its raw BM25 `rank` (the grouping tie-break key) is preserved
+/// exactly. Overwriting every hit's `rank` with a position-derived RRF score here
+/// would change equal-BM25 group tie-break ordering, so skipping fusion keeps the
+/// keyword-only path byte-identical to pre-Semantic-Search.
+///
+/// Dedup prefers the **Text Search** row for an anchor present in both lists, so a
+/// keyword-and-meaning hit keeps its highlighted snippet. Both inputs are borrowed
+/// and only the deduped hits we keep are cloned — the frame path re-fuses on every
+/// pagination page, so cloning the whole inputs per call would be wasteful.
+fn rrf_fuse_hits<T: Clone>(
+    text_hits: &[T],
+    semantic_hits: &[T],
+    anchor_id: impl Fn(&T) -> i64,
+    set_rank: impl Fn(&mut T, f64),
+) -> Vec<T> {
     if semantic_hits.is_empty() {
         return text_hits.to_vec();
     }
 
     let mut scores: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
     for (position, hit) in text_hits.iter().enumerate() {
-        *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
+        *scores.entry(anchor_id(hit)).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
     }
     for (position, hit) in semantic_hits.iter().enumerate() {
-        *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
+        *scores.entry(anchor_id(hit)).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
     }
 
-    // Prefer the Text Search row for an anchor present in both lists, so a
-    // keyword-and-meaning hit keeps its highlighted snippet. Borrow both inputs
-    // and clone only the deduped hits we keep — the frame path re-fuses on every
-    // pagination page, so cloning the whole inputs per call would be wasteful.
     let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut fused = Vec::with_capacity(text_hits.len() + semantic_hits.len());
     for hit in text_hits.iter().chain(semantic_hits.iter()) {
-        if !seen.insert(hit.anchor_id) {
+        let id = anchor_id(hit);
+        if !seen.insert(id) {
             continue;
         }
         let mut hit = hit.clone();
         // Negate so lower = better, matching the BM25 ASC ordering grouping uses.
-        hit.rank = -scores.get(&hit.anchor_id).copied().unwrap_or(0.0);
+        set_rank(&mut hit, -scores.get(&id).copied().unwrap_or(0.0));
         fused.push(hit);
     }
     fused
 }
 
+fn rrf_fuse_frame_hits(text_hits: &[FrameHit], semantic_hits: &[FrameHit]) -> Vec<FrameHit> {
+    rrf_fuse_hits(text_hits, semantic_hits, |hit| hit.anchor_id, |hit, rank| hit.rank = rank)
+}
+
 /// Audio counterpart of [`rrf_fuse_frame_hits`].
 fn rrf_fuse_audio_hits(text_hits: &[AudioHit], semantic_hits: &[AudioHit]) -> Vec<AudioHit> {
-    // Keyword-only path: see `rrf_fuse_frame_hits` — return the **Text Search**
-    // list untouched so the keyword-only path stays byte-identical.
-    if semantic_hits.is_empty() {
-        return text_hits.to_vec();
-    }
-
-    let mut scores: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
-    for (position, hit) in text_hits.iter().enumerate() {
-        *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
-    }
-    for (position, hit) in semantic_hits.iter().enumerate() {
-        *scores.entry(hit.anchor_id).or_insert(0.0) += 1.0 / (RRF_K + position as f64);
-    }
-
-    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    let mut fused = Vec::with_capacity(text_hits.len() + semantic_hits.len());
-    for hit in text_hits.iter().chain(semantic_hits.iter()) {
-        if !seen.insert(hit.anchor_id) {
-            continue;
-        }
-        let mut hit = hit.clone();
-        hit.rank = -scores.get(&hit.anchor_id).copied().unwrap_or(0.0);
-        fused.push(hit);
-    }
-    fused
+    rrf_fuse_hits(text_hits, semantic_hits, |hit| hit.anchor_id, |hit, rank| hit.rank = rank)
 }
 
 fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {

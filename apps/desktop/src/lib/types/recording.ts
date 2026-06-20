@@ -836,8 +836,4 @@ export interface SemanticSearchSettings {
 	enabled: boolean;
 	provider: string;
 	modelId: string | null;
-	// Retained for serde compatibility but dormant under the candle backend: candle
-	// has no ONNX intra-op thread pool, so this field's only consumer was removed.
-	// Kept (not deleted) to preserve the on-wire shape; left at its existing value.
-	embedThreads: number;
 }

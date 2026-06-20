@@ -257,9 +257,24 @@ impl SemanticSearchStore {
     /// the recreate.
     pub async fn recreate_vectors_table(&self, dimension: usize) -> Result<u64> {
         let mut tx = self.pool.begin().await?;
-        let previous: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM search_document_vectors")
-            .fetch_one(&mut *tx)
-            .await?;
+        // Count existing vectors only when the table is actually present: this is
+        // also reached from `reconcile_vectors_table`'s "absent → rebuild" self-heal
+        // path, where the table is missing — an unguarded `COUNT(*)` would raise
+        // "no such table" and abort the very rebuild that path exists to perform. A
+        // missing table discarded zero vectors.
+        let table_present: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master \
+             WHERE type = 'table' AND name = 'search_document_vectors'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let previous: i64 = if table_present.is_some() {
+            sqlx::query_scalar("SELECT COUNT(*) FROM search_document_vectors")
+                .fetch_one(&mut *tx)
+                .await?
+        } else {
+            0
+        };
         sqlx::query("DROP TABLE IF EXISTS search_document_vectors")
             .execute(&mut *tx)
             .await?;

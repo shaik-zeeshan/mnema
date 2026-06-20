@@ -2886,9 +2886,14 @@
   );
 
   // Model ids already surfaced as guided/builtin status rows — excluded from the
-  // Custom combobox so the user never sees a duplicate of a guided tier.
+  // Custom combobox so the user never sees a duplicate of a guided tier. Keyed off
+  // the GUIDED rows only (tier !== "custom"), NOT every status row: the catalog's
+  // Custom-tier model (bge-m3) is always present in the status response (the
+  // builtin manifest carries all three tiers), so mapping every row would put the
+  // Custom model in this set and drop it from `semanticSearchCustomOptions` too —
+  // leaving the whole Custom tier unselectable in the combined picker.
   let semanticSearchGuidedModelIds = $derived(
-    new Set((semanticSearchModelStatus?.models ?? []).map((m) => m.modelId)),
+    new Set(semanticSearchGuidedModels.map((m) => m.modelId)),
   );
 
   // The Custom-combobox options: the supported catalog minus anything already
