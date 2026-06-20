@@ -19,6 +19,17 @@ See README.md for setup. Example:
     python run_der.py --limit 8                # fast loop on first 8 test clips
     python run_der.py --manifest voxconverse_subset.txt
     python run_der.py --all --json-out baseline.json
+
+Provider selection: `--binary` drives ANY external binary that honors the same
+contract (`--audio <wav> --uri <name>`, optional `--models-dir`, pure RTTM on
+stdout). To score the speakrs provider instead of sherpa-onnx, build its sibling
+bin and point `--binary` at it (sherpa-only tuning flags like --model-id /
+--clustering-threshold are accepted-and-ignored by the speakrs bin):
+    brew install openblas pkgconf
+    export PKG_CONFIG_PATH=$(brew --prefix openblas)/lib/pkgconfig
+    cargo build -p speaker-analysis --features speakrs --release \\
+        --bin diarize_to_rttm_speakrs
+    python run_der.py --binary ../../target/release/diarize_to_rttm_speakrs --all
 """
 
 from __future__ import annotations
@@ -211,7 +222,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=8, help="first N clips (default: 8; <=0 means all)")
     parser.add_argument("--all", action="store_true", help="evaluate the whole split")
     parser.add_argument("--manifest", help="file of clip indices (one per line, # comments ok)")
-    parser.add_argument("--binary", help="path to diarize_to_rttm (default: target/{release,debug})")
+    parser.add_argument(
+        "--binary",
+        help="path to a diarizer binary honoring the --audio/--uri/RTTM-on-stdout "
+        "contract (default: target/{release,debug}/diarize_to_rttm). Point at "
+        "target/{release,debug}/diarize_to_rttm_speakrs to score the speakrs provider.",
+    )
     parser.add_argument("--collar", type=float, default=0.25, help="DER forgiveness collar in seconds")
     parser.add_argument("--models-dir", help="speaker-analysis model store (passed to the binary)")
     parser.add_argument("--model-id", help="preset id (passed to the binary)")

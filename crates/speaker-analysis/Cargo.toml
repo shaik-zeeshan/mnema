@@ -6,6 +6,11 @@ edition = "2021"
 [features]
 default = []
 sherpa-onnx = ["dep:sherpa-onnx-runtime", "dep:tokio", "dep:cidre"]
+# speakrs is the second on-device diarization provider (pure-Rust + native
+# CoreML). It must build STANDALONE (without sherpa-onnx): tokio drives
+# `spawn_blocking`, and cidre is reused for the macOS audio decode path shared
+# with the sherpa provider.
+speakrs = ["dep:speakrs", "dep:tokio", "dep:cidre"]
 
 # DER benchmark harness binary (see scripts/diarization_bench/). Only built with
 # the sherpa-onnx feature, so default `cargo check`/`cargo test` stay clean.
@@ -13,6 +18,15 @@ sherpa-onnx = ["dep:sherpa-onnx-runtime", "dep:tokio", "dep:cidre"]
 name = "diarize_to_rttm"
 path = "src/bin/diarize_to_rttm.rs"
 required-features = ["sherpa-onnx"]
+
+# speakrs sibling of the DER benchmark harness binary (see
+# scripts/diarization_bench/). Only built with the speakrs feature, so the heavy
+# speakrs/OpenBLAS/CoreML build stays opt-in and default `cargo check`/`cargo test`
+# (no features) stay clean. Drive it via `run_der.py --binary <path>`.
+[[bin]]
+name = "diarize_to_rttm_speakrs"
+path = "src/bin/diarize_to_rttm_speakrs.rs"
+required-features = ["speakrs"]
 
 [dependencies]
 async-trait = "0.1"
@@ -22,6 +36,11 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 sherpa-onnx-runtime = { package = "sherpa-onnx", version = "1.13.1", optional = true }
+# speakrs needs a BLAS backend; its `default-linalg` is Intel-MKL (x86 only), so
+# on Apple Silicon we select an OpenBLAS feature. `openblas-system` links the
+# system OpenBLAS (brew install openblas). The `online` HuggingFace download
+# path is dropped because we load via `from_dir` against the app model store.
+speakrs = { version = "0.4", default-features = false, features = ["coreml", "openblas-system"], optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
 tempfile = "3"
 

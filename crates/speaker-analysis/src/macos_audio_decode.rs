@@ -1,28 +1,28 @@
-#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
+#[cfg(any(test, all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs"))))]
 use crate::{SpeakerAnalysisError, SpeakerAnalysisResult};
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 use std::path::Path;
-#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
+#[cfg(any(test, all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs"))))]
 use std::time::{Duration, Instant};
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 use tempfile::NamedTempFile;
 
-#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
+#[cfg(any(test, all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs"))))]
 #[derive(Debug)]
 pub(crate) struct DecodedAudio {
     pub(crate) samples: Vec<f32>,
     pub(crate) sample_rate_hz: u32,
 }
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 const AVASSETREADER_WRITER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 const AVASSETREADER_WRITER_READY_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
+#[cfg(any(test, all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs"))))]
 fn wait_for_writer_input_ready(
     mut is_ready: impl FnMut() -> bool,
     timeout: Duration,
@@ -41,7 +41,7 @@ fn wait_for_writer_input_ready(
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 pub(crate) fn decode_audio_to_mono_with_avassetreader_fallback(
     path: &Path,
 ) -> SpeakerAnalysisResult<DecodedAudio> {
@@ -52,7 +52,7 @@ pub(crate) fn decode_audio_to_mono_with_avassetreader_fallback(
     )
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
+#[cfg(any(test, all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs"))))]
 fn decode_with_fallback<T, FPrimary, FFallback>(
     primary: FPrimary,
     fallback: FFallback,
@@ -72,7 +72,7 @@ where
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 fn avaudiofile_decode_audio_to_mono(path: &Path) -> SpeakerAnalysisResult<DecodedAudio> {
     use cidre::{av, ns, objc};
 
@@ -139,7 +139,7 @@ fn avaudiofile_decode_audio_to_mono(path: &Path) -> SpeakerAnalysisResult<Decode
     })
 }
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 fn avassetreader_decode_audio_to_mono(path: &Path) -> SpeakerAnalysisResult<DecodedAudio> {
     let temp_wav = NamedTempFile::new().map_err(|error| {
         SpeakerAnalysisError::Analysis(format!(
@@ -151,7 +151,7 @@ fn avassetreader_decode_audio_to_mono(path: &Path) -> SpeakerAnalysisResult<Deco
     avaudiofile_decode_audio_to_mono(temp_wav.path())
 }
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 fn transcode_audio_to_wav_with_asset_reader(
     source_path: &Path,
     wav_path: &Path,
@@ -389,7 +389,7 @@ fn transcode_audio_to_wav_with_asset_reader(
     })
 }
 
-#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+#[cfg(all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs")))]
 fn append_downmixed_f32(
     out: &mut Vec<f32>,
     buffer: &cidre::av::AudioPcmBuf,
@@ -422,6 +422,7 @@ fn append_downmixed_f32(
     Ok(())
 }
 
+#[cfg(any(test, all(target_os = "macos", any(feature = "sherpa-onnx", feature = "speakrs"))))]
 pub(crate) fn resample_linear(
     samples: &[f32],
     source_rate_hz: u32,
@@ -495,6 +496,15 @@ mod tests {
 
         assert!(error.to_string().contains("primary failed"));
         assert!(error.to_string().contains("fallback failed"));
+    }
+
+    #[test]
+    fn resamples_to_target_rate() {
+        let samples = vec![0.0, 1.0, 0.0, -1.0];
+        let out = resample_linear(&samples, 4, 2);
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.0).abs() < 0.0001);
+        assert!((out[1] - 0.0).abs() < 0.0001);
     }
 
     #[test]

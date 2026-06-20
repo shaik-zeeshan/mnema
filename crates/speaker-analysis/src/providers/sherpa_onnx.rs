@@ -8,17 +8,18 @@ use std::{
 use async_trait::async_trait;
 use serde_json::json;
 
+use crate::providers::shared::{
+    add_warning_reason, audio_peak, best_enrollment_match, cosine_similarity,
+    decode_audio_to_mono_16khz, f32_embedding_to_le_bytes, finalize_provenance_counts,
+    mark_overlapping_turns, merge_adjacent_turns, ms_to_sample_index, provider_cluster_id,
+    seconds_to_ms, speaker_skip_reason, validate_decoded_samples, SAMPLE_RATE_HZ,
+};
 use crate::{
-    macos_audio_decode::{
-        decode_audio_to_mono_with_avassetreader_fallback, resample_linear, DecodedAudio,
-    },
     model_install_dir, SpeakerAnalysisError, SpeakerAnalysisMetadata, SpeakerAnalysisOutput,
     SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult, SpeakerCluster,
-    SpeakerRecognitionSuggestion, SpeakerTurn, DEFAULT_CLUSTERING_THRESHOLD,
-    DEFAULT_SHERPA_ONNX_MODEL_ID, SHERPA_ONNX_PROVIDER_ID,
+    SpeakerTurn, DEFAULT_CLUSTERING_THRESHOLD, DEFAULT_SHERPA_ONNX_MODEL_ID, SHERPA_ONNX_PROVIDER_ID,
 };
 
-const SAMPLE_RATE_HZ: u32 = 16_000;
 const CLUSTERING_THRESHOLD_OPTION: &str = "clusteringThreshold";
 const CROSS_CHUNK_THRESHOLD_OPTION: &str = "crossChunkThreshold";
 const NUM_CLUSTERS_OPTION: &str = "numClusters";
@@ -29,8 +30,6 @@ const MIN_DURATION_OFF_OPTION: &str = "minDurationOff";
 /// default `SAFE_SINGLE_CHUNK_DIARIZATION_MS` is used and behavior is
 /// byte-identical. See `sanitize_safe_chunk_ms` for the accepted range.
 const SAFE_CHUNK_MS_OPTION: &str = "safeChunkMs";
-const MIN_DIARIZATION_AUDIO_MS: u64 = 1_000;
-const MIN_DIARIZATION_PEAK: f32 = 1.0e-5;
 /// Production default safe-chunk diarization window. **Tuned to 60s and must
 /// stay within the `[2×SAFE_CHUNK_OVERLAP_MS ..= MAX_SAFE_CHUNK_DIARIZATION_MS]`
 /// bounds — do not tune it outside that range.**
@@ -67,7 +66,6 @@ const SAFE_SINGLE_CHUNK_DIARIZATION_MS: u64 = 60_000;
 /// 60s embedding cap, so the override can never push past TitaNet's limit.
 const MAX_SAFE_CHUNK_DIARIZATION_MS: u64 = 60_000;
 const SAFE_CHUNK_OVERLAP_MS: u64 = 1_000;
-const MERGE_ADJACENT_TURN_GAP_MS: u64 = 250;
 /// Maximum audio (in samples) fed to the speaker-embedding extractor in a single
 /// call. The NeMo TitaNet ONNX models have a fixed internal dimension (~12288
 /// frames, ≈123s) and throw an uncatchable C++ exception that aborts the process
@@ -77,10 +75,6 @@ const MERGE_ADJACENT_TURN_GAP_MS: u64 = 250;
 /// bounds the stored representative embedding — turns and cluster assignments are
 /// already finalized — so it does not change diarization labeling.
 const MAX_EMBEDDING_AUDIO_SAMPLES: usize = 60 * SAMPLE_RATE_HZ as usize;
-const MIN_RECOGNITION_SUGGESTION_SCORE: f32 = 0.60;
-const HIGH_RECOGNITION_SUGGESTION_SCORE: f32 = 0.72;
-const PERSON_AMBIGUITY_MARGIN: f32 = 0.05;
-const REJECTED_PERSON_SIMILARITY_THRESHOLD: f32 = 0.80;
 static SHERPA_DIARIZATION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone)]
@@ -222,6 +216,10 @@ fn run_sherpa_on_samples(
     models_dir: &Path,
     samples: Vec<f32>,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
+    // Wall-clock of the analysis pass (Slice 3 `analysisDurationMs`). Decode
+    // happens in `run_sherpa_blocking` and is captured by `elapsedMs`; this
+    // measures only the analyze pass so both providers report it uniformly.
+    let analysis_started = Instant::now();
     let selection = resolve_model_selection(&request, models_dir)?;
     if !request.audio_path.is_file() {
         return Err(SpeakerAnalysisError::InvalidRequest(format!(
@@ -251,7 +249,7 @@ fn run_sherpa_on_samples(
             .metadata
             .provenance
             .insert("skipReason".to_string(), json!(skip_reason));
-        finalize_provenance_counts(&mut output);
+        finalize_provenance_counts(&mut output, analysis_started.elapsed().as_millis() as u64);
         return Ok(output);
     }
 
@@ -292,7 +290,13 @@ fn run_sherpa_on_samples(
             json!(selection.safe_chunk_ms),
         );
         return analyze_long_audio_with_safe_chunking(
-            &request, &samples, &selection, &diarizer, &extractor, output,
+            &request,
+            &samples,
+            &selection,
+            &diarizer,
+            &extractor,
+            output,
+            analysis_started,
         );
     }
 
@@ -346,7 +350,7 @@ fn run_sherpa_on_samples(
         });
     }
     output.turns = mark_overlapping_turns(output.turns);
-    finalize_provenance_counts(&mut output);
+    finalize_provenance_counts(&mut output, analysis_started.elapsed().as_millis() as u64);
 
     Ok(output)
 }
@@ -359,6 +363,7 @@ fn analyze_long_audio_with_safe_chunking(
     diarizer: &sherpa_onnx_runtime::OfflineSpeakerDiarization,
     extractor: &sherpa_onnx_runtime::SpeakerEmbeddingExtractor,
     mut output: SpeakerAnalysisOutput,
+    analysis_started: Instant,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
     let chunk_len = safe_single_chunk_sample_limit(selection.safe_chunk_ms);
     let mut local_clusters = Vec::new();
@@ -424,7 +429,7 @@ fn analyze_long_audio_with_safe_chunking(
         .insert("warningReasons".to_string(), json!(warning_reasons));
 
     if local_clusters.is_empty() {
-        finalize_provenance_counts(&mut output);
+        finalize_provenance_counts(&mut output, analysis_started.elapsed().as_millis() as u64);
         return Ok(output);
     }
 
@@ -480,7 +485,7 @@ fn analyze_long_audio_with_safe_chunking(
             suggestion,
         });
     }
-    finalize_provenance_counts(&mut output);
+    finalize_provenance_counts(&mut output, analysis_started.elapsed().as_millis() as u64);
 
     Ok(output)
 }
@@ -1132,23 +1137,6 @@ fn blend_embeddings(
     }
 }
 
-fn merge_adjacent_turns(mut turns: Vec<SpeakerTurn>) -> Vec<SpeakerTurn> {
-    turns.sort_by_key(|turn| (turn.start_ms, turn.end_ms));
-    let mut merged = Vec::<SpeakerTurn>::new();
-    for turn in turns {
-        if let Some(last) = merged.last_mut() {
-            if last.provider_cluster_id == turn.provider_cluster_id
-                && turn.start_ms <= last.end_ms.saturating_add(MERGE_ADJACENT_TURN_GAP_MS)
-            {
-                last.end_ms = last.end_ms.max(turn.end_ms);
-                continue;
-            }
-        }
-        merged.push(turn);
-    }
-    merged
-}
-
 fn safe_single_chunk_sample_limit(safe_chunk_ms: u64) -> usize {
     SAMPLE_RATE_HZ as usize * safe_chunk_ms as usize / 1000
 }
@@ -1174,21 +1162,6 @@ fn min_turn_samples(min_turn_ms: u64) -> usize {
 
 fn overlap_sample_limit() -> usize {
     SAMPLE_RATE_HZ as usize * SAFE_CHUNK_OVERLAP_MS as usize / 1000
-}
-
-fn mark_overlapping_turns(mut turns: Vec<SpeakerTurn>) -> Vec<SpeakerTurn> {
-    for index in 0..turns.len() {
-        let overlaps = turns.iter().enumerate().any(|(other_index, other)| {
-            other_index != index
-                && other.provider_cluster_id != turns[index].provider_cluster_id
-                && other.end_ms > turns[index].start_ms
-                && other.start_ms < turns[index].end_ms
-        });
-        if overlaps {
-            turns[index].overlaps = true;
-        }
-    }
-    turns
 }
 
 #[cfg(feature = "sherpa-onnx")]
@@ -1311,72 +1284,6 @@ fn speaker_output_for_request(
     output
 }
 
-#[cfg(feature = "sherpa-onnx")]
-fn validate_decoded_samples(samples: &[f32]) -> SpeakerAnalysisResult<()> {
-    if samples.iter().any(|sample| !sample.is_finite()) {
-        return Err(SpeakerAnalysisError::Runtime {
-            stage: "validate_decoded_samples".to_string(),
-            message: "decoded speaker-analysis audio contained non-finite samples".to_string(),
-        });
-    }
-    Ok(())
-}
-
-#[cfg(feature = "sherpa-onnx")]
-fn audio_peak(samples: &[f32]) -> f32 {
-    samples
-        .iter()
-        .map(|sample| sample.abs())
-        .fold(0.0_f32, f32::max)
-}
-
-#[cfg(feature = "sherpa-onnx")]
-fn speaker_skip_reason(audio_peak: f32, duration_ms: u64) -> Option<&'static str> {
-    if duration_ms < MIN_DIARIZATION_AUDIO_MS {
-        return Some("too_short");
-    }
-
-    if audio_peak < MIN_DIARIZATION_PEAK {
-        return Some("silent");
-    }
-
-    None
-}
-
-#[cfg(feature = "sherpa-onnx")]
-fn finalize_provenance_counts(output: &mut SpeakerAnalysisOutput) {
-    output
-        .metadata
-        .provenance
-        .insert("turnCount".to_string(), json!(output.turns.len()));
-    output
-        .metadata
-        .provenance
-        .insert("clusterCount".to_string(), json!(output.clusters.len()));
-}
-
-#[cfg(feature = "sherpa-onnx")]
-fn add_warning_reason(output: &mut SpeakerAnalysisOutput, reason: &str) {
-    let mut reasons = output
-        .metadata
-        .provenance
-        .get("warningReasons")
-        .and_then(serde_json::Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    reasons.push(reason.to_string());
-    output
-        .metadata
-        .provenance
-        .insert("warningReasons".to_string(), json!(reasons));
-}
-
 fn sanitize_threshold(value: f32) -> f32 {
     if value.is_finite() {
         value.clamp(0.05, 0.95)
@@ -1492,85 +1399,6 @@ fn compute_embedding(
         })
 }
 
-fn best_enrollment_match(
-    request: &SpeakerAnalysisRequest,
-    embedding: &[f32],
-    model_id: &str,
-) -> Option<SpeakerRecognitionSuggestion> {
-    let mut matches = request
-        .enrolled_people
-        .iter()
-        .filter(|person| person.embedding_model_id == model_id)
-        .filter_map(|person| {
-            let enrolled = f32_embedding_from_le_bytes(&person.embedding)?;
-            let score = cosine_similarity(&enrolled, embedding);
-            if score < MIN_RECOGNITION_SUGGESTION_SCORE
-                || has_similar_rejection(request, person.person_id, embedding, model_id)
-            {
-                return None;
-            }
-            let confidence = if score >= HIGH_RECOGNITION_SUGGESTION_SCORE {
-                crate::RecognitionConfidence::High
-            } else {
-                crate::RecognitionConfidence::Medium
-            };
-            Some(SpeakerRecognitionSuggestion {
-                person_id: person.person_id,
-                display_name: person.display_name.clone(),
-                confidence,
-                score,
-            })
-        })
-        .collect::<Vec<_>>();
-    matches.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.person_id.cmp(&right.person_id))
-    });
-
-    let best = matches.first()?;
-    if matches
-        .iter()
-        .find(|candidate| candidate.person_id != best.person_id)
-        .is_some_and(|second| best.score - second.score < PERSON_AMBIGUITY_MARGIN)
-    {
-        return None;
-    }
-    Some(best.clone())
-}
-
-fn has_similar_rejection(
-    request: &SpeakerAnalysisRequest,
-    person_id: i64,
-    embedding: &[f32],
-    model_id: &str,
-) -> bool {
-    request
-        .rejected_people
-        .iter()
-        .filter(|rejection| {
-            rejection.person_id == person_id && rejection.embedding_model_id == model_id
-        })
-        .filter_map(|rejection| f32_embedding_from_le_bytes(&rejection.embedding))
-        .any(|rejected| {
-            cosine_similarity(&rejected, embedding) >= REJECTED_PERSON_SIMILARITY_THRESHOLD
-        })
-}
-
-fn provider_cluster_id(speaker: i32) -> String {
-    format!("speaker_{speaker:02}")
-}
-
-fn seconds_to_ms(seconds: f32) -> u64 {
-    (seconds.max(0.0) * 1000.0).round() as u64
-}
-
-fn ms_to_sample_index(ms: u64, sample_len: usize) -> usize {
-    ((ms as usize).saturating_mul(SAMPLE_RATE_HZ as usize) / 1000).min(sample_len)
-}
-
 fn concatenate_ranges(samples: &[f32], ranges: &[(usize, usize)]) -> Vec<f32> {
     let len = ranges.iter().map(|(start, end)| end - start).sum();
     let mut out = Vec::with_capacity(len);
@@ -1600,63 +1428,9 @@ fn concatenate_ranges_capped(
     out
 }
 
-fn f32_embedding_to_le_bytes(embedding: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(embedding.len() * 4);
-    for value in embedding {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    out
-}
-
-fn f32_embedding_from_le_bytes(bytes: &[u8]) -> Option<Vec<f32>> {
-    if bytes.len() % 4 != 0 {
-        return None;
-    }
-    Some(
-        bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect(),
-    )
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot = a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
-    let a_norm = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let b_norm = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    dot / (a_norm * b_norm).max(f32::EPSILON)
-}
-
-#[cfg(all(feature = "sherpa-onnx", target_os = "macos"))]
-fn decode_audio_to_mono_16khz(path: &Path) -> SpeakerAnalysisResult<Vec<f32>> {
-    let decoded = avfoundation_decode_audio_to_mono(path)?;
-    Ok(resample_linear(
-        &decoded.samples,
-        decoded.sample_rate_hz,
-        SAMPLE_RATE_HZ,
-    ))
-}
-
-#[cfg(all(feature = "sherpa-onnx", not(target_os = "macos")))]
-fn decode_audio_to_mono_16khz(_path: &Path) -> SpeakerAnalysisResult<Vec<f32>> {
-    Err(SpeakerAnalysisError::ProviderUnavailable(
-        "sherpa-onnx audio decoding is only implemented with AVFoundation on macOS in v1"
-            .to_string(),
-    ))
-}
-
-#[cfg(all(feature = "sherpa-onnx", target_os = "macos"))]
-fn avfoundation_decode_audio_to_mono(path: &Path) -> SpeakerAnalysisResult<DecodedAudio> {
-    decode_audio_to_mono_with_avassetreader_fallback(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PersonEnrollment, PersonRecognitionRejection, SpeakerAnalysisRequest};
 
     fn selection_for(model_id: &str) -> SherpaModelSelection {
         let request = SpeakerAnalysisRequest::new(
@@ -1796,120 +1570,9 @@ mod tests {
         assert_eq!(min_turn_samples(1_000), 16_000);
     }
 
-    #[test]
-    fn resamples_to_target_rate() {
-        let samples = vec![0.0, 1.0, 0.0, -1.0];
-        let out = resample_linear(&samples, 4, 2);
-        assert_eq!(out.len(), 2);
-        assert!((out[0] - 0.0).abs() < 0.0001);
-        assert!((out[1] - 0.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn embedding_bytes_round_trip() {
-        let embedding = vec![0.1, -0.2, 0.3];
-        let bytes = f32_embedding_to_le_bytes(&embedding);
-        assert_eq!(f32_embedding_from_le_bytes(&bytes), Some(embedding));
-    }
-
-    fn request_with_enrollment(score: f32) -> SpeakerAnalysisRequest {
-        let mut request = SpeakerAnalysisRequest::new(
-            "/tmp/audio.m4a",
-            SHERPA_ONNX_PROVIDER_ID,
-            Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
-            "session-a",
-            7,
-        );
-        request.enrolled_people.push(PersonEnrollment {
-            person_id: 1,
-            display_name: "Jack".to_string(),
-            embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(score)),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
-        });
-        request
-    }
-
-    fn unit_embedding_for_score(score: f32) -> [f32; 2] {
-        [score, (1.0 - score.powi(2)).max(0.0).sqrt()]
-    }
-
-    #[test]
-    fn recognition_skips_weak_best_match() {
-        let request = request_with_enrollment(0.59);
-
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
-
-        assert!(suggestion.is_none());
-    }
-
-    #[test]
-    fn recognition_maps_high_confidence_from_strict_threshold() {
-        let request = request_with_enrollment(0.72);
-
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
-            .expect("suggestion");
-
-        assert_eq!(suggestion.confidence, crate::RecognitionConfidence::High);
-        assert!(suggestion.score >= 0.72);
-    }
-
-    #[test]
-    fn recognition_maps_medium_confidence_from_minimum_threshold() {
-        let request = request_with_enrollment(0.60);
-
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
-            .expect("suggestion");
-
-        assert_eq!(suggestion.confidence, crate::RecognitionConfidence::Medium);
-        assert!(suggestion.score >= 0.60);
-        assert!(suggestion.score < 0.72);
-    }
-
-    #[test]
-    fn recognition_skips_person_with_similar_rejection() {
-        let mut request = request_with_enrollment(1.0);
-        request.rejected_people.push(PersonRecognitionRejection {
-            person_id: 1,
-            embedding: f32_embedding_to_le_bytes(&[1.0, 0.0]),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
-        });
-
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
-
-        assert!(suggestion.is_none());
-    }
-
-    #[test]
-    fn recognition_skips_ambiguous_top_two_people() {
-        let mut request = request_with_enrollment(0.72);
-        request.enrolled_people.push(PersonEnrollment {
-            person_id: 2,
-            display_name: "Jill".to_string(),
-            embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(0.68)),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
-        });
-
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
-
-        assert!(suggestion.is_none());
-    }
-
-    #[test]
-    fn recognition_keeps_close_same_person_enrollments_unambiguous() {
-        let mut request = request_with_enrollment(0.72);
-        request.enrolled_people.push(PersonEnrollment {
-            person_id: 1,
-            display_name: "Jack".to_string(),
-            embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(0.71)),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
-        });
-
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
-            .expect("same-person enrollments should not be ambiguous");
-
-        assert_eq!(suggestion.person_id, 1);
-        assert!(suggestion.score >= 0.72);
-    }
+    // `resamples_to_target_rate` lives with `resample_linear` in
+    // `macos_audio_decode`. Recognition policy, embedding round-trip, cosine,
+    // and turn merge tests live with their functions in `providers::shared`.
 
     #[test]
     fn clamps_sherpa_runtime_options_before_native_call() {
@@ -1922,38 +1585,6 @@ mod tests {
         assert_eq!(sanitize_num_clusters(100), 16);
         assert_eq!(sanitize_min_duration(f32::INFINITY), 0.0);
         assert_eq!(sanitize_min_duration(30.0), 5.0);
-    }
-
-    #[test]
-    fn merges_adjacent_turns_for_same_cluster() {
-        let turns = vec![
-            SpeakerTurn {
-                provider_cluster_id: "speaker_00".to_string(),
-                start_ms: 0,
-                end_ms: 1_000,
-                transcript_text: None,
-                overlaps: false,
-            },
-            SpeakerTurn {
-                provider_cluster_id: "speaker_00".to_string(),
-                start_ms: 1_050,
-                end_ms: 2_000,
-                transcript_text: None,
-                overlaps: false,
-            },
-            SpeakerTurn {
-                provider_cluster_id: "speaker_01".to_string(),
-                start_ms: 2_500,
-                end_ms: 3_000,
-                transcript_text: None,
-                overlaps: false,
-            },
-        ];
-
-        let merged = merge_adjacent_turns(turns);
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].start_ms, 0);
-        assert_eq!(merged[0].end_ms, 2_000);
     }
 
     #[cfg(feature = "sherpa-onnx")]
@@ -2260,13 +1891,7 @@ mod tests {
         assert_eq!(calls, 2);
     }
 
-    #[cfg(feature = "sherpa-onnx")]
-    #[test]
-    fn skips_sherpa_for_short_or_silent_audio() {
-        assert_eq!(speaker_skip_reason(0.1, 500), Some("too_short"));
-        assert_eq!(speaker_skip_reason(0.0, 2_000), Some("silent"));
-        assert_eq!(speaker_skip_reason(0.1, 2_000), None);
-    }
+    // `skips_sherpa_for_short_or_silent_audio` now lives in `providers::shared`.
 
     #[cfg(feature = "sherpa-onnx")]
     #[test]
@@ -2284,7 +1909,7 @@ mod tests {
             .metadata
             .provenance
             .insert("skipReason".to_string(), json!("too_short"));
-        finalize_provenance_counts(&mut output);
+        finalize_provenance_counts(&mut output, 3);
 
         let provenance = &output.metadata.provenance;
         assert_eq!(provenance.get("schemaVersion"), Some(&json!(1)));
@@ -2300,6 +1925,10 @@ mod tests {
             provenance.get("warningReasons"),
             Some(&json!(Vec::<String>::new()))
         );
+        // Slice 3: both new provenance keys must be present even on the
+        // skip/empty path, with `clustersPerSegment == 0`.
+        assert_eq!(provenance.get("clustersPerSegment"), Some(&json!(0)));
+        assert_eq!(provenance.get("analysisDurationMs"), Some(&json!(3)));
     }
 
     #[cfg(feature = "sherpa-onnx")]
@@ -2352,18 +1981,8 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "sherpa-onnx")]
-    #[test]
-    fn non_finite_samples_return_typed_runtime_error() {
-        let error =
-            validate_decoded_samples(&[0.0, f32::NAN]).expect_err("non-finite samples should fail");
-
-        assert!(matches!(
-            error,
-            SpeakerAnalysisError::Runtime { ref stage, .. }
-                if stage == "validate_decoded_samples"
-        ));
-    }
+    // `non_finite_samples_return_typed_runtime_error` now lives in
+    // `providers::shared`.
 
     #[test]
     fn concatenate_ranges_capped_truncates_in_order() {

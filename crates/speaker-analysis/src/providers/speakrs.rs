@@ -1,0 +1,438 @@
+//! speakrs on-device diarization provider (Slice 2 + 3).
+//!
+//! speakrs is a pure-Rust pyannote community-1 pipeline with native CoreML
+//! acceleration. Unlike the sherpa provider it runs the WHOLE Audio Segment in
+//! one pass — NO safe-chunk window. Rationale: the speaker-analysis helper runs
+//! subprocess-per-job (see CONTEXT.md), so the subprocess exit is the
+//! memory-reclamation boundary; and an Audio Segment is capped at 5 minutes, so
+//! the transient CoreML peak is bounded and length-bounded scratch. Safe-chunking
+//! stays specific to providers with their own per-call ceilings (sherpa's
+//! pyannote/TitaNet runtime). So this module deliberately has no chunking.
+
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+use async_trait::async_trait;
+use serde_json::json;
+
+use crate::providers::shared::{
+    add_warning_reason, audio_peak, best_enrollment_match, decode_audio_to_mono_16khz,
+    f32_embedding_to_le_bytes, finalize_provenance_counts, mark_overlapping_turns,
+    merge_adjacent_turns, speaker_skip_reason, validate_decoded_samples, SAMPLE_RATE_HZ,
+};
+use crate::providers::speakrs_mapping::{
+    map_speakrs_result, provider_cluster_id, SpeakerClusterCentroid,
+};
+use crate::{
+    model_install_dir, safe_path_component, SpeakerAnalysisError, SpeakerAnalysisMetadata,
+    SpeakerAnalysisOutput, SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult,
+    SpeakerCluster, SPEAKRS_DEFAULT_MODEL_ID, SPEAKRS_EMBEDDING_MODEL_ID, SPEAKRS_PROVIDER_ID,
+};
+
+/// `provider_version` stamp; the crate version is pinned in Cargo.toml.
+const SPEAKRS_PROVIDER_VERSION: &str = concat!("speakrs/", "0.4");
+
+#[derive(Debug, Clone)]
+pub struct SpeakrsSpeakerAnalysisProvider {
+    models_dir: PathBuf,
+}
+
+impl SpeakrsSpeakerAnalysisProvider {
+    pub fn with_models_dir(models_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            models_dir: models_dir.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl SpeakerAnalysisProvider for SpeakrsSpeakerAnalysisProvider {
+    fn provider(&self) -> &'static str {
+        SPEAKRS_PROVIDER_ID
+    }
+
+    async fn analyze(
+        &self,
+        request: SpeakerAnalysisRequest,
+    ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
+        let models_dir = self.models_dir.clone();
+        tokio::task::spawn_blocking(move || run_speakrs_blocking(request, &models_dir))
+            .await
+            .map_err(|error| {
+                SpeakerAnalysisError::Analysis(format!("speakrs worker failed to join: {error}"))
+            })?
+    }
+}
+
+/// Blocking entry the Slice 4 subprocess helper calls. Keep this name EXACTLY.
+pub fn analyze_speakrs_request_blocking(
+    request: SpeakerAnalysisRequest,
+    models_dir: &Path,
+) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
+    run_speakrs_blocking(request, models_dir)
+}
+
+/// Resolve the speakrs model install dir for this request.
+///
+/// Prefers the manifest descriptor (added in Slice 5). Until that lands, falls
+/// back to the same `models_dir/<provider>/<model_id>` layout `model_install_dir`
+/// would produce via `safe_path_component`, so this compiles and works before
+/// Slice 5. The dir is passed FLAT to `OwnedDiarizationPipeline::from_dir`, which
+/// loads `segmentation-3.0.onnx`, `wespeaker-voxceleb-resnet34.onnx`, the PLDA
+/// `*.npy` files, and the compiled `*.mlmodelc` bundles directly from it.
+fn resolve_install_dir(
+    request: &SpeakerAnalysisRequest,
+    models_dir: &Path,
+) -> SpeakerAnalysisResult<PathBuf> {
+    if request.provider != SPEAKRS_PROVIDER_ID {
+        return Err(SpeakerAnalysisError::InvalidRequest(format!(
+            "speakrs provider received request for {}",
+            request.provider
+        )));
+    }
+    let model_id = request
+        .model_id
+        .clone()
+        .unwrap_or_else(|| SPEAKRS_DEFAULT_MODEL_ID.to_string());
+
+    // Prefer the manifest descriptor when present (Slice 5).
+    if let Some(descriptor) = crate::find_model_descriptor(
+        &crate::builtin_model_manifest(),
+        SPEAKRS_PROVIDER_ID,
+        Some(model_id.as_str()),
+    ) {
+        return model_install_dir(models_dir, descriptor)
+            .map_err(|error| SpeakerAnalysisError::InvalidRequest(error.to_string()));
+    }
+
+    // Pre-Slice-5 fallback: mirror `model_install_dir`'s safe layout by hand.
+    let provider_component = safe_path_component("provider", SPEAKRS_PROVIDER_ID)
+        .map_err(|error| SpeakerAnalysisError::InvalidRequest(error.to_string()))?;
+    let model_component = safe_path_component("modelId", &model_id)
+        .map_err(|error| SpeakerAnalysisError::InvalidRequest(error.to_string()))?;
+    Ok(models_dir.join(provider_component).join(model_component))
+}
+
+fn run_speakrs_blocking(
+    request: SpeakerAnalysisRequest,
+    models_dir: &Path,
+) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
+    // 1. Validate provider + resolve the install dir.
+    let install_dir = resolve_install_dir(&request, models_dir)?;
+    let model_id = request
+        .model_id
+        .clone()
+        .unwrap_or_else(|| SPEAKRS_DEFAULT_MODEL_ID.to_string());
+
+    // 2. Confirm the install dir exists (required files are checked by Slice 5's
+    //    status detection; here we surface a typed MissingModel so the job fails
+    //    cleanly rather than panicking inside the native loader).
+    if !install_dir.is_dir() {
+        return Err(SpeakerAnalysisError::MissingModel {
+            model_kind: "speakrs-bundle".to_string(),
+            path: install_dir,
+        });
+    }
+
+    // 3. Decode whole-segment audio to mono 16k, validate, compute peak/duration.
+    let analysis_started = Instant::now();
+    let samples = decode_audio_to_mono_16khz(&request.audio_path)?;
+    validate_decoded_samples(&samples)?;
+    let duration_ms = samples.len() as u64 * 1000 / SAMPLE_RATE_HZ as u64;
+    let audio_peak = audio_peak(&samples);
+
+    // 4. Build the base output + provenance (mirrors sherpa's keys for a uniform
+    //    downstream). On a too-short/silent skip, return the SUCCESSFUL EMPTY
+    //    output (CONTEXT.md invariant), still carrying the Slice 3 keys.
+    let mut output = speaker_output_for_request(&request, &install_dir, &model_id, duration_ms, audio_peak);
+    if let Some(skip_reason) = speaker_skip_reason(audio_peak, duration_ms) {
+        output
+            .metadata
+            .provenance
+            .insert("skipReason".to_string(), json!(skip_reason));
+        finalize_provenance_counts(&mut output, analysis_started.elapsed().as_millis() as u64);
+        return Ok(output);
+    }
+
+    // 5. Run speakrs WHOLE-SEGMENT (no chunking — see module docs). CoreML mode.
+    let mut pipeline = speakrs::OwnedDiarizationPipeline::from_dir(
+        install_dir.clone(),
+        speakrs::ExecutionMode::CoreMl,
+    )
+    .map_err(|error| SpeakerAnalysisError::Runtime {
+        stage: "create_pipeline".to_string(),
+        message: format!("failed to load speakrs pipeline from {}: {error}", install_dir.display()),
+    })?;
+    let result = pipeline
+        .run(&samples)
+        .map_err(|error| SpeakerAnalysisError::Runtime {
+            stage: "diarize".to_string(),
+            message: format!("speakrs diarization failed: {error}"),
+        })?;
+
+    // 6. Decompose the DiarizationResult into the plain inputs the pure mapper
+    //    takes (no speakrs/ndarray types cross this boundary).
+    let segments: Vec<(f64, f64, String)> = result
+        .segments
+        .iter()
+        .map(|segment| (segment.start, segment.end, segment.speaker.clone()))
+        .collect();
+
+    // `ChunkEmbeddings`/`ChunkSpeakerClusters` are newtypes over ndarray arrays
+    // shaped (chunks, speakers, dim) and (chunks, speakers). Read shape + flat
+    // row-major data through the arrays' own public methods (`shape`,
+    // `as_slice`, `iter`) so this file never names an `ndarray` type — that
+    // avoids coupling our signatures to speakrs's ndarray version.
+    let emb_shape = result.embeddings.0.shape();
+    let (chunks, speakers, dim) = if emb_shape.len() == 3 {
+        (emb_shape[0], emb_shape[1], emb_shape[2])
+    } else {
+        (0, 0, 0)
+    };
+    let embeddings: Vec<f32> = match result.embeddings.0.as_slice() {
+        Some(slice) => slice.to_vec(),
+        None => result.embeddings.0.iter().copied().collect(),
+    };
+    let hard_clusters: Vec<i32> = match result.hard_clusters.0.as_slice() {
+        Some(slice) => slice.to_vec(),
+        None => result.hard_clusters.0.iter().copied().collect(),
+    };
+
+    let mapping = map_speakrs_result(&segments, chunks, speakers, dim, &embeddings, &hard_clusters);
+
+    // 7. Build turns (post-process to match sherpa: merge adjacent same-cluster
+    //    turns, then mark cross-cluster overlaps).
+    output.turns = mark_overlapping_turns(merge_adjacent_turns(mapping.turns));
+
+    // 8. Build clusters from the centroids, attaching cautious recognition when
+    //    requested. The centroid is already mean-pooled + L2-normalized.
+    output.clusters = speakrs_clusters_from_centroids(&request, mapping.clusters, &model_id);
+
+    // 9. Finalize provenance counts (turnCount/clusterCount + Slice 3 keys).
+    if output.clusters.is_empty() && !output.turns.is_empty() {
+        // A diarization that produced turns but no usable centroids (every slot
+        // skipped) is unusual; record it without failing the job.
+        add_warning_reason(&mut output, "speakrs_no_cluster_centroids");
+    }
+    finalize_provenance_counts(&mut output, analysis_started.elapsed().as_millis() as u64);
+
+    Ok(output)
+}
+
+/// Build the [`SpeakerCluster`]s for a speakrs result from the mapped centroids,
+/// attaching cautious recognition when `request.recognize_people` is set.
+///
+/// `voiceprint_model_id` is the preset's Voiceprint Space id — the resolved request
+/// `model_id`. That is the value persisted to `recording_speaker_clusters.model_id`,
+/// and therefore the `person_voice_embeddings.model_id` that the recognition fetch
+/// filters on and `best_enrollment_match` compares against. It is DISTINCT from
+/// `SPEAKRS_EMBEDDING_MODEL_ID`, which only labels which embedding model produced the
+/// vector (provenance, stamped on `embedding_model_id`). Recognition MUST key on the
+/// preset id; keying on the embedding id silently drops every enrollment.
+fn speakrs_clusters_from_centroids(
+    request: &SpeakerAnalysisRequest,
+    centroids: Vec<SpeakerClusterCentroid>,
+    voiceprint_model_id: &str,
+) -> Vec<SpeakerCluster> {
+    centroids
+        .into_iter()
+        .map(|centroid| {
+            let global_id = centroid.global_id;
+            let suggestion = if request.recognize_people {
+                best_enrollment_match(request, &centroid.embedding, voiceprint_model_id)
+            } else {
+                None
+            };
+            SpeakerCluster {
+                provider_cluster_id: provider_cluster_id(global_id as i32),
+                stable_label: format!("Unknown Speaker {}", global_id + 1),
+                embedding: f32_embedding_to_le_bytes(&centroid.embedding),
+                embedding_model_id: SPEAKRS_EMBEDDING_MODEL_ID.to_string(),
+                suggestion,
+            }
+        })
+        .collect()
+}
+
+/// Build the base output + provenance for a speakrs job. Mirrors sherpa's
+/// `speaker_output_for_request` provenance keys so downstream is uniform, plus
+/// `chunkingMode = "single"` (speakrs never chunks).
+fn speaker_output_for_request(
+    request: &SpeakerAnalysisRequest,
+    install_dir: &Path,
+    model_id: &str,
+    duration_ms: u64,
+    audio_peak: f32,
+) -> SpeakerAnalysisOutput {
+    let mut output = SpeakerAnalysisOutput::new(SpeakerAnalysisMetadata::from_request(request));
+    output.provider_version = Some(SPEAKRS_PROVIDER_VERSION.to_string());
+    let provenance = &mut output.metadata.provenance;
+    provenance.insert("schemaVersion".to_string(), json!(1));
+    provenance.insert("modelId".to_string(), json!(model_id));
+    provenance.insert(
+        "modelInstallDir".to_string(),
+        json!(install_dir.display().to_string()),
+    );
+    provenance.insert(
+        "embeddingModelId".to_string(),
+        json!(SPEAKRS_EMBEDDING_MODEL_ID),
+    );
+    provenance.insert("audioDurationMs".to_string(), json!(duration_ms));
+    provenance.insert("audioPeak".to_string(), json!(audio_peak));
+    provenance.insert("skipReason".to_string(), serde_json::Value::Null);
+    // speakrs runs the whole segment in one pass — never safe-chunked.
+    provenance.insert("chunkingMode".to_string(), json!("single"));
+    provenance.insert("executionMode".to_string(), json!("coreml"));
+    provenance.insert("turnCount".to_string(), json!(0));
+    provenance.insert("clusterCount".to_string(), json!(0));
+    provenance.insert(
+        "recognitionEnabled".to_string(),
+        json!(request.recognize_people),
+    );
+    provenance.insert("warningReasons".to_string(), json!(Vec::<String>::new()));
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_request_for_other_provider() {
+        let request = SpeakerAnalysisRequest::new(
+            "/tmp/audio.m4a",
+            "sherpa_onnx",
+            Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
+            "session-a",
+            7,
+        );
+        let error =
+            resolve_install_dir(&request, Path::new("/tmp/models")).expect_err("wrong provider");
+        assert!(matches!(error, SpeakerAnalysisError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn resolves_fallback_install_dir_before_manifest_descriptor() {
+        // Pre-Slice-5: no speakrs descriptor in the manifest, so the install dir
+        // is the safe `models_dir/speakrs/<model_id>` layout.
+        let request = SpeakerAnalysisRequest::new(
+            "/tmp/audio.m4a",
+            SPEAKRS_PROVIDER_ID,
+            None,
+            "session-a",
+            7,
+        );
+        let dir = resolve_install_dir(&request, Path::new("/tmp/models")).expect("install dir");
+        assert_eq!(
+            dir,
+            PathBuf::from(format!("/tmp/models/speakrs/{SPEAKRS_DEFAULT_MODEL_ID}"))
+        );
+    }
+
+    #[test]
+    fn missing_install_dir_returns_missing_model() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let request = SpeakerAnalysisRequest::new(
+            "/tmp/audio.m4a",
+            SPEAKRS_PROVIDER_ID,
+            Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
+            "session-a",
+            7,
+        );
+        let error = run_speakrs_blocking(request, temp.path())
+            .expect_err("missing speakrs bundle should fail");
+        assert!(matches!(
+            error,
+            SpeakerAnalysisError::MissingModel { ref model_kind, .. }
+                if model_kind == "speakrs-bundle"
+        ));
+    }
+
+    #[test]
+    fn base_output_carries_uniform_provenance() {
+        let request = SpeakerAnalysisRequest::new(
+            "/tmp/audio.m4a",
+            SPEAKRS_PROVIDER_ID,
+            Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
+            "session-a",
+            7,
+        );
+        let mut output = speaker_output_for_request(
+            &request,
+            Path::new("/tmp/models/speakrs/x"),
+            SPEAKRS_DEFAULT_MODEL_ID,
+            500,
+            0.0,
+        );
+        output
+            .metadata
+            .provenance
+            .insert("skipReason".to_string(), json!("too_short"));
+        finalize_provenance_counts(&mut output, 5);
+
+        let provenance = &output.metadata.provenance;
+        assert_eq!(provenance.get("schemaVersion"), Some(&json!(1)));
+        assert_eq!(provenance.get("chunkingMode"), Some(&json!("single")));
+        assert_eq!(provenance.get("skipReason"), Some(&json!("too_short")));
+        assert_eq!(provenance.get("turnCount"), Some(&json!(0)));
+        assert_eq!(provenance.get("clusterCount"), Some(&json!(0)));
+        // Slice 3 keys present even on the skip/empty path.
+        assert_eq!(provenance.get("clustersPerSegment"), Some(&json!(0)));
+        assert_eq!(provenance.get("analysisDurationMs"), Some(&json!(5)));
+        assert_eq!(
+            output.provider_version.as_deref(),
+            Some(SPEAKRS_PROVIDER_VERSION)
+        );
+    }
+
+    #[test]
+    fn recognition_keys_on_preset_voiceprint_id_not_embedding_id() {
+        // A speakrs cluster is enrolled under the preset's Voiceprint Space id — the
+        // value `recording_speaker_clusters.model_id` and `person_voice_embeddings
+        // .model_id` store (NOT `SPEAKRS_EMBEDDING_MODEL_ID`). Recognition must
+        // compare against that same preset id; keying on the embedding id silently
+        // drops every enrollment (the bug this guards against).
+        use crate::PersonEnrollment;
+
+        let embedding = vec![1.0_f32, 0.0];
+        let mut request = SpeakerAnalysisRequest::new(
+            "/tmp/audio.m4a",
+            SPEAKRS_PROVIDER_ID,
+            Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
+            "session-a",
+            7,
+        );
+        request.recognize_people = true;
+        request.enrolled_people.push(PersonEnrollment {
+            person_id: 42,
+            display_name: "Ada".to_string(),
+            embedding: f32_embedding_to_le_bytes(&embedding),
+            embedding_model_id: SPEAKRS_DEFAULT_MODEL_ID.to_string(),
+        });
+        let centroids = vec![SpeakerClusterCentroid {
+            global_id: 0,
+            embedding: embedding.clone(),
+        }];
+
+        // Keyed on the preset id (what `run_speakrs_blocking` passes): recognized.
+        let clusters =
+            speakrs_clusters_from_centroids(&request, centroids.clone(), SPEAKRS_DEFAULT_MODEL_ID);
+        let suggestion = clusters[0]
+            .suggestion
+            .as_ref()
+            .expect("enrolled speaker should be recognized when keyed on the preset id");
+        assert_eq!(suggestion.person_id, 42);
+        // Provenance still labels the embedding model, independent of the match key.
+        assert_eq!(clusters[0].embedding_model_id, SPEAKRS_EMBEDDING_MODEL_ID);
+
+        // Keyed on the embedding id (the prior bug): the enrollment is filtered out.
+        let regressed =
+            speakrs_clusters_from_centroids(&request, centroids, SPEAKRS_EMBEDDING_MODEL_ID);
+        assert!(
+            regressed[0].suggestion.is_none(),
+            "keying recognition on the embedding id must not match preset-id enrollments"
+        );
+    }
+}

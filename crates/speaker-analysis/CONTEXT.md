@@ -7,6 +7,7 @@ Root entry point: [CONTEXT-MAP.md](../../CONTEXT-MAP.md).
 ## Decisions
 
 - [ADR 0001: Speaker Model Presets and Per-Preset Voiceprint Scope](docs/adr/0001-speaker-model-presets-and-voiceprint-scope.md)
+- [ADR 0002: Adopt speakrs as a Second On-Device Diarization Provider, Trending to Replacement](docs/adr/0002-adopt-speakrs-as-second-on-device-diarization-provider.md)
 
 ## Language
 
@@ -40,7 +41,7 @@ _Avoid_: global voiceprints, cross-model recognition, embedding-only scope
 - Successful **Speaker Analysis Job** diagnostics live in result provenance.
 - Failed **Speaker Analysis Job** diagnostics live in `processing_jobs.last_error`.
 - **Speaker Analysis Job** execution has a dedicated single-concurrency processing worker so speaker work does not block OCR/frame-batch or audio-transcription lanes.
-- The sherpa speaker-analysis helper remains subprocess-per-job in this stage; no persistent helper daemon, in-process model reuse, or generic audio-heavy worker abstraction is part of the current design.
+- Speaker-analysis helpers run subprocess-per-job for every diarization provider; no persistent helper daemon, in-process model reuse, or generic audio-heavy worker abstraction is part of the current design. Because the subprocess exit is also the memory-reclamation boundary, a provider whose peak is a transient, length-bounded scratch (e.g. a CoreML runtime) processes a whole **Audio Segment** in one pass without a safe-chunk window; safe-chunking stays specific to providers with their own per-call ceilings (the sherpa pyannote/TitaNet runtime).
 - Each **Speaker Analysis Job** freezes its helper timeout in payload option `helperTimeoutSeconds` when admitted, so later settings changes affect only future jobs.
 - The speaker-analysis helper timeout defaults to 600 seconds, clamps to 60-3600 seconds, and timeout failures kill/reap the helper before the job follows the normal failed processing path.
 - **Speaker Turn Alignment** treats **Audio Transcription** words or segments as the source timeline and assigns them to the best speaker turn annotation.
