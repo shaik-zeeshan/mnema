@@ -4741,8 +4741,15 @@ pub async fn search_capture(
     // **Semantic Search Model** is installed (default/Anthropic-only) — search
     // then degrades to keyword-only with no regression. Never errors: a failed or
     // absent embed just leaves `query_embedding = None`.
+    //
+    // The embed runs over the operator-stripped residual — exactly what FTS ranks
+    // on — so `app:`/`before:`/`source:` operators and quoted phrases never pollute
+    // the meaning vector. The full `request.query` still drives FTS below; only the
+    // EMBED input is the residual. An all-operators query yields an empty residual,
+    // which `embed_search_query` empty-guards to `None` (keyword-only).
+    let residual_query = ::app_infra::semantic_search_residual_query(&request.query);
     let query_embedding =
-        crate::semantic_search_query::embed_search_query(&app_handle, &query_embedder, &request.query)
+        crate::semantic_search_query::embed_search_query(&app_handle, &query_embedder, &residual_query)
             .await;
 
     infra

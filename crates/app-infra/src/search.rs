@@ -1713,6 +1713,18 @@ fn split_field_operator(token: &QueryToken) -> Option<(String, String, bool)> {
     Some((key.to_string(), value, value_quoted))
 }
 
+/// The operator-stripped residual body of a raw search query — the text the
+/// meaning-vector embed should use (so `app:`/`before:`/quoted operators don't
+/// pollute the **Semantic Search Vector**). Mirrors what FTS ranks on.
+///
+/// app-infra takes no embedding-runtime dependency, so it cannot embed the query
+/// itself; the desktop layer embeds, and this exposes the residual it should feed
+/// the embedder. An all-operators query yields an empty residual, which the caller
+/// treats as "no meaning vector" (keyword-only).
+pub fn semantic_search_residual_query(raw: &str) -> String {
+    parse_search_query(raw).residual_query
+}
+
 /// Parses a raw query into refinements and a safe FTS body. See module comment.
 pub(crate) fn parse_search_query(raw: &str) -> ParsedQuery {
     let tokenized = tokenize_query(raw);
@@ -7969,26 +7981,59 @@ mod tests {
                 .await
                 .expect("infra should initialize");
 
-            // Two anchors, same meaning vector neighborhood, different apps. A
-            // post-filter that ranked first and filtered second could drop the
-            // in-scope answer; the pre-filter (rowid IN scope) must not.
-            let in_scope_id =
-                seed_frame_anchor_with_app(&infra, "2026-05-17T10:00:00Z", "kept by meaning", "com.example.Keep", "Keep").await;
-            let out_scope_id =
-                seed_frame_anchor_with_app(&infra, "2026-05-17T10:05:00Z", "dropped by scope", "com.example.Drop", "Drop").await;
-            // Give the OUT-of-scope anchor the vector nearest the query, so a
-            // post-filter would have ranked it #1 and then discarded it, leaving
-            // the in-scope answer unreturned. The pre-filter excludes it up front.
-            infra
-                .semantic_search()
-                .store_vector(out_scope_id, &seeded_vector(5))
-                .await
-                .expect("out-of-scope vector stores");
+            // The whole point of this test is to distinguish a PRE-filter (rowid IN
+            // scope, applied inside the KNN) from a naive post-filter (rank the top-k
+            // first, drop out-of-scope rows second). With only a couple of anchors,
+            // a post-filter would also pass — the in-scope answer fits inside the
+            // top-`k` window either way. So we crowd the KNN window past
+            // `SEMANTIC_KNN_LIMIT` with out-of-scope anchors that sit *exactly* on
+            // the query vector (L2 distance 0, nearer than anything else). A
+            // post-filter's top-`k` would then be entirely out-of-scope rows and the
+            // in-scope answer would never survive the post-drop. Only the pre-filter
+            // — which excludes those rows before ranking — keeps the in-scope anchor.
+            let out_of_scope_count = (SEMANTIC_KNN_LIMIT as usize) + 5;
+
+            // Seed the in-scope answer first, at a vector slightly off the query
+            // (distance √2). Under a correct pre-filter it is the *only* candidate;
+            // under a post-filter it is rank `out_of_scope_count + 1` and falls
+            // outside the top-`k`, so it would be lost. Its OCR text deliberately
+            // does NOT contain the FTS query term ("meaning"), so it can only surface
+            // via the semantic tier — otherwise FTS would mask a post-filter bug by
+            // matching it on keyword regardless of the KNN.
+            let in_scope_id = seed_frame_anchor_with_app(
+                &infra,
+                "2026-05-17T10:00:00Z",
+                "kept by the refinement scope",
+                "com.example.Keep",
+                "Keep",
+            )
+            .await;
             infra
                 .semantic_search()
                 .store_vector(in_scope_id, &seeded_vector(6))
                 .await
                 .expect("in-scope vector stores");
+
+            // Seed > SEMANTIC_KNN_LIMIT out-of-scope anchors, every one of them sitting
+            // on the query vector (seed 5, distance 0) so they fully occupy the
+            // KNN's top-`k` window. A post-filter would rank these ahead of the
+            // in-scope anchor and then discard them all, returning nothing in scope.
+            for offset in 0..out_of_scope_count {
+                let captured_at = format!("2026-05-17T11:{:02}:{:02}Z", offset / 60, offset % 60);
+                let out_scope_id = seed_frame_anchor_with_app(
+                    &infra,
+                    &captured_at,
+                    "dropped by scope",
+                    "com.example.Drop",
+                    "Drop",
+                )
+                .await;
+                infra
+                    .semantic_search()
+                    .store_vector(out_scope_id, &seeded_vector(5))
+                    .await
+                    .expect("out-of-scope vector stores");
+            }
 
             let response = infra
                 .search_capture(SearchCaptureRequest {
@@ -8009,20 +8054,26 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),
-                    // Query vector nearest the OUT-of-scope anchor's vector.
+                    // Query vector exactly on every out-of-scope anchor's vector, so
+                    // a post-filter's top-`k` is all out-of-scope rows.
                     query_embedding: Some(seeded_vector(5)),
                 })
                 .await
                 .expect("search should succeed");
 
-            // Only the in-scope anchor is returned; the out-of-scope nearest
-            // neighbor is pre-filtered out, never ranked-then-dropped.
+            // The in-scope anchor survives — it can only be present if the scope was
+            // applied as a PRE-filter, since a post-filter's top-`k` window was
+            // entirely consumed by the out-of-scope anchors crowding the query vector.
             let ids: Vec<i64> = response
                 .frames
                 .iter()
                 .map(|frame| frame.representative_frame.id)
                 .collect();
-            assert!(!ids.is_empty(), "the in-scope meaning answer is returned");
+            assert!(
+                !ids.is_empty(),
+                "the in-scope meaning answer survives even though > SEMANTIC_KNN_LIMIT \
+                 out-of-scope anchors crowd the query vector — only a pre-filter keeps it"
+            );
             for frame in &response.frames {
                 assert_eq!(
                     frame.app_bundle_id.as_deref(),
@@ -8030,7 +8081,6 @@ mod tests {
                     "no out-of-scope anchor leaks past the pre-filter"
                 );
             }
-            let _ = out_scope_id;
         });
     }
 

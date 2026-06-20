@@ -47,6 +47,13 @@ impl SemanticQueryEmbedderState {
 /// keyword-only, the same "no usable runtime → feature unavailable" shape as
 /// local transcription.
 ///
+/// `query` is the operator-stripped residual body (see
+/// `::app_infra::semantic_search_residual_query`), not the raw query — so
+/// `app:`/`before:`/`source:` operators and quoted phrases never pollute the
+/// meaning vector, and it matches what FTS ranks on. An all-operators query has an
+/// empty residual, which the trim/empty-guard below resolves to `None`
+/// (keyword-only).
+///
 /// The model load and the embed both run on a blocking thread because the candle
 /// forward is synchronous model work (Metal GPU on macOS / candle-CPU elsewhere)
 /// that must stay off the tokio reactor (and off the capture hot path — this is

@@ -84,9 +84,9 @@ pub use processing::{
     SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 pub use search::{
-    AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
-    SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
+    semantic_search_residual_query, AudioSearchResult, FrameSearchResult, SearchAppRefinement,
+    SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse,
+    SearchDateRangeOrigin, SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
 };
 pub use semantic_search::{AnchorMissingVector, SemanticSearchStore};
 pub use conversation::ConversationStore;
