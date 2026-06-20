@@ -310,6 +310,19 @@ pub(crate) struct LoadedEmbedder {
     pub(crate) embedder: SemanticSearchEmbedder,
 }
 
+/// Distinguishes a `load_embedder` failure from a successful-load-but-embed
+/// failure when both now run inside the one `spawn_blocking` (M1). The closure
+/// returns `Result<(LoadedEmbedder, Vec<per-anchor results>), LoadError>`: an
+/// `Err(LoadError)` means the model never loaded (→ CT3 load-failure accounting:
+/// `consecutive_load_failures`, the corrupt-model signal), while an `Ok` with
+/// per-anchor `Err`s inside the `Vec` means the model loaded fine and individual
+/// anchors failed to embed (→ the existing per-anchor L3 quarantine handling). The
+/// two failure modes stay branchable exactly as they were when the load ran inline
+/// on the reactor.
+struct LoadError {
+    error: String,
+}
+
 /// Run one sweep pass: gate on the installed model, drain up to one batch of
 /// anchors newest-first (skipping quarantined poison-pills), embed each on a
 /// blocking thread, and store the vectors. Never panics; any error is logged and
@@ -403,65 +416,68 @@ async fn run_sweep_pass(
     }
 
     // Resolve the catalog descriptor (dimension/window/pooling + install path) for
-    // the selected model, then load the embedder if not already loaded for it.
+    // the selected model. The actual embedder load is deferred into the blocking
+    // task below (M1): `load_embedder` does heavy synchronous I/O + model init
+    // (`fs::read`, `from_mmaped_safetensors` over hundreds of MB, Metal/device init,
+    // tokenizer load), so it must never run on the tokio reactor — it is folded into
+    // the same `spawn_blocking` as the forward, mirroring the query path.
     let Some(descriptor) = resolve_selected_descriptor(&settings) else {
         // Availability said yes but the descriptor vanished — defensive; treat as
         // unavailable for this pass.
         state.embedder = None;
         return SweepPass::Idle;
     };
-    if !embedder_matches(&state.embedder, &descriptor) {
-        match load_embedder(&app_data_dir, &descriptor) {
-            Ok(loaded) => {
-                state.embedder = Some(loaded);
-                // A successful load proves the weights are not corrupt: reset CT3.
-                state.consecutive_load_failures = 0;
-                state.corrupt_model_signalled = false;
-            }
-            Err(error) => {
-                // CT3: availability is presence+marker only — it never validates that
-                // the safetensors weights actually load into candle. A truncated /
-                // bit-rotted model fails here every 30s forever. Count consecutive
-                // load failures; once they hit the cap, surface a "reinstall" signal
-                // on the model-status telemetry channel and idle instead of hammering
-                // the doomed load.
-                state.consecutive_load_failures =
-                    state.consecutive_load_failures.saturating_add(1);
-                crate::native_capture::debug_log::log_error(format!(
-                    "semantic index backfill failed to load model '{}/{}' (consecutive load failures: {}): {error}",
-                    descriptor.provider, descriptor.model_id, state.consecutive_load_failures
-                ));
-                if state.consecutive_load_failures >= MAX_CONSECUTIVE_LOAD_FAILURES {
-                    signal_model_appears_corrupt(app_handle, &descriptor, &error);
-                    state.corrupt_model_signalled = true;
-                    state.embedder = None;
-                    return SweepPass::Idle;
-                }
-                return SweepPass::Error;
-            }
-        }
-    }
 
-    // Embed the batch on a blocking thread: the candle forward is synchronous model
-    // work (Metal GPU on macOS / candle-CPU elsewhere) that must stay off the tokio
-    // reactor, then store each vector. The embedder is moved into the blocking task
-    // and back out so it survives across passes (it is shared `&self`-immutable for
-    // the embed itself). The batch is wall-timed to scale the CPU-pacing cooldown
-    // that follows.
-    let loaded = state.embedder.take().expect("embedder loaded above");
+    // Embed the batch on a blocking thread: BOTH the (conditional) embedder load
+    // AND the candle forward are synchronous model work (Metal GPU on macOS /
+    // candle-CPU elsewhere) that must stay off the tokio reactor, then store each
+    // vector. The cached embedder is moved into the blocking task and back out so it
+    // survives across passes (it is shared `&self`-immutable for the embed itself).
+    // If the cached embedder is already for this descriptor it is reused; otherwise
+    // it is (re)loaded inside the task. The batch is wall-timed to scale the
+    // CPU-pacing cooldown that follows.
+    //
+    // The cached embedder is taken out here so it can be moved into the task; on a
+    // load failure (which clears the slot inside the task) it stays `None` and is
+    // retried/loaded next pass, matching the pre-M1 behavior where a failed load
+    // also left `state.embedder` unset.
+    let cached = if embedder_matches(&state.embedder, &descriptor) {
+        state.embedder.take()
+    } else {
+        // A different model (Settings switch) or nothing cached: drop it and (re)load
+        // inside the task below.
+        state.embedder = None;
+        None
+    };
     let texts: Vec<(i64, String)> = batch
         .iter()
         .map(|anchor| (anchor.anchor_id, anchor.body_text.clone()))
         .collect();
 
     let embed_started_at = Instant::now();
-    // CT2: race the blocking embed against the shutdown watch so a quit mid-batch
-    // does not wait on a full batch of model work. If shutdown wins, the blocking
-    // task is abandoned (it only computes vectors in memory — dropping it leaves no
-    // partial DB state) and the worker stops. `select` polls the shutdown future
-    // first, so an already-requested shutdown also wins immediately. The embedder
-    // moved into the abandoned task is lost; the worker is exiting anyway.
+    let app_data_dir_for_task = app_data_dir.clone();
+    let descriptor_for_task = descriptor.clone();
+    // CT2: race the blocking load+embed against the shutdown watch so a quit
+    // mid-batch does not wait on a full batch of model load+forward work. If
+    // shutdown wins, the blocking task is abandoned (it only loads/computes in
+    // memory — dropping it leaves no partial DB state) and the worker stops.
+    // `select` polls the shutdown future first, so an already-requested shutdown
+    // also wins immediately. The embedder moved into the abandoned task is lost; the
+    // worker is exiting anyway.
     let embed_task = tauri::async_runtime::spawn_blocking(move || {
+        // M1: do the heavy `load_embedder` here (off the reactor) when the cached
+        // embedder is absent or for a different model. A load failure short-circuits
+        // with `LoadError` so the caller runs the CT3 load-failure accounting
+        // (consecutive-load-failure counter, corrupt-model signal) — kept DISTINCT
+        // from a successful-load-but-per-anchor-embed-failure, which is carried in
+        // the returned per-anchor `Vec` for the existing L3 handling.
+        let loaded = match cached {
+            Some(loaded) => loaded,
+            None => match load_embedder(&app_data_dir_for_task, &descriptor_for_task) {
+                Ok(loaded) => loaded,
+                Err(error) => return Err(LoadError { error }),
+            },
+        };
         // candle on Metal frees the P-cores by construction, so the retired
         // per-thread background-QoS downclock is gone (ADR 0037); the embed runs at
         // the blocking thread's default QoS. The embedder is `&self`-immutable for
@@ -480,24 +496,61 @@ async fn run_sweep_pass(
             .zip(results)
             .map(|(anchor_id, result)| (anchor_id, result.map_err(|error| error.to_string())))
             .collect();
-        (loaded, out)
+        Ok((loaded, out))
     });
     let shutdown_changed = shutdown_rx.changed();
     pin_mut!(embed_task, shutdown_changed);
-    let (loaded, embedded) = match select(embed_task, shutdown_changed).await {
+    let load_embed = match select(embed_task, shutdown_changed).await {
         Either::Left((join_result, _)) => match join_result {
-            Ok(pair) => pair,
+            Ok(load_embed) => load_embed,
             Err(error) => {
                 crate::native_capture::debug_log::log_error(format!(
                     "semantic index backfill embed task panicked/cancelled: {error}"
                 ));
-                // The embedder was moved into the failed task; it will be reloaded.
+                // The embedder (if any) was moved into the failed task; it will be
+                // reloaded next pass (the slot is already `None` from the take above).
                 return SweepPass::Error;
             }
         },
         Either::Right((_, _)) => {
-            // Shutdown requested mid-embed: abandon the in-flight batch and stop.
+            // Shutdown requested mid-load/embed: abandon the in-flight batch and stop.
             return SweepPass::Shutdown;
+        }
+    };
+    // Branch load-vs-embed exactly as before M1, just sourced from the task result:
+    //   - `Err(LoadError)` => CT3 load-failure accounting (distinct failure mode).
+    //   - `Ok((loaded, embedded))` => the model loaded OK; per-anchor results carry
+    //     any embed failures for the existing L3 handling below.
+    let (loaded, embedded) = match load_embed {
+        Ok(pair) => {
+            // A successful load (or a reuse of the cached embedder, which also proves
+            // the weights are fine) resets CT3.
+            state.consecutive_load_failures = 0;
+            state.corrupt_model_signalled = false;
+            pair
+        }
+        Err(LoadError { error }) => {
+            // CT3: availability is presence+marker only — it never validates that the
+            // safetensors weights actually load into candle. A truncated / bit-rotted
+            // model fails here every 30s forever. Count consecutive load failures;
+            // once they hit the cap, surface a "reinstall" signal on the model-status
+            // telemetry channel and idle instead of hammering the doomed load. The
+            // load now runs on the blocking thread (M1), so this accounting happens
+            // after the task returns rather than inline on the reactor — the branching
+            // is otherwise identical.
+            state.consecutive_load_failures = state.consecutive_load_failures.saturating_add(1);
+            crate::native_capture::debug_log::log_error(format!(
+                "semantic index backfill failed to load model '{}/{}' (consecutive load failures: {}): {error}",
+                descriptor.provider, descriptor.model_id, state.consecutive_load_failures
+            ));
+            if state.consecutive_load_failures >= MAX_CONSECUTIVE_LOAD_FAILURES {
+                signal_model_appears_corrupt(app_handle, &descriptor, &error);
+                state.corrupt_model_signalled = true;
+                // The slot is already `None` (taken above; the task did not return an
+                // embedder on a load failure).
+                return SweepPass::Idle;
+            }
+            return SweepPass::Error;
         }
     };
     // Restore the embedder for the next pass.
