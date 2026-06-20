@@ -286,17 +286,32 @@ pub async fn delete_speaker_analysis_model(
     }
 }
 
+/// Human-facing label for a speaker-analysis provider group. Falls back to the
+/// raw provider id for any future provider that lacks a curated label here.
+fn speaker_provider_display_name(provider: &str) -> String {
+    match provider {
+        speaker_analysis::SHERPA_ONNX_PROVIDER_ID => "Sherpa ONNX".to_string(),
+        speaker_analysis::SPEAKRS_PROVIDER_ID => "speakrs (CoreML)".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn build_speaker_analysis_model_status_response(
     app_data_dir: &Path,
 ) -> Result<SpeakerAnalysisModelStatusResponseDto, speaker_analysis::ModelStatusError> {
     let models_dir = speaker_analysis_models_dir(app_data_dir);
     let manifest = builtin_model_manifest();
-    let mut models = Vec::new();
+
+    // Group descriptors by their ACTUAL provider (preserving manifest order)
+    // instead of folding everything into a single hardcoded "Sherpa ONNX" group,
+    // so every provider — sherpa today, speakrs (and any future provider) — gets
+    // its own selectable group surfaced to the settings UI.
+    let mut providers: Vec<SpeakerAnalysisProviderStatusDto> = Vec::new();
 
     for descriptor in &manifest.models {
         let status = detect_model_status(&models_dir, descriptor)?;
         let ModelManagement::AppManaged { artifact, .. } = &descriptor.management;
-        models.push(SpeakerAnalysisModelStatusDto {
+        let model = SpeakerAnalysisModelStatusDto {
             provider: descriptor.provider.clone(),
             model_id: descriptor.model_id.clone(),
             display_name: descriptor.display_name.clone(),
@@ -316,16 +331,24 @@ fn build_speaker_analysis_model_status_response(
                     sha256: artifact.sha256.clone(),
                     shape: serde_json::to_value(&artifact.shape).unwrap_or(serde_json::Value::Null),
                 }),
-        });
+        };
+
+        match providers
+            .iter_mut()
+            .find(|group| group.provider == descriptor.provider)
+        {
+            Some(group) => group.models.push(model),
+            None => providers.push(SpeakerAnalysisProviderStatusDto {
+                provider: descriptor.provider.clone(),
+                display_name: speaker_provider_display_name(&descriptor.provider),
+                models: vec![model],
+            }),
+        }
     }
 
     Ok(SpeakerAnalysisModelStatusResponseDto {
         models_directory: models_dir.to_string_lossy().to_string(),
-        providers: vec![SpeakerAnalysisProviderStatusDto {
-            provider: speaker_analysis::SHERPA_ONNX_PROVIDER_ID.to_string(),
-            display_name: "Sherpa ONNX".to_string(),
-            models,
-        }],
+        providers,
     })
 }
 
@@ -734,5 +757,113 @@ mod tests {
             ))
         ));
         assert!(!dir.path().join("segmentation/model.onnx").exists());
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// speakrs ships RAW files (no `.tar.bz2`): each artifact file is fetched
+    /// directly and placed verbatim at its `relative_path`, preserving nested
+    /// `.mlmodelc/...` subpaths. The install path must checksum the raw bytes
+    /// and write them where speakrs's `from_dir` reads them.
+    #[test]
+    fn raw_multi_file_install_places_nested_file_after_checksum() {
+        let dir = TestDir::new("raw-nested");
+        let bytes = b"coreml weight payload";
+        let file = ModelArtifactFile {
+            relative_path: "segmentation-3.0.mlmodelc/weights/weight.bin".to_string(),
+            url: "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0.mlmodelc/weights/weight.bin".to_string(),
+            byte_size: bytes.len() as u64,
+            sha256: Some(sha256_hex(bytes)),
+        };
+
+        let destination = safe_relative_model_file_path(&file.relative_path)
+            .expect("relative path is safe");
+        install_downloaded_model_file(dir.path(), &file, &destination, bytes)
+            .expect("raw nested file installs");
+
+        let placed = dir.path().join("segmentation-3.0.mlmodelc/weights/weight.bin");
+        assert!(placed.is_file(), "raw file lands at its nested relative_path");
+        assert_eq!(std::fs::read(&placed).unwrap(), bytes);
+        // The temp staging file is cleaned up and nothing is extracted.
+        assert!(!dir.path().join(".download.tmp").exists());
+    }
+
+    /// A raw (non-archive) file with a wrong checksum must fail before being
+    /// written to its destination.
+    #[test]
+    fn raw_multi_file_install_rejects_checksum_mismatch() {
+        let dir = TestDir::new("raw-checksum");
+        let file = ModelArtifactFile {
+            relative_path: "plda_lda.npy".to_string(),
+            url: "https://huggingface.co/avencera/speakrs-models/resolve/main/plda_lda.npy"
+                .to_string(),
+            byte_size: 4,
+            sha256: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+        };
+
+        let result =
+            install_downloaded_model_file(dir.path(), &file, Path::new("plda_lda.npy"), b"data");
+
+        assert!(matches!(
+            result,
+            Err(ModelDownloadError::Install(
+                speaker_analysis::ModelInstallError::ChecksumMismatch { .. }
+            ))
+        ));
+        assert!(!dir.path().join("plda_lda.npy").exists());
+    }
+
+    /// The status response must surface ONE group per actual provider (sherpa +
+    /// speakrs), each carrying its own descriptors — not a single hardcoded
+    /// "Sherpa ONNX" group folding speakrs in. This is what lets the settings UI
+    /// show the speakrs preset as a selectable, downloadable option.
+    #[test]
+    fn status_response_groups_models_by_actual_provider() {
+        let dir = TestDir::new("provider-grouping");
+
+        let response = build_speaker_analysis_model_status_response(dir.path())
+            .expect("status response builds for an empty models dir");
+
+        let sherpa = response
+            .providers
+            .iter()
+            .find(|group| group.provider == speaker_analysis::SHERPA_ONNX_PROVIDER_ID)
+            .expect("sherpa group present");
+        let speakrs = response
+            .providers
+            .iter()
+            .find(|group| group.provider == speaker_analysis::SPEAKRS_PROVIDER_ID)
+            .expect("speakrs group present");
+
+        // Every model in a group belongs to that group's provider.
+        assert!(sherpa
+            .models
+            .iter()
+            .all(|model| model.provider == speaker_analysis::SHERPA_ONNX_PROVIDER_ID));
+        assert!(speakrs
+            .models
+            .iter()
+            .all(|model| model.provider == speaker_analysis::SPEAKRS_PROVIDER_ID));
+
+        // The speakrs preset is reachable, downloadable, and carries its license.
+        let speakrs_default = speakrs
+            .models
+            .iter()
+            .find(|model| model.model_id.as_deref() == Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID))
+            .expect("speakrs default preset present");
+        assert!(speakrs_default.download.is_some());
+        assert!(speakrs_default
+            .license_label
+            .as_deref()
+            .is_some_and(|label| label.contains("CC-BY-4.0")));
+        assert_eq!(speakrs.display_name, "speakrs (CoreML)");
+        assert_eq!(sherpa.display_name, "Sherpa ONNX");
     }
 }

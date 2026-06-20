@@ -83,6 +83,18 @@ impl SpeakerAnalysisProcessorBackend {
         }
     }
 
+    pub fn from_provider_arcs<I>(providers: I) -> Self
+    where
+        I: IntoIterator<Item = Arc<dyn SpeakerAnalysisProvider>>,
+    {
+        Self {
+            providers: providers
+                .into_iter()
+                .map(|provider| (provider.provider().to_string(), provider))
+                .collect(),
+        }
+    }
+
     fn provider_for(&self, provider: &str) -> Result<Arc<dyn SpeakerAnalysisProvider>> {
         self.providers.get(provider).cloned().ok_or_else(|| {
             AppInfraError::SpeakerAnalysisEngine(format!(

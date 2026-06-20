@@ -1544,11 +1544,20 @@ fn desktop_processing_registry(
                 ),
             ]),
         )
-        .register(::app_infra::SpeakerAnalysisProcessorBackend::new(
-            crate::speaker_analysis_runtime::SubprocessSherpaOnnxSpeakerAnalysisProvider::with_models_dir(
-                speaker_models_dir,
+        .register(::app_infra::SpeakerAnalysisProcessorBackend::from_provider_arcs([
+            Arc::new(
+                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider(
+                    speaker_analysis::SHERPA_ONNX_PROVIDER_ID,
+                    speaker_models_dir.clone(),
+                ),
+            ) as Arc<dyn speaker_analysis::SpeakerAnalysisProvider>,
+            Arc::new(
+                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider(
+                    speaker_analysis::SPEAKRS_PROVIDER_ID,
+                    speaker_models_dir,
+                ),
             ),
-        ))
+        ]))
         .register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
 }
 
