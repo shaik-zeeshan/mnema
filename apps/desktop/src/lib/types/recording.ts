@@ -769,3 +769,18 @@ export interface DeleteUnusedOcrModelsResponse {
 	skippedProcessingJobs: DeletedOcrModel[];
 	retargetedProcessingJobs: number;
 }
+
+// Mirrors `third_party_notices::ThirdPartyNoticeEntry` (serde camelCase).
+export interface ThirdPartyNoticeEntry {
+	component: string;
+	kind: string;
+	displayName: string;
+	license: string | null;
+	sourceUrl: string | null;
+}
+
+// Mirrors `third_party_notices::ThirdPartyNotices` (serde camelCase).
+export interface ThirdPartyNotices {
+	entries: ThirdPartyNoticeEntry[];
+	plainText: string;
+}

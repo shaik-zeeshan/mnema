@@ -18,6 +18,7 @@ mod sensitive_capture_recommendations;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
+mod third_party_notices;
 mod usage_charts;
 mod user_context;
 mod windows;
@@ -485,6 +486,7 @@ pub fn run() {
             ocr_models::start_ocr_model_download,
             ocr_models::cancel_ocr_model_download,
             ocr_models::delete_unused_ocr_models,
+            third_party_notices::get_third_party_notices,
             app_infra::submit_debug_cpu_job,
             app_infra::list_app_jobs,
             app_infra::get_app_job,
