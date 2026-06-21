@@ -3416,6 +3416,21 @@
   </span>
 {/snippet}
 
+<!-- The keyword-only hint, guarded by showSemanticSearchHint, shared by the
+     empty and results branches so there is one source of truth. -->
+{#snippet semanticHint()}
+  {#if showSemanticSearchHint}
+    <button
+      type="button"
+      class="quick-recall__semantic-hint"
+      onclick={() => void openSemanticSearchSettings()}
+    >
+      Searching keywords only. Turn on meaning-based search in Settings →
+      Processing to also find results by meaning.
+    </button>
+  {/if}
+{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="quick-recall" onkeydown={handleRootKeydown}>
   <!-- The search↔Ask AI swap is the one hero transition: a brief cross-fade
@@ -3791,27 +3806,9 @@
             </p>
           {:else if showEmpty}
             <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
-            {#if showSemanticSearchHint}
-              <button
-                type="button"
-                class="quick-recall__semantic-hint"
-                onclick={() => void openSemanticSearchSettings()}
-              >
-                Searching keywords only. Turn on meaning-based search in Settings →
-                Processing to also find results by meaning.
-              </button>
-            {/if}
+            {@render semanticHint()}
           {:else}
-            {#if showSemanticSearchHint}
-              <button
-                type="button"
-                class="quick-recall__semantic-hint"
-                onclick={() => void openSemanticSearchSettings()}
-              >
-                Searching keywords only. Turn on meaning-based search in Settings →
-                Processing to also find results by meaning.
-              </button>
-            {/if}
+            {@render semanticHint()}
             {#if frames.length > 0}
               <div class="quick-recall__section" role="presentation">
                 <span class="quick-recall__section-label">Screen</span>

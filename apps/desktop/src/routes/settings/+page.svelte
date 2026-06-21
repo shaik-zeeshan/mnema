@@ -6475,7 +6475,9 @@
           <p class="card__subtitle">
             Meaning-based search runs fully on-device — on the GPU where available, otherwise the CPU.
             Pick a supported model, then Mnema embeds your captures in the background. Nothing is
-            downloaded until you choose a model.
+            downloaded until you choose a model. The model stays on as a background indexer — it keeps
+            re-embedding new captures (ongoing CPU/GPU and battery while it catches up), and switching
+            models re-indexes every existing capture.
           </p>
         </div>
         <button
