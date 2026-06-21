@@ -91,7 +91,26 @@ pub fn map_speakrs_result(
         })
         .collect();
 
-    let clusters = accumulate_centroids(chunks, speakers, dim, embeddings, hard_clusters);
+    let mut clusters = accumulate_centroids(chunks, speakers, dim, embeddings, hard_clusters);
+
+    // Ensure every turn's parsed global id resolves to a cluster: a SPEAKER_NN
+    // segment whose only embedding rows were skipped (negative sentinel or
+    // non-finite) yields a turn but no centroid, and downstream persistence drops
+    // turns whose provider_cluster_id has no cluster. Append an empty-embedding
+    // placeholder for each such id (clamping negatives to 0, mirroring the turn id),
+    // then keep `clusters` sorted ascending by global_id.
+    let mut present: std::collections::HashSet<usize> =
+        clusters.iter().map(|cluster| cluster.global_id).collect();
+    for (_start, _end, label) in segments {
+        let global_id = parse_speaker_label(label).max(0) as usize;
+        if present.insert(global_id) {
+            clusters.push(SpeakerClusterCentroid {
+                global_id,
+                embedding: Vec::new(),
+            });
+        }
+    }
+    clusters.sort_by_key(|cluster| cluster.global_id);
 
     SpeakrsMapping { turns, clusters }
 }
@@ -247,11 +266,21 @@ pub fn stitch_chunk_mappings(
     for (offset_ms, mapping) in chunks {
         // local cluster global_id -> stitched global index, for this chunk only.
         let mut remap: HashMap<usize, usize> = HashMap::new();
+        // Global indices already claimed by an earlier local cluster in THIS chunk.
+        // speakrs declared the chunk's local clusters distinct, so each must fold
+        // into a *different* global; without this, a later local cluster could
+        // re-match a global the running mean has shifted toward, collapsing two
+        // distinct speakers into one identity. Reset to empty for the next chunk so
+        // cross-chunk stitching is unaffected.
+        let mut claimed: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
         for cluster in &mapping.clusters {
             let mut best: Option<usize> = None;
             let mut best_sim = sim_threshold;
             for (index, global) in globals.iter().enumerate() {
+                if claimed.contains(&index) {
+                    continue;
+                }
                 let sim = cosine_normalized(&global.normalized_mean(), &cluster.embedding);
                 if sim >= best_sim {
                     best_sim = sim;
@@ -274,6 +303,7 @@ pub fn stitch_chunk_mappings(
                     globals.len() - 1
                 }
             };
+            claimed.insert(assigned);
             remap.insert(cluster.global_id, assigned);
         }
 
@@ -305,17 +335,18 @@ pub fn stitch_chunk_mappings(
 
     out_turns.sort_by_key(|turn| (turn.start_ms, turn.end_ms));
 
+    // Emit one cluster per global — including count==0 placeholders, whose
+    // `normalized_mean()` is an empty Vec. Filtering placeholders here would leave
+    // their turns pointing at a global id with no cluster (downstream persistence
+    // silently drops such turns) AND make the enumerate() ids skip, so emitting
+    // every global keeps each turn's id resolvable and the ids dense (0..n). An
+    // empty-embedding cluster never produces a false match (cosine returns 0.0).
     let clusters = globals
         .into_iter()
         .enumerate()
-        .filter_map(|(global_id, cluster)| {
-            if cluster.count == 0 {
-                return None;
-            }
-            Some(SpeakerClusterCentroid {
-                global_id,
-                embedding: cluster.normalized_mean(),
-            })
+        .map(|(global_id, cluster)| SpeakerClusterCentroid {
+            global_id,
+            embedding: cluster.normalized_mean(),
         })
         .collect();
 
@@ -323,6 +354,69 @@ pub fn stitch_chunk_mappings(
         turns: out_turns,
         clusters,
     }
+}
+
+/// Plan the safe-chunk ranges `[start, end)` over `total_samples`, each chunk at
+/// most `chunk_samples` long, so a long segment is diarized in bounded windows
+/// (the whole-segment CoreML memory peak trips a large transient past ~3min — see
+/// `SPEAKRS_SAFE_CHUNK_SECONDS`).
+///
+/// Always-compiled and pure (no speakrs/feature deps) so the boundary math is
+/// unit-testable without the native build; `providers::speakrs` calls it.
+///
+/// A trailing chunk shorter than `min_tail_samples` would give its `pipeline.run`
+/// too few segmentation windows (the segmentation window is 10s). Rather than fold
+/// it into the previous range — which can yield a single range LONGER than
+/// `chunk_samples`, defeating the window the chunking exists to bound — REBALANCE:
+/// merge the last two ranges and, if the combined span exceeds `chunk_samples`,
+/// split it into two equal halves (each then > `min_tail_samples` and
+/// <= `chunk_samples`). This keeps the segment at >= 2 chunks (so it still stitches)
+/// with every chunk inside the window. All other cases are untouched: `total <=
+/// chunk_samples` is one whole range; clean multiples stay N equal ranges; a >= 3
+/// chunk plan with only a short last chunk rebalances just the final two.
+pub fn plan_chunk_ranges(
+    total_samples: usize,
+    chunk_samples: usize,
+    min_tail_samples: usize,
+) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    if total_samples == 0 || chunk_samples == 0 {
+        return ranges;
+    }
+
+    let mut start = 0usize;
+    while start < total_samples {
+        let end = (start + chunk_samples).min(total_samples);
+        ranges.push((start, end));
+        start = end;
+    }
+
+    // Rebalance a too-short trailing chunk against the one before it.
+    if ranges.len() >= 2 {
+        let last = *ranges.last().unwrap();
+        if last.1 - last.0 < min_tail_samples {
+            let prev = ranges[ranges.len() - 2];
+            let combined_start = prev.0;
+            let combined_end = last.1;
+            let combined_len = combined_end - combined_start;
+            ranges.pop();
+            if combined_len > chunk_samples {
+                // Splitting in two keeps both halves <= chunk_samples and, since the
+                // combined span is > chunk_samples >= 2 * min_tail_samples in
+                // practice, both halves stay above the tail minimum.
+                let mid = combined_start + combined_len / 2;
+                let last_index = ranges.len() - 1;
+                ranges[last_index] = (combined_start, mid);
+                ranges.push((mid, combined_end));
+            } else {
+                // Combined span fits the window: a plain fold is safe.
+                let last_index = ranges.len() - 1;
+                ranges[last_index] = (combined_start, combined_end);
+            }
+        }
+    }
+
+    ranges
 }
 
 #[cfg(test)]
@@ -573,5 +667,154 @@ mod tests {
         let (b0, b1) = make();
         let split = stitch_chunk_mappings(vec![(0, b0), (10_000, b1)], 0.9);
         assert_eq!(split.clusters.len(), 2, "0.8 cosine < 0.9 -> split");
+    }
+
+    #[test]
+    fn stitch_does_not_collapse_two_distinct_within_one_chunk() {
+        // FIX 1: a single chunk has two local clusters whose centroids are similar
+        // (cosine 1.0 >= 0.6). speakrs declared them DISTINCT, so they must stay two
+        // globals — without the per-chunk `claimed` exclusion, the second would
+        // re-match the first's (running-mean-shifted) global and the two collapse.
+        let chunk = SpeakrsMapping {
+            turns: vec![turn(0, 0, 1_000), turn(1, 1_000, 2_000)],
+            clusters: vec![centroid(0, vec![1.0, 0.0]), centroid(1, vec![1.0, 0.0])],
+        };
+        let out = stitch_chunk_mappings(vec![(0, chunk)], 0.6);
+        assert_eq!(
+            out.clusters.len(),
+            2,
+            "two distinct local clusters in one chunk must stay separate"
+        );
+        assert_eq!(out.turns[0].provider_cluster_id, "speaker_00");
+        assert_eq!(out.turns[1].provider_cluster_id, "speaker_01");
+    }
+
+    #[test]
+    fn stitch_preserves_clusterless_turn_with_dense_ids() {
+        // FIX 2 + FIX 4: chunk has a real cluster (id 0) and a turn referencing a
+        // local id (1) with NO centroid. The clusterless turn must be preserved AND
+        // get a cluster, and the emitted cluster ids must be dense 0..n (no gap).
+        let chunk = SpeakrsMapping {
+            turns: vec![turn(0, 0, 1_000), turn(1, 1_000, 2_000)],
+            clusters: vec![centroid(0, vec![1.0, 0.0])],
+        };
+        let out = stitch_chunk_mappings(vec![(0, chunk)], 0.6);
+
+        // Both turns survive.
+        assert_eq!(out.turns.len(), 2);
+        // The clusterless turn keeps a unique global id distinct from cluster 0.
+        assert_eq!(out.turns[0].provider_cluster_id, "speaker_00");
+        assert_eq!(out.turns[1].provider_cluster_id, "speaker_01");
+
+        // A cluster exists for every turn's global id, and ids are dense 0..n.
+        let ids: Vec<usize> = out.clusters.iter().map(|c| c.global_id).collect();
+        assert_eq!(ids, vec![0, 1], "cluster ids must be contiguous 0..n");
+        // The placeholder cluster (id 1) carries an empty embedding.
+        assert!(out.clusters[1].embedding.is_empty());
+        // The real cluster (id 0) carries its normalized centroid.
+        assert!(!out.clusters[0].embedding.is_empty());
+    }
+
+    #[test]
+    fn single_chunk_preserves_turn_with_only_sentinel_embedding() {
+        // FIX 2 + FIX 4 (single-chunk path): a SPEAKER_01 segment whose only
+        // embedding slot is the -2 sentinel yields a turn but no centroid; the turn
+        // must be preserved with a placeholder (empty-embedding) cluster, and the
+        // cluster list must stay sorted ascending by global_id.
+        let segments = vec![
+            (0.0_f64, 1.0_f64, "SPEAKER_00".to_string()),
+            (1.0_f64, 2.0_f64, "SPEAKER_01".to_string()),
+        ];
+        let chunks = 1;
+        let speakers = 2;
+        let dim = 2;
+        let embeddings = vec![
+            1.0, 0.0, // s0 -> cluster 0 (valid)
+            99.0, 99.0, // s1 -> -2 sentinel (skipped, no centroid)
+        ];
+        let hard_clusters = vec![0, -2];
+
+        let mapping =
+            map_speakrs_result(&segments, chunks, speakers, dim, &embeddings, &hard_clusters);
+
+        // Both turns survive.
+        assert_eq!(mapping.turns.len(), 2);
+        assert_eq!(mapping.turns[1].provider_cluster_id, provider_cluster_id(1));
+
+        // A cluster exists for both global ids, sorted ascending.
+        let ids: Vec<usize> = mapping.clusters.iter().map(|c| c.global_id).collect();
+        assert_eq!(ids, vec![0, 1]);
+        // Cluster 1 is a placeholder (empty embedding); cluster 0 has its centroid.
+        assert!(mapping.clusters[1].embedding.is_empty());
+        assert!(!mapping.clusters[0].embedding.is_empty());
+    }
+
+    #[test]
+    fn plan_chunk_ranges_total_within_window_is_one_range() {
+        // total <= chunk_samples -> single whole-segment range.
+        assert_eq!(plan_chunk_ranges(0, 100, 20), Vec::<(usize, usize)>::new());
+        assert_eq!(plan_chunk_ranges(80, 100, 20), vec![(0, 80)]);
+        assert_eq!(plan_chunk_ranges(100, 100, 20), vec![(0, 100)]);
+    }
+
+    #[test]
+    fn plan_chunk_ranges_exact_multiple_is_equal_ranges() {
+        // Clean multiple of the window -> N equal ranges, untouched.
+        assert_eq!(plan_chunk_ranges(300, 100, 20), vec![(0, 100), (100, 200), (200, 300)]);
+        assert_eq!(plan_chunk_ranges(200, 100, 20), vec![(0, 100), (100, 200)]);
+    }
+
+    #[test]
+    fn plan_chunk_ranges_short_tail_rebalances_into_two_balanced_ranges() {
+        // FIX 5 regression: total just over the window with a <min_tail trailing
+        // chunk. Folding would give one >chunk range; rebalancing must split the
+        // combined span into two ~equal halves, BOTH <= window AND >= min_tail.
+        let window = 100;
+        let min_tail = 20;
+        let total = 110; // first chunk 0..100, tail 100..110 is 10 < min_tail.
+        let ranges = plan_chunk_ranges(total, window, min_tail);
+        assert_eq!(ranges.len(), 2, "must stay chunked (>= 2) for stitching");
+        // Two balanced halves of the 0..110 span.
+        assert_eq!(ranges, vec![(0, 55), (55, 110)]);
+        for (start, end) in &ranges {
+            let len = end - start;
+            assert!(len <= window, "chunk {len} exceeds window {window}");
+            assert!(len >= min_tail, "chunk {len} below min_tail {min_tail}");
+        }
+    }
+
+    #[test]
+    fn plan_chunk_ranges_three_chunks_short_last_rebalances_only_last_two() {
+        // >= 3 chunks where only the final chunk is short: the first chunk is
+        // untouched and only the last two are rebalanced.
+        let window = 100;
+        let min_tail = 20;
+        let total = 210; // 0..100, 100..200, 200..210 (10 < min_tail).
+        let ranges = plan_chunk_ranges(total, window, min_tail);
+        assert_eq!(ranges.len(), 3);
+        // First chunk untouched.
+        assert_eq!(ranges[0], (0, 100));
+        // Last two rebalanced: combined 100..210 (len 110 > window) -> halves.
+        assert_eq!(ranges[1], (100, 155));
+        assert_eq!(ranges[2], (155, 210));
+        for (start, end) in &ranges {
+            let len = end - start;
+            assert!(len <= window && len >= min_tail);
+        }
+    }
+
+    #[test]
+    fn plan_chunk_ranges_short_tail_smaller_window_still_splits() {
+        // A different window/total to confirm the split is general, not tuned to one
+        // size: window 60, total 65 -> 0..60 + 60..65 (5 < min_tail). Combined 0..65
+        // = 65 > 60, so it splits into balanced halves (the fold branch is
+        // unreachable from uniform chunking, since the chunk before a short tail is
+        // always exactly the window, making combined > window).
+        let ranges = plan_chunk_ranges(65, 60, 20);
+        assert_eq!(ranges, vec![(0, 32), (32, 65)]);
+        for (start, end) in &ranges {
+            let len = end - start;
+            assert!(len <= 60 && len >= 20);
+        }
     }
 }

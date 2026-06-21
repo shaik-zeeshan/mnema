@@ -32,8 +32,8 @@ use crate::providers::shared::{
     merge_adjacent_turns, speaker_skip_reason, validate_decoded_samples, SAMPLE_RATE_HZ,
 };
 use crate::providers::speakrs_mapping::{
-    map_speakrs_result, provider_cluster_id, stitch_chunk_mappings, SpeakerClusterCentroid,
-    SpeakrsMapping,
+    map_speakrs_result, plan_chunk_ranges, provider_cluster_id, stitch_chunk_mappings,
+    SpeakerClusterCentroid, SpeakrsMapping,
 };
 use crate::{
     model_install_dir, safe_path_component, SpeakerAnalysisError, SpeakerAnalysisMetadata,
@@ -204,21 +204,11 @@ fn run_speakrs_blocking(
     //    SPEAKRS_SAFE_CHUNK_SECONDS) and is DER-neutral with the tuned stitch sim.
     let chunk_samples = SPEAKRS_SAFE_CHUNK_SECONDS * SAMPLE_RATE_HZ as usize;
     let min_tail_samples = SPEAKRS_MIN_CHUNK_TAIL_SECONDS * SAMPLE_RATE_HZ as usize;
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    let mut range_start = 0usize;
-    while range_start < samples.len() {
-        let range_end = (range_start + chunk_samples).min(samples.len());
-        ranges.push((range_start, range_end));
-        range_start = range_end;
-    }
-    // Fold a too-short trailing chunk into the previous one.
-    if ranges.len() >= 2 {
-        let last = *ranges.last().unwrap();
-        if last.1 - last.0 < min_tail_samples {
-            ranges.pop();
-            ranges.last_mut().unwrap().1 = last.1;
-        }
-    }
+    // Plan the safe-chunk ranges with the pure (always-compiled) helper. It
+    // rebalances a too-short trailing chunk against the previous one rather than
+    // folding into a single >window range, so every chunk stays inside the CoreML
+    // memory window (see plan_chunk_ranges / SPEAKRS_SAFE_CHUNK_SECONDS).
+    let ranges = plan_chunk_ranges(samples.len(), chunk_samples, min_tail_samples);
 
     let chunk_count = ranges.len();
     let mapping = if chunk_count <= 1 {
@@ -228,7 +218,7 @@ fn run_speakrs_blocking(
                 stage: "diarize".to_string(),
                 message: format!("speakrs diarization failed: {error}"),
             })?;
-        map_run_result(result)
+        map_run_result(result)?
     } else {
         let mut chunk_mappings: Vec<(u64, SpeakrsMapping)> = Vec::with_capacity(chunk_count);
         for (start, end) in ranges {
@@ -240,7 +230,7 @@ fn run_speakrs_blocking(
                         message: format!("speakrs diarization failed: {error}"),
                     })?;
             let offset_ms = start as u64 * 1000 / SAMPLE_RATE_HZ as u64;
-            chunk_mappings.push((offset_ms, map_run_result(result)));
+            chunk_mappings.push((offset_ms, map_run_result(result)?));
         }
         stitch_chunk_mappings(chunk_mappings, SPEAKRS_STITCH_SIMILARITY)
     };
@@ -266,9 +256,28 @@ fn run_speakrs_blocking(
     output.clusters = speakrs_clusters_from_centroids(&request, mapping.clusters, &model_id);
 
     // 9. Finalize provenance counts (turnCount/clusterCount + Slice 3 keys).
-    if output.clusters.is_empty() && !output.turns.is_empty() {
-        // A diarization that produced turns but no usable centroids (every slot
-        // skipped) is unusual; record it without failing the job.
+    //
+    // Clusterless turns are no longer lossy — a turn whose centroid was skipped now
+    // keeps a placeholder (empty-embedding) cluster so it survives persistence — but
+    // we still surface the condition. A placeholder cluster encodes to an empty
+    // embedding byte string, so count those: any > 0 means some turns had no usable
+    // centroid. The all-empty case (turns but ZERO usable centroids) still warns,
+    // preserving the spirit of the old `speakrs_no_cluster_centroids` reason.
+    let placeholder_cluster_count = output
+        .clusters
+        .iter()
+        .filter(|cluster| cluster.embedding.is_empty())
+        .count();
+    if placeholder_cluster_count > 0 {
+        add_warning_reason(&mut output, "speakrs_clusterless_turns");
+        output.metadata.provenance.insert(
+            "placeholderClusterCount".to_string(),
+            json!(placeholder_cluster_count),
+        );
+    }
+    if !output.turns.is_empty() && placeholder_cluster_count == output.clusters.len() {
+        // Turns present but EVERY cluster is a placeholder (no usable centroid at
+        // all): the all-empty case the old warning flagged. Record it too.
         add_warning_reason(&mut output, "speakrs_no_cluster_centroids");
     }
     finalize_provenance_counts(&mut output, analysis_started.elapsed().as_millis() as u64);
@@ -281,19 +290,30 @@ fn run_speakrs_blocking(
 /// crosses out of this function; it reads array shape + flat row-major data
 /// through the arrays' own public methods so our signatures stay decoupled from
 /// speakrs's ndarray version.
-fn map_run_result(result: speakrs::DiarizationResult) -> SpeakrsMapping {
+fn map_run_result(
+    result: speakrs::DiarizationResult,
+) -> SpeakerAnalysisResult<SpeakrsMapping> {
     let segments: Vec<(f64, f64, String)> = result
         .segments
         .iter()
         .map(|segment| (segment.start, segment.end, segment.speaker.clone()))
         .collect();
 
+    // Fail loud on an unexpected embedding rank. speakrs always returns an Array3,
+    // so this is unreachable today; if it ever changes shape, silently collapsing
+    // to (0,0,0) would drop EVERY centroid while still emitting turns (clusterless
+    // output). Surfacing a typed error keeps that invariant honest.
     let emb_shape = result.embeddings.0.shape();
-    let (chunks, speakers, dim) = if emb_shape.len() == 3 {
-        (emb_shape[0], emb_shape[1], emb_shape[2])
-    } else {
-        (0, 0, 0)
-    };
+    if emb_shape.len() != 3 {
+        return Err(SpeakerAnalysisError::Runtime {
+            stage: "map_run_result".to_string(),
+            message: format!(
+                "unexpected speakrs embedding rank {} (expected 3)",
+                emb_shape.len()
+            ),
+        });
+    }
+    let (chunks, speakers, dim) = (emb_shape[0], emb_shape[1], emb_shape[2]);
     let embeddings: Vec<f32> = match result.embeddings.0.as_slice() {
         Some(slice) => slice.to_vec(),
         None => result.embeddings.0.iter().copied().collect(),
@@ -303,7 +323,14 @@ fn map_run_result(result: speakrs::DiarizationResult) -> SpeakrsMapping {
         None => result.hard_clusters.0.iter().copied().collect(),
     };
 
-    map_speakrs_result(&segments, chunks, speakers, dim, &embeddings, &hard_clusters)
+    Ok(map_speakrs_result(
+        &segments,
+        chunks,
+        speakers,
+        dim,
+        &embeddings,
+        &hard_clusters,
+    ))
 }
 
 /// Build the [`SpeakerCluster`]s for a speakrs result from the mapped centroids,
