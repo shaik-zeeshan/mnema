@@ -21,5 +21,9 @@ echo "mnema dev sandbox"
 echo "  save dir:   ${MNEMA_SAVE_DIRECTORY}"
 echo "  config dir: ${MNEMA_APP_CONFIG_DIR}"
 
+# speakrs builds OpenBLAS from source; this puts the gcc lib dir on the linker
+# search path so the from-source build links (see scripts/openblas-build-env.sh).
+. "${repo_root}/scripts/openblas-build-env.sh"
+
 cd "${repo_root}"
 exec bun run tauri -- dev -c src-tauri/tauri.dev.conf.json "$@"

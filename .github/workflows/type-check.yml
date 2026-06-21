@@ -44,6 +44,19 @@ jobs:
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
 
+      # speakrs links OpenBLAS via the `openblas-static` feature: openblas-src
+      # builds OpenBLAS (incl. Fortran LAPACK) from source during `cargo check`,
+      # and the desktop build.rs force-links the static gfortran/quadmath runtime.
+      # Both need a Fortran toolchain at build time, and OpenBLAS's `make all`
+      # links its test programs with `-lgfortran`, so the gcc lib dir must be on
+      # the linker search path (LIBRARY_PATH).
+      - name: Install Fortran toolchain (gcc/gfortran)
+        run: |
+          set -euo pipefail
+          brew install gcc
+          gfdir="$(dirname "$(gfortran -print-file-name=libgfortran.dylib)")"
+          echo "LIBRARY_PATH=${gfdir}${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Cache Rust dependencies
         uses: actions/cache@v4
         with:
