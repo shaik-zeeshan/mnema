@@ -93,3 +93,32 @@ safetensors layout; the backend cutover re-indexes through 0036's existing atomi
 startup-reconcile + dimension-authority machinery (a no-op for the ~all users who have no model/vectors
 today); model-gated default-on and "never auto-download a model" are unchanged. The candle-CPU
 measurement and the cloud-backend egress design are tracked follow-ups.
+
+## Amendment — per-model prompts lifted (pre-release branch)
+
+The migration above deferred **per-model input prompts/prefixes** (then "per-model input
+prefixes") to keep the candle cutover provably behavior-identical, accepting the latent
+recall leak of running `nomic`/`e5` without the `search_query:`/`search_document:` (and e5
+`query:`/`passage:`) text they were trained with. That deferral was justified by the cost of
+forcing a re-index and the need for a larger judged set first.
+
+On this **pre-release branch** that cost is zero — no users, no stored vectors, no re-index —
+so the deferral is **lifted**:
+
+- Every model descriptor now carries a **Prompt** pair (Query, Document), filled in for the
+  whole catalog (nomic `search_query:`/`search_document:`, e5 `query:`/`passage:`, bge-m3
+  none). The prompt is applied **per chunk, above the backend trait**, with token-budget
+  reservation so prompt + chunk + special tokens stay within the 256-token window; a `None`
+  prompt keeps the chunk strings byte-identical to today (bare-text parity preserved).
+- Two new **Custom-tier** models land alongside the prompt work: **Stella 400M v5** (English,
+  a new `StellaEnV5` candle architecture with a native 2048-dim dense head — no truncation)
+  and **Snowflake Arctic Embed L v2.0** (multilingual, reusing the existing XLM-RoBERTa
+  architecture + `Cls` pooling, Matryoshka-truncated from native 1024 to a stored 256-dim).
+
+This sharpens the migration's terminology note: "prefix" is unified under **Prompt** (a model
+may prepend a full instruction, not just a token tag). See
+[`crates/semantic-search/CONTEXT.md`](../../crates/semantic-search/CONTEXT.md), which already
+documents the **Prompt** concept (Query/Document, declared per descriptor) and the
+**dimension-distinctness** invariant — the final catalog dimensions are 384 / 768 / 1024 /
+2048 / 256 (e5 / nomic / bge-m3 / Stella / Arctic), pairwise-distinct as the store requires.
+The remaining quality lever, **first-window embed**, stays deferred.
