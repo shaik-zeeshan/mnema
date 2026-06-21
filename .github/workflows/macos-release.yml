@@ -29,6 +29,12 @@ jobs:
       CI: true
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
+      # Build OpenBLAS with all-generation arm64 kernels + runtime dispatch, so a
+      # release built on one Apple Silicon generation (whatever the runner is)
+      # runs on every other (M1–M4). Without this, the static OpenBLAS is tuned to
+      # the build machine's exact core and can hit illegal-instruction crashes on
+      # older CPUs.
+      OPENBLAS_DYNAMIC_ARCH: "1"
 
     steps:
       - name: Checkout
@@ -57,6 +63,19 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup target add aarch64-apple-darwin
+
+      # speakrs links OpenBLAS via the `openblas-static` feature: openblas-src
+      # builds OpenBLAS (incl. Fortran LAPACK) from source, and the desktop
+      # build.rs force-links the static gfortran/quadmath runtime. Both need a
+      # Fortran toolchain at build time. OpenBLAS's `make all` also links its
+      # test programs with `-lgfortran`, so the gcc lib dir must be on the
+      # linker search path (LIBRARY_PATH) for the from-source build to succeed.
+      - name: Install Fortran toolchain (gcc/gfortran)
+        run: |
+          set -euo pipefail
+          brew install gcc
+          gfdir="$(dirname "$(gfortran -print-file-name=libgfortran.dylib)")"
+          echo "LIBRARY_PATH=${gfdir}${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4

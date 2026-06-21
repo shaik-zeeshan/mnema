@@ -28,9 +28,11 @@
 //!
 //! ## Usage
 //! ```text
-//! # OpenBLAS is required to build speakrs:
-//! brew install openblas pkgconf
-//! export PKG_CONFIG_PATH=$(brew --prefix openblas)/lib/pkgconfig
+//! # speakrs builds OpenBLAS from source (openblas-static), so a Fortran
+//! # toolchain is required at build time, plus the gcc lib dir on the linker
+//! # search path so OpenBLAS's own test programs link:
+//! brew install gcc
+//! export LIBRARY_PATH="$(dirname "$(gfortran -print-file-name=libgfortran.dylib)")"
 //!
 //! cargo build -p speaker-analysis --features speakrs --release \
 //!     --bin diarize_to_rttm_speakrs
