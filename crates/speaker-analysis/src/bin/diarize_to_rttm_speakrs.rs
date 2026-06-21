@@ -79,12 +79,12 @@ OPTIONS:
 NOTE: For drop-in parity with run_der.py's shared --binary args, the
 sherpa-only tuning flags (--clustering-threshold, --cross-chunk-threshold,
 --num-clusters, --min-duration-on, --min-duration-off, --safe-chunk-ms,
---dump-embeddings) are accepted but ignored — speakrs runs the whole Audio
-Segment in one pass with a single curated preset and no safe-chunk window.";
+--dump-embeddings) are accepted but ignored — speakrs runs with a single
+curated preset; segments past 180s are safe-chunked and stitched internally.";
 
 fn default_models_dir() -> PathBuf {
-    // Mirrors the path the desktop app installs models to and the sherpa bench
-    // bin defaults to.
+    // Mirrors the path the desktop app installs models to (the shared
+    // speaker-analysis model store).
     let home = std::env::var("HOME").unwrap_or_default();
     PathBuf::from(home)
         .join("Library/Application Support/com.shaikzeeshan.mnema")

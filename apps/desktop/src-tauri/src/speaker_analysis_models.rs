@@ -669,18 +669,34 @@ fn install_downloaded_model_file(
         .filter(|value| !value.is_empty())
         .is_none()
     {
+        // Best-effort: drop the staged temp file before aborting so a refused
+        // install does not leave `.download.tmp` behind for the next attempt to
+        // clear. A failure to clean up must never mask the refusal itself.
+        let _ = remove_model_file_if_exists(&temp_path);
         return Err(ModelDownloadError::MissingChecksum {
             relative_path: file.relative_path.clone(),
         });
     }
-    validate_artifact_sha256(&temp_path, file.sha256.as_deref())
-        .map_err(ModelDownloadError::Install)?;
-    if file.url.ends_with(".tar.bz2") {
-        install_from_tar_bz2(install_dir, destination_relative_path, bytes)?;
+    if let Err(error) = validate_artifact_sha256(&temp_path, file.sha256.as_deref()) {
+        // Best-effort cleanup of the staged temp file on a checksum mismatch,
+        // leaving the install dir as it was found. A failure to clean up must
+        // never mask the checksum-mismatch error we are surfacing.
+        let _ = remove_model_file_if_exists(&temp_path);
+        return Err(ModelDownloadError::Install(error));
+    }
+    let install_result = if file.url.ends_with(".tar.bz2") {
+        install_from_tar_bz2(install_dir, destination_relative_path, bytes)
     } else {
         install_model_file(install_dir.join(destination_relative_path), bytes)
-            .map_err(ModelDownloadError::Install)?;
+            .map_err(ModelDownloadError::Install)
+    };
+    if install_result.is_err() {
+        // A post-stage install failure leaves the temp file behind; remove it
+        // best-effort before propagating the error. A failure to clean up must
+        // never mask the original install failure.
+        let _ = remove_model_file_if_exists(&temp_path);
     }
+    install_result?;
     remove_model_file_if_exists(temp_path).map_err(ModelDownloadError::Install)?;
     Ok(())
 }

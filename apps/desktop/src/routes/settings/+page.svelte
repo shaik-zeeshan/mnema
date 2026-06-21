@@ -3353,7 +3353,6 @@
       (model) => model.provider === draftSpeakerProvider && model.modelId === draftSpeakerModelId,
     )
       ?? allSpeakerModels.find((model) => model.modelId === draftSpeakerModelId)
-      ?? allSpeakerModels[0]
       ?? null
   );
 

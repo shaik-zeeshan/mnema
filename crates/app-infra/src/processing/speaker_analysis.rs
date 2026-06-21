@@ -19,6 +19,14 @@ pub const HELPER_TIMEOUT_SECONDS_OPTION: &str = "helperTimeoutSeconds";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakerAnalysisJobPayload {
+    // A valid-JSON payload that omits `provider` must still deserialize (not error
+    // out) so the Rust cleanup-lock claim path stays symmetric with the SQL-atomic
+    // claim path: the SQL CASE keys any valid-JSON speaker_analysis payload onto the
+    // normalized speakrs default key, so a missing provider here defaults to the empty
+    // string and `normalize_model_selection` remaps it onto speakrs the same way. A
+    // missing-provider serde Err would otherwise be swallowed as "unlocked" and reopen
+    // a delete-out-from-under window.
+    #[serde(default)]
     pub provider: String,
     pub model_id: Option<String>,
     pub recognize_people: bool,
@@ -46,6 +54,23 @@ impl SpeakerAnalysisJobPayload {
     /// to the speakrs default.
     pub fn normalize_model_selection(&mut self) {
         if self.provider != SPEAKRS_PROVIDER_ID {
+            // Leave a one-time trail when we actually collapse a legacy/non-speakrs
+            // selection onto speakrs and discard its model_id. The model_id belongs to
+            // a removed provider's voiceprint space, so dropping it is intentional, but
+            // an empty already-speakrs payload must NOT log — only an actual non-speakrs
+            // provider or a non-empty stale model_id reaches here. (The crate has no
+            // logging facade dependency, so this writes a single line to stderr.)
+            if !self.provider.is_empty()
+                || self
+                    .model_id
+                    .as_deref()
+                    .is_some_and(|model_id| !model_id.is_empty())
+            {
+                eprintln!(
+                    "speaker_analysis: normalized legacy selection onto speakrs (dropped provider={:?} model_id={:?})",
+                    self.provider, self.model_id
+                );
+            }
             self.provider = SPEAKRS_PROVIDER_ID.to_string();
             // The old model_id belongs to a removed provider's voiceprint space;
             // drop it so the speakrs default is selected below.
@@ -251,6 +276,27 @@ mod tests {
             options: serde_json::Map::new(),
         };
 
+        payload.normalize_model_selection();
+
+        assert_eq!(payload.provider, SPEAKRS_PROVIDER_ID);
+        assert_eq!(payload.model_id.as_deref(), Some(SPEAKRS_DEFAULT_MODEL_ID));
+    }
+
+    /// A valid-JSON payload that omits `provider` must still deserialize (via
+    /// `#[serde(default)]`) and normalize onto the speakrs default, so the Rust
+    /// cleanup-lock claim path keys it the same way the SQL-atomic claim path does
+    /// (which treats any valid-JSON speaker_analysis payload as the speakrs key). A
+    /// deserialize error here would otherwise be swallowed as "unlocked" and reopen a
+    /// delete-out-from-under window for a corrupt payload.
+    #[test]
+    fn missing_provider_deserializes_and_normalizes_to_speakrs() {
+        let payload: SpeakerAnalysisJobPayload =
+            serde_json::from_str(r#"{"modelId":null,"recognizePeople":false}"#)
+                .expect("missing provider must default rather than error");
+
+        assert_eq!(payload.provider, "");
+
+        let mut payload = payload;
         payload.normalize_model_selection();
 
         assert_eq!(payload.provider, SPEAKRS_PROVIDER_ID);

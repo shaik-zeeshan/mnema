@@ -80,7 +80,10 @@ pub fn map_speakrs_result(
     let turns = segments
         .iter()
         .map(|(start_sec, end_sec, label)| {
-            let global_id = parse_speaker_label(label);
+            // Clamp negatives to 0 to mirror the placeholder-cluster id derivation
+            // below (`parse_speaker_label(label).max(0)`), so a negative parsed
+            // label keeps the turn's cluster id and its placeholder cluster in sync.
+            let global_id = parse_speaker_label(label).max(0);
             SpeakerTurn {
                 provider_cluster_id: provider_cluster_id(global_id),
                 start_ms: seconds_to_ms(*start_sec),
@@ -747,6 +750,31 @@ mod tests {
         // Cluster 1 is a placeholder (empty embedding); cluster 0 has its centroid.
         assert!(mapping.clusters[1].embedding.is_empty());
         assert!(!mapping.clusters[0].embedding.is_empty());
+    }
+
+    #[test]
+    fn negative_label_turn_clamps_to_zero_and_resolves_to_cluster() {
+        // FIX 4: a defensive negative parsed label must clamp the SAME way for the
+        // turn id and its placeholder cluster, so the turn never points at a
+        // provider_cluster_id with no matching cluster. The segment's only embedding
+        // slot is the -2 sentinel (no real centroid), forcing the placeholder path.
+        let segments = vec![(0.0_f64, 1.0_f64, "SPEAKER_-1".to_string())];
+        let chunks = 1;
+        let speakers = 1;
+        let dim = 2;
+        let embeddings = vec![
+            99.0, 99.0, // s0 -> -2 sentinel (skipped, no centroid)
+        ];
+        let hard_clusters = vec![-2];
+
+        let mapping =
+            map_speakrs_result(&segments, chunks, speakers, dim, &embeddings, &hard_clusters);
+
+        // The negative label clamps to 0 for the turn id...
+        assert_eq!(mapping.turns.len(), 1);
+        assert_eq!(mapping.turns[0].provider_cluster_id, provider_cluster_id(0));
+        // ...and a cluster exists for that same id (the placeholder at global_id 0).
+        assert!(mapping.clusters.iter().any(|c| c.global_id == 0));
     }
 
     #[test]

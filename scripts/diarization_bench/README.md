@@ -97,9 +97,16 @@ The script forwards diarization knobs to the binary so you can compare configs
 without rebuilding:
 
 ```sh
-python run_der.py --manifest voxconverse_subset.txt --clustering-threshold 0.70
-python run_der.py --manifest voxconverse_subset.txt --model-id reverb-v1-nemo-titanet-large
+python run_der.py --manifest voxconverse_subset.txt --model-id pyannote-community-1-wespeaker
 ```
+
+> **Most tuning flags are inert on speakrs.** `--clustering-threshold`,
+> `--cross-chunk-threshold`, and the other sherpa-era knobs are *accepted and
+> ignored* by the `diarize_to_rttm_speakrs` bin (it prints a stderr note and
+> uses speakrs's single fixed pipeline). Only the removed sherpa bin honored
+> them, so sweeping them here yields a *flat* DER — that's the flag being
+> ignored, not the parameter having no effect. `--model-id` is the one knob the
+> speakrs bin still honors (it selects the preset).
 
 Save a `--json-out` baseline first, then re-run with a tweak and diff the
 aggregate DER and its confusion / miss / FA split.
@@ -118,10 +125,12 @@ aggregate DER and its confusion / miss / FA split.
 
 ## NME-SC over-clustering experiment (prototype)
 
-The production cross-chunk clustering is threshold-AHC (`cross_chunk_threshold=0.60`):
-it has no global prior on speaker count and **over-splits** — on this 10-clip
-subset it over-estimates the speaker count on 100% of clips (mean abs error
-~17.9; e.g. 2 real speakers -> 24 predicted), even at DER ~9.7%.
+This experiment targeted the **removed sherpa** cross-chunk clustering, which
+was threshold-AHC (`cross_chunk_threshold=0.60`): it had no global prior on
+speaker count and **over-split** — on this 10-clip subset it over-estimated the
+speaker count on 100% of clips (mean abs error ~17.9; e.g. 2 real speakers -> 24
+predicted), even at DER ~9.7%. (The shipped speakrs provider does not use this
+pipeline: it clusters with VBx plus a 0.6 centroid stitch.)
 
 `nme_sc.py` is a self-contained numpy/scipy prototype of **NME-SC** (Normalized
 Maximum Eigengap Spectral Clustering, Park et al. 2019 — what NeMo uses), which
