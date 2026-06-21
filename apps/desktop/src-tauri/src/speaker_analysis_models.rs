@@ -157,6 +157,16 @@ enum ModelDownloadError {
     Archive(std::io::Error),
     #[error("invalid speaker model artifact path: {0}")]
     InvalidArtifactPath(String),
+    #[error(
+        "download for {relative_path} exceeded its expected size of {byte_size} bytes (limit {limit} bytes); aborting"
+    )]
+    OversizedDownload {
+        relative_path: String,
+        byte_size: u64,
+        limit: u64,
+    },
+    #[error("speaker model artifact {relative_path} is missing its integrity checksum; refusing to install")]
+    MissingChecksum { relative_path: String },
 }
 
 #[tauri::command]
@@ -577,11 +587,32 @@ async fn download_model_file(
     already_downloaded_bytes: u64,
     cancel_requested: &AtomicBool,
 ) -> Result<Vec<u8>, ModelDownloadTaskError> {
+    // Each artifact file is content-addressed by its manifest `byte_size`, so a
+    // correct body is exactly that many bytes. Cap the accepted body at
+    // `byte_size + slack` (a small fixed margin) so a misbehaving or compromised
+    // host serving an oversized body fails fast with a typed error instead of
+    // buffering an unbounded stream into memory and OOMing before the SHA256
+    // check ever runs.
+    const DOWNLOAD_SIZE_SLACK_BYTES: u64 = 64 * 1024;
+    let size_limit = file.byte_size.saturating_add(DOWNLOAD_SIZE_SLACK_BYTES);
+
     let response = reqwest::get(&file.url)
         .await
         .map_err(ModelDownloadError::Http)?
         .error_for_status()
         .map_err(ModelDownloadError::Http)?;
+    // Reject up front when the server advertises a body larger than we will ever
+    // accept, so a hostile `Content-Length` never gets the chance to stream.
+    if let Some(content_length) = response.content_length() {
+        if content_length > size_limit {
+            return Err(ModelDownloadError::OversizedDownload {
+                relative_path: file.relative_path.clone(),
+                byte_size: file.byte_size,
+                limit: size_limit,
+            }
+            .into());
+        }
+    }
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -589,6 +620,16 @@ async fn download_model_file(
             return Err(ModelDownloadTaskError::Cancelled);
         }
         let chunk = chunk.map_err(ModelDownloadError::Http)?;
+        // Enforce the running-total cap before retaining the chunk so we never
+        // grow `bytes` past the limit even if `Content-Length` was absent or lied.
+        if bytes.len() as u64 + chunk.len() as u64 > size_limit {
+            return Err(ModelDownloadError::OversizedDownload {
+                relative_path: file.relative_path.clone(),
+                byte_size: file.byte_size,
+                limit: size_limit,
+            }
+            .into());
+        }
         bytes.extend_from_slice(&chunk);
         emit_download_progress(
             app_handle,
@@ -617,6 +658,21 @@ fn install_downloaded_model_file(
 ) -> Result<(), ModelDownloadError> {
     let temp_path = install_dir.join(".download.tmp");
     install_model_file(&temp_path, bytes).map_err(ModelDownloadError::Install)?;
+    // `validate_artifact_sha256` treats a missing/blank checksum as "nothing to
+    // verify" and returns `Ok(())`. For an app-managed download that would mean
+    // installing unverified bytes, so refuse here before relying on it: every
+    // downloaded artifact MUST carry an integrity checksum.
+    if file
+        .sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Err(ModelDownloadError::MissingChecksum {
+            relative_path: file.relative_path.clone(),
+        });
+    }
     validate_artifact_sha256(&temp_path, file.sha256.as_deref())
         .map_err(ModelDownloadError::Install)?;
     if file.url.ends_with(".tar.bz2") {
