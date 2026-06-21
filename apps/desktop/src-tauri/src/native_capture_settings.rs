@@ -355,12 +355,16 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
 ///   sentinel (the feature is default-on but model-gated, so cleared → keyword-only)
 ///   and is kept as `None` — this is the one deliberate divergence from the speaker
 ///   validator, whose `None` resets to a default because speaker analysis has no
-///   "no model" off-state. A **present** id is trimmed; an empty/whitespace or
-///   unknown/unsupported id (the actual L4 hazard — garbage persisting verbatim)
-///   falls back to the default model (`nomic-embed-text-v1.5`); a present-and-known
-///   id is kept. `resolve_descriptor` is the validity gate (the role
-///   `find_model_descriptor` plays in the speaker validator) and also covers
-///   Custom-picked local models, so a real Custom selection survives.
+///   "no model" off-state. A **present** id is trimmed; only an empty/whitespace id
+///   (no real selection) falls back to the default model (`nomic-embed-text-v1.5`).
+///   A present-but-unresolvable id is **preserved verbatim** rather than swapped to a
+///   possibly dimension-incompatible default: changing the selected model must happen
+///   only through the explicit atomic switch path, never as a silent side effect of an
+///   unrelated recording-settings save. The live-dimension authority no-ops an
+///   unresolvable id into keyword-only and startup reconciliation re-aligns it, so a
+///   silent swap here would only desync the persisted selection from the vec0 table
+///   until the next restart's reconcile. A present-and-known id is kept as-is, so a
+///   real Custom selection survives.
 /// - `enabled`: a plain bool, carried through unchanged (the speaker validator
 ///   likewise carries its bool flags through).
 fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticSearchSettings {
@@ -374,17 +378,20 @@ fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticS
         // Explicitly cleared — keep "no model selected" (keyword-only) rather than
         // resurrecting the default. This is the intentional model-gated off-state.
         None => None,
-        // A present id: trim; an empty or unknown id falls back to the default so
-        // garbage never persists verbatim and leaves the worker/query silently
-        // no-op'ing forever while the toggle reads enabled.
+        // A present id: trim. Only an empty/whitespace id (no real selection) falls
+        // back to the default. A present-but-unresolvable id is preserved verbatim
+        // rather than swapped to a possibly dimension-incompatible default: changing
+        // the selected model must happen only through the explicit atomic switch
+        // path, never as a silent side effect of an unrelated settings save. The
+        // live-dimension authority no-ops an unresolvable id into keyword-only and
+        // startup reconciliation re-aligns it — wiping it here would leave the vec0
+        // table disagreeing with the persisted selection until the next restart.
         Some(raw) => {
             let trimmed = raw.trim();
-            if !trimmed.is_empty()
-                && semantic_search::resolve_descriptor(&provider, trimmed).is_some()
-            {
-                Some(trimmed.to_string())
-            } else {
+            if trimmed.is_empty() {
                 default_semantic_search_model_id()
+            } else {
+                Some(trimmed.to_string())
             }
         }
     };
@@ -2586,11 +2593,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_semantic_search_settings_falls_back_for_empty_and_unknown_model() {
-        // L4: a PRESENT but empty/whitespace or unknown model id falls back to the
-        // default model (mirrors validate_speaker_analysis_settings_falls_back) —
-        // this is the garbage-persisting-verbatim hazard the finding describes.
-        for raw_model in ["   ", "", "bogus-model-xyz"] {
+    fn validate_semantic_search_settings_falls_back_for_empty_model() {
+        // L4: a PRESENT but empty/whitespace model id (no real selection) falls back
+        // to the default model.
+        for raw_model in ["   ", ""] {
             let settings = SemanticSearchSettings {
                 enabled: true,
                 provider: semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
@@ -2603,9 +2609,34 @@ mod tests {
             assert_eq!(
                 validated.model_id,
                 default_semantic_search_model_id(),
-                "a present empty/unknown model {raw_model:?} must fall back to the default"
+                "a present empty/whitespace model {raw_model:?} must fall back to the default"
             );
         }
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_preserves_a_present_unresolvable_model() {
+        // An unrelated recording-settings save must NOT silently swap a present-but-
+        // unresolvable model id to the (possibly dimension-incompatible) default —
+        // that would desync the persisted selection from the vec0 table until the
+        // next restart's reconcile. The id is preserved verbatim (trimmed); the
+        // live-dimension authority no-ops it into keyword-only and reconciliation
+        // re-aligns it. Changing the selected model happens only via the explicit
+        // atomic switch path.
+        let settings = SemanticSearchSettings {
+            enabled: true,
+            provider: semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: Some("  bogus-model-xyz  ".to_string()),
+            ..Default::default()
+        };
+
+        let validated = validate_semantic_search_settings(settings);
+
+        assert_eq!(
+            validated.model_id.as_deref(),
+            Some("bogus-model-xyz"),
+            "a present unresolvable model must be preserved (trimmed), not swapped to the default"
+        );
     }
 
     #[test]

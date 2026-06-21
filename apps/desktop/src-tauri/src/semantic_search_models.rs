@@ -227,6 +227,13 @@ enum ModelDownloadError {
         #[source]
         source: std::io::Error,
     },
+    #[error("insufficient disk space for {provider}/{model_id}: need ~{needed_bytes} bytes, have ~{available_bytes} free on the models volume")]
+    InsufficientDiskSpace {
+        provider: String,
+        model_id: String,
+        needed_bytes: u64,
+        available_bytes: u64,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -381,22 +388,45 @@ pub fn cancel_semantic_search_model_download(
 /// selected, so the table matches a fresh-migration DB.
 const DEFAULT_SEMANTIC_SEARCH_DIMENSION: usize = 768;
 
-/// **Atomically switch the Semantic Search Model**: rebuild the `vec0` table at
-/// the newly-selected model's dimension AND persist the selection as one
-/// operation, so the persisted `model_id` and the live table dimension can never
-/// disagree.
+/// Process-wide serialization for [`select_semantic_search_model`]'s
+/// rebuild-then-persist pair. Mirrors the single-slot policy the download path
+/// enforces via [`claim_model_download`]: only one model switch runs at a time, so
+/// two concurrent invocations can never interleave recreate + persist and leave
+/// the live table dimension disagreeing with the persisted `model_id`. A
+/// module-level lock (rather than Tauri-managed state) keeps this self-contained —
+/// the guard is held across both writes inside the command.
+static SELECT_MODEL_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn select_model_lock() -> &'static tokio::sync::Mutex<()> {
+    SELECT_MODEL_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// **Switch the Semantic Search Model**: rebuild the `vec0` table at the
+/// newly-selected model's dimension, THEN persist the selection — two sequential
+/// transactions ordered so the failure modes are recoverable rather than
+/// permanently stuck.
 ///
-/// This collapses what used to be a non-atomic two-step (persist `model_id`,
-/// *then* re-index) that was the root of three faces of one bug (H1/H2 + the
-/// re-index race): if the re-index failed after the persist, the table stayed at
-/// the old dimension while the selection named a new-dimension model — every
-/// search hard-failed and the backfill worker error-looped forever, with no
-/// recovery by re-selecting the same model (the UI early-returns on an unchanged
-/// pick). Here the **table rebuild — the step that can fail — happens first**;
-/// the selection is persisted only after it commits. So a failed rebuild leaves
-/// the old model selected and the old-dim table intact (the recreate runs in its
-/// own transaction and rolls back), and the frontend surfaces the error against a
-/// consistent backend state.
+/// This replaces a worse two-step ordering (persist `model_id`, *then* re-index)
+/// that was the root of three faces of one bug (H1/H2 + the re-index race): if the
+/// re-index failed after the persist, the table stayed at the old dimension while
+/// the selection named a new-dimension model — every search hard-failed and the
+/// backfill worker error-looped forever, with no recovery by re-selecting the same
+/// model (the UI early-returns on an unchanged pick). Here the order is reversed,
+/// so each failure leaves a consistent-or-self-healing state:
+///   - **A failed rebuild never advances the selection.** The recreate runs in its
+///     own transaction and rolls back, so the old model stays selected against the
+///     intact old-dim table and the frontend surfaces the error.
+///   - **A failed persist leaves a new-dim table that startup reconciliation
+///     re-aligns.** The table is already at the new dimension but the selection
+///     still names the old model; the error is reported, and the next startup's
+///     [`reconcile_semantic_search_index_on_startup`] rebuilds the table back to
+///     whatever model remained selected — so there is no permanently-stuck state.
+/// The two writes are NOT one atomic operation; the ordering plus the startup
+/// reconciler is what keeps table-dim and persisted-id from disagreeing for long.
+///
+/// The rebuild+persist pair is serialized process-wide by [`SELECT_MODEL_LOCK`] so
+/// two concurrent invocations cannot interleave their recreate+persist and leave
+/// the table dimension and persisted id disagreeing.
 ///
 /// Different **Semantic Search Model Tier**s produce incomparable vectors and
 /// `vec0` is a fixed-dim table, so a switch re-derives every **Search Result
@@ -416,6 +446,11 @@ pub async fn select_semantic_search_model(
     infra: tauri::State<'_, crate::app_infra::AppInfraState>,
     settings_state: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
 ) -> Result<u64, String> {
+    // Serialize the whole rebuild+persist against any concurrent switch, so two
+    // invocations cannot interleave recreate + persist and leave the table
+    // dimension disagreeing with the persisted id. Held until the command returns.
+    let _switch_guard = select_model_lock().lock().await;
+
     // Resolve the target model's dimension up front. An unresolvable id (legacy /
     // not enumerated) aborts BEFORE touching the table or the persisted selection,
     // so a bad pick is a clean no-op.
@@ -459,8 +494,10 @@ pub async fn select_semantic_search_model(
     Ok(cleared)
 }
 
-/// The vec0 table dimension reconciliation must expect for a settings snapshot —
-/// resolved from the persisted `model_id` **regardless of the `enabled` flag**.
+/// The vec0 table dimension reconciliation should expect for a settings snapshot,
+/// or `None` when reconciliation must be **skipped** because the dimension cannot
+/// be determined safely — resolved from the persisted `model_id` **regardless of
+/// the `enabled` flag**.
 ///
 /// Reconciliation keys off the *selected model*, NOT the *active feature*: a user
 /// on a non-768 tier (Multilingual e5 = 384, Custom bge-m3 = 1024) who toggles
@@ -470,16 +507,25 @@ pub async fn select_semantic_search_model(
 /// `None` the moment `enabled == false`, BEFORE it even reads `model_id`), startup
 /// would fall back to 768 and `reconcile_vectors_table(768)` would DROP+recreate
 /// their table — wiping the entire vector index and forcing a full re-embed. So we
-/// resolve straight from `model_id` here and only fall back to the migration
-/// default 768 when `model_id` is genuinely `None` (a fresh/never-selected
-/// profile). The `enabled` flag is deliberately ignored.
-fn reconcile_expected_dimension(settings: &capture_types::SemanticSearchSettings) -> usize {
-    settings
-        .model_id
-        .as_deref()
-        .and_then(|model_id| resolve_descriptor(&settings.provider, model_id))
-        .map(|descriptor| descriptor.dimension)
-        .unwrap_or(DEFAULT_SEMANTIC_SEARCH_DIMENSION)
+/// resolve straight from `model_id` here, and the `enabled` flag is deliberately
+/// ignored.
+///
+/// Two `None`-shaped inputs must NOT be conflated:
+///   - `model_id == None` (a fresh/never-selected profile) => `Some(768)`: the
+///     migration default is correct, a fresh DB is already a `float[768]` table.
+///   - `model_id == Some(unresolvable)` (catalog/config drift — the id no longer
+///     resolves to a descriptor) => `None`: we do NOT know the table's true
+///     dimension, so falling back to 768 here would DROP a populated 384/1024
+///     table and force a full re-embed over a transient resolve failure. Returning
+///     `None` makes the caller SKIP reconciliation and leave the existing table
+///     untouched; the next time the id resolves (or the real selection re-runs the
+///     switch), the table re-aligns.
+fn reconcile_expected_dimension(settings: &capture_types::SemanticSearchSettings) -> Option<usize> {
+    match settings.model_id.as_deref() {
+        None => Some(DEFAULT_SEMANTIC_SEARCH_DIMENSION),
+        Some(model_id) => resolve_descriptor(&settings.provider, model_id)
+            .map(|descriptor| descriptor.dimension),
+    }
 }
 
 /// Reconcile the `vec0` table dimension against the selected model's expected
@@ -501,11 +547,24 @@ fn reconcile_expected_dimension(settings: &capture_types::SemanticSearchSettings
 /// only falls back to the migration default 768 when no model was ever selected.
 /// Resolving through the worker's enabled-gated `resolve_selected_descriptor` here
 /// would wipe a disabled non-768 user's index on every restart (B1).
+///
+/// A persisted `model_id` that no longer resolves (catalog/config drift) makes
+/// [`reconcile_expected_dimension`] return `None`; we then SKIP reconciliation
+/// entirely and leave the existing table as-is, so a transient resolve failure can
+/// never silently DROP a populated 384/1024 index back to 768. The real selection
+/// re-aligns the table the next time the id resolves.
 pub(crate) async fn reconcile_semantic_search_index_on_startup(
     infra: &crate::app_infra::AppInfraState,
     settings: &capture_types::SemanticSearchSettings,
 ) {
-    let expected_dimension = reconcile_expected_dimension(settings);
+    let Some(expected_dimension) = reconcile_expected_dimension(settings) else {
+        crate::native_capture::debug_log::log_info(format!(
+            "semantic search startup reconciliation skipped: selected model '{}' (provider '{}') does not resolve to a known descriptor; leaving the existing vec0 table untouched rather than wiping it to the {DEFAULT_SEMANTIC_SEARCH_DIMENSION}-dim default (catalog/config drift)",
+            settings.model_id.as_deref().unwrap_or("<none>"),
+            settings.provider
+        ));
+        return;
+    };
     match infra
         .semantic_search()
         .reconcile_vectors_table(expected_dimension)
@@ -679,16 +738,35 @@ fn model_file_specs(descriptor: &SemanticSearchModelDescriptor) -> Vec<ModelFile
 /// the logged "integrity unverified" path, trusting the revision pin + TLS.
 fn pinned_file_sha256(hf_repo: &str, relative_path: &str) -> Option<&'static str> {
     let pinned: &[(&str, &str)] = match hf_repo {
-        // English tier — pinned LFS sha256 of the safetensors weights.
-        "nomic-ai/nomic-embed-text-v1.5" => &[(
-            "model.safetensors",
-            "9e7d262b1fe5ea350782829496efa831901b77486bbde1cea54a4c822d010d5c",
-        )],
-        // Multilingual tier — pinned LFS sha256 of the weights + tokenizer.
+        // English tier — pinned sha256 of every required guided-tier file: the
+        // safetensors weights plus the candle-loaded `config.json` and
+        // `tokenizer.json`, so the whole guided-tier install is integrity-verified
+        // (not just the weights). Hashes computed from the pinned revision.
+        "nomic-ai/nomic-embed-text-v1.5" => &[
+            (
+                "model.safetensors",
+                "9e7d262b1fe5ea350782829496efa831901b77486bbde1cea54a4c822d010d5c",
+            ),
+            (
+                "config.json",
+                "9ab00bd92cee80a569f708140b7b6c1661a65891ff3765b1519e181ba2f2c92b",
+            ),
+            (
+                "tokenizer.json",
+                "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+            ),
+        ],
+        // Multilingual tier — pinned sha256 of every required guided-tier file:
+        // weights + `config.json` + `tokenizer.json`. Hashes computed from the
+        // pinned revision.
         "intfloat/multilingual-e5-small" => &[
             (
                 "model.safetensors",
                 "1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477",
+            ),
+            (
+                "config.json",
+                "69137736cab8b8903a07fe8afaafdda25aac55415a12a55d1bffa9f581abf959",
             ),
             (
                 "tokenizer.json",
@@ -918,21 +996,24 @@ async fn run_model_download_task(
     clear_active_download(&app_handle, &plan.provider, &plan.model_id);
 
     match result {
-        Ok(()) => {
+        Ok(downloaded_total) => {
             log_info(format!(
-                "semantic search model download completed: {}/{} installed at {}",
+                "semantic search model download completed: {}/{} installed at {} ({downloaded_total} bytes downloaded)",
                 plan.provider,
                 plan.model_id,
                 plan.install_dir.display(),
             ));
+            // Report the REAL accumulated download total (not the approximate catalog
+            // size) as downloaded_bytes; total_bytes carries the larger of the two so
+            // a UI progress bar never shows >100%.
             emit_download_progress(
                 &app_handle,
                 &SemanticSearchModelDownloadProgressDto::new(
                     &plan.provider,
                     &plan.model_id,
                     SemanticSearchModelDownloadStatusDto::Completed,
-                    plan.total_bytes,
-                    Some(plan.total_bytes),
+                    downloaded_total,
+                    Some(plan.total_bytes.max(downloaded_total)),
                     None,
                 ),
             );
@@ -982,11 +1063,63 @@ async fn run_model_download_task(
     }
 }
 
+/// Best-effort free-disk preflight for a download plan: fail fast when the models
+/// volume cannot hold the plan's approximate total bytes (`plan.total_bytes`, the
+/// catalog footprint — bge-m3 is ~2.27GB), so a multi-GB download does not fill the
+/// disk and error mid-stream.
+///
+/// "Best-effort" means an inability to MEASURE never blocks the download: if the
+/// free-space query itself errors (the path resolves to no existing ancestor, or
+/// `fs2::available_space` fails), we log and return `Ok(())` so the download
+/// proceeds. Only a *measured* shortfall fails. Uses `fs2::available_space`
+/// (already a desktop dependency), which reports the space available to a
+/// non-privileged process — the right bound for a user-space download.
+fn preflight_free_disk_space(plan: &DownloadPlan) -> Result<(), ModelDownloadError> {
+    // The install dir does not exist yet; probe the nearest existing ancestor on
+    // the same volume so `available_space` has a real path to stat.
+    let probe_path = plan
+        .install_dir
+        .ancestors()
+        .find(|ancestor| ancestor.exists());
+    let Some(probe_path) = probe_path else {
+        log_info(format!(
+            "semantic search model download disk preflight skipped for {}/{}: no existing ancestor of {} to stat",
+            plan.provider,
+            plan.model_id,
+            plan.install_dir.display()
+        ));
+        return Ok(());
+    };
+    match fs2::available_space(probe_path) {
+        Ok(available_bytes) => {
+            if available_bytes < plan.total_bytes {
+                return Err(ModelDownloadError::InsufficientDiskSpace {
+                    provider: plan.provider.clone(),
+                    model_id: plan.model_id.clone(),
+                    needed_bytes: plan.total_bytes,
+                    available_bytes,
+                });
+            }
+            Ok(())
+        }
+        Err(error) => {
+            // Cannot measure — log and proceed rather than blocking the download.
+            log_info(format!(
+                "semantic search model download disk preflight could not read free space at {} for {}/{}: {error}; proceeding",
+                probe_path.display(),
+                plan.provider,
+                plan.model_id
+            ));
+            Ok(())
+        }
+    }
+}
+
 async fn download_and_install_model(
     app_handle: &tauri::AppHandle,
     plan: &DownloadPlan,
     cancel_requested: &AtomicBool,
-) -> Result<(), ModelDownloadTaskError> {
+) -> Result<u64, ModelDownloadTaskError> {
     let descriptor = descriptor_for(&plan.provider, &plan.model_id).ok_or_else(|| {
         ModelDownloadError::ModelNotFound {
             provider: plan.provider.clone(),
@@ -1002,6 +1135,15 @@ async fn download_and_install_model(
             path: plan.install_dir.clone(),
             source: std::io::Error::other("install dir has no models root"),
         })?;
+
+    // Free-disk preflight: bge-m3 alone is ~2.27GB, so fail fast with a clear
+    // message rather than filling the volume and erroring mid-stream. Best-effort —
+    // if the free-space query itself fails we log and proceed (an inability to
+    // MEASURE must never block a download). The check runs against an existing
+    // ancestor of the install dir (the install dir does not exist yet).
+    if plan.total_bytes > 0 {
+        preflight_free_disk_space(plan)?;
+    }
 
     // A fresh install: clear any partial leftovers so a half-download never lingers.
     let _ = std::fs::remove_dir_all(&plan.install_dir);
@@ -1119,7 +1261,9 @@ async fn download_and_install_model(
     // never reports a partial download as Installed.
     write_installed_marker(&models_dir, &plan.provider, &plan.model_id)
         .map_err(ModelDownloadError::Status)?;
-    Ok(())
+    // Return the real accumulated byte total so the Completed event reports what was
+    // actually downloaded, not the approximate catalog footprint.
+    Ok(downloaded_total)
 }
 
 async fn download_file_to(
@@ -1678,7 +1822,7 @@ mod tests {
         };
         assert_eq!(
             reconcile_expected_dimension(&disabled_e5),
-            384,
+            Some(384),
             "a disabled non-768 model must keep its table dimension (B1: never wipe)"
         );
 
@@ -1691,7 +1835,7 @@ mod tests {
         };
         assert_eq!(
             reconcile_expected_dimension(&never_selected),
-            DEFAULT_SEMANTIC_SEARCH_DIMENSION,
+            Some(DEFAULT_SEMANTIC_SEARCH_DIMENSION),
             "no model ever selected => the migration default 768"
         );
         assert_eq!(DEFAULT_SEMANTIC_SEARCH_DIMENSION, 768);
@@ -1702,7 +1846,21 @@ mod tests {
             provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: Some("bge-m3".to_string()),
         };
-        assert_eq!(reconcile_expected_dimension(&enabled_bge), 1024);
+        assert_eq!(reconcile_expected_dimension(&enabled_bge), Some(1024));
+
+        // FIX 4: a persisted model_id that no longer RESOLVES (catalog/config
+        // drift) must return None so the caller SKIPS reconciliation and leaves the
+        // populated table untouched — never the 768 fallback that would DROP it.
+        let unresolvable = capture_types::SemanticSearchSettings {
+            enabled: true,
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: Some("a-model-that-no-longer-exists".to_string()),
+        };
+        assert_eq!(
+            reconcile_expected_dimension(&unresolvable),
+            None,
+            "an unresolvable model_id must skip reconciliation, not wipe to 768"
+        );
     }
 
     /// B2: the guided-tier fail-closed gate refuses to finalize a guided tier whose
