@@ -25,20 +25,13 @@ script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 dmg_dir="${repo_root}/target/release/bundle/dmg"
 
-# speakrs links OpenBLAS via the `openblas-static` feature, built from source.
-# Two build-time requirements (see AGENTS.md):
-#   - a Fortran toolchain must be present, and the gcc lib dir on the linker
-#     search path (LIBRARY_PATH) so OpenBLAS's own test programs link;
-#   - OPENBLAS_DYNAMIC_ARCH=1 so this signed build (which you hand to others)
-#     runs on every Apple Silicon generation, not just this machine's core.
-if ! command -v gfortran >/dev/null 2>&1; then
-  print -u2 "gfortran not found — install the Fortran toolchain: brew install gcc"
-  exit 1
-fi
-gfortran_libdir="$(dirname "$(gfortran -print-file-name=libgfortran.dylib)")"
-export LIBRARY_PATH="${gfortran_libdir}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+# speakrs links OpenBLAS via the `openblas-static` feature, built from source:
+# put the gcc lib dir on the linker search path (shared helper), and — because
+# this signed build is handed to others — build all-generation arm64 kernels so
+# it runs on every Apple Silicon, not just this machine's core. See AGENTS.md.
+source "${repo_root}/scripts/openblas-build-env.sh"
 export OPENBLAS_DYNAMIC_ARCH=1
-print "OpenBLAS: static + DYNAMIC_ARCH; LIBRARY_PATH includes ${gfortran_libdir}"
+print "OpenBLAS: static + DYNAMIC_ARCH (all Apple Silicon generations)"
 
 cd "${repo_root}/apps/desktop"
 CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- build
