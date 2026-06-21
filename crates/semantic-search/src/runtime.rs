@@ -49,6 +49,20 @@ const EMBED_SUB_BATCH_SIZE: usize = 8;
 /// only long ones are chunked more finely.
 const MAX_EMBED_WINDOW_TOKENS: usize = 256;
 
+/// Whether a text is being embedded as a search **query** or a stored
+/// **document** (anchor body). Some models ship asymmetric input prompts — a
+/// per-side instruction string prepended before the model forward — so the same
+/// text yields a query-side vs document-side vector. The embedder selects the
+/// prompt by this kind (see [`SemanticSearchEmbedder::embed_texts`]); a model
+/// with no prompt for the side embeds the bare text identically for both.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EmbedKind {
+    /// The text is a search query (uses the descriptor's `query_prompt`).
+    Query,
+    /// The text is a stored document/anchor body (uses `document_prompt`).
+    Document,
+}
+
 /// A loaded **Semantic Search Model** ready to derive **Semantic Search
 /// Vectors**. Holds the backend (the raw forward) plus a non-truncating split
 /// tokenizer used only to detect and split overflowing text above the backend.
@@ -58,6 +72,21 @@ pub struct SemanticSearchEmbedder {
     /// token-window splitting (the backend's own tokenizer truncates).
     split_tokenizer: Tokenizer,
     max_tokens: usize,
+    /// Instruction prepended to a **query** before the backend forward (e.g.
+    /// `"query: "`), or `None`/empty for a model that embeds bare query text.
+    query_prompt: Option<String>,
+    /// Instruction prepended to a **document/anchor body** before the backend
+    /// forward, or `None`/empty for a model that embeds bare document text.
+    document_prompt: Option<String>,
+    /// Matryoshka stored width: when `Some(d)`, each native backend vector is
+    /// truncated to its first `d` elements and L2-renormalized above the trait
+    /// (the backend still produces native-width vectors). `None` ⇒ pass through.
+    mrl_truncate_dim: Option<usize>,
+    /// The vector width this model STORES — the MRL-truncated width when
+    /// truncating, else the native width. The backend's `dimension()` is the
+    /// native produced width, which differs from this when `mrl_truncate_dim` is
+    /// set, so [`Self::dimension`] reports this stored width instead.
+    stored_dimension: usize,
 }
 
 impl SemanticSearchEmbedder {
@@ -83,19 +112,21 @@ impl SemanticSearchEmbedder {
     ) -> Result<Self, EmbeddingError> {
         let model_dir = model_dir.as_ref();
         let backend = CandleBackend::load_from_dir(model_dir, descriptor)?;
-        Self::from_backend(model_dir, Box::new(backend), descriptor.max_tokens)
+        Self::from_backend(model_dir, Box::new(backend), descriptor)
     }
 
     /// Construct the wrapper over an already-built backend (the seam tests and a
     /// future non-candle backend share). Loads the split tokenizer from
-    /// `tokenizer.json` under `model_dir` and clamps the window.
+    /// `tokenizer.json` under `model_dir`, clamps the window, and pulls the
+    /// per-model prompts, MRL stored width, and stored dimension straight from the
+    /// descriptor (the backend stays prompt-/MRL-agnostic; those live above it).
     fn from_backend(
         model_dir: &Path,
         backend: Box<dyn SemanticSearchBackend>,
-        descriptor_max_tokens: usize,
+        descriptor: &SemanticSearchModelDescriptor,
     ) -> Result<Self, EmbeddingError> {
         // GPU tensor bound: clamp the window before it sizes the chunk splits.
-        let max_tokens = descriptor_max_tokens.min(MAX_EMBED_WINDOW_TOKENS);
+        let max_tokens = descriptor.max_tokens.min(MAX_EMBED_WINDOW_TOKENS);
 
         let tokenizer_path = model_dir.join(TOKENIZER_FILE_NAME);
         let tokenizer_bytes =
@@ -117,54 +148,102 @@ impl SemanticSearchEmbedder {
             backend,
             split_tokenizer,
             max_tokens,
+            query_prompt: descriptor.query_prompt.clone(),
+            document_prompt: descriptor.document_prompt.clone(),
+            mrl_truncate_dim: descriptor.mrl_truncate_dim,
+            stored_dimension: descriptor.dimension,
         })
     }
 
-    /// The vector dimension the loaded model produces (delegates to the backend).
+    /// The vector dimension the loaded model STORES — the MRL-truncated width when
+    /// truncating, else the native width. This is the descriptor's `dimension`,
+    /// NOT `backend.dimension()` (the native produced width): the two differ when
+    /// `mrl_truncate_dim` is set, and storage/query both index the stored width.
     pub fn dimension(&self) -> usize {
-        self.backend.dimension()
+        self.stored_dimension
     }
 
-    /// Derive a single **Semantic Search Vector** (f32) for a UTF-8 string.
+    /// Derive a single **Semantic Search Vector** (f32) for a UTF-8 string,
+    /// embedded as `kind` (query vs document — selects the per-model input prompt).
     ///
     /// Text within the window is embedded directly; text that overflows is
     /// auto-split into token-window chunks (never silently truncated), each chunk
     /// embedded, and the chunk vectors mean-pooled and L2-normalized into one
     /// vector. Delegates to [`embed_texts`](Self::embed_texts) so the single-text
     /// query path and the batched backfill path share one set of semantics.
-    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        self.embed_texts(&[text])
+    pub fn embed_text(&self, text: &str, kind: EmbedKind) -> Result<Vec<f32>, EmbeddingError> {
+        self.embed_texts(&[text], kind)
             .into_iter()
             .next()
             .unwrap_or(Err(EmbeddingError::EmptyEmbedding))
     }
 
-    /// Derive a **Semantic Search Vector** for each input text. Returns exactly one
-    /// result per input, in input order.
+    /// Derive a **Semantic Search Vector** for each input text, all embedded as
+    /// `kind` (query vs document). Returns exactly one result per input, in input
+    /// order.
     ///
     /// Each text is split into token-window chunks up front; all chunks are fanned
     /// into one flat list, embedded in bounded length-sorted sub-batches, then
     /// regrouped per text by [`fan_in_chunk_results`] (single chunk passes through
     /// unchanged; multiple chunks mean-pool). A chunk that fails to embed fails only
     /// its own text, never a sibling in the batch.
-    pub fn embed_texts(&self, texts: &[&str]) -> Vec<Result<Vec<f32>, EmbeddingError>> {
+    ///
+    /// PROMPT APPLICATION (above the backend trait): the per-model `kind` prompt is
+    /// prepended to each chunk STRING before the backend forward, and the split
+    /// budget is reduced by the prompt's token length so `prompt + chunk + special`
+    /// still fits the window. A `None`/empty prompt prepends nothing and reserves
+    /// zero budget, so the chunk strings are byte-identical to the no-prompt path.
+    pub fn embed_texts(
+        &self,
+        texts: &[&str],
+        kind: EmbedKind,
+    ) -> Vec<Result<Vec<f32>, EmbeddingError>> {
         if texts.is_empty() {
             return Vec::new();
         }
 
+        // Select the per-model prompt for this side and measure its token cost up
+        // front (once for the whole batch): the prompt reserves that many tokens of
+        // the window so each chunk leaves room for `prompt + chunk + special`. A
+        // `None`/empty prompt costs zero tokens and prepends nothing (bare-text
+        // parity with the no-prompt path).
+        let prompt = select_prompt(kind, &self.query_prompt, &self.document_prompt);
+        let prompt_token_len = match self.prompt_token_len(prompt) {
+            Ok(len) => len,
+            // A prompt that fails to tokenize is a load-time misconfiguration, not a
+            // per-text fault: fail every input uniformly rather than silently
+            // dropping the prompt and producing wrong-side vectors. (`EmbeddingError`
+            // isn't `Clone`, so reconstruct the same `Tokenize` error per slot from
+            // its message.)
+            Err(error) => {
+                let message = error.to_string();
+                return texts
+                    .iter()
+                    .map(|_| Err(EmbeddingError::Tokenize(message.clone())))
+                    .collect();
+            }
+        };
+        // Reduce the window by the prompt tokens so the split reserves room for the
+        // prompt; the split still subtracts `SPECIAL_TOKEN_HEADROOM` internally.
+        let chunk_max_tokens = self.max_tokens.saturating_sub(prompt_token_len);
+
         // Split every text up front. A split failure is recorded as that text's
         // result slot and contributes ZERO chunks to the batch; a success records
-        // `None` here and pushes its chunks (tracking the count) so the fan-in can
-        // slice the flat vectors back per text.
+        // `None` here and pushes its (prompt-prepended) chunks (tracking the count)
+        // so the fan-in can slice the flat vectors back per text.
         let mut split_results: Vec<Option<EmbeddingError>> = Vec::with_capacity(texts.len());
         let mut chunk_counts: Vec<usize> = Vec::new();
         let mut all_chunks: Vec<String> = Vec::new();
         for text in texts {
-            match self.split_on_overflow(text) {
+            match self.split_on_overflow(text, chunk_max_tokens) {
                 Ok(chunks) => {
                     split_results.push(None);
                     chunk_counts.push(chunks.len());
-                    all_chunks.extend(chunks);
+                    // Prepend the per-model prompt STRING to each chunk before it
+                    // reaches the backend. `prepend_prompt` returns the chunk
+                    // unchanged for a `None`/empty prompt, so the bare-text path is
+                    // byte-identical to today.
+                    all_chunks.extend(chunks.into_iter().map(|chunk| prepend_prompt(prompt, chunk)));
                 }
                 Err(error) => split_results.push(Some(error)),
             }
@@ -238,7 +317,11 @@ impl SemanticSearchEmbedder {
             match self.backend.embed_batch(&sub_batch) {
                 Ok(vectors) if vectors.len() == window.len() => {
                     for (&index, vector) in window.iter().zip(vectors) {
-                        out[index] = Some(Ok(vector));
+                        // MRL: truncate the native-width vector to the stored width
+                        // and L2-renormalize BEFORE the cross-chunk fan-in, so the
+                        // pool and the single-chunk passthrough both operate on the
+                        // stored-width unit vector. A `None` mrl passes through.
+                        out[index] = Some(Ok(self.apply_mrl(vector)));
                     }
                 }
                 // A count mismatch or a backend error for the whole sub-batch:
@@ -262,18 +345,53 @@ impl SemanticSearchEmbedder {
     /// Embed a single chunk on its own (the per-chunk fallback path): a one-element
     /// `embed_batch` whose result is unwrapped to exactly one vector, or an `Err` for
     /// just this chunk. Used to localize a sub-batch failure to the offending chunk.
+    /// Applies MRL truncation to the native vector (matching the sub-batch path) so
+    /// the single-chunk passthrough carries the stored-width unit vector.
     fn embed_single_chunk(&self, chunk: &str) -> Result<Vec<f32>, EmbeddingError> {
         let vectors = self.backend.embed_batch(&[chunk])?;
         vectors
             .into_iter()
             .next()
+            .map(|vector| self.apply_mrl(vector))
             .ok_or(EmbeddingError::EmptyEmbedding)
     }
 
-    /// Split `text` into chunks that each fit the model's token window. Returns a
-    /// single-element vec when the text already fits.
-    fn split_on_overflow(&self, text: &str) -> Result<Vec<String>, EmbeddingError> {
-        split_text_on_token_overflow(&self.split_tokenizer, text, self.max_tokens)
+    /// Apply Matryoshka truncation to one native backend vector: when
+    /// `mrl_truncate_dim == Some(d)`, truncate to the first `d` elements and
+    /// L2-renormalize; otherwise return the native vector unchanged. The backend
+    /// only knows the native width — this is the one place the stored width is cut.
+    fn apply_mrl(&self, vector: Vec<f32>) -> Vec<f32> {
+        match self.mrl_truncate_dim {
+            Some(d) => truncate_and_renormalize(&vector, d),
+            None => vector,
+        }
+    }
+
+    /// Split `text` into chunks that each fit `max_tokens` (already reduced by the
+    /// prompt's token cost by the caller, so `prompt + chunk + special` fits the
+    /// window). Returns a single-element vec when the text already fits.
+    fn split_on_overflow(
+        &self,
+        text: &str,
+        max_tokens: usize,
+    ) -> Result<Vec<String>, EmbeddingError> {
+        split_text_on_token_overflow(&self.split_tokenizer, text, max_tokens)
+    }
+
+    /// Token length of `prompt` via the non-truncating split tokenizer (no special
+    /// tokens added), so the budget the split reserves matches the actual prompt
+    /// tokens the backend prepends. A `None`/empty prompt costs zero tokens.
+    fn prompt_token_len(&self, prompt: Option<&str>) -> Result<usize, EmbeddingError> {
+        match prompt {
+            Some(prompt) if !prompt.is_empty() => {
+                let encoding = self
+                    .split_tokenizer
+                    .encode(prompt, false)
+                    .map_err(|error| EmbeddingError::Tokenize(error.to_string()))?;
+                Ok(encoding.get_ids().len())
+            }
+            _ => Ok(0),
+        }
     }
 }
 
@@ -340,6 +458,51 @@ fn ceil_char_boundary(text: &str, index: usize) -> usize {
         index += 1;
     }
     index
+}
+
+/// Select the per-model input prompt for an [`EmbedKind`] (query vs document). A
+/// pure free helper so the side→prompt mapping is unit-testable without a loaded
+/// model. Returns `None` when the model has no prompt for the side.
+fn select_prompt<'a>(
+    kind: EmbedKind,
+    query_prompt: &'a Option<String>,
+    document_prompt: &'a Option<String>,
+) -> Option<&'a str> {
+    match kind {
+        EmbedKind::Query => query_prompt.as_deref(),
+        EmbedKind::Document => document_prompt.as_deref(),
+    }
+}
+
+/// Prepend the per-model `prompt` STRING to a chunk before the backend forward. A
+/// `None`/empty prompt returns the chunk unchanged (no allocation difference in
+/// content), so the bare-text path is byte-identical to the no-prompt path.
+fn prepend_prompt(prompt: Option<&str>, chunk: String) -> String {
+    match prompt {
+        Some(prompt) if !prompt.is_empty() => {
+            let mut prefixed = String::with_capacity(prompt.len() + chunk.len());
+            prefixed.push_str(prompt);
+            prefixed.push_str(&chunk);
+            prefixed
+        }
+        _ => chunk,
+    }
+}
+
+/// Matryoshka truncation: keep the first `d` elements of a native embedding and
+/// L2-renormalize so the truncated prefix is again a unit vector. A pure helper —
+/// the model produces native-width vectors and this is the one place the stored
+/// width is cut (Arctic 1024 → 256). `d` is clamped to the vector length so a
+/// short vector is renormalized whole rather than over-read.
+fn truncate_and_renormalize(v: &[f32], d: usize) -> Vec<f32> {
+    let keep = d.min(v.len());
+    let mut truncated = v[..keep].to_vec();
+    let norm = truncated.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let epsilon = 1e-12f32;
+    for value in truncated.iter_mut() {
+        *value /= norm + epsilon;
+    }
+    truncated
 }
 
 /// Regroup the flat list of per-chunk **results** a batched embed produced back
@@ -593,5 +756,119 @@ mod tests {
         assert_eq!(starved.len(), 2);
         assert!(starved[0].is_ok());
         assert!(matches!(starved[1], Err(EmbeddingError::EmptyEmbedding)));
+    }
+
+    #[test]
+    fn embed_kind_selects_the_matching_side_prompt() {
+        // `select_prompt` is the pure side→prompt mapping the embedder uses.
+        let query = Some("query: ".to_string());
+        let document = Some("passage: ".to_string());
+        assert_eq!(select_prompt(EmbedKind::Query, &query, &document), Some("query: "));
+        assert_eq!(select_prompt(EmbedKind::Document, &query, &document), Some("passage: "));
+
+        // A model with no prompt for the side yields `None` (bare text).
+        let none: Option<String> = None;
+        assert_eq!(select_prompt(EmbedKind::Query, &none, &document), None);
+        assert_eq!(select_prompt(EmbedKind::Document, &query, &none), None);
+    }
+
+    #[test]
+    fn prompt_budget_reserves_room_for_prompt_plus_chunk_plus_special() {
+        // The window split must leave room for `prompt + chunk + special`. Mirror the
+        // embedder's budget math with the predictable whitespace tokenizer: a window
+        // of 7 tokens and a 2-token prompt leaves a per-chunk budget of
+        // 7 - 2 (prompt) - 2 (SPECIAL_TOKEN_HEADROOM) = 3 content tokens.
+        let tokenizer = whitespace_tokenizer();
+        let window = 7usize;
+
+        // Prompt "alpha bravo" = 2 tokens (mirrors `prompt_token_len`'s
+        // `encode(prompt, false)`).
+        let prompt = "alpha bravo";
+        let prompt_tokens = tokenizer.encode(prompt, false).expect("encode prompt").get_ids().len();
+        assert_eq!(prompt_tokens, 2);
+
+        let chunk_max_tokens = window.saturating_sub(prompt_tokens);
+        let text = "alpha bravo charlie delta echo foxtrot";
+        let chunks =
+            split_text_on_token_overflow(&tokenizer, text, chunk_max_tokens).expect("split");
+
+        // EVERY chunk satisfies prompt_tokens + chunk_tokens + SPECIAL_TOKEN_HEADROOM
+        // <= window, so prompt + chunk + special never overflows the model window.
+        for chunk in &chunks {
+            let chunk_tokens = tokenizer.encode(chunk.as_str(), false).expect("encode").get_ids().len();
+            assert!(
+                prompt_tokens + chunk_tokens + SPECIAL_TOKEN_HEADROOM <= window,
+                "prompt({prompt_tokens}) + chunk({chunk_tokens}) + special({SPECIAL_TOKEN_HEADROOM}) must fit window({window})"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_prompt_chunks_are_identical_to_the_no_prompt_path() {
+        // A `None`/empty prompt must produce byte-identical chunk strings to the
+        // no-prompt path: zero reserved budget, no string prepended.
+        let tokenizer = whitespace_tokenizer();
+        let window = 4usize; // budget = 4 - 0 (prompt) - 2 (special) = 2 content tokens.
+        let text = "alpha bravo charlie delta echo foxtrot";
+
+        // No-prompt path: split at the full window, no prepend.
+        let baseline = split_text_on_token_overflow(&tokenizer, text, window).expect("split");
+
+        // Prompt path with a `None` prompt: zero reserved budget + `prepend_prompt`
+        // returns each chunk unchanged.
+        let none: Option<&str> = None;
+        let chunk_max_tokens = window.saturating_sub(0);
+        let prompted: Vec<String> = split_text_on_token_overflow(&tokenizer, text, chunk_max_tokens)
+            .expect("split")
+            .into_iter()
+            .map(|chunk| prepend_prompt(none, chunk))
+            .collect();
+        assert_eq!(prompted, baseline, "None prompt must be byte-identical to no-prompt");
+
+        // An empty-string prompt is treated the same as `None`.
+        let empty: Option<&str> = Some("");
+        let empty_prompted: Vec<String> =
+            split_text_on_token_overflow(&tokenizer, text, window.saturating_sub(0))
+                .expect("split")
+                .into_iter()
+                .map(|chunk| prepend_prompt(empty, chunk))
+                .collect();
+        assert_eq!(empty_prompted, baseline, "empty prompt must be byte-identical to no-prompt");
+    }
+
+    #[test]
+    fn prepend_prompt_prefixes_a_nonempty_prompt() {
+        assert_eq!(prepend_prompt(Some("query: "), "hello".to_string()), "query: hello");
+        // None / empty leave the chunk untouched (bare-text parity).
+        assert_eq!(prepend_prompt(None, "hello".to_string()), "hello");
+        assert_eq!(prepend_prompt(Some(""), "hello".to_string()), "hello");
+    }
+
+    #[test]
+    fn truncate_and_renormalize_yields_unit_norm_prefix() {
+        // A native vector with a known non-unit prefix. Truncating to d=2 keeps the
+        // first 2 elements and renormalizes them to unit length.
+        let native = vec![3.0f32, 4.0, 12.0, 0.0];
+        let d = 2usize;
+        let truncated = truncate_and_renormalize(&native, d);
+
+        // Length == d.
+        assert_eq!(truncated.len(), d);
+
+        // Unit-norm.
+        let norm = truncated.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "truncated vector must be unit length");
+
+        // Equals the renormalized prefix of the native vector: [3,4] → /5 → [0.6, 0.8].
+        let prefix_norm = (native[0] * native[0] + native[1] * native[1]).sqrt();
+        let expected = [native[0] / prefix_norm, native[1] / prefix_norm];
+        assert!((truncated[0] - expected[0]).abs() < 1e-6);
+        assert!((truncated[1] - expected[1]).abs() < 1e-6);
+
+        // `d` larger than the vector clamps to the full length (renormalized whole).
+        let whole = truncate_and_renormalize(&native, 99);
+        assert_eq!(whole.len(), native.len());
+        let whole_norm = whole.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((whole_norm - 1.0).abs() < 1e-5);
     }
 }

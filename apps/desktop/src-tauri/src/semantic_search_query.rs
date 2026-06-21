@@ -19,6 +19,7 @@
 
 use std::sync::Mutex;
 
+use semantic_search::EmbedKind;
 use tauri::Manager;
 
 use crate::semantic_search_worker::{
@@ -129,7 +130,7 @@ pub async fn embed_search_query(
         // `&self`-immutable, so the embedder needs no `mut`.
         let vector = loaded
             .embedder
-            .embed_text(&query)
+            .embed_text(&query, EmbedKind::Query)
             .map_err(|error| error.to_string());
         Some((loaded, vector))
     })

@@ -84,12 +84,15 @@ pub enum SemanticSearchModelTier {
 /// the candle backend (`backend/candle.rs`) to the matching
 /// `candle_transformers::models::*` module: `NomicBert` for the English default
 /// (`nomic-embed-text-v1.5`), `XlmRoberta` for the multilingual-e5 family and
-/// `bge-m3`. Hand-coded per model — never inferred from an id.
+/// `bge-m3`, and `StellaEnV5` for `stella_en_400M_v5` (dispatches to
+/// `candle_transformers::models::stella_en_v5`, whose dense head pools internally).
+/// Hand-coded per model — never inferred from an id.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticSearchArchitecture {
     NomicBert,
     XlmRoberta,
+    StellaEnV5,
 }
 
 /// The sentence-pooling strategy a **Semantic Search Model** reads its single
@@ -147,6 +150,23 @@ pub struct SemanticSearchModelDescriptor {
     /// The sentence-pooling strategy the backend pools this model with — Mean for
     /// nomic / e5, Cls for bge-m3. Hand-coded, never guessed from the id.
     pub pooling: SemanticSearchPooling,
+    /// The instruction prefix prepended to a **query** before embedding (e.g.
+    /// nomic's `search_query: `, e5's `query: `). `None` when the model takes a
+    /// bare query with no instruction (bge-m3's dense path). Hand-coded per model.
+    #[serde(default)]
+    pub query_prompt: Option<String>,
+    /// The instruction prefix prepended to a **document/passage** before embedding
+    /// (e.g. nomic's `search_document: `, e5's `passage: `). `None` when the model
+    /// embeds the bare text. Hand-coded per model.
+    #[serde(default)]
+    pub document_prompt: Option<String>,
+    /// When set, the stored vector width when **Matryoshka-truncating** the model's
+    /// native vector: the backend produces its native dimension, the embedder
+    /// truncates each vector to this many leading elements and renormalizes, and the
+    /// truncated width (equal to `dimension`) is what is stored. `None` when the
+    /// model is stored at its native width (no truncation).
+    #[serde(default)]
+    pub mrl_truncate_dim: Option<usize>,
     pub expected_layout: InstalledModelLayout,
 }
 
@@ -170,11 +190,18 @@ pub struct InstalledModelLayout {
     /// The repo-relative path of the safetensors weights (e.g. `model.safetensors`).
     /// The candle backend mmaps this from disk.
     pub weights_relative_path: String,
+    /// The repo-relative path of an **auxiliary head** weights file, when the model
+    /// loads a second safetensors alongside the base backbone (e.g. Stella's dense
+    /// projection head `2_Dense_2048/model.safetensors`). `None` for every model
+    /// whose single backbone safetensors is the whole model.
+    #[serde(default)]
+    pub aux_weights_relative_path: Option<String>,
 }
 
 impl InstalledModelLayout {
     /// Build a layout from the safetensors weights path plus the two json files.
     /// `required_files` is the union: weights, `config.json`, `tokenizer.json`.
+    /// No auxiliary head (single-backbone model).
     pub fn from_weights_path(weights_relative_path: impl Into<String>) -> Self {
         let weights_relative_path = weights_relative_path.into();
         let required_files = vec![
@@ -186,6 +213,31 @@ impl InstalledModelLayout {
             marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
             required_files,
             weights_relative_path,
+            aux_weights_relative_path: None,
+        }
+    }
+
+    /// Build a layout for a model that loads a **base backbone plus a separate head**
+    /// safetensors (e.g. Stella: `model.safetensors` + `2_Dense_2048/model.safetensors`).
+    /// `required_files` is the union: base, head, `config.json`, `tokenizer.json`;
+    /// `weights_relative_path` is the base and `aux_weights_relative_path` the head.
+    pub fn from_weights_and_head(
+        base_relative_path: impl Into<String>,
+        head_relative_path: impl Into<String>,
+    ) -> Self {
+        let base_relative_path = base_relative_path.into();
+        let head_relative_path = head_relative_path.into();
+        let required_files = vec![
+            base_relative_path.clone(),
+            head_relative_path.clone(),
+            CONFIG_FILE_NAME.to_string(),
+            TOKENIZER_FILE_NAME.to_string(),
+        ];
+        Self {
+            marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
+            required_files,
+            weights_relative_path: base_relative_path,
+            aux_weights_relative_path: Some(head_relative_path),
         }
     }
 }
@@ -247,7 +299,7 @@ pub struct SupportedEmbeddingModel {
     pub pooling: SemanticSearchPooling,
 }
 
-/// The hand-coded catalog: the three curated tiers (ADR 0037).
+/// The hand-coded catalog: the curated tiers (ADR 0037).
 ///
 /// - **English (default):** `nomic-embed-text-v1.5` — NomicBert, 768-dim, Mean,
 ///   8192-token, Apache-2.0, ~250 MB. `model.safetensors` at the repo root.
@@ -255,6 +307,13 @@ pub struct SupportedEmbeddingModel {
 ///   512-token, MIT, ~470 MB.
 /// - **Custom multilingual option:** `bge-m3` — XLM-Roberta, 1024-dim, CLS,
 ///   8192-token, MIT, ~2.27 GB.
+/// - **Custom English option:** `stella_en_400M_v5` — StellaEnV5, 2048-dim
+///   (native `2_Dense_2048` head, module-internal mean+dense pool), 8192-token,
+///   MIT, ~1.75 GB. Base `model.safetensors` plus the `2_Dense_2048/model.safetensors`
+///   head.
+/// - **Custom multilingual option:** `snowflake-arctic-embed-l-v2.0` — XLM-Roberta,
+///   256-dim stored (Matryoshka-truncated from native 1024), CLS, 8192-token,
+///   Apache-2.0, ~2.3 GB.
 fn catalog() -> Vec<SemanticSearchModelDescriptor> {
     vec![
         SemanticSearchModelDescriptor {
@@ -276,6 +335,10 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             // ~250 MB safetensors (F32 weights).
             approx_download_bytes: 250_000_000,
             pooling: SemanticSearchPooling::Mean,
+            // nomic's asymmetric retrieval prefixes (trailing space is significant).
+            query_prompt: Some("search_query: ".to_string()),
+            document_prompt: Some("search_document: ".to_string()),
+            mrl_truncate_dim: None,
             expected_layout: InstalledModelLayout::default(),
         },
         SemanticSearchModelDescriptor {
@@ -297,6 +360,10 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             // ~470 MB on disk.
             approx_download_bytes: 470_000_000,
             pooling: SemanticSearchPooling::Mean,
+            // e5's asymmetric retrieval prefixes (trailing space is significant).
+            query_prompt: Some("query: ".to_string()),
+            document_prompt: Some("passage: ".to_string()),
+            mrl_truncate_dim: None,
             expected_layout: InstalledModelLayout::default(),
         },
         SemanticSearchModelDescriptor {
@@ -316,6 +383,10 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             // ~2.27 GB safetensors.
             approx_download_bytes: 2_270_000_000,
             pooling: SemanticSearchPooling::Cls,
+            // bge-m3's dense path takes bare text — no instruction prefix.
+            query_prompt: None,
+            document_prompt: None,
+            mrl_truncate_dim: None,
             // bge-m3's repo ships ONLY a PyTorch `pytorch_model.bin` (no
             // `model.safetensors`), so the weights file — and thus the download
             // path AND the on-disk loader input — is the `.bin`. The candle
@@ -324,6 +395,77 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             // is an `XLMRobertaModel` state-dict whose keys already sit at the
             // VarBuilder root (same as e5), so no key remap is needed.
             expected_layout: InstalledModelLayout::from_weights_path("pytorch_model.bin"),
+        },
+        SemanticSearchModelDescriptor {
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: "stella_en_400M_v5".to_string(),
+            display_name: "Stella 400M v5 (English, Custom)".to_string(),
+            description: "Custom English option (NovaSearch/stella_en_400M_v5), \
+                2048-dimensional, MIT. Stronger English retrieval than the default \
+                Nomic; larger per-vector storage (2048-dim)."
+                .to_string(),
+            tier: SemanticSearchModelTier::Custom,
+            architecture: SemanticSearchArchitecture::StellaEnV5,
+            hf_repo: "NovaSearch/stella_en_400M_v5".to_string(),
+            hf_revision: "ffeb2b7ee715c226d4ffe5e4619f7dbb48624c20".to_string(),
+            license_label: Some("MIT".to_string()),
+            // Stored = the `2_Dense_2048` head's out_features (the backbone hidden is
+            // 1024; the dense head projects up to 2048). No truncation.
+            dimension: 2048,
+            max_tokens: 8192,
+            // ~1.75 GB safetensors (~435M F32 backbone params + the 2048 head).
+            approx_download_bytes: 1_750_000_000,
+            // Stella pools INSIDE the candle module (mean-pool over the mask, then the
+            // dense head). The external pool step is bypassed for this architecture, so
+            // this `Mean` is the closest-truth label only — it is ignored at load.
+            pooling: SemanticSearchPooling::Mean,
+            // Stella's asymmetric retrieval instruction for queries (the `\n` is a real
+            // newline in the prompt string). Documents are embedded bare.
+            query_prompt: Some(
+                "Instruct: Given a web search query, retrieve relevant passages that \
+                 answer the query.\nQuery: "
+                    .to_string(),
+            ),
+            document_prompt: None,
+            mrl_truncate_dim: None,
+            // Base backbone `model.safetensors` at the repo root plus the dense
+            // projection head `2_Dense_2048/model.safetensors` loaded alongside it.
+            expected_layout: InstalledModelLayout::from_weights_and_head(
+                "model.safetensors",
+                "2_Dense_2048/model.safetensors",
+            ),
+        },
+        SemanticSearchModelDescriptor {
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: "snowflake-arctic-embed-l-v2.0".to_string(),
+            display_name: "Snowflake Arctic Embed L v2.0 (Multilingual, Custom)"
+                .to_string(),
+            description: "Custom multilingual option \
+                (Snowflake/snowflake-arctic-embed-l-v2.0), Matryoshka-truncated to \
+                256-dimensional, Apache-2.0, CLS-pooled. bge-m3-class multilingual \
+                retrieval at a quarter of the per-vector storage."
+                .to_string(),
+            tier: SemanticSearchModelTier::Custom,
+            architecture: SemanticSearchArchitecture::XlmRoberta,
+            hf_repo: "Snowflake/snowflake-arctic-embed-l-v2.0".to_string(),
+            hf_revision: "ac6544c8a46e00af67e330e85a9028c66b8cfd9a".to_string(),
+            license_label: Some("Apache-2.0".to_string()),
+            // Stored width is the Matryoshka-truncated 256 (see `mrl_truncate_dim`),
+            // NOT the model's native 1024.
+            dimension: 256,
+            max_tokens: 8192,
+            // ~2.3 GB safetensors (~568M F32 params, XLM-Roberta large).
+            approx_download_bytes: 2_300_000_000,
+            pooling: SemanticSearchPooling::Cls,
+            // Arctic's asymmetric retrieval prefix for queries (trailing space is
+            // significant); documents are embedded bare.
+            query_prompt: Some("query: ".to_string()),
+            document_prompt: None,
+            // Matryoshka: the backend produces the native 1024-dim vector; the embedder
+            // truncates each vector to the first 256 elements and renormalizes (in
+            // `runtime.rs`, above the backend trait) before storage.
+            mrl_truncate_dim: Some(256),
+            expected_layout: InstalledModelLayout::default(),
         },
     ]
 }
@@ -540,6 +682,9 @@ mod tests {
             max_tokens: 8192,
             approx_download_bytes: 250_000_000,
             pooling: SemanticSearchPooling::Mean,
+            query_prompt: Some("search_query: ".to_string()),
+            document_prompt: Some("search_document: ".to_string()),
+            mrl_truncate_dim: None,
             expected_layout: InstalledModelLayout::default(),
         }
     }
@@ -788,9 +933,12 @@ mod tests {
     #[test]
     fn pooling_is_a_declared_field_hand_coded_per_model() {
         // Pooling is hand-coded per model, NEVER inferred from an id prefix (the
-        // historical silent-drift bug). nomic / e5 = Mean; bge-m3 = CLS.
-        let mean = ["nomic-embed-text-v1.5", "multilingual-e5-small"];
-        let cls = ["bge-m3"];
+        // historical silent-drift bug). nomic / e5 = Mean; bge-m3 / Arctic = CLS.
+        // Stella's `Mean` is the closest-truth label only (it pools internally via
+        // its dense head and the external pool is bypassed at load), but the
+        // descriptor field still carries `Mean`, so it is checked here too.
+        let mean = ["nomic-embed-text-v1.5", "multilingual-e5-small", "stella_en_400M_v5"];
+        let cls = ["bge-m3", "snowflake-arctic-embed-l-v2.0"];
         for id in mean {
             let descriptor =
                 resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, id).unwrap_or_else(|| panic!("{id}"));
@@ -825,16 +973,54 @@ mod tests {
     #[test]
     fn supported_models_lists_the_curated_catalog() {
         let supported = list_supported_models();
-        assert_eq!(supported.len(), 3, "exactly the three curated tiers");
+        // The two default tiers (nomic / e5) plus the three Custom options
+        // (bge-m3, Stella, Arctic).
+        assert_eq!(supported.len(), 5, "exactly the five curated models");
         let ids: Vec<&str> = supported.iter().map(|m| m.model_id.as_str()).collect();
         assert!(ids.contains(&"nomic-embed-text-v1.5"));
         assert!(ids.contains(&"multilingual-e5-small"));
         assert!(ids.contains(&"bge-m3"));
+        assert!(ids.contains(&"stella_en_400M_v5"));
+        assert!(ids.contains(&"snowflake-arctic-embed-l-v2.0"));
         // The English default is not flagged multilingual; the e5/bge tiers are.
         let nomic = supported.iter().find(|m| m.model_id == "nomic-embed-text-v1.5").unwrap();
         assert!(!nomic.multilingual);
         let e5 = supported.iter().find(|m| m.model_id == "multilingual-e5-small").unwrap();
         assert!(e5.multilingual);
+        // The multilingual heuristic (tier == Multilingual || architecture ==
+        // XlmRoberta) cleaves the two new Custom options correctly: Stella is a
+        // StellaEnV5 English model, so it is NOT flagged multilingual; Arctic is an
+        // XlmRoberta model, so it IS — even though both share the Custom tier.
+        let stella = supported.iter().find(|m| m.model_id == "stella_en_400M_v5").unwrap();
+        assert!(!stella.multilingual, "Stella (English, StellaEnV5) is not multilingual");
+        let arctic = supported
+            .iter()
+            .find(|m| m.model_id == "snowflake-arctic-embed-l-v2.0")
+            .unwrap();
+        assert!(arctic.multilingual, "Arctic (XlmRoberta) is multilingual");
+    }
+
+    /// How a descriptor's stored `dimension` relates to the model's *backbone*
+    /// hidden size (the `config.json` hidden width). The drift test asserts a
+    /// different equality per relation, because for two of the five catalog models
+    /// the stored width is deliberately NOT the backbone hidden size:
+    ///
+    /// - [`DimSource::BackboneHidden`] — the stored vector is the backbone's own
+    ///   hidden state (nomic / e5 / bge). `dimension == config hidden`.
+    /// - [`DimSource::MrlTruncate`] — the stored vector is a Matryoshka prefix of
+    ///   the backbone hidden state, renormalized (Arctic stores 256 of a native
+    ///   1024). `mrl_truncate_dim == Some(dimension)` and `dimension <= config
+    ///   hidden` (the truncated width can never exceed the native width).
+    /// - [`DimSource::DeclaredHead`] — the stored vector is a *dense projection
+    ///   head* output, independent of the backbone hidden size (Stella's
+    ///   `2_Dense_2048` head projects the 1024 backbone up to 2048). `dimension ==
+    ///   head_dim`, `mrl_truncate_dim == None`, and the config hidden is the
+    ///   *independent* backbone width (asserted only via `backbone_hidden` below,
+    ///   never against `dimension`).
+    enum DimSource {
+        BackboneHidden,
+        MrlTruncate,
+        DeclaredHead { head_dim: usize },
     }
 
     /// Drift guard (replaces the retired `ort` pin-lockstep + fastembed-synthesis
@@ -855,12 +1041,20 @@ mod tests {
         /// XLM-Roberta `max_position_embeddings`). e5/bge `max_position_embeddings`
         /// carries the +2 offset for the two special tokens, so the descriptor's
         /// usable window is the config value minus that offset.
+        ///
+        /// `backbone_hidden` is the config's hidden width (always asserted, for
+        /// every model). `dim_source` says how the *stored* `dimension` relates to
+        /// that backbone — the stored width is the backbone hidden state for three
+        /// models, a Matryoshka prefix of it for Arctic, and a dense-head output
+        /// independent of it for Stella (see [`DimSource`]).
         struct ConfigReference {
             model_id: &'static str,
             architecture: SemanticSearchArchitecture,
             architectures_class: &'static str,
             max_tokens_field: &'static str,
             max_position_offset: u64,
+            backbone_hidden: usize,
+            dim_source: DimSource,
         }
         let references = [
             ConfigReference {
@@ -869,6 +1063,8 @@ mod tests {
                 architectures_class: "NomicBertModel",
                 max_tokens_field: "n_positions",
                 max_position_offset: 0,
+                backbone_hidden: 768,
+                dim_source: DimSource::BackboneHidden,
             },
             ConfigReference {
                 model_id: "multilingual-e5-small",
@@ -876,6 +1072,8 @@ mod tests {
                 architectures_class: "XLMRobertaModel",
                 max_tokens_field: "max_position_embeddings",
                 max_position_offset: 2,
+                backbone_hidden: 384,
+                dim_source: DimSource::BackboneHidden,
             },
             ConfigReference {
                 model_id: "bge-m3",
@@ -883,6 +1081,33 @@ mod tests {
                 architectures_class: "XLMRobertaModel",
                 max_tokens_field: "max_position_embeddings",
                 max_position_offset: 2,
+                backbone_hidden: 1024,
+                dim_source: DimSource::BackboneHidden,
+            },
+            ConfigReference {
+                // Stella's stored width is its `2_Dense_2048` dense head output
+                // (2048), NOT the 1024 backbone hidden size — so the stored
+                // `dimension` is cross-checked against the declared head width and
+                // the config hidden is asserted independently as the backbone.
+                model_id: "stella_en_400M_v5",
+                architecture: SemanticSearchArchitecture::StellaEnV5,
+                architectures_class: "NewModel",
+                max_tokens_field: "max_position_embeddings",
+                max_position_offset: 0,
+                backbone_hidden: 1024,
+                dim_source: DimSource::DeclaredHead { head_dim: 2048 },
+            },
+            ConfigReference {
+                // Arctic stores a Matryoshka-truncated 256 of its native 1024
+                // backbone hidden state — so the stored `dimension` is cross-checked
+                // against `mrl_truncate_dim` and bounded by (≤) the config hidden.
+                model_id: "snowflake-arctic-embed-l-v2.0",
+                architecture: SemanticSearchArchitecture::XlmRoberta,
+                architectures_class: "XLMRobertaModel",
+                max_tokens_field: "max_position_embeddings",
+                max_position_offset: 2,
+                backbone_hidden: 1024,
+                dim_source: DimSource::MrlTruncate,
             },
         ];
 
@@ -913,8 +1138,12 @@ mod tests {
                 panic!("parse fixture config {}: {error}", config_path.display())
             });
 
-            // nomic config.json names the hidden size `n_embd`; XLM-Roberta configs
-            // name it `hidden_size`. Accept either.
+            // nomic config.json names the hidden size `n_embd`; XLM-Roberta and
+            // Stella (`model_type: "new"`) configs name it `hidden_size`. Accept
+            // either. This is the BACKBONE hidden width — it equals the stored
+            // `dimension` only when `dim_source` is `BackboneHidden`; for Arctic it
+            // is the native (pre-truncation) width, and for Stella it is the
+            // backbone behind the dense head.
             let hidden_size = config
                 .get("hidden_size")
                 .or_else(|| config.get("n_embd"))
@@ -922,11 +1151,69 @@ mod tests {
                 .unwrap_or_else(|| {
                     panic!("{}: config.json has no hidden_size/n_embd", descriptor.model_id)
                 });
+            // The reference's backbone hidden must itself agree with the real config
+            // (so a wrong fixture/reference pairing fails before the dimension check).
             assert_eq!(
-                hidden_size as usize, descriptor.dimension,
-                "{}: descriptor.dimension ({}) drifted from config hidden size ({})",
-                descriptor.model_id, descriptor.dimension, hidden_size
+                hidden_size as usize, reference.backbone_hidden,
+                "{}: config hidden ({}) drifted from the reference backbone_hidden ({})",
+                descriptor.model_id, hidden_size, reference.backbone_hidden
             );
+
+            // The stored `dimension` is cross-checked per its relation to the
+            // backbone hidden — equal to it (backbone), a renormalized prefix of it
+            // (MRL truncate), or an independent dense-head output (declared head).
+            match reference.dim_source {
+                DimSource::BackboneHidden => {
+                    // nomic / e5 / bge: the stored vector IS the backbone hidden
+                    // state, so the stored width must equal the config hidden size.
+                    assert_eq!(
+                        hidden_size as usize, descriptor.dimension,
+                        "{}: descriptor.dimension ({}) drifted from config hidden size ({})",
+                        descriptor.model_id, descriptor.dimension, hidden_size
+                    );
+                    // A backbone-hidden model is stored at native width — no MRL.
+                    assert_eq!(
+                        descriptor.mrl_truncate_dim, None,
+                        "{}: a backbone-hidden model must not declare mrl_truncate_dim",
+                        descriptor.model_id
+                    );
+                }
+                DimSource::MrlTruncate => {
+                    // Arctic: the backend produces the native backbone hidden state,
+                    // and the embedder truncates each vector to `mrl_truncate_dim`
+                    // leading elements and renormalizes. So the stored width is the
+                    // declared truncate width, and it can never exceed the native
+                    // (config hidden) width.
+                    assert_eq!(
+                        descriptor.mrl_truncate_dim, Some(descriptor.dimension),
+                        "{}: an MRL-truncated model's mrl_truncate_dim must equal its stored dimension ({})",
+                        descriptor.model_id, descriptor.dimension
+                    );
+                    assert!(
+                        descriptor.dimension <= hidden_size as usize,
+                        "{}: truncated dimension ({}) cannot exceed native config hidden ({})",
+                        descriptor.model_id, descriptor.dimension, hidden_size
+                    );
+                }
+                DimSource::DeclaredHead { head_dim } => {
+                    // Stella: a dense projection head (`2_Dense_2048`) produces the
+                    // stored vector, independent of the backbone hidden size — the
+                    // candle Config is constructed (not parsed from config.json), so
+                    // config hidden is asserted only as the backbone (above), never
+                    // against the stored `dimension`. The stored width must equal the
+                    // declared head output width, and there is NO truncation.
+                    assert_eq!(
+                        descriptor.dimension, head_dim,
+                        "{}: descriptor.dimension ({}) drifted from the declared head width ({head_dim})",
+                        descriptor.model_id, descriptor.dimension
+                    );
+                    assert_eq!(
+                        descriptor.mrl_truncate_dim, None,
+                        "{}: a declared-head model must not declare mrl_truncate_dim",
+                        descriptor.model_id
+                    );
+                }
+            }
 
             // The candle architecture is hand-coded, never inferred from an id — so
             // the config's `architectures[0]` class name must match the reference we
@@ -969,7 +1256,7 @@ mod tests {
                 reference.max_position_offset
             );
 
-            // nomic names the layer count `n_layer`; XLM-Roberta uses
+            // nomic names the layer count `n_layer`; XLM-Roberta and Stella use
             // `num_hidden_layers`. A sane positive count guards against a wrong
             // fixture/model pairing.
             let layers = config

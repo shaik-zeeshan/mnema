@@ -42,4 +42,4 @@ pub use models::{
     TOKENIZER_FILE_NAME,
 };
 
-pub use runtime::SemanticSearchEmbedder;
+pub use runtime::{EmbedKind, SemanticSearchEmbedder};

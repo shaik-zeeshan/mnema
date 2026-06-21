@@ -3,12 +3,29 @@
 //!
 //! Ported from the proven `nomic-embed-text-v1.5` reference embedder: load the
 //! descriptor's weights file into a `VarBuilder` — either `model.safetensors` via
-//! an mmaped `VarBuilder` (nomic / e5) or a PyTorch `pytorch_model.bin` / `.pth`
-//! via the safe pickle reader (`VarBuilder::from_pth`, used by bge-m3, whose repo
-//! ships no safetensors) — run the architecture the descriptor names (NomicBert
-//! for the English default, XLM-Roberta for the multilingual-e5 / bge-m3
-//! families), pool per the descriptor (Mean or CLS), and L2-normalize. Always
-//! returns F32 vectors so the scoring path is unchanged.
+//! an mmaped `VarBuilder` (nomic / e5 / Stella base) or a PyTorch
+//! `pytorch_model.bin` / `.pth` via the safe pickle reader
+//! (`VarBuilder::from_pth`, used by bge-m3, whose repo ships no safetensors) — run
+//! the architecture the descriptor names (NomicBert for the English default,
+//! XLM-Roberta for the multilingual-e5 / bge-m3 / Arctic families, StellaEnV5 for
+//! the Stella English option), pool per the descriptor (Mean or CLS), and
+//! L2-normalize. Always returns F32 vectors so the scoring path is unchanged.
+//!
+//! **StellaEnV5 (`stella_en_400M_v5`) is the one architecture that owns its own
+//! pooling.** It is a backbone + a dense projection head: candle's
+//! `stella_en_v5::EmbeddingModel` is built from TWO VarBuilders — the BASE (the
+//! `new.`-prefixed backbone, reusing the same mmaped device-dtype `vb` every other
+//! arch uses) and the HEAD (the `2_Dense_2048/model.safetensors` `linear.weight`
+//! [2048,1024] + `linear.bias` [2048], named from `descriptor.expected_layout.
+//! aux_weights_relative_path`). Its `forward` mean-pools the backbone hidden states
+//! AND applies the dense head internally, so the external Mean/CLS pool step below
+//! is BYPASSED for Stella — we l2-normalize the module's (B, 2048) output directly.
+//! The candle module casts the pooled hidden to F32 BEFORE the head linear, so the
+//! HEAD VarBuilder MUST be loaded at `DType::F32` in BOTH CPU and Metal builds
+//! (the base VarBuilder still uses the device dtype: F16 on Metal, F32 on CPU).
+//! `EmbeddingModel::forward` takes `&mut self` while the backend's `embed_batch` is
+//! `&self`, so the model is held in a `std::sync::Mutex` (locked in the forward
+//! path) — that bridges the `&mut` requirement and keeps `CandleBackend: Send`.
 //!
 //! **Device & precision.** Tries `Device::new_metal(0)` then falls back to CPU.
 //! Metal kernels only link when the crate `metal` feature is on, so the metal
@@ -23,11 +40,15 @@
 //! kernels for BOTH branches, so this one dtype choice works in both precisions.
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::nomic_bert::{
     Config as NomicConfig, NomicBertModel,
+};
+use candle_transformers::models::stella_en_v5::{
+    Config as StellaConfig, EmbedDim, EmbeddingModel as StellaEmbeddingModel,
 };
 use candle_transformers::models::xlm_roberta::{
     Config as XlmConfig, XLMRobertaModel,
@@ -44,6 +65,11 @@ use crate::models::{
 enum LoadedModel {
     NomicBert(NomicBertModel),
     XlmRoberta(XLMRobertaModel),
+    /// Stella's backbone + dense-head embedder. Held behind a `Mutex` because its
+    /// `forward` is `&mut self` (it mutates the base model's per-layer state) while
+    /// the backend's `embed_batch` is `&self`; the lock bridges that and keeps
+    /// `CandleBackend: Send`.
+    Stella(Mutex<StellaEmbeddingModel>),
 }
 
 /// The candle embedding backend: one loaded model + the forward-pass tokenizer.
@@ -182,20 +208,98 @@ impl CandleBackend {
             }
         };
 
-        let model = match descriptor.architecture {
+        // Each arm yields the loaded model AND the NATIVE width the backend
+        // actually produces — the dimension the scoring path sees BEFORE the
+        // embedder wrapper applies any MRL truncation. For NomicBert and StellaEnV5
+        // the native width equals `descriptor.dimension` (no truncation; Stella's
+        // 2048 head IS the stored width). For XlmRoberta it is the backbone
+        // `cfg.hidden_size` (1024 for Arctic, which truncates 1024 → 256 ABOVE this
+        // trait via `mrl_truncate_dim`; equals `descriptor.dimension` for e5 / bge,
+        // which do not truncate). Reporting the native width here is the Arctic fix:
+        // the backend honestly reports 1024 even though the descriptor stores 256.
+        let (model, dimension) = match descriptor.architecture {
             SemanticSearchArchitecture::NomicBert => {
                 let cfg: NomicConfig = serde_json::from_slice(&config_bytes)
                     .map_err(|error| EmbeddingError::LoadConfig(error.to_string()))?;
                 let model = NomicBertModel::load(vb, &cfg)
                     .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?;
-                LoadedModel::NomicBert(model)
+                (LoadedModel::NomicBert(model), descriptor.dimension)
             }
             SemanticSearchArchitecture::XlmRoberta => {
                 let cfg: XlmConfig = serde_json::from_slice(&config_bytes)
                     .map_err(|error| EmbeddingError::LoadConfig(error.to_string()))?;
+                let native_dim = cfg.hidden_size;
                 let model = XLMRobertaModel::new(&cfg, vb)
                     .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?;
-                LoadedModel::XlmRoberta(model)
+                (LoadedModel::XlmRoberta(model), native_dim)
+            }
+            // Stella is a backbone + dense projection head. The base `vb` built
+            // above (device dtype, mmaped `model.safetensors`) is the BASE; the head
+            // is a SECOND VarBuilder over `2_Dense_2048/model.safetensors`. Stella
+            // does NOT parse `config.json` — the candle `Config` is constructed
+            // (`new_400_m_v5`), not deserialized — but `config.json` is still a
+            // required, separately-downloaded file (left untouched here).
+            SemanticSearchArchitecture::StellaEnV5 => {
+                // The head weights path is mandatory for Stella; a None aux path is a
+                // descriptor wiring error, not a missing-file-on-disk condition.
+                let head_rel = descriptor
+                    .expected_layout
+                    .aux_weights_relative_path
+                    .as_ref()
+                    .ok_or_else(|| {
+                        EmbeddingError::LoadModel(
+                            "stella_en_v5 requires aux_weights_relative_path (the \
+                             2_Dense_2048 head), but the descriptor layout has none"
+                                .to_string(),
+                        )
+                    })?;
+                let head_path = model_dir.join(head_rel);
+                // Surface a neutral ReadModelFile (not a deep candle string) if the
+                // head safetensors is absent, naming the file the descriptor declares.
+                if !head_path.is_file() {
+                    return Err(EmbeddingError::ReadModelFile {
+                        path: head_path.clone(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("{head_rel} not found"),
+                        ),
+                    });
+                }
+
+                // The head MUST be F32 in BOTH CPU and Metal builds: candle casts the
+                // pooled hidden to F32 before the head linear, so an F16 head would
+                // dtype-mismatch the linear on Metal. The base `vb` keeps the device
+                // dtype (F16 on Metal, F32 on CPU); only the head is pinned to F32.
+                //
+                // SAFETY: an mmap of a trusted local safetensors file; the mapping's
+                // lifetime ends with the VarBuilder and `EmbeddingModel::new` copies
+                // the head tensors it needs at construction time.
+                let head_vb = unsafe {
+                    VarBuilder::from_mmaped_safetensors(&[&head_path], DType::F32, &device)
+                        .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?
+                };
+
+                // The candle Stella `Config` is parameterised by the head's output
+                // width. We only ship the native `2_Dense_2048` head, so the stored
+                // descriptor dimension must be exactly 2048; anything else is an
+                // unsupported wiring.
+                let embed_dim = match descriptor.dimension {
+                    2048 => EmbedDim::Dim2048,
+                    other => {
+                        return Err(EmbeddingError::LoadModel(format!(
+                            "stella_en_v5 only supports the 2048-dim head, but the \
+                             descriptor declares dimension {other}"
+                        )));
+                    }
+                };
+                let cfg = StellaConfig::new_400_m_v5(embed_dim);
+                // Base = the device-dtype `vb` reused from above; head = the F32
+                // head VarBuilder. The model owns mean-pool + the dense head. The
+                // native width is the head's output (2048) = `descriptor.dimension`;
+                // Stella does not truncate.
+                let model = StellaEmbeddingModel::new(&cfg, vb, head_vb)
+                    .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?;
+                (LoadedModel::Stella(Mutex::new(model)), descriptor.dimension)
             }
         };
 
@@ -208,7 +312,10 @@ impl CandleBackend {
             tokenizer,
             device,
             pooling: descriptor.pooling,
-            dimension: descriptor.dimension,
+            // The NATIVE produced width computed per-arch above (= backbone
+            // `hidden_size` for XlmRoberta, so Arctic reports 1024 not its
+            // truncated 256; = `descriptor.dimension` for the others).
+            dimension,
             cpu_fallback,
         })
     }
@@ -250,6 +357,32 @@ impl CandleBackend {
         let attention_mask = Tensor::from_vec(mask, (b, max_len), &self.device)
             .map_err(|error| EmbeddingError::Embed(error.to_string()))?;
 
+        // Stella owns its pooling (mean-pool + dense head), so it bypasses the
+        // external Mean/CLS pool below entirely. `forward(&mut self, ..)` mutates
+        // the base model's per-layer state, so we lock the `Mutex` to call it from
+        // this `&self` path. It returns (B, 2048) F32 un-normalized — the candle
+        // module already cast the pooled hidden to F32 before its head linear — so
+        // we only need to L2-normalize, then drop to CPU `f32` rows. The U8
+        // `attention_mask` is the `where_cond` condition inside the backbone, which
+        // has `where_u8_{f16,f32}` kernels (the same reason the U8 mask is used
+        // everywhere here), so it works in both precisions.
+        if let LoadedModel::Stella(model) = &self.model {
+            let pooled = model
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .forward(&input_ids, &attention_mask)
+                .map_err(|error| EmbeddingError::Embed(error.to_string()))?; // (B, 2048)
+            let normed =
+                l2_normalize(&pooled).map_err(|error| EmbeddingError::Embed(error.to_string()))?;
+            let normed = normed
+                .to_dtype(DType::F32)
+                .and_then(|t| t.to_device(&Device::Cpu))
+                .map_err(|error| EmbeddingError::Embed(error.to_string()))?;
+            return normed
+                .to_vec2()
+                .map_err(|error| EmbeddingError::Embed(error.to_string()));
+        }
+
         // (B, L, H)
         let hidden = match &self.model {
             LoadedModel::NomicBert(model) => model
@@ -273,6 +406,11 @@ impl CandleBackend {
                     )
                     .map_err(|error| EmbeddingError::Embed(error.to_string()))?
             }
+            // Stella returned above via its own module-owned pooling path; it never
+            // reaches this hidden-states-then-external-pool branch.
+            LoadedModel::Stella(_) => unreachable!(
+                "Stella is handled by the early-return forward path before this match"
+            ),
         };
 
         // Pool per the model's declared strategy, then L2-normalize.

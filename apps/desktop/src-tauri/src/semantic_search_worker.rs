@@ -39,7 +39,7 @@ use futures_util::{
 };
 use semantic_search::{
     detect_model_status, model_install_dir, resolve_descriptor, semantic_search_models_dir,
-    SemanticSearchEmbedder, SemanticSearchModelDescriptor,
+    EmbedKind, SemanticSearchEmbedder, SemanticSearchModelDescriptor,
 };
 use tauri::{Emitter, Manager};
 use tokio::sync::watch;
@@ -533,7 +533,7 @@ async fn run_sweep_pass(
         // same overflow-split/single-passthrough/multi-mean-pool semantics as
         // `embed_text`. `bodies` borrows `texts`, so build `out` after it returns.
         let bodies: Vec<&str> = texts.iter().map(|(_, body)| body.as_str()).collect();
-        let results = loaded.embedder.embed_texts(&bodies);
+        let results = loaded.embedder.embed_texts(&bodies, EmbedKind::Document);
         let out: Vec<(i64, std::result::Result<Vec<f32>, String>)> = texts
             .iter()
             .map(|(anchor_id, _)| *anchor_id)
