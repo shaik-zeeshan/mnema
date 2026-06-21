@@ -300,7 +300,7 @@ pub async fn delete_speaker_analysis_model(
 /// raw provider id for any future provider that lacks a curated label here.
 fn speaker_provider_display_name(provider: &str) -> String {
     match provider {
-        speaker_analysis::SPEAKRS_PROVIDER_ID => "speakrs (CoreML)".to_string(),
+        speaker_analysis::SPEAKRS_PROVIDER_ID => "On-device (CoreML)".to_string(),
         other => other.to_string(),
     }
 }
@@ -910,6 +910,6 @@ mod tests {
             .license_label
             .as_deref()
             .is_some_and(|label| label.contains("CC-BY-4.0")));
-        assert_eq!(speakrs.display_name, "speakrs (CoreML)");
+        assert_eq!(speakrs.display_name, "On-device (CoreML)");
     }
 }

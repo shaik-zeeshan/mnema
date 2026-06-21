@@ -337,8 +337,8 @@ pub fn builtin_model_manifest() -> SpeakerAnalysisModelManifest {
             SpeakerAnalysisModelDescriptor {
                 provider: SPEAKRS_PROVIDER_ID.to_string(),
                 model_id: Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
-                display_name: "speakrs (pyannote community-1 + WeSpeaker, CoreML)".to_string(),
-                description: "On-device speaker diarization via speakrs: a pure-Rust pyannote community-1 segmentation pipeline paired with WeSpeaker VoxCeleb ResNet34 embeddings, accelerated natively with Apple CoreML.".to_string(),
+                display_name: "pyannote community-1 + WeSpeaker (CoreML)".to_string(),
+                description: "On-device speaker diarization: a pure-Rust pyannote community-1 segmentation pipeline paired with WeSpeaker VoxCeleb ResNet34 embeddings, accelerated natively with Apple CoreML.".to_string(),
                 license_label: Some(
                     "CC-BY-4.0 (WeSpeaker VoxCeleb ResNet34) + MIT (pyannote segmentation-3.0)"
                         .to_string(),
