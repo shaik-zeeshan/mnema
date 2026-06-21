@@ -41,7 +41,11 @@ the index via the same machinery as switching models). Building a cloud backend 
 synthesis that produced every descriptor (dimension, pooling, output key, on-disk layout, the open
 Custom-picker list) is removed. Each model is now a **hand-coded descriptor**
 (`{ architecture, dimension, pooling, max_tokens, safetensors_layout, hf_repo }`); guided tiers are
-explicit entries. This **reverses commit `524975e`'s "synthesize from the catalog, never hand-restate"
+explicit entries. (`safetensors_layout` covers the common case — a `model.safetensors` weights file —
+but the declared layout is the single authority for the weights file, and a tier may instead point it
+at a PyTorch `.bin`/`.pth` checkpoint for a repo that ships no safetensors: the shipped `bge-m3` tier
+declares `pytorch_model.bin`, which the candle backend loads via the pickle path
+(`VarBuilder::from_pth`).) This **reverses commit `524975e`'s "synthesize from the catalog, never hand-restate"
 overlay** — there is no catalog left to overlay. A CI guard cross-checks each descriptor against the
 model's own `config.json` (dimension, layer count) as the new drift guard, replacing the old
 "resolves-in-fastembed" guard. Feasibility verified against candle-transformers 0.10.2: it ships
