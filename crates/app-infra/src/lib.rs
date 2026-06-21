@@ -1828,7 +1828,13 @@ fn speaker_analysis_model_key_for_job(job: &ProcessingJob) -> Result<Option<Stri
     let Some(payload_json) = job.payload_json.as_deref() else {
         return Ok(None);
     };
-    let payload: SpeakerAnalysisJobPayload = serde_json::from_str(payload_json)?;
+    let mut payload: SpeakerAnalysisJobPayload = serde_json::from_str(payload_json)?;
+    // Normalize a (possibly legacy) sherpa_onnx payload onto speakrs first, so the
+    // model-deletion protection key matches the speakrs model the job actually
+    // loads at run time (the run path normalizes too). Without this, a legacy
+    // payload would protect `sherpa_onnx/<old-model>` while the job runs as
+    // `speakrs/<default>`, letting a manual delete remove the live model.
+    payload.normalize_model_selection();
     Ok(payload
         .model_id
         .as_deref()
@@ -4947,12 +4953,22 @@ mod tests {
                 ))
                 .await
                 .expect("segment should insert");
-            // Build the payload via a struct literal so the synthetic
-            // `mock_speaker/voice-model` key survives — `SpeakerAnalysisJobPayload::new`
-            // would remap any non-speakrs provider onto speakrs, collapsing the
-            // distinct key this lock/claim test needs.
-            let payload = serde_json::to_string(&mock_speaker_payload("voice-model"))
-                .expect("payload should serialize");
+            // Enqueue a legacy `sherpa_onnx` payload. The job's protection key is
+            // derived through `normalize_model_selection`, so it resolves to the
+            // real speakrs model the job will actually load — not the stale sherpa
+            // key on the frozen payload. The cleanup lock must therefore target the
+            // speakrs key to block this job (FIX 3: a sherpa-keyed lock would not).
+            let payload = serde_json::to_string(&SpeakerAnalysisJobPayload {
+                provider: "sherpa_onnx".to_string(),
+                model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
+                recognize_people: false,
+                options: serde_json::Map::new(),
+            })
+            .expect("payload should serialize");
+            let speakrs_model_key = format!(
+                "{}/{}",
+                speaker_analysis::SPEAKRS_PROVIDER_ID, speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
+            );
             let job = infra
                 .enqueue_processing_job(
                     &ProcessingJobDraft::for_audio_segment_speaker_analysis(segment.id)
@@ -4961,9 +4977,7 @@ mod tests {
                 .await
                 .expect("speaker analysis job should insert");
             let lock = infra
-                .acquire_speaker_analysis_model_cleanup_locks(&BTreeSet::from([
-                    "mock_speaker/voice-model".to_string(),
-                ]))
+                .acquire_speaker_analysis_model_cleanup_locks(&BTreeSet::from([speakrs_model_key]))
                 .await
                 .expect("cleanup lock should acquire");
 
@@ -4992,6 +5006,17 @@ mod tests {
         });
     }
 
+    /// FIX 3 (SQL claim path): the SQL-atomic `process_next` lock-skip must key a
+    /// `speaker_analysis` job off its *normalized* speakrs model, not the raw frozen
+    /// payload. speakrs is the sole provider shipping a single model, so every
+    /// speaker_analysis job — including a legacy `provider="sherpa_onnx"` payload —
+    /// normalizes to the same speakrs key; the SQL CASE now binds that key from the
+    /// Rust constants. Before the fix the CASE concatenated the raw `provider/modelId`
+    /// (`sherpa_onnx/<old-model>`), which never matched the speakrs lock key, so a
+    /// legacy job ran while its (speakrs) model was mid-deletion. A locked legacy job
+    /// must therefore be skipped by `process_next`, and become claimable once released.
+    /// (The lower-level SQL seam is also covered directly in
+    /// `processing::store::tests::sql_claim_skips_legacy_sherpa_speaker_job_when_speakrs_model_locked`.)
     #[test]
     fn speaker_analysis_model_cleanup_lock_makes_next_claim_skip_locked_model_jobs() {
         run_async_test(async {
@@ -5005,7 +5030,7 @@ mod tests {
             )
             .await
             .expect("app infra should initialize");
-            let locked_segment = infra
+            let segment = infra
                 .upsert_audio_segment(&NewAudioSegment::new(
                     AudioSegmentSourceKind::Microphone,
                     "speaker-cleanup-lock-next-claim",
@@ -5015,65 +5040,67 @@ mod tests {
                     "2026-04-12T10:01:00Z",
                 ))
                 .await
-                .expect("locked segment should insert");
-            let unlocked_segment = infra
-                .upsert_audio_segment(&NewAudioSegment::new(
-                    AudioSegmentSourceKind::Microphone,
-                    "speaker-cleanup-lock-next-claim",
-                    2,
-                    "/tmp/speaker-cleanup-lock-next-claim-unlocked.m4a",
-                    "2026-04-12T10:01:00Z",
-                    "2026-04-12T10:02:00Z",
-                ))
-                .await
-                .expect("unlocked segment should insert");
-            let locked_payload = serde_json::to_string(&mock_speaker_payload("voice-model"))
-                .expect("locked payload should serialize");
-            let unlocked_payload =
-                serde_json::to_string(&mock_speaker_payload("other-voice-model"))
-                    .expect("unlocked payload should serialize");
-            let locked_job = infra
+                .expect("segment should insert");
+            // Legacy `sherpa_onnx` payload frozen before speakrs became the sole
+            // provider. Its raw key (`sherpa_onnx/pyannote-3.0-nemo-titanet-small`) is
+            // NOT what the job loads at run time — it normalizes onto the speakrs
+            // model. The SQL `process_next` path must therefore key it to the speakrs
+            // lock, not the stale sherpa key (FIX 3).
+            let legacy_payload = serde_json::to_string(&SpeakerAnalysisJobPayload {
+                provider: "sherpa_onnx".to_string(),
+                model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
+                recognize_people: false,
+                options: serde_json::Map::new(),
+            })
+            .expect("legacy payload should serialize");
+            let job = infra
                 .enqueue_processing_job(
-                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(locked_segment.id)
-                        .with_payload_json(locked_payload),
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(segment.id)
+                        .with_payload_json(legacy_payload),
                 )
                 .await
-                .expect("locked speaker analysis job should insert");
-            let unlocked_job = infra
-                .enqueue_processing_job(
-                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(unlocked_segment.id)
-                        .with_payload_json(unlocked_payload),
-                )
-                .await
-                .expect("unlocked speaker analysis job should insert");
+                .expect("legacy speaker analysis job should insert");
+            let speakrs_model_key = format!(
+                "{}/{}",
+                speaker_analysis::SPEAKRS_PROVIDER_ID, speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
+            );
             let lock = infra
-                .acquire_speaker_analysis_model_cleanup_locks(&BTreeSet::from([
-                    "mock_speaker/voice-model".to_string(),
-                ]))
+                .acquire_speaker_analysis_model_cleanup_locks(&BTreeSet::from([speakrs_model_key]))
                 .await
                 .expect("cleanup lock should acquire");
 
-            let claimed = infra
+            // While the speakrs model is locked, the legacy job must be SKIPPED by the
+            // SQL claim (the regression: the un-normalized CASE would claim it).
+            let skipped = infra
                 .process_next_processing_job_for_processor(SPEAKER_ANALYSIS_PROCESSOR)
                 .await
-                .expect("next job should process")
-                .expect("unlocked job should be claimable");
-            let claimed_job_id = match claimed {
-                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
-                ProcessingJobRunOutcome::Failed(job) => job.id,
-            };
-            assert_eq!(claimed_job_id, unlocked_job.id);
-            let locked = infra
-                .get_processing_job(locked_job.id)
+                .expect("next job should process without error");
+            assert!(
+                skipped.is_none(),
+                "legacy sherpa job must be skipped while the speakrs model is locked"
+            );
+            let queued = infra
+                .get_processing_job(job.id)
                 .await
-                .expect("locked job should load")
-                .expect("locked job should exist");
-            assert_eq!(locked.status, ProcessingJobStatus::Queued);
+                .expect("job should load")
+                .expect("job should exist");
+            assert_eq!(queued.status, ProcessingJobStatus::Queued);
 
+            // After release the same job is claimable and runs to completion.
             infra
                 .release_processing_model_cleanup_locks(&lock)
                 .await
                 .expect("cleanup lock should release");
+            let claimed = infra
+                .process_next_processing_job_for_processor(SPEAKER_ANALYSIS_PROCESSOR)
+                .await
+                .expect("next job should process after release")
+                .expect("legacy sherpa job should be claimable once unlocked");
+            let claimed_job_id = match claimed {
+                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                ProcessingJobRunOutcome::Failed(job) => job.id,
+            };
+            assert_eq!(claimed_job_id, job.id);
         });
     }
 
@@ -5118,14 +5145,29 @@ mod tests {
                 .await
                 .expect("completed segment should insert");
 
+            // All speaker-analysis jobs key to the same normalized speakrs model
+            // (speakrs is the sole provider). The completed job — even though it
+            // shares that key — must not keep the key "active": only queued and
+            // running jobs hold a model from deletion. Use a legacy `sherpa_onnx`
+            // payload for the completed job to also prove the key is derived
+            // through normalization, not from the frozen sherpa key (FIX 3).
+            let speakrs_model_key = format!(
+                "{}/{}",
+                speaker_analysis::SPEAKRS_PROVIDER_ID, speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
+            );
             let queued_payload = serde_json::to_string(&mock_speaker_payload("queued-model"))
                 .expect("queued payload should serialize");
             let running_payload = serde_json::to_string(&mock_speaker_payload("running-model"))
                 .expect("running payload should serialize");
-            let completed_payload = serde_json::to_string(&mock_speaker_payload("completed-model"))
-                .expect("completed payload should serialize");
+            let completed_payload = serde_json::to_string(&SpeakerAnalysisJobPayload {
+                provider: "sherpa_onnx".to_string(),
+                model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
+                recognize_people: false,
+                options: serde_json::Map::new(),
+            })
+            .expect("completed payload should serialize");
 
-            infra
+            let queued = infra
                 .enqueue_processing_job(
                     &ProcessingJobDraft::for_audio_segment_speaker_analysis(queued_segment.id)
                         .with_payload_json(queued_payload),
@@ -5166,9 +5208,34 @@ mod tests {
                 .await
                 .expect("speaker analysis model keys should list");
 
-            assert!(keys.contains("mock_speaker/queued-model"));
-            assert!(keys.contains("mock_speaker/running-model"));
-            assert!(!keys.contains("mock_speaker/completed-model"));
+            // The queued and running jobs hold the normalized speakrs model; the
+            // completed job is excluded by status. Because every job normalizes to
+            // the same speakrs key, the active set is exactly that one key — and it
+            // is present only because a queued/running job still holds it.
+            assert!(keys.contains(&speakrs_model_key));
+            assert_eq!(keys.len(), 1);
+
+            // Drain the queued and running jobs; once only the completed job remains
+            // the active set is empty, proving the key was "active" solely because a
+            // queued/running job held it (completed jobs don't keep a model alive).
+            infra
+                .claim_queued_processing_job(queued.id)
+                .await
+                .expect("queued speaker analysis job should claim")
+                .expect("queued speaker analysis job should exist");
+            infra
+                .complete_processing_job(queued.id, &ProcessingResultDraft::new())
+                .await
+                .expect("queued speaker analysis job should complete");
+            infra
+                .complete_processing_job(running.id, &ProcessingResultDraft::new())
+                .await
+                .expect("running speaker analysis job should complete");
+            let drained_keys = infra
+                .list_active_speaker_analysis_model_keys()
+                .await
+                .expect("speaker analysis model keys should list after drain");
+            assert!(drained_keys.is_empty());
         });
     }
 
