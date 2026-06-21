@@ -144,8 +144,9 @@ impl SemanticSearchEmbedder {
     ///
     /// Each text is split into token-window chunks up front; all chunks are fanned
     /// into one flat list, embedded in bounded length-sorted sub-batches, then
-    /// regrouped per text by [`fan_in_chunk_vectors`] (single chunk passes through
-    /// unchanged; multiple chunks mean-pool).
+    /// regrouped per text by [`fan_in_chunk_results`] (single chunk passes through
+    /// unchanged; multiple chunks mean-pool). A chunk that fails to embed fails only
+    /// its own text, never a sibling in the batch.
     pub fn embed_texts(&self, texts: &[&str]) -> Vec<Result<Vec<f32>, EmbeddingError>> {
         if texts.is_empty() {
             return Vec::new();
@@ -170,26 +171,22 @@ impl SemanticSearchEmbedder {
         }
 
         // Embed the flat chunk list in bounded, length-sorted sub-batches so one
-        // long chunk can't balloon the whole batch's padded tensor. Returns vectors
-        // in the same flat order the chunks were pushed.
-        let embed_result = self.embed_chunks_bounded(all_chunks);
+        // long chunk can't balloon the whole batch's padded tensor. Returns one
+        // result PER CHUNK in the same flat order the chunks were pushed: a chunk
+        // that fails to embed fails ONLY itself, so one poison chunk never fails its
+        // batch-mates (data-integrity: a single bad/oversized input must not
+        // quarantine a whole newest-first window of healthy anchors). A sub-batch
+        // backend error is retried chunk-by-chunk to localize the fault — a
+        // transient whole-batch fault (e.g. a padding-driven GPU OOM) typically
+        // succeeds at the smaller per-chunk shape, while a genuine poison chunk
+        // still fails alone.
+        let chunk_results = self.embed_chunks_bounded(all_chunks);
 
-        // Fan the flat vectors back into one result per successfully-split text. On
-        // an embed error every successfully-split text fails identically; texts that
-        // already failed splitting keep their own split error below.
-        let mut fanned_in = match embed_result {
-            Ok(vectors) => fan_in_chunk_vectors(&chunk_counts, vectors).into_iter(),
-            Err(error) => {
-                // One `Err` per successfully-split text. `EmbeddingError` is not
-                // `Clone`, so the message is rebuilt per slot.
-                let message = error.to_string();
-                chunk_counts
-                    .iter()
-                    .map(|_| Err(EmbeddingError::Embed(message.clone())))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-            }
-        };
+        // Fan the flat per-chunk results back into one result per successfully-split
+        // text: a text fails only if one of ITS OWN chunks failed, independent of
+        // sibling texts in the batch. Texts that already failed splitting keep their
+        // own split error below.
+        let mut fanned_in = fan_in_chunk_results(&chunk_counts, chunk_results).into_iter();
 
         // Interleave: a split-failure slot keeps its error; every other slot draws
         // the next fan-in result, in the same order the chunk counts were pushed.
@@ -204,21 +201,28 @@ impl SemanticSearchEmbedder {
             .collect()
     }
 
-    /// Embed every chunk in `chunks`, returning one vector per chunk **in input
+    /// Embed every chunk in `chunks`, returning one **result** per chunk **in input
     /// order**, while bounding the work shape so one long chunk can't blow up the
-    /// whole batch.
+    /// whole batch AND a single failing chunk fails only itself.
     ///
     /// The backend pads each batch to its longest sequence, so handing it a
     /// backfill batch's chunks all at once would let a single long chunk drag every
     /// sibling up to its width. Here chunks are sorted by length and embedded in
     /// [`EMBED_SUB_BATCH_SIZE`]-wide sub-batches, so each sub-batch pads close to
     /// its own members' width and the peak per forward pass is bounded by the
-    /// sub-batch. Vectors are scattered back to input order so the caller's
+    /// sub-batch. Results are scattered back to input order so the caller's
     /// chunk→text fan-in is unchanged.
-    fn embed_chunks_bounded(&self, chunks: Vec<String>) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    ///
+    /// Per-chunk fault isolation (data-integrity): if a whole sub-batch
+    /// `embed_batch` errors, each chunk in that sub-batch is retried ALONE so the
+    /// error is localized — a transient padding-driven fault usually succeeds at the
+    /// smaller single-chunk shape, while a genuinely-poison chunk fails by itself
+    /// and only its own slot carries the `Err`. This keeps one bad input from
+    /// failing its healthy batch-mates.
+    fn embed_chunks_bounded(&self, chunks: Vec<String>) -> Vec<Result<Vec<f32>, EmbeddingError>> {
         let total = chunks.len();
         if total == 0 {
-            return Ok(Vec::new());
+            return Vec::new();
         }
 
         // Sort *indices* by chunk byte length (a cheap proxy for token length) so
@@ -226,28 +230,44 @@ impl SemanticSearchEmbedder {
         let mut order: Vec<usize> = (0..total).collect();
         order.sort_unstable_by_key(|&index| chunks[index].len());
 
-        let mut out: Vec<Option<Vec<f32>>> = (0..total).map(|_| None).collect();
+        let mut out: Vec<Option<Result<Vec<f32>, EmbeddingError>>> =
+            (0..total).map(|_| None).collect();
 
         for window in order.chunks(EMBED_SUB_BATCH_SIZE) {
             let sub_batch: Vec<&str> = window.iter().map(|&index| chunks[index].as_str()).collect();
-            let vectors = self.backend.embed_batch(&sub_batch)?;
-            if vectors.len() != window.len() {
-                return Err(EmbeddingError::Embed(format!(
-                    "backend returned {} vectors for {} chunks",
-                    vectors.len(),
-                    window.len()
-                )));
-            }
-            for (&index, vector) in window.iter().zip(vectors) {
-                out[index] = Some(vector);
+            match self.backend.embed_batch(&sub_batch) {
+                Ok(vectors) if vectors.len() == window.len() => {
+                    for (&index, vector) in window.iter().zip(vectors) {
+                        out[index] = Some(Ok(vector));
+                    }
+                }
+                // A count mismatch or a backend error for the whole sub-batch:
+                // retry each chunk alone to localize the fault to the actual
+                // offending chunk(s), so a transient batch fault recovers and only a
+                // true poison chunk ends up `Err`.
+                Ok(_) | Err(_) => {
+                    for &index in window {
+                        out[index] = Some(self.embed_single_chunk(&chunks[index]));
+                    }
+                }
             }
         }
 
         // Every position is filled because `order` covers `0..total` exactly once.
-        Ok(out
+        out.into_iter()
+            .map(|result| result.expect("every chunk position embedded"))
+            .collect()
+    }
+
+    /// Embed a single chunk on its own (the per-chunk fallback path): a one-element
+    /// `embed_batch` whose result is unwrapped to exactly one vector, or an `Err` for
+    /// just this chunk. Used to localize a sub-batch failure to the offending chunk.
+    fn embed_single_chunk(&self, chunk: &str) -> Result<Vec<f32>, EmbeddingError> {
+        let vectors = self.backend.embed_batch(&[chunk])?;
+        vectors
             .into_iter()
-            .map(|vector| vector.expect("every chunk position embedded"))
-            .collect())
+            .next()
+            .ok_or(EmbeddingError::EmptyEmbedding)
     }
 
     /// Split `text` into chunks that each fit the model's token window. Returns a
@@ -322,30 +342,50 @@ fn ceil_char_boundary(text: &str, index: usize) -> usize {
     index
 }
 
-/// Regroup the flat list of chunk vectors a batched embed produced back into one
-/// vector per text, given each (successfully-split) text's chunk count in order.
+/// Regroup the flat list of per-chunk **results** a batched embed produced back
+/// into one result per text, given each (successfully-split) text's chunk count in
+/// order.
 ///
-/// `chunk_counts[i]` is text `i`'s number of chunks; the helper walks `vectors` in
-/// lockstep, taking each text's contiguous slice. A text with exactly one chunk
-/// passes its single vector through unchanged (byte-for-byte parity with
-/// `embed_text`'s single-chunk path — the backend already L2-normalized it); a
-/// text with more than one chunk is `mean_pool_l2`'d (→ `EmptyEmbedding` if pooling
-/// returns `None`, e.g. a ragged/empty slice). An under-delivered batch clamps its
-/// slice instead of panicking.
-fn fan_in_chunk_vectors(
+/// `chunk_counts[i]` is text `i`'s number of chunks; the helper walks
+/// `chunk_results` in lockstep, taking each text's contiguous slice. A text fails
+/// (carrying the first chunk error, in chunk order) iff one of ITS OWN chunks
+/// failed — independent of sibling texts in the batch, so one poison chunk never
+/// fails a healthy neighbor. Otherwise a text with exactly one chunk passes its
+/// single vector through unchanged (byte-for-byte parity with `embed_text`'s
+/// single-chunk path — the backend already L2-normalized it); a text with more than
+/// one chunk is `mean_pool_l2`'d (→ `EmptyEmbedding` if pooling returns `None`, e.g.
+/// a ragged/empty slice). An under-delivered batch clamps its slice instead of
+/// panicking.
+fn fan_in_chunk_results(
     chunk_counts: &[usize],
-    vectors: Vec<Vec<f32>>,
+    chunk_results: Vec<Result<Vec<f32>, EmbeddingError>>,
 ) -> Vec<Result<Vec<f32>, EmbeddingError>> {
     let mut results = Vec::with_capacity(chunk_counts.len());
     let mut cursor = 0usize;
     for &count in chunk_counts {
-        let end = (cursor + count).min(vectors.len());
-        let slice = &vectors[cursor.min(vectors.len())..end];
+        let end = (cursor + count).min(chunk_results.len());
+        let slice = &chunk_results[cursor.min(chunk_results.len())..end];
         cursor += count;
-        if count == 1 && slice.len() == 1 {
-            results.push(Ok(slice[0].clone()));
+
+        // This text fails iff one of its own chunks failed. Surface that chunk's
+        // error (first in chunk order) so the failure is per-text, not per-batch.
+        if let Some(error_message) = slice.iter().find_map(|result| match result {
+            Err(error) => Some(error.to_string()),
+            Ok(_) => None,
+        }) {
+            results.push(Err(EmbeddingError::Embed(error_message)));
+            continue;
+        }
+
+        // All of this text's chunks succeeded: collect their vectors and pool.
+        let vectors: Vec<Vec<f32>> = slice
+            .iter()
+            .filter_map(|result| result.as_ref().ok().cloned())
+            .collect();
+        if count == 1 && vectors.len() == 1 {
+            results.push(Ok(vectors[0].clone()));
         } else {
-            results.push(mean_pool_l2(slice).ok_or(EmbeddingError::EmptyEmbedding));
+            results.push(mean_pool_l2(&vectors).ok_or(EmbeddingError::EmptyEmbedding));
         }
     }
     results
@@ -460,15 +500,15 @@ mod tests {
 
     #[test]
     fn fan_in_regroups_single_and_multi_chunk_texts() {
-        // chunk_counts [1,2,1] over 4 flat vectors: text0 = v0 passthrough,
+        // chunk_counts [1,2,1] over 4 flat chunk results: text0 = v0 passthrough,
         // text1 = mean_pool_l2(v1,v2), text2 = v3 passthrough.
         let v0 = vec![1.0, 0.0];
         let v1 = vec![3.0, 0.0];
         let v2 = vec![0.0, 3.0];
         let v3 = vec![0.0, 1.0];
-        let results = fan_in_chunk_vectors(
+        let results = fan_in_chunk_results(
             &[1, 2, 1],
-            vec![v0.clone(), v1.clone(), v2.clone(), v3.clone()],
+            vec![Ok(v0.clone()), Ok(v1.clone()), Ok(v2.clone()), Ok(v3.clone())],
         );
         assert_eq!(results.len(), 3);
 
@@ -485,29 +525,71 @@ mod tests {
 
     #[test]
     fn fan_in_on_empty_input_is_empty() {
-        let results = fan_in_chunk_vectors(&[], Vec::new());
+        let results = fan_in_chunk_results(&[], Vec::new());
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn fan_in_isolates_a_poison_chunk_to_its_own_text() {
+        // Data-integrity: a single failing chunk must fail ONLY its own text, never
+        // a healthy neighbor in the same batch. text0 (1 chunk) is fine, text1's one
+        // chunk errored, text2 (1 chunk) is fine.
+        let results = fan_in_chunk_results(
+            &[1, 1, 1],
+            vec![
+                Ok(vec![1.0, 0.0]),
+                Err(EmbeddingError::Embed("poison".to_string())),
+                Ok(vec![0.0, 1.0]),
+            ],
+        );
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].as_ref().expect("text0"), &vec![1.0, 0.0]);
+        assert!(
+            matches!(results[1], Err(EmbeddingError::Embed(_))),
+            "the poison chunk fails only its own text"
+        );
+        assert_eq!(results[2].as_ref().expect("text2"), &vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn fan_in_fails_a_multi_chunk_text_if_any_of_its_chunks_failed() {
+        // A 2-chunk text fails if EITHER of its chunks failed, while the single-chunk
+        // neighbor still succeeds. text0 = [Ok, Err] => Err; text1 = [Ok] => Ok.
+        let results = fan_in_chunk_results(
+            &[2, 1],
+            vec![
+                Ok(vec![1.0, 0.0]),
+                Err(EmbeddingError::Embed("poison".to_string())),
+                Ok(vec![9.0, 9.0]),
+            ],
+        );
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], Err(EmbeddingError::Embed(_))));
+        assert_eq!(results[1].as_ref().expect("text1"), &vec![9.0, 9.0]);
     }
 
     #[test]
     fn fan_in_rejects_ragged_or_under_delivered_slices() {
         // A multi-chunk text whose chunk vectors are ragged (different dims) can't
         // be pooled → EmptyEmbedding, while the well-formed neighbor still passes.
-        let results = fan_in_chunk_vectors(&[2, 1], vec![vec![1.0, 2.0], vec![1.0], vec![9.0, 9.0]]);
+        let results = fan_in_chunk_results(
+            &[2, 1],
+            vec![Ok(vec![1.0, 2.0]), Ok(vec![1.0]), Ok(vec![9.0, 9.0])],
+        );
         assert_eq!(results.len(), 2);
         assert!(matches!(results[0], Err(EmbeddingError::EmptyEmbedding)));
         assert_eq!(results[1].as_ref().expect("text1"), &vec![9.0, 9.0]);
 
-        // An under-delivered batch (fewer vectors than chunk_counts.sum()) clamps
+        // An under-delivered batch (fewer results than chunk_counts.sum()) clamps
         // its slice instead of panicking. A 2-chunk text handed only 1 vector still
         // pools that one survivor — no panic, no dropped text.
-        let short = fan_in_chunk_vectors(&[2], vec![vec![1.0, 0.0]]);
+        let short = fan_in_chunk_results(&[2], vec![Ok(vec![1.0, 0.0])]);
         assert_eq!(short.len(), 1);
         assert!(short[0].is_ok());
 
         // A FULLY starved text (its whole slice clamped to empty) can't pool and
-        // fails cleanly: text0 consumed the only vector, leaving text1 nothing.
-        let starved = fan_in_chunk_vectors(&[1, 1], vec![vec![1.0, 0.0]]);
+        // fails cleanly: text0 consumed the only result, leaving text1 nothing.
+        let starved = fan_in_chunk_results(&[1, 1], vec![Ok(vec![1.0, 0.0])]);
         assert_eq!(starved.len(), 2);
         assert!(starved[0].is_ok());
         assert!(matches!(starved[1], Err(EmbeddingError::EmptyEmbedding)));

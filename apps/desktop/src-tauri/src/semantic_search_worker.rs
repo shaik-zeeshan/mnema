@@ -172,10 +172,15 @@ struct SweepState {
     /// At [`MAX_CONSECUTIVE_LOAD_FAILURES`] the model is treated as corrupt: the
     /// worker surfaces a reinstall signal once and idles instead of load-looping.
     consecutive_load_failures: u32,
-    /// Set once a corrupt-model signal has been surfaced for the current selection
-    /// so the worker idles quietly rather than re-emitting every tick. Cleared
-    /// when the selection changes or a load later succeeds.
-    corrupt_model_signalled: bool,
+    /// The `(provider, model_id)` a corrupt-model signal was surfaced for, if any,
+    /// so the worker idles quietly for THAT selection rather than re-emitting every
+    /// tick. Keyed by the signalled model identity — `None` until a model is
+    /// flagged corrupt. Cleared (back to `None`) when the model goes unavailable on
+    /// disk, when a load later succeeds, or — crucially — when the user switches to
+    /// a DIFFERENT selection, so a valid model B is loaded normally even after model
+    /// A was flagged corrupt. The latch only short-circuits to Idle when the
+    /// currently-selected identity EQUALS the stored one.
+    corrupt_model_signalled: Option<(String, String)>,
     /// Consecutive idle passes since the last pass that embedded something. Drives
     /// the idle-drop ([`IDLE_PASSES_BEFORE_EMBEDDER_DROP`]): once a caught-up
     /// worker has idled this many passes in a row, the embedder is dropped to
@@ -190,7 +195,7 @@ impl SweepState {
             logged_no_model: false,
             anchor_failures: HashMap::new(),
             consecutive_load_failures: 0,
-            corrupt_model_signalled: false,
+            corrupt_model_signalled: None,
             consecutive_idles: 0,
         }
     }
@@ -219,6 +224,35 @@ impl SweepState {
     /// deleted/reprocessed so its id is retired).
     fn clear_anchor_failures(&mut self, anchor_id: i64) {
         self.anchor_failures.remove(&anchor_id);
+    }
+
+    /// Whether the currently-selected `(provider, model_id)` has already been
+    /// signalled corrupt this stretch (CT3). True only when a corrupt signal was
+    /// raised for *exactly this* identity, so a switch to a different (valid) model
+    /// is never short-circuited by a latch raised for the old one.
+    fn corrupt_latch_matches(&self, provider: &str, model_id: &str) -> bool {
+        self.corrupt_model_signalled
+            .as_ref()
+            .is_some_and(|(p, m)| p == provider && m == model_id)
+    }
+
+    /// Reconcile the corrupt-model latch and the load counter against the
+    /// currently-selected `(provider, model_id)`. If a corrupt signal is latched for
+    /// a DIFFERENT selection (the user switched models), clear it and reset the load
+    /// counter (and drop any cached embedder, which is for the old model) so the new
+    /// selection gets a clean set of load attempts. A no-op when the latch already
+    /// names this selection or is unset.
+    fn reconcile_selection(&mut self, provider: &str, model_id: &str) {
+        if matches!(&self.corrupt_model_signalled, Some((p, m)) if p == provider && m == model_id) {
+            return;
+        }
+        if self.corrupt_model_signalled.is_some() {
+            // A latch raised for a different model: the selection changed, so the
+            // new model deserves a fresh start.
+            self.corrupt_model_signalled = None;
+            self.consecutive_load_failures = 0;
+            self.embedder = None;
+        }
     }
 }
 
@@ -362,7 +396,7 @@ async fn run_sweep_pass(
         // fresh (re)install gets a clean set of load attempts.
         state.embedder = None;
         state.consecutive_load_failures = 0;
-        state.corrupt_model_signalled = false;
+        state.corrupt_model_signalled = None;
         if !state.logged_no_model {
             crate::native_capture::debug_log::log_info(
                 "semantic index backfill skipped: no Semantic Search Model installed (silent no-op)",
@@ -373,12 +407,27 @@ async fn run_sweep_pass(
     }
     state.logged_no_model = false;
 
-    // CT3: if the selected model has already been signalled corrupt this stretch
-    // (N consecutive load failures), idle quietly rather than re-attempting the
-    // doomed load every tick. The latch is cleared when the selection changes or
-    // the model is reinstalled (the `!available` branch above) so a reinstall is
-    // retried cleanly.
-    if state.corrupt_model_signalled {
+    // Resolve the catalog descriptor (dimension/window/pooling + install path) for
+    // the selected model BEFORE the corrupt-model latch check, so the latch can be
+    // keyed by the model it was raised for. (Availability said yes but the
+    // descriptor vanished — defensive; treat as unavailable for this pass.)
+    let Some(descriptor) = resolve_selected_descriptor(&settings) else {
+        state.embedder = None;
+        return SweepPass::Idle;
+    };
+
+    // CT3: reconcile the corrupt-model latch against the currently-selected model.
+    // The latch is keyed by the `(provider, model_id)` it was raised for: switching
+    // to a DIFFERENT (valid) model clears the latch, the load counter, and the
+    // stale cached embedder so model B loads cleanly even after model A was flagged
+    // corrupt. The `!available` branch above clears it on uninstall/reinstall.
+    state.reconcile_selection(&descriptor.provider, &descriptor.model_id);
+
+    // CT3: if the *currently-selected* model has already been signalled corrupt this
+    // stretch (N consecutive load failures), idle quietly rather than re-attempting
+    // the doomed load every tick. Only the matching identity short-circuits — a
+    // different selection was cleared by `reconcile_selection` above.
+    if state.corrupt_latch_matches(&descriptor.provider, &descriptor.model_id) {
         return SweepPass::Idle;
     }
 
@@ -415,18 +464,13 @@ async fn run_sweep_pass(
         return SweepPass::Idle;
     }
 
-    // Resolve the catalog descriptor (dimension/window/pooling + install path) for
-    // the selected model. The actual embedder load is deferred into the blocking
-    // task below (M1): `load_embedder` does heavy synchronous I/O + model init
-    // (`fs::read`, `from_mmaped_safetensors` over hundreds of MB, Metal/device init,
-    // tokenizer load), so it must never run on the tokio reactor — it is folded into
-    // the same `spawn_blocking` as the forward, mirroring the query path.
-    let Some(descriptor) = resolve_selected_descriptor(&settings) else {
-        // Availability said yes but the descriptor vanished — defensive; treat as
-        // unavailable for this pass.
-        state.embedder = None;
-        return SweepPass::Idle;
-    };
+    // The catalog descriptor (dimension/window/pooling + install path) for the
+    // selected model was resolved above (before the corrupt-model latch). The actual
+    // embedder load is deferred into the blocking task below (M1): `load_embedder`
+    // does heavy synchronous I/O + model init (`fs::read`, `from_mmaped_safetensors`
+    // over hundreds of MB, Metal/device init, tokenizer load), so it must never run
+    // on the tokio reactor — it is folded into the same `spawn_blocking` as the
+    // forward, mirroring the query path.
 
     // Embed the batch on a blocking thread: BOTH the (conditional) embedder load
     // AND the candle forward are synchronous model work (Metal GPU on macOS /
@@ -526,7 +570,7 @@ async fn run_sweep_pass(
             // A successful load (or a reuse of the cached embedder, which also proves
             // the weights are fine) resets CT3.
             state.consecutive_load_failures = 0;
-            state.corrupt_model_signalled = false;
+            state.corrupt_model_signalled = None;
             pair
         }
         Err(LoadError { error }) => {
@@ -545,7 +589,10 @@ async fn run_sweep_pass(
             ));
             if state.consecutive_load_failures >= MAX_CONSECUTIVE_LOAD_FAILURES {
                 signal_model_appears_corrupt(app_handle, &descriptor, &error);
-                state.corrupt_model_signalled = true;
+                // Latch the corrupt signal to THIS selection's identity so a later
+                // switch to a different (valid) model is not short-circuited by it.
+                state.corrupt_model_signalled =
+                    Some((descriptor.provider.clone(), descriptor.model_id.clone()));
                 // The slot is already `None` (taken above; the task did not return an
                 // embedder on a load failure).
                 return SweepPass::Idle;
@@ -556,8 +603,29 @@ async fn run_sweep_pass(
     // Restore the embedder for the next pass.
     state.embedder = Some(loaded);
 
+    // Whole-batch vs per-anchor failure (data-integrity gate): `embed_texts` now
+    // isolates a true poison input to its own text (a failing chunk fails only its
+    // own text, after a per-chunk retry of any failed sub-batch), so a single
+    // failing anchor among healthy siblings is a genuine per-anchor fault. Several
+    // anchors failing TOGETHER, by contrast, is the signature of a transient
+    // whole-batch fault (e.g. a recurring GPU OOM that fails every chunk even at the
+    // single-chunk shape). Crediting each of those a deterministic L3 failure would
+    // quarantine up to a whole 16-anchor newest-first window of healthy anchors on
+    // one transient fault. So a per-anchor deterministic failure is only credited
+    // when an anchor fails in ISOLATION (exactly one embed error in the batch); when
+    // more than one anchor fails together the batch is treated as a transient error
+    // (back off, quarantine nobody). A genuine single poison anchor among healthy
+    // siblings still surfaces alone (the others store), so it still accrues toward
+    // quarantine and is eventually excluded — that path is preserved.
+    let embed_failure_count = embedded
+        .iter()
+        .filter(|(_, result)| result.is_err())
+        .count();
+    let isolated_embed_failure = is_isolated_embed_failure(embed_failure_count);
+
     let mut stored = 0u64;
-    // Transient errors (DB re-check / store failures): worth a 30s retry.
+    // Transient errors (DB re-check / store failures, OR a whole-batch embed fault):
+    // worth a 30s retry.
     let mut transient_errors = 0u64;
     // Deterministic embed failures (a candle error on this exact input):
     // counted toward per-anchor quarantine, NOT toward the transient retry loop.
@@ -621,7 +689,26 @@ async fn run_sweep_pass(
                 }
             }
             Err(error) => {
-                // L3: a deterministic embed failure for this anchor. Bump its
+                if !isolated_embed_failure {
+                    // More than one anchor in this batch failed to embed.
+                    // `embed_texts` already isolates a true poison input to its own
+                    // text (a failing chunk fails only its own text, after a
+                    // per-chunk retry), so multiple anchors failing TOGETHER is the
+                    // signature of a transient whole-batch fault (e.g. a GPU OOM that
+                    // recurs even at the single-chunk shape), NOT several independent
+                    // poison pills. Treat it as transient — back off and retry the
+                    // whole batch later — WITHOUT crediting any anchor a deterministic
+                    // L3 failure, so a transient OOM never quarantines a window of
+                    // healthy anchors. Do not bump the anchor's streak.
+                    transient_errors += 1;
+                    crate::native_capture::debug_log::log_error(format!(
+                        "semantic index backfill batch embed failure ({embed_failure_count} anchors in this batch); treating as transient (no quarantine); anchor {anchor_id} last error: {error}"
+                    ));
+                    continue;
+                }
+                // L3: a deterministic embed failure for this anchor IN ISOLATION (it
+                // was the only anchor in the batch to fail, while siblings stored
+                // fine — so the fault is the input, not the batch). Bump its
                 // consecutive-failure count; quarantine it once it hits the cap so
                 // it stops driving the error loop. This is NOT a transient error.
                 embed_failures += 1;
@@ -687,6 +774,24 @@ async fn run_sweep_pass(
     // replacements (with a minimal pace), but it is effectively idle if nothing
     // remains.
     SweepPass::DidWork(BACKFILL_BATCH_COOLDOWN_MIN)
+}
+
+/// Whether an embed failure in a batch should be credited as a deterministic
+/// per-anchor (L3) failure, given how many anchors in the SAME batch failed.
+///
+/// Data-integrity gate: `SemanticSearchEmbedder::embed_texts` isolates a true
+/// poison input to its own text (a failing chunk fails only its own text), so a
+/// single failing anchor among healthy siblings is a genuine per-anchor fault and
+/// is credited toward quarantine. When MORE THAN ONE anchor in the batch fails
+/// together, that is the signature of a transient whole-batch fault (e.g. a
+/// recurring GPU OOM that fails every chunk even on the per-chunk retry) rather
+/// than per-anchor poison — so it is treated as transient (back off) and NO anchor
+/// is credited a deterministic failure, which would otherwise quarantine a whole
+/// newest-first window of healthy anchors. A genuine single poison anchor still
+/// surfaces alone (its healthy batch-mates store), so it still accrues toward
+/// quarantine and is eventually excluded.
+fn is_isolated_embed_failure(embed_failure_count: usize) -> bool {
+    embed_failure_count == 1
 }
 
 /// CPU-pacing cooldown between backfill batches: the just-finished batch's wall
@@ -1035,6 +1140,83 @@ mod tests {
             !state.is_anchor_quarantined(new_id),
             "the reprocessed id is not quarantined and is retried"
         );
+    }
+
+    #[test]
+    fn corrupt_latch_is_keyed_to_the_signalled_model_identity() {
+        // CT3: the corrupt-model latch must only short-circuit the selection it was
+        // raised for. A latch for model A does not idle a switch to model B.
+        let mut state = SweepState::new();
+        let provider = "mnema";
+        let model_a = "corrupt-model";
+        let model_b = "good-model";
+
+        // No latch initially: nothing matches.
+        assert!(!state.corrupt_latch_matches(provider, model_a));
+
+        // Latch model A corrupt (as the load-failure cap site does).
+        state.corrupt_model_signalled = Some((provider.to_string(), model_a.to_string()));
+        state.consecutive_load_failures = MAX_CONSECUTIVE_LOAD_FAILURES;
+        // Pretend a stale embedder for A is cached.
+        assert!(state.corrupt_latch_matches(provider, model_a));
+        assert!(
+            !state.corrupt_latch_matches(provider, model_b),
+            "a different model is never matched by A's latch"
+        );
+
+        // Reconciling against the SAME model is a no-op: the latch (and counter) hold.
+        state.reconcile_selection(provider, model_a);
+        assert_eq!(
+            state.corrupt_model_signalled,
+            Some((provider.to_string(), model_a.to_string()))
+        );
+        assert_eq!(state.consecutive_load_failures, MAX_CONSECUTIVE_LOAD_FAILURES);
+        assert!(state.corrupt_latch_matches(provider, model_a));
+    }
+
+    #[test]
+    fn switching_models_clears_a_corrupt_latch_raised_for_the_old_model() {
+        // The regression FIX 1 fixes: after model A is flagged corrupt, switching to
+        // a valid model B must clear the latch (and the load counter, and the stale
+        // cached embedder) so B is loaded instead of the worker idling forever.
+        let mut state = SweepState::new();
+        let provider = "mnema";
+        let model_a = "corrupt-model";
+        let model_b = "good-model";
+
+        state.corrupt_model_signalled = Some((provider.to_string(), model_a.to_string()));
+        state.consecutive_load_failures = MAX_CONSECUTIVE_LOAD_FAILURES;
+
+        // The user switches to model B: reconcile clears the latch keyed to A.
+        state.reconcile_selection(provider, model_b);
+        assert_eq!(state.corrupt_model_signalled, None, "A's latch is cleared on switch");
+        assert_eq!(state.consecutive_load_failures, 0, "load counter resets for the new model");
+        assert!(
+            !state.corrupt_latch_matches(provider, model_b),
+            "model B is not short-circuited and proceeds to load"
+        );
+    }
+
+    #[test]
+    fn a_whole_batch_embed_failure_does_not_quarantine_each_anchor() {
+        // FIX 2: a transient whole-batch fault surfaces as MORE THAN ONE failing
+        // anchor in the batch, and must be treated as transient (no per-anchor
+        // quarantine), while a genuine single poison anchor (one failure, healthy
+        // siblings) is still credited toward quarantine.
+        assert!(
+            !is_isolated_embed_failure(0),
+            "no failures => nothing to credit"
+        );
+        assert!(
+            is_isolated_embed_failure(1),
+            "exactly one anchor failing in isolation is a genuine per-anchor fault"
+        );
+        for batch_failures in 2..=SWEEP_BATCH_SIZE as usize {
+            assert!(
+                !is_isolated_embed_failure(batch_failures),
+                "{batch_failures} anchors failing together is a transient batch fault, not poison"
+            );
+        }
     }
 
     #[test]
