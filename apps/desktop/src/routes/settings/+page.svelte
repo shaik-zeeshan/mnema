@@ -98,6 +98,7 @@
     KeyboardBindingsSettings,
     AppUpdateChannel,
     AppUpdateStatus,
+    ThirdPartyNotices,
   } from "$lib/types";
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
@@ -876,8 +877,8 @@
   let draftTranscriptionChunkSeconds = $state(30);
   let draftSpeakerSeparateSpeakers = $state(false);
   let draftSpeakerRecognizeSavedPeople = $state(false);
-  let draftSpeakerProvider = $state("sherpa_onnx");
-  let draftSpeakerModelId = $state<string | null>("pyannote-3.0-nemo-titanet-small");
+  let draftSpeakerProvider = $state("speakrs");
+  let draftSpeakerModelId = $state<string | null>("pyannote-community-1-wespeaker");
   let draftSpeakerTimeoutMinutes = $state(10);
   // Saved-person count drives the preset-switch warning (over-warns for any
   // profile, not strictly the current Voiceprint Space — acceptable for V1).
@@ -938,6 +939,15 @@
   let aboutDetailsCopied = $state(false);
   let aboutActionError = $state<string | null>(null);
   let aboutDetailsCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Acknowledgements (About tab): third-party model attribution assembled by the
+  // backend from every model manifest. Loaded once on mount with the rest of the
+  // About data; the "Copy notices" action mirrors the about-details copy flow.
+  let thirdPartyNotices = $state<ThirdPartyNotices | null>(null);
+  let loadingThirdPartyNotices = $state(false);
+  let thirdPartyNoticesError = $state<string | null>(null);
+  let thirdPartyNoticesCopied = $state(false);
+  let thirdPartyNoticesCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Loading / error state
   let loadingRecSettings = $state(false);
@@ -1468,8 +1478,17 @@
     draftTranscriptionChunkSeconds = s.transcription?.chunkSeconds ?? 30;
     draftSpeakerSeparateSpeakers = s.speakerAnalysis?.separateSpeakers ?? false;
     draftSpeakerRecognizeSavedPeople = s.speakerAnalysis?.recognizeSavedPeople ?? false;
-    draftSpeakerProvider = s.speakerAnalysis?.provider ?? "sherpa_onnx";
-    draftSpeakerModelId = s.speakerAnalysis?.modelId ?? "pyannote-3.0-nemo-titanet-small";
+    // Coerce legacy saved values: the sherpa_onnx provider (and its model ids)
+    // no longer exist, so old users' saved settings must resolve to the speakrs
+    // default — otherwise the preset picker would select a provider/model the
+    // backend manifest never returns. When the saved provider is legacy (or
+    // absent) we drop its stale model id too and fall back to the speakrs default.
+    const savedSpeakerProvider = s.speakerAnalysis?.provider;
+    const isLegacySpeakerProvider = !savedSpeakerProvider || savedSpeakerProvider === "sherpa_onnx";
+    draftSpeakerProvider = isLegacySpeakerProvider ? "speakrs" : savedSpeakerProvider;
+    draftSpeakerModelId = isLegacySpeakerProvider
+      ? "pyannote-community-1-wespeaker"
+      : (s.speakerAnalysis?.modelId ?? "pyannote-community-1-wespeaker");
     draftSpeakerTimeoutMinutes = Math.round((s.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
   }
 
@@ -1922,6 +1941,49 @@
       await openUrl(url);
     } catch (err) {
       aboutActionError = describeError(err);
+    }
+  }
+
+  async function loadThirdPartyNotices() {
+    loadingThirdPartyNotices = true;
+    thirdPartyNoticesError = null;
+    try {
+      thirdPartyNotices = await invoke<ThirdPartyNotices>("get_third_party_notices");
+    } catch (err) {
+      thirdPartyNoticesError = describeError(err);
+    } finally {
+      loadingThirdPartyNotices = false;
+    }
+  }
+
+  // Entries grouped by `kind`, preserving the backend's category order
+  // (Speaker Diarization → Transcription → OCR) as kinds are first seen.
+  const thirdPartyNoticeGroups = $derived.by(() => {
+    const groups: { kind: string; entries: ThirdPartyNotices["entries"] }[] = [];
+    for (const entry of thirdPartyNotices?.entries ?? []) {
+      let group = groups.find((g) => g.kind === entry.kind);
+      if (!group) {
+        group = { kind: entry.kind, entries: [] };
+        groups.push(group);
+      }
+      group.entries.push(entry);
+    }
+    return groups;
+  });
+
+  async function copyThirdPartyNotices() {
+    if (!thirdPartyNotices) return;
+    thirdPartyNoticesError = null;
+    try {
+      await writeText(thirdPartyNotices.plainText);
+      thirdPartyNoticesCopied = true;
+      if (thirdPartyNoticesCopiedTimer !== null) clearTimeout(thirdPartyNoticesCopiedTimer);
+      thirdPartyNoticesCopiedTimer = setTimeout(() => {
+        thirdPartyNoticesCopied = false;
+        thirdPartyNoticesCopiedTimer = null;
+      }, 2000);
+    } catch (err) {
+      thirdPartyNoticesError = describeError(err);
     }
   }
 
@@ -3272,28 +3334,44 @@
     return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
   })());
 
-  const selectedSpeakerProviderStatus = $derived(
-    speakerModelStatus?.providers.find((provider) => provider.provider === draftSpeakerProvider) ?? speakerModelStatus?.providers[0] ?? null
-  );
+  // A Speaker Model Preset is keyed by (provider, modelId): the picker value
+  // encodes both so it stays correct if more providers are added later.
+  // `__os_managed__` stands in for a null modelId.
+  function speakerPresetKey(provider: string, modelId: string | null): string {
+    return `${provider}::${modelId ?? "__os_managed__"}`;
+  }
 
-  const selectedSpeakerModels = $derived(
-    selectedSpeakerProviderStatus?.models ?? []
+  // Flatten every provider group into one preset list so all presets appear in
+  // the single picker. The backend manifest currently returns only the speakrs
+  // provider; order follows the manifest, keeping the speakrs default at the top.
+  const allSpeakerModels = $derived(
+    (speakerModelStatus?.providers ?? []).flatMap((provider) => provider.models)
   );
 
   const selectedSpeakerModel = $derived(
-    selectedSpeakerModels.find((model) => model.modelId === draftSpeakerModelId) ?? selectedSpeakerModels[0] ?? null
+    allSpeakerModels.find(
+      (model) => model.provider === draftSpeakerProvider && model.modelId === draftSpeakerModelId,
+    )
+      ?? allSpeakerModels.find((model) => model.modelId === draftSpeakerModelId)
+      ?? null
   );
 
   // Preset picker options. Each curated Speaker Model Preset surfaces its
   // download size from the same model-status descriptor the status panel uses
   // (`model.download.byteSize`), formatted via the shared `formatBytes` helper.
   const speakerModelOptions = $derived(
-    selectedSpeakerModels.map((model) => ({
-      value: model.modelId ?? "__os_managed__",
+    allSpeakerModels.map((model) => ({
+      value: speakerPresetKey(model.provider, model.modelId),
       label: model.download
         ? `${model.displayName} · ${formatBytes(model.download.byteSize)}`
         : model.displayName,
     }))
+  );
+
+  const selectedSpeakerPresetKey = $derived(
+    selectedSpeakerModel
+      ? speakerPresetKey(selectedSpeakerModel.provider, selectedSpeakerModel.modelId)
+      : speakerPresetKey(draftSpeakerProvider, draftSpeakerModelId)
   );
 
   const selectedSpeakerDownloadProgress = $derived(
@@ -3450,16 +3528,21 @@
   // Switching Speaker Model Presets is non-destructive and reversible, so the
   // warning is purely informational: it fires only when the user is moving AWAY
   // from the saved preset while saved-person recognition is on and at least one
-  // Person profile exists. Confirming proceeds (the existing autosave persists
-  // the new modelId); cancelling leaves draftSpeakerModelId unchanged so the
-  // controlled picker reverts to the saved selection. It NEVER auto-migrates,
-  // re-enrolls, or blocks the choice.
+  // Person profile exists. A preset switch can change the PROVIDER too — each
+  // provider's preset is its own WeSpeaker/embedding Voiceprint Space, so the
+  // warning keys off either the provider OR the modelId changing.
+  // Confirming proceeds (the existing autosave persists the new provider+modelId);
+  // cancelling leaves the drafts unchanged so the controlled picker reverts to
+  // the saved selection. It NEVER auto-migrates, re-enrolls, or blocks the choice.
   async function chooseSpeakerModel(value: string) {
-    const next = value === "__os_managed__" ? null : value;
-    if (next === draftSpeakerModelId) return;
+    const [nextProvider, rawModelId] = value.split("::");
+    const nextModelId = !rawModelId || rawModelId === "__os_managed__" ? null : rawModelId;
+    if (nextProvider === draftSpeakerProvider && nextModelId === draftSpeakerModelId) return;
 
+    const savedProvider = recordingSettings?.speakerAnalysis?.provider ?? null;
     const savedModelId = recordingSettings?.speakerAnalysis?.modelId ?? null;
-    const switchingAwayFromSaved = next !== savedModelId;
+    const switchingAwayFromSaved =
+      nextProvider !== savedProvider || nextModelId !== savedModelId;
     const needsWarning =
       switchingAwayFromSaved && draftSpeakerRecognizeSavedPeople && personProfileCount > 0;
 
@@ -3478,7 +3561,8 @@
       }
     }
 
-    draftSpeakerModelId = next;
+    draftSpeakerProvider = nextProvider;
+    draftSpeakerModelId = nextModelId;
   }
 
   // ─── Init ─────────────────────────────────────────────────────────────────
@@ -3504,6 +3588,7 @@
       loadDebugLogStatus();
       loadGeneralLogStatus();
       loadAppUpdateStatus();
+      void loadThirdPartyNotices();
       void appPrivacyExclusion.loadPrivacyAppCandidates();
       void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
       loadBrokerGrants();
@@ -4082,6 +4167,67 @@
           <span class="inline-error__msg">{appUpdateActionError}</span>
           <button class="btn btn--ghost btn--sm" onclick={() => appUpdateActionError = null}>×</button>
         </div>
+      {/if}
+    </section>
+
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">Acknowledgements</h2>
+          <p class="card__subtitle">
+            Mnema's on-device models are built on these open projects. Each is
+            credited under its license.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          onclick={copyThirdPartyNotices}
+          disabled={!thirdPartyNotices || loadingThirdPartyNotices}
+          aria-label="Copy the full third-party notices to the clipboard"
+        >
+          {thirdPartyNoticesCopied ? "Copied" : "Copy notices"}
+        </button>
+      </div>
+
+      {#if loadingThirdPartyNotices && !thirdPartyNotices}
+        <p class="group-hint">Loading notices…</p>
+      {:else if thirdPartyNoticeGroups.length > 0}
+        <div class="notice-groups">
+          {#each thirdPartyNoticeGroups as group (group.kind)}
+            <div class="notice-group">
+              <span class="group-label">{group.kind}</span>
+              <ul class="notice-list">
+                {#each group.entries as entry (entry.component)}
+                  <li class="notice-item">
+                    <div class="notice-item__main">
+                      <span class="notice-item__name">{entry.displayName}</span>
+                      {#if entry.license}
+                        <span class="notice-item__license">{entry.license}</span>
+                      {/if}
+                    </div>
+                    {#if entry.sourceUrl}
+                      <button
+                        type="button"
+                        class="notice-item__source"
+                        onclick={() => openExternalUrl(entry.sourceUrl ?? "")}
+                        title={entry.sourceUrl}
+                      >
+                        {entry.sourceUrl}<span class="about-link__arrow" aria-hidden="true">↗</span>
+                      </button>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/each}
+        </div>
+      {:else if !loadingThirdPartyNotices}
+        <p class="group-hint">No third-party notices to show.</p>
+      {/if}
+
+      {#if thirdPartyNoticesError}
+        <p class="error-text about-error" role="alert">{thirdPartyNoticesError}</p>
       {/if}
     </section>
   </div>
@@ -6068,12 +6214,12 @@
       <div class="settings-group">
         <span class="group-label">Speaker model</span>
         <SelectMenu
-          value={draftSpeakerModelId ?? "__os_managed__"}
+          value={selectedSpeakerPresetKey}
           onValueChange={chooseSpeakerModel}
           disabled={!draftSpeakerSeparateSpeakers || switchingSpeakerModel}
           label="Preset"
           options={speakerModelOptions.length > 0 ? speakerModelOptions : [
-            { value: draftSpeakerModelId ?? "__os_managed__", label: "Loading preset options" },
+            { value: selectedSpeakerPresetKey, label: "Loading preset options" },
           ]}
         />
         <p class="group-hint">
@@ -6100,6 +6246,12 @@
           {#if selectedSpeakerModel.failureMessage}
             <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedSpeakerModel.failureMessage}</p>
           {/if}
+          {#if selectedSpeakerModel.licenseLabel || selectedSpeakerModel.sourceUrl}
+            <p class="group-hint">
+              {#if selectedSpeakerModel.licenseLabel}<strong>License:</strong> {selectedSpeakerModel.licenseLabel}. {/if}
+              {#if selectedSpeakerModel.sourceUrl}<strong>Source:</strong> {selectedSpeakerModel.sourceUrl}{/if}
+            </p>
+          {/if}
           {#if selectedSpeakerModel.download}
             {#if selectedSpeakerDownloadRunning}
               <div class="download-progress" aria-live="polite">
@@ -6125,7 +6277,7 @@
                 </button>
               </div>
             {/if}
-            <p class="group-hint">Downloads the pyannote segmentation bundle plus NeMo Titanet embedding model into app-managed storage.</p>
+            <p class="group-hint">Downloads this preset's segmentation and speaker-embedding models into app-managed storage.</p>
           {/if}
           {#if speakerDownloadError}
             <p class="group-hint group-hint--warn">Speaker model action failed: {speakerDownloadError}</p>
@@ -7532,6 +7684,89 @@
 
   .about-error {
     margin: 0;
+  }
+
+  /* ── Acknowledgements ─────────────────────────────────────── */
+  .notice-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .notice-group {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .notice-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .notice-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 9px 11px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+  }
+
+  .notice-item__main {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 10px;
+  }
+
+  .notice-item__name {
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .notice-item__license {
+    padding: 1px 7px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  .notice-item__source {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--app-text-muted);
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    line-height: 1.4;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+    transition: color 0.12s;
+  }
+
+  .notice-item__source:hover,
+  .notice-item__source:focus-visible {
+    outline: none;
+    color: var(--app-accent);
   }
 
   .update-channel-control {

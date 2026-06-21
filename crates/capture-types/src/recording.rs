@@ -384,11 +384,15 @@ pub fn default_speaker_recognition_enabled() -> bool {
 }
 
 pub fn default_speaker_analysis_provider() -> String {
-    "sherpa_onnx".to_string()
+    // speakrs is the sole on-device diarization provider; sherpa-onnx is removed.
+    "speakrs".to_string()
 }
 
 pub fn default_speaker_analysis_model_id() -> Option<String> {
-    Some("pyannote-3.0-nemo-titanet-small".to_string())
+    // The speakrs default preset's model id (`SPEAKRS_DEFAULT_MODEL_ID`).
+    // capture-types deliberately does not depend on the speaker-analysis crate,
+    // so the literal is mirrored here (kept in sync with that constant).
+    Some("pyannote-community-1-wespeaker".to_string())
 }
 
 pub fn default_speaker_analysis_timeout_seconds() -> u64 {

@@ -73,7 +73,7 @@ pub(crate) const MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS: i64 = 600;
 const OCR_RETRY_BACKOFF_SECONDS: [i64; 2] = [30, 120];
 
 /// Backoff before a failed audio job may be re-claimed, indexed like [`OCR_RETRY_BACKOFF_SECONDS`].
-/// Audio jobs are minutes-long (a Whisper pass or sherpa diarization), so retries are spaced wider
+/// Audio jobs are minutes-long (a Whisper pass or speaker diarization), so retries are spaced wider
 /// than OCR's so a transient failure (e.g. a model still loading) has real time to clear and so a
 /// failing audio lane does not re-claim ahead of fresh work every cycle.
 const AUDIO_RETRY_BACKOFF_SECONDS: [i64; 2] = [60, 300];
@@ -1095,6 +1095,25 @@ impl ProcessingStore {
         processor: Option<&str>,
         excluded_processors: &[&str],
     ) -> Result<Option<ProcessingJob>> {
+        // Cleanup-lock model_key for a `speaker_analysis` job. Every speaker_analysis
+        // payload — including a legacy `provider="sherpa_onnx"` payload frozen before
+        // speakrs became the sole provider — normalizes (via
+        // `SpeakerAnalysisJobPayload::normalize_model_selection`) onto the single
+        // speakrs provider + default model at every Rust read seam, so its cleanup-lock
+        // key is ALWAYS this normalized speakrs default key. We bind it from the Rust
+        // constants and use it directly in the CASE below, rather than concatenating the
+        // raw `payload.provider/payload.modelId` in SQL: a raw concatenation would yield
+        // `sherpa_onnx/<old-model>` for a legacy job, which never matches the speakrs
+        // lock key, so the lock-skip clause would fail to skip a legacy job whose
+        // (speakrs) model is locked for deletion. Binding from the constants keeps this
+        // SQL in lockstep with `speaker_analysis_model_key_for_job` and the other Rust
+        // key-derivation seams. NOTE: this relies on speakrs shipping exactly one model
+        // today — revisit if a second speakrs model is added (the bound key would then
+        // need to be derived per-job rather than from the default constant).
+        let speaker_analysis_model_key = model_key(
+            speaker_analysis::SPEAKRS_PROVIDER_ID,
+            speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID,
+        );
         loop {
             let mut transaction = self.pool.begin().await?;
             let row = match (processor, excluded_processors.is_empty()) {
@@ -1111,7 +1130,11 @@ impl ProcessingStore {
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
+                             WHEN pj.processor = 'speaker_analysis' \
+                              AND pj.payload_json IS NOT NULL \
+                              AND json_valid(pj.payload_json) \
+                             THEN ?2 \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
                               AND pj.payload_json IS NOT NULL \
                               AND json_valid(pj.payload_json) \
                              THEN CASE \
@@ -1129,6 +1152,7 @@ impl ProcessingStore {
                      LIMIT 1",
                 )
                 .bind(processor)
+                .bind(&speaker_analysis_model_key)
                 .fetch_optional(&mut *transaction)
                 .await?,
                 (None, false) => {
@@ -1146,13 +1170,30 @@ impl ProcessingStore {
                     for excluded_processor in excluded_processors {
                         separated.push_bind(excluded_processor);
                     }
+                    // See the comment on `speaker_analysis_model_key` above: a
+                    // speaker_analysis job's cleanup-lock key is the bound normalized
+                    // speakrs default key (push_bind below, where the `?N` placeholder
+                    // falls), not the raw payload provider/modelId concatenation, so a
+                    // legacy sherpa-keyed job is still skipped when the speakrs model is
+                    // locked. ocr/audio_transcription keep the raw extraction.
                     separated.push_unseparated(
                         ") \
                            AND NOT EXISTS ( \
                              SELECT 1 FROM processing_model_cleanup_locks AS lock \
                              WHERE lock.processor = pj.processor \
                                AND lock.model_key = CASE \
-                                 WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
+                                 WHEN pj.processor = 'speaker_analysis' \
+                                  AND pj.payload_json IS NOT NULL \
+                                  AND json_valid(pj.payload_json) \
+                                 THEN ",
+                    );
+                    // `separated` holds a mutable borrow of `query`; release it before
+                    // resuming direct `query.push*` calls for the bound speakrs key.
+                    drop(separated);
+                    query.push_bind(&speaker_analysis_model_key);
+                    query.push(
+                        " \
+                                 WHEN pj.processor IN ('ocr', 'audio_transcription') \
                                   AND pj.payload_json IS NOT NULL \
                                   AND json_valid(pj.payload_json) \
                                  THEN CASE \
@@ -1183,7 +1224,11 @@ impl ProcessingStore {
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
+                             WHEN pj.processor = 'speaker_analysis' \
+                              AND pj.payload_json IS NOT NULL \
+                              AND json_valid(pj.payload_json) \
+                             THEN ?1 \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
                               AND pj.payload_json IS NOT NULL \
                               AND json_valid(pj.payload_json) \
                              THEN CASE \
@@ -1200,6 +1245,7 @@ impl ProcessingStore {
                      ORDER BY pj.id ASC \
                      LIMIT 1",
                 )
+                .bind(&speaker_analysis_model_key)
                 .fetch_optional(&mut *transaction)
                 .await?,
             };
@@ -2968,6 +3014,158 @@ mod tests {
         assert_eq!(resolution.auto_merge_target_cluster_id, None);
         assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
     }
+
+    fn speaker_analysis_job_with_payload(payload_json: Option<String>) -> ProcessingJob {
+        ProcessingJob {
+            id: 1,
+            subject_type: AUDIO_SEGMENT_SUBJECT_TYPE.to_string(),
+            subject_id: 1,
+            processor: SPEAKER_ANALYSIS_PROCESSOR.to_string(),
+            status: ProcessingJobStatus::Queued,
+            attempt_count: 0,
+            failure_count: 0,
+            payload_json,
+            last_error: None,
+            created_at: String::new(),
+            queued_at: String::new(),
+            updated_at: String::new(),
+            started_at: None,
+            finished_at: None,
+        }
+    }
+
+    /// FIX 3: the model-deletion protection key for a legacy `sherpa_onnx` job
+    /// payload must match the speakrs model the job actually loads at run time.
+    /// The run path normalizes the (frozen) payload onto speakrs, so the
+    /// protection key must too — otherwise a concurrent manual model delete could
+    /// remove the live speakrs model out from under a queued/running legacy job.
+    #[test]
+    fn speaker_analysis_model_key_normalizes_legacy_sherpa_payload_to_speakrs() {
+        let payload = super::super::SpeakerAnalysisJobPayload {
+            provider: "sherpa_onnx".to_string(),
+            model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
+            recognize_people: false,
+            options: serde_json::Map::new(),
+        };
+        let job = speaker_analysis_job_with_payload(Some(
+            serde_json::to_string(&payload).expect("legacy payload should encode"),
+        ));
+
+        let key = speaker_analysis_model_key_for_job(&job)
+            .expect("key derivation should succeed for a legacy payload");
+
+        assert_eq!(
+            key,
+            Some(model_key(
+                speaker_analysis::SPEAKRS_PROVIDER_ID,
+                speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID,
+            ))
+        );
+    }
+
+    #[test]
+    fn speaker_analysis_model_key_without_payload_is_none() {
+        let job = speaker_analysis_job_with_payload(None);
+
+        assert_eq!(
+            speaker_analysis_model_key_for_job(&job).expect("no payload should yield Ok(None)"),
+            None
+        );
+    }
+
+    /// Builds a fresh in-memory SQLite pool with the full embedded migration chain
+    /// applied, so the SQL-atomic claim path (`claim_next_queued_job_matching_processor`)
+    /// runs against the real `processing_jobs` + `processing_model_cleanup_locks` schema.
+    async fn migrated_store() -> ProcessingStore {
+        // The migrate! macro resolves its path against CARGO_MANIFEST_DIR, so the
+        // crate's `./migrations` chain applies the same here as it does at startup.
+        static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory db should open");
+        MIGRATOR.run(&pool).await.expect("migrations should apply");
+        ProcessingStore::new(pool)
+    }
+
+    /// FIX 3 (SQL claim path): the SQL-atomic claim in
+    /// `claim_next_queued_job_matching_processor` must skip a queued
+    /// `speaker_analysis` job whose normalized speakrs model is locked for deletion —
+    /// even when that job carries a *legacy* frozen `provider="sherpa_onnx"` payload.
+    /// Before the fix, the CASE concatenated the raw `provider/modelId` (yielding
+    /// `sherpa_onnx/<old-model>`), which never matched the speakrs lock key, so the
+    /// legacy job was wrongly claimed while its (speakrs) model was mid-deletion. This
+    /// is the SQL-path sibling of `speaker_analysis_model_key_normalizes_legacy_sherpa_payload_to_speakrs`
+    /// (which covers the Rust direct-claim seam).
+    #[test]
+    fn sql_claim_skips_legacy_sherpa_speaker_job_when_speakrs_model_locked() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            // Legacy payload frozen before speakrs became the sole provider: its raw
+            // key is `sherpa_onnx/pyannote-3.0-nemo-titanet-small`, distinct from the
+            // normalized speakrs key the run path actually loads.
+            let legacy_payload = serde_json::to_string(&super::super::SpeakerAnalysisJobPayload {
+                provider: "sherpa_onnx".to_string(),
+                model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
+                recognize_people: false,
+                options: serde_json::Map::new(),
+            })
+            .expect("legacy payload should serialize");
+            let job = store
+                .enqueue_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(1)
+                        .with_payload_json(legacy_payload),
+                )
+                .await
+                .expect("legacy speaker analysis job should enqueue");
+
+            // Lock the NORMALIZED speakrs key — the key the job's run path resolves to
+            // and the key the fixed SQL CASE binds for every speaker_analysis job.
+            let speakrs_key = model_key(
+                speaker_analysis::SPEAKRS_PROVIDER_ID,
+                speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID,
+            );
+            let lock = store
+                .acquire_model_cleanup_locks(
+                    SPEAKER_ANALYSIS_PROCESSOR,
+                    &BTreeSet::from([speakrs_key]),
+                    "test-lock-token",
+                )
+                .await
+                .expect("cleanup lock should acquire");
+
+            // While the speakrs model is locked, the legacy-sherpa job must be SKIPPED
+            // by the SQL claim (the regression: the un-normalized CASE would claim it).
+            let skipped = store
+                .claim_next_queued_job_for_processor(SPEAKER_ANALYSIS_PROCESSOR)
+                .await
+                .expect("claim should not error while locked");
+            assert!(
+                skipped.is_none(),
+                "legacy sherpa job must be skipped while the speakrs model is locked"
+            );
+
+            // Once the lock is released, the same job becomes claimable.
+            store
+                .release_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+            let claimed = store
+                .claim_next_queued_job_for_processor(SPEAKER_ANALYSIS_PROCESSOR)
+                .await
+                .expect("claim should succeed after release")
+                .expect("legacy sherpa job should be claimable once unlocked");
+            assert_eq!(claimed.id, job.id);
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
 }
 
 async fn insert_frame_record_in_transaction(
@@ -3401,7 +3599,13 @@ fn speaker_analysis_model_key_for_job(job: &ProcessingJob) -> Result<Option<Stri
     let Some(payload_json) = job.payload_json.as_deref() else {
         return Ok(None);
     };
-    let payload: super::SpeakerAnalysisJobPayload = serde_json::from_str(payload_json)?;
+    let mut payload: super::SpeakerAnalysisJobPayload = serde_json::from_str(payload_json)?;
+    // Normalize a (possibly legacy) sherpa_onnx payload onto speakrs first, so the
+    // model-deletion protection key matches the speakrs model the job actually
+    // loads at run time (the run path normalizes too). Without this, a legacy
+    // payload would protect `sherpa_onnx/<old-model>` while the job runs as
+    // `speakrs/<default>`, letting a manual delete remove the live model.
+    payload.normalize_model_selection();
     Ok(payload
         .model_id
         .as_deref()

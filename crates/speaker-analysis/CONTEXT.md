@@ -6,7 +6,9 @@ Root entry point: [CONTEXT-MAP.md](../../CONTEXT-MAP.md).
 
 ## Decisions
 
-- [ADR 0001: Speaker Model Presets and Per-Preset Voiceprint Scope](docs/adr/0001-speaker-model-presets-and-voiceprint-scope.md)
+- [ADR 0001: Speaker Model Presets and Per-Preset Voiceprint Scope](docs/adr/0001-speaker-model-presets-and-voiceprint-scope.md) — superseded by 0003
+- [ADR 0002: Adopt speakrs as a Second On-Device Diarization Provider, Trending to Replacement](docs/adr/0002-adopt-speakrs-as-second-on-device-diarization-provider.md) — its replacement path is now realized by 0003
+- [ADR 0003: Remove sherpa, Make speakrs the Sole On-Device Diarization Provider](docs/adr/0003-remove-sherpa-make-speakrs-sole-diarization-provider.md)
 
 ## Language
 
@@ -23,7 +25,7 @@ The session-level policy that keeps a real speaker associated with a stable spea
 _Avoid_: segment-local speaker identity, provider cluster identity, cross-session speaker identity
 
 **Speaker Model Preset**:
-A curated, named choice (e.g. Balanced, Multilingual, High-accuracy) that a user selects, backed by exactly one combined segmentation+embedding `model_id` in the manifest.
+A curated, named choice backed by exactly one combined segmentation+embedding `model_id` in the manifest. There is one shipping preset today — the `speakrs` `pyannote-community-1-wespeaker` artifact, the sole on-device diarization provider. The machinery still supports more than one entry, but only validated presets are added.
 _Avoid_: raw segmentation/embedding pickers, model file names, arbitrary user-built model combos
 
 **Voiceprint Space**:
@@ -40,7 +42,7 @@ _Avoid_: global voiceprints, cross-model recognition, embedding-only scope
 - Successful **Speaker Analysis Job** diagnostics live in result provenance.
 - Failed **Speaker Analysis Job** diagnostics live in `processing_jobs.last_error`.
 - **Speaker Analysis Job** execution has a dedicated single-concurrency processing worker so speaker work does not block OCR/frame-batch or audio-transcription lanes.
-- The sherpa speaker-analysis helper remains subprocess-per-job in this stage; no persistent helper daemon, in-process model reuse, or generic audio-heavy worker abstraction is part of the current design.
+- Speaker analysis has a single on-device diarization provider, **speakrs** (pure-Rust pyannote-community-1 segmentation + WeSpeaker embedding + VBx clustering on CoreML; model id `pyannote-community-1-wespeaker`). The helper runs subprocess-per-job; no persistent helper daemon, in-process model reuse, or generic audio-heavy worker abstraction is part of the current design. To bound the transient CoreML memory peak, speakrs runs segments at or below a fixed internal safe-chunk window (180s, `SPEAKRS_SAFE_CHUNK_SECONDS`) whole, and diarizes longer ones in sequential chunks no larger than that window, then stitches the per-chunk speaker clusters back into segment-wide identities by centroid cosine similarity (`SPEAKRS_STITCH_SIMILARITY` = 0.6). Whole-segment diarization spikes a large transient CoreML buffer past ~3min; chunking caps that peak (and is faster) while staying DER-neutral on the VoxConverse bench — ADR 0003's amendment documents this and marks the old "no chunking" rationale disproven by measurement. The window is a fixed internal constant, not a tunable: the dispatch path keeps a generic `provider` axis and the helper accepts a `--safe-chunk-ms` flag, but speakrs accepts-and-ignores it; it existed for a provider with its own per-call ceiling.
 - Each **Speaker Analysis Job** freezes its helper timeout in payload option `helperTimeoutSeconds` when admitted, so later settings changes affect only future jobs.
 - The speaker-analysis helper timeout defaults to 600 seconds, clamps to 60-3600 seconds, and timeout failures kill/reap the helper before the job follows the normal failed processing path.
 - **Speaker Turn Alignment** treats **Audio Transcription** words or segments as the source timeline and assigns them to the best speaker turn annotation.

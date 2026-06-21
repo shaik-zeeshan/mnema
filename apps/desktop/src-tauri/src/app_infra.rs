@@ -1544,11 +1544,17 @@ fn desktop_processing_registry(
                 ),
             ]),
         )
-        .register(::app_infra::SpeakerAnalysisProcessorBackend::new(
-            crate::speaker_analysis_runtime::SubprocessSherpaOnnxSpeakerAnalysisProvider::with_models_dir(
-                speaker_models_dir,
-            ),
-        ))
+        .register(::app_infra::SpeakerAnalysisProcessorBackend::from_provider_arcs([
+            // speakrs is the sole on-device diarization provider; sherpa-onnx is
+            // removed. Legacy `sherpa_onnx` job payloads are remapped to speakrs
+            // at the normalize/dispatch seam, so only this provider is registered.
+            Arc::new(
+                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider(
+                    speaker_analysis::SPEAKRS_PROVIDER_ID,
+                    speaker_models_dir,
+                ),
+            ) as Arc<dyn speaker_analysis::SpeakerAnalysisProvider>,
+        ]))
         .register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
 }
 
