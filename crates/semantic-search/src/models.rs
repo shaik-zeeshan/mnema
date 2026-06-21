@@ -987,6 +987,38 @@ mod tests {
         }
     }
 
+    /// **Cross-model contamination guard.** Every catalog model MUST have a
+    /// distinct vector dimension. This is a load-bearing invariant for the
+    /// `app-infra` vector store: during a model switch, `store_vector_if_dimension_matches`
+    /// and `recreate_vectors_table` use the live `vec0` column *width* as the ONLY
+    /// discriminator between the old and new embedding spaces (they stamp no model
+    /// identity). That is sound only while dimensions are pairwise distinct — the
+    /// moment two models share a dimension, an in-flight old-model vector could be
+    /// written into the new-model index silently (a different embedding space, no
+    /// error, no self-heal). If this test fails, you are adding a colliding-dimension
+    /// model: the dimension check no longer guards contamination, and the store seam
+    /// needs a stronger model-identity/epoch guard before that model can ship.
+    #[test]
+    fn catalog_dimensions_are_pairwise_distinct() {
+        let descriptors = catalog();
+        let mut seen: Vec<(usize, &str)> = Vec::with_capacity(descriptors.len());
+        for descriptor in &descriptors {
+            if let Some((_, other_id)) =
+                seen.iter().find(|(dimension, _)| *dimension == descriptor.dimension)
+            {
+                panic!(
+                    "catalog models {} and {} share dimension {} — distinct dimensions are the \
+                     ONLY guard against cross-model contamination in the vector store (see \
+                     store_vector_if_dimension_matches / recreate_vectors_table in \
+                     app-infra/src/semantic_search.rs); a same-dimension model needs a stronger \
+                     model-identity/epoch guard there before it can ship",
+                    other_id, descriptor.model_id, descriptor.dimension
+                );
+            }
+            seen.push((descriptor.dimension, &descriptor.model_id));
+        }
+    }
+
     #[test]
     fn no_installed_model_makes_feature_a_silent_no_op_not_an_error() {
         use capture_types::default_semantic_search_settings;

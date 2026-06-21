@@ -153,6 +153,18 @@ pub async fn embed_search_query(
     }
 
     match vector {
+        // Mirror the write-path guard (`store_vector` rejects non-finite
+        // components): a NaN/inf component would yield non-deterministic KNN
+        // ordering, so drop the vector and fall back to the keyword-only path the
+        // function already takes when there is no usable semantic vector.
+        Ok(vector) if vector.iter().any(|component| !component.is_finite()) => {
+            crate::native_capture::debug_log::log_error(
+                "semantic query embed produced a non-finite component; \
+                 falling back to keyword-only search"
+                    .to_string(),
+            );
+            None
+        }
         Ok(vector) => Some(vector),
         Err(error) => {
             crate::native_capture::debug_log::log_error(format!(

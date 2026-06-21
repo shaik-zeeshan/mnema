@@ -10,8 +10,11 @@
 //! - [`SemanticSearchStore::anchors_missing_vector`] — one query selecting
 //!   `direct` anchors that have searchable `body_text` but no `vec0` row, ordered
 //!   newest-first so the worker drains fresh capture before historical backlog
-//!   (ADR 0036). The `direct`-only filter is the whole dedup policy: an
-//!   `equivalent_reuse` anchor reuses its group's vector, so it is never selected.
+//!   (ADR 0036). The `direct`-only filter is the whole dedup policy: **only**
+//!   `direct` anchors ever carry a **Semantic Search Vector**. An
+//!   `equivalent_reuse` anchor is never embedded and has no `vec0` row, so it is
+//!   not itself KNN-reachable — its group's `direct` representative is the row
+//!   that surfaces for the whole dedup group.
 //! - [`SemanticSearchStore::store_vector`] — write one **Semantic Search Vector**
 //!   into the `search_document_vectors` vec0 table keyed to `search_documents.id`.
 //!
@@ -57,9 +60,10 @@ impl SemanticSearchStore {
     /// Newest-first (`absolute_start_at DESC, id DESC`) is the ADR-0036 ordering:
     /// freshly captured anchors preempt the historical backlog, which is drained
     /// from the newest end backward. Only `text_source_kind = 'direct'` rows are
-    /// considered — an `equivalent_reuse` anchor reuses its group's vector, so
-    /// structural frame dedup already collapses the count with no separate
-    /// admission pass.
+    /// considered: **only** `direct` anchors are ever embedded, so an
+    /// `equivalent_reuse` anchor gets no `vec0` row and is not itself KNN-reachable
+    /// — its group's `direct` representative is what surfaces. Structural frame
+    /// dedup thus collapses the embed count with no separate admission pass.
     ///
     /// The `NOT IN (SELECT rowid FROM search_document_vectors)` anti-join is what
     /// makes the sweep self-healing and resumable: any anchor already vectored is
@@ -196,6 +200,18 @@ impl SemanticSearchStore {
     /// (or the table is absent), **or** because the `direct` anchor row no longer
     /// exists (a delete raced the store — [`store_vector`] inserts nothing, so no
     /// orphan is left). `Err` — a non-finite vector (L1) or a real DB failure.
+    ///
+    /// **Load-bearing invariant — distinct dimensions per model.** The dimension
+    /// equality here is the *only* guard against cross-model contamination: a
+    /// vector embedded under the OLD model while a switch is mid-flight is rejected
+    /// solely because its length differs from the live column width. This is sound
+    /// **only** under the invariant that every catalog model has a distinct
+    /// dimension (enforced by `catalog_dimensions_are_pairwise_distinct` in
+    /// `semantic-search/src/models.rs`). Introducing a second model that shares a
+    /// dimension with another would let an in-flight old-model vector be written
+    /// into the new-model index silently (a different embedding space, no error, no
+    /// self-heal) — that requires a stronger model-identity/epoch guard here, not
+    /// the dimension check alone.
     pub async fn store_vector_if_dimension_matches(
         &self,
         anchor_id: i64,
@@ -270,6 +286,17 @@ impl SemanticSearchStore {
     /// under the new model (newest-first) with no in-memory state (ADR 0036). The
     /// `AFTER DELETE` trigger keys off the table *name*, so it stays valid across
     /// the recreate.
+    ///
+    /// **Load-bearing invariant — distinct dimensions per model.** The rebuilt
+    /// table records only the new `dimension`, never any model identity. Together
+    /// with [`store_vector_if_dimension_matches`], the live column width is the
+    /// sole discriminator between the old and new embedding spaces during a switch.
+    /// That is safe **only** while every catalog model has a distinct dimension
+    /// (enforced by `catalog_dimensions_are_pairwise_distinct` in
+    /// `semantic-search/src/models.rs`). A future same-dimension model would make a
+    /// switch indistinguishable by width alone, so an in-flight old-model vector
+    /// could land in the new index undetected — that case requires a stronger
+    /// model-identity/epoch guard stamped here, not just the dimension width.
     pub async fn recreate_vectors_table(&self, dimension: usize) -> Result<u64> {
         let mut tx = self.pool.begin().await?;
         // Count existing vectors only when the table is actually present: this is
