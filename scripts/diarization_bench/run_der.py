@@ -5,8 +5,8 @@ Pipeline per clip:
   1. Pull the clip + ground-truth speaker turns from the HuggingFace dataset
      `diarizers-community/voxconverse` (already split, timestamped).
   2. Write the audio to a temp WAV and build the reference annotation.
-  3. Run the Rust `diarize_to_rttm` binary (real sherpa-onnx provider) to get a
-     hypothesis RTTM, then parse it back.
+  3. Run the Rust `diarize_to_rttm_speakrs` binary (real speakrs provider) to get
+     a hypothesis RTTM, then parse it back.
   4. Score with pyannote.metrics DER, with a 0.25s collar, reported both
      including and excluding overlapped speech.
 
@@ -22,14 +22,15 @@ See README.md for setup. Example:
 
 Provider selection: `--binary` drives ANY external binary that honors the same
 contract (`--audio <wav> --uri <name>`, optional `--models-dir`, pure RTTM on
-stdout). To score the speakrs provider instead of sherpa-onnx, build its sibling
-bin and point `--binary` at it (sherpa-only tuning flags like --model-id /
---clustering-threshold are accepted-and-ignored by the speakrs bin):
+stdout). The shipped speakrs bin is the default; build it and run with no
+`--binary` to score the production provider (the tuning flags like --model-id /
+--clustering-threshold / --safe-chunk-ms are accepted-and-ignored by the speakrs
+bin — its safe-chunk window is a fixed internal constant):
     brew install openblas pkgconf
     export PKG_CONFIG_PATH=$(brew --prefix openblas)/lib/pkgconfig
     cargo build -p speaker-analysis --features speakrs --release \\
         --bin diarize_to_rttm_speakrs
-    python run_der.py --binary ../../target/release/diarize_to_rttm_speakrs --all
+    python run_der.py --all
 """
 
 from __future__ import annotations
@@ -60,13 +61,13 @@ def find_binary(explicit: str | None) -> Path:
             sys.exit(f"--binary not found: {p}")
         return p
     for profile in ("release", "debug"):
-        cand = REPO_ROOT / "target" / profile / "diarize_to_rttm"
+        cand = REPO_ROOT / "target" / profile / "diarize_to_rttm_speakrs"
         if cand.is_file():
             return cand
     sys.exit(
-        "diarize_to_rttm binary not found. Build it first:\n"
-        "  cargo build -p speaker-analysis --features sherpa-onnx --release "
-        "--bin diarize_to_rttm\n"
+        "diarize_to_rttm_speakrs binary not found. Build it first:\n"
+        "  cargo build -p speaker-analysis --features speakrs --release "
+        "--bin diarize_to_rttm_speakrs\n"
         "or pass --binary <path>."
     )
 
@@ -225,8 +226,8 @@ def main() -> int:
     parser.add_argument(
         "--binary",
         help="path to a diarizer binary honoring the --audio/--uri/RTTM-on-stdout "
-        "contract (default: target/{release,debug}/diarize_to_rttm). Point at "
-        "target/{release,debug}/diarize_to_rttm_speakrs to score the speakrs provider.",
+        "contract (default: target/{release,debug}/diarize_to_rttm_speakrs, the "
+        "shipped speakrs provider).",
     )
     parser.add_argument("--collar", type=float, default=0.25, help="DER forgiveness collar in seconds")
     parser.add_argument("--models-dir", help="speaker-analysis model store (passed to the binary)")
@@ -239,7 +240,9 @@ def main() -> int:
     parser.add_argument(
         "--safe-chunk-ms",
         type=int,
-        help="safe-chunk diarization window override in ms (default 60000, clamped <=60000)",
+        help="accepted-but-ignored by the speakrs bench binary (its safe-chunk "
+        "window is the fixed internal 180s SPEAKRS_SAFE_CHUNK_SECONDS, not a "
+        "tunable); still forwarded harmlessly",
     )
     parser.add_argument("--work-dir", help="keep exported WAV/RTTM here instead of a temp dir")
     parser.add_argument("--json-out", help="write aggregate + per-file results as JSON")

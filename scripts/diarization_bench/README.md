@@ -2,12 +2,12 @@
 
 > **Shipped provider:** Mnema ships **`speakrs`** as the sole on-device diarization
 > provider ([ADR 0003](../../crates/speaker-analysis/docs/adr/0003-remove-sherpa-make-speakrs-sole-diarization-provider.md)).
-> Sherpa ONNX has been removed from the app. This harness still documents the
-> historical Sherpa-vs-speakrs comparison (that comparison is *why* speakrs won and
-> sherpa was dropped — keep it as the benchmark record), and it can drive either
-> provider's `diarize_to_rttm*` binary directly for re-measurement, but the Sherpa
-> path no longer reflects what the app runs. Score `speakrs` via the
-> `diarize_to_rttm_speakrs` binary for current numbers.
+> Sherpa ONNX — its `sherpa-onnx` Cargo feature and its `diarize_to_rttm` bench
+> binary — has been removed from this branch. The historical Sherpa-vs-speakrs
+> comparison (that comparison is *why* speakrs won and sherpa was dropped) lives in
+> ADR 0003 as the benchmark record; re-running it requires a checkout from before
+> that PR, since neither the feature nor the bin exists here. Score `speakrs` via
+> the `diarize_to_rttm_speakrs` binary for current numbers.
 
 Measures Mnema's speaker diarization accuracy as **Diarization Error Rate (DER)**
 against the [VoxConverse](https://www.robots.ox.ac.uk/~vgg/data/voxconverse/)
@@ -33,12 +33,12 @@ overlap-included number is penalized on overlapping speech — track both.
    Streaming reads parquet shards lazily and stops after the requested clips, so
    it avoids the multi-GB Arrow cache that a full `load_dataset` writes to disk —
    important on a near-full disk. Splits are `dev` (216 clips) and `test` (232).
-2. Each clip's audio is written to a temp WAV; a Rust `diarize_to_rttm*` binary
-   runs the **real** provider and prints a hypothesis RTTM. The shipped provider is
-   `diarize_to_rttm_speakrs` (`analyze_speakrs_request_blocking`); the legacy
-   `diarize_to_rttm` runs the removed sherpa-onnx provider and is kept only for
-   re-running the historical comparison. Both speak the same `--binary` CLI/RTTM
-   contract `run_der.py` expects, so DER scoring is apples-to-apples.
+2. Each clip's audio is written to a temp WAV; the Rust `diarize_to_rttm_speakrs`
+   binary runs the **real** shipped speakrs provider
+   (`analyze_speakrs_request_blocking`) and prints a hypothesis RTTM. It speaks the
+   `--binary` CLI/RTTM contract `run_der.py` expects, so DER scoring against the
+   reference is apples-to-apples (and stays comparable to the historical sherpa
+   numbers, which used the same contract).
 3. `pyannote.metrics` scores the hypothesis against the reference.
 
 ## Prerequisites
@@ -51,20 +51,17 @@ desktop app once and let it download a preset, which lands them at
 1. Build the Rust binary (macOS; no `mnema-cli` sidecar required since this targets
    the `speaker-analysis` crate, not the Tauri app).
 
-   For the shipped **speakrs** provider (needs the `speakrs` feature; OpenBLAS must
-   be installed first — `brew install openblas pkgconf` and
+   Build the shipped **speakrs** provider's bench bin (needs the `speakrs` feature;
+   OpenBLAS must be installed first — `brew install openblas pkgconf` and
    `export PKG_CONFIG_PATH=$(brew --prefix openblas)/lib/pkgconfig`):
 
    ```sh
    cargo build -p speaker-analysis --features speakrs --release --bin diarize_to_rttm_speakrs
    ```
 
-   For the removed **sherpa-onnx** provider, only to re-run the historical
-   comparison (needs the `sherpa-onnx` feature):
-
-   ```sh
-   cargo build -p speaker-analysis --features sherpa-onnx --release --bin diarize_to_rttm
-   ```
+   (The removed `sherpa-onnx` feature and its `diarize_to_rttm` bin are gone on this
+   branch; re-running the historical sherpa comparison needs a checkout from before
+   the PR that dropped them.)
 
 2. Set up Python deps (a virtualenv is recommended):
 
@@ -133,13 +130,21 @@ instead of a similarity threshold. `bench_nme_sc.py` measures it against the
 baseline **apples-to-apples**: same subset, same reference, same `pyannote.metrics`
 DER (0.25s collar) and same `SpeakerCountStats` (both imported from `run_der.py`).
 
-This is additive/opt-in and does **not** touch the production Rust clustering:
-`diarize_to_rttm --dump-embeddings <path>` (Rust flag) dumps the
-pre-global-clustering local-cluster centroid embeddings + their pending turns;
-NME-SC re-clusters those centroids; the RTTM is rebuilt from the turns + new
-labels. Everything up to the global cluster-count step is identical to baseline.
+> **Pre-PR experiment.** This prototype was built against the removed **sherpa**
+> bench bin: it relies on `diarize_to_rttm --dump-embeddings <path>`, a flag that
+> only existed on the now-deleted `diarize_to_rttm` binary. Both that bin and the
+> `sherpa-onnx` feature are gone on this branch, so reproducing the run below needs
+> a checkout from before the PR that dropped them. The notes are kept as the record
+> of the over-clustering investigation.
 
-Run it (after building the binary + installing deps as above):
+This was additive/opt-in and did **not** touch the production Rust clustering:
+`diarize_to_rttm --dump-embeddings <path>` (Rust flag) dumped the
+pre-global-clustering local-cluster centroid embeddings + their pending turns;
+NME-SC re-clustered those centroids; the RTTM was rebuilt from the turns + new
+labels. Everything up to the global cluster-count step was identical to baseline.
+
+How it was run (on a pre-PR checkout, after building that binary + installing deps
+as above):
 
 ```sh
 cd scripts/diarization_bench
