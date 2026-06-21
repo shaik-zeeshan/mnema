@@ -569,7 +569,7 @@ export interface AudioSpeechDetectionSettings {
 export interface SpeakerAnalysisSettings {
 	separateSpeakers: boolean;
 	recognizeSavedPeople: boolean;
-	provider: "sherpa_onnx" | string;
+	provider: "speakrs" | string;
 	modelId: string | null;
 	timeoutSeconds: number;
 }
@@ -836,4 +836,19 @@ export interface SemanticSearchSettings {
 	enabled: boolean;
 	provider: string;
 	modelId: string | null;
+}
+
+// Mirrors `third_party_notices::ThirdPartyNoticeEntry` (serde camelCase).
+export interface ThirdPartyNoticeEntry {
+	component: string;
+	kind: string;
+	displayName: string;
+	license: string | null;
+	sourceUrl: string | null;
+}
+
+// Mirrors `third_party_notices::ThirdPartyNotices` (serde camelCase).
+export interface ThirdPartyNotices {
+	entries: ThirdPartyNoticeEntry[];
+	plainText: string;
 }

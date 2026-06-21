@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use speaker_analysis::{
-    providers::sherpa_onnx::{analyze_sherpa_request_blocking, SherpaOnnxSpeakerAnalysisProvider},
     SpeakerAnalysisError, SpeakerAnalysisOutput, SpeakerAnalysisProvider, SpeakerAnalysisRequest,
     SpeakerAnalysisResult,
 };
@@ -32,30 +31,41 @@ struct SpeakerAnalysisHelperPayload {
     request: SpeakerAnalysisRequest,
 }
 
+/// Subprocess wrapper for on-device speaker analysis.
+///
+/// The on-device diarization engine (speakrs) runs in an isolated helper
+/// subprocess so a native crash or memory blow-up never takes down the main app.
+/// The subprocess forwards the request to the engine inside the helper (see
+/// [`analyze_request_for_provider`], which remaps any legacy non-speakrs provider
+/// to speakrs). One instance of this struct is registered per provider id,
+/// sharing the same base `speaker-analysis-models` dir (the per-model subdir is
+/// derived inside `analyze_speakrs_request_blocking`).
 #[derive(Debug, Clone)]
-pub struct SubprocessSherpaOnnxSpeakerAnalysisProvider {
+pub struct SubprocessSpeakerAnalysisProvider {
+    provider_id: &'static str,
     models_dir: PathBuf,
 }
 
-impl SubprocessSherpaOnnxSpeakerAnalysisProvider {
-    pub fn with_models_dir(models_dir: impl Into<PathBuf>) -> Self {
+impl SubprocessSpeakerAnalysisProvider {
+    pub fn with_provider(provider_id: &'static str, models_dir: impl Into<PathBuf>) -> Self {
         Self {
+            provider_id,
             models_dir: models_dir.into(),
         }
     }
 }
 
 #[async_trait]
-impl SpeakerAnalysisProvider for SubprocessSherpaOnnxSpeakerAnalysisProvider {
+impl SpeakerAnalysisProvider for SubprocessSpeakerAnalysisProvider {
     fn provider(&self) -> &'static str {
-        SherpaOnnxSpeakerAnalysisProvider::with_models_dir(&self.models_dir).provider()
+        self.provider_id
     }
 
     async fn analyze(
         &self,
         request: SpeakerAnalysisRequest,
     ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
-        run_sherpa_analysis_subprocess(&self.models_dir, &request).await
+        run_analysis_subprocess(&self.models_dir, &request).await
     }
 }
 
@@ -82,7 +92,7 @@ fn run_subprocess_helper() -> Result<(), String> {
         .map_err(|error| format!("failed reading speaker-analysis helper stdin: {error}"))?;
     let payload: SpeakerAnalysisHelperPayload = serde_json::from_str(&request_json)
         .map_err(|error| format!("failed parsing speaker-analysis helper request json: {error}"))?;
-    let output = analyze_sherpa_request_blocking(payload.request, &models_dir)
+    let output = analyze_request_for_provider(payload.request, &models_dir)
         .map_err(|error| format!("speaker-analysis helper failed: {error}"))?;
     serde_json::to_writer(std::io::stdout(), &output).map_err(|error| {
         format!("failed writing speaker-analysis helper response json: {error}")
@@ -91,6 +101,45 @@ fn run_subprocess_helper() -> Result<(), String> {
         .flush()
         .map_err(|error| format!("failed flushing speaker-analysis helper stdout: {error}"))?;
     Ok(())
+}
+
+/// Dispatch a decoded helper request to the on-device engine, rooted at the base
+/// `speaker-analysis-models` dir.
+///
+/// speakrs is the sole on-device provider. Its arm is gated on the
+/// `speaker-analysis-speakrs` Cargo feature so this file still compiles when the
+/// feature is off (the `#[cfg(not(...))]` branch returns a typed
+/// `ProviderUnavailable`); the desktop crate enables it by default so the shipped
+/// build's arm is live.
+///
+/// MIGRATION: sherpa-onnx is removed. A request that still carries the legacy
+/// `provider = "sherpa_onnx"` (or any other non-speakrs provider) — e.g. an
+/// in-flight/queued **Speaker Analysis Job** frozen before the removal — is
+/// remapped to the speakrs arm rather than erroring, so legacy work re-runs
+/// through speakrs instead of failing with an unknown-provider error.
+fn analyze_request_for_provider(
+    mut request: SpeakerAnalysisRequest,
+    models_dir: &Path,
+) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
+    // Legacy remap: anything that is not the speakrs provider id routes to
+    // speakrs (sherpa is gone). Normalize the request's provider so the speakrs
+    // engine sees a consistent provider id in its output metadata.
+    if request.provider != speaker_analysis::SPEAKRS_PROVIDER_ID {
+        request.provider = speaker_analysis::SPEAKRS_PROVIDER_ID.to_string();
+    }
+
+    #[cfg(feature = "speaker-analysis-speakrs")]
+    {
+        speaker_analysis::providers::speakrs::analyze_speakrs_request_blocking(request, models_dir)
+    }
+    #[cfg(not(feature = "speaker-analysis-speakrs"))]
+    {
+        let _ = models_dir;
+        Err(SpeakerAnalysisError::ProviderUnavailable(format!(
+            "speaker-analysis provider '{}' was not compiled into this build",
+            request.provider
+        )))
+    }
 }
 
 fn parse_models_dir_from_args(args: impl IntoIterator<Item = OsString>) -> Result<PathBuf, String> {
@@ -112,7 +161,7 @@ fn parse_models_dir_from_args(args: impl IntoIterator<Item = OsString>) -> Resul
     ))
 }
 
-async fn run_sherpa_analysis_subprocess(
+async fn run_analysis_subprocess(
     models_dir: &Path,
     request: &SpeakerAnalysisRequest,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
@@ -339,8 +388,8 @@ mod tests {
     fn request_with_timeout(value: Option<serde_json::Value>) -> SpeakerAnalysisRequest {
         let mut request = SpeakerAnalysisRequest::new(
             "/tmp/audio.m4a",
-            speaker_analysis::SHERPA_ONNX_PROVIDER_ID,
-            Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            speaker_analysis::SPEAKRS_PROVIDER_ID,
+            Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string()),
             "session-1",
             42,
         );
@@ -351,6 +400,90 @@ mod tests {
             );
         }
         request
+    }
+
+    fn dispatch_request_for(provider: &str, models_dir: &Path) -> SpeakerAnalysisRequest {
+        // A nonexistent audio path is fine: every arm validates inputs (audio or
+        // model dir) before touching native code, so this exercises *routing*
+        // without needing real models.
+        SpeakerAnalysisRequest::new(
+            models_dir.join("missing-audio.m4a"),
+            provider,
+            None,
+            "session-1",
+            7,
+        )
+    }
+
+    /// The routing invariant: with sherpa removed, EVERY provider (speakrs,
+    /// legacy sherpa, or any unknown string) routes to the speakrs arm. The only
+    /// failures permitted are the speakrs engine's own input/model errors (or, on
+    /// a misconfigured feature-off build, `ProviderUnavailable`) — never an
+    /// `InvalidRequest("unknown speaker-analysis provider ...")`, because the
+    /// dispatcher no longer has an unknown-provider branch.
+    fn assert_reached_speakrs_arm(error: &SpeakerAnalysisError) {
+        if let SpeakerAnalysisError::InvalidRequest(message) = error {
+            assert!(
+                !message.contains("unknown speaker-analysis provider"),
+                "request fell through to an unknown-provider branch instead of routing to speakrs: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_routes_speakrs_to_speakrs_arm() {
+        // Routes into the speakrs arm against a nonexistent models dir. With the
+        // `speaker-analysis-speakrs` feature ON (the shipped build), the speakrs
+        // path surfaces an engine error (MissingModel / audio decode). With the
+        // feature OFF, the ProviderUnavailable fallthrough fires. Either way the
+        // request reached the arm — never an "unknown" branch.
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let nonexistent = tempdir.path().join("does-not-exist");
+        let request = dispatch_request_for(speaker_analysis::SPEAKRS_PROVIDER_ID, &nonexistent);
+        let error =
+            analyze_request_for_provider(request, &nonexistent).expect_err("should fail routing");
+        assert_reached_speakrs_arm(&error);
+        // When the feature is off, pin the exact fallthrough so a misconfigured
+        // build is caught loudly.
+        #[cfg(not(feature = "speaker-analysis-speakrs"))]
+        assert!(
+            matches!(error, SpeakerAnalysisError::ProviderUnavailable(_)),
+            "speakrs feature off should yield ProviderUnavailable, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_remaps_legacy_sherpa_provider_to_speakrs_arm() {
+        // MIGRATION: a legacy job payload frozen with provider "sherpa_onnx" must
+        // route to the speakrs arm (sherpa is removed), never the old
+        // unknown-provider error.
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let nonexistent = tempdir.path().join("does-not-exist");
+        let request = dispatch_request_for("sherpa_onnx", &nonexistent);
+        let error =
+            analyze_request_for_provider(request, &nonexistent).expect_err("should fail routing");
+        assert_reached_speakrs_arm(&error);
+        #[cfg(not(feature = "speaker-analysis-speakrs"))]
+        assert!(
+            matches!(error, SpeakerAnalysisError::ProviderUnavailable(_)),
+            "speakrs feature off should yield ProviderUnavailable, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_remaps_unknown_provider_to_speakrs_arm() {
+        // Any unknown provider string also remaps to speakrs rather than erroring.
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let nonexistent = tempdir.path().join("does-not-exist");
+        let request = dispatch_request_for("totally-made-up", &nonexistent);
+        let error =
+            analyze_request_for_provider(request, &nonexistent).expect_err("should fail routing");
+        assert_reached_speakrs_arm(&error);
+        #[cfg(not(feature = "speaker-analysis-speakrs"))]
+        assert!(
+            matches!(error, SpeakerAnalysisError::ProviderUnavailable(_)),
+            "speakrs feature off should yield ProviderUnavailable, got {error:?}"
+        );
     }
 
     #[test]

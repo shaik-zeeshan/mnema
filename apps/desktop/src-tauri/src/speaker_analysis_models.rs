@@ -157,6 +157,16 @@ enum ModelDownloadError {
     Archive(std::io::Error),
     #[error("invalid speaker model artifact path: {0}")]
     InvalidArtifactPath(String),
+    #[error(
+        "download for {relative_path} exceeded its expected size of {byte_size} bytes (limit {limit} bytes); aborting"
+    )]
+    OversizedDownload {
+        relative_path: String,
+        byte_size: u64,
+        limit: u64,
+    },
+    #[error("speaker model artifact {relative_path} is missing its integrity checksum; refusing to install")]
+    MissingChecksum { relative_path: String },
 }
 
 #[tauri::command]
@@ -286,17 +296,30 @@ pub async fn delete_speaker_analysis_model(
     }
 }
 
+/// Human-facing label for a speaker-analysis provider group. Falls back to the
+/// raw provider id for any future provider that lacks a curated label here.
+fn speaker_provider_display_name(provider: &str) -> String {
+    match provider {
+        speaker_analysis::SPEAKRS_PROVIDER_ID => "On-device (CoreML)".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn build_speaker_analysis_model_status_response(
     app_data_dir: &Path,
 ) -> Result<SpeakerAnalysisModelStatusResponseDto, speaker_analysis::ModelStatusError> {
     let models_dir = speaker_analysis_models_dir(app_data_dir);
     let manifest = builtin_model_manifest();
-    let mut models = Vec::new();
+
+    // Group descriptors by their ACTUAL provider (preserving manifest order) so
+    // every provider — speakrs today (and any future provider) — gets its own
+    // selectable group surfaced to the settings UI.
+    let mut providers: Vec<SpeakerAnalysisProviderStatusDto> = Vec::new();
 
     for descriptor in &manifest.models {
         let status = detect_model_status(&models_dir, descriptor)?;
         let ModelManagement::AppManaged { artifact, .. } = &descriptor.management;
-        models.push(SpeakerAnalysisModelStatusDto {
+        let model = SpeakerAnalysisModelStatusDto {
             provider: descriptor.provider.clone(),
             model_id: descriptor.model_id.clone(),
             display_name: descriptor.display_name.clone(),
@@ -316,16 +339,24 @@ fn build_speaker_analysis_model_status_response(
                     sha256: artifact.sha256.clone(),
                     shape: serde_json::to_value(&artifact.shape).unwrap_or(serde_json::Value::Null),
                 }),
-        });
+        };
+
+        match providers
+            .iter_mut()
+            .find(|group| group.provider == descriptor.provider)
+        {
+            Some(group) => group.models.push(model),
+            None => providers.push(SpeakerAnalysisProviderStatusDto {
+                provider: descriptor.provider.clone(),
+                display_name: speaker_provider_display_name(&descriptor.provider),
+                models: vec![model],
+            }),
+        }
     }
 
     Ok(SpeakerAnalysisModelStatusResponseDto {
         models_directory: models_dir.to_string_lossy().to_string(),
-        providers: vec![SpeakerAnalysisProviderStatusDto {
-            provider: speaker_analysis::SHERPA_ONNX_PROVIDER_ID.to_string(),
-            display_name: "Sherpa ONNX".to_string(),
-            models,
-        }],
+        providers,
     })
 }
 
@@ -556,11 +587,32 @@ async fn download_model_file(
     already_downloaded_bytes: u64,
     cancel_requested: &AtomicBool,
 ) -> Result<Vec<u8>, ModelDownloadTaskError> {
+    // Each artifact file is content-addressed by its manifest `byte_size`, so a
+    // correct body is exactly that many bytes. Cap the accepted body at
+    // `byte_size + slack` (a small fixed margin) so a misbehaving or compromised
+    // host serving an oversized body fails fast with a typed error instead of
+    // buffering an unbounded stream into memory and OOMing before the SHA256
+    // check ever runs.
+    const DOWNLOAD_SIZE_SLACK_BYTES: u64 = 64 * 1024;
+    let size_limit = file.byte_size.saturating_add(DOWNLOAD_SIZE_SLACK_BYTES);
+
     let response = reqwest::get(&file.url)
         .await
         .map_err(ModelDownloadError::Http)?
         .error_for_status()
         .map_err(ModelDownloadError::Http)?;
+    // Reject up front when the server advertises a body larger than we will ever
+    // accept, so a hostile `Content-Length` never gets the chance to stream.
+    if let Some(content_length) = response.content_length() {
+        if content_length > size_limit {
+            return Err(ModelDownloadError::OversizedDownload {
+                relative_path: file.relative_path.clone(),
+                byte_size: file.byte_size,
+                limit: size_limit,
+            }
+            .into());
+        }
+    }
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -568,6 +620,16 @@ async fn download_model_file(
             return Err(ModelDownloadTaskError::Cancelled);
         }
         let chunk = chunk.map_err(ModelDownloadError::Http)?;
+        // Enforce the running-total cap before retaining the chunk so we never
+        // grow `bytes` past the limit even if `Content-Length` was absent or lied.
+        if bytes.len() as u64 + chunk.len() as u64 > size_limit {
+            return Err(ModelDownloadError::OversizedDownload {
+                relative_path: file.relative_path.clone(),
+                byte_size: file.byte_size,
+                limit: size_limit,
+            }
+            .into());
+        }
         bytes.extend_from_slice(&chunk);
         emit_download_progress(
             app_handle,
@@ -596,14 +658,45 @@ fn install_downloaded_model_file(
 ) -> Result<(), ModelDownloadError> {
     let temp_path = install_dir.join(".download.tmp");
     install_model_file(&temp_path, bytes).map_err(ModelDownloadError::Install)?;
-    validate_artifact_sha256(&temp_path, file.sha256.as_deref())
-        .map_err(ModelDownloadError::Install)?;
-    if file.url.ends_with(".tar.bz2") {
-        install_from_tar_bz2(install_dir, destination_relative_path, bytes)?;
+    // `validate_artifact_sha256` treats a missing/blank checksum as "nothing to
+    // verify" and returns `Ok(())`. For an app-managed download that would mean
+    // installing unverified bytes, so refuse here before relying on it: every
+    // downloaded artifact MUST carry an integrity checksum.
+    if file
+        .sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        // Best-effort: drop the staged temp file before aborting so a refused
+        // install does not leave `.download.tmp` behind for the next attempt to
+        // clear. A failure to clean up must never mask the refusal itself.
+        let _ = remove_model_file_if_exists(&temp_path);
+        return Err(ModelDownloadError::MissingChecksum {
+            relative_path: file.relative_path.clone(),
+        });
+    }
+    if let Err(error) = validate_artifact_sha256(&temp_path, file.sha256.as_deref()) {
+        // Best-effort cleanup of the staged temp file on a checksum mismatch,
+        // leaving the install dir as it was found. A failure to clean up must
+        // never mask the checksum-mismatch error we are surfacing.
+        let _ = remove_model_file_if_exists(&temp_path);
+        return Err(ModelDownloadError::Install(error));
+    }
+    let install_result = if file.url.ends_with(".tar.bz2") {
+        install_from_tar_bz2(install_dir, destination_relative_path, bytes)
     } else {
         install_model_file(install_dir.join(destination_relative_path), bytes)
-            .map_err(ModelDownloadError::Install)?;
+            .map_err(ModelDownloadError::Install)
+    };
+    if install_result.is_err() {
+        // A post-stage install failure leaves the temp file behind; remove it
+        // best-effort before propagating the error. A failure to clean up must
+        // never mask the original install failure.
+        let _ = remove_model_file_if_exists(&temp_path);
     }
+    install_result?;
     remove_model_file_if_exists(temp_path).map_err(ModelDownloadError::Install)?;
     Ok(())
 }
@@ -734,5 +827,105 @@ mod tests {
             ))
         ));
         assert!(!dir.path().join("segmentation/model.onnx").exists());
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// speakrs ships RAW files (no `.tar.bz2`): each artifact file is fetched
+    /// directly and placed verbatim at its `relative_path`, preserving nested
+    /// `.mlmodelc/...` subpaths. The install path must checksum the raw bytes
+    /// and write them where speakrs's `from_dir` reads them.
+    #[test]
+    fn raw_multi_file_install_places_nested_file_after_checksum() {
+        let dir = TestDir::new("raw-nested");
+        let bytes = b"coreml weight payload";
+        let file = ModelArtifactFile {
+            relative_path: "segmentation-3.0.mlmodelc/weights/weight.bin".to_string(),
+            url: "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0.mlmodelc/weights/weight.bin".to_string(),
+            byte_size: bytes.len() as u64,
+            sha256: Some(sha256_hex(bytes)),
+        };
+
+        let destination = safe_relative_model_file_path(&file.relative_path)
+            .expect("relative path is safe");
+        install_downloaded_model_file(dir.path(), &file, &destination, bytes)
+            .expect("raw nested file installs");
+
+        let placed = dir.path().join("segmentation-3.0.mlmodelc/weights/weight.bin");
+        assert!(placed.is_file(), "raw file lands at its nested relative_path");
+        assert_eq!(std::fs::read(&placed).unwrap(), bytes);
+        // The temp staging file is cleaned up and nothing is extracted.
+        assert!(!dir.path().join(".download.tmp").exists());
+    }
+
+    /// A raw (non-archive) file with a wrong checksum must fail before being
+    /// written to its destination.
+    #[test]
+    fn raw_multi_file_install_rejects_checksum_mismatch() {
+        let dir = TestDir::new("raw-checksum");
+        let file = ModelArtifactFile {
+            relative_path: "plda_lda.npy".to_string(),
+            url: "https://huggingface.co/avencera/speakrs-models/resolve/main/plda_lda.npy"
+                .to_string(),
+            byte_size: 4,
+            sha256: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+        };
+
+        let result =
+            install_downloaded_model_file(dir.path(), &file, Path::new("plda_lda.npy"), b"data");
+
+        assert!(matches!(
+            result,
+            Err(ModelDownloadError::Install(
+                speaker_analysis::ModelInstallError::ChecksumMismatch { .. }
+            ))
+        ));
+        assert!(!dir.path().join("plda_lda.npy").exists());
+    }
+
+    /// The status response surfaces ONE group per actual provider. With sherpa
+    /// removed, speakrs is the sole provider group, carrying its own descriptor.
+    /// This is what lets the settings UI show the speakrs preset as a selectable,
+    /// downloadable option.
+    #[test]
+    fn status_response_groups_models_by_actual_provider() {
+        let dir = TestDir::new("provider-grouping");
+
+        let response = build_speaker_analysis_model_status_response(dir.path())
+            .expect("status response builds for an empty models dir");
+
+        // sherpa is gone: speakrs is the only provider group.
+        assert_eq!(response.providers.len(), 1);
+        let speakrs = response
+            .providers
+            .iter()
+            .find(|group| group.provider == speaker_analysis::SPEAKRS_PROVIDER_ID)
+            .expect("speakrs group present");
+
+        // Every model in the group belongs to the speakrs provider.
+        assert!(speakrs
+            .models
+            .iter()
+            .all(|model| model.provider == speaker_analysis::SPEAKRS_PROVIDER_ID));
+
+        // The speakrs preset is reachable, downloadable, and carries its license.
+        let speakrs_default = speakrs
+            .models
+            .iter()
+            .find(|model| model.model_id.as_deref() == Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID))
+            .expect("speakrs default preset present");
+        assert!(speakrs_default.download.is_some());
+        assert!(speakrs_default
+            .license_label
+            .as_deref()
+            .is_some_and(|label| label.contains("CC-BY-4.0")));
+        assert_eq!(speakrs.display_name, "On-device (CoreML)");
     }
 }

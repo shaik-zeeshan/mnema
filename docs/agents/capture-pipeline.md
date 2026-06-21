@@ -142,4 +142,4 @@ App startup is split so the window opens fast:
 
 ## Speaker Analysis Models
 
-`install_from_tar_bz2` (`speaker_analysis_models.rs`) extracts tarball entries by matching whole final path components via `Path::ends_with("model.onnx")` — a quantized sibling like `model.int8.onnx` is correctly skipped. Set each descriptor's `required_files` + `sherpa_params.segmentation_relative_path` to the destination subdir.
+On-device diarization runs through the sole **speakrs** provider (pure-Rust pyannote-community-1 + WeSpeaker on CoreML, model id `pyannote-community-1-wespeaker`). Its preset ships **raw model files** (no `.tar.bz2`): each descriptor `relative_path` lands under the model store, `sherpa_params` is absent, and the helper reads them via `from_dir` / `SPEAKRS_MODELS_DIR`. Set the descriptor's `required_files` to the destination layout so install verification matches.
