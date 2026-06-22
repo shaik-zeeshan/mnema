@@ -2615,11 +2615,15 @@ fn degrade_to_keyword_only<T>(kind: &str, result: Result<Vec<T>>) -> Vec<T> {
     match result {
         Ok(hits) => hits,
         Err(error) => {
-            // app-infra carries no logging crate; this diagnostic goes to stderr,
-            // which the desktop log target captures. It is a degrade signal, never
-            // a user-facing error — search proceeds keyword-only.
-            eprintln!(
-                "semantic {kind} search degraded to keyword-only (semantic fetch failed: {error})"
+            // Route the degrade through `debug_log!` — the same packaged-app log
+            // target the companion query-embed failure path uses on the desktop
+            // side — rather than bare stderr, so a persistent semantic-tier
+            // outage (a DB failure silently dropping hybrid to keyword-only) is
+            // observable even when the packaged app does not capture stderr. It
+            // is a degrade signal, never a user-facing error — search proceeds
+            // keyword-only.
+            capture_runtime::debug_log!(
+                "[app-infra][search] semantic {kind} search degraded to keyword-only (semantic fetch failed: {error})"
             );
             Vec::new()
         }
@@ -2677,7 +2681,16 @@ async fn fetch_grouped_frame_hits(
         text_hits.extend(hits);
         let fused = rrf_fuse_frame_hits(&text_hits, &semantic_hits);
         let groups = group_frame_hits(&fused);
-        if groups.len() >= needed_groups || hit_count < hit_limit {
+        // Only **Text Search**-derived groups count toward the pagination
+        // termination: the semantic snapshot is fetched whole up front, so the
+        // meaning-only groups are already all present and never grow across
+        // pages. Counting them toward `needed_groups` could stop the **Text
+        // Search** loop a page early, starving a later text hit of its keyword
+        // RRF contribution (it would rank ~1 low on its semantic term alone).
+        // Drain text until enough text groups exist, exactly as the audio path
+        // drains its snapshot before fusing.
+        let text_group_count = groups.iter().filter(|group| !group.found_by_meaning).count();
+        if text_group_count >= needed_groups || hit_count < hit_limit {
             return Ok(groups);
         }
         hit_offset = hit_offset.saturating_add(hit_count);
