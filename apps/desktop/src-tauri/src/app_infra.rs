@@ -472,6 +472,12 @@ pub struct FrameDto {
     pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
     pub window_title: Option<String>,
+    /// Guarded host+path of the page captured in this frame (read-time
+    /// sanitized + secret-redacted via the broker URL guard). The raw captured
+    /// `browser_url` is local-only and is NEVER placed here — only the guarded
+    /// form crosses to the frontend. `None` when the frame had no URL or it was
+    /// not http(s).
+    pub url: Option<String>,
     pub equivalence_hint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -515,6 +521,11 @@ pub struct FrameSearchResultDto {
     pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
     pub window_title: Option<String>,
+    /// Guarded host+path of the page behind this result (read-time sanitized +
+    /// secret-redacted via the broker URL guard). The raw captured `browser_url`
+    /// is local-only and is NEVER placed here — only the guarded form crosses to
+    /// the frontend. `None` when the frame had no URL or it was not http(s).
+    pub url: Option<String>,
     pub thumbnail_frame_id: i64,
     pub text_source_kind: String,
     pub secret_redaction_count: u32,
@@ -757,6 +768,15 @@ impl From<::app_infra::BackgroundJob> for AppJobDto {
 
 impl From<::app_infra::Frame> for FrameDto {
     fn from(frame: ::app_infra::Frame) -> Self {
+        // Read the GUARDED host+path from the raw captured `browser_url` BEFORE
+        // the snapshot is moved below. The raw URL never lands on the DTO — only
+        // the guard's sanitized, secret-redacted host+path (or `None`).
+        let url = frame
+            .metadata_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.browser_url.as_deref())
+            .and_then(::app_infra::guard_browser_url);
+
         let (app_bundle_id, app_name, window_title) = frame
             .metadata_snapshot
             .map(|metadata| {
@@ -778,6 +798,7 @@ impl From<::app_infra::Frame> for FrameDto {
             app_bundle_id,
             app_name,
             window_title,
+            url,
             equivalence_hint: frame.equivalence.hint,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
@@ -817,6 +838,12 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
             app_bundle_id: result.app_bundle_id,
             app_name: result.app_name,
             window_title: result.window_title,
+            // Guard the raw captured `browser_url` at the boundary: only the
+            // sanitized host+path crosses to the frontend; the raw URL never does.
+            url: result
+                .browser_url
+                .as_deref()
+                .and_then(::app_infra::guard_browser_url),
             thumbnail_frame_id: result.thumbnail_frame_id,
             text_source_kind: result.text_source_kind,
             secret_redaction_count: result.secret_redaction_count,
@@ -4675,6 +4702,48 @@ pub async fn get_frame(
         .map_err(|error| format!("failed to get frame {}: {error}", request.frame_id))
 }
 
+/// App-mediated open of a frame's RAW captured `browser_url` in the default
+/// browser. The trusted local frontend opens captures by frame id (it never uses
+/// opaque broker ids). Loads the frame's raw URL, gates it to `http`/`https`, and
+/// hands it to the tauri opener plugin (NOT a bare `Command::new` — the packaged
+/// app has no Homebrew PATH). The raw URL is local-only: it is never returned,
+/// logged, or echoed in an error.
+///
+/// Returns `true` if a frame was found, its captured URL was http(s), and the
+/// opener accepted it; `false` if the frame has no http(s) `browser_url` to open.
+#[tauri::command]
+pub async fn open_captured_url(
+    frame_id: i64,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<bool, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let infra = Arc::clone(&*state);
+    let raw_url = infra
+        .get_frame(frame_id)
+        .await
+        .map_err(|error| format!("failed to get frame {frame_id}: {error}"))?
+        .and_then(|frame| frame.metadata_snapshot)
+        .and_then(|snapshot| snapshot.browser_url);
+    let Some(raw_url) = raw_url else {
+        return Ok(false);
+    };
+    // Scheme gate: only ever hand http(s) to the OS opener. The raw URL never
+    // crosses into the error path or a log line.
+    let is_http = url::Url::parse(&raw_url)
+        .map(|url| matches!(url.scheme(), "http" | "https"))
+        .unwrap_or(false);
+    if !is_http {
+        return Ok(false);
+    }
+    app_handle
+        .opener()
+        .open_url(raw_url, None::<String>)
+        .map_err(|error| format!("failed to open captured url for frame {frame_id}: {error}"))?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub async fn get_nearest_earlier_equivalent_frame(
     request: GetNearestEarlierEquivalentFrameRequest,
@@ -5825,6 +5894,7 @@ mod tests {
             app_bundle_id: Some("com.example.Search".to_string()),
             app_name: Some("Search App".to_string()),
             window_title: Some("Search Window".to_string()),
+            browser_url: None,
             thumbnail_frame_id: 9,
             text_source_kind: "ocr".to_string(),
             secret_redaction_count: 0,

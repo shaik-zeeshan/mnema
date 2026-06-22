@@ -14,6 +14,7 @@ Use this skill to answer user questions from Mnema's local personal record throu
 - Require user authorization through Mnema. Before any data command, check `mnema access status`; if there is no active grant for this client, run `mnema access request --scope last-day --duration 24h` and wait for approval before continuing. If the CLI returns `authorization_required`, `authorization_timeout`, `authorization_denied`, or `app_unavailable`, stop and tell the user the exact Mnema approval action needed. Do not create or modify grants outside the Mnema app.
 - Prefer search snippets and concise synthesis. Use `show-text` only for a specific signed opaque result ID returned by `search` when the snippet is insufficient, and avoid pasting long OCR/transcript text unless requested.
 - Use `open` when the user wants to inspect the original record in Mnema. Do not open media files or export frame images yourself unless the user explicitly asks.
+- Do not invoke `open-url`. Opening a result's raw captured browser URL in the user's browser is a user-only action surfaced in the Mnema app, not an agent capability — Mnema's in-app Ask AI rejects it just as it rejects `open`. The raw URL never reaches the agent; you only ever see the guarded `context.url`. If the user wants to revisit the original page, tell them to use the open-in-browser button in Mnema rather than attempting it yourself.
 - Use project terms from `CONTEXT.md`: **Captured Frame**, **Audio Segment**, **Audio Transcription**, **Speaker Turn**, **Capture Session**, **Capture Segment**, and **Managed Storage Layout**.
 - Remember that **Scrub Preview** is not source-of-truth. For exact inspection, open the broker result in Mnema rather than relying on preview cache artifacts.
 
@@ -99,6 +100,7 @@ The bundled sidecar binary is named `mnema-cli`, but the user-facing installed c
 - `mnema show-text <resultId>`: return broker-visible derived text for one result.
 - `mnema timeline --from RFC3339 --to RFC3339 [--limit n] [--app appOrBundleId] [--window-title text]`: return broker-visible activity intervals for a bounded window. Without app/window filters this is audio-oriented; with either filter it returns matching screen intervals.
 - `mnema open <resultId>`: open Mnema to one result.
+- `mnema open-url <opaqueId>`: user-only. Opens the result's raw captured browser URL in the user's default browser, app-mediated by Mnema. This is **not** an agent capability — do not invoke it; Mnema's in-app Ask AI rejects it the same way it rejects `open`. Agents only ever see the guarded `context.url`, never the raw URL this resolves.
 
 Global options:
 
@@ -125,14 +127,14 @@ Data command output is an envelope:
 }
 ```
 
-For `search`, `data.results[]` contains `id`, `kind`, `snippet`, `startedAt`, `endedAt`, and optional `context`; current kinds map to `screenText` and `audioTranscript`. For `timeline`, `data.intervals[]` contains `kind`, `startedAt`, `endedAt`, `summary`, and optional `context`. Screen `context` is allowlisted to `appBundleId`, `appName`, and `windowTitle`; it does not include browser URL, paths, or raw metadata snapshots. For `show-text`, `data.text` contains broker-visible derived text. For `open`, `data.opened` reports whether Mnema was opened.
+For `search`, `data.results[]` contains `id`, `kind`, `snippet`, `startedAt`, `endedAt`, and optional `context`; current kinds map to `screenText` and `audioTranscript`. For `timeline`, `data.intervals[]` contains `kind`, `startedAt`, `endedAt`, `summary`, and optional `context`. Screen `context` is allowlisted to `appBundleId`, `appName`, `windowTitle`, and an optional guarded `url`; it does not include raw paths or raw metadata snapshots. The `url` is a sanitized host+path only — the broker strips the query string and fragment and redacts secret/token-shaped path segments before returning it, so it is safe to read but is **not** the raw captured URL. It appears only on screen results/intervals (audio carries no URL) and only when the underlying frame actually captured a URL. For `show-text`, `data.text` contains broker-visible derived text. For `open`, `data.opened` reports whether Mnema was opened.
 
 Structured error codes include `authorization_required`, `authorization_timeout`, `authorization_denied`, `app_unavailable`, `outside_grant_scope`, and `broker_operation_failed`.
 
 ## Output Guidance
 
 - Normalize `<mark>` tags from snippets into plain emphasis or remove them in final prose.
-- Treat `context.appName`, `context.appBundleId`, and `context.windowTitle` as broker-visible search context. Use them to disambiguate results, but avoid over-reporting window titles when they are not relevant to the user's question.
+- Treat `context.appName`, `context.appBundleId`, `context.windowTitle`, and `context.url` as broker-visible search context. Use them to disambiguate results, but avoid over-reporting window titles when they are not relevant to the user's question. `context.url` is a guarded host+path (query/fragment stripped, secrets/tokens redacted), not the raw captured URL; cite it as a hint about where the user was, and never present it as a clickable or complete link.
 - Do not expose config paths, grant file paths, raw database paths, or media paths in final answers unless directly relevant and requested.
 - Result `startedAt` / `endedAt` are UTC (`Z`-suffixed). Convert them to the user's local timezone before describing time-of-day or reasoning about which record is "first", "earliest", "latest", "morning", or "evening"; the raw UTC clock can fall on a different local date.
 - `search` and `timeline` results are not guaranteed to be in chronological order. For "first / earliest / last / latest" requests, sort the candidate results by `startedAt` and pick the extreme — never assume the first item in the response is the earliest. Widen the time window and raise `--limit` (and page with `nextCursor` when present) so the true earliest/latest is not cut off before you conclude.

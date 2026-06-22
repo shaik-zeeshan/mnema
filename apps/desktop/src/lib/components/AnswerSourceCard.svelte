@@ -10,7 +10,9 @@
     endedAt,
     sourceKind = null,
     thumbnailUrl = null,
+    url = null,
     onselect,
+    onopenurl,
   }: {
     kind: "frame" | "audio";
     appName?: string | null;
@@ -19,8 +21,23 @@
     endedAt: string;
     sourceKind?: "microphone" | "system" | null;
     thumbnailUrl?: string | null;
+    /** Guarded host+path of the captured page (frame sources only), or null. The
+     *  raw URL never reaches the UI; only the host is shown as the control label. */
+    url?: string | null;
     onselect: () => void;
+    /** Open the captured page in the browser (frame sources with a `url`). */
+    onopenurl?: () => void;
   } = $props();
+
+  // Label the open control with the host only (the substring before the first
+  // "/" of the guarded host+path); the full guarded form goes in the tooltip.
+  let openHost = $derived(kind === "frame" && url ? url.split("/")[0] : "");
+
+  function handleOpen(event: MouseEvent): void {
+    // Stop the surrounding card-select button from also firing.
+    event.stopPropagation();
+    onopenurl?.();
+  }
 
   // Fade the thumbnail image in once it decodes so it eases over the reserved
   // placeholder box instead of hard-popping (and so no layout shift occurs).
@@ -36,6 +53,10 @@
   let isMic = $derived(sourceKind === "microphone");
 </script>
 
+<!-- The card root is itself the <button> select target, so the "open in browser"
+     control cannot nest inside it (invalid HTML). This positioned wrapper makes
+     the card-button and the open-button DOM siblings. -->
+<div class="source-card-wrap">
 <button
   class="source-card"
   class:source-card--frame={kind === "frame"}
@@ -93,13 +114,39 @@
     <span class="source-card__time">{formatTimestampCompact(startedAt)}</span>
   </div>
 </button>
+{#if openHost}
+  <button
+    type="button"
+    class="source-card__open"
+    tabindex="-1"
+    title={`Open ${url} in browser`}
+    aria-label={`Open ${openHost} in browser`}
+    onclick={handleOpen}
+  >
+    <svg class="source-card__open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M5.5 2.5H2.5v9h9v-3" />
+      <path d="M8 2.5h3.5V6" />
+      <path d="M7 7l4.5-4.5" />
+    </svg>
+    <span class="source-card__open-host">{openHost}</span>
+  </button>
+{/if}
+</div>
 
 <style>
+  /* The card root is the select <button>, so the open control can't nest inside
+     it. This positioned wrapper is the fixed-width flex tile in the scrolling
+     strip; the card-button and the open-button are its DOM siblings. */
+  .source-card-wrap {
+    position: relative;
+    flex: 0 0 auto;
+    width: 208px;
+  }
+
   /* Horizontal answer-source card: a compact, fixed-width tile meant to sit in a
      horizontally-scrolling strip. Thumbnail on top, metadata stacked below. */
   .source-card {
-    flex: 0 0 auto;
-    width: 208px;
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -245,8 +292,69 @@
     white-space: nowrap;
   }
 
+  /* A quiet secondary affordance: muted host chip with an external-link glyph,
+     overlaid in the tile's top-right corner. It only saturates to the accent on
+     hover/focus so it never competes with the card's own hover/focus state. */
+  .source-card__open {
+    position: absolute;
+    top: 13px;
+    right: 13px;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: calc(100% - 26px);
+    padding: 1px 6px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 10px;
+    line-height: 1.6;
+    cursor: pointer;
+    opacity: 0;
+    transition:
+      opacity 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+
+  /* Reveal the control on tile hover/focus or whenever it itself is the focus
+     target, so it stays keyboard-reachable without cluttering resting cards. */
+  .source-card-wrap:hover .source-card__open,
+  .source-card-wrap:focus-within .source-card__open {
+    opacity: 1;
+  }
+
+  .source-card__open:hover,
+  .source-card__open:focus-visible {
+    outline: none;
+    opacity: 1;
+    border-color: var(--app-accent-border);
+    background: var(--app-surface-raised);
+    color: var(--app-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 12%, transparent);
+  }
+
+  .source-card__open-glyph {
+    flex: 0 0 auto;
+  }
+
+  .source-card__open-host {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .source-card {
+      transition: none;
+    }
+
+    .source-card__open {
       transition: none;
     }
   }

@@ -61,6 +61,9 @@ enum CommandKind {
     Open {
         opaque_result_id: String,
     },
+    OpenUrl {
+        opaque_result_id: String,
+    },
     Access {
         #[command(subcommand)]
         command: AccessCommand,
@@ -357,6 +360,18 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             )
             .await
         }
+        CommandKind::OpenUrl { opaque_result_id } => {
+            run_data_command(
+                "open-url",
+                &identity,
+                BrokeredCaptureRequest::OpenCapturedUrl {
+                    opaque_id: opaque_result_id,
+                },
+                cli.format,
+                cli.no_prompt,
+            )
+            .await
+        }
         CommandKind::Access { command } => {
             if cli.format.is_some() {
                 return Err(usage_error("--format is only supported for data commands"));
@@ -434,6 +449,22 @@ async fn run_data_command(
         "open" => {
             let BrokeredCaptureResponse::OpenInMnema(response) = response else {
                 return Err(broker_failure("unexpected open response"));
+            };
+            print_envelope(
+                command,
+                identity,
+                format,
+                &OpenData {
+                    id: response.opaque_id,
+                    opened: response.opened,
+                },
+            )
+        }
+        "open-url" => {
+            // App-mediated open of the result's raw captured URL. The raw URL is
+            // local-only — only whether it opened and the opaque id are printed.
+            let BrokeredCaptureResponse::OpenCapturedUrl(response) = response else {
+                return Err(broker_failure("unexpected open-url response"));
             };
             print_envelope(
                 command,
@@ -1011,6 +1042,7 @@ mod tests {
         .unwrap();
         Cli::try_parse_from(["mnema", "show-text", "f1.deadbeef"]).unwrap();
         Cli::try_parse_from(["mnema", "open", "f1.deadbeef"]).unwrap();
+        Cli::try_parse_from(["mnema", "open-url", "f1.deadbeef"]).unwrap();
     }
 
     #[test]
@@ -1061,6 +1093,7 @@ mod tests {
                     app_bundle_id: Some("com.example.Linear".to_string()),
                     app_name: Some("Linear".to_string()),
                     window_title: Some("Roadmap".to_string()),
+                    url: None,
                 }),
                 span_start_ms: None,
                 span_end_ms: None,
@@ -1090,6 +1123,7 @@ mod tests {
                     app_bundle_id: Some("com.example.Linear".to_string()),
                     app_name: Some("Linear".to_string()),
                     window_title: Some("Roadmap".to_string()),
+                    url: None,
                 }),
             }],
             limit: 1,

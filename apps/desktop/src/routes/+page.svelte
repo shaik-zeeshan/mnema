@@ -631,6 +631,11 @@
   }
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
+  // The current frame's host (the guarded host+path up to the first "/"); empty
+  // when the frame has no guarded URL. The raw URL never reaches the UI.
+  const currentFrameHost = $derived(
+    timelineActive?.url ? timelineActive.url.split("/")[0] : "",
+  );
   const timelineFrameById = $derived.by<Map<number, FrameDto>>(() => {
     const framesById = new Map<number, FrameDto>();
     for (const frame of timelineFrames) framesById.set(frame.id, frame);
@@ -3826,6 +3831,21 @@
       setFrameActionStatus(
         `Download failed: ${typeof err === "string" ? err : "file write was rejected"}`,
       );
+    }
+  }
+
+  // Open the current frame's captured http(s) page in the default browser via
+  // the brokered Rust command (the raw URL stays in Rust; only the guarded
+  // host+path ever reaches the UI). Best-effort — a missing/unopenable URL just
+  // does nothing.
+  async function openCurrentFrameUrl(): Promise<void> {
+    const frame = timelineActive;
+    if (!frame) return;
+    try {
+      await invoke("open_captured_url", { frameId: frame.id });
+      stageActionsMenuOpen = false;
+    } catch {
+      // Best-effort: silently no-op when the URL cannot be opened.
     }
   }
 
@@ -7075,6 +7095,22 @@
                 aria-label="Download active frame image"
                 title="Download image (D)"
               >download</button>
+              {#if currentFrameHost}
+                <button
+                  type="button"
+                  class="timeline__stage-action-menu-item timeline__stage-action-menu-item--open"
+                  onclick={openCurrentFrameUrl}
+                  title={`Open ${currentFrameHost} in browser`}
+                  aria-label={`Open ${currentFrameHost} in browser`}
+                >
+                  <svg class="timeline__stage-action-open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M5.5 2.5H2.5v9h9v-3" />
+                    <path d="M8 2.5h3.5V6" />
+                    <path d="M7 7l4.5-4.5" />
+                  </svg>
+                  <span class="timeline__stage-action-open-host">{currentFrameHost}</span>
+                </button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -9475,6 +9511,27 @@
     border-color: var(--app-border-hover);
     color: var(--app-text);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-border-hover) 32%, transparent);
+  }
+
+  /* The "open in browser" peer reuses the menu-item shell so it reads as a
+     sibling of copy/download. The host is a real domain (mixed case), so it
+     opts out of the items' uppercase label transform and lets a long host
+     ellipsize within the menu's bounded width. */
+  .timeline__stage-action-menu-item--open {
+    gap: 7px;
+    text-transform: none;
+    letter-spacing: 0.02em;
+  }
+
+  .timeline__stage-action-open-glyph {
+    flex: 0 0 auto;
+  }
+
+  .timeline__stage-action-open-host {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .timeline__stage-status {

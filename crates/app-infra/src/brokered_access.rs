@@ -19,6 +19,14 @@ use crate::{
     AUDIO_SEGMENT_SUBJECT_TYPE, FRAME_SUBJECT_TYPE,
 };
 
+// Read-time URL guard. The `guard_url` entry point turns a raw captured browser
+// URL into a sanitized, secret-redacted `host[:port]/path`. It is consumed both
+// internally (broker search/timeline context) and across crates (the desktop DTO
+// + Ask AI source mappers) via the crate-root `guard_browser_url` re-export.
+mod url_guard;
+
+pub use url_guard::guard_url;
+
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
 const BROKER_GRANTS_LOCK_FILE_NAME: &str = "broker-grants.lock";
 const BROKER_AUDIT_LOCK_FILE_NAME: &str = "broker-audit.lock";
@@ -238,6 +246,10 @@ pub struct BrokerSearchResultContext {
     pub app_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_title: Option<String>,
+    /// Guarded host+path of the page behind this result (read-time, sanitized
+    /// + secret-redacted). Cloud-facing; the raw URL never appears here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -258,6 +270,16 @@ pub struct BrokerShowTextResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerOpenInMnemaResponse {
+    pub opened: bool,
+    pub opaque_id: String,
+}
+
+/// Response to `open_captured_url`: an app-mediated handoff that opens the raw
+/// captured `browser_url` of a frame result in the default browser. The raw URL
+/// is local-only and is NEVER carried on this struct (only `opaque_id`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerOpenCapturedUrlResponse {
     pub opened: bool,
     pub opaque_id: String,
 }
@@ -361,6 +383,7 @@ pub enum BrokeredCaptureRequest {
     Timeline(BrokerTimelineRequest),
     RecallContext(BrokerRecallContextRequest),
     OpenInMnema { opaque_id: String },
+    OpenCapturedUrl { opaque_id: String },
 }
 
 impl BrokeredCaptureRequest {
@@ -372,6 +395,7 @@ impl BrokeredCaptureRequest {
             Self::Timeline(_) => Some("timeline"),
             Self::RecallContext(_) => Some("recall_context"),
             Self::OpenInMnema { .. } => Some("open_in_mnema"),
+            Self::OpenCapturedUrl { .. } => Some("open_captured_url"),
         }
     }
 }
@@ -385,6 +409,7 @@ pub enum BrokeredCaptureResponse {
     Timeline(BrokerTimelineResponse),
     RecallContext(BrokerRecallContextResponse),
     OpenInMnema(BrokerOpenInMnemaResponse),
+    OpenCapturedUrl(BrokerOpenCapturedUrlResponse),
     Error(BrokerErrorResponse),
 }
 
@@ -392,7 +417,7 @@ impl BrokeredCaptureResponse {
     fn result_count(&self) -> u32 {
         match self {
             Self::Search(response) => response.results.len() as u32,
-            Self::ShowText(_) | Self::OpenInMnema(_) => 1,
+            Self::ShowText(_) | Self::OpenInMnema(_) | Self::OpenCapturedUrl(_) => 1,
             Self::Timeline(response) => response.intervals.len() as u32,
             Self::RecallContext(response) => {
                 (response.conclusions.len() + response.activities.len()) as u32
@@ -477,13 +502,18 @@ impl BrokeredCaptureAccess {
     /// Unlike [`execute_for_identity`], Ask AI access is gated by the Ask AI Setting at the
     /// Tauri layer (fail-closed) rather than by a persisted broker grant, so this path injects
     /// a synthetic All Retained grant instead of loading disk grants. Only the agent's data
-    /// tools are permitted; `OpenInMnema` is an app-mediated handoff (ADR 0024) and is rejected.
+    /// tools are permitted; `OpenInMnema` and `OpenCapturedUrl` are app-mediated handoffs
+    /// (ADR 0024) and are rejected.
     pub async fn execute_for_ask_ai(
         &self,
         identity: BrokerClientIdentity,
         request: BrokeredCaptureRequest,
     ) -> Result<BrokeredCaptureResponse> {
-        if matches!(request, BrokeredCaptureRequest::OpenInMnema { .. }) {
+        if matches!(
+            request,
+            BrokeredCaptureRequest::OpenInMnema { .. }
+                | BrokeredCaptureRequest::OpenCapturedUrl { .. }
+        ) {
             return Ok(BrokeredCaptureResponse::Error(
                 BrokerErrorResponse::authorization_required(),
             ));
@@ -593,6 +623,51 @@ impl BrokeredCaptureAccess {
                         open_mnema_deep_link(&opaque_id)?;
                         Ok(BrokeredCaptureResponse::OpenInMnema(
                             BrokerOpenInMnemaResponse {
+                                opened: true,
+                                opaque_id,
+                            },
+                        ))
+                    }
+                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
+                }
+            }
+            BrokeredCaptureRequest::OpenCapturedUrl { opaque_id } => {
+                if opaque_capture_reference(&opaque_id).is_none() {
+                    return Ok(BrokeredCaptureResponse::Error(invalid_opaque_id_error()));
+                }
+                let infra = self.initialize_infra().await?;
+                match broker_authorize_opaque_reference(
+                    &self.config_dir,
+                    &infra,
+                    grants,
+                    &opaque_id,
+                )
+                .await?
+                {
+                    Ok(reference) => {
+                        // Only frame results can carry a captured browser URL;
+                        // audio results have none.
+                        let Some(frame_id) = reference.frame_id else {
+                            return Ok(BrokeredCaptureResponse::Error(no_openable_url_error()));
+                        };
+                        // Load the frame's RAW captured `browser_url`. It is
+                        // local-only: it is parsed + scheme-gated here and passed
+                        // straight to the OS opener — it NEVER enters a response
+                        // field, a log line, the audit record, or the auth channel.
+                        let raw_url = infra
+                            .get_frame(frame_id)
+                            .await?
+                            .and_then(|frame| frame.metadata_snapshot)
+                            .and_then(|snapshot| snapshot.browser_url);
+                        let Some(raw_url) = raw_url else {
+                            return Ok(BrokeredCaptureResponse::Error(no_openable_url_error()));
+                        };
+                        if !is_http_url(&raw_url) {
+                            return Ok(BrokeredCaptureResponse::Error(no_openable_url_error()));
+                        }
+                        open_external_url(&raw_url)?;
+                        Ok(BrokeredCaptureResponse::OpenCapturedUrl(
+                            BrokerOpenCapturedUrlResponse {
                                 opened: true,
                                 opaque_id,
                             },
@@ -1495,8 +1570,15 @@ async fn broker_frame_timeline(
     limit: u32,
 ) -> Result<Vec<BrokerTimelineInterval>> {
     let mut query = QueryBuilder::<Sqlite>::new(
+        // `frame_id` is a bare (non-aggregated) column selected alongside
+        // `MAX(id)`: SQLite resolves bare columns to the row that produced the
+        // bare `min()`/`max()`, so `representative_frame_id` is the frame_id of
+        // the same `MAX(id)` row that drives the interval's ordering — i.e. the
+        // interval's landing frame. Kept INTERNAL (never put on the wire
+        // struct); only its guarded url crosses the broker boundary read-time.
         "SELECT group_key, app_bundle_id, app_name, window_title, \
-                MIN(absolute_start_at) AS started_at, MAX(absolute_end_at) AS ended_at, MAX(id) AS sort_id \
+                MIN(absolute_start_at) AS started_at, MAX(absolute_end_at) AS ended_at, MAX(id) AS sort_id, \
+                frame_id AS representative_frame_id \
          FROM search_documents \
          WHERE anchor_type = 'frame' \
            AND julianday(absolute_end_at) >= julianday(",
@@ -1513,20 +1595,36 @@ async fn broker_frame_timeline(
     query.push_bind(limit as i64);
 
     let rows = query.build().fetch_all(infra.pool()).await?;
-    rows.into_iter()
-        .map(|row| {
-            let app_bundle_id: Option<String> = row.get("app_bundle_id");
-            let app_name: Option<String> = row.get("app_name");
-            let window_title: Option<String> = row.get("window_title");
-            Ok(BrokerTimelineInterval {
-                kind: "screen".to_string(),
-                started_at: row.get("started_at"),
-                ended_at: Some(row.get("ended_at")),
-                reason: None,
-                context: broker_search_result_context(app_bundle_id, app_name, window_title),
-            })
-        })
-        .collect()
+    let mut intervals = Vec::with_capacity(rows.len());
+    for row in rows {
+        let app_bundle_id: Option<String> = row.get("app_bundle_id");
+        let app_name: Option<String> = row.get("app_name");
+        let window_title: Option<String> = row.get("window_title");
+        // Read-time URL guard: load the representative (landing) frame's captured
+        // `browser_url` from its metadata snapshot and sanitize + secret-redact it
+        // before it leaves the broker boundary. The lookup is bounded by `limit`
+        // (one per interval), the raw frame id never crosses to the wire, and only
+        // guarded http(s) host+path survives — everything else guards to `None`.
+        let representative_frame_id: Option<i64> = row.get("representative_frame_id");
+        let url = match representative_frame_id {
+            Some(frame_id) => infra
+                .get_frame(frame_id)
+                .await?
+                .and_then(|frame| frame.metadata_snapshot)
+                .and_then(|snapshot| snapshot.browser_url)
+                .as_deref()
+                .and_then(url_guard::guard_url),
+            None => None,
+        };
+        intervals.push(BrokerTimelineInterval {
+            kind: "screen".to_string(),
+            started_at: row.get("started_at"),
+            ended_at: Some(row.get("ended_at")),
+            reason: None,
+            context: broker_search_result_context(app_bundle_id, app_name, window_title, url),
+        });
+    }
+    Ok(intervals)
 }
 
 const DEFAULT_RECALL_CONTEXT_LIMIT: u32 = 8;
@@ -2121,40 +2219,66 @@ fn outside_scope_error() -> BrokerErrorResponse {
     }
 }
 
+/// Error for `open_captured_url` when the authorized result has no broker-openable
+/// URL: no captured `browser_url`, an audio result (no URL), or a non-`http(s)`
+/// scheme. The raw URL is never echoed into the message.
+fn no_openable_url_error() -> BrokerErrorResponse {
+    BrokerErrorResponse {
+        error: BrokerAuthStatusKind::AuthorizationRequired,
+        message: "result has no openable http(s) URL".to_string(),
+    }
+}
+
+/// `true` only for `http`/`https` URLs. Used to gate `open_captured_url` so only
+/// web URLs are ever handed to the OS opener.
+fn is_http_url(raw_url: &str) -> bool {
+    url::Url::parse(raw_url)
+        .map(|url| matches!(url.scheme(), "http" | "https"))
+        .unwrap_or(false)
+}
+
 fn open_mnema_deep_link(opaque_id: &str) -> Result<()> {
     let url = format!("mnema://open/{opaque_id}");
+    open_external_url(&url)
+}
+
+/// Open an arbitrary URL in the platform default handler via the OS opener
+/// command. Used both for `mnema://` deep links and for the raw captured
+/// `browser_url` of `open_captured_url` — for the latter, the raw URL must reach
+/// only this function and the OS, never a response, log, audit, or auth channel.
+fn open_external_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        let status = std::process::Command::new("open").arg(&url).status()?;
+        let status = std::process::Command::new("open").arg(url).status()?;
         if status.success() {
             Ok(())
         } else {
             Err(AppInfraError::BrokeredAccess(format!(
-                "failed to open Mnema deep link with status {status}"
+                "failed to open URL with status {status}"
             )))
         }
     }
     #[cfg(target_os = "windows")]
     {
         let status = std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
+            .args(["/C", "start", "", url])
             .status()?;
         if status.success() {
             Ok(())
         } else {
             Err(AppInfraError::BrokeredAccess(format!(
-                "failed to open Mnema deep link with status {status}"
+                "failed to open URL with status {status}"
             )))
         }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let status = std::process::Command::new("xdg-open").arg(&url).status()?;
+        let status = std::process::Command::new("xdg-open").arg(url).status()?;
         if status.success() {
             Ok(())
         } else {
             Err(AppInfraError::BrokeredAccess(format!(
-                "failed to open Mnema deep link with status {status}"
+                "failed to open URL with status {status}"
             )))
         }
     }
@@ -2187,6 +2311,14 @@ fn map_search_response(
                     frame.app_bundle_id,
                     frame.app_name,
                     frame.window_title,
+                    // Read-time URL guard: the representative frame's captured
+                    // `browser_url` (from the metadata snapshot) is sanitized +
+                    // secret-redacted before it leaves the broker boundary. Only
+                    // http(s) URLs survive; everything else guards to `None`.
+                    frame
+                        .browser_url
+                        .as_deref()
+                        .and_then(url_guard::guard_url),
                 ),
                 // Frame results have no sub-segment audio anchor.
                 span_start_ms: None,
@@ -2228,14 +2360,16 @@ fn broker_search_result_context(
     app_bundle_id: Option<String>,
     app_name: Option<String>,
     window_title: Option<String>,
+    url: Option<String>,
 ) -> Option<BrokerSearchResultContext> {
-    if app_bundle_id.is_none() && app_name.is_none() && window_title.is_none() {
+    if app_bundle_id.is_none() && app_name.is_none() && window_title.is_none() && url.is_none() {
         return None;
     }
     Some(BrokerSearchResultContext {
         app_bundle_id,
         app_name,
         window_title,
+        url,
     })
 }
 
@@ -3145,6 +3279,7 @@ mod tests {
                     app_bundle_id: Some("com.example.Linear".to_string()),
                     app_name: Some("Linear".to_string()),
                     window_title: Some("Roadmap".to_string()),
+                    browser_url: None,
                     thumbnail_frame_id: 11,
                     text_source_kind: "direct".to_string(),
                     secret_redaction_count: 0,
@@ -3161,6 +3296,7 @@ mod tests {
                     app_bundle_id: None,
                     app_name: None,
                     window_title: None,
+                    browser_url: None,
                     thumbnail_frame_id: 12,
                     text_source_kind: "direct".to_string(),
                     secret_redaction_count: 0,
@@ -3218,9 +3354,181 @@ mod tests {
                 app_bundle_id: Some("com.example.Linear".to_string()),
                 app_name: Some("Linear".to_string()),
                 window_title: Some("Roadmap".to_string()),
+                url: None,
             })
         );
         assert_eq!(mapped.results[1].context, None);
+    }
+
+    /// Mint a `Frame` for a search-result fixture. The `browser_url` is carried on
+    /// the `FrameSearchResult` (read-time from the representative snapshot), not on
+    /// this `Frame`; `map_search_response` only reads the result-level field.
+    fn search_result_frame(id: i64) -> crate::Frame {
+        crate::Frame {
+            id,
+            session_id: "screen-session".to_string(),
+            file_path: format!("/tmp/frame-{id}.jpg"),
+            captured_at: "2026-05-17T10:00:00Z".to_string(),
+            width: None,
+            height: None,
+            equivalence: crate::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            metadata_snapshot: None,
+            created_at: "2026-05-17T10:00:00Z".to_string(),
+            updated_at: "2026-05-17T10:00:00Z".to_string(),
+        }
+    }
+
+    /// Build a single-frame `SearchCaptureResponse` whose representative frame
+    /// carries `browser_url`. This mirrors what `search.rs` populates read-time
+    /// from the representative frame's metadata snapshot.
+    fn frame_search_response_with_browser_url(
+        id: i64,
+        browser_url: Option<&str>,
+    ) -> SearchCaptureResponse {
+        SearchCaptureResponse {
+            normalized_query: "target".to_string(),
+            snapshot_document_id: 1,
+            frames: vec![crate::FrameSearchResult {
+                group_key: format!("frame:{id}"),
+                representative_frame: search_result_frame(id),
+                group_start_at: "2026-05-17T10:00:00Z".to_string(),
+                group_end_at: "2026-05-17T10:00:00Z".to_string(),
+                match_count: 1,
+                snippet: "frame target".to_string(),
+                app_bundle_id: Some("com.google.Chrome".to_string()),
+                app_name: Some("Google Chrome".to_string()),
+                window_title: Some("Tab".to_string()),
+                browser_url: browser_url.map(str::to_string),
+                thumbnail_frame_id: id,
+                text_source_kind: "direct".to_string(),
+                secret_redaction_count: 0,
+                has_secret_redactions: false,
+                found_by_meaning: false,
+            }],
+            audio: Vec::new(),
+            has_more_frames: false,
+            has_more_audio: false,
+            applied_refinements: SearchCaptureRefinements::default(),
+            residual_query: "target".to_string(),
+            parse_errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn broker_search_frame_url_is_guarded_preserving_commit_sha() {
+        // Historical-coverage proof: a frame whose snapshot carries a browser_url
+        // is mapped at broker-return time regardless of when it was captured —
+        // there is no index column or backfill, so any frame with a snapshot
+        // browser_url is covered for free. A commit SHA must survive the guard.
+        let secret = b"test broker opaque secret with enough bytes";
+        let response = frame_search_response_with_browser_url(
+            11,
+            Some("https://github.com/owner/repo/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"),
+        );
+
+        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+
+        let context = mapped.results[0]
+            .context
+            .as_ref()
+            .expect("frame result should carry app/window context");
+        assert_eq!(
+            context.url.as_deref(),
+            Some("github.com/owner/repo/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"),
+        );
+    }
+
+    #[test]
+    fn broker_search_frame_url_redacts_armed_token_segment() {
+        let secret = b"test broker opaque secret with enough bytes";
+        let response = frame_search_response_with_browser_url(
+            11,
+            Some("https://site.com/reset-password/AbC9xK2mP4qR7sT0"),
+        );
+
+        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+
+        let url = mapped.results[0]
+            .context
+            .as_ref()
+            .and_then(|context| context.url.as_deref())
+            .expect("guarded url should be present");
+        assert!(
+            url.contains("reset-password"),
+            "credential keyword stays visible: {url}"
+        );
+        assert!(
+            !url.contains("AbC9xK2mP4qR7sT0"),
+            "armed token must be redacted: {url}"
+        );
+    }
+
+    #[test]
+    fn broker_search_frame_without_browser_url_has_context_but_no_url() {
+        let secret = b"test broker opaque secret with enough bytes";
+        let response = frame_search_response_with_browser_url(11, None);
+
+        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+
+        let context = mapped.results[0]
+            .context
+            .as_ref()
+            .expect("app/window context should still be present");
+        assert_eq!(context.app_name.as_deref(), Some("Google Chrome"));
+        assert_eq!(context.url, None);
+    }
+
+    #[test]
+    fn broker_search_audio_result_has_no_context_or_url() {
+        let secret = b"test broker opaque secret with enough bytes";
+        let audio_segment = crate::AudioSegment {
+            id: 22,
+            source_kind: AudioSegmentSourceKind::Microphone,
+            source_session_id: "mic-session".to_string(),
+            segment_index: 1,
+            file_path: "/tmp/audio.m4a".to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: "2026-05-17T10:00:20Z".to_string(),
+            capture_segment_id: None,
+            created_at: "2026-05-17T10:00:00Z".to_string(),
+            updated_at: "2026-05-17T10:00:00Z".to_string(),
+        };
+        let response = SearchCaptureResponse {
+            normalized_query: "target".to_string(),
+            snapshot_document_id: 1,
+            frames: Vec::new(),
+            audio: vec![crate::AudioSearchResult {
+                group_key: "audio:22:0-1000".to_string(),
+                audio_segment,
+                source_kind: AudioSegmentSourceKind::Microphone,
+                span_start_ms: 0,
+                span_end_ms: 1_000,
+                absolute_start_at: "2026-05-17T10:00:00Z".to_string(),
+                absolute_end_at: "2026-05-17T10:00:01Z".to_string(),
+                match_count: 1,
+                snippet: "audio target".to_string(),
+                aligned_frame: None,
+                secret_redaction_count: 0,
+                has_secret_redactions: false,
+                found_by_meaning: false,
+            }],
+            has_more_frames: false,
+            has_more_audio: false,
+            applied_refinements: SearchCaptureRefinements::default(),
+            residual_query: "target".to_string(),
+            parse_errors: Vec::new(),
+        };
+
+        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+
+        assert_eq!(mapped.results[0].kind, "audio");
+        assert_eq!(mapped.results[0].context, None);
     }
 
     #[test]
@@ -3318,6 +3626,177 @@ mod tests {
                     .as_ref()
                     .and_then(|context| context.window_title.as_deref()),
                 Some("Roadmap Grooming")
+            );
+        });
+    }
+
+    /// Seed one OCR'd frame (its metadata snapshot optionally carrying
+    /// `browser_url`) so it lands a `search_documents` frame row the timeline can
+    /// group. Returns the inserted frame id. Mirrors the OCR enqueue→claim→complete
+    /// dance the other timeline tests use to project a frame into `search_documents`.
+    async fn seed_timeline_frame_with_browser_url(
+        infra: &AppInfra,
+        save_dir: &std::path::Path,
+        file_name: &str,
+        captured_at: &str,
+        browser_url: Option<&str>,
+    ) -> i64 {
+        let frame = infra
+            .insert_frame(
+                &NewFrame::new(
+                    "screen-session",
+                    save_dir.join(file_name).display().to_string(),
+                    captured_at,
+                )
+                .with_metadata_snapshot(capture_metadata::FrameMetadataSnapshot {
+                    app_bundle_id: Some("com.google.Chrome".to_string()),
+                    app_name: Some("Google Chrome".to_string()),
+                    window_title: Some("Pull Request".to_string()),
+                    window_id: None,
+                    browser_url: browser_url.map(str::to_string),
+                    display_id: Some(1),
+                    metadata_redaction_reason: None,
+                    metadata_redaction_source_id: None,
+                }),
+            )
+            .await
+            .expect("frame should insert");
+        let job = infra
+            .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+            .await
+            .expect("OCR job should enqueue");
+        let running = infra
+            .claim_queued_processing_job(job.id)
+            .await
+            .expect("OCR job should claim")
+            .expect("OCR job should exist");
+        infra
+            .complete_processing_job(
+                running.id,
+                &ProcessingResultDraft::new().with_result_text("timeline body"),
+            )
+            .await
+            .expect("OCR job should complete");
+        frame.id
+    }
+
+    #[test]
+    fn broker_timeline_interval_carries_guarded_url_of_representative_frame() {
+        // Page-granular accuracy + read-time URL guard: the interval's url is the
+        // representative frame's captured `browser_url`, sanitized through the
+        // guard (host+path only). The commit SHA must survive (it is page content,
+        // not a credential).
+        run_async_test(async {
+            let config_dir = temp_config_dir("timeline-url-guard");
+            let save_dir = temp_save_dir("timeline-url-guard");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            seed_timeline_frame_with_browser_url(
+                &infra,
+                &save_dir,
+                "timeline-commit.jpg",
+                "2026-05-17T10:00:00Z",
+                Some("https://github.com/owner/repo/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"),
+            )
+            .await;
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_timeline(
+                &infra,
+                &[grant],
+                BrokerTimelineRequest {
+                    from: "2026-05-17T00:00:00Z".to_string(),
+                    to: "2026-05-18T00:00:00Z".to_string(),
+                    limit: Some(5),
+                    app: None,
+                    window_title: None,
+                },
+            )
+            .await
+            .expect("timeline should run")
+            .expect("timeline should be authorized");
+
+            let screen = response
+                .intervals
+                .iter()
+                .find(|interval| interval.kind == "screen")
+                .expect("screen interval should be present");
+            assert_eq!(
+                screen
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.url.as_deref()),
+                Some("github.com/owner/repo/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"),
+                "interval url is the representative frame's guarded host+path (SHA preserved)"
+            );
+        });
+    }
+
+    #[test]
+    fn broker_timeline_interval_without_browser_url_keeps_context_but_no_url() {
+        // A representative frame with no captured browser_url yields an interval
+        // that still carries app/window context but no url.
+        run_async_test(async {
+            let config_dir = temp_config_dir("timeline-no-url");
+            let save_dir = temp_save_dir("timeline-no-url");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            seed_timeline_frame_with_browser_url(
+                &infra,
+                &save_dir,
+                "timeline-no-url.jpg",
+                "2026-05-17T10:00:00Z",
+                None,
+            )
+            .await;
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_timeline(
+                &infra,
+                &[grant],
+                BrokerTimelineRequest {
+                    from: "2026-05-17T00:00:00Z".to_string(),
+                    to: "2026-05-18T00:00:00Z".to_string(),
+                    limit: Some(5),
+                    app: None,
+                    window_title: None,
+                },
+            )
+            .await
+            .expect("timeline should run")
+            .expect("timeline should be authorized");
+
+            let screen = response
+                .intervals
+                .iter()
+                .find(|interval| interval.kind == "screen")
+                .expect("screen interval should be present");
+            let context = screen
+                .context
+                .as_ref()
+                .expect("interval keeps app/window context");
+            assert_eq!(context.app_name.as_deref(), Some("Google Chrome"));
+            assert_eq!(
+                context.url, None,
+                "no captured browser_url means no interval url"
             );
         });
     }
@@ -3615,6 +4094,95 @@ mod tests {
             assert_eq!(
                 response,
                 BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required())
+            );
+        });
+    }
+
+    #[test]
+    fn ask_ai_rejects_open_captured_url_as_non_data_tool() {
+        run_async_test(async {
+            let access =
+                BrokeredCaptureAccess::from_config_dir(temp_config_dir("ask-ai-open-url").clone());
+            let identity =
+                BrokerClientIdentity::new("PI", BrokerClientIdentitySource::Inferred).unwrap();
+
+            let response = access
+                .execute_for_ask_ai(
+                    identity,
+                    BrokeredCaptureRequest::OpenCapturedUrl {
+                        opaque_id: "anything".into(),
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response,
+                BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required())
+            );
+        });
+    }
+
+    #[test]
+    fn is_http_url_gates_to_http_https() {
+        assert!(is_http_url("http://example.com/path"));
+        assert!(is_http_url("https://example.com/path"));
+        assert!(!is_http_url("ftp://example.com/file"));
+        assert!(!is_http_url("file:///etc/passwd"));
+        assert!(!is_http_url("mnema://open/abc"));
+        assert!(!is_http_url("not a url"));
+        assert!(!is_http_url(""));
+    }
+
+    #[test]
+    fn open_captured_url_rejects_audio_result_with_no_url() {
+        // An authorized audio result has no `frame_id`, so there is no captured
+        // browser URL to open — the handler must error before any opener is reached.
+        run_async_test(async {
+            let config_dir = temp_config_dir("open-captured-url-audio");
+            let save_dir = temp_save_dir("open-captured-url-audio");
+            write_recording_settings(&config_dir, &save_dir);
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let now = now_unix_ms();
+            let started_at = format_unix_ms(now.saturating_sub(60 * 1000));
+            let ended_at = format_unix_ms(now);
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    save_dir.join("audio.m4a").display().to_string(),
+                    started_at,
+                    ended_at,
+                ))
+                .await
+                .expect("segment should insert");
+            // Grant + identity must share a normalized label so `execute` resolves
+            // active grants for the caller before the handler runs.
+            let grant = create_grant(
+                &config_dir,
+                "mnema-cli",
+                1,
+                BrokerGrantScope::RecentDays { days: 1 },
+            )
+            .expect("grant should create");
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+            let opaque_id = encode_signed_opaque_id("audio", segment.id, Some(&grant.id), &secret);
+
+            let access = BrokeredCaptureAccess::from_config_dir(config_dir.clone());
+            let response = access
+                .execute(
+                    "mnema-cli",
+                    BrokeredCaptureRequest::OpenCapturedUrl { opaque_id },
+                )
+                .await
+                .expect("open-captured-url should run");
+
+            assert_eq!(
+                response,
+                BrokeredCaptureResponse::Error(no_openable_url_error())
             );
         });
     }

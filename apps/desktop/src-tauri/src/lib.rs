@@ -515,6 +515,7 @@ pub fn run() {
             app_infra::get_audio_segment,
             app_infra::get_audio_segment_media,
             app_infra::get_frame,
+            app_infra::open_captured_url,
             app_infra::get_earliest_earlier_equivalent_frame,
             app_infra::get_nearest_earlier_equivalent_frame,
             app_infra::get_timeline_window_around_frame,

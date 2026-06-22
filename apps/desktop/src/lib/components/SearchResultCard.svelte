@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import type { FrameSearchResultDto, AudioSearchResultDto } from "$lib/types/app-infra";
   import { parseSearchSnippet } from "$lib/search-snippet";
   import { formatTimestampCompact } from "$lib/format-time";
@@ -38,9 +39,32 @@
     const s = total % 60;
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
+
+  // The "open in browser" affordance shows only the host (the substring of the
+  // guarded host+path before the first "/"); the raw URL never reaches the UI.
+  let openHost = $derived(
+    kind === "frame" && frame?.url ? frame.url.split("/")[0] : "",
+  );
+
+  // Open the captured http(s) page in the default browser via the brokered Rust
+  // command (the raw URL stays in Rust). Stop propagation so the surrounding
+  // card-select button does not also fire. Best-effort.
+  async function openCapturedUrl(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    if (kind !== "frame" || !frame) return;
+    try {
+      await invoke("open_captured_url", { frameId: frame.thumbnailFrameId });
+    } catch {
+      // Best-effort: a missing/unopenable URL simply does nothing.
+    }
+  }
 </script>
 
 {#if kind === "frame" && frame}
+  <!-- The card root is itself the <button> select target, so the "open in
+       browser" control cannot nest inside it (invalid HTML). It lives as an
+       absolutely-positioned sibling overlay in this positioned wrapper. -->
+  <div class="search-card-wrap">
   <button
     class="search-card search-card--frame"
     class:search-card--selected={selected}
@@ -88,6 +112,24 @@
       </div>
     </div>
   </button>
+  {#if openHost}
+    <button
+      type="button"
+      class="search-card__open"
+      tabindex="-1"
+      title={`Open ${frame.url} in browser`}
+      aria-label={`Open ${openHost} in browser`}
+      onclick={openCapturedUrl}
+    >
+      <svg class="search-card__open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5.5 2.5H2.5v9h9v-3" />
+        <path d="M8 2.5h3.5V6" />
+        <path d="M7 7l4.5-4.5" />
+      </svg>
+      <span class="search-card__open-host">{openHost}</span>
+    </button>
+  {/if}
+  </div>
 {/if}
 
 {#if kind === "audio" && audio}
@@ -353,8 +395,78 @@
     color: var(--app-warn);
   }
 
+  /* The card root is the select <button>, so the open control can't nest inside
+     it. This positioned wrapper makes the card-button and the open-button DOM
+     siblings, with the open control overlaid in the top-right corner. */
+  .search-card-wrap {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* A quiet secondary affordance: muted host chip with an external-link glyph,
+     overlaid in the card's top-right corner. It only saturates to the accent on
+     hover/focus so it never competes with the card's own selected highlight. */
+  .search-card__open {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 60%;
+    padding: 1px 6px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 10px;
+    line-height: 1.6;
+    cursor: pointer;
+    opacity: 0;
+    transition:
+      opacity 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+
+  /* Reveal the control on card hover/focus or whenever it itself is the focus
+     target, so it stays keyboard-reachable without cluttering resting cards. */
+  .search-card-wrap:hover .search-card__open,
+  .search-card-wrap:focus-within .search-card__open {
+    opacity: 1;
+  }
+
+  .search-card__open:hover,
+  .search-card__open:focus-visible {
+    outline: none;
+    opacity: 1;
+    border-color: var(--app-accent-border);
+    background: var(--app-surface-raised);
+    color: var(--app-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 12%, transparent);
+  }
+
+  .search-card__open-glyph {
+    flex: 0 0 auto;
+  }
+
+  .search-card__open-host {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .search-card {
+      transition: none;
+    }
+
+    .search-card__open {
       transition: none;
     }
   }

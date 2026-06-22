@@ -694,6 +694,18 @@
     }
   }
 
+  // Open the captured page behind a frame source in the default browser via the
+  // brokered Rust command. Frame sources only (audio has frameId/url null). The
+  // raw URL stays in Rust; the UI never sees it. Best-effort.
+  async function openSourceUrl(source: AskAiSource): Promise<void> {
+    if (source.frameId == null) return;
+    try {
+      await invoke("open_captured_url", { frameId: source.frameId });
+    } catch {
+      // Best-effort: a missing/unopenable URL simply does nothing.
+    }
+  }
+
   // ── Versioned update transport (the SOLE Ask AI stream listener) ─────────
   // The backend owns the render model and streams versioned `TurnUpdate` ops via
   // `ask_ai_update`. The frontend applies each op in order; a version gap (we
@@ -1142,7 +1154,9 @@
                                     thumbnailUrl={s.frameId != null
                                       ? (thumbnailCache.get(s.frameId) ?? null)
                                       : null}
+                                    url={s.url}
                                     onselect={() => void selectSource(s)}
+                                    onopenurl={() => void openSourceUrl(s)}
                                   />
                                 {/each}
                               </div>
@@ -1160,6 +1174,7 @@
                                     startedAt={s.startedAt}
                                     endedAt={s.endedAt}
                                     sourceKind={s.sourceKind}
+                                    url={s.url}
                                     onselect={() => void selectSource(s)}
                                   />
                                 {/each}

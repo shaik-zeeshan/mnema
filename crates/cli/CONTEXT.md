@@ -71,19 +71,20 @@ _Avoid_: all data, full disk access, raw capture access
 - Mnema CLI structured **Broker Output Format** responses use a versioned top-level envelope in V1 rather than untagged command payloads.
 - The V1 Mnema CLI structured output envelope includes schema version, command name, resolved **Broker Client Identity** metadata, and command-specific data.
 - Mnema CLI search output returns opaque result `id`, kind, redacted snippet, startedAt, endedAt, limit, and nullable nextCursor in V1.
-- Mnema CLI search output should not include app names, window titles, browser URLs, media paths, or raw database identifiers in V1.
+- Mnema CLI search output returns **Search Context** on screen results — app name, window title, and a guarded host+path **Broker URL Context** — but never media paths or raw database identifiers. (Supersedes the original V1 stance that excluded app/window/URL metadata: the app-name/window-title context channel already ships, and the guarded host+path rides on it; see ADR 0038.)
 - Mnema CLI timeline output returns coarse source/time intervals, limit, and nullable nextCursor in V1.
-- Mnema CLI timeline interval output may include a nullable summary field, but V1 should not return app names, window titles, browser URLs, media paths, or raw database identifiers.
+- Mnema CLI timeline interval output may include a nullable summary field and the same **Search Context** as search results (app name, window title, and a guarded host+path **Broker URL Context** from the interval's representative frame), but never media paths or raw database identifiers.
 - Mnema CLI show-text output returns one opaque result `id`, kind, and full redacted text for that result in V1.
 - Mnema CLI show-text should return a structured error rather than an empty successful text payload when the result is invalid, unavailable, revoked, expired, or outside the active grant scope.
 - Mnema CLI `open` structured output returns the opaque result `id` and opened state in V1, without returning media paths or deep-link URLs.
+- Mnema CLI `open-url` is the app-mediated action that opens a result's raw captured browser URL in the user's default browser, backed by the `OpenCapturedUrl` broker request; its structured output returns the opaque result `id` and opened state only, never the raw URL, media paths, or deep-link URLs. The raw URL is local-only — it reaches only the OS opener and never a broker response, log, audit, or auth channel.
 - Mnema CLI TOON output should use standard encoder behavior in V1 rather than custom compacting options that create a Mnema-specific dialect.
 - Mnema CLI YAML output should use `yaml_serde` or another currently maintained Serde-compatible YAML encoder verified during implementation.
 - Mnema CLI YAML output should not use deprecated or advisory-flagged YAML encoders such as `serde_yaml` or `serde_yml`.
 - Mnema CLI output serialization failures are operational CLI errors rather than broker response errors.
 - Mnema CLI treats **Broker Output Format** as a global presentation option, but commands that do not support formatted output should reject it rather than silently ignoring it.
 - Mnema CLI non-data commands such as access requests and installation/status helpers may use human-readable output instead of structured broker response output.
-- Mnema CLI data commands include search, timeline, show-text, and `open` for the app-mediated open action; non-data commands include access request, help, version, and CLI helper/status commands.
+- Mnema CLI data commands include search, timeline, show-text, `open` for the app-mediated open-in-Mnema action, and `open-url` for the app-mediated open-the-captured-URL-in-a-browser action; non-data commands include access request, help, version, and CLI helper/status commands. Both `open` and `open-url` are user-only app-mediated handoffs, not agent tools: the in-app Ask AI agent rejects both, so neither appears in its tool surface.
 - Mnema CLI access status is human-readable by default but may use **Broker Output Format** for scripts when explicitly requested.
 - Mnema CLI access status focuses on active **CLI Access Grant** state by default, while **Access Settings** owns fuller inactive grant and access history review.
 - Mnema CLI access status defaults to the resolved **Broker Client Identity** and may show all active identities only when explicitly requested.
@@ -126,7 +127,7 @@ _Avoid_: all data, full disk access, raw capture access
 - **Broker Authorization Channel** V1 is macOS-first while keeping the domain boundary abstract enough for future Windows or Linux local IPC implementations.
 - The existing broker authorization request file is a compatibility fallback for **Broker Authorization Channel** startup or unavailable-app cases, not the primary authorization flow.
 - First **Brokered Capture Access** authorization requires Mnema UI; standalone CLI access may use existing valid grants but should return `authorization_required` when no valid grant exists.
-- **Brokered Capture Access** V1 grants are read-only, redacted, time-bounded, revocable, and limited to searchable-content commands such as search, show-text, timeline, and the CLI `open` action.
+- **Brokered Capture Access** V1 grants are read-only, redacted, time-bounded, revocable, and limited to searchable-content commands such as search, show-text, timeline, and the app-mediated CLI `open` and `open-url` actions.
 - **Brokered Capture Access** V1 grants apply to the full V1 broker data command set rather than per-command permissions.
 - **Brokered Capture Access** grants may be time-scoped, and **All Retained Broker Scope** requires an explicit user choice in an expanded authorization surface rather than the default one-click prompt.
 - **Brokered Capture Access** authorization V1 offers `Last day` and **All Retained Broker Scope** as scope choices, and `1 hour`, `24 hours`, and `7 days` as duration choices; V1 does not offer month-long or permanent grants.
@@ -153,7 +154,7 @@ _Avoid_: all data, full disk access, raw capture access
 - **Brokered Capture Access** must not expose original-media paths by default because agents could use those paths to recover secrets from frame, video, or audio media outside the redacted searchable-text path.
 - **Brokered Capture Access** may provide an app-mediated open action for opaque result identifiers so original media inspection stays mediated by app UI warnings and confirmations.
 - **Brokered Capture Access** V1 does not include privileged original-media export, media-path return, raw DB dump, or raw OCR/transcript dump commands.
-- **Brokered Capture Access** may support app, source, and time refinements, but should minimize returned app/window/browser metadata and avoid returning full browser URLs by default.
+- **Brokered Capture Access** may support app, source, and time refinements and returns app/window **Search Context** plus a guarded host+path **Broker URL Context**, but never a full browser URL — the query string and fragment are always stripped at the boundary and token-shaped path segments redacted (see ADR 0038).
 - **CLI Access** lives under **Access Settings** for Mnema CLI installation, grant inspection, revocation, and non-content access history; it manages existing grants rather than manually creating new standing grants in V1.
 - **Access Settings** owns Mnema CLI installation, reinstall, and status detection controls.
 - **Access Settings** should distinguish managed Mnema CLI installation, bundled sidecar availability, shell PATH discovery, and unmanaged `mnema` commands rather than exposing a single installed/not-installed state.
@@ -163,7 +164,8 @@ _Avoid_: all data, full disk access, raw capture access
 - **Access Settings** may provide PATH guidance for Mnema CLI setup but should not automatically edit shell startup files in V1.
 - User-facing Mnema CLI commands and help should avoid `broker` terminology; broker remains internal domain and code language where needed.
 - The CLI `open` command is an app-mediated broker command that may launch or focus the desktop app and should re-authorize the opaque result before navigation.
+- The CLI `open-url` command is the sibling app-mediated broker command that opens the result's raw captured browser URL in the user's default browser; like `open` it re-authorizes the opaque result before acting, but it never surfaces the raw URL — only the OS opener receives it.
 - `mnema-broker` is not a user-facing V1 binary.
 - Denied or unavailable **Broker Authorization Channel** responses use stable reason codes such as userCancelled, closed, onboardingRequired, requestSuperseded, busy, timeout, appUnavailable, unsupportedVersion, and invalidRequest.
 - The in-app AI chat surface (PI Agent SDK) is a **Brokered Capture Access** consumer, not a new data-access path: it reads retained capture content only through the redacted, retention-aware broker policy/query code that backs the CLI data commands, reusing them rather than reaching app-infra rows or media directly. Redaction applies even though the agent runs inside Mnema because the context it is given leaves the machine to PI's cloud model, which is the same cloud boundary that justifies broker redaction for external agents.
-- The in-app **Ask AI** agent's tool surface is exactly the broker data command set (`search`, `timeline`, `show-text`), so the in-app PI tool contract is identical to the external-agent contract documented in the `mnema-data` skill rather than a separate in-app tool API.
+- The in-app **Ask AI** agent's tool surface is exactly the broker data command set (`search`, `timeline`, `show-text`), so the in-app PI tool contract is identical to the external-agent contract documented in the `mnema-data` skill rather than a separate in-app tool API. The app-mediated `open`/open-in-Mnema and `open-url`/open-captured-URL actions are user-only and deliberately excluded — Ask AI rejects both, never exposing them as agent tools.

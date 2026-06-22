@@ -22,6 +22,7 @@ secret-redaction = { path = "../secret-redaction" }
 chrono = "0.4"
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+log = "0.4"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
@@ -38,6 +39,7 @@ sqlite-vec = "=0.1.9"
 thiserror = "2"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread"] }
+url = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cidre = { version = "0.15", default-features = false, features = ["vn", "blocks", "cm", "cv", "macos_15_0"] }
