@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main, onboarding, settings, debug, and quick recall windows",
-  "windows": ["main", "onboarding", "settings", "debug", "quick-recall"],
+  "description": "Capability for the main, onboarding, debug, and quick recall windows",
+  "windows": ["main", "onboarding", "debug", "quick-recall"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

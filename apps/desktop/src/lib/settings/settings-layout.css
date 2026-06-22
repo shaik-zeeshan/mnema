@@ -1,0 +1,639 @@
+/* Settings layout — shell, sidebar rail, footer, content/scroll, sidebar head,
+ * back-to-app, collapsed rail, status strip. First part of the shared Settings
+ * stylesheet.
+ *
+ * The Settings styles (a verbatim move of the legacy settings <style> body
+ * during shell-ification) are split across cohesive concern files, each under
+ * the 800-line cap, and imported by the shell `routes/settings/+page.svelte` in
+ * SOURCE ORDER — that order is load-bearing for the cascade (theme overrides
+ * must load last). The five parts are:
+ *   settings-layout.css   — shell / rail / scroll layout (this file)
+ *   settings-groups.css   — settings groups & bordered sub-blocks
+ *   settings-controls.css — shared controls + notices viewer
+ *   settings-blocks.css   — capture-config blocks (resolution/bitrate/CLI/etc.)
+ *   settings-theme.css    — [data-theme="light"] overrides
+ *
+ * Every selector is namespaced under `.settings-shell` (the shell root) so the
+ * rules never leak to other surfaces (Insights, Debug) that reuse generic class
+ * names. @keyframes stay global (referenced by name). The `.settings-shell`
+ * root rule itself lives on the shell component's own <style>. */
+
+  /* ── Settings shell ───────────────────────────────────────────────────
+     Two columns: a fixed nav rail on the left, one scrolling content pane
+     on the right. The shell is the sole child of `.app-content` (a flex
+     column with `min-height: 0`), so `flex: 1` + `min-height: 0` hand the
+     leftover height down to `.settings-scroll`, which owns the overflow —
+     the window and rail never scroll. */
+  
+
+  /* ── Sidebar rail ─────────────────────────────────────────────────── */
+  .settings-shell .settings-sidebar {
+    position: relative;
+    flex: 0 0 230px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    gap: 14px;
+    padding-right: 18px;
+    /* Only flex-basis + padding animate on collapse. Labels are toggled, not
+       reflowed, so this stays a single cheap interpolation. */
+    transition:
+      flex-basis 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+      padding 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Rail divider: a dashed hairline that fades toward the top and bottom
+     edges. Uses a repeating gradient for the dashes and a mask for the fade. */
+  .settings-shell .settings-sidebar::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 1px;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 3px,
+      var(--app-border-strong) 3px,
+      var(--app-border-strong) 8px
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black 14%,
+      black 86%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black 14%,
+      black 86%,
+      transparent
+    );
+  }
+
+  .settings-shell .settings-sidebar--collapsed {
+    flex-basis: 60px;
+    padding-right: 8px;
+  }
+
+  /* The nav list scrolls on its own if the categories ever outgrow the
+     rail; the brand and capture footer stay pinned. */
+  .settings-shell .settings-nav {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .settings-shell .settings-nav__list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 1px;
+  }
+
+  .settings-shell .settings-nav__item {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    padding: 9px 11px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    color: var(--app-text-muted);
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+
+  .settings-shell .settings-nav__item:hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+
+  .settings-shell .settings-nav__item:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .settings-shell .settings-nav__item--active, .settings-shell .settings-nav__item--active:hover {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+  }
+
+  .settings-shell .settings-nav__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+
+  .settings-shell .settings-nav__item:hover .settings-nav__icon {
+    color: var(--app-text-strong);
+    border-color: var(--app-border-strong);
+  }
+
+  .settings-shell .settings-nav__item--active .settings-nav__icon {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+    box-shadow: 0 0 10px -3px var(--app-accent-glow);
+  }
+
+  .settings-shell .settings-nav__icon svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .settings-shell .settings-nav__text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .settings-shell .settings-nav__label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1.25;
+    color: inherit;
+  }
+
+  .settings-shell .settings-nav__hint {
+    font-size: 10px;
+    line-height: 1.3;
+    letter-spacing: 0.01em;
+    color: var(--app-text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .settings-shell .settings-nav__item--active .settings-nav__hint {
+    color: color-mix(in srgb, var(--app-accent) 55%, var(--app-text-muted));
+  }
+
+  /* ── Sidebar footer: at-a-glance capture summary ──────────────────── */
+  .settings-shell .settings-sidebar__foot {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    /* Left gutter matches the nav-icon column (1px list + 11px item) so the
+       summary lines up under the categories above it. */
+    padding: 12px 2px 0 12px;
+  }
+
+  /* Footer divider: a dashed hairline that fades at both ends, matching the
+     rail divider treatment. */
+  .settings-shell .settings-sidebar__foot::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: repeating-linear-gradient(
+      to right,
+      transparent 0px,
+      transparent 3px,
+      var(--app-border-strong) 3px,
+      var(--app-border-strong) 8px
+    );
+    -webkit-mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 22%,
+      black 78%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 22%,
+      black 78%,
+      transparent
+    );
+  }
+
+  .settings-shell .settings-sidebar__foot-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+  }
+
+  /* ── Content pane + scroll region ─────────────────────────────────── */
+  .settings-shell .settings-content {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  /* A plain BLOCK scroll container — deliberately not flex. One tab panel
+     renders at a time, and a flex child that is itself a flex column can be
+     collapsed by the default `flex-shrink: 1` down to the container height; the
+     scroll container then sees `scrollHeight === clientHeight`, shows no
+     scrollbar, and clips the overflow instead of scrolling it (the bottom-cut
+     bug). As a block container it measures the panel's full height and scrolls.
+     Horizontal padding keeps content clear of the scrollbar gutter. */
+  .settings-shell .settings-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 8px 24px 0;
+  }
+
+  /* The centered content column: capped to a comfortable reading width and
+     centered with auto margins (not flex `align-items`, which has its own
+     overflow-clipping quirks in WebKit). When a panel stacks several cards
+     (Processing, Capture) they lay out in a column with an airy gap that reads
+     as distinct sections. The trailing `padding-bottom` lives on this scrolling
+     child so WebKit counts it in scrollHeight and the last row stays reachable. */
+  .settings-shell [role="tabpanel"] {
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+    width: 100%;
+    max-width: 640px;
+    margin: 0 auto;
+    padding-bottom: 48px;
+  }
+
+  /* Auto-hiding scrollbars: invisible at rest, fade in on hover or scroll,
+     accent-tinted on direct thumb interaction. */
+  .settings-shell .settings-scroll::-webkit-scrollbar, .settings-shell .settings-nav::-webkit-scrollbar {
+    width: 8px;
+  }
+  .settings-shell .settings-scroll::-webkit-scrollbar-track, .settings-shell .settings-nav::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .settings-shell .settings-scroll::-webkit-scrollbar-thumb, .settings-shell .settings-nav::-webkit-scrollbar-thumb {
+    background: transparent;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
+  }
+  /* Show thumb while the container is hovered or actively scrolling. */
+  .settings-shell .settings-scroll:hover::-webkit-scrollbar-thumb, .settings-shell .settings-scroll.is-scrolling::-webkit-scrollbar-thumb, .settings-shell .settings-nav:hover::-webkit-scrollbar-thumb {
+    background: var(--app-border-hover);
+    background-clip: padding-box;
+  }
+  /* Accent highlight when hovering directly over the thumb. */
+  .settings-shell .settings-scroll::-webkit-scrollbar-thumb:hover, .settings-shell .settings-nav::-webkit-scrollbar-thumb:hover {
+    background: var(--app-accent);
+    background-clip: padding-box;
+  }
+  .settings-shell .settings-scroll, .settings-shell .settings-nav {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  .settings-shell .settings-scroll:hover, .settings-shell .settings-scroll.is-scrolling, .settings-shell .settings-nav:hover {
+    scrollbar-color: var(--app-border-hover) transparent;
+  }
+
+  /* ── Sidebar head: title, collapse toggle, save status ─── */
+  .settings-shell .settings-sidebar__head {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    /* Left gutter matches the nav-icon column so the title and save status
+       line up under the categories below. */
+    padding: 2px 2px 0 12px;
+  }
+
+  .settings-shell .settings-sidebar__titlebar {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+  }
+
+  .settings-shell .settings-sidebar__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: var(--app-text-strong);
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Collapse / expand control. The chevron points "into" the rail to collapse
+     and flips 180° to point out when collapsed (see the collapsed block). */
+  .settings-shell .settings-sidebar__toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 6px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .settings-shell .settings-sidebar__toggle:hover:not(:disabled) {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-strong);
+    color: var(--app-text-strong);
+  }
+  .settings-shell .settings-sidebar__toggle:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+  .settings-shell .settings-sidebar__toggle:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .settings-shell .settings-sidebar__toggle-icon {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .settings-shell .settings-sidebar__status {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .settings-shell .status-text {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+    position: relative;
+    padding-left: 12px;
+    white-space: nowrap;
+  }
+
+  .settings-shell .status-text::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-accent-strong);
+  }
+
+  .settings-shell .status-text--blocked {
+    color: var(--app-warn);
+  }
+  .settings-shell .status-text--blocked::before {
+    background: var(--app-warn-strong);
+  }
+
+  .settings-shell .status-text--ok {
+    color: var(--app-accent);
+  }
+  .settings-shell .status-text--ok::before {
+    background: var(--app-accent);
+    box-shadow: 0 0 6px var(--app-accent-glow);
+  }
+
+  .settings-shell .status-text--saving {
+    color: var(--app-accent-strong);
+  }
+  .settings-shell .status-text--saving::before {
+    background: var(--app-accent);
+    animation: status-pulse 1.1s ease-in-out infinite;
+  }
+
+  .settings-shell .status-text--error {
+    color: var(--app-danger);
+  }
+  .settings-shell .status-text--error::before {
+    background: var(--app-danger);
+    box-shadow: 0 0 6px var(--app-danger);
+  }
+
+  @keyframes status-pulse {
+    0%, 100% { opacity: 0.35; transform: translateY(-50%) scale(0.85); }
+    50% { opacity: 1; transform: translateY(-50%) scale(1.1); }
+  }
+
+  /* ── Collapsed rail ────────────────────────────────────────────────────
+     The rail narrows to an icon-only strip. Width + padding animate; labels
+     are dropped outright (not faded) so the nav can never spill into a
+     horizontal scrollbar mid-transition and item focus rings are never
+     clipped. The chevron flips to point outward as the cue to expand. */
+  .settings-shell .settings-sidebar--collapsed .settings-sidebar__toggle-icon {
+    transform: rotate(180deg);
+  }
+
+  .settings-shell .settings-sidebar--collapsed .settings-sidebar__head {
+    align-items: center;
+    padding: 2px 0 0;
+  }
+  .settings-shell .settings-sidebar--collapsed .settings-sidebar__titlebar {
+    justify-content: center;
+    width: 100%;
+  }
+  .settings-shell .settings-sidebar--collapsed .settings-sidebar__title {
+    display: none;
+  }
+
+  .settings-shell .settings-sidebar--collapsed .settings-nav__item {
+    justify-content: center;
+    padding: 9px 0;
+    gap: 0;
+  }
+  .settings-shell .settings-sidebar--collapsed .settings-nav__text {
+    display: none;
+  }
+
+  /* Save status shrinks to a single state-coloured dot (the element itself
+     becomes the dot; its ::before and label are dropped). */
+  .settings-shell .settings-sidebar--collapsed .settings-sidebar__status {
+    justify-content: center;
+  }
+  .settings-shell .settings-sidebar--collapsed .status-text {
+    width: 7px;
+    height: 7px;
+    padding-left: 0;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .settings-shell .settings-sidebar--collapsed .status-text::before, .settings-shell .settings-sidebar--collapsed .status-text__label {
+    display: none;
+  }
+  .settings-shell .settings-sidebar--collapsed .status-text--ok, .settings-shell .settings-sidebar--collapsed .status-text--saving {
+    box-shadow: 0 0 6px var(--app-accent-glow);
+  }
+  .settings-shell .settings-sidebar--collapsed .status-text--error {
+    box-shadow: 0 0 6px var(--app-danger);
+  }
+  .settings-shell .settings-sidebar--collapsed .status-text--saving {
+    animation: status-dot-pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes status-dot-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  /* Capture summary becomes a vertical column of source icon chips: a lit
+     accent chip while capturing, a muted outline when not. The fps/resolution
+     pills are text-only, so they drop out of the icon rail. */
+  .settings-shell .settings-sidebar--collapsed .settings-sidebar__foot {
+    align-items: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .settings-shell .settings-sidebar--collapsed .settings-sidebar__foot-label {
+    display: none;
+  }
+  .settings-shell .settings-sidebar--collapsed .status-strip {
+    flex-direction: column;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  .settings-shell .settings-sidebar--collapsed .status-pill {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 6px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+  }
+  .settings-shell .settings-sidebar--collapsed .status-pill--on {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    box-shadow: 0 0 10px -3px var(--app-accent-glow);
+  }
+  .settings-shell .settings-sidebar--collapsed .status-pill--info {
+    display: none;
+  }
+  .settings-shell .settings-sidebar--collapsed .status-pill__dot, .settings-shell .settings-sidebar--collapsed .status-pill__label {
+    display: none;
+  }
+  .settings-shell .settings-sidebar--collapsed .status-pill__icon {
+    display: inline-flex;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-shell .settings-sidebar, .settings-shell .settings-sidebar__toggle-icon {
+      transition: none;
+    }
+    .settings-shell .settings-sidebar--collapsed .status-text--saving {
+      animation: none;
+    }
+  }
+
+  /* (The former top page-header + horizontal tab strip are gone; their
+     title, save-status, and capture-summary styles now live in the sidebar
+     rail above.) */
+
+  /* ── Status strip ─────────────────────────────────────────── */
+  .settings-shell .status-strip {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0;
+  }
+
+  .settings-shell .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+  }
+
+  /* Source glyph: hidden while the rail is expanded (the dot + label carry the
+     state there); becomes the whole indicator once the rail collapses. */
+  .settings-shell .status-pill__icon {
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  .settings-shell .status-pill__icon svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .settings-shell .status-pill__dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--app-border-strong);
+    transition: background 0.15s;
+  }
+
+  .settings-shell .status-pill--on {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+
+  .settings-shell .status-pill--on .status-pill__dot {
+    background: var(--app-accent);
+    box-shadow: 0 0 6px var(--app-accent-glow);
+  }
+
+  .settings-shell .status-pill--info {
+    border-color: var(--app-border);
+    background: var(--app-surface-raised);
+  }
+
+  .settings-shell .status-pill__label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+
+  .settings-shell .status-pill--on .status-pill__label {
+    color: var(--app-accent-strong);
+  }
+

@@ -47,7 +47,8 @@ static MACOS_TERMINATE_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct OpenSettingsTabPayload {
-    tab: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tab: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus: Option<String>,
 }
@@ -56,7 +57,6 @@ struct OpenSettingsTabPayload {
 enum AppWindow {
     Onboarding,
     Main,
-    Settings,
     CliAccessRequest,
     Debug,
     QuickRecall,
@@ -181,19 +181,6 @@ impl AppWindow {
                 shadow: false,
                 macos_corner_radius: None,
             },
-            Self::Settings => AppWindowConfig {
-                label: "settings",
-                path: "settings",
-                title: "mnema · Settings",
-                inner_size: (1040.0, 820.0),
-                min_inner_size: (820.0, 620.0),
-                gated_by_dev_options: false,
-                decorations: false,
-                overlay_title_bar: false,
-                transparent: true,
-                shadow: true,
-                macos_corner_radius: Some(12.0),
-            },
             Self::CliAccessRequest => AppWindowConfig {
                 label: "cli-access-request",
                 path: "access/request",
@@ -240,7 +227,6 @@ impl AppWindow {
         match label {
             "onboarding" => Some(Self::Onboarding),
             "main" => Some(Self::Main),
-            "settings" => Some(Self::Settings),
             "cli-access-request" => Some(Self::CliAccessRequest),
             "debug" => Some(Self::Debug),
             "quick-recall" => Some(Self::QuickRecall),
@@ -427,6 +413,11 @@ fn normalize_settings_focus(focus: &str) -> Option<&'static str> {
     }
 }
 
+// Retained as the deeplink-contract guard (covered by tests below): proves the
+// alias→canonical normalization composes into a `/settings` route URL. The
+// runtime path now lives in the frontend (`settingsRoutePath` in
+// `surface-windows.ts`), so this is test-only.
+#[cfg(test)]
 fn settings_tab_focus_path(tab: &str, focus: Option<&str>) -> Result<String, String> {
     let normalized =
         normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
@@ -438,54 +429,32 @@ fn settings_tab_focus_path(tab: &str, focus: Option<&str>) -> Result<String, Str
     Ok(format!("/settings?tab={normalized}&focus={focus}"))
 }
 
-fn open_or_focus_settings_window_to_tab(
+// Settings now lives as the `/settings` route inside the Main window. Focus,
+// show, and unminimize the Main window (the same semantics `open_main_window`
+// would apply), then emit the `open_settings_tab` deeplink to it. The Main
+// layout listens for this and navigates to `/settings?tab=…&focus=…`; the
+// settings page reacts to the resulting URL query. Aliases are normalized here
+// so the emitted payload always carries canonical values. An unknown tab/focus
+// is dropped (the route falls back to its default tab) rather than erroring,
+// so a stale deeplink still lands on Settings.
+fn focus_main_and_emit_open_settings(
     app: &tauri::AppHandle,
-    tab: &str,
+    tab: Option<&str>,
     focus: Option<&str>,
 ) -> Result<(), String> {
-    let path = settings_tab_focus_path(tab, focus)?;
-    let config = AppWindow::Settings.config();
-    let tab = normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
-    let focus = match focus {
-        Some(value) => Some(
-            normalize_settings_focus(value)
-                .ok_or_else(|| format!("unknown settings focus: {value}"))?
-                .to_string(),
-        ),
-        None => None,
+    open_or_focus_window(app, AppWindow::Main, None)?;
+
+    let Some(main) = app.get_webview_window(AppWindow::Main.config().label) else {
+        return Err("main window unavailable".into());
     };
+
     let payload = OpenSettingsTabPayload {
-        tab: tab.to_string(),
-        focus,
+        tab: tab.and_then(normalize_settings_tab).map(str::to_string),
+        focus: focus.and_then(normalize_settings_focus).map(str::to_string),
     };
 
-    if let Some(existing) = app.get_webview_window(config.label) {
-        show_and_focus_window(&existing);
-        existing
-            .emit(OPEN_SETTINGS_TAB_EVENT, payload)
-            .map_err(|err| err.to_string())?;
-        return Ok(());
-    }
-
-    let mut builder = WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(path.into()));
-    builder = builder
-        .title(config.title)
-        .inner_size(config.inner_size.0, config.inner_size.1)
-        .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
-        .decorations(config.decorations)
-        .transparent(config.transparent)
-        .shadow(config.shadow);
-
-    let built = builder.build().map_err(|err| err.to_string())?;
-
-    #[cfg(target_os = "macos")]
-    if let Some(radius) = config.macos_corner_radius {
-        apply_macos_rounded_content_view(&built, radius);
-    }
-
-    show_and_focus_window(&built);
-
-    Ok(())
+    main.emit(OPEN_SETTINGS_TAB_EVENT, payload)
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -1050,7 +1019,7 @@ pub(crate) fn is_final_graceful_exit_ready(app: &tauri::AppHandle) -> bool {
 fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
-        Some(AppWindow::Settings | AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
+        Some(AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
         Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall) => DestroyedWindowAction::None,
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
@@ -1069,10 +1038,7 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
             Ok(())
         }
         Some(
-            AppWindow::Onboarding
-            | AppWindow::Settings
-            | AppWindow::CliAccessRequest
-            | AppWindow::Debug,
+            AppWindow::Onboarding | AppWindow::CliAccessRequest | AppWindow::Debug,
         ) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
         None => window.close().map_err(|err| err.to_string()),
@@ -1080,10 +1046,7 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 fn close_window_focuses_main_before_close(label: &str) -> bool {
-    matches!(
-        AppWindow::from_label(label),
-        Some(AppWindow::Settings | AppWindow::Debug)
-    )
+    matches!(AppWindow::from_label(label), Some(AppWindow::Debug))
 }
 
 pub fn handle_window_event(
@@ -1156,22 +1119,22 @@ pub(crate) fn is_onboarding_complete(app: &tauri::AppHandle) -> bool {
     current_onboarding_state(app, store.inner()).is_complete()
 }
 
+/// Focus the Main window and ask it to open the `/settings` route. Settings is
+/// no longer a dedicated window; callers outside the Main window (the tray,
+/// Quick Recall, …) invoke this so Rust focuses Main and emits the
+/// `open_settings_tab` deeplink that the Main layout turns into a `/settings`
+/// navigation. `tab`/`focus` are optional aliases, normalized before emit.
 #[tauri::command]
-pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    open_or_focus_window(&app, AppWindow::Settings, None)
+pub fn focus_main_and_open_settings(
+    app: tauri::AppHandle,
+    tab: Option<String>,
+    focus: Option<String>,
+) -> Result<(), String> {
+    focus_main_and_emit_open_settings(&app, tab.as_deref(), focus.as_deref())
 }
 
 pub(crate) fn open_cli_access_request_window(app: &tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(app, AppWindow::CliAccessRequest, None)
-}
-
-#[tauri::command]
-pub fn open_settings_window_to_tab(
-    app: tauri::AppHandle,
-    tab: String,
-    focus: Option<String>,
-) -> Result<(), String> {
-    open_or_focus_settings_window_to_tab(&app, &tab, focus.as_deref())
 }
 
 #[tauri::command]
@@ -1256,13 +1219,21 @@ mod tests {
     #[test]
     fn secondary_window_destruction_refocuses_main_window() {
         assert_eq!(
-            destroyed_window_action("settings"),
-            DestroyedWindowAction::FocusMainWindow
-        );
-        assert_eq!(
             destroyed_window_action("debug"),
             DestroyedWindowAction::FocusMainWindow
         );
+    }
+
+    #[test]
+    fn settings_is_no_longer_a_known_window_label() {
+        // Settings folded into the `/settings` route inside the Main window, so
+        // the dedicated `settings` window label no longer maps to any AppWindow
+        // and its destruction has no window-level side effect.
+        assert_eq!(
+            destroyed_window_action("settings"),
+            DestroyedWindowAction::None
+        );
+        assert!(!close_window_focuses_main_before_close("settings"));
     }
 
     #[test]
@@ -1275,7 +1246,6 @@ mod tests {
 
     #[test]
     fn cli_access_request_close_command_does_not_refocus_main_window() {
-        assert!(close_window_focuses_main_before_close("settings"));
         assert!(close_window_focuses_main_before_close("debug"));
         assert!(!close_window_focuses_main_before_close(
             "cli-access-request"

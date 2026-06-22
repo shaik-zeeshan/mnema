@@ -8,7 +8,7 @@
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
-  import { closeCurrentWindow, openSettingsWindow } from "$lib/surface-windows";
+  import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
   import type {
     SemanticSearchModelStatusResponse,
     SemanticSearchModelDownloadProgress,
@@ -3038,7 +3038,7 @@
     }
   }
   async function openSemanticSearchSettings(): Promise<void> {
-    await openSettingsWindow("processing");
+    await openSettings("processing");
   }
   // Show the hint once results have run and no model is installed — the hint is
   // most useful exactly when keyword-only search underwhelms.

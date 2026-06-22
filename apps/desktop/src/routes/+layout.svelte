@@ -6,7 +6,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
-  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
+  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings, settingsRoutePath, type SettingsWindowTab, type SettingsWindowFocus } from "$lib/surface-windows";
   import {
     bootstrapCaptureControls,
     captureControls,
@@ -57,13 +57,19 @@
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
   const isOnboarding = $derived(normalizedPathname.startsWith("/onboarding"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
+  // Settings renders inside the Main window as the `/settings` route. The Main
+  // titlebar (record controls, source pills, surface toggle, gear) stays visible
+  // on Settings too — it is the Main window's persistent top nav — and Settings
+  // renders its own sidebar shell in the content area below it. Native traffic
+  // lights stay (overlay titlebar), reserved for by the titlebar's left inset.
+  const isSettingsRoute = $derived(normalizedPathname === "/settings");
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const isPanelSurface = isQuickRecallWindow();
   // The Main window now hosts two top-level Surfaces — Timeline (`/`) and
   // Insights (`/insights`). The shared main titlebar (record controls, source
   // pills, settings, the Timeline⇄Insights surface toggle) renders on both.
   const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute);
-  const showMainTitlebar = $derived(isMainSurfaceRoute && !isPanelSurface);
+  const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
   const isMainWindow = $derived(!showDedicatedTitlebar && !isPanelSurface);
@@ -131,6 +137,24 @@
     let destroyed = false;
     let unlistenBrokerOpenCaptureResult: (() => void) | undefined;
     let unlistenInsightsOpenConversation: (() => void) | undefined;
+    let unlistenOpenSettingsTab: (() => void) | undefined;
+
+    // Settings deeplink transport. The Main window owns the `/settings` route, so
+    // it is the single place that turns an `open_settings_tab` event (emitted by
+    // Rust's `focus_main_and_open_settings` for the tray and other windows) into
+    // a route navigation. The settings page reacts to the resulting `?tab`/`?focus`
+    // query reactively, so this is the one navigation — no double-handling.
+    listen<{ tab?: string; focus?: string }>("open_settings_tab", (event) => {
+      if (destroyed || !isMainWindow) return;
+      const target = settingsRoutePath(
+        event.payload?.tab as SettingsWindowTab | undefined,
+        event.payload?.focus as SettingsWindowFocus | undefined,
+      );
+      void goto(target);
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenOpenSettingsTab = fn;
+    });
 
     listen("broker_open_capture_result", () => {
       if (isMainWindow && !isMainRoute) {
@@ -186,6 +210,7 @@
       destroyed = true;
       unlistenBrokerOpenCaptureResult?.();
       unlistenInsightsOpenConversation?.();
+      unlistenOpenSettingsTab?.();
     };
   });
 
@@ -204,8 +229,9 @@
   // Non-gated routes always render immediately.
   const showChildren = $derived(!isDebug || (devLoaded && devEnabled));
 
-  // Routes that want a centered, padded reading column.
-  const isNarrow = $derived(isOnboarding || isSettings || isDebug);
+  // Routes that want a centered, padded reading column. Settings is excluded:
+  // it renders full-bleed inside the Main window with its own sidebar shell.
+  const isNarrow = $derived(isOnboarding || isDebug);
   const notificationCount = $derived(appNotifications.count);
   const hasNotifications = $derived(notificationCount > 0);
 
@@ -215,7 +241,7 @@
 
   async function runNotificationAction(notification: AppNotification): Promise<void> {
     if (notification.action?.type === "open_settings_tab") {
-      await openSettingsWindow(notification.action.tab);
+      await openSettings(notification.action.tab);
       await clearAppNotification(notification.id);
       notificationsOpen = false;
     }
@@ -632,7 +658,7 @@
     }
 
     if (action.type === "openSettings") {
-      void openSettingsWindow();
+      void openSettings();
       return;
     }
 
@@ -703,7 +729,7 @@
 
 <div
   class="app-shell"
-  class:app-shell--bounded={isMainSurfaceRoute}
+  class:app-shell--bounded={isMainSurfaceRoute || isSettingsRoute}
   class:app-shell--dedicated={showDedicatedTitlebar}
   class:app-shell--macos={showDedicatedTitlebar && windowPlatform === "macos"}
   class:app-shell--windows={showDedicatedTitlebar && windowPlatform === "windows"}
@@ -1028,7 +1054,7 @@
           class="titlebar__settings"
           aria-label="Open settings"
           title={`Settings (${shortcutDisplay("openSettings")})`}
-          onclick={() => void openSettingsWindow()}
+          onclick={() => void openSettings()}
         >
           <svg
             class="titlebar__settings-icon"
@@ -1116,7 +1142,7 @@
   </header>
   {/if}
 
-  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface}>
+  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface} class:app-content--settings={isSettingsRoute && !showDedicatedTitlebar}>
     {#if showChildren}
       {@render children()}
     {/if}
@@ -1540,6 +1566,16 @@
   :global([contenteditable]) {
     user-select: text;
     -webkit-user-select: text;
+  }
+
+  /* Themed text selection. Without this WebKit falls back to its default
+     highlight, which clashes with the terminal chrome — faint text (e.g. an
+     install path) selected against it read as an unreadable wash. A translucent
+     accent highlight with forced-strong text stays on-brand and legible in both
+     themes. */
+  :global(::selection) {
+    background: color-mix(in srgb, var(--app-accent) 28%, transparent);
+    color: var(--app-text-strong);
   }
 
   :global(body.dedicated-surface-window) {
@@ -2242,6 +2278,16 @@
     min-height: 100vh;
     min-height: 100dvh;
     background: transparent;
+  }
+
+  /* Settings rendered inside the Main window, below the persistent top nav (the
+     Main titlebar). The titlebar already reserves space for the native overlay
+     traffic lights, so no top inset is needed here — just a small gap under the
+     bar. Full-bleed otherwise (the settings shell owns its own scroll region). */
+  .app-content--settings {
+    background: var(--app-bg);
+    overflow: hidden;
+    padding: 8px 20px 0;
   }
 
   .app-shell--dedicated {

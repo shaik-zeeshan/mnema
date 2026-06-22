@@ -1,0 +1,339 @@
+/* Settings groups & sub-blocks — settings-group/stack, model-status, download-progress, shortcut editor, semantic-search picked-model status.
+ *
+ * Part of the shared Settings stylesheet (split for the 800-line cap; the
+ * shell imports the parts in source order — see settings-layout.css for the
+ * full map). Every selector is namespaced under `.settings-shell`. */
+
+  /* ── Settings groups ──────────────────────────────────────── */
+  .settings-shell .settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .settings-shell .settings-group:focus {
+    outline: none;
+  }
+
+  /* Semantic-search picked-model status: a single contained block under the one
+     model picker, mirroring the Speaker card's .model-status look. */
+  .settings-shell .ss-picked {
+    padding: 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+
+  .settings-shell .settings-group--attention .settings-stack {
+    border-color: color-mix(in srgb, var(--app-accent) 45%, var(--app-border));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent) 18%, transparent);
+  }
+
+  .settings-shell .group-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+  }
+
+  .settings-shell .settings-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+  }
+
+  .settings-shell .shortcut-editor-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .settings-shell .shortcut-editor-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 14px;
+    align-items: center;
+    padding: 9px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+
+  .settings-shell .shortcut-editor-row--error {
+    border-color: var(--app-danger-border);
+  }
+
+  .settings-shell .shortcut-editor-row__main {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .settings-shell .shortcut-editor-row__title {
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+
+  .settings-shell .shortcut-editor-row__description {
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .settings-shell .shortcut-editor-row__error {
+    color: var(--app-danger-text);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .settings-shell .shortcut-editor-row__controls {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .settings-shell .shortcut-editor-row--listening {
+    border-color: var(--app-accent-border);
+  }
+
+  .settings-shell .shortcut-capture {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 104px;
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-strong);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease, color 0.12s ease, background 0.12s ease;
+  }
+
+  .settings-shell .shortcut-capture:hover, .settings-shell .shortcut-capture:focus-visible {
+    border-color: var(--app-accent-border);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    outline: none;
+  }
+
+  .settings-shell .shortcut-capture--empty {
+    border-style: dashed;
+    color: var(--app-text-muted);
+    font-weight: 600;
+  }
+
+  .settings-shell .shortcut-capture--recording, .settings-shell .shortcut-capture--recording:hover {
+    border-style: solid;
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .settings-shell .shortcut-capture__keys {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .settings-shell .shortcut-cap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 4px;
+    background: var(--app-bg);
+    color: var(--app-text-strong);
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .settings-shell .shortcut-capture__hint {
+    line-height: 1;
+  }
+
+  .settings-shell .shortcut-capture__pulse {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--app-accent);
+    animation: shortcut-capture-pulse 1.3s ease-out infinite;
+  }
+
+  @keyframes shortcut-capture-pulse {
+    0% { box-shadow: 0 0 0 0 var(--app-accent-glow); opacity: 1; }
+    70% { box-shadow: 0 0 0 6px transparent; opacity: 0.55; }
+    100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-shell .shortcut-capture__pulse {
+      animation: none;
+    }
+  }
+
+  .settings-shell .shortcut-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  }
+
+  .settings-shell .shortcut-icon-btn svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .settings-shell .shortcut-icon-btn:hover:not(:disabled), .settings-shell .shortcut-icon-btn:focus-visible {
+    border-color: var(--app-border-strong);
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    outline: none;
+  }
+
+  .settings-shell .shortcut-icon-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  @media (max-width: 720px) {
+    .settings-shell .shortcut-editor-row {
+      grid-template-columns: 1fr;
+    }
+
+    .settings-shell .shortcut-editor-row__controls {
+      justify-content: flex-start;
+    }
+  }
+
+
+  .settings-shell .about-id__mark {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 10px;
+  }
+
+  .settings-shell .about-id__version {
+    padding: 2px 8px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+
+  .settings-shell .about-id__version--pending {
+    border-color: var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-weight: 600;
+  }
+
+  .settings-shell .about-id__channel {
+    align-self: center;
+  }
+
+  .settings-shell .about-meta {
+    display: grid;
+    gap: 7px;
+    margin: 0;
+  }
+
+  .settings-shell .about-meta__row {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .settings-shell .about-meta dt {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+  }
+
+  .settings-shell .about-meta dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--app-text);
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+
+  .settings-shell .about-links {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 16px;
+  }
+
+  .settings-shell .about-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    transition: color 0.12s;
+  }
+
+  .settings-shell .about-link:hover:not(:disabled), .settings-shell .about-link:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+  }
+
+  .settings-shell .about-link__arrow {
+    font-size: 10px;
+    opacity: 0.7;
+  }
+
+  .settings-shell .about-error {
+    margin: 0;
+  }
+
