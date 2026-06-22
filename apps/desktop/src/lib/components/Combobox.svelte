@@ -33,7 +33,9 @@
   let open = $state(false);
 
   const selectedLabel = $derived(
-    value ? (options.find((o) => o.value === value)?.label ?? value) : null,
+    value
+      ? (options.find((o) => o.value === value)?.label ?? placeholder)
+      : null,
   );
 
   // While the panel is closed, show the selected label in the input; while open,

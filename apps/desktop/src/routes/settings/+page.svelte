@@ -991,6 +991,13 @@
 
   // Loading / error state
   let loadingRecSettings = $state(false);
+  // True only once loadRecordingSettings() has resolved at least once, so the
+  // persisted semantic-search selection (semanticSearchSelectedModelId) is known.
+  // chooseSemanticSearchModel gates its first-selection-vs-switch classification on
+  // this: status loads independently of settings, so the "Use this model" button can
+  // render before settings resolve, and a switch must not be misclassified as a
+  // first-time selection (which skips the destructive re-index confirm).
+  let recordingSettingsLoaded = $state(false);
   let savingRecDomains = $state<Record<RecordingSettingsDraftDomain, boolean>>(
     makeRecordingDomainState(false)
   );
@@ -2604,6 +2611,9 @@
       const s = await invoke<RecordingSettings>("get_recording_settings");
       recordingSettings = s;
       syncRecDrafts(s);
+      // Settings (incl. the persisted semantic-search selection) are now known —
+      // chooseSemanticSearchModel can safely classify first-selection vs switch.
+      recordingSettingsLoaded = true;
     } catch (err) {
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
@@ -2868,6 +2878,12 @@
   // only on confirm, persist the new selection and trigger the full re-index. The
   // backfill worker re-derives every vector under the new model.
   async function chooseSemanticSearchModel(model: SemanticSearchModelStatus) {
+    // Status loads independently of settings (see recordingSettingsLoaded), so this
+    // can fire before the persisted selection is known. Wait for settings before
+    // classifying: otherwise a real switch reads semanticSearchSelectedModelId as
+    // still-null and is misclassified as a first selection, skipping the re-index
+    // confirm. (No-op once already loaded.)
+    if (!recordingSettingsLoaded) await loadRecordingSettings();
     if (semanticSearchSelectedModelId === model.modelId) return;
     const isFirstSelection = semanticSearchSelectedModelId === null;
     if (!isFirstSelection) {
