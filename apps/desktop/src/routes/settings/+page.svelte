@@ -14,7 +14,6 @@
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
-  import Combobox from "$lib/components/Combobox.svelte";
   import ThemeModeControl from "$lib/components/ThemeModeControl.svelte";
   import { createAppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
   import { detectKeyboardPlatform, formatShortcut } from "$lib/keyboard";
@@ -934,13 +933,13 @@
   // model row mirroring the guided-tier layout.
   let semanticSearchSupportedModels = $state<SemanticSearchSupportedModel[]>([]);
   // The single "picked" (focused) model id driving the shared status + action
-  // region. One combined Combobox writes this id (guided tiers + full catalog in
+  // region. One combined Select writes this id (guided tiers + full catalog in
   // one list). Initialized to `null` (not a literal default) so the load path's
   // pre-focus guard (`picked === null && selected !== null`) actually fires and
   // opens the card focused on the *active* model — guided tier OR a persisted
   // custom selection — instead of always snapping to the nomic default. Every
   // reader tolerates null: the picked-view derivation returns null (no card),
-  // the progress derivation returns null, and the Combobox accepts `string |
+  // the progress derivation returns null, and the Select accepts `string |
   // null` (shows its placeholder until a value is picked).
   let semanticSearchPickedModelId = $state<string | null>(null);
   let loadingSemanticSearchSupportedModels = $state(false);
@@ -2958,7 +2957,7 @@
     return "Custom";
   }
 
-  // ─── Picked model (shared between the guided SelectMenu + custom Combobox) ───
+  // ─── Picked model (driven by the combined model SelectMenu) ───
 
   // The semantic-search provider id. Custom models share the same provider as
   // the guided tiers, so reuse the provider field carried on the status rows.
@@ -6681,10 +6680,9 @@
         {#if semanticSearchModelStatus}
           <div class="settings-group">
             <span class="group-label">Model</span>
-            <Combobox
+            <SelectMenu
               label=""
-              placeholder="Search models — recommended tiers first…"
-              emptyText="No matching models"
+              placeholder="Select a model — recommended tiers first…"
               value={semanticSearchPickedModelId}
               onValueChange={(v) => (semanticSearchPickedModelId = v)}
               options={semanticSearchModelOptions}
