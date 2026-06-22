@@ -148,7 +148,17 @@ impl SemanticSearchStore {
     /// in-tree pipeline cannot produce one (every embedding is L2-normalized over
     /// guaranteed-non-empty text), so this is defensive against a corrupt/
     /// pathological ONNX graph only.
-    pub async fn store_vector(&self, anchor_id: i64, vector: &[f32]) -> Result<bool> {
+    ///
+    /// **Internal primitive — call [`SemanticSearchStore::store_vector_if_dimension_matches`]
+    /// instead.** This is `pub(crate)` (not `pub`) on purpose (F13): it does NO
+    /// live-dimension check, so a caller that reaches it directly bypasses the single
+    /// dimension authority and can write a wrong-length blob the live `vec0` column
+    /// would reject (or, worse under a future same-dimension model, a cross-model
+    /// vector). The gate lives in
+    /// [`SemanticSearchStore::store_vector_if_dimension_matches`]; the worker calls
+    /// only that. Narrowing visibility to `pub(crate)` keeps the in-crate tests
+    /// compiling while making it impossible for external code to skip the gate.
+    pub(crate) async fn store_vector(&self, anchor_id: i64, vector: &[f32]) -> Result<bool> {
         if vector.iter().any(|component| !component.is_finite()) {
             return Err(crate::AppInfraError::InvalidSearchRequest(format!(
                 "refusing to store a non-finite Semantic Search Vector for anchor {anchor_id} \
