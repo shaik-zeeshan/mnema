@@ -302,18 +302,23 @@ pub struct SupportedEmbeddingModel {
 /// The hand-coded catalog: the curated tiers (ADR 0037).
 ///
 /// - **English (default):** `nomic-embed-text-v1.5` — NomicBert, 768-dim, Mean,
-///   8192-token, Apache-2.0, ~250 MB. `model.safetensors` at the repo root.
+///   8192-token, Apache-2.0, ~548 MB. `model.safetensors` at the repo root.
 /// - **Multilingual:** `multilingual-e5-small` — XLM-Roberta, 384-dim, Mean,
-///   512-token, MIT, ~470 MB.
+///   512-token, MIT, ~488 MB.
 /// - **Custom multilingual option:** `bge-m3` — XLM-Roberta, 1024-dim, CLS,
-///   8192-token, MIT, ~2.27 GB.
+///   8192-token, MIT, ~2.29 GB.
 /// - **Custom English option:** `stella_en_400M_v5` — StellaEnV5, 2048-dim
 ///   (native `2_Dense_2048` head, module-internal mean+dense pool), 8192-token,
 ///   MIT, ~1.75 GB. Base `model.safetensors` plus the `2_Dense_2048/model.safetensors`
 ///   head.
 /// - **Custom multilingual option:** `snowflake-arctic-embed-l-v2.0` — XLM-Roberta,
 ///   256-dim stored (Matryoshka-truncated from native 1024), CLS, 8192-token,
-///   Apache-2.0, ~2.3 GB.
+///   Apache-2.0, ~2.29 GB.
+///
+/// The `approx_download_bytes` for each model is the sum of its required files
+/// (weights + `tokenizer.json` + `config.json`) at the pinned revision — it feeds
+/// both the Settings disk-cost disclosure and the download disk-space preflight,
+/// so it must never undercount (see `download_disk_preflight`).
 fn catalog() -> Vec<SemanticSearchModelDescriptor> {
     vec![
         SemanticSearchModelDescriptor {
@@ -332,8 +337,10 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             license_label: Some("Apache-2.0".to_string()),
             dimension: 768,
             max_tokens: 8192,
-            // ~250 MB safetensors (F32 weights).
-            approx_download_bytes: 250_000_000,
+            // ~548 MB: model.safetensors (546.9 MB F32 weights) + tokenizer.json
+            // (711 KB) + config.json. The full F32 backbone — NOT the ~250 MB F16
+            // figure a prior comment mistook for it.
+            approx_download_bytes: 548_000_000,
             pooling: SemanticSearchPooling::Mean,
             // nomic's asymmetric retrieval prefixes (trailing space is significant).
             query_prompt: Some("search_query: ".to_string()),
@@ -357,8 +364,9 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             license_label: Some("MIT".to_string()),
             dimension: 384,
             max_tokens: 512,
-            // ~470 MB on disk.
-            approx_download_bytes: 470_000_000,
+            // ~488 MB: model.safetensors (470.6 MB) + tokenizer.json (17.1 MB,
+            // a SentencePiece-derived tokenizer) + config.json.
+            approx_download_bytes: 488_000_000,
             pooling: SemanticSearchPooling::Mean,
             // e5's asymmetric retrieval prefixes (trailing space is significant).
             query_prompt: Some("query: ".to_string()),
@@ -380,8 +388,9 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             license_label: Some("MIT".to_string()),
             dimension: 1024,
             max_tokens: 8192,
-            // ~2.27 GB safetensors.
-            approx_download_bytes: 2_270_000_000,
+            // ~2.29 GB: pytorch_model.bin (2.27 GB) + tokenizer.json (17.1 MB) +
+            // config.json.
+            approx_download_bytes: 2_289_000_000,
             pooling: SemanticSearchPooling::Cls,
             // bge-m3's dense path takes bare text — no instruction prefix.
             query_prompt: None,
@@ -454,8 +463,9 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             // NOT the model's native 1024.
             dimension: 256,
             max_tokens: 8192,
-            // ~2.3 GB safetensors (~568M F32 params, XLM-Roberta large).
-            approx_download_bytes: 2_300_000_000,
+            // ~2.29 GB: model.safetensors (2.27 GB, ~568M F32 params, XLM-Roberta
+            // large) + tokenizer.json (17.1 MB) + config.json.
+            approx_download_bytes: 2_289_000_000,
             pooling: SemanticSearchPooling::Cls,
             // Arctic's asymmetric retrieval prefix for queries (trailing space is
             // significant); documents are embedded bare.
