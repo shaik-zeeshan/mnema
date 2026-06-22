@@ -30,9 +30,19 @@ use crate::semantic_search_worker::{
 /// The cached query embedder, shared as Tauri managed state across `search_capture`
 /// calls. `None` until the first search runs with an installed model. A model
 /// switch from Settings reloads it (the cache remembers its provider/model id).
+///
+/// `load_lock` serializes the take→load→embed→restore region so two searches
+/// racing a *cold* load (or a model-switch reload) do not each pay the heavy
+/// `load_embedder` cost: the second waiter awaits the in-flight load behind the
+/// async lock and then reuses the cached embedder. It is a `tokio::sync::Mutex`
+/// (not `std::Mutex`) precisely because it is held across the `.await` of the
+/// blocking embed task; the `std::Mutex` around `cached` is only ever taken in
+/// short, await-free critical sections (the invariant: no `std::Mutex` across an
+/// await point).
 #[derive(Default)]
 pub struct SemanticQueryEmbedderState {
     cached: Mutex<Option<LoadedEmbedder>>,
+    load_lock: tokio::sync::Mutex<()>,
 }
 
 impl SemanticQueryEmbedderState {
@@ -89,10 +99,19 @@ pub async fn embed_search_query(
 
     let descriptor = resolve_selected_descriptor(&settings)?;
 
-    // Take the cached embedder out of the mutex for the blocking task (so we never
-    // hold a std Mutex across an await), reloading if the selection changed, then
-    // put it back. The state is per-process and search is serialized enough that
-    // the brief None window between take and restore is acceptable.
+    // Serialize the load→embed→restore region with the async load lock so two
+    // searches racing a cold load (or model-switch reload) do not each pay the
+    // heavy `load_embedder` cost: a concurrent search awaits the in-flight load
+    // here and reuses the embedder the winner caches. Held across the blocking
+    // embed `.await` below, so it must be the async lock — never a `std::Mutex`
+    // across an await point. The `std::Mutex` around `cached` is still taken only
+    // in short, await-free sections (take below, restore after the await).
+    let _load_guard = state.load_lock.lock().await;
+
+    // Take the cached embedder out of the std mutex for the blocking task (so we
+    // never hold a std Mutex across an await), reloading if the selection changed,
+    // then put it back. The async load lock above keeps the brief None window
+    // between take and restore from racing a concurrent cold load.
     let cached = {
         let mut guard = state.cached.lock().unwrap_or_else(|poison| poison.into_inner());
         match guard.take() {
