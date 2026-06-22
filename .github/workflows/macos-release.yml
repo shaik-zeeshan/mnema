@@ -66,16 +66,13 @@ jobs:
 
       # speakrs links OpenBLAS via the `openblas-static` feature: openblas-src
       # builds OpenBLAS (incl. Fortran LAPACK) from source, and the desktop
-      # build.rs force-links the static gfortran/quadmath runtime. Both need a
-      # Fortran toolchain at build time. OpenBLAS's `make all` also links its
-      # test programs with `-lgfortran`, so the gcc lib dir must be on the
-      # linker search path (LIBRARY_PATH) for the from-source build to succeed.
+      # build.rs force-links the static gfortran/quadmath runtime. The shared
+      # script installs gcc and makes an unversioned `gfortran` resolvable on
+      # PATH (+ FC/OPENBLAS_FC/LIBRARY_PATH) — the hosted runner's keg exposes
+      # only `gfortran-15`, which otherwise breaks every literal `gfortran`
+      # consumer. See scripts/ci-install-fortran.sh.
       - name: Install Fortran toolchain (gcc/gfortran)
-        run: |
-          set -euo pipefail
-          brew install gcc
-          gfdir="$(dirname "$(gfortran -print-file-name=libgfortran.dylib)")"
-          echo "LIBRARY_PATH=${gfdir}${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+        run: ./scripts/ci-install-fortran.sh
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4

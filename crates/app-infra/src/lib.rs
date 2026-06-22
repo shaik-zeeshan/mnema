@@ -17,6 +17,7 @@ mod ocr_budget;
 pub mod processing;
 pub mod retry_policy;
 mod search;
+mod semantic_search;
 pub mod status;
 pub mod usage_charts;
 pub mod user_context;
@@ -83,10 +84,11 @@ pub use processing::{
     SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 pub use search::{
-    AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
-    SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
+    semantic_search_residual_query, AudioSearchResult, FrameSearchResult, SearchAppRefinement,
+    SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse,
+    SearchDateRangeOrigin, SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
 };
+pub use semantic_search::{AnchorMissingVector, SemanticSearchStore};
 pub use conversation::ConversationStore;
 pub use status::AppInfraStatus;
 pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
@@ -272,6 +274,7 @@ pub struct AppInfra {
     capture_retention: CaptureRetentionStore,
     processing: ProcessingStore,
     search: SearchStore,
+    semantic_search: SemanticSearchStore,
     usage_charts: UsageChartsStore,
     user_context: UserContextStore,
     conversation: ConversationStore,
@@ -334,6 +337,7 @@ impl AppInfra {
         let capture_retention = CaptureRetentionStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
         let search = SearchStore::new(database.pool().clone());
+        let semantic_search = SemanticSearchStore::new(database.pool().clone());
         let usage_charts = UsageChartsStore::new(database.pool().clone());
         let user_context = UserContextStore::new(database.pool().clone());
         let conversation = ConversationStore::new(database.pool().clone());
@@ -352,6 +356,7 @@ impl AppInfra {
             capture_retention,
             processing,
             search,
+            semantic_search,
             usage_charts,
             user_context,
             conversation,
@@ -436,6 +441,15 @@ impl AppInfra {
 
     pub fn usage_charts(&self) -> &UsageChartsStore {
         &self.usage_charts
+    }
+
+    /// The **Semantic Index Backfill** store seam: the query that finds **Search
+    /// Result Anchor**s lacking a **Semantic Search Vector** and the persistence
+    /// that stores a derived vector. The embedding model work lives in the desktop
+    /// layer (`semantic-search` crate); this exposes only the SQL the sweep worker
+    /// needs.
+    pub fn semantic_search(&self) -> &SemanticSearchStore {
+        &self.semantic_search
     }
 
     pub async fn frame_secret_redaction_count(&self, frame_id: i64) -> Result<u32> {
@@ -1956,6 +1970,7 @@ mod tests {
                 audio_offset: None,
                 snapshot_document_id: None,
                 refinements: None,
+                query_embedding: None,
             })
             .await
             .expect("search should run")
@@ -8235,6 +8250,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("secret search should run");
@@ -8249,6 +8265,7 @@ mod tests {
                     audio_offset: None,
                     snapshot_document_id: None,
                     refinements: None,
+                    query_embedding: None,
                 })
                 .await
                 .expect("context search should run");

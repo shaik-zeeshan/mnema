@@ -8,7 +8,12 @@
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
-  import { closeCurrentWindow } from "$lib/surface-windows";
+  import { closeCurrentWindow, openSettingsWindow } from "$lib/surface-windows";
+  import type {
+    SemanticSearchModelStatusResponse,
+    SemanticSearchModelDownloadProgress,
+    RecordingSettingsDomainUpdateResponse,
+  } from "$lib/types";
   import { askAiClock } from "$lib/askAiClock";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
@@ -3016,6 +3021,35 @@
       resultsQuery.length > 0,
   );
 
+  // In-search discoverability hint (issue #125): when no Semantic Search Model is
+  // installed, search is keyword-only. Surface a one-time hint pointing the user
+  // to Settings so they can turn on meaning-based search. We load the model
+  // status lazily and treat "no model installed" as "no model available".
+  let semanticSearchModelInstalled = $state<boolean | null>(null);
+  async function loadSemanticSearchModelInstalled(): Promise<void> {
+    try {
+      const status = await invoke<SemanticSearchModelStatusResponse>(
+        "get_semantic_search_model_status",
+      );
+      semanticSearchModelInstalled = status.models.some((model) => model.available);
+    } catch {
+      // Best-effort: a failure just suppresses the hint (never blocks search).
+      semanticSearchModelInstalled = null;
+    }
+  }
+  async function openSemanticSearchSettings(): Promise<void> {
+    await openSettingsWindow("processing");
+  }
+  // Show the hint once results have run and no model is installed — the hint is
+  // most useful exactly when keyword-only search underwhelms.
+  let showSemanticSearchHint = $derived(
+    semanticSearchModelInstalled === false &&
+      !belowMinimum &&
+      !loading &&
+      parseErrorMessage === null &&
+      resultsQuery.length > 0,
+  );
+
   // Slice 3: results are PAUSED (not empty, not errored) when the backend
   // returned a parse error for an at/above-minimum query that isn't mid-flight.
   // The backend suppresses results in this case; this branch renders a calm
@@ -3202,6 +3236,7 @@
   onMount(() => {
     void focusQuickRecall();
     void loadAskAvailability();
+    void loadSemanticSearchModelInstalled();
     // Warm the captured-app catalog up front so the App value list (whether
     // reached by typing `app:` or via the picker) has selectable rows on first
     // open — the source/date lists are static, so only App needs the head start.
@@ -3224,6 +3259,8 @@
     let unlistenUpdate: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
     let unlistenDismiss: (() => void) | undefined;
+    let unlistenSettings: (() => void) | undefined;
+    let unlistenSemanticSearchDownload: (() => void) | undefined;
 
     // The window is hidden/re-shown rather than recreated across summons, so
     // re-grab focus each time it becomes key — onMount alone fires only once.
@@ -3236,6 +3273,11 @@
           // and the user may have enabled Ask AI or fixed PI/auth since the last
           // summon. Without this the stale disabled hint would persist forever.
           void loadAskAvailability();
+          // Same staleness applies to the "turn on meaning search" hint: a model
+          // can be installed/removed in Settings while this (reused) window stays
+          // hidden, so re-probe model status on focus too — otherwise the hint
+          // keeps showing keyword-only long after a model is installed.
+          void loadSemanticSearchModelInstalled();
           // Re-summon hydration: if an ask thread is armed but its in-memory
           // transcript was cleared, reload it from the store so a finished (or
           // still-streaming) answer reappears. Background completion is
@@ -3287,6 +3329,47 @@
       else unlistenDismiss = fn;
     });
 
+    // Settings saved in the Settings window broadcast
+    // `recording_settings_domain_changed` ({ domain, settings }). The Semantic
+    // Search toggle + model selection live in the `semantic_search` domain, so a
+    // model selection/toggle made while this (reused) window stays focused must
+    // re-probe model status — otherwise the "turn on meaning search" hint goes
+    // stale exactly as the onFocusChanged re-probe of Ask AI availability would
+    // (focus never changes in this in-place case). The focus re-probe above
+    // covers the download-then-refocus case; this covers the focus-stays case.
+    listen<RecordingSettingsDomainUpdateResponse>(
+      "recording_settings_domain_changed",
+      (event) => {
+        if (event.payload.domain !== "semantic_search") return;
+        void loadSemanticSearchModelInstalled();
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSettings = fn;
+    });
+
+    // A model download started in Settings emits progress here as it runs. The
+    // settings-domain listener above only fires on a settings save, not when a
+    // background download FINISHES — so if a download completes while this
+    // (reused) window stays focused, the "turn on meaning search" hint would keep
+    // showing "download"/keyword-only until the next focus change. Re-probe model
+    // status when the download reaches a terminal state (completed/failed/
+    // cancelled) so the hint reflects the now-installed model live. Mirrors the
+    // settings page handler (`handleSemanticSearchDownloadProgress`).
+    listen<SemanticSearchModelDownloadProgress>(
+      "semantic_search_model_download_progress",
+      (event) => {
+        if (
+          ["completed", "failed", "cancelled"].includes(event.payload.status)
+        ) {
+          void loadSemanticSearchModelInstalled();
+        }
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSemanticSearchDownload = fn;
+    });
+
     return () => {
       destroyed = true;
       window.removeEventListener("keydown", handleLauncherCaptureKeydown, {
@@ -3296,6 +3379,8 @@
       unlistenUpdate?.();
       unlistenFocus?.();
       unlistenDismiss?.();
+      unlistenSettings?.();
+      unlistenSemanticSearchDownload?.();
     };
   });
 
@@ -3329,6 +3414,21 @@
     </span>
     <span class="quick-recall__tool-app-name">{app}</span>
   </span>
+{/snippet}
+
+<!-- The keyword-only hint, guarded by showSemanticSearchHint, shared by the
+     empty and results branches so there is one source of truth. -->
+{#snippet semanticHint()}
+  {#if showSemanticSearchHint}
+    <button
+      type="button"
+      class="quick-recall__semantic-hint"
+      onclick={() => void openSemanticSearchSettings()}
+    >
+      Searching keywords only. Turn on meaning-based search in Settings →
+      Processing to also find results by meaning.
+    </button>
+  {/if}
 {/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3706,7 +3806,9 @@
             </p>
           {:else if showEmpty}
             <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
+            {@render semanticHint()}
           {:else}
+            {@render semanticHint()}
             {#if frames.length > 0}
               <div class="quick-recall__section" role="presentation">
                 <span class="quick-recall__section-label">Screen</span>
@@ -4356,6 +4458,27 @@
 
   .quick-recall__state--error {
     color: var(--app-accent);
+  }
+
+  /* In-search discoverability hint (issue #125): keyword-only search → Settings. */
+  .quick-recall__semantic-hint {
+    display: block;
+    width: 100%;
+    margin: 4px 0 8px;
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--app-text-muted);
+    background: var(--app-surface-raised, rgba(127, 127, 127, 0.08));
+    border: 1px solid var(--app-border, rgba(127, 127, 127, 0.2));
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .quick-recall__semantic-hint:hover {
+    color: var(--app-text);
+    border-color: var(--app-accent);
   }
 
   /* Slice 4: feature-teaching orientation view shown pre-query (belowMinimum).

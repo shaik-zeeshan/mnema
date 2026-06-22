@@ -2773,6 +2773,48 @@ pub fn update_user_context_settings(
     )
 }
 
+/// Update the **Semantic Search** settings that do NOT change the active vector
+/// dimension: the enabled toggle (issue #125). A model *switch* goes through the
+/// atomic `select_semantic_search_model` command instead — it rebuilds the `vec0`
+/// table at the new model's dimension and persists the selection together, so the
+/// persisted model and the live table dimension can never disagree. The
+/// **Semantic Index Backfill** worker reloads the embedder on its next pass when
+/// the provider/model id changes.
+#[tauri::command]
+pub fn update_semantic_search_settings(
+    request: capture_types::UpdateSemanticSearchSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::SemanticSearch(request),
+    )
+}
+
+/// Persist a **Semantic Search Model Tier** patch from outside the command layer
+/// (the atomic `select_semantic_search_model` switch, which rebuilds the `vec0`
+/// table *before* persisting so the persisted `model_id` and the live table
+/// dimension never disagree). Reuses the same domain-update path as
+/// [`update_semantic_search_settings`].
+pub(crate) fn persist_semantic_search_settings(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    request: capture_types::UpdateSemanticSearchSettingsRequest,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    // Trusted path: the atomic switch has already rebuilt the `vec0` table to the
+    // new model's dimension before this persist, so use the trusted variant that
+    // honors `model_id`/`provider`. The generic IPC command
+    // (`update_semantic_search_settings`) uses `SemanticSearch`, which ignores
+    // those dimension-affecting fields. See review finding low #4 (PR #126).
+    update_recording_settings_domain(
+        app_handle,
+        state,
+        RecordingSettingsDomainPatch::SemanticSearchModelSwitch(request),
+    )
+}
+
 #[tauri::command]
 pub fn start_native_capture(
     request: StartNativeCaptureRequest,

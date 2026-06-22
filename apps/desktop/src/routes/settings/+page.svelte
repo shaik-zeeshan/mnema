@@ -94,6 +94,10 @@
     SpeakerAnalysisModelDownloadProgress,
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
+    SemanticSearchModelStatus,
+    SemanticSearchModelStatusResponse,
+    SemanticSearchModelDownloadProgress,
+    SemanticSearchSupportedModel,
     PersonProfileDto,
     KeyboardBindingsSettings,
     AppUpdateChannel,
@@ -107,6 +111,7 @@
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
   const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
+  const SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT = "semantic_search_model_download_progress";
   const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
 
   // Canonical project links surfaced in the About tab. The GitHub repo is the
@@ -910,6 +915,40 @@
   let requestingAppleSpeechPermission = $state(false);
   let appleSpeechPermissionError = $state<string | null>(null);
 
+  // Semantic Search Model Tier (issue #125) — guided tiers + Custom picker,
+  // download/progress, and the sticky re-index confirm on a model switch.
+  let draftSemanticSearchEnabled = $state(true);
+  // The persisted selected model id (the sticky selection). Switching it is a
+  // confirmed action that re-indexes, so the draft only moves after the confirm.
+  let semanticSearchSelectedModelId = $state<string | null>(null);
+  let semanticSearchModelStatus = $state<SemanticSearchModelStatusResponse | null>(null);
+  let loadingSemanticSearchModelStatus = $state(false);
+  let semanticSearchModelError = $state<string | null>(null);
+  let semanticSearchDownloadProgress = $state<SemanticSearchModelDownloadProgress | null>(null);
+  let semanticSearchDownloadError = $state<string | null>(null);
+  let semanticSearchReindexing = $state(false);
+  let semanticSearchReindexMessage = $state<string | null>(null);
+  // The curated candle-supported catalog for the Custom picker, loaded on mount
+  // via `list_semantic_search_supported_models`. The picked entry is shown as a
+  // model row mirroring the guided-tier layout.
+  let semanticSearchSupportedModels = $state<SemanticSearchSupportedModel[]>([]);
+  // The single "picked" (focused) model id driving the shared status + action
+  // region. One combined Select writes this id (guided tiers + full catalog in
+  // one list). Initialized to `null` (not a literal default) so the load path's
+  // pre-focus guard (`picked === null && selected !== null`) actually fires and
+  // opens the card focused on the *active* model — guided tier OR a persisted
+  // custom selection — instead of always snapping to the nomic default. Every
+  // reader tolerates null: the picked-view derivation returns null (no card),
+  // the progress derivation returns null, and the Select accepts `string |
+  // null` (shows its placeholder until a value is picked).
+  let semanticSearchPickedModelId = $state<string | null>(null);
+  let loadingSemanticSearchSupportedModels = $state(false);
+  let semanticSearchSupportedModelsError = $state<string | null>(null);
+  // The OS UI locale, used to recommend the Multilingual tier to non-English
+  // users rather than silently defaulting them to English.
+  const osLocale = typeof navigator !== "undefined" ? (navigator.language ?? "") : "";
+  const osIsNonEnglish = osLocale.length > 0 && !osLocale.toLowerCase().startsWith("en");
+
   // Debug log status
   let debugLogStatus = $state<NativeCaptureDebugLogStatus | null>(null);
   let loadingDebugLogStatus = $state(false);
@@ -951,6 +990,13 @@
 
   // Loading / error state
   let loadingRecSettings = $state(false);
+  // True only once loadRecordingSettings() has resolved at least once, so the
+  // persisted semantic-search selection (semanticSearchSelectedModelId) is known.
+  // chooseSemanticSearchModel gates its first-selection-vs-switch classification on
+  // this: status loads independently of settings, so the "Use this model" button can
+  // render before settings resolve, and a switch must not be misclassified as a
+  // first-time selection (which skips the destructive re-index confirm).
+  let recordingSettingsLoaded = $state(false);
   let savingRecDomains = $state<Record<RecordingSettingsDraftDomain, boolean>>(
     makeRecordingDomainState(false)
   );
@@ -1490,6 +1536,8 @@
       ? "pyannote-community-1-wespeaker"
       : (s.speakerAnalysis?.modelId ?? "pyannote-community-1-wespeaker");
     draftSpeakerTimeoutMinutes = Math.round((s.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
+    draftSemanticSearchEnabled = s.semanticSearch?.enabled ?? true;
+    semanticSearchSelectedModelId = s.semanticSearch?.modelId ?? null;
   }
 
   function syncRecDrafts(s: RecordingSettings) {
@@ -2562,6 +2610,9 @@
       const s = await invoke<RecordingSettings>("get_recording_settings");
       recordingSettings = s;
       syncRecDrafts(s);
+      // Settings (incl. the persisted semantic-search selection) are now known —
+      // chooseSemanticSearchModel can safely classify first-selection vs switch.
+      recordingSettingsLoaded = true;
     } catch (err) {
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
@@ -2746,6 +2797,282 @@
     if (["completed", "failed", "cancelled"].includes(progress.status)) {
       await loadTranscriptionModelStatus();
     }
+  }
+
+  // ─── Semantic Search Model Tier (issue #125) ────────────────────────────────
+
+  async function loadSemanticSearchModelStatus() {
+    loadingSemanticSearchModelStatus = true;
+    semanticSearchModelError = null;
+    try {
+      semanticSearchModelStatus = await invoke<SemanticSearchModelStatusResponse>(
+        "get_semantic_search_model_status",
+      );
+      // Pre-focus the active model in the shared status + action region so the
+      // card opens showing what's installed/active — whether that's a guided
+      // tier or a persisted custom model (surfaced by the backend with any tier).
+      if (semanticSearchPickedModelId === null && semanticSearchSelectedModelId !== null) {
+        semanticSearchPickedModelId = semanticSearchSelectedModelId;
+      }
+    } catch (err) {
+      semanticSearchModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingSemanticSearchModelStatus = false;
+    }
+  }
+
+  // Load the curated candle-supported catalog for the Custom picker. Gated
+  // models (e.g. gemma) are already excluded server-side.
+  async function loadSemanticSearchSupportedModels() {
+    loadingSemanticSearchSupportedModels = true;
+    semanticSearchSupportedModelsError = null;
+    try {
+      semanticSearchSupportedModels = await invoke<SemanticSearchSupportedModel[]>(
+        "list_semantic_search_supported_models",
+      );
+    } catch (err) {
+      semanticSearchSupportedModelsError =
+        typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingSemanticSearchSupportedModels = false;
+    }
+  }
+
+  // Start downloading a model. Mnema only downloads on an explicit user choice —
+  // never auto-downloads (ADR 0036).
+  async function startSemanticSearchModelDownload(model: SemanticSearchModelStatus) {
+    semanticSearchDownloadError = null;
+    try {
+      semanticSearchDownloadProgress = await invoke<SemanticSearchModelDownloadProgress>(
+        "start_semantic_search_model_download",
+        { request: { provider: model.provider, modelId: model.modelId } },
+      );
+    } catch (err) {
+      semanticSearchDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    }
+  }
+
+  async function cancelSemanticSearchModelDownload() {
+    semanticSearchDownloadError = null;
+    try {
+      await invoke("cancel_semantic_search_model_download");
+    } catch (err) {
+      semanticSearchDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    }
+  }
+
+  async function handleSemanticSearchDownloadProgress(progress: SemanticSearchModelDownloadProgress) {
+    semanticSearchDownloadProgress = progress;
+    if (progress.status === "failed") {
+      semanticSearchDownloadError = progress.message ?? "Download failed.";
+    }
+    if (["completed", "failed", "cancelled"].includes(progress.status)) {
+      await loadSemanticSearchModelStatus();
+    }
+  }
+
+  // Persist a tier selection. Switching the SELECTED model is a deliberate,
+  // confirmed action because different models produce incomparable vectors and
+  // `vec0` is fixed-dim — so we warn that every recording will be re-indexed and,
+  // only on confirm, persist the new selection and trigger the full re-index. The
+  // backfill worker re-derives every vector under the new model.
+  async function chooseSemanticSearchModel(model: SemanticSearchModelStatus) {
+    // Status loads independently of settings (see recordingSettingsLoaded), so this
+    // can fire before the persisted selection is known. Wait for settings before
+    // classifying: otherwise a real switch reads semanticSearchSelectedModelId as
+    // still-null and is misclassified as a first selection, skipping the re-index
+    // confirm. (No-op once already loaded.)
+    if (!recordingSettingsLoaded) await loadRecordingSettings();
+    if (semanticSearchSelectedModelId === model.modelId) return;
+    const isFirstSelection = semanticSearchSelectedModelId === null;
+    if (!isFirstSelection) {
+      const confirmed = await confirm(
+        `Switching to “${model.displayName}” re-indexes every recording: all existing meaning vectors are cleared and re-derived under the new model in the background. Your captures are not changed.`,
+        {
+          title: "Re-index for new search model?",
+          kind: "warning",
+          okLabel: "Switch & Re-index",
+          cancelLabel: "Keep Current Model",
+        },
+      );
+      if (!confirmed) return;
+    }
+
+    semanticSearchModelError = null;
+    semanticSearchReindexing = true;
+    semanticSearchReindexMessage = null;
+    try {
+      // One atomic backend command rebuilds the vec0 table at the new model's
+      // dimension AND persists the selection together, so the persisted model and
+      // the live table dimension can never disagree. If it throws, the backend
+      // state is unchanged (old model still selected, old-dim table intact) — so we
+      // only adopt the new selection on success.
+      const cleared = await invoke<number>("select_semantic_search_model", {
+        modelId: model.modelId,
+      });
+      semanticSearchSelectedModelId = model.modelId;
+      // Only an actual switch (not the first selection) had vectors to clear.
+      if (!isFirstSelection) {
+        semanticSearchReindexMessage =
+          cleared > 0
+            ? `Cleared ${cleared} vector${cleared === 1 ? "" : "s"}; re-indexing in the background.`
+            : "Re-index started in the background.";
+      }
+      await loadSemanticSearchModelStatus();
+    } catch (err) {
+      semanticSearchModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      semanticSearchReindexing = false;
+    }
+  }
+
+  async function setSemanticSearchEnabled(enabled: boolean) {
+    semanticSearchModelError = null;
+    try {
+      await invoke<RecordingSettingsDomainUpdateResponse>("update_semantic_search_settings", {
+        request: { enabled },
+      });
+      draftSemanticSearchEnabled = enabled;
+    } catch (err) {
+      semanticSearchModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      // Revert the toggle to the persisted value on failure.
+      draftSemanticSearchEnabled = !enabled;
+    }
+  }
+
+  // The catalog grouped for display: the guided tiers (English/Multilingual)
+  // first, then the Custom picker. Recommendation is locale-based (ADR 0036).
+  let semanticSearchGuidedModels = $derived(
+    (semanticSearchModelStatus?.models ?? []).filter((m) => m.tier !== "custom"),
+  );
+
+  function semanticSearchProgressPercent(p: SemanticSearchModelDownloadProgress): number {
+    if (!p.totalBytes || p.totalBytes <= 0) return 0;
+    return Math.min(100, Math.round((p.downloadedBytes / p.totalBytes) * 100));
+  }
+
+  function semanticSearchTierLabel(tier: string): string {
+    if (tier === "english") return "English";
+    if (tier === "multilingual") return "Multilingual";
+    return "Custom";
+  }
+
+  // ─── Picked model (driven by the combined model SelectMenu) ───
+
+  // The semantic-search provider id. Custom models share the same provider as
+  // the guided tiers, so reuse the provider field carried on the status rows.
+  let semanticSearchProvider = $derived(
+    (semanticSearchModelStatus?.models ?? [])[0]?.provider ?? null,
+  );
+
+  // Model ids already surfaced as guided/builtin status rows — excluded from the
+  // Custom combobox so the user never sees a duplicate of a guided tier. Keyed off
+  // the GUIDED rows only (tier !== "custom"), NOT every status row: the catalog's
+  // Custom-tier model (bge-m3) is always present in the status response (the
+  // builtin manifest carries all three tiers), so mapping every row would put the
+  // Custom model in this set and drop it from `semanticSearchCustomOptions` too —
+  // leaving the whole Custom tier unselectable in the combined picker.
+  let semanticSearchGuidedModelIds = $derived(
+    new Set(semanticSearchGuidedModels.map((m) => m.modelId)),
+  );
+
+  // The Custom-combobox options: the supported catalog minus anything already
+  // rendered as a guided/builtin tier.
+  let semanticSearchCustomOptions = $derived(
+    semanticSearchSupportedModels.filter(
+      (m) => !semanticSearchGuidedModelIds.has(m.modelId),
+    ),
+  );
+
+  // The single combined picker list: guided/recommended tiers first (deduped by
+  // modelId, guided wins), then the rest of the supported on-device catalog. One control,
+  // one value (`semanticSearchPickedModelId`); each option labels its tier so
+  // the distinction stays clear without a second selector.
+  let semanticSearchModelOptions = $derived([
+    ...semanticSearchGuidedModels.map((m) => ({
+      value: m.modelId,
+      label: `${m.displayName} · ${m.dimension}d${m.tier === "multilingual" ? " · multilingual" : ""} · recommended`,
+    })),
+    ...semanticSearchCustomOptions.map((m) => ({
+      value: m.modelId,
+      label: `${m.displayName} — ${m.dimension}d${m.multilingual ? " · multilingual" : ""}`,
+    })),
+  ]);
+
+  // The render-ready view of the picked model for the shared status + action
+  // region. Resolve live status first (carries provider + available + status),
+  // else fall back to the supported catalog entry (a custom model not yet in
+  // status). Null when nothing is picked.
+  interface SemanticSearchPickedView {
+    modelId: string;
+    provider: string | null;
+    displayName: string;
+    description: string;
+    metaLine: string;
+    available: boolean;
+    approxDownloadBytes: number | null;
+  }
+  let semanticSearchPickedModel = $derived.by((): SemanticSearchPickedView | null => {
+    const id = semanticSearchPickedModelId;
+    if (!id) return null;
+    const live = (semanticSearchModelStatus?.models ?? []).find((m) => m.modelId === id);
+    if (live) {
+      return {
+        modelId: live.modelId,
+        provider: live.provider,
+        displayName: live.displayName,
+        description: live.description,
+        metaLine: `${semanticSearchTierLabel(live.tier)} · ${formatBytes(live.approxDownloadBytes)} on disk · ${live.dimension}-dim · runs on-device${live.licenseLabel ? ` · ${live.licenseLabel}` : ""}`,
+        available: live.available,
+        approxDownloadBytes: live.approxDownloadBytes,
+      };
+    }
+    const catalog = semanticSearchSupportedModels.find((m) => m.modelId === id);
+    if (catalog) {
+      const size =
+        catalog.approxDownloadBytes != null
+          ? `${formatBytes(catalog.approxDownloadBytes)} on disk · `
+          : "";
+      return {
+        modelId: catalog.modelId,
+        provider: semanticSearchProvider,
+        displayName: catalog.displayName,
+        description: catalog.description,
+        metaLine: `${semanticSearchTierLabel("custom")} · ${size}${catalog.dimension}-dim · runs on-device${catalog.multilingual ? " · multilingual" : ""}`,
+        available: false,
+        approxDownloadBytes: catalog.approxDownloadBytes,
+      };
+    }
+    return null;
+  });
+
+  // Live download progress for the picked model, matched by id (a not-yet-in-
+  // status custom model has no provider on its status row to match against).
+  let semanticSearchPickedProgress = $derived.by(() => {
+    const id = semanticSearchPickedModelId;
+    const p = semanticSearchDownloadProgress;
+    return id && p && p.modelId === id ? p : null;
+  });
+
+  // Download the picked model, reusing the shared download command. The resolved
+  // view already carries the right provider (live row's, else the catalog's); build
+  // the minimal status-shaped object `startSemanticSearchModelDownload` reads.
+  async function startSemanticSearchPickedDownload(model: SemanticSearchPickedView) {
+    if (!model.provider) return;
+    await startSemanticSearchModelDownload({
+      provider: model.provider,
+      modelId: model.modelId,
+    } as SemanticSearchModelStatus);
+  }
+
+  // Activate the picked model. Reuses the guided-tier confirm + re-index flow by
+  // building a minimal status-shaped object (only the fields the chooser reads —
+  // modelId + displayName).
+  async function chooseSemanticSearchPickedModel(model: SemanticSearchPickedView) {
+    await chooseSemanticSearchModel({
+      modelId: model.modelId,
+      displayName: model.displayName,
+    } as SemanticSearchModelStatus);
   }
 
   async function loadSpeakerModelStatus() {
@@ -3584,6 +3911,8 @@
       loadOcrModelStatus();
       loadTranscriptionModelStatus();
       loadSpeakerModelStatus();
+      void loadSemanticSearchModelStatus();
+      void loadSemanticSearchSupportedModels();
       void loadPersonProfileCount();
       loadDebugLogStatus();
       loadGeneralLogStatus();
@@ -3609,6 +3938,7 @@
     let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
     let unlistenSpeakerDownloadProgress: (() => void) | undefined;
+    let unlistenSemanticSearchDownloadProgress: (() => void) | undefined;
     let destroyed = false;
 
     listen<MicrophoneControllerState>("microphone_controller_changed", (event) => {
@@ -3702,6 +4032,16 @@
       else unlistenSpeakerDownloadProgress = fn;
     });
 
+    listen<SemanticSearchModelDownloadProgress>(
+      SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
+      (event) => {
+        void handleSemanticSearchDownloadProgress(event.payload);
+      }
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSemanticSearchDownloadProgress = fn;
+    });
+
     listen("user_context_changed", () => {
       void refreshUserContext();
     }).then((fn) => {
@@ -3723,6 +4063,7 @@
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
       unlistenSpeakerDownloadProgress?.();
+      unlistenSemanticSearchDownloadProgress?.();
       unlistenUserContextChanged?.();
     };
   });
@@ -6292,6 +6633,162 @@
         {/if}
       </div>
     </section>
+
+    <!-- ── Card: Semantic Search Model (issue #125) ─────────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">Semantic Search Model</h2>
+          <p class="card__subtitle">
+            Meaning-based search runs fully on-device — on the GPU where available, otherwise the CPU.
+            Pick a supported model, then Mnema embeds your captures in the background. Nothing is
+            downloaded until you choose a model. The model stays on as a background indexer — it keeps
+            re-embedding new captures (ongoing CPU/GPU and battery while it catches up), and switching
+            models re-indexes every existing capture.
+          </p>
+        </div>
+        <button
+          class="btn btn--ghost btn--sm"
+          onclick={() => void loadSemanticSearchModelStatus()}
+          disabled={loadingSemanticSearchModelStatus}
+        >
+          {loadingSemanticSearchModelStatus ? "Checking" : "Refresh"}
+        </button>
+      </div>
+
+      <div class="settings-group">
+        <Switch
+          checked={draftSemanticSearchEnabled}
+          onCheckedChange={(value) => void setSemanticSearchEnabled(value)}
+          label="Enable semantic search"
+          description="Fuse meaning-based results with keyword search. Inert until a model below is installed."
+        />
+
+        {#if osIsNonEnglish}
+          <p class="group-hint">
+            Your system language ({osLocale}) isn’t English — the Multilingual tier is recommended so
+            non-English captures aren’t degraded by the English default.
+          </p>
+        {/if}
+
+        <div class="settings-divider"></div>
+
+        {#if semanticSearchModelError}
+          <p class="group-hint group-hint--warn">Model status failed: {semanticSearchModelError}</p>
+        {/if}
+
+        {#if semanticSearchModelStatus}
+          <div class="settings-group">
+            <span class="group-label">Model</span>
+            <SelectMenu
+              label=""
+              placeholder="Select a model — recommended tiers first…"
+              value={semanticSearchPickedModelId}
+              onValueChange={(v) => (semanticSearchPickedModelId = v)}
+              options={semanticSearchModelOptions}
+            />
+            <p class="group-hint">
+              Recommended tiers are listed first. Pick from the supported on-device models;
+              multilingual models are marked. Nothing downloads until you choose below.
+            </p>
+          </div>
+
+          {#if semanticSearchSupportedModelsError}
+            <p class="group-hint group-hint--warn">Custom model list failed: {semanticSearchSupportedModelsError}</p>
+          {:else if loadingSemanticSearchSupportedModels && semanticSearchSupportedModels.length === 0}
+            <p class="group-hint">Loading supported models…</p>
+          {/if}
+
+          {#if semanticSearchPickedModel}
+            {@const picked = semanticSearchPickedModel}
+            {@const progress = semanticSearchPickedProgress}
+            {@const installed = picked.available}
+            {@const selected = semanticSearchSelectedModelId === picked.modelId}
+            {@const downloading =
+              !!progress &&
+              (progress.status === "downloading" ||
+                progress.status === "starting" ||
+                progress.status === "installing")}
+            <div class="settings-group ss-picked" role="group" aria-label={picked.displayName}>
+              <div class="row-actions" style="justify-content: space-between; align-items: flex-start;">
+                <div>
+                  <strong>{picked.displayName}</strong>
+                  <p class="group-hint">{picked.description}</p>
+                  <p class="group-hint">{picked.metaLine}</p>
+                </div>
+                <span class="badge {selected ? 'badge--ok' : 'badge--neutral'} badge--sm">
+                  {selected
+                    ? "Active"
+                    : installed
+                      ? "Installed"
+                      : downloading
+                        ? `Downloading ${progress ? semanticSearchProgressPercent(progress) : 0}%`
+                        : progress && progress.status === "failed"
+                          ? "Failed"
+                          : "Not installed"}
+                </span>
+              </div>
+
+              {#if downloading && progress}
+                <div class="download-progress" aria-live="polite">
+                  <div class="download-progress__bar">
+                    <span style={`width: ${semanticSearchProgressPercent(progress)}%`}></span>
+                  </div>
+                  <p class="group-hint">
+                    {semanticSearchProgressPercent(progress)}% · {formatBytes(progress.downloadedBytes)}{progress.totalBytes ? ` of ${formatBytes(progress.totalBytes)}` : ""}
+                  </p>
+                </div>
+              {/if}
+
+              {#if downloading || !installed || !selected}
+                <div class="row-actions">
+                  {#if downloading}
+                    <button class="btn btn--ghost btn--sm" onclick={() => void cancelSemanticSearchModelDownload()}>
+                      Cancel
+                    </button>
+                  {:else if !installed}
+                    <!-- Step 1: download. Mnema never auto-downloads (ADR 0036). -->
+                    <button
+                      class="btn btn--primary btn--sm"
+                      onclick={() => void startSemanticSearchPickedDownload(picked)}
+                      disabled={!picked.provider}
+                    >
+                      {picked.approxDownloadBytes != null
+                        ? `Download (${formatBytes(picked.approxDownloadBytes)})`
+                        : "Download"}
+                    </button>
+                  {:else if !selected}
+                    <!-- Step 2: use (installed, not yet active). -->
+                    <button
+                      class="btn btn--primary btn--sm"
+                      onclick={() => void chooseSemanticSearchPickedModel(picked)}
+                    >
+                      Use this model
+                    </button>
+                  {/if}
+                  {#if !installed && !downloading}
+                    <span class="action-hint">Step 1: download · Step 2: use this model</span>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          {#if semanticSearchDownloadError}
+            <p class="group-hint group-hint--warn">Download failed: {semanticSearchDownloadError}</p>
+          {/if}
+          {#if semanticSearchReindexing}
+            <p class="group-hint">Re-indexing — clearing existing vectors…</p>
+          {:else if semanticSearchReindexMessage}
+            <p class="group-hint">{semanticSearchReindexMessage}</p>
+          {/if}
+        {:else if loadingSemanticSearchModelStatus}
+          <p class="group-hint">Checking installed search models…</p>
+        {:else}
+          <p class="group-hint group-hint--warn">No search model status is available.</p>
+        {/if}
+      </div>
+    </section>
     </div>
   {/if}
 
@@ -7328,6 +7825,15 @@
 
   .settings-group:focus {
     outline: none;
+  }
+
+  /* Semantic-search picked-model status: a single contained block under the one
+     model picker, mirroring the Speaker card's .model-status look. */
+  .ss-picked {
+    padding: 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
   }
 
   .settings-group--attention .settings-stack {

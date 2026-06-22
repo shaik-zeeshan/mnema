@@ -430,6 +430,55 @@ impl Default for SpeakerAnalysisSettings {
     }
 }
 
+pub fn default_semantic_search_enabled() -> bool {
+    // Default-on but model-gated: the feature is inert until a Semantic Search
+    // Model is installed (ADR 0036). `enabled` lets the user turn it off even
+    // when a model is present.
+    true
+}
+
+pub fn default_semantic_search_provider() -> String {
+    // The on-disk `{provider}/{model_id}` namespace for locally-run models. Kept
+    // backend-neutral ("local"), not a runtime name — mirrors
+    // `semantic_search::SEMANTIC_SEARCH_PROVIDER_ID`, which the desktop validator
+    // checks this against.
+    "local".to_string()
+}
+
+pub fn default_semantic_search_model_id() -> Option<String> {
+    // English default tier: nomic-embed-text-v1.5 (768-dim, 8192-token, Apache-2.0).
+    Some("nomic-embed-text-v1.5".to_string())
+}
+
+/// User-facing selection of the **Semantic Search Model** (a **Semantic Search
+/// Model Tier**). This is the minimal shape the embedding runtime and its
+/// model-gating need; the Settings slice extends it (guided tiers + Custom
+/// picker) and wires it into `RecordingSettings`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticSearchSettings {
+    #[serde(default = "default_semantic_search_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_semantic_search_provider")]
+    pub provider: String,
+    #[serde(default = "default_semantic_search_model_id")]
+    pub model_id: Option<String>,
+}
+
+pub fn default_semantic_search_settings() -> SemanticSearchSettings {
+    SemanticSearchSettings {
+        enabled: default_semantic_search_enabled(),
+        provider: default_semantic_search_provider(),
+        model_id: default_semantic_search_model_id(),
+    }
+}
+
+impl Default for SemanticSearchSettings {
+    fn default() -> Self {
+        default_semantic_search_settings()
+    }
+}
+
 impl Default for VideoBitrateSettings {
     fn default() -> Self {
         default_video_bitrate()
@@ -832,6 +881,17 @@ where
     Option::<AiEngineRef>::deserialize(deserializer).map(Some)
 }
 
+/// Distinguish an absent field (`None`) from an explicit `null` (`Some(None)`)
+/// for a patch string. Present-and-set is `Some(Some(value))`.
+fn deserialize_optional_optional_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAiRuntimeSettingsRequest {
@@ -950,6 +1010,8 @@ pub struct RecordingSettings {
     pub ai_runtime: AiRuntimeSettings,
     #[serde(default)]
     pub user_context: UserContextSettings,
+    #[serde(default = "default_semantic_search_settings")]
+    pub semantic_search: SemanticSearchSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -991,6 +1053,7 @@ pub enum SettingsOwnershipDomain {
     Access,
     AiRuntime,
     UserContext,
+    SemanticSearch,
     OneTimePromptState,
 }
 
@@ -1045,6 +1108,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub ai_runtime: AiRuntimeSettings,
     #[serde(default)]
     pub user_context: UserContextSettings,
+    #[serde(default = "default_semantic_search_settings")]
+    pub semantic_search: SemanticSearchSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -1065,6 +1130,21 @@ pub struct UpdateRecordingSettingsRequest {
         alias = "inactivityActivityMode"
     )]
     pub inactivity_activity_mode: InactivityActivityMode,
+}
+
+/// Partial update of the **Semantic Search Model Tier** selection. A model
+/// switch is a deliberate, confirmed action in the UI (it re-derives every
+/// **Semantic Search Vector**); this is the patch the desktop command applies
+/// once the user confirms (ADR 0036).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSemanticSearchSettingsRequest {
+    pub enabled: Option<bool>,
+    pub provider: Option<String>,
+    /// Double-`Option`: `Some(None)` clears the selected model, `Some(Some(id))`
+    /// selects a model, `None` leaves the selection unchanged.
+    #[serde(default, deserialize_with = "deserialize_optional_optional_string")]
+    pub model_id: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

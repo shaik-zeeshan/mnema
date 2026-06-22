@@ -242,6 +242,12 @@ export interface FrameSearchResultDto {
 	textSourceKind: "direct" | "equivalent_reuse";
 	hasSecretRedactions: boolean;
 	secretRedactionCount: number;
+	/**
+	 * A meaning-only Semantic Search hit: the snippet is a leading body-text
+	 * excerpt that should render with a "found by meaning" tag rather than a
+	 * highlighted keyword snippet.
+	 */
+	foundByMeaning: boolean;
 }
 
 export interface AudioSearchResultDto {
@@ -257,6 +263,8 @@ export interface AudioSearchResultDto {
 	alignedFrame: FrameDto | null;
 	hasSecretRedactions: boolean;
 	secretRedactionCount: number;
+	/** A meaning-only Semantic Search hit (see {@link FrameSearchResultDto}). */
+	foundByMeaning: boolean;
 }
 
 export interface ListAudioSegmentsRequest {

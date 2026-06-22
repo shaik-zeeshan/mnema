@@ -75,7 +75,7 @@
         {/if}
       </div>
       <p class="search-card__snippet">
-        {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
+        {#if frame.foundByMeaning}<span class="search-card__meaning-tag">found by meaning</span>{/if}{#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
       </p>
       <div class="search-card__foot">
         <span class="search-card__time">{formatTimestampCompact(frame.groupEndAt)}</span>
@@ -117,7 +117,7 @@
         <span class="search-card__sub">{formatDuration(Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000))}</span>
       </div>
       <p class="search-card__snippet">
-        {#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
+        {#if audio.foundByMeaning}<span class="search-card__meaning-tag">found by meaning</span>{/if}{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
       </p>
       <div class="search-card__foot">
         <span class="search-card__time">{formatTimestampCompact(audio.absoluteStartAt)}</span>
@@ -305,6 +305,24 @@
     background: color-mix(in srgb, var(--app-accent) 26%, transparent);
     color: var(--app-text-strong);
     padding: 0 1px;
+  }
+
+  /* A meaning-only Semantic Search hit leads its excerpt with this inline tag,
+     so the user sees the result was found by meaning rather than a keyword the
+     snippet would have highlighted. Accent-tinted but quiet, reading as a label
+     in front of the body-text excerpt. */
+  .search-card__meaning-tag {
+    margin-right: 5px;
+    padding: 0 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 16%, transparent);
+    color: var(--app-accent);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    vertical-align: 1px;
   }
 
   .search-card__foot {

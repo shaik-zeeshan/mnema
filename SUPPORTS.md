@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-06-10_
+_Last reviewed: 2026-06-18_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -28,6 +28,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Audio transcription: Apple Speech | [x] | [ ] | [ ] | Apple-only provider. |
 | Audio transcription: Local Whisper/Parakeet | [x] | [~] | [~] | Models are cross-platform-ish, but audio decode is AVFoundation-only today. |
 | Speaker analysis | [x] | [ ] | [ ] | On-device diarization runs through the `speakrs` provider (pure-Rust pyannote-community-1 segmentation + WeSpeaker embedding + VBx clustering on CoreML), which links system OpenBLAS. CoreML ties it to Apple Silicon macOS; audio decode is AVFoundation-only too. |
+| Semantic Search (local embeddings + vec0) | [x] | [~] | [~] | Built and tested on macOS only. Embeddings run on-device via **candle** behind a pluggable **Semantic Search Backend**: the Apple GPU (Metal, F16) on macOS or **candle-CPU** (F32) elsewhere — the runtime tries Metal then falls back to CPU; CUDA is deferred (no v1 artifact). This replaces the earlier `fastembed`/ONNX (`ort`) path along with its per-thread QoS downclock and arena mitigations. `sqlite-vec` (`vec0`) is still statically linked into the SQLCipher amalgamation (unchanged), and model download is still a desktop-owned `reqwest` (now `rustls`) fetch from Hugging Face (now safetensors layout) — all cross-platform in principle and free of native capture/audio-decode dependencies. Note candle-metal is a **second native ML runtime** in the bundle (links Metal/MPS) alongside `ort`, which now remains only for transcription — flag for the release/notarization checklist. Windows/Linux are **unverified**: claiming support is gated on a **candle-CPU measurement** (CPU%, throughput, RSS) plus a real build/run of the candle-CPU + static `vec0` link on those platforms. See [ADR 0037](docs/adr/0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md). |
 | Inactivity detection | [x] | [ ] | [ ] | macOS uses CoreGraphics input idle plus capture-sourced screen/audio activity. |
 | Sleep/wake recovery | [x] | [ ] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. |
 | Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
@@ -73,6 +74,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Local Whisper/Parakeet provider integration using AVFoundation decode.
 - [x] Speaker analysis via the `speakrs` provider (CoreML + system OpenBLAS) using AVFoundation decode.
 - [x] System-audio speech activity using AVFoundation-backed audio decode.
+- [x] Semantic Search: on-device **candle** embeddings on the Apple GPU (Metal, F16) behind a pluggable **Semantic Search Backend** (the runtime tries Metal then falls back to candle-CPU; CUDA deferred), `vec0` vectors inside the SQLCipher-encrypted Capture Index, deferred-startup backfill sweep, and desktop-owned model download (now `rustls`, safetensors layout) from Hugging Face. This supersedes the `fastembed`/`ort` path: Metal frees the P-cores by construction, so the macOS-only per-thread QoS downclock and the ONNX arena mitigations are gone. candle-metal is a **second native ML runtime** in the bundle (links Metal/MPS) alongside `ort`, which now stays only for transcription — a release/notarization checklist item. No native capture or audio-decode dependency, so the runtime is platform-neutral in principle; only verified on macOS today. See [ADR 0037](docs/adr/0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md).
 
 ### Privacy, metadata, and UX
 

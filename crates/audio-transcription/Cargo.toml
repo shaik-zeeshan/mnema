@@ -15,7 +15,12 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 ndarray = { version = "0.17", optional = true }
-ort = { version = "2.0.0-rc.12", optional = true }
+# Exact pin: Parakeet links `ort`/`ort-sys` to the native ONNX runtime, and an
+# `ort` minor bump can shift the bundled `onnxruntime` version, so pin it exactly
+# and bump deliberately. (Semantic Search no longer shares this runtime — it moved
+# off fastembed/`ort` to candle in ADR 0037, so the old cross-crate lockstep with
+# crates/semantic-search no longer applies.) See ADR 0036 / issue #122.
+ort = { version = "=2.0.0-rc.12", optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }

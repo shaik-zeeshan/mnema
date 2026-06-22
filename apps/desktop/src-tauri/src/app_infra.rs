@@ -519,6 +519,9 @@ pub struct FrameSearchResultDto {
     pub text_source_kind: String,
     pub secret_redaction_count: u32,
     pub has_secret_redactions: bool,
+    /// A meaning-only **Semantic Search** hit: the snippet is a leading
+    /// `body_text` excerpt the frontend tags "found by meaning".
+    pub found_by_meaning: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -536,6 +539,8 @@ pub struct AudioSearchResultDto {
     pub aligned_frame: Option<FrameDto>,
     pub secret_redaction_count: u32,
     pub has_secret_redactions: bool,
+    /// A meaning-only **Semantic Search** hit (see [`FrameSearchResultDto`]).
+    pub found_by_meaning: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -816,6 +821,7 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
             text_source_kind: result.text_source_kind,
             secret_redaction_count: result.secret_redaction_count,
             has_secret_redactions: result.has_secret_redactions,
+            found_by_meaning: result.found_by_meaning,
         }
     }
 }
@@ -835,6 +841,7 @@ impl From<::app_infra::AudioSearchResult> for AudioSearchResultDto {
             aligned_frame: result.aligned_frame.map(FrameDto::from),
             secret_redaction_count: result.secret_redaction_count,
             has_secret_redactions: result.has_secret_redactions,
+            found_by_meaning: result.found_by_meaning,
         }
     }
 }
@@ -1785,6 +1792,36 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     );
 
     crate::user_context::worker::spawn_user_context_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
+    // Semantic Search startup reconciliation (self-heal): if a past model switch
+    // left the vec0 table at a dimension that disagrees with the selected model
+    // (e.g. a rebuild that failed under DB contention), every search degrades to
+    // keyword-only and the worker idles forever — recovery cannot come from
+    // re-selecting the same model (the UI early-returns on an unchanged pick). Run
+    // once here on the deferred-startup seam, BEFORE the backfill worker spawns, to
+    // rebuild a stuck table back to the selected model's dimension. Idempotent: a
+    // matching table is left untouched (the common case). Best-effort — a failure
+    // is logged and the worker still spawns (it will idle on the mismatch rather
+    // than error-loop).
+    {
+        let settings = crate::semantic_search_worker::effective_semantic_search_settings(app_handle);
+        tauri::async_runtime::block_on(
+            crate::semantic_search_models::reconcile_semantic_search_index_on_startup(
+                &infra, &settings,
+            ),
+        );
+    }
+
+    // Semantic Index Backfill sweep-loop (issue #123): derives a Semantic Search
+    // Vector for direct anchors lacking one — live capture + historical backfill
+    // in one self-healing newest-first query, resumable across restarts, inert
+    // until a Semantic Search Model is installed. Spawned here on the
+    // deferred-startup seam (after the window opens), never on the capture hot path.
+    crate::semantic_search_worker::spawn_semantic_index_backfill_worker(
         Arc::clone(&infra),
         app_handle.clone(),
         background_workers.clone(),
@@ -4699,9 +4736,28 @@ pub async fn get_timeline_window_around_frame(
 #[tauri::command]
 pub async fn search_capture(
     request: SearchCaptureRequest,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppInfraState>,
+    query_embedder: tauri::State<'_, crate::semantic_search_query::SemanticQueryEmbedderState>,
 ) -> Result<SearchCaptureResponseDto, String> {
     let infra = Arc::clone(&*state);
+
+    // **Hybrid Search**: embed the query string into a **Semantic Search Vector**
+    // so app-infra can fuse the `vec0` KNN with FTS5 by RRF. `None` when no
+    // **Semantic Search Model** is installed (default/Anthropic-only) — search
+    // then degrades to keyword-only with no regression. Never errors: a failed or
+    // absent embed just leaves `query_embedding = None`.
+    //
+    // The embed runs over the operator-stripped residual — exactly what FTS ranks
+    // on — so `app:`/`before:`/`source:` operators and quoted phrases never pollute
+    // the meaning vector. The full `request.query` still drives FTS below; only the
+    // EMBED input is the residual. An all-operators query yields an empty residual,
+    // which `embed_search_query` empty-guards to `None` (keyword-only).
+    let residual_query = ::app_infra::semantic_search_residual_query(&request.query);
+    let query_embedding =
+        crate::semantic_search_query::embed_search_query(&app_handle, &query_embedder, &residual_query)
+            .await;
+
     infra
         .search_capture(::app_infra::SearchCaptureRequest {
             query: request.query,
@@ -4711,6 +4767,7 @@ pub async fn search_capture(
             audio_offset: request.audio_offset,
             snapshot_document_id: request.snapshot_document_id,
             refinements: request.refinements,
+            query_embedding,
         })
         .await
         .map(SearchCaptureResponseDto::from)
@@ -5772,6 +5829,7 @@ mod tests {
             text_source_kind: "ocr".to_string(),
             secret_redaction_count: 0,
             has_secret_redactions: false,
+            found_by_meaning: false,
         };
 
         let value =

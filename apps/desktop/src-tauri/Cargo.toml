@@ -43,7 +43,13 @@ tauri-plugin-updater = "2"
 fs2 = "0.4"
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-reqwest = { version = "0.12", features = ["stream"] }
+# rustls alignment (ADR 0037): with fastembed/ort's `native-tls` gone, the model
+# downloader's `reqwest` aligns to rustls — the workspace's other TLS users are
+# rustls too (sqlx uses `runtime-tokio-rustls`). `default-features = false` drops
+# the `default-tls` (native-tls) path; `charset` keeps `.text()` decoding and
+# `http2` keeps HTTP/2 negotiation that the HTTPS endpoints (HuggingFace, the AI
+# providers) use.
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "charset", "http2"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -59,6 +65,11 @@ audio-transcription = { path = "../../../crates/audio-transcription", features =
 # matching desktop-crate cfg. See `[features]` above.
 speaker-analysis = { path = "../../../crates/speaker-analysis", default-features = false }
 ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
+# Semantic Search now runs on candle (ADR 0037). The base dep has no default
+# features (candle-CPU); the macOS target dep below adds `metal` for the Apple GPU
+# (Cargo unions features across the base + target entries). The candle runtime
+# tries Metal then falls back to CPU at runtime regardless.
+semantic-search = { path = "../../../crates/semantic-search" }
 capture-types = { path = "../../../crates/capture-types" }
 capture-metadata = { path = "../../../crates/capture-metadata" }
 capture-runtime = { path = "../../../crates/capture-runtime" }
@@ -82,3 +93,8 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 cidre = { version = "0.15", default-features = false, features = ["app", "async", "av", "blocks", "cf", "cg", "cm", "iio", "ns", "ut", "macos_15_0"] }
 objc = "0.2"
+# Enable candle's `metal` feature on macOS so Semantic Search embeds on the Apple
+# GPU (ADR 0037). Cargo unions this with the base (no-default-features) entry, so
+# the macOS build gets Metal while other platforms stay candle-CPU. The path must
+# match the base entry above exactly.
+semantic-search = { path = "../../../crates/semantic-search", features = ["metal"] }

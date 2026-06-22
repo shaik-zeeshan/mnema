@@ -6,19 +6,22 @@ use capture_types::{
     default_ocr_settings, default_ocr_tesseract_char_whitelist,
     default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
-    default_preview_cache_ttl_seconds, default_privacy_settings, default_speaker_analysis_model_id,
+    default_preview_cache_ttl_seconds, default_privacy_settings, default_semantic_search_model_id,
+    default_semantic_search_provider, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AccessSettings,
     AiRuntimeSettings, AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionProvider,
     AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
     RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
-    SettingsOwnershipDomain, SpeakerAnalysisSettings, UpdateAccessSettingsRequest,
+    SemanticSearchSettings, SettingsOwnershipDomain, SpeakerAnalysisSettings,
+    UpdateAccessSettingsRequest,
     UpdateAiRuntimeSettingsRequest, UpdateCaptureSourceSettingsRequest,
     UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
     UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
-    UpdateStorageSettingsRequest, UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest,
-    UserContextSettings, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    UpdateSemanticSearchSettingsRequest, UpdateStorageSettingsRequest,
+    UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest, UserContextSettings,
+    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -111,6 +114,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         access: AccessSettings::default(),
         ai_runtime: AiRuntimeSettings::default(),
         user_context: UserContextSettings::default(),
+        semantic_search: capture_types::default_semantic_search_settings(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -364,6 +368,71 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
                 .timeout_seconds
                 .clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS)
         },
+    }
+}
+
+/// Normalize the **Semantic Search** settings before they are persisted, mirroring
+/// [`validate_speaker_analysis_settings`] (finding L4): every other model-bearing
+/// domain trims/normalizes its provider + model id, but `semantic_search` was
+/// persisted raw, so a whitespace/empty/incoherent `provider`+`model_id` (a
+/// hand-edited config, or a future free-text Custom picker) would land verbatim,
+/// `resolve_selected_descriptor` would return `None`, and the worker + query would
+/// silently no-op forever while the toggle still read enabled.
+///
+/// Like the speaker-analysis validator this is **infallible** (it normalizes rather
+/// than rejecting):
+/// - `provider`: trimmed; reset to the default (`"local"`) if it is not the one
+///   recognized provider, exactly as the speaker validator resets an unrecognized
+///   provider to `"sherpa_onnx"`.
+/// - `model_id`: an explicit `None` is the legitimate **"no model selected"**
+///   sentinel (the feature is default-on but model-gated, so cleared → keyword-only)
+///   and is kept as `None` — this is the one deliberate divergence from the speaker
+///   validator, whose `None` resets to a default because speaker analysis has no
+///   "no model" off-state. A **present** id is trimmed; only an empty/whitespace id
+///   (no real selection) falls back to the default model (`nomic-embed-text-v1.5`).
+///   A present-but-unresolvable id is **preserved verbatim** rather than swapped to a
+///   possibly dimension-incompatible default: changing the selected model must happen
+///   only through the explicit atomic switch path, never as a silent side effect of an
+///   unrelated recording-settings save. The live-dimension authority no-ops an
+///   unresolvable id into keyword-only and startup reconciliation re-aligns it, so a
+///   silent swap here would only desync the persisted selection from the vec0 table
+///   until the next restart's reconcile. A present-and-known id is kept as-is, so a
+///   real Custom selection survives.
+/// - `enabled`: a plain bool, carried through unchanged (the speaker validator
+///   likewise carries its bool flags through).
+fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticSearchSettings {
+    let provider = if value.provider.trim() == semantic_search::SEMANTIC_SEARCH_PROVIDER_ID {
+        semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string()
+    } else {
+        default_semantic_search_provider()
+    };
+
+    let model_id = match value.model_id {
+        // Explicitly cleared — keep "no model selected" (keyword-only) rather than
+        // resurrecting the default. This is the intentional model-gated off-state.
+        None => None,
+        // A present id: trim. Only an empty/whitespace id (no real selection) falls
+        // back to the default. A present-but-unresolvable id is preserved verbatim
+        // rather than swapped to a possibly dimension-incompatible default: changing
+        // the selected model must happen only through the explicit atomic switch
+        // path, never as a silent side effect of an unrelated settings save. The
+        // live-dimension authority no-ops an unresolvable id into keyword-only and
+        // startup reconciliation re-aligns it — wiping it here would leave the vec0
+        // table disagreeing with the persisted selection until the next restart.
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                default_semantic_search_model_id()
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+    };
+
+    SemanticSearchSettings {
+        enabled: value.enabled,
+        provider,
+        model_id,
     }
 }
 
@@ -681,6 +750,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         access: request.access,
         ai_runtime: normalize_ai_runtime_settings(request.ai_runtime),
         user_context: request.user_context,
+        semantic_search: validate_semantic_search_settings(request.semantic_search),
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -787,6 +857,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             access: parsed.access,
             ai_runtime: parsed.ai_runtime,
             user_context: parsed.user_context,
+            semantic_search: parsed.semantic_search,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -914,6 +985,23 @@ pub(crate) enum RecordingSettingsDomainPatch {
     Access(UpdateAccessSettingsRequest),
     AiRuntime(UpdateAiRuntimeSettingsRequest),
     UserContext(UpdateUserContextSettingsRequest),
+    /// Generic **Semantic Search** settings patch from the untrusted IPC boundary
+    /// (`update_semantic_search_settings`). Honors the `enabled` toggle and other
+    /// non-dimension-affecting fields, but DELIBERATELY ignores `model_id` /
+    /// `provider`: changing the model through a generic patch would re-open the
+    /// non-atomic dimension split (the persisted `model_id` moves but the `vec0`
+    /// table is not rebuilt to the new model's dimension). Model/provider changes
+    /// must go through the dedicated atomic switch (`select_semantic_search_model`
+    /// → [`Self::SemanticSearchModelSwitch`]), which rebuilds the table and
+    /// persists the selection together. See review finding low #4 (PR #126).
+    SemanticSearch(UpdateSemanticSearchSettingsRequest),
+    /// Trusted **Semantic Search Model Tier** persist from the atomic switch
+    /// (`select_semantic_search_model` via `persist_semantic_search_settings`),
+    /// which has ALREADY rebuilt the `vec0` table to the new model's dimension
+    /// before persisting. This variant honors `model_id` / `provider` so the
+    /// persisted selection lands in lockstep with the live table dimension. It is
+    /// internal-only — there is no `#[tauri::command]` that constructs it.
+    SemanticSearchModelSwitch(UpdateSemanticSearchSettingsRequest),
 }
 
 impl RecordingSettingsDomainPatch {
@@ -931,6 +1019,8 @@ impl RecordingSettingsDomainPatch {
             Self::Access(_) => SettingsOwnershipDomain::Access,
             Self::AiRuntime(_) => SettingsOwnershipDomain::AiRuntime,
             Self::UserContext(_) => SettingsOwnershipDomain::UserContext,
+            Self::SemanticSearch(_) => SettingsOwnershipDomain::SemanticSearch,
+            Self::SemanticSearchModelSwitch(_) => SettingsOwnershipDomain::SemanticSearch,
         }
     }
 }
@@ -970,6 +1060,7 @@ fn recording_settings_request_from_settings(
         access: settings.access,
         ai_runtime: settings.ai_runtime,
         user_context: settings.user_context,
+        semantic_search: settings.semantic_search,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -1146,6 +1237,49 @@ fn apply_domain_patch_to_settings(
             }
             if let Some(value) = request.backfill_go_deeper {
                 settings.user_context.backfill_go_deeper = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::SemanticSearch(request) => {
+            if let Some(value) = request.enabled {
+                settings.semantic_search.enabled = value;
+                touched = true;
+            }
+            // Ignore `model_id` / `provider` from this generic IPC patch. Changing
+            // the model here would re-open the non-atomic dimension split: the
+            // persisted `model_id` would move but the `vec0` table is NOT rebuilt
+            // to the new model's dimension, so the index width would disagree with
+            // the selection (search degrades to keyword-only until startup
+            // reconciliation, and vectors could be discarded). Model/provider
+            // changes must go through the dedicated atomic switch
+            // (`select_semantic_search_model`), which rebuilds the table and
+            // persists the selection together. We ignore-with-log rather than
+            // error so existing callers that harmlessly echo the current value
+            // don't break.
+            if request.model_id.is_some() || request.provider.is_some() {
+                crate::native_capture::debug_log::log_info(
+                    "semantic search: ignoring `model_id`/`provider` in a generic settings update; \
+                     model/provider changes must go through the atomic switch \
+                     (`select_semantic_search_model`) that rebuilds the vec0 table at the new dimension",
+                );
+            }
+        }
+        RecordingSettingsDomainPatch::SemanticSearchModelSwitch(request) => {
+            // Trusted path: `select_semantic_search_model` has ALREADY rebuilt the
+            // `vec0` table to the new model's dimension before persisting, so the
+            // selection lands in lockstep with the live table width. Honor every
+            // field, including `model_id` / `provider`.
+            if let Some(value) = request.enabled {
+                settings.semantic_search.enabled = value;
+                touched = true;
+            }
+            if let Some(value) = request.provider {
+                settings.semantic_search.provider = value;
+                touched = true;
+            }
+            if let Some(value) = request.model_id {
+                // Double-Option: an explicit `null` clears the selected model.
+                settings.semantic_search.model_id = value;
                 touched = true;
             }
         }
@@ -1548,6 +1682,137 @@ mod tests {
         assert_eq!(updated.ocr, base.ocr);
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
+    }
+
+    #[test]
+    fn semantic_search_model_switch_patch_switches_model_and_preserves_other_fields() {
+        let mut base = default_recording_settings();
+        base.capture_microphone = true;
+        base.save_directory = "/tmp/mnema-before".to_string();
+        assert_eq!(
+            base.semantic_search.model_id.as_deref(),
+            Some("nomic-embed-text-v1.5")
+        );
+
+        // Switch to the Multilingual tier via the trusted atomic-switch variant
+        // (the path `select_semantic_search_model` uses AFTER it has rebuilt the
+        // vec0 table to the new model's dimension).
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::SemanticSearchModelSwitch(
+                capture_types::UpdateSemanticSearchSettingsRequest {
+                    enabled: None,
+                    provider: None,
+                    model_id: Some(Some("multilingual-e5-small".to_string())),
+                },
+            ),
+        )
+        .expect("semantic search model switch should validate");
+
+        assert_eq!(
+            updated.semantic_search.model_id.as_deref(),
+            Some("multilingual-e5-small")
+        );
+        // Unrelated fields are untouched.
+        assert!(updated.capture_microphone);
+        assert_eq!(updated.save_directory, base.save_directory);
+        assert_eq!(updated.ocr, base.ocr);
+    }
+
+    #[test]
+    fn generic_semantic_search_patch_ignores_model_id_and_provider() {
+        let mut base = default_recording_settings();
+        base.semantic_search.enabled = false;
+        let original_model = base.semantic_search.model_id.clone();
+        let original_provider = base.semantic_search.provider.clone();
+        assert!(original_model.is_some());
+
+        // A generic IPC patch that carries `model_id`/`provider` must NOT change
+        // the persisted model or provider (changing them here would re-open the
+        // non-atomic dimension split). The honored fields (here `enabled`) still
+        // apply, so the patch is non-empty and validates.
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::SemanticSearch(
+                capture_types::UpdateSemanticSearchSettingsRequest {
+                    enabled: Some(true),
+                    provider: Some("some-other-provider".to_string()),
+                    model_id: Some(Some("bge-m3".to_string())),
+                },
+            ),
+        )
+        .expect("generic semantic search patch should validate");
+
+        assert!(updated.semantic_search.enabled, "enabled toggle is honored");
+        assert_eq!(
+            updated.semantic_search.model_id, original_model,
+            "model_id must be ignored by the generic IPC patch"
+        );
+        assert_eq!(
+            updated.semantic_search.provider, original_provider,
+            "provider must be ignored by the generic IPC patch"
+        );
+    }
+
+    #[test]
+    fn generic_semantic_search_patch_with_only_model_id_is_rejected_as_empty() {
+        // A generic patch whose ONLY fields are the now-ignored `model_id` /
+        // `provider` leaves nothing honored, so it is rejected as an empty patch
+        // rather than silently no-op'ing the persist.
+        let mut base = default_recording_settings();
+        let error = apply_domain_patch_to_settings(
+            &mut base,
+            RecordingSettingsDomainPatch::SemanticSearch(
+                capture_types::UpdateSemanticSearchSettingsRequest {
+                    enabled: None,
+                    provider: Some("some-other-provider".to_string()),
+                    model_id: Some(Some("bge-m3".to_string())),
+                },
+            ),
+        )
+        .expect_err("a patch carrying only ignored fields must be rejected");
+        assert_eq!(error.code, "empty_settings_patch");
+        // The persisted model is left untouched by the rejected patch.
+        assert_eq!(
+            base.semantic_search.model_id.as_deref(),
+            Some("nomic-embed-text-v1.5")
+        );
+    }
+
+    #[test]
+    fn semantic_search_model_switch_can_clear_and_toggle() {
+        let base = default_recording_settings();
+
+        // An explicit null clears the selected model; disabling the feature flips
+        // `enabled`. This is the trusted atomic-switch variant, so model_id is
+        // honored.
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::SemanticSearchModelSwitch(
+                capture_types::UpdateSemanticSearchSettingsRequest {
+                    enabled: Some(false),
+                    provider: None,
+                    model_id: Some(None),
+                },
+            ),
+        )
+        .expect("semantic search model switch should validate");
+
+        assert!(!updated.semantic_search.enabled);
+        assert_eq!(updated.semantic_search.model_id, None);
+    }
+
+    #[test]
+    fn empty_semantic_search_patch_is_rejected() {
+        let mut base = default_recording_settings();
+        let error = apply_domain_patch_to_settings(
+            &mut base,
+            RecordingSettingsDomainPatch::SemanticSearch(
+                capture_types::UpdateSemanticSearchSettingsRequest::default(),
+            ),
+        )
+        .expect_err("an empty patch must be rejected");
+        assert_eq!(error.code, "empty_settings_patch");
     }
 
     #[test]
@@ -1975,6 +2240,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: capture_types::default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -2034,6 +2300,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: capture_types::default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -2109,6 +2376,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: capture_types::default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -2158,6 +2426,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: capture_types::default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -2258,6 +2527,7 @@ mod tests {
             access: AccessSettings::default(),
             ai_runtime: AiRuntimeSettings::default(),
             user_context: UserContextSettings::default(),
+            semantic_search: capture_types::default_semantic_search_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -2400,5 +2670,109 @@ mod tests {
             validated.model_id.as_deref(),
             Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID)
         );
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_trims_and_keeps_known_model() {
+        // L4: an untrimmed but otherwise-known guided-tier provider + model is
+        // trimmed and kept (mirrors validate_speaker_analysis_settings keeping a
+        // known model). The default model id is a known guided tier.
+        let known_model = default_semantic_search_model_id().expect("a default model id");
+        let settings = SemanticSearchSettings {
+            enabled: true,
+            provider: format!("  {}  ", semantic_search::SEMANTIC_SEARCH_PROVIDER_ID),
+            model_id: Some(format!("  {known_model}  ")),
+            ..Default::default()
+        };
+
+        let validated = validate_semantic_search_settings(settings);
+
+        assert_eq!(validated.provider, semantic_search::SEMANTIC_SEARCH_PROVIDER_ID);
+        assert_eq!(validated.model_id.as_deref(), Some(known_model.as_str()));
+        assert!(validated.enabled, "the enabled flag is carried through");
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_resets_unknown_provider_to_default() {
+        // L4: an unrecognized provider resets to the default ("local"), exactly
+        // as the speaker validator resets an unknown provider to "sherpa_onnx".
+        let settings = SemanticSearchSettings {
+            enabled: false,
+            provider: "made-up-provider".to_string(),
+            model_id: default_semantic_search_model_id(),
+            ..Default::default()
+        };
+
+        let validated = validate_semantic_search_settings(settings);
+
+        assert_eq!(validated.provider, default_semantic_search_provider());
+        // The model still resolves under the reset default provider, so it survives.
+        assert_eq!(validated.model_id, default_semantic_search_model_id());
+        assert!(!validated.enabled, "the enabled flag is carried through");
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_falls_back_for_empty_model() {
+        // L4: a PRESENT but empty/whitespace model id (no real selection) falls back
+        // to the default model.
+        for raw_model in ["   ", ""] {
+            let settings = SemanticSearchSettings {
+                enabled: true,
+                provider: semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+                model_id: Some(raw_model.to_string()),
+                ..Default::default()
+            };
+
+            let validated = validate_semantic_search_settings(settings);
+
+            assert_eq!(
+                validated.model_id,
+                default_semantic_search_model_id(),
+                "a present empty/whitespace model {raw_model:?} must fall back to the default"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_preserves_a_present_unresolvable_model() {
+        // An unrelated recording-settings save must NOT silently swap a present-but-
+        // unresolvable model id to the (possibly dimension-incompatible) default —
+        // that would desync the persisted selection from the vec0 table until the
+        // next restart's reconcile. The id is preserved verbatim (trimmed); the
+        // live-dimension authority no-ops it into keyword-only and reconciliation
+        // re-aligns it. Changing the selected model happens only via the explicit
+        // atomic switch path.
+        let settings = SemanticSearchSettings {
+            enabled: true,
+            provider: semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: Some("  bogus-model-xyz  ".to_string()),
+            ..Default::default()
+        };
+
+        let validated = validate_semantic_search_settings(settings);
+
+        assert_eq!(
+            validated.model_id.as_deref(),
+            Some("bogus-model-xyz"),
+            "a present unresolvable model must be preserved (trimmed), not swapped to the default"
+        );
+    }
+
+    #[test]
+    fn validate_semantic_search_settings_keeps_an_explicitly_cleared_model() {
+        // L4 boundary: an explicit `None` is the legitimate "no model selected"
+        // (keyword-only) sentinel and must NOT be resurrected to the default — this
+        // is the one deliberate divergence from the speaker-analysis validator, and
+        // it preserves the model-gated clear semantics the domain patch relies on.
+        let settings = SemanticSearchSettings {
+            enabled: false,
+            provider: semantic_search::SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: None,
+            ..Default::default()
+        };
+
+        let validated = validate_semantic_search_settings(settings);
+
+        assert_eq!(validated.model_id, None);
     }
 }

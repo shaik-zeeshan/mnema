@@ -31,6 +31,10 @@ rand = "0.8"
 sha2 = "0.10"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "migrate"] }
 libsqlite3-sys = { version = "0.30.1", features = ["bundled-sqlcipher"] }
+# sqlite-vec compiles sqlite-vec.c with SQLITE_CORE, so it links against the
+# host SQLCipher amalgamation (one libsqlite3-sys, no second SQLite) and exposes
+# `vec0` as an auto-extension. Registered in db.rs via `sqlite3_auto_extension`.
+sqlite-vec = "=0.1.9"
 thiserror = "2"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread"] }
