@@ -11,8 +11,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
+    time::Duration,
 };
 
 use futures_util::StreamExt;
@@ -43,6 +44,14 @@ pub struct ActiveSemanticSearchModelDownload {
     provider: String,
     model_id: String,
     cancel_requested: Arc<AtomicBool>,
+    /// Wakes a stalled download future the instant Cancel is requested. The
+    /// `cancel_requested` flag alone is only observed by the per-chunk branch in
+    /// the receive loop, which a half-open TCP / wedged CDN never reaches (the
+    /// body simply stops arriving and `stream.next()` blocks forever). The
+    /// download future also `select!`s on this notify, so Cancel works even with
+    /// zero inbound bytes — the future wakes, sees the flag, and releases the
+    /// single download slot rather than holding it for the process lifetime.
+    cancel_notify: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -221,6 +230,19 @@ enum ModelDownloadError {
     },
     #[error("downloaded file {relative_path} is empty (zero bytes) with no Content-Length to check against (dropped/truncated download)")]
     EmptyDownload { relative_path: String },
+    #[error("download of {relative_path} stalled: no bytes received for {idle_secs}s (half-open connection or wedged CDN); aborting so the slot is released")]
+    Stalled {
+        relative_path: String,
+        idle_secs: u64,
+    },
+    #[error("unpinned file {relative_path} was served with no Content-Length: refusing to install an unverifiable large file with no length and no pinned SHA256 to bound truncation against (fail-closed)")]
+    MissingContentLength { relative_path: String },
+    #[error("download of {relative_path} overran the advertised {advertised} bytes (received {received}) — aborting before it fills the volume")]
+    ContentLengthOverrun {
+        relative_path: String,
+        advertised: u64,
+        received: u64,
+    },
     #[error("failed to read file {path} for checksum: {source}")]
     ReadFile {
         path: PathBuf,
@@ -262,6 +284,13 @@ struct DownloadPlan {
     /// The repo-relative path of the safetensors weights, used by the guided-tier
     /// fail-closed gate to confirm the weights file carries a pinned digest.
     weights_relative_path: String,
+    /// The repo-relative path of an **auxiliary head** weights file, when the model
+    /// loads a second safetensors alongside the base backbone (e.g. Stella's dense
+    /// projection head `2_Dense_2048/model.safetensors`). `None` for every
+    /// single-backbone model. The guided-tier gate requires this file to carry a
+    /// pinned digest too when present (F14) — the "guided tiers can never install
+    /// unverified" contract covers EVERY required file, not just the base weights.
+    aux_weights_relative_path: Option<String>,
     install_dir: PathBuf,
     files: Vec<ModelFileSpec>,
     total_bytes: u64,
@@ -335,12 +364,14 @@ pub fn start_semantic_search_model_download(
         error.to_string()
     })?;
     let cancel_requested = Arc::new(AtomicBool::new(false));
+    let cancel_notify = Arc::new(tokio::sync::Notify::new());
 
     claim_model_download(
         download_state.inner(),
         &plan.provider,
         &plan.model_id,
         Arc::clone(&cancel_requested),
+        Arc::clone(&cancel_notify),
     )
     .map_err(|error| {
         log_error(format!(
@@ -362,7 +393,7 @@ pub fn start_semantic_search_model_download(
 
     let app_for_task = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        run_model_download_task(app_for_task, plan, cancel_requested).await;
+        run_model_download_task(app_for_task, plan, cancel_requested, cancel_notify).await;
     });
 
     Ok(starting)
@@ -380,6 +411,11 @@ pub fn cancel_semantic_search_model_download(
         return Err(ModelDownloadError::NoActiveDownload.to_string());
     };
     active.cancel_requested.store(true, Ordering::SeqCst);
+    // Wake the download future immediately so Cancel works even when the body has
+    // stalled with zero inbound bytes (the per-chunk flag check would never be
+    // reached). The future `select!`s on this notify; `notify_waiters` wakes the
+    // currently-parked branch. (Set the flag FIRST so the woken future observes it.)
+    active.cancel_notify.notify_waiters();
     Ok(())
 }
 
@@ -487,6 +523,29 @@ pub async fn select_semantic_search_model(
             error.message
         )
     })?;
+
+    // Hardening assert (F15): the rebuild + persist are two separate transactions
+    // under the in-process `SELECT_MODEL_LOCK`, relying on startup reconciliation to
+    // re-align a half-applied switch. At minimum, confirm the live vec0 column width
+    // now matches the selected descriptor's dimension here, so a half-applied switch
+    // (a concurrent worker DROP+CREATE landing between, or a recreate that did not
+    // take) is DETECTED and logged loudly rather than silently degrading search to
+    // keyword-only. The selection is already persisted, so a mismatch is reported but
+    // not rolled back — the next startup reconciliation self-heals it. (The deeper
+    // model-identity epoch stamp remains out of scope for this pass; see ADR 0036.)
+    match infra.semantic_search().live_vector_dimension().await {
+        Ok(Some(live)) if live == dimension => {}
+        Ok(other) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "semantic search model switch to '{model_id}': live vec0 column width {other:?} does NOT match the selected model dimension {dimension} after rebuild+persist (half-applied switch — startup reconciliation will re-align it; search stays keyword-only until then)"
+            ));
+        }
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "semantic search model switch to '{model_id}': could not read the live vec0 column width to confirm it matches the selected dimension {dimension} after rebuild+persist: {error}"
+            ));
+        }
+    }
 
     crate::native_capture::debug_log::log_info(format!(
         "semantic search model switched to '{model_id}': rebuilt vector table at {dimension} dims, discarded {cleared} vector(s); the backfill worker will re-derive every anchor under the new model"
@@ -784,6 +843,31 @@ fn pinned_file_sha256(hf_repo: &str, relative_path: &str) -> Option<&'static str
             "pytorch_model.bin",
             "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38",
         )],
+        // Custom tier — `NovaSearch/stella_en_400M_v5` loads a base backbone plus a
+        // separate dense projection head (`2_Dense_2048/model.safetensors`). Both
+        // are multi-GB-scale LFS files; pinning BOTH closes F7's "integrity
+        // UNVERIFIED — trusting TLS only" branch, so a redirect to an un-allowlisted
+        // CDN serving swapped bytes fails verification and never installs. The
+        // digests are the LFS `oid sha256` published at the pinned revision
+        // (`ffeb2b7ee715c226d4ffe5e4619f7dbb48624c20`).
+        "NovaSearch/stella_en_400M_v5" => &[
+            (
+                "model.safetensors",
+                "17e549d16172a548a3115739b55575968eb6523653daad76c46b0758e9425032",
+            ),
+            (
+                "2_Dense_2048/model.safetensors",
+                "a831055e5110e81c03ed6559f4ebf5842630f227ded6b6c18826700d548b990f",
+            ),
+        ],
+        // Custom tier — `Snowflake/snowflake-arctic-embed-l-v2.0` ships a single
+        // multi-GB safetensors backbone. Pinning its LFS sha256 (published at the
+        // pinned revision `ac6544c8a46e00af67e330e85a9028c66b8cfd9a`) closes the same
+        // F7 unverified branch for Arctic.
+        "Snowflake/snowflake-arctic-embed-l-v2.0" => &[(
+            "model.safetensors",
+            "21bf1a120b1c6562aeec379dfa9039b0d360591c784cb1c6786e87256b738ee1",
+        )],
         _ => &[],
     };
     pinned
@@ -844,14 +928,24 @@ fn sha256_of_file(file_path: &Path) -> Result<String, ModelDownloadError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Fail-closed install gate for the **guided tiers** (B2): a model whose `tier` is
-/// `English` or `Multilingual` MUST verify its weights against a pinned digest, so
-/// a guided tier can never install down the unverified "trust TLS only" path. The
-/// per-file checksum loop already ran and a mismatch aborted; this only refuses the
-/// finalize when the guided tier's weights file carries no pinned digest at all
-/// (`pinned_file_sha256` returns `None` for it). Custom tier (and any unpinned file)
-/// is exempt — it keeps the "integrity unverified" path, trusting the revision pin
-/// + TLS — so this is a no-op for it.
+/// Fail-closed install gate for the **guided tiers** (B2 / F14): a model whose
+/// `tier` is `English` or `Multilingual` MUST verify EVERY required weights file
+/// against a pinned digest, so a guided tier can never install down the unverified
+/// "trust TLS only" path. The per-file checksum loop already ran and a mismatch
+/// aborted; this only refuses the finalize when a guided tier's weights file
+/// carries no pinned digest at all (`pinned_file_sha256` returns `None` for it).
+///
+/// The check covers BOTH the base `weights_relative_path` AND the auxiliary head
+/// `aux_weights_relative_path` when present (F14): the layout supports an aux head
+/// (Stella's `2_Dense_2048/model.safetensors`), and the "guided tiers can never
+/// install unverified" contract is about every required weights file, not just the
+/// base. Today no English/Multilingual tier carries an aux head, so the aux branch
+/// is dormant for them — but it is the correct, future-proof contract: a guided
+/// tier that ever loaded a second head would be required to pin it too.
+///
+/// Custom tier (and any unpinned file) is exempt — it keeps the "integrity
+/// unverified" path, trusting the revision pin + TLS (and, for Stella/Arctic,
+/// happens to be pinned anyway). So this is a no-op for the Custom tier.
 fn guard_guided_tier_weights_pinned(plan: &DownloadPlan) -> Result<(), ModelDownloadError> {
     let is_guided = matches!(
         plan.tier,
@@ -860,12 +954,18 @@ fn guard_guided_tier_weights_pinned(plan: &DownloadPlan) -> Result<(), ModelDown
     if !is_guided {
         return Ok(());
     }
-    if pinned_file_sha256(&plan.hf_repo, &plan.weights_relative_path).is_none() {
-        return Err(ModelDownloadError::GuidedTierWeightsUnpinned {
-            provider: plan.provider.clone(),
-            model_id: plan.model_id.clone(),
-            weights_relative_path: plan.weights_relative_path.clone(),
-        });
+    // Every required weights file of a guided tier must be pinned: the base
+    // backbone and, when the model loads a second safetensors head, that head too.
+    let required_weights = std::iter::once(plan.weights_relative_path.as_str())
+        .chain(plan.aux_weights_relative_path.as_deref());
+    for relative_path in required_weights {
+        if pinned_file_sha256(&plan.hf_repo, relative_path).is_none() {
+            return Err(ModelDownloadError::GuidedTierWeightsUnpinned {
+                provider: plan.provider.clone(),
+                model_id: plan.model_id.clone(),
+                weights_relative_path: relative_path.to_string(),
+            });
+        }
     }
     Ok(())
 }
@@ -878,6 +978,90 @@ fn guard_guided_tier_weights_pinned(plan: &DownloadPlan) -> Result<(), ModelDown
 /// reproducible.
 fn hf_file_url(hf_repo: &str, hf_revision: &str, hf_relative_path: &str) -> String {
     format!("https://huggingface.co/{hf_repo}/resolve/{hf_revision}/{hf_relative_path}")
+}
+
+/// How long to wait for the TCP+TLS handshake before giving up. A wedged CDN that
+/// never completes the handshake errors here rather than hanging the task (and
+/// holding the single download slot) forever. Conservative so a slow-but-live link
+/// still connects.
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum idle gap between received body bytes before the read is declared
+/// stalled. A half-open TCP / wedged CDN that returns 200 headers and then stops
+/// sending body bytes leaves `stream.next()` blocking forever — the per-chunk
+/// cancel branch in the receive loop is never reached and the slot stays claimed
+/// for the process lifetime (every later download then returns AlreadyRunning).
+/// Wrapping each `stream.next()` in a `tokio::time::timeout` of this length resets
+/// the clock on every chunk, so a stalled body errors and releases the slot while a
+/// live-but-slow multi-GB transfer (which keeps producing chunks) is never falsely
+/// aborted. Mirrors `reqwest`'s per-read idle bound via an explicit timeout we
+/// control so it composes with the cancel-notify `select!`.
+const DOWNLOAD_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The shared `reqwest::Client` for every semantic-search model file fetch, built
+/// once and reused (mirrors the single-client policy of the AI runtime's model
+/// HTTP). Bare `reqwest::get` builds a fresh default client per call with NO
+/// connect timeout and NO redirect constraint — F2/F7. This client adds:
+///   - a **connect timeout** (`DOWNLOAD_CONNECT_TIMEOUT`) so a wedged CDN that
+///     never finishes the handshake errors instead of hanging;
+///   - a **read timeout** (`DOWNLOAD_READ_IDLE_TIMEOUT`) as a backstop idle bound
+///     beneath the explicit per-`next()` timeout in the receive loop;
+///   - an **HF-only redirect allowlist** (`hf_redirect_policy`) so the default
+///     "follow up to 10 redirects to ANY host" can never bounce an unpinned (or
+///     even pinned) large file to an arbitrary CDN. HF `resolve/` 30x-redirects to
+///     its own LFS CDN; anything off the allowlist is refused.
+fn download_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+            .read_timeout(DOWNLOAD_READ_IDLE_TIMEOUT)
+            .redirect(hf_redirect_policy())
+            .build()
+            // A client build failure is a programmer error (the rustls backend is
+            // always compiled in); fall back to the crate default rather than
+            // panicking the download task.
+            .unwrap_or_default()
+    })
+}
+
+/// Whether `host` is on the HuggingFace download allowlist: `huggingface.co`,
+/// `hf.co`, or any `*.hf.co` subdomain (HF's LFS CDN resolves under `*.hf.co` /
+/// `cdn-lfs*.hf.co`). The match is exact-or-suffix on a dot boundary so
+/// `evilhf.co` or `huggingface.co.attacker.test` never pass.
+fn is_allowlisted_hf_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "huggingface.co"
+        || host == "hf.co"
+        || host.ends_with(".hf.co")
+        || host.ends_with(".huggingface.co")
+}
+
+/// Redirect policy constraining every hop to the HF allowlist (F7). The default
+/// policy follows up to 10 redirects to ANY host, so an HF `resolve/` 30x could
+/// land bytes from an un-allowlisted CDN that the integrity gate never sees for an
+/// unpinned file. This refuses any hop whose host is off the allowlist, and caps
+/// the chain length, so a redirect loop or an off-host bounce fails the download
+/// instead of silently fetching foreign bytes.
+fn hf_redirect_policy() -> reqwest::redirect::Policy {
+    const MAX_HF_REDIRECTS: usize = 10;
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > MAX_HF_REDIRECTS {
+            return attempt.error(std::io::Error::other(
+                "semantic search model download exceeded the redirect limit",
+            ));
+        }
+        // Resolve the target host to an owned decision BEFORE consuming `attempt`:
+        // `attempt.url()` borrows `attempt`, and both `follow()`/`error()` move it.
+        let host = attempt.url().host_str().map(str::to_owned);
+        match host.as_deref() {
+            Some(host) if is_allowlisted_hf_host(host) => attempt.follow(),
+            other => attempt.error(std::io::Error::other(format!(
+                "semantic search model download refused a redirect to a non-HuggingFace host: {}",
+                other.unwrap_or("<no host>")
+            ))),
+        }
+    })
 }
 
 fn build_download_plan(
@@ -911,6 +1095,7 @@ fn build_download_plan(
         hf_revision: descriptor.hf_revision.clone(),
         tier: descriptor.tier,
         weights_relative_path: descriptor.expected_layout.weights_relative_path.clone(),
+        aux_weights_relative_path: descriptor.expected_layout.aux_weights_relative_path.clone(),
         install_dir,
         files: model_file_specs(&descriptor),
         total_bytes: descriptor.approx_download_bytes,
@@ -930,6 +1115,7 @@ fn claim_model_download(
     provider: &str,
     model_id: &str,
     cancel_requested: Arc<AtomicBool>,
+    cancel_notify: Arc<tokio::sync::Notify>,
 ) -> Result<(), ModelDownloadError> {
     let mut active = state
         .lock()
@@ -947,6 +1133,7 @@ fn claim_model_download(
         provider: provider.to_string(),
         model_id: model_id.to_string(),
         cancel_requested,
+        cancel_notify,
     });
     Ok(())
 }
@@ -983,6 +1170,7 @@ async fn run_model_download_task(
     app_handle: tauri::AppHandle,
     plan: DownloadPlan,
     cancel_requested: Arc<AtomicBool>,
+    cancel_notify: Arc<tokio::sync::Notify>,
 ) {
     log_info(format!(
         "semantic search model download started: provider={}, model={}, install_dir={}, files={}, approx_total_bytes={}",
@@ -992,7 +1180,8 @@ async fn run_model_download_task(
         plan.files.len(),
         plan.total_bytes,
     ));
-    let result = download_and_install_model(&app_handle, &plan, &cancel_requested).await;
+    let result =
+        download_and_install_model(&app_handle, &plan, &cancel_requested, &cancel_notify).await;
     clear_active_download(&app_handle, &plan.provider, &plan.model_id);
 
     match result {
@@ -1074,6 +1263,15 @@ async fn run_model_download_task(
 /// proceeds. Only a *measured* shortfall fails. Uses `fs2::available_space`
 /// (already a desktop dependency), which reports the space available to a
 /// non-privileged process — the right bound for a user-space download.
+/// The free space the disk preflight requires for a plan: the catalog estimate
+/// plus 10% headroom (F19). The estimate is a lower bound (the real Content-Length
+/// can be larger), so demanding `estimate * 1.1` free turns a modest underestimate
+/// into a clean fail-fast instead of a mid-write disk-full error. Saturating so an
+/// implausibly huge estimate never overflows.
+fn required_free_with_headroom(estimate_bytes: u64) -> u64 {
+    estimate_bytes.saturating_add(estimate_bytes / 10)
+}
+
 fn preflight_free_disk_space(plan: &DownloadPlan) -> Result<(), ModelDownloadError> {
     // The install dir does not exist yet; probe the nearest existing ancestor on
     // the same volume so `available_space` has a real path to stat.
@@ -1092,11 +1290,19 @@ fn preflight_free_disk_space(plan: &DownloadPlan) -> Result<(), ModelDownloadErr
     };
     match fs2::available_space(probe_path) {
         Ok(available_bytes) => {
-            if available_bytes < plan.total_bytes {
+            // `plan.total_bytes` is the STATIC catalog estimate (`approx_download_bytes`),
+            // not the real Content-Length — an underestimate would pass preflight then
+            // fill the volume mid-write (F19). Treat it as a lower bound with 10%
+            // headroom so a modest underestimate still fails fast here rather than
+            // erroring partway through a multi-GB write. (The in-loop overrun guard in
+            // `download_file_to` is the second line of defence against the live size
+            // exceeding the advertised Content-Length.)
+            let needed_bytes = required_free_with_headroom(plan.total_bytes);
+            if available_bytes < needed_bytes {
                 return Err(ModelDownloadError::InsufficientDiskSpace {
                     provider: plan.provider.clone(),
                     model_id: plan.model_id.clone(),
-                    needed_bytes: plan.total_bytes,
+                    needed_bytes,
                     available_bytes,
                 });
             }
@@ -1119,6 +1325,7 @@ async fn download_and_install_model(
     app_handle: &tauri::AppHandle,
     plan: &DownloadPlan,
     cancel_requested: &AtomicBool,
+    cancel_notify: &tokio::sync::Notify,
 ) -> Result<u64, ModelDownloadTaskError> {
     let descriptor = descriptor_for(&plan.provider, &plan.model_id).ok_or_else(|| {
         ModelDownloadError::ModelNotFound {
@@ -1183,6 +1390,7 @@ async fn download_and_install_model(
             downloaded_total,
             spec.expected_sha256.is_some(),
             cancel_requested,
+            cancel_notify,
         )
         .await?;
         downloaded_total = downloaded_total.saturating_add(file_bytes);
@@ -1266,6 +1474,7 @@ async fn download_and_install_model(
     Ok(downloaded_total)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_file_to(
     app_handle: &tauri::AppHandle,
     plan: &DownloadPlan,
@@ -1275,13 +1484,17 @@ async fn download_file_to(
     already_downloaded_bytes: u64,
     has_pinned_sha256: bool,
     cancel_requested: &AtomicBool,
+    cancel_notify: &tokio::sync::Notify,
 ) -> Result<u64, ModelDownloadTaskError> {
     // This HTTPS fetch runs over rustls: with fastembed/ort's `native-tls` gone the
     // desktop `reqwest` is built with `rustls-tls` (no default-tls), aligning the
     // downloader with the workspace's other TLS users — sqlx's
-    // `runtime-tokio-rustls` (ADR 0037). `reqwest::get` uses the crate's default
-    // client, which now negotiates TLS via rustls.
-    let response = reqwest::get(url).await.map_err(|error| {
+    // `runtime-tokio-rustls` (ADR 0037). The shared `download_client` adds a connect
+    // timeout, a read-idle timeout, and an HF-only redirect allowlist (F2/F7) — a
+    // bare `reqwest::get` had none of these, so a wedged CDN could hang the request
+    // forever (holding the single download slot) and a redirect could fetch
+    // un-allowlisted bytes the integrity gate never sees.
+    let response = download_client().get(url).send().await.map_err(|error| {
         log_error(format!(
             "semantic search model download HTTP request failed for {}/{} at {url}: {error}",
             plan.provider, plan.model_id
@@ -1311,11 +1524,58 @@ async fn download_file_to(
             source,
         })?;
     let mut file_downloaded = 0_u64;
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // Cancel-first: a Cancel requested between chunks is honoured immediately,
+        // even if the next chunk never arrives (a stall would otherwise leave the
+        // per-chunk check unreached). The notify wakes the `select!` below the
+        // instant Cancel runs.
         if cancel_requested.load(Ordering::SeqCst) {
             return Err(ModelDownloadTaskError::Cancelled);
         }
-        let chunk = chunk.map_err(ModelDownloadError::Http)?;
+        // Wait for the next chunk OR a cancel OR an idle timeout, whichever happens
+        // first. Wrapping `stream.next()` in `tokio::time::timeout` bounds the gap
+        // between chunks: a half-open TCP / wedged CDN that stops sending body bytes
+        // makes `next()` block forever, so without this the per-chunk cancel branch
+        // is never reached and the single download slot is held for the process
+        // lifetime (every later download returns AlreadyRunning). The timeout resets
+        // on each chunk, so a live-but-slow multi-GB transfer is never falsely
+        // aborted; only a genuinely stalled body errors and releases the slot. Racing
+        // it against `cancel_notify.notified()` (via `futures_util::future::select`,
+        // since the desktop `tokio` is built without the `macros` feature so
+        // `tokio::select!` is unavailable) makes Cancel work even with zero inbound
+        // bytes — the notify resolves first and the future returns immediately.
+        let timed_next = std::pin::pin!(tokio::time::timeout(
+            DOWNLOAD_READ_IDLE_TIMEOUT,
+            stream.next()
+        ));
+        let cancelled = std::pin::pin!(cancel_notify.notified());
+        let chunk = match futures_util::future::select(timed_next, cancelled).await {
+            // Cancel won the race (notify resolved before the next chunk / timeout).
+            futures_util::future::Either::Right(_) => {
+                return Err(ModelDownloadTaskError::Cancelled);
+            }
+            // The stream ended: the body is fully received.
+            futures_util::future::Either::Left((Ok(None), _)) => break,
+            futures_util::future::Either::Left((Ok(Some(chunk)), _)) => {
+                chunk.map_err(ModelDownloadError::Http)?
+            }
+            // No chunk arrived within the idle window: a stalled body. Abort so the
+            // task returns and the slot is released (the partial install dir is then
+            // removed by the task runner).
+            futures_util::future::Either::Left((Err(_elapsed), _)) => {
+                log_error(format!(
+                    "semantic search model download stalled for {}/{} at {url}: no bytes for {}s after {file_downloaded} byte(s)",
+                    plan.provider,
+                    plan.model_id,
+                    DOWNLOAD_READ_IDLE_TIMEOUT.as_secs()
+                ));
+                return Err(ModelDownloadError::Stalled {
+                    relative_path: relative_path.to_string(),
+                    idle_secs: DOWNLOAD_READ_IDLE_TIMEOUT.as_secs(),
+                }
+                .into());
+            }
+        };
         std::io::Write::write_all(&mut output, &chunk).map_err(|source| {
             ModelDownloadError::WriteFile {
                 path: destination.to_path_buf(),
@@ -1323,6 +1583,24 @@ async fn download_file_to(
             }
         })?;
         file_downloaded = file_downloaded.saturating_add(chunk.len() as u64);
+        // Abort as soon as the written bytes exceed the advertised Content-Length
+        // (F19): a server that under-reports its length then keeps streaming would
+        // otherwise fill the volume past the size the preflight budgeted for. Failing
+        // here removes the partial install instead of writing to disk-full.
+        if let Some(expected_len) = content_length {
+            if file_downloaded > expected_len {
+                log_error(format!(
+                    "semantic search model download overran the advertised length for {}/{} at {url}: received {file_downloaded} of {expected_len} advertised bytes",
+                    plan.provider, plan.model_id
+                ));
+                return Err(ModelDownloadError::ContentLengthOverrun {
+                    relative_path: relative_path.to_string(),
+                    advertised: expected_len,
+                    received: file_downloaded,
+                }
+                .into());
+            }
+        }
         // Real per-chunk byte progress (not a CLI bool) on every chunk.
         emit_download_progress(
             app_handle,
@@ -1357,17 +1635,29 @@ async fn download_file_to(
             }
             .into());
         }
-    } else if !has_pinned_sha256 && file_downloaded == 0 {
-        // No Content-Length to compare against AND no pinned SHA256 to catch a
-        // truncated body (finding L7): this file is otherwise unguarded, so at the
-        // very least reject a zero-byte / fully-dropped stream rather than marking an
-        // empty file Installed. A file WITH a pinned digest is already fully
-        // protected by the post-download checksum (Fix 2), so it is exempt here.
+    } else if !has_pinned_sha256 {
+        // No Content-Length to bound truncation against AND no pinned SHA256 to catch
+        // a corrupt/short body (F8): this file is otherwise unguarded. Previously
+        // only a 0-byte stream was rejected, so an unpinned file served with no
+        // length whose stream dropped after some non-zero bytes slipped through,
+        // passed the is_file() check, was marked Installed, then failed as corrupt
+        // safetensors at embed time with no self-heal. We now fail CLOSED: an
+        // unpinned large file MUST advertise a Content-Length so we can verify the
+        // written size; absent one we refuse the install rather than trust an
+        // unverifiable, unboundable body. (A file WITH a pinned digest stays exempt —
+        // the post-download checksum fully protects it, length or not.)
         log_error(format!(
-            "semantic search model download produced an empty file for {}/{} at {url}: 0 bytes with no Content-Length or pinned SHA256 to verify against",
+            "semantic search model download refused for {}/{} at {url}: {file_downloaded} byte(s) received with no Content-Length and no pinned SHA256 — cannot verify the body is complete (fail-closed)",
             plan.provider, plan.model_id
         ));
-        return Err(ModelDownloadError::EmptyDownload {
+        if file_downloaded == 0 {
+            // Keep the precise "empty download" signal for the zero-byte case.
+            return Err(ModelDownloadError::EmptyDownload {
+                relative_path: relative_path.to_string(),
+            }
+            .into());
+        }
+        return Err(ModelDownloadError::MissingContentLength {
             relative_path: relative_path.to_string(),
         }
         .into());
@@ -1665,6 +1955,7 @@ mod tests {
             SEMANTIC_SEARCH_PROVIDER_ID,
             "nomic-embed-text-v1.5",
             Arc::new(AtomicBool::new(false)),
+            Arc::new(tokio::sync::Notify::new()),
         )
         .expect("first claim");
         let second = claim_model_download(
@@ -1672,6 +1963,7 @@ mod tests {
             SEMANTIC_SEARCH_PROVIDER_ID,
             "multilingual-e5-small",
             Arc::new(AtomicBool::new(false)),
+            Arc::new(tokio::sync::Notify::new()),
         )
         .expect_err("second claim should fail while one is active");
         assert!(matches!(second, ModelDownloadError::AlreadyRunning { .. }));
@@ -1880,6 +2172,7 @@ mod tests {
                 hf_revision: "rev".to_string(),
                 tier,
                 weights_relative_path: weights_relative_path.to_string(),
+                aux_weights_relative_path: None,
                 install_dir: PathBuf::from("/tmp/x"),
                 files: Vec::new(),
                 total_bytes: 0,
@@ -1920,5 +2213,136 @@ mod tests {
             "model.safetensors",
         ))
         .expect("custom tier is exempt from the fail-closed gate");
+    }
+
+    /// F14: the guided-tier gate requires a pinned digest for EVERY required weights
+    /// file — both the base backbone AND the auxiliary head when present. A guided
+    /// tier with an aux head whose head is unpinned must be refused even when the
+    /// base weights are pinned, so the "guided tiers can never install unverified"
+    /// contract covers the whole model.
+    #[test]
+    fn guided_tier_gate_requires_a_pinned_aux_head_digest() {
+        // A synthetic guided tier whose base weights ARE pinned but whose aux head is
+        // NOT must be refused (the head would otherwise install unverified).
+        let plan_unpinned_head = DownloadPlan {
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: "m".to_string(),
+            // nomic's base `model.safetensors` is pinned, so the base passes; the aux
+            // head path below is NOT pinned for this repo, so the gate must fail on it.
+            hf_repo: "nomic-ai/nomic-embed-text-v1.5".to_string(),
+            hf_revision: "rev".to_string(),
+            tier: SemanticSearchModelTier::English,
+            weights_relative_path: "model.safetensors".to_string(),
+            aux_weights_relative_path: Some("2_Dense_2048/model.safetensors".to_string()),
+            install_dir: PathBuf::from("/tmp/x"),
+            files: Vec::new(),
+            total_bytes: 0,
+        };
+        let error = guard_guided_tier_weights_pinned(&plan_unpinned_head)
+            .expect_err("a guided tier with an unpinned aux head must be refused");
+        match error {
+            ModelDownloadError::GuidedTierWeightsUnpinned {
+                weights_relative_path,
+                ..
+            } => assert_eq!(weights_relative_path, "2_Dense_2048/model.safetensors"),
+            other => panic!("expected GuidedTierWeightsUnpinned for the aux head, got {other:?}"),
+        }
+    }
+
+    /// F7: Stella's base + dense head and Arctic's backbone now carry pinned LFS
+    /// digests, so their multi-GB safetensors install fail-closed instead of on the
+    /// "integrity UNVERIFIED — trusting TLS only" branch.
+    #[test]
+    fn stella_and_arctic_weights_are_pinned() {
+        assert_eq!(
+            pinned_file_sha256("NovaSearch/stella_en_400M_v5", "model.safetensors")
+                .expect("Stella base weights are pinned (F7)"),
+            "17e549d16172a548a3115739b55575968eb6523653daad76c46b0758e9425032"
+        );
+        assert_eq!(
+            pinned_file_sha256(
+                "NovaSearch/stella_en_400M_v5",
+                "2_Dense_2048/model.safetensors"
+            )
+            .expect("Stella dense head is pinned (F7)"),
+            "a831055e5110e81c03ed6559f4ebf5842630f227ded6b6c18826700d548b990f"
+        );
+        assert_eq!(
+            pinned_file_sha256(
+                "Snowflake/snowflake-arctic-embed-l-v2.0",
+                "model.safetensors"
+            )
+            .expect("Arctic backbone is pinned (F7)"),
+            "21bf1a120b1c6562aeec379dfa9039b0d360591c784cb1c6786e87256b738ee1"
+        );
+
+        // Every Custom-tier descriptor that loads safetensors weights must now carry a
+        // pinned digest for each weights file (base + aux head), so no Custom model
+        // installs its multi-GB weights on the unverified branch.
+        let manifest = builtin_model_manifest();
+        for descriptor in &manifest.models {
+            if descriptor.tier != SemanticSearchModelTier::Custom {
+                continue;
+            }
+            // bge-m3's weights are `pytorch_model.bin` (already pinned); the
+            // safetensors-weighted Custom models (Stella, Arctic) must pin every
+            // weights file.
+            if descriptor
+                .expected_layout
+                .weights_relative_path
+                .ends_with(".safetensors")
+            {
+                assert!(
+                    pinned_file_sha256(
+                        &descriptor.hf_repo,
+                        &descriptor.expected_layout.weights_relative_path
+                    )
+                    .is_some(),
+                    "custom-tier {} base weights must be pinned (F7)",
+                    descriptor.model_id
+                );
+                if let Some(aux) = &descriptor.expected_layout.aux_weights_relative_path {
+                    assert!(
+                        pinned_file_sha256(&descriptor.hf_repo, aux).is_some(),
+                        "custom-tier {} aux head must be pinned (F7)",
+                        descriptor.model_id
+                    );
+                }
+            }
+        }
+    }
+
+    /// F7: the redirect allowlist accepts HuggingFace hosts and its LFS CDN, and
+    /// refuses any off-host (or lookalike) redirect target.
+    #[test]
+    fn redirect_allowlist_accepts_hf_hosts_and_refuses_others() {
+        assert!(is_allowlisted_hf_host("huggingface.co"));
+        assert!(is_allowlisted_hf_host("hf.co"));
+        assert!(is_allowlisted_hf_host("cdn-lfs.hf.co"));
+        assert!(is_allowlisted_hf_host("cdn-lfs-us-1.hf.co"));
+        assert!(is_allowlisted_hf_host("CDN-LFS.HF.CO")); // case-insensitive
+        assert!(is_allowlisted_hf_host("cas-bridge.xethub.hf.co"));
+
+        // Lookalikes / arbitrary CDNs are refused.
+        assert!(!is_allowlisted_hf_host("evilhf.co"));
+        assert!(!is_allowlisted_hf_host("huggingface.co.attacker.test"));
+        assert!(!is_allowlisted_hf_host("hf.co.evil.test"));
+        assert!(!is_allowlisted_hf_host("example.com"));
+        assert!(!is_allowlisted_hf_host(""));
+    }
+
+    /// F19: the disk preflight treats the catalog estimate as a lower bound with 10%
+    /// headroom, so a modest underestimate fails fast rather than mid-write.
+    #[test]
+    fn disk_preflight_requires_ten_percent_headroom() {
+        assert_eq!(required_free_with_headroom(0), 0);
+        assert_eq!(required_free_with_headroom(1_000), 1_100);
+        // ~2.27GB bge-m3 estimate gains ~227MB of headroom.
+        assert_eq!(
+            required_free_with_headroom(2_270_000_000),
+            2_270_000_000 + 227_000_000
+        );
+        // Saturating: an implausibly huge estimate never overflows.
+        assert_eq!(required_free_with_headroom(u64::MAX), u64::MAX);
     }
 }
