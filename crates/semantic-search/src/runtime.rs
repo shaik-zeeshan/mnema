@@ -47,7 +47,7 @@ const EMBED_SUB_BATCH_SIZE: usize = 8;
 /// footprint tight. Text longer than this is split into capped chunks and
 /// mean-pooled (the overflow path below), so short anchors embed identically and
 /// only long ones are chunked more finely.
-const MAX_EMBED_WINDOW_TOKENS: usize = 256;
+pub(crate) const MAX_EMBED_WINDOW_TOKENS: usize = 256;
 
 /// Whether a text is being embedded as a search **query** or a stored
 /// **document** (anchor body). Some models ship asymmetric input prompts — a

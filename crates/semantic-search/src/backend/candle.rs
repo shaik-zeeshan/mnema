@@ -60,6 +60,7 @@ use crate::models::{
     SemanticSearchArchitecture, SemanticSearchModelDescriptor, SemanticSearchPooling,
     CONFIG_FILE_NAME, TOKENIZER_FILE_NAME,
 };
+use crate::runtime::MAX_EMBED_WINDOW_TOKENS;
 
 /// The loaded architecture, dispatched off `descriptor.architecture`.
 enum LoadedModel {
@@ -86,6 +87,23 @@ pub struct CandleBackend {
     device: Device,
     pooling: SemanticSearchPooling,
     dimension: usize,
+    /// The pad token id the loaded tokenizer/model declares. Read from the
+    /// tokenizer's padding config at load (falling back to 0 when the tokenizer
+    /// declares none). XLM-RoBERTa models (e5 / bge-m3 / Arctic) declare
+    /// `pad_token_id = 1` (id 0 is `<s>`); candle's `XLMRobertaEmbeddings` derives
+    /// position ids from `input_ids.ne(padding_idx = 1)`, so a literal-0 pad slot
+    /// would be treated as a real `<s>` token. Padding the `(B,L)` ids with THIS id
+    /// (not a hardcoded 0) keeps the padded slots out of the position-id and any
+    /// future pooling math regardless of architecture.
+    pad_id: u32,
+    /// Hard cap on the padded sequence length the forward pass builds — the same
+    /// GPU-tensor bound the embedder wrapper clamps the chunk window to
+    /// (`descriptor.max_tokens.min(MAX_EMBED_WINDOW_TOKENS)`). Stored here so
+    /// `forward_batch` can clamp `max_len` defensively: tokenization is not additive
+    /// at the prompt+chunk join, so a realized batch sequence can exceed the
+    /// documented window even though the wrapper split on it. Threaded onto the
+    /// struct (not a new public arg) so the backend's public API is unchanged.
+    embed_window: usize,
     /// True when Metal was unavailable and we fell back to CPU.
     pub cpu_fallback: bool,
 }
@@ -141,6 +159,18 @@ impl CandleBackend {
     /// Load the backend onto a caller-chosen `device` (otherwise identical to
     /// [`load_from_dir`](Self::load_from_dir), which picks the device itself). The
     /// shared core behind `load_from_dir`, `load_cpu`, and `try_load_metal`.
+    ///
+    /// **Weight integrity is the downloader's responsibility, NOT this loader's.**
+    /// This fn mmaps `model.safetensors` (unsafe `VarBuilder::from_mmaped_safetensors`)
+    /// and reads bge-m3's `.bin`/`.pth` via candle's SAFE symbolic pickle reader
+    /// (`VarBuilder::from_pth` — the non-pickle-RCE variant), with no on-disk hash
+    /// check here on purpose: the desktop downloader is the integrity gate. The
+    /// guided tiers (nomic / e5 / bge-m3) are SHA256-pinned and fail-closed — their
+    /// weights refuse to install unless the bytes match the pinned digest, and the
+    /// install marker / catalog-version coupling is written only AFTER verification,
+    /// so by the time `load_on_device` runs the on-disk weights are already verified.
+    /// Re-hashing multi-GB weights on every load would be a redundant, slow check; do
+    /// not add one here.
     fn load_on_device(
         model_dir: impl AsRef<Path>,
         descriptor: &SemanticSearchModelDescriptor,
@@ -304,20 +334,57 @@ impl CandleBackend {
         };
 
         let tokenizer_path = model_dir.join(TOKENIZER_FILE_NAME);
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|error| EmbeddingError::LoadTokenizer(error.to_string()))?;
+
+        // Read the model's real pad token id from the tokenizer's padding config
+        // BEFORE we strip that config below — XLM-RoBERTa (e5 / bge-m3 / Arctic)
+        // declares `pad_id = 1` (id 0 is `<s>`), and `forward_batch` pads with this
+        // (see [`CandleBackend::pad_id`]). Fall back to 0 when the tokenizer declares
+        // no padding (the historic literal-0 behaviour for nomic / Stella).
+        let pad_id = tokenizer.get_padding().map(|p| p.pad_id).unwrap_or(0);
+
+        // Mirror the split tokenizer (see `SemanticSearchEmbedder::from_backend`):
+        // overflow is handled ABOVE the trait by the wrapper's own token-window
+        // chunking, so the forward-pass tokenizer must never silently truncate (the
+        // chunk window is already sized to fit) — and it must never auto-pad, because
+        // `forward_batch` builds its own `(B, L)` padding (BatchLongest, clamped to
+        // the embed window) using `pad_id`. Disable both regardless of what
+        // `tokenizer.json` declares so the forward tokenizer's length matches what
+        // the wrapper split on.
+        tokenizer
+            .with_truncation(None)
+            .map_err(|error| EmbeddingError::LoadTokenizer(error.to_string()))?;
+        tokenizer.with_padding(None);
 
         Ok(Self {
             model,
             tokenizer,
             device,
             pooling: descriptor.pooling,
+            pad_id,
+            // The GPU-tensor bound the wrapper clamps the chunk window to; the
+            // forward pass clamps `max_len` to this defensively (F11).
+            embed_window: descriptor.max_tokens.min(MAX_EMBED_WINDOW_TOKENS),
             // The NATIVE produced width computed per-arch above (= backbone
             // `hidden_size` for XlmRoberta, so Arctic reports 1024 not its
             // truncated 256; = `descriptor.dimension` for the others).
             dimension,
             cpu_fallback,
         })
+    }
+
+    /// The pad token id this backend resolved from the tokenizer's padding config at
+    /// load (falling back to 0 when the tokenizer declares none). Exposed for the
+    /// synthetic forward test ONLY, to assert the F10 fix directly: a revert to a
+    /// literal-0 pad is inert through the public embed path under XLM-RoBERTa right
+    /// padding (trailing pad slots never reach the position-id math for real tokens
+    /// nor survive pooling), so the embed-output parity check cannot catch it — this
+    /// accessor lets the test pin that the right pad id (1 for e5 / bge-m3 / Arctic)
+    /// is actually read, which IS the regression that would silently return.
+    #[doc(hidden)]
+    pub fn resolved_pad_id(&self) -> u32 {
+        self.pad_id
     }
 
     /// One candle forward pass over a batch of in-window fragments → one pooled,
@@ -330,7 +397,17 @@ impl CandleBackend {
             .encode_batch(texts.to_vec(), true)
             .map_err(|error| EmbeddingError::Tokenize(error.to_string()))?;
 
-        let max_len = encodings.iter().map(|e| e.len()).max().unwrap_or(1).max(1);
+        // Pad to the batch's longest sequence (BatchLongest), but clamp to the embed
+        // window: tokenization is not additive at the prompt+chunk join, so a
+        // realized batch sequence can exceed the documented window even though the
+        // wrapper split on it. Clamping `max_len` here bounds the padded `(B, L)` GPU
+        // tensor and any rows longer than the window are right-truncated to it (F11).
+        let max_len = encodings
+            .iter()
+            .map(|e| e.len())
+            .max()
+            .unwrap_or(1)
+            .clamp(1, self.embed_window);
         let b = encodings.len();
 
         let mut ids: Vec<u32> = Vec::with_capacity(b * max_len);
@@ -346,7 +423,12 @@ impl CandleBackend {
                     ids.push(e_ids[j]);
                     mask.push(e_mask[j] as u8);
                 } else {
-                    ids.push(0); // pad token id (0)
+                    // Pad with the model's REAL pad id (read from the tokenizer at
+                    // load) — XLM-RoBERTa derives position ids from `ne(pad_id = 1)`,
+                    // so a literal 0 here would be read as the real `<s>` token. The
+                    // attention mask masks the slot out either way, but using the
+                    // right pad id keeps padded slots inert in the position-id math.
+                    ids.push(self.pad_id);
                     mask.push(0);
                 }
             }
