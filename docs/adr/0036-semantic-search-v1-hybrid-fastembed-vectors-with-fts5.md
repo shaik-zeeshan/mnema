@@ -181,25 +181,32 @@ so the remaining gates to un-drafting the feature are explicit.
    Custom model can reach the "Use this model" action. Previously a Custom model could be downloaded
    but never selected — the entire Custom path was a dead end.
 
-4. **Download integrity — fail-closed plumbing in place, guided-tier hashes not yet pinned
-   (tracked gap).** SHA256 verification plumbing was added (mirroring the OCR/transcription
-   downloaders' `validate_artifact_sha256`), fail-closed by construction, plus a Content-Length
-   truncation guard on the streaming downloader. **However, no guided-tier hashes are pinned yet:**
-   the hash table returns `None` for every tier, so every guided download currently resolves to
-   "integrity unverified" rather than verified. Pinning the real per-file SHA256 constants is an
-   explicit follow-up — until then, **guided downloads are not checksum-verified.** Custom
-   (user-entered) models are unverified by design, since no digest is known ahead of time. This is
-   accepted with a tracked gap; do not describe guided downloads as integrity-verified until the
-   constants are pinned.
+4. **Download integrity — fail-closed and verified for every pinned tier.** SHA256 verification was
+   added (mirroring the OCR/transcription downloaders' `validate_artifact_sha256`), fail-closed by
+   construction, plus a Content-Length truncation guard on the streaming downloader. The real
+   per-file LFS SHA256 constants **are now pinned**: the English tier (`nomic-embed-text-v1.5`) and
+   the Multilingual tier (`multilingual-e5-small`) each pin all three required files
+   (`model.safetensors`, `config.json`, `tokenizer.json`), and the curated `bge-m3` Custom model
+   pins its `pytorch_model.bin` weights. Each pinned file is hashed from disk and compared before the
+   `.installed.json` marker is written, so a tampered/truncated file fails verification and is never
+   marked Installed. A separate fail-closed gate (`guard_guided_tier_weights_pinned`) refuses to
+   finalize a **guided tier** (English/Multilingual) at all unless its weights matched a pinned
+   digest — a guided tier can never install down the unverified "trust TLS only" path. Every download
+   is additionally pinned to an immutable Hugging Face commit revision rather than the mutable `main`
+   ref. Only genuinely-**unpinned Custom** picks (e.g. Stella, Arctic) remain unverified by design,
+   since no digest is known ahead of time — they install down the logged "integrity unverified" path
+   trusting the revision pin + TLS. So guided tiers and `bge-m3` may be described as
+   integrity-verified; only those unpinned Custom models may not.
 
-5. **`ort` TLS-stack divergence (known, needs a deliberate call) + a lockstep guard.** The
-   `semantic-search` crate builds `ort` with the **`native-tls`** feature, while the rest of the
-   workspace uses **`rustls`**. This divergence is known and left as-is pending a deliberate
-   decision on which TLS stack the ONNX path should use. Separately, a new test now mechanically
-   asserts the `ort` version pin stays in lockstep between `crates/semantic-search` and
-   `crates/audio-transcription`, so a future fastembed/Parakeet bump that drifts the two pins fails
-   loudly instead of silently compiling two native ONNX runtimes (or failing the static link with no
-   early signal).
+5. **Runtime moved off ONNX onto candle (superseding [ADR 0037](0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md)).** The original v1 plan ran embeddings
+   in-process via `fastembed`/`ort`, which created an `ort` exact-pin coupling with Parakeet
+   transcription and an `ort` TLS-stack divergence (`native-tls` in the embedding crate vs `rustls`
+   elsewhere). [ADR 0037](0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md) replaced that runtime with **candle** (on-device Apple GPU via Metal, or
+   CPU) behind a pluggable **Semantic Search Backend**, so `fastembed`/`ort` no longer participate in
+   **Semantic Search** at all — `ort` remains in the workspace only for audio transcription, and both
+   the `ort` exact-pin coupling and the TLS-stack divergence are therefore moot. See ADR 0037 for the
+   candle backend and the hand-maintained descriptor catalog that replaced fastembed's synthesized
+   `ModelInfo`.
 
 6. **CPU pacing during backfill is a light governor, not OCR's Execution Budget.** The body says
    backfill "runs only on idle/background capacity." In v1 that is realized as a clamped inter-batch
@@ -213,8 +220,9 @@ so the remaining gates to un-drafting the feature are explicit.
    an orphan vector at rest); an `is_finite` guard rejects non-finite embeddings before insert; an
    in-memory poison-pill quarantine sidelines an anchor after 3 consecutive **deterministic** embed
    failures (distinct from transient DB-store retries, no migration — a reprocess gets a new anchor
-   id and re-tries); and 3 consecutive ONNX **load** failures surface a "model appears corrupt —
-   reinstall" signal over the download-progress event.
+   id and re-tries); and 3 consecutive model **load** failures surface a "model appears corrupt —
+   reinstall" signal over the download-progress event. (The runtime is now candle, not ONNX — see
+   point 5 and [ADR 0037](0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md); the load-failure handling carries over unchanged.)
 
 **Gates still outstanding before un-drafting.** These were deferred or are follow-ups, not fixed in
 this branch:
@@ -224,8 +232,6 @@ this branch:
   ANN behind a *measured* p95 trigger, but ships **no** measurement. Measuring p95 unfiltered-query
   latency at a realistic corpus is the explicit gate before relying on the brute-force path at scale
   — it is a gate, not something implemented here.
-- **Guided-tier SHA256 pinning** (see point 4 above) — required to honor the fail-closed integrity
-  posture for guided downloads.
 - **Packaged-build acceptance sign-off** — AC-1 (CASCADE-delete trigger) and AC-2 (per-chunk
   download progress) are proven at the unit level against the real code paths; the ADR asks for
   confirmation in a packaged SQLCipher build, which remains a sign-off formality.
