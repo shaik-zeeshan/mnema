@@ -21,6 +21,7 @@
 
   // Controller derived selectors.
   const userContextCloudDefault = $derived(c.userContextCloudDefault);
+  const userContextLocalDefault = $derived(c.userContextLocalDefault);
 
   // Store action methods.
   const aiRuntimeReasonLabel = (reason: string | null | undefined) =>
@@ -121,34 +122,40 @@
   >
     {#snippet control()}
       <div class="uc-stack">
-        {#if userContextCloudDefault}
-          <RadioGroup
-            value={rec.draftUserContextBudgetTier}
-            onValueChange={(value) =>
-              (rec.draftUserContextBudgetTier = value as DerivationBudgetTier)}
-            label="Intensity"
-            options={[
-              {
-                value: "light",
-                label: "Light",
-                description: "Slowest pacing, fewest tokens. Understanding fills in gradually.",
-              },
-              {
-                value: "balanced",
-                label: "Balanced",
-                description: "Moderate pacing and token spend. A sensible default.",
-              },
-              {
-                value: "thorough",
-                label: "Thorough",
-                description: "Fastest pacing, most tokens. Covers your history sooner.",
-              },
-            ]}
-          />
-        {:else}
+        <RadioGroup
+          value={rec.draftUserContextBudgetTier}
+          onValueChange={(value) =>
+            (rec.draftUserContextBudgetTier = value as DerivationBudgetTier)}
+          disabled={!userContextCloudDefault}
+          label="Intensity"
+          options={[
+            {
+              value: "light",
+              label: "Light",
+              description: "Slowest pacing, fewest tokens. Understanding fills in gradually.",
+            },
+            {
+              value: "balanced",
+              label: "Balanced",
+              description: "Moderate pacing and token spend. A sensible default.",
+            },
+            {
+              value: "thorough",
+              label: "Thorough",
+              description: "Fastest pacing, most tokens. Covers your history sooner.",
+            },
+          ]}
+        />
+        {#if userContextLocalDefault}
           <p class="group-hint">
             Budget tiers apply to a cloud default model. A local default uses fixed
-            background pacing — no token spend, so there is no intensity knob to choose.
+            background pacing — no token spend, so there is no intensity to choose.
+          </p>
+        {:else if !userContextCloudDefault}
+          <p class="group-hint">
+            Set a default model above to choose an intensity. Budget tiers pace
+            token spend for a cloud default — until a default model is configured
+            there is nothing to pace.
           </p>
         {/if}
       </div>

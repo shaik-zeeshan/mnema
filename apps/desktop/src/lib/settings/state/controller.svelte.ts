@@ -345,6 +345,9 @@ export class SettingsController {
   userContextCloudDefault = $derived(
     this.rec.draftAiDefaultModel !== null && this.isCloudAiProviderInstance(this.rec.draftAiDefaultModel.provider),
   );
+  userContextLocalDefault = $derived(
+    this.rec.draftAiDefaultModel !== null && !this.isCloudAiProviderInstance(this.rec.draftAiDefaultModel.provider),
+  );
 
   // Friendly Ask AI reason copy.
   askAiReasonLabel = (reason: string | null | undefined) =>
