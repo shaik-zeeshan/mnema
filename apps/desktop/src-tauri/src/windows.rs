@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -44,13 +45,26 @@ static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static MACOS_TERMINATE_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct OpenSettingsTabPayload {
+pub(crate) struct OpenSettingsTabPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     tab: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus: Option<String>,
+}
+
+/// Pending Settings deeplink(s) for a cold main window. Mirrors
+/// `InsightsOpenConversationState` in `lib.rs`: the live `open_settings_tab`
+/// event drives a warm window, but a freshly-built (cold) main window hasn't
+/// attached its `listen("open_settings_tab")` yet (that registers in a
+/// `+layout.svelte` mount effect) and Tauri doesn't buffer events with no
+/// listener — so the cold-start tray "Open Settings" would be dropped and strand
+/// the user on Timeline. We queue the normalized payload here when Main had to be
+/// BUILT and the layout drains it on mount via `drain_pending_open_settings`.
+#[derive(Default)]
+pub struct PendingOpenSettingsState {
+    pending: Mutex<VecDeque<OpenSettingsTabPayload>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -437,24 +451,74 @@ fn settings_tab_focus_path(tab: &str, focus: Option<&str>) -> Result<String, Str
 // so the emitted payload always carries canonical values. An unknown tab/focus
 // is dropped (the route falls back to its default tab) rather than erroring,
 // so a stale deeplink still lands on Settings.
+//
+// Cold-window handoff (mirrors `open_conversation_in_chat` in `lib.rs`): when the
+// Main window has to be BUILT (cold start from the tray / another window), its
+// freshly-loaded webview hasn't attached its `listen("open_settings_tab")` yet
+// (that registers in a `+layout.svelte` mount effect) and Tauri doesn't buffer
+// events with no listener — so a synchronous emit would be dropped and strand the
+// user on Timeline. We therefore queue the normalized payload into
+// `PendingOpenSettingsState` when (and only when) Main was cold; the layout
+// drains it on mount via `drain_pending_open_settings`. The WARM path (Main
+// already open) keeps emitting directly. We still emit on the cold path too, so a
+// webview that happens to attach before the drain is served by whichever fires
+// first; the drain is idempotent because it consumes the queue.
 fn focus_main_and_emit_open_settings(
     app: &tauri::AppHandle,
+    pending: &PendingOpenSettingsState,
     tab: Option<&str>,
     focus: Option<&str>,
 ) -> Result<(), String> {
+    // Snapshot whether Main exists BEFORE opening, so we can tell a cold build
+    // apart from a warm focus. Only a cold build needs the pending queue; queuing
+    // on a warm window would leave the entry stranded (the page doesn't remount,
+    // so the drain never runs) and replay a stale deeplink on the next genuine
+    // mount.
+    let main_window_was_open = app
+        .get_webview_window(AppWindow::Main.config().label)
+        .is_some();
+
     open_or_focus_window(app, AppWindow::Main, None)?;
 
     let Some(main) = app.get_webview_window(AppWindow::Main.config().label) else {
         return Err("main window unavailable".into());
     };
 
-    let payload = OpenSettingsTabPayload {
-        tab: tab.and_then(normalize_settings_tab).map(str::to_string),
-        focus: focus.and_then(normalize_settings_focus).map(str::to_string),
-    };
+    let payload = normalized_open_settings_payload(tab, focus);
+    enqueue_cold_open_settings(pending, &payload, main_window_was_open);
 
     main.emit(OPEN_SETTINGS_TAB_EVENT, payload)
         .map_err(|err| err.to_string())
+}
+
+/// Normalize tab/focus aliases into the canonical `open_settings_tab` payload.
+/// Unknown values are dropped (the settings route falls back to its default tab)
+/// rather than erroring, so a stale deeplink still lands on Settings.
+fn normalized_open_settings_payload(
+    tab: Option<&str>,
+    focus: Option<&str>,
+) -> OpenSettingsTabPayload {
+    OpenSettingsTabPayload {
+        tab: tab.and_then(normalize_settings_tab).map(str::to_string),
+        focus: focus.and_then(normalize_settings_focus).map(str::to_string),
+    }
+}
+
+/// Queue a normalized Settings deeplink for the cold-window mount drain — but
+/// ONLY when Main had to be built (`main_window_was_open == false`). Queuing on a
+/// warm window would strand the entry (the page doesn't remount, so the drain
+/// never runs) and replay a stale deeplink on the next genuine mount.
+fn enqueue_cold_open_settings(
+    pending: &PendingOpenSettingsState,
+    payload: &OpenSettingsTabPayload,
+    main_window_was_open: bool,
+) {
+    if main_window_was_open {
+        return;
+    }
+    if let Ok(mut queue) = pending.pending.lock() {
+        queue.push_back(payload.clone());
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1123,14 +1187,42 @@ pub(crate) fn is_onboarding_complete(app: &tauri::AppHandle) -> bool {
 /// no longer a dedicated window; callers outside the Main window (the tray,
 /// Quick Recall, …) invoke this so Rust focuses Main and emits the
 /// `open_settings_tab` deeplink that the Main layout turns into a `/settings`
-/// navigation. `tab`/`focus` are optional aliases, normalized before emit.
+/// navigation. `tab`/`focus` are optional aliases, normalized before emit. A cold
+/// start that has to BUILD Main also queues the normalized payload into
+/// `PendingOpenSettingsState` so the layout's on-mount drain still lands the
+/// deeplink even though the live event fires before the listener attaches.
+///
+/// The managed pending state is resolved from `app` rather than taken as a
+/// `tauri::State` parameter so this stays directly callable from Rust — the tray's
+/// "Open Settings" handler (`status_bar.rs`) invokes it with an `AppHandle`, not
+/// over IPC. (That tray path is the very cold-start case the pending queue
+/// fixes.)
 #[tauri::command]
 pub fn focus_main_and_open_settings(
     app: tauri::AppHandle,
     tab: Option<String>,
     focus: Option<String>,
 ) -> Result<(), String> {
-    focus_main_and_emit_open_settings(&app, tab.as_deref(), focus.as_deref())
+    let pending = app.state::<PendingOpenSettingsState>();
+    focus_main_and_emit_open_settings(&app, pending.inner(), tab.as_deref(), focus.as_deref())
+}
+
+/// Drain any queued Settings deeplink(s) for a cold main window. The Main layout
+/// calls this once on mount: a freshly-built main window boots on Timeline and
+/// the live `open_settings_tab` event may have already fired before the layout's
+/// listener attached, so the queued payload is the only way the cold-start tray
+/// "Open Settings" reaches `/settings`. Mirrors
+/// `drain_pending_insights_open_conversations` in `lib.rs`. Returns the queued
+/// payloads (normally at most one) in arrival order; an empty vec means nothing
+/// was pending (warm window, or the lock was poisoned).
+#[tauri::command]
+pub fn drain_pending_open_settings(
+    pending: tauri::State<'_, PendingOpenSettingsState>,
+) -> Vec<OpenSettingsTabPayload> {
+    let Ok(mut queue) = pending.pending.lock() else {
+        return Vec::new();
+    };
+    queue.drain(..).collect()
 }
 
 pub(crate) fn open_cli_access_request_window(app: &tauri::AppHandle) -> Result<(), String> {
@@ -1211,9 +1303,11 @@ pub fn complete_onboarding(
 #[cfg(test)]
 mod tests {
     use super::{
-        close_window_focuses_main_before_close, destroyed_window_action, is_known_settings_tab,
-        load_onboarding_state_from_path, normalize_settings_focus, normalize_settings_tab,
-        settings_tab_focus_path, AppExitCoordinatorState, DestroyedWindowAction,
+        close_window_focuses_main_before_close, destroyed_window_action, enqueue_cold_open_settings,
+        is_known_settings_tab, load_onboarding_state_from_path, normalize_settings_focus,
+        normalize_settings_tab, normalized_open_settings_payload, settings_tab_focus_path,
+        AppExitCoordinatorState, DestroyedWindowAction, OpenSettingsTabPayload,
+        PendingOpenSettingsState,
     };
 
     #[test]
@@ -1403,6 +1497,45 @@ mod tests {
             Ok("/settings?tab=access&focus=cliAccess")
         );
         assert!(settings_tab_focus_path("privacy", Some("../agent")).is_err());
+    }
+
+    #[test]
+    fn open_settings_payload_normalizes_aliases() {
+        let payload = normalized_open_settings_payload(Some("ocr"), Some("agent-access"));
+        assert_eq!(payload.tab.as_deref(), Some("processing"));
+        assert_eq!(payload.focus.as_deref(), Some("cliAccess"));
+
+        // Unknown values are dropped, not errored, so a stale deeplink still lands
+        // on Settings (the route falls back to its default tab).
+        let dropped = normalized_open_settings_payload(Some("transcripts"), Some("nope"));
+        assert_eq!(dropped, OpenSettingsTabPayload::default());
+    }
+
+    #[test]
+    fn cold_open_settings_is_queued_for_the_mount_drain() {
+        // A cold-start tray "Open Settings" has to BUILD the main window, whose
+        // fresh webview hasn't attached its `open_settings_tab` listener yet — so
+        // the payload must be queued for the on-mount drain.
+        let pending = PendingOpenSettingsState::default();
+        let payload = normalized_open_settings_payload(Some("privacy"), None);
+
+        enqueue_cold_open_settings(&pending, &payload, /* main_window_was_open */ false);
+
+        let queued: Vec<_> = pending.pending.lock().unwrap().drain(..).collect();
+        assert_eq!(queued, vec![payload]);
+    }
+
+    #[test]
+    fn warm_open_settings_is_not_queued() {
+        // A warm window is served by the live event alone; queuing here would
+        // strand the entry (the page doesn't remount) and replay a stale deeplink
+        // on the next genuine mount.
+        let pending = PendingOpenSettingsState::default();
+        let payload = normalized_open_settings_payload(Some("privacy"), None);
+
+        enqueue_cold_open_settings(&pending, &payload, /* main_window_was_open */ true);
+
+        assert!(pending.pending.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -390,6 +390,7 @@ pub fn run() {
         .manage(semantic_search_models::SemanticSearchModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
+        .manage(windows::PendingOpenSettingsState::default())
         .manage(BrokerOpenCaptureResultState::default())
         .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
@@ -614,6 +615,7 @@ pub fn run() {
             native_capture::resume_native_capture,
             native_capture::stop_native_capture,
             windows::focus_main_and_open_settings,
+            windows::drain_pending_open_settings,
             windows::open_debug_window,
             windows::close_current_window,
             windows::focus_quick_recall_window,
