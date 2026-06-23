@@ -71,6 +71,11 @@
   {#if label}
     <span class="select-label" id={labelId}>{label}</span>
   {/if}
+  <!-- Inner positioning context wrapping only the trigger (Root renders no box),
+       so the non-portaled popover anchors to the trigger rather than the
+       label+trigger — otherwise a flipped-up menu floats off by the label
+       height. -->
+  <div class="select-anchor">
   <BitsSelect.Root
     type="single"
     value={value ?? ""}
@@ -112,6 +117,7 @@
       </BitsSelect.Content>
     </BitsSelect.Portal>
   </BitsSelect.Root>
+  </div>
 </div>
 
 <style>
@@ -120,8 +126,15 @@
     flex-direction: column;
     gap: 6px;
     width: 100%;
-    /* Positioning context for the (non-portaled) popover, pinned below. */
+  }
+
+  /* Positioning context for the (non-portaled) popover. Wraps ONLY the trigger
+     so both the downward `top` and upward `bottom` rules resolve against the
+     trigger box — not the label+trigger, which would float a flipped-up menu
+     off by the label height. */
+  .select-anchor {
     position: relative;
+    width: 100%;
   }
 
   /* bits-ui positions the popover with floating-ui (JS measurement of the
@@ -130,7 +143,7 @@
      its trigger. Since we render inline (Portal disabled), pin the floating
      wrapper to the trigger with pure CSS instead — deterministic, no JS rect,
      matching ModelPickerMenu's non-portaled positioning. */
-  .select-wrapper :global([data-bits-floating-content-wrapper]) {
+  .select-anchor :global([data-bits-floating-content-wrapper]) {
     position: absolute !important;
     inset: auto auto auto 0 !important;
     top: calc(100% + 4px) !important;
@@ -142,7 +155,7 @@
   /* Flip upward when there isn't enough room below the trigger (measured on
      open). Anchors the panel above the trigger instead of below — still pinned,
      never drifting. */
-  .select-wrapper--up :global([data-bits-floating-content-wrapper]) {
+  .select-wrapper--up .select-anchor :global([data-bits-floating-content-wrapper]) {
     top: auto !important;
     bottom: calc(100% + 4px) !important;
   }

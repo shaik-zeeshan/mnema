@@ -16,14 +16,20 @@
     label,
     description,
   }: Props = $props();
+
+  // Stable ids so the visible label/description (plain <span>s, not associated
+  // by BitsSwitch.Root) can be linked to the switch via aria-labelledby /
+  // aria-describedby — otherwise the role="switch" has no accessible name.
+  const labelId = `switch-label-${Math.random().toString(36).slice(2, 9)}`;
+  const descriptionId = `switch-desc-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
 <div class="switch-wrapper" class:switch-wrapper--disabled={disabled}>
   {#if label}
     <div class="switch-text">
-      <span class="switch-label">{label}</span>
+      <span class="switch-label" id={labelId}>{label}</span>
       {#if description}
-        <span class="switch-description">{description}</span>
+        <span class="switch-description" id={descriptionId}>{description}</span>
       {/if}
     </div>
   {/if}
@@ -32,6 +38,8 @@
     {disabled}
     {onCheckedChange}
     class="switch-track"
+    aria-labelledby={label ? labelId : undefined}
+    aria-describedby={label && description ? descriptionId : undefined}
   >
     <BitsSwitch.Thumb class="switch-thumb" />
   </BitsSwitch.Root>

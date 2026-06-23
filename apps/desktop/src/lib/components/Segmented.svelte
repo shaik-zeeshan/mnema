@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from "svelte";
+  import { tick, type Snippet } from "svelte";
 
   interface Option {
     value: string;
@@ -46,10 +46,25 @@
 
   const isOff = (v: string): boolean => disabledValues.includes(v);
 
+  // Per-segment button refs, so keyboard nav can move DOM focus onto the newly
+  // active segment (focus-follows-selection — the roving tabindex alone leaves
+  // focus stranded on the now tabindex=-1 button).
+  let segEls = $state<(HTMLButtonElement | null)[]>([]);
+
   function select(next: string) {
     if (disabled || isOff(next) || next === value) return;
     value = next;
     onValueChange?.(next);
+  }
+
+  // After a keyboard selection, move focus to the new segment — but only when
+  // focus is already inside this group, so we never steal focus on mount or on
+  // a programmatic value change.
+  function focusSelected(index: number) {
+    const group = segEls[index]?.closest(".segmented");
+    if (group && group.contains(document.activeElement)) {
+      segEls[index]?.focus();
+    }
   }
 
   // Step from `from` in `dir` (+1/-1), skipping disabled options. Returns the
@@ -90,8 +105,13 @@
       nextIndex = isOff(options[last].value) ? nextEnabledIndex(last, -1) : last;
     }
     if (nextIndex === null) return;
+    const target = nextIndex;
     event.preventDefault();
-    select(options[nextIndex].value);
+    select(options[target].value);
+    // Selecting flips the roving tabindex to `target`; follow it with DOM focus
+    // so the new segment is what the user is actually on. tick() lets the
+    // tabindex/active classes update first.
+    void tick().then(() => focusSelected(target));
   }
 </script>
 
@@ -105,6 +125,7 @@
   {#each options as option, index (option.value)}
     <button
       type="button"
+      bind:this={segEls[index]}
       class="seg"
       class:seg--active={value === option.value}
       class:seg--off={isOff(option.value)}

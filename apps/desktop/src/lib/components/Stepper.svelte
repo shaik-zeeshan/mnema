@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { clampToRange, stepRaw } from "./stepper-clamp";
+  import { clampToRange, parseStepperRaw, stepRaw } from "./stepper-clamp";
 
   // `value` is a RAW STRING so it can flow upward unchanged into the settings
   // shell's raw fields (customWidthRaw / customHeightRaw / draftCustomMbpsRaw),
@@ -34,6 +34,17 @@
   function commit() {
     const clamped = clampToRange(value, { min, max });
     if (clamped !== value) value = clamped;
+  }
+
+  // Reflect the upper bound back while typing so the +/- buttons and the text
+  // field never disagree on an over-max value: an integer above `max` can only
+  // grow with more digits, so there's no legitimate keystroke we'd be eating by
+  // clamping it now. The lower bound is left for commit (blur/Enter) — a value
+  // below `min` is still a number the user may be typing up to.
+  function clampMaxLive() {
+    if (typeof max !== "number") return;
+    const parsed = parseStepperRaw(value);
+    if (parsed !== null && parsed > max) value = String(max);
   }
 
   function bump(direction: 1 | -1) {
@@ -79,6 +90,7 @@
       aria-label={ariaLabel}
       aria-invalid={invalid}
       autocomplete="off"
+      oninput={clampMaxLive}
       onblur={commit}
       onkeydown={onKeydown}
     />

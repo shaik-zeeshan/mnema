@@ -93,6 +93,11 @@
   {#if label}
     <span class="combobox-label" id={labelId}>{label}</span>
   {/if}
+  <!-- Inner positioning context wrapping only the trigger (Root renders no box),
+       so the non-portaled popover anchors to the trigger rather than the
+       label+trigger — otherwise a flipped-up menu floats off by the label
+       height. -->
+  <div class="combobox-anchor">
   <BitsCombobox.Root
     type="single"
     value={value ?? ""}
@@ -164,6 +169,7 @@
       </BitsCombobox.Content>
     </BitsCombobox.Portal>
   </BitsCombobox.Root>
+  </div>
 </div>
 
 <style>
@@ -172,14 +178,21 @@
     flex-direction: column;
     gap: 6px;
     width: 100%;
-    /* Positioning context for the (non-portaled) popover, pinned below. */
+  }
+
+  /* Positioning context for the (non-portaled) popover. Wraps ONLY the trigger
+     so both the downward `top` and upward `bottom` rules resolve against the
+     trigger box — not the label+trigger, which would float a flipped-up menu
+     off by the label height. */
+  .combobox-anchor {
     position: relative;
+    width: 100%;
   }
 
   /* See Select.svelte: floating-ui's JS positioning is wrong across Settings'
      inner scroll container in the WKWebView, so pin the inline popover to the
      trigger with pure CSS instead. */
-  .combobox-wrapper :global([data-bits-floating-content-wrapper]) {
+  .combobox-anchor :global([data-bits-floating-content-wrapper]) {
     position: absolute !important;
     inset: auto auto auto 0 !important;
     top: calc(100% + 4px) !important;
@@ -191,7 +204,7 @@
   /* Flip upward when there isn't enough room below the trigger (measured on
      open). Anchors the panel above the trigger instead of below — still pinned,
      never drifting. */
-  .combobox-wrapper--up :global([data-bits-floating-content-wrapper]) {
+  .combobox-wrapper--up .combobox-anchor :global([data-bits-floating-content-wrapper]) {
     top: auto !important;
     bottom: calc(100% + 4px) !important;
   }
