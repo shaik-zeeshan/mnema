@@ -1,7 +1,15 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  // Load the global onboarding stylesheet here too: FeatureStack (which also
+  // imports it) is UNMOUNTED during the welcome/finale phases, so the welcome
+  // and finale `.ob-screen` styles must be loaded from the always-mounted page.
+  // The import is global + idempotent, so the duplicate in FeatureStack is fine.
+  import "./onboarding-ui.css";
+  import "./onboarding-screens.css";
   import FeatureStack from "./FeatureStack.svelte";
   import FeatureRow from "./FeatureRow.svelte";
+  import WelcomeScreen from "./WelcomeScreen.svelte";
+  import FinaleScreen from "./FinaleScreen.svelte";
   import { FEATURES } from "./feature-model";
   import { OnboardingController } from "./onboarding.svelte";
   import PermissionsBody from "./PermissionsBody.svelte";
@@ -59,15 +67,20 @@
 </script>
 
 <div class="onboarding-root">
-  <FeatureStack
-    onCount={c.onCount}
-    attentionCount={c.attentionCount}
-    ctaLabel={c.ctaLabel}
-    ctaDisabled={c.ctaDisabled}
-    onFinish={() => c.finish(true)}
-    secondaryLabel="Finish without recording"
-    onSecondary={() => c.finish(false)}
-  >
+  {#if c.phase === "welcome"}
+    <WelcomeScreen controller={c} />
+  {:else if c.phase === "done"}
+    <FinaleScreen controller={c} />
+  {:else}
+    <FeatureStack
+      onCount={c.onCount}
+      attentionCount={c.attentionCount}
+      ctaLabel="Review &amp; finish →"
+      ctaDisabled={c.attentionCount > 0}
+      onFinish={() => c.reviewAndFinish()}
+      secondaryLabel="← Back"
+      onSecondary={() => c.backToWelcome()}
+    >
     {#each FEATURES as f (f.id)}
       <FeatureRow
         icon={f.icon}
@@ -78,6 +91,8 @@
         enabled={c.isEnabled(f.id)}
         open={c.openId === f.id}
         attention={c.featureAttention(f.id)}
+        toggleDisabled={c.featureToggleDisabled(f.id)}
+        lockReason={c.featureLockReason(f.id)}
         onToggle={() => c.toggleFeature(f.id)}
         onExpand={() => c.setOpen(f.id)}
       >
@@ -106,7 +121,8 @@
         {/snippet}
       </FeatureRow>
     {/each}
-  </FeatureStack>
+    </FeatureStack>
+  {/if}
 </div>
 
 <style>

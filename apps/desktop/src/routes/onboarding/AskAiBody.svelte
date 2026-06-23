@@ -35,6 +35,17 @@
   </div>
 </div>
 
+<!-- Action-needed callout: Ask AI is on but has no usable reasoning engine yet.
+     The WHY (and whether to show it) is the store's single source of truth —
+     don't re-derive the condition here. -->
+{#if controller.draftAskAiEnabled && !ai.aiConfigReady}
+  <div class="group">
+    <div class="lock-callout">
+      <div class="lock-callout-text">{ai.aiConfigMissing}</div>
+    </div>
+  </div>
+{/if}
+
 <div class="group always-on">
   <div class="group-title">Things you can ask</div>
   <ul class="askai-examples">

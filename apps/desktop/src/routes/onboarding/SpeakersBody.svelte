@@ -21,6 +21,21 @@
   });
 </script>
 
+{#if controller.featureLockReason("speakers")}
+  <div class="lock-callout">
+    <div class="lock-callout-text">
+      Audio transcription must be on to separate speakers.
+    </div>
+    <button
+      type="button"
+      class="btn accent sm"
+      onclick={() => controller.toggleFeature("transcribe")}
+    >
+      Turn on Audio transcription
+    </button>
+  </div>
+{/if}
+
 <div class="group">
   <div class="note muted">
     Speaker separation runs <b>locally</b> after microphone transcription — keep

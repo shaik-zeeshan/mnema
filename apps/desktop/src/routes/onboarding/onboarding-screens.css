@@ -1,0 +1,441 @@
+/* Onboarding bookend screens (Welcome / Finale) — GLOBAL stylesheet.
+ *
+ * Split out of `onboarding-ui.css` (which stays under the 800-line code-org
+ * budget and holds only the `.onboarding-shell` accordion chrome). Imported
+ * alongside it from `+page.svelte` so the welcome/finale `.ob-screen` styles
+ * load even while FeatureStack (the accordion) is UNMOUNTED during those phases.
+ *
+ * The WelcomeScreen/FinaleScreen roots are NOT inside `.onboarding-shell`, so
+ * every selector below is namespaced under `.ob-screen`. The wrapper fills
+ * `.onboarding-root` (flex-column, definite-height parent) and centers the hero.
+ * Tokens stay `--app-*`; the old `.btn--*` button classes are dropped in favor
+ * of the shared `.cta` (primary) + bespoke muted link buttons here. */
+.ob-screen {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family:
+    "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, "Cascadia Code",
+    "Fira Code", monospace;
+  color: var(--app-text);
+}
+
+/* primary CTA reused from the shared family (defined once on .onboarding-shell
+   .cta); restate the base here since `.ob-screen` is a separate namespace. */
+.ob-screen .cta {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--app-bg);
+  background: var(--app-accent);
+  border: 1px solid var(--app-accent);
+  border-radius: 8px;
+  padding: 12px 26px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: box-shadow 0.15s ease, transform 0.08s ease;
+}
+.ob-screen .cta:hover:not(:disabled) {
+  box-shadow: 0 0 0 4px var(--app-accent-glow);
+}
+.ob-screen .cta:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.ob-screen .cta:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* muted link-style buttons (Use recommended / Just open dashboard / Back) */
+.ob-screen .welcome__accel,
+.ob-screen .finale__link,
+.ob-screen .finale__back {
+  font: inherit;
+  background: transparent;
+  border: none;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.ob-screen .welcome__accel:not(:disabled):hover,
+.ob-screen .finale__link:not(:disabled):hover,
+.ob-screen .finale__back:not(:disabled):hover {
+  color: var(--app-accent);
+}
+.ob-screen .welcome__accel:disabled,
+.ob-screen .finale__link:disabled,
+.ob-screen .finale__back:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* shared hero/crest frame */
+.ob-screen .welcome,
+.ob-screen .finale {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-raised);
+  overflow: hidden;
+}
+.ob-screen .welcome__bg,
+.ob-screen .finale__bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* ── Welcome ───────────────────────────────────────────────── */
+.ob-screen .welcome__grid {
+  position: absolute;
+  inset: -2px;
+  background-image:
+    linear-gradient(var(--app-border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--app-border) 1px, transparent 1px);
+  background-size: 22px 22px;
+  opacity: 0.35;
+  mask-image: radial-gradient(ellipse at 30% 35%, black 0%, transparent 75%);
+}
+.ob-screen .welcome__halo {
+  position: absolute;
+  width: 360px;
+  height: 360px;
+  left: -80px;
+  top: -120px;
+  background: radial-gradient(circle, var(--app-accent-glow) 0%, transparent 65%);
+  filter: blur(8px);
+  opacity: 0.7;
+  animation: ob-drift 14s ease-in-out infinite;
+}
+@keyframes ob-drift {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(40px, 25px); }
+}
+.ob-screen .welcome__inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 32px 36px;
+  max-width: 520px;
+}
+.ob-screen .welcome__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  padding: 3px 10px 3px 8px;
+  border: 1px solid var(--app-accent-border);
+  border-radius: 999px;
+  background: var(--app-accent-bg);
+  color: var(--app-accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.ob-screen .welcome__pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--app-accent);
+  box-shadow: 0 0 0 0 var(--app-accent-glow);
+  animation: ob-pulse 1.8s ease-out infinite;
+}
+@keyframes ob-pulse {
+  0% { box-shadow: 0 0 0 0 var(--app-accent-glow); }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.ob-screen .welcome__title {
+  margin: 0;
+  color: var(--app-text-strong);
+  font-size: 38px;
+  font-weight: 700;
+  line-height: 1.02;
+  letter-spacing: -0.01em;
+}
+.ob-screen .welcome__title em {
+  font-style: normal;
+  color: var(--app-accent);
+  position: relative;
+}
+.ob-screen .welcome__title em::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 6px;
+  background: var(--app-accent-glow);
+  opacity: 0.5;
+  z-index: -1;
+}
+.ob-screen .welcome__tag {
+  margin: 0;
+  color: var(--app-text);
+  font-size: 12.5px;
+  line-height: 1.55;
+  max-width: 44ch;
+}
+.ob-screen .welcome__loop {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--app-text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.ob-screen .welcome__loop li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ob-screen .welcome__loop li:not(:last-child)::after {
+  content: "→";
+  margin: 0 8px;
+  color: var(--app-accent);
+  opacity: 0.6;
+}
+.ob-screen .welcome__loop li span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--app-accent);
+  box-shadow: 0 0 4px var(--app-accent-glow);
+}
+.ob-screen .welcome__cta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 8px;
+}
+.ob-screen .btn__arrow {
+  display: inline-block;
+  transition: transform 0.18s ease;
+}
+.ob-screen .welcome__cta .cta:not(:disabled):hover .btn__arrow {
+  transform: translateX(3px);
+}
+.ob-screen .welcome__meta {
+  color: var(--app-text-muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.ob-screen .welcome__accel {
+  align-self: flex-start;
+  margin-top: -4px;
+  padding-left: 0;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+/* ── Finale ────────────────────────────────────────────────── */
+.ob-screen .finale__rings {
+  position: absolute;
+  width: 540px;
+  height: 540px;
+  border-radius: 50%;
+  border: 1px solid var(--app-accent-border);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.35;
+  animation: ob-ring-pulse 4s ease-in-out infinite;
+}
+.ob-screen .finale__rings--alt {
+  width: 360px;
+  height: 360px;
+  border-color: var(--app-accent);
+  opacity: 0.18;
+  animation-delay: 1.6s;
+}
+@keyframes ob-ring-pulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(0.92); opacity: 0.15; }
+  50% { transform: translate(-50%, -50%) scale(1.05); opacity: 0.5; }
+}
+.ob-screen .finale__inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 32px 36px;
+  max-width: 520px;
+}
+.ob-screen .finale__crest {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--app-accent-border);
+  background: var(--app-accent-bg);
+  color: var(--app-accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.ob-screen .finale__crest-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--app-accent);
+  box-shadow: 0 0 6px var(--app-accent-glow);
+}
+.ob-screen .finale__title {
+  margin: 0;
+  color: var(--app-text-strong);
+  font-size: 42px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1;
+}
+.ob-screen .finale__tag {
+  margin: 0;
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 46ch;
+}
+
+/* warn-toned callout explaining WHY the finish buttons are disabled */
+.ob-screen .finale__attn {
+  width: 100%;
+  max-width: 46ch;
+  text-align: left;
+  color: var(--app-warn);
+  background: var(--app-warn-bg);
+  border: 1px solid var(--app-warn-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.ob-screen .finale__attn-head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ob-screen .finale__attn-body {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--app-text);
+}
+.ob-screen .finale__attn-body b {
+  color: var(--app-warn);
+  font-weight: 540;
+}
+
+.ob-screen .finale__chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+.ob-screen .chip {
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 999px;
+}
+.ob-screen .chip[data-on="true"] {
+  color: var(--app-accent);
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-bg);
+}
+.ob-screen .finale__cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.ob-screen .finale__rec {
+  letter-spacing: 0.12em;
+  box-shadow: 0 0 0 0 var(--app-accent-glow);
+  animation: ob-cta-glow 2.4s ease-in-out infinite;
+}
+@keyframes ob-cta-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--app-accent-glow); }
+  50% { box-shadow: 0 0 0 6px transparent; }
+}
+.ob-screen .finale__rec-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.ob-screen .finale__link {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 4px 8px;
+}
+.ob-screen .finale__back {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 4px 8px;
+}
+.ob-screen .finale__foot {
+  margin: 6px 0 0;
+  color: var(--app-text-muted);
+  font-size: 10px;
+}
+.ob-screen .finale__foot em {
+  font-style: normal;
+  color: var(--app-text);
+}
+
+/* ── Narrow widths (min window 640px) ──────────────────────── */
+@media (max-width: 600px) {
+  .ob-screen .welcome__inner,
+  .ob-screen .finale__inner { padding: 22px 20px; }
+  .ob-screen .welcome__title { font-size: 30px; }
+  .ob-screen .finale__title { font-size: 32px; }
+  .ob-screen .welcome__cta { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-screen .welcome__halo,
+  .ob-screen .welcome__pulse,
+  .ob-screen .finale__rings,
+  .ob-screen .finale__rec {
+    animation: none;
+  }
+  .ob-screen .cta,
+  .ob-screen .btn__arrow,
+  .ob-screen .welcome__accel,
+  .ob-screen .finale__link,
+  .ob-screen .finale__back {
+    transition: none;
+  }
+}

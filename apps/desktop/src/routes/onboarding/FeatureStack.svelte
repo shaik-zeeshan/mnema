@@ -79,9 +79,9 @@
       case "Enter":
       case " ":
       case "Spacebar": {
-        // Trigger expand for a focused-but-collapsed header. An already-open
-        // header's click is a no-op (matches FeatureRow), so a synthetic click
-        // is safe and routes through the same guard.
+        // Toggle the focused header (matches FeatureRow): a collapsed row opens,
+        // an already-open row collapses. The synthetic click routes through the
+        // same guard, so keyboard and pointer behavior stay identical.
         event.preventDefault();
         head.click();
         break;

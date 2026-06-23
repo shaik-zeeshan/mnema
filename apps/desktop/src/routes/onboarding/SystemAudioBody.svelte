@@ -15,6 +15,22 @@
   };
 </script>
 
+{#if controller.featureLockReason("sysaudio")}
+  <div class="lock-callout">
+    <div class="lock-callout-text">
+      System audio access is required before you can capture system sound.
+    </div>
+    <button
+      type="button"
+      class="btn accent sm"
+      disabled={controller.requestingPerm === "systemAudio"}
+      onclick={() => controller.requestPermission("systemAudio")}
+    >
+      {controller.requestingPerm === "systemAudio" ? "…" : "Grant System audio access"}
+    </button>
+  </div>
+{/if}
+
 <div class="group">
   <div class="note muted">
     System audio requires <b>Screen capture</b> (always on) and the macOS audio

@@ -23,6 +23,15 @@
   });
 </script>
 
+{#if controller.transcriptionRequestedWhileOff}
+  <div class="lock-callout">
+    <div class="lock-callout-text">
+      Microphone or System audio is set to be transcribed, but Audio transcription is off.
+      Turn it on to transcribe captured speech.
+    </div>
+  </div>
+{/if}
+
 <div class="group">
   <div class="group-title">Provider</div>
   <div class="ctl stack-field">

@@ -17,6 +17,22 @@
   };
 </script>
 
+{#if controller.featureLockReason("mic")}
+  <div class="lock-callout">
+    <div class="lock-callout-text">
+      Microphone access is required before you can record your mic.
+    </div>
+    <button
+      type="button"
+      class="btn accent sm"
+      disabled={controller.requestingPerm === "microphone"}
+      onclick={() => controller.requestPermission("microphone")}
+    >
+      {controller.requestingPerm === "microphone" ? "…" : "Grant Microphone access"}
+    </button>
+  </div>
+{/if}
+
 <div class="group">
   <div class="ctl">
     <div class="ctl-label">

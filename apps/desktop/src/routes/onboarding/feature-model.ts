@@ -108,3 +108,29 @@ export const FEATURES: FeatureMeta[] = [
     required: false,
   },
 ];
+
+// ── Feature dependency relations ───────────────────────────────────────────
+// A feature can only be ENABLED once its prerequisite is met (turning a feature
+// OFF is always allowed — that gating lives in the controller). This module owns
+// the pure relation logic so it stays testable and the controller just supplies
+// the live context.
+export interface FeatureLockContext {
+  micGranted: boolean;
+  systemAudioGranted: boolean;
+  transcriptionEnabled: boolean;
+}
+
+// Why an optional feature can't be enabled yet (unmet prerequisite), or null if
+// it can be enabled. Required features and features with no prerequisite → null.
+export function featureLockReason(id: FeatureId, ctx: FeatureLockContext): string | null {
+  switch (id) {
+    case "mic":
+      return ctx.micGranted ? null : "Needs Microphone permission";
+    case "sysaudio":
+      return ctx.systemAudioGranted ? null : "Needs System audio permission";
+    case "speakers":
+      return ctx.transcriptionEnabled ? null : "Needs Audio transcription on";
+    default:
+      return null;
+  }
+}

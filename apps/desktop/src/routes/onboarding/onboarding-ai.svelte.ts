@@ -108,6 +108,31 @@ export function createOnboardingAiStore() {
 
   // ── Derived view state ────────────────────────────────────────────────────
   const anyCloudConnected = $derived(draftAiProviders.some((p) => isCloudAiProviderKind(p.kind)));
+
+  // Single source of truth for "Ask AI is usable". Ask AI can only run if a
+  // chosen default model can actually resolve: a default model is selected, its
+  // provider exists in the draft list, and that provider is itself configured
+  // (cloud → key saved; openai_compatible → key saved + base URL; local → fine).
+  // `aiConfigMissing` is the PRIMARY computation (returns the short human reason,
+  // or null when ready) and `aiConfigReady` is derived from it, so the boolean
+  // and the explanation can never drift. Both the attention rule
+  // (OnboardingController.featureAttention) and AskAiBody read these — the
+  // condition lives ONLY here.
+  const aiConfigMissing = $derived.by<string | null>(() => {
+    if (draftAiProviders.length === 0) return "Connect a reasoning engine to use Ask AI.";
+    const model = draftAiDefaultModel;
+    if (!model || model.model.trim().length === 0) return "Choose a default model for Ask AI.";
+    const provider = providerById(model.provider);
+    if (!provider) return "Pick a default model from a connected provider.";
+    if (provider.kind === "openai_compatible" && provider.baseUrl.trim().length === 0) {
+      return `Set the base URL for ${aiProviderLabelById(provider.id)}.`;
+    }
+    if (isCloudAiProviderKind(provider.kind) && !aiRuntime.aiProviderKeySavedByProvider[provider.id]) {
+      return `Save the API key for ${aiProviderLabelById(provider.id)}.`;
+    }
+    return null;
+  });
+  const aiConfigReady = $derived(aiConfigMissing === null);
   const aiModelValue = $derived.by(() => {
     const ref = draftAiDefaultModel;
     if (!ref || ref.model.trim().length === 0) return "";
@@ -155,6 +180,8 @@ export function createOnboardingAiStore() {
 
     // Derived view state.
     get anyCloudConnected() { return anyCloudConnected; },
+    get aiConfigReady() { return aiConfigReady; },
+    get aiConfigMissing() { return aiConfigMissing; },
     get aiModelValue() { return aiModelValue; },
     get modelFailureRows() { return modelFailureRows; },
     get modelRetryTargets() { return modelRetryTargets; },

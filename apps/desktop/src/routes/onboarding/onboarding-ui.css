@@ -275,6 +275,32 @@
 .onboarding-shell .row.open .row-attn {
   display: none;
 }
+/* muted "needs prerequisite" hint — collapsed, non-required, OFF rows whose
+   enable is gated. Same scale as .row-attn but MUTED (not warn): a subtle
+   surface chip with a lock glyph and the reason text. Hidden when open (the
+   body's lock-callout explains it). */
+.onboarding-shell .row-lock {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--app-text-muted);
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.onboarding-shell .row-lock .lock-ico {
+  color: var(--app-text-subtle);
+}
+.onboarding-shell .row-lock .lock-ico svg {
+  width: 11px;
+  height: 11px;
+}
+.onboarding-shell .row.open .row-lock {
+  display: none;
+}
 /* required = locked: on-theme lock glyph in the app's SVG style (no orange) */
 .onboarding-shell .lock-ico {
   display: flex;
@@ -551,6 +577,33 @@
   flex-direction: column;
   gap: 8px;
   width: 100%;
+}
+
+/* ===== unmet-prerequisite callout (in-body inline action) =====
+   Rendered at the TOP of a locked feature's body. It is a direct child of
+   `.body-inner` that is NEITHER `.group`/`.ctl`/`.model-card`, so the feature-off
+   dim below leaves it fully visible + interactive — the user can satisfy the
+   prerequisite (grant a permission / flip transcription on) from right here.
+   Accent-toned to read as "action needed". */
+.onboarding-shell .lock-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-accent-border);
+  border-radius: 8px;
+  background: var(--app-accent-bg);
+}
+.onboarding-shell .lock-callout-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--app-text);
+}
+.onboarding-shell .lock-callout .btn {
+  flex: 0 0 auto;
 }
 
 /* ===== disabled body (feature off but expanded) ===== */

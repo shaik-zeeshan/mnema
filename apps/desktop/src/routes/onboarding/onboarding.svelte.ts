@@ -37,8 +37,8 @@ import type {
   VideoBitrateMode,
   VideoBitratePreset,
 } from "$lib/types";
-import type { FeatureId } from "./feature-model";
-import { FEATURES } from "./feature-model";
+import type { FeatureId, FeatureLockContext } from "./feature-model";
+import { FEATURES, featureLockReason as lockReasonFor } from "./feature-model";
 import {
   createOcrModelStore,
   createSpeakerModelStore,
@@ -95,7 +95,8 @@ export class OnboardingController {
   draftActivityMode = $state<ActivityMode>("system_input_only");
   draftMicrophoneActivitySensitivity = $state(50);
   draftSystemAudioActivitySensitivity = $state(50);
-  draftOcrEnabled = $state(true);
+  // Optional feature — starts OFF; the user opts in via its accordion toggle.
+  draftOcrEnabled = $state(false);
   draftOcrProvider = $state<OcrProvider>("apple_vision");
   draftOcrModelId = $state<string | null>(null);
   draftOcrLanguage = $state("");
@@ -104,7 +105,8 @@ export class OnboardingController {
   draftOcrTesseractPageSegmentationMode = $state<OcrTesseractPageSegmentationMode>("single_block");
   draftOcrTesseractPreprocessMode = $state<OcrTesseractPreprocessMode>("grayscale");
   draftOcrTesseractUpscaleFactor = $state(1);
-  draftTranscriptionEnabled = $state(true);
+  // Optional feature — starts OFF; the user opts in via its accordion toggle.
+  draftTranscriptionEnabled = $state(false);
   draftTranscriptionProvider = $state<AudioTranscriptionProvider>("local_whisper");
   draftTranscriptionModelId = $state<string | null>("base");
   draftTranscriptionLanguage = $state("auto");
@@ -125,7 +127,8 @@ export class OnboardingController {
   // field in RecordingSettings; excluded apps are ALWAYS persisted from
   // `draftExcludedApps`. This flag only drives the privacy row's toggle, the
   // dim-when-off of the privacy body, and the footer "features on" count.
-  privacyEnabled = $state(true);
+  // Optional feature — starts OFF; the user opts in via its accordion toggle.
+  privacyEnabled = $state(false);
 
   // ── Backing settings + permissions ───────────────────────────────────────
   settings = $state<RecordingSettings | null>(null);
@@ -141,7 +144,32 @@ export class OnboardingController {
   errorMessage = $state<string | null>(null);
 
   // ── Accordion ────────────────────────────────────────────────────────────
-  openId = $state<FeatureId>("screen");
+  // `null` = every row collapsed. Nothing is open at start; opening a row sets
+  // its id, and clicking the already-open row toggles back to `null`.
+  openId = $state<FeatureId | null>(null);
+
+  // ── Phase machine: welcome (first screen) → configure (accordion) → done (finale)
+  phase = $state<"welcome" | "configure" | "done">("welcome");
+  applyingRecommended = $state(false);
+
+  beginSetup(): void { this.phase = "configure"; }
+  backToWelcome(): void { this.phase = "welcome"; }
+  reviewAndFinish(): void { this.phase = "done"; }
+  backToConfigure(): void { this.phase = "configure"; }
+
+  // One-tap recommended defaults. DRAFT-ONLY (the redesign's invariant is "save
+  // only on finish" — do NOT call any Tauri save command here). Mirrors the old
+  // welcome "Use recommended setup" intent without the mid-flow server writes.
+  applyRecommendedSetup(): void {
+    this.draftCaptureScreen = true;
+    this.draftOcrEnabled = true;
+    this.chooseOcrProvider("apple_vision");
+    this.draftTranscriptionEnabled = true;
+    this.chooseTranscriptionProvider("local_whisper");
+    this.draftTranscriptionModelId = "base";
+    this.phase = "configure";
+    this.openId = "permissions";
+  }
 
   // ── Subsystems (delegated; surfaced flat below) ──────────────────────────
   private readonly ocrStore = createOcrModelStore({
@@ -379,8 +407,26 @@ export class OnboardingController {
   }
 
   // ── Accordion + per-feature enable/attention ─────────────────────────────
+  // Toggle behavior: clicking a collapsed row opens it (and collapses whatever
+  // was open — one-open-at-a-time); clicking the already-open row collapses it.
   setOpen(id: FeatureId): void {
-    this.openId = id;
+    this.openId = this.openId === id ? null : id;
+  }
+
+  // Every OPTIONAL feature defaults OFF for a fresh onboarding. Called once after
+  // the initial `syncDrafts` (which is a verbatim settings round-trip and would
+  // otherwise inherit the default RecordingSettings' OCR/transcription = on).
+  // Required features (permissions/screen/storage) have no toggle and are left
+  // alone. Cascades that hang off these toggles are reset here too.
+  resetOptionalFeaturesOff(): void {
+    this.draftCaptureMicrophone = false;
+    this.draftCaptureSystemAudio = false;
+    this.draftOcrEnabled = false;
+    this.draftTranscriptionEnabled = false;
+    this.draftSpeakerSeparateSpeakers = false;
+    this.draftSpeakerRecognizeSavedPeople = false;
+    this.privacyEnabled = false;
+    this.draftAskAiEnabled = false;
   }
 
   isEnabled(id: FeatureId): boolean {
@@ -413,13 +459,14 @@ export class OnboardingController {
       case "storage":
         return; // required — no-op
       case "mic":
+        // Recording the mic needs Microphone permission — gate the enable only.
+        if (!this.draftCaptureMicrophone && this.featureLockReason("mic")) return;
         this.draftCaptureMicrophone = !this.draftCaptureMicrophone;
         return;
       case "sysaudio":
-        // System audio requires screen capture. Screen is required-on in this
-        // flow, so the legacy coupling (screen off → sys audio off) is inert;
-        // we still gate enabling on screen for parity.
-        if (!this.draftCaptureSystemAudio && !this.draftCaptureScreen) return;
+        // Capturing system audio needs System audio permission — gate the
+        // enable only. (Screen capture is required-on in this flow.)
+        if (!this.draftCaptureSystemAudio && this.featureLockReason("sysaudio")) return;
         this.draftCaptureSystemAudio = !this.draftCaptureSystemAudio;
         return;
       case "ocr":
@@ -427,8 +474,15 @@ export class OnboardingController {
         return;
       case "transcribe":
         this.draftTranscriptionEnabled = !this.draftTranscriptionEnabled;
+        // Speaker separation needs a transcript to split — cascade off.
+        if (!this.draftTranscriptionEnabled) {
+          this.draftSpeakerSeparateSpeakers = false;
+          this.draftSpeakerRecognizeSavedPeople = false;
+        }
         return;
       case "speakers":
+        // Separating speakers needs Audio transcription on — gate the enable.
+        if (!this.draftSpeakerSeparateSpeakers && this.featureLockReason("speakers")) return;
         this.draftSpeakerSeparateSpeakers = !this.draftSpeakerSeparateSpeakers;
         if (!this.draftSpeakerSeparateSpeakers) this.draftSpeakerRecognizeSavedPeople = false;
         return;
@@ -460,6 +514,18 @@ export class OnboardingController {
     return !model.available;
   }
 
+  // An audio source is actively set to be transcribed (source on + its per-source
+  // "transcribe" toggle on) while the master Audio transcription feature is OFF —
+  // the request silently never runs, so the transcribe row needs attention.
+  // Public so TranscriptionBody can explain WHY in its callout; this is the single
+  // source for both the attention flag and the body copy.
+  transcriptionRequestedWhileOff = $derived.by(() => {
+    if (this.draftTranscriptionEnabled) return false;
+    const micWants = this.draftCaptureMicrophone && this.draftTranscriptionMicrophoneEnabled;
+    const sysWants = this.draftCaptureSystemAudio && this.draftTranscriptionSystemAudioEnabled;
+    return micWants || sysWants;
+  });
+
   private speakerModelNeedsAttention(): boolean {
     if (!this.draftSpeakerSeparateSpeakers) return false;
     const model = this.selectedSpeakerModel;
@@ -479,15 +545,39 @@ export class OnboardingController {
       case "ocr":
         return this.ocrModelNeedsAttention();
       case "transcribe":
-        return this.transcriptionModelNeedsAttention();
+        return this.transcriptionModelNeedsAttention() || this.transcriptionRequestedWhileOff;
       case "speakers":
         return this.speakerModelNeedsAttention();
+      // Ask AI on but no usable reasoning engine (no provider, no default model,
+      // or the default model's provider isn't configured). Readiness lives in the
+      // onboarding-ai store; reading the derived here keeps `attentionCount`
+      // tracking the provider/model/key state it depends on.
+      case "askai":
+        return this.draftAskAiEnabled && !this.ai.aiConfigReady;
       case "screen":
       case "storage":
       case "privacy":
-      case "askai":
         return false;
     }
+  }
+
+  // ── Feature dependency relations ─────────────────────────────────────────
+  private lockContext(): FeatureLockContext {
+    return {
+      micGranted: this.permissions?.microphone === "granted",
+      systemAudioGranted: this.permissions?.systemAudio === "granted",
+      transcriptionEnabled: this.draftTranscriptionEnabled,
+    };
+  }
+  // Why feature `id` can't be enabled yet, or null. Drives the row lock hint +
+  // the disabled toggle + the in-body inline action.
+  featureLockReason(id: FeatureId): string | null {
+    return lockReasonFor(id, this.lockContext());
+  }
+  // The toggle is disabled only when the feature is OFF and its prerequisite is
+  // unmet — turning a feature OFF is always allowed.
+  featureToggleDisabled(id: FeatureId): boolean {
+    return !this.isEnabled(id) && this.featureLockReason(id) !== null;
   }
 
   // ── Footer / CTA deriveds ────────────────────────────────────────────────
@@ -509,8 +599,21 @@ export class OnboardingController {
         && !this.selectedSpeakerDownloadRunning)),
   );
 
+  // Finishing requires model readiness AND zero outstanding attention items
+  // (permissions, undownloaded models, etc.). This is what blocks the finale CTA.
+  canComplete = $derived(this.canFinish && this.attentionCount === 0);
+
+  // ── Finale summary helpers ───────────────────────────────────────────────
+  selectedSourceCount = $derived(
+    Number(this.draftCaptureScreen) + Number(this.draftCaptureMicrophone) + Number(this.draftCaptureSystemAudio),
+  );
+  // Human names of every feature currently flagged for attention (for the finale list).
+  attentionItems = $derived(
+    FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name),
+  );
+
   ctaLabel = $derived("Start recording");
-  ctaDisabled = $derived(this.loading || this.saving || this.completing || !this.canFinish);
+  ctaDisabled = $derived(this.loading || this.saving || this.completing || !this.canComplete);
 
   // ── Settings round-trip (VERBATIM from the legacy page) ──────────────────
   syncDrafts(next: RecordingSettings): void {
@@ -730,6 +833,12 @@ export class OnboardingController {
       this.settings = loadedSettings;
       this.permissions = permissionResponse.permissions as Record<PermissionKey, PermissionValue>;
       this.syncDrafts(loadedSettings);
+      // Fresh onboarding starts every OPTIONAL feature OFF — the user opts in
+      // per-row. `syncDrafts` is a verbatim settings round-trip (and the default
+      // RecordingSettings ships OCR/transcription enabled), so we force the
+      // optional toggles off after the initial load. Required features (screen,
+      // storage, permissions) are untouched.
+      this.resetOptionalFeaturesOff();
       this.ai.init();
       void this.appPrivacyExclusion.loadPrivacyAppCandidates();
       void this.appPrivacyExclusion.loadSensitiveCaptureRecommendations();
@@ -799,7 +908,7 @@ export class OnboardingController {
   }
 
   async finish(startRecording: boolean): Promise<void> {
-    if (this.settings === null || !this.canFinish) return;
+    if (this.settings === null || !this.canComplete) return;
     this.completing = true;
     this.starting = startRecording;
     this.errorMessage = null;

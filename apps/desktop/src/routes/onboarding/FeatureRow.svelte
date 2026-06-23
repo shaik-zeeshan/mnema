@@ -17,6 +17,10 @@
     enabled: boolean;
     open: boolean;
     attention?: boolean;
+    // The toggle is disabled (can't be turned ON) until a prerequisite is met;
+    // `lockReason` is the human "why" shown in the collapsed status block.
+    toggleDisabled?: boolean;
+    lockReason?: string | null;
     onToggle: () => void;
     onExpand: () => void;
     body?: Snippet;
@@ -31,6 +35,8 @@
     enabled,
     open,
     attention = false,
+    toggleDisabled = false,
+    lockReason = null,
     onToggle,
     onExpand,
     body,
@@ -40,19 +46,20 @@
   // (required rows are always armed; optional rows when enabled).
   let armed = $derived(required || enabled);
 
-  // Header click: expand only when collapsed, and never when the click landed on
-  // the toggle. The shared Switch renders `.switch-track` (bits-ui), so a click
-  // inside it is isolated here — guarantees toggle and expand stay independent
-  // even though the Switch sits inside the header.
+  // Header click: toggle this row open/closed, and never react when the click
+  // landed on the toggle. The shared Switch renders `.switch-track` (bits-ui),
+  // so a click inside it is isolated here — guarantees the enable toggle and the
+  // expand/collapse stay independent even though the Switch sits in the header.
+  // `onExpand` routes to the controller, which toggles (re-click collapses).
   function onHeadClick(event: MouseEvent) {
     const target = event.target as Element | null;
     if (target?.closest(".switch-track")) return;
-    if (open) return; // an already-open header is not a collapse target
     onExpand();
   }
 
   function onSwitchChange() {
     if (required) return; // locked — never toggles
+    if (toggleDisabled) return; // prerequisite unmet — enabling is gated
     onToggle();
   }
 </script>
@@ -95,6 +102,10 @@
           <span class="row-attn"
             ><span class="attn-dot"></span>Needs setup</span
           >
+        {:else if !enabled && lockReason}
+          <span class="row-lock"
+            ><span class="lock-ico"><Icon name="lock" /></span>{lockReason}</span
+          >
         {/if}
       </span>
     {/if}
@@ -103,7 +114,7 @@
       {#if required}
         <Switch checked={true} disabled={true} />
       {:else}
-        <Switch checked={enabled} onCheckedChange={onSwitchChange} />
+        <Switch checked={enabled} disabled={toggleDisabled} onCheckedChange={onSwitchChange} />
       {/if}
     </div>
   </button>
