@@ -48,6 +48,17 @@ import { createAudioStore } from "./audio.svelte";
 import { createKeyboardStore } from "./keyboard.svelte";
 import { createProcessingModelsView } from "./controller-processing.svelte";
 import { semanticSearchTierLabel } from "./models-format";
+import {
+  AI_PROVIDER_KINDS,
+  CLOUD_AI_PROVIDER_KINDS,
+  AI_LOCAL_DEFAULT_ENDPOINTS,
+  isCloudAiProviderKind,
+  aiProviderKindLabel,
+  aiProviderKindDescription,
+  baseUrlHost,
+  aiProviderInstanceLabel,
+  newAiProviderId,
+} from "./ai-providers";
 import type {
   CaptureSupport,
   OcrProvider,
@@ -84,23 +95,6 @@ interface SemanticSearchPickedView {
   available: boolean;
   approxDownloadBytes: number | null;
 }
-
-const AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
-  "anthropic",
-  "openai",
-  "openai_compatible",
-  "ollama",
-  "llamafile",
-];
-const CLOUD_AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
-  "anthropic",
-  "openai",
-  "openai_compatible",
-];
-const AI_LOCAL_DEFAULT_ENDPOINTS: Partial<Record<AiProviderKind, string>> = {
-  ollama: "http://localhost:11434",
-  llamafile: "http://localhost:8080",
-};
 
 export class SettingsController {
   // Re-exported so markup/components can reference these constants verbatim.
@@ -207,30 +201,17 @@ export class SettingsController {
     this.rec.draftCaptureScreen && this.resolutionSupportPending && this.rec.draftResolutionMode !== "original",
   );
 
-  // ─── AI provider helpers ────────────────────────────────────────────────────
+  // ─── AI provider helpers (delegate to the shared pure module) ───────────────
   isCloudAiProviderKind(kind: string): boolean {
-    return (CLOUD_AI_PROVIDER_KINDS as readonly string[]).includes(kind);
+    return isCloudAiProviderKind(kind);
   }
 
   aiProviderKindLabel(kind: string): string {
-    switch (kind) {
-      case "anthropic": return "Anthropic";
-      case "openai": return "OpenAI";
-      case "openai_compatible": return "OpenAI-compatible";
-      case "ollama": return "Ollama";
-      case "llamafile": return "Llamafile";
-      default: return kind;
-    }
+    return aiProviderKindLabel(kind);
   }
 
   aiProviderKindDescription(kind: AiProviderKind): string {
-    switch (kind) {
-      case "anthropic": return "Claude models — your own API key";
-      case "openai": return "GPT models — your own API key";
-      case "openai_compatible": return "Fireworks, OpenRouter, Together — custom base URL + key";
-      case "ollama": return "Local runtime, default endpoint http://localhost:11434";
-      case "llamafile": return "Local OpenAI-compatible server, default http://localhost:8080";
-    }
+    return aiProviderKindDescription(kind);
   }
 
   connectedAiProviderIds = $derived(this.rec.draftAiProviders.map((p) => p.id));
@@ -249,24 +230,10 @@ export class SettingsController {
     return kind !== undefined && this.isCloudAiProviderKind(kind);
   }
   baseUrlHost(baseUrl: string): string {
-    const trimmed = baseUrl.trim();
-    if (!trimmed) return "";
-    try {
-      return new URL(trimmed).host || trimmed;
-    } catch {
-      return trimmed;
-    }
+    return baseUrlHost(baseUrl);
   }
   aiProviderInstanceLabel(provider: AiProviderConfig): string {
-    const label = provider.label.trim();
-    if (label) return label;
-    const kindLabel = this.aiProviderKindLabel(provider.kind);
-    const host = this.baseUrlHost(provider.baseUrl);
-    if (host) return `${kindLabel} · ${host}`;
-    const suffix = provider.id.startsWith(`${provider.kind}-`)
-      ? provider.id.slice(provider.kind.length + 1)
-      : "";
-    return suffix ? `${kindLabel} (${suffix})` : kindLabel;
+    return aiProviderInstanceLabel(provider);
   }
   aiProviderLabelById(id: string): string {
     const provider = this.aiProviderById(id);
@@ -274,14 +241,7 @@ export class SettingsController {
   }
 
   newAiProviderId(kind: AiProviderKind): string {
-    if (!this.connectedAiProviderIds.includes(kind)) return kind;
-    let suffix = 2;
-    let candidate = `${kind}-${suffix}`;
-    while (this.connectedAiProviderIds.includes(candidate)) {
-      suffix += 1;
-      candidate = `${kind}-${suffix}`;
-    }
-    return candidate;
+    return newAiProviderId(kind, this.connectedAiProviderIds);
   }
 
   addAiProvider(kind: AiProviderKind): void {

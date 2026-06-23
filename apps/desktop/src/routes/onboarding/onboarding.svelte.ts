@@ -44,6 +44,7 @@ import {
   createSpeakerModelStore,
   createTranscriptionModelStore,
 } from "./onboarding-models.svelte";
+import { createOnboardingAiStore } from "./onboarding-ai.svelte";
 import {
   AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
   DEFAULT_SPEAKER_MODEL_ID,
@@ -155,6 +156,11 @@ export class OnboardingController {
     speakerProvider: () => this.draftSpeakerProvider,
     speakerModelId: () => this.draftSpeakerModelId,
   });
+
+  // Reasoning-Engine (Ask AI) provider setup. Public so AskAiBody can render the
+  // inline provider list / key fields / default-model picker. Its drafts are
+  // committed as the `aiRuntime` domain in buildSettingsRequest().
+  readonly ai = createOnboardingAiStore();
 
   // The privacy controller updates settings via `onSettingsUpdated`, which
   // re-syncs drafts (so `draftExcludedApps` re-derives from the server). Mirrors
@@ -593,6 +599,9 @@ export class OnboardingController {
     this.draftSpeakerTimeoutMinutes = Math.round((next.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
     this.draftExcludedApps = [...(next.privacy?.excludedApps ?? [])];
     this.draftAskAiEnabled = next.access?.askAiEnabled ?? false;
+    // Re-seed the inline Reasoning-Engine setup from the canonical aiRuntime
+    // domain (the whole-settings round-trip flows back through here after save).
+    this.ai.syncFromSettings(next.aiRuntime?.providers ?? [], next.aiRuntime?.defaultModel ?? null);
   }
 
   buildSettingsRequest(): RecordingSettings {
@@ -660,7 +669,24 @@ export class OnboardingController {
         // `access` is sent whole and is authoritative, so we must round-trip the
         // Ask AI model selection (chosen on the Settings page); omitting it would
         // reset the selection back to the PI runtime default on every full save.
+        // Left null so Ask AI inherits the global default model chosen below.
         askAiModel: base.access?.askAiModel ?? null,
+      },
+      // Reasoning Engine config connected inline during onboarding (AskAiBody).
+      // The master AI switch follows the Ask AI feature toggle — onboarding only
+      // surfaces Ask AI, so enabling it opts into AI features. The per-provider
+      // key is keychain-only (saved eagerly) and never travels in this payload.
+      aiRuntime: {
+        enabled: this.draftAskAiEnabled,
+        providers: this.ai.draftAiProviders.map((p) => ({
+          id: p.id,
+          kind: p.kind,
+          label: p.label,
+          baseUrl: p.baseUrl,
+        })),
+        defaultModel: this.ai.draftAiDefaultModel
+          ? { provider: this.ai.draftAiDefaultModel.provider, model: this.ai.draftAiDefaultModel.model }
+          : null,
       },
     };
   }
@@ -704,6 +730,7 @@ export class OnboardingController {
       this.settings = loadedSettings;
       this.permissions = permissionResponse.permissions as Record<PermissionKey, PermissionValue>;
       this.syncDrafts(loadedSettings);
+      this.ai.init();
       void this.appPrivacyExclusion.loadPrivacyAppCandidates();
       void this.appPrivacyExclusion.loadSensitiveCaptureRecommendations();
     } catch (err) {
