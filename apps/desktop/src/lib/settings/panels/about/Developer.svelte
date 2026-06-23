@@ -32,7 +32,7 @@
 <SettingGroup id="settings-section-developer" title="Developer &amp; Logs">
   <SettingRow
     label="Enable developer options"
-    description="Reveal the Debug surface in the navigation bar (raw session, system probe, idle policy, app-infra and background-job tools). When disabled, the Debug page is hidden and visiting it redirects to the Timeline. Changes auto-save and apply immediately."
+    description="Reveal the Debug surface in the navigation bar (raw session, system probe, idle policy, app-infra and background-job tools) and record verbose Debug-level entries in the General Application Log. When disabled, the Debug page is hidden, visiting it redirects to the Timeline, and the General Application Log keeps only high-level events and errors. Development builds always log verbosely. Changes auto-save and apply immediately."
   >
     {#snippet control()}
       <Switch bind:checked={rec.draftDeveloperOptionsEnabled} />

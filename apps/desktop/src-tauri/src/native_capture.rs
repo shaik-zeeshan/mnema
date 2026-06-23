@@ -2334,6 +2334,7 @@ pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
     let settings_state = app_handle.state::<RecordingSettingsState>();
     let loaded = initialize_recording_settings_state_from_disk(app_handle, settings_state.inner());
 
+    debug_log::set_app_debug_logging_enabled(loaded.settings.developer_options_enabled);
     debug_log::configure(
         app_handle,
         loaded.settings.native_capture_debug_logging_enabled,
@@ -2391,6 +2392,7 @@ fn finish_recording_settings_update(
         }
     }
 
+    debug_log::set_app_debug_logging_enabled(settings.developer_options_enabled);
     debug_log::configure(app_handle, settings.native_capture_debug_logging_enabled);
 
     if !previous_settings.native_capture_debug_logging_enabled

@@ -1284,6 +1284,168 @@ mod tests {
         }
     }
 
+    /// **Download-size drift guard (offline).** Each descriptor's
+    /// `approx_download_bytes` must cover the real on-disk footprint of exactly the
+    /// files the installer fetches — the union in `expected_layout.required_files`.
+    /// The value feeds two surfaces: the Settings disk-cost disclosure AND the
+    /// download disk-space preflight (`download_disk_preflight`, which reserves
+    /// `approx_download_bytes` + 10% headroom). An UNDERcount silently passes
+    /// preflight on a near-full volume then fills it mid-write (the F19 failure this
+    /// guards against — nomic's old 250 MB was 0.46× its real 548 MB); a gross
+    /// OVERcount scares the user off a download far smaller than advertised.
+    ///
+    /// The reference sizes live in `tests/fixtures/{model_id}/required_file_sizes.json`,
+    /// captured from the model's pinned `hf_revision` (an immutable commit SHA, so the
+    /// sizes can never drift upstream). The ignored
+    /// [`required_file_size_fixtures_match_huggingface`] test revalidates those
+    /// fixtures against live HuggingFace — run it when bumping a revision.
+    #[test]
+    fn approx_download_bytes_covers_required_files() {
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures");
+
+        for descriptor in catalog() {
+            let sizes_path = fixtures_dir
+                .join(&descriptor.model_id)
+                .join("required_file_sizes.json");
+            let bytes = fs::read(&sizes_path).unwrap_or_else(|error| {
+                panic!("read size fixture {}: {error}", sizes_path.display())
+            });
+            let sizes: std::collections::BTreeMap<String, u64> =
+                serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                    panic!("parse size fixture {}: {error}", sizes_path.display())
+                });
+
+            // The fixture must price exactly the files the installer downloads: every
+            // required file present (a layout change with no fixture update fails here)
+            // and no extras (a stale entry would inflate the reference total).
+            let required: std::collections::BTreeSet<&String> =
+                descriptor.expected_layout.required_files.iter().collect();
+            let fixtured: std::collections::BTreeSet<&String> = sizes.keys().collect();
+            assert_eq!(
+                required, fixtured,
+                "{}: required_file_sizes.json keys must equal expected_layout.required_files",
+                descriptor.model_id
+            );
+
+            let real_total: u64 = descriptor
+                .expected_layout
+                .required_files
+                .iter()
+                .map(|file| sizes[file])
+                .sum();
+
+            // Lower bound: never undercount. The disk preflight reserves only this many
+            // bytes (+10%), so an undercount risks filling the volume mid-write.
+            assert!(
+                descriptor.approx_download_bytes >= real_total,
+                "{}: approx_download_bytes ({}) undercounts the real required-file total ({}) — \
+                 this weakens the download disk-space preflight",
+                descriptor.model_id,
+                descriptor.approx_download_bytes,
+                real_total
+            );
+            // Upper bound: stay within 5% of the truth. The value is a user-facing
+            // disclosure, not a fudge factor, so it must not balloon past reality.
+            let ceiling = real_total + real_total / 20;
+            assert!(
+                descriptor.approx_download_bytes <= ceiling,
+                "{}: approx_download_bytes ({}) overcounts the real required-file total ({}) by >5%",
+                descriptor.model_id,
+                descriptor.approx_download_bytes,
+                real_total
+            );
+        }
+    }
+
+    /// **Fixture revalidation (network, ignored).** The `required_file_sizes.json`
+    /// fixtures are hand-captured from each model's pinned `hf_revision`. This test
+    /// fetches the real HuggingFace file tree at that exact revision and asserts every
+    /// fixtured size still matches — the regeneration guard to run when bumping a
+    /// revision (the only time the sizes can change, since a revision is an immutable
+    /// commit SHA):
+    ///
+    /// ```text
+    /// cargo test -p semantic-search -- --ignored required_file_size_fixtures_match_huggingface
+    /// ```
+    ///
+    /// Ignored by default: it needs the network and the `curl` binary, so it never
+    /// runs in offline/CI builds. It shells out to `curl` (always present on the
+    /// macOS/Linux dev hosts) rather than adding an HTTP dependency for one ignored test.
+    #[test]
+    #[ignore = "network: fetches the HuggingFace file tree; run manually when bumping a revision"]
+    fn required_file_size_fixtures_match_huggingface() {
+        use serde_json::Value;
+        use std::process::Command;
+
+        let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures");
+
+        for descriptor in catalog() {
+            // The recursive tree API returns one entry per file with its real size. LFS
+            // weights carry the true size under `lfs.size`; the bare `size` is only the
+            // pointer-file length, so prefer `lfs.size` when present.
+            let url = format!(
+                "https://huggingface.co/api/models/{}/tree/{}?recursive=true",
+                descriptor.hf_repo, descriptor.hf_revision
+            );
+            let output = Command::new("curl")
+                .args(["-sSfL", &url])
+                .output()
+                .unwrap_or_else(|error| panic!("{}: spawn curl: {error}", descriptor.model_id));
+            assert!(
+                output.status.success(),
+                "{}: curl {url} failed: {}",
+                descriptor.model_id,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let tree: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+                panic!("{}: parse HF tree json: {error}", descriptor.model_id)
+            });
+            let live: std::collections::BTreeMap<String, u64> = tree
+                .iter()
+                .filter_map(|entry| {
+                    let path = entry.get("path")?.as_str()?.to_string();
+                    let size = entry
+                        .get("lfs")
+                        .and_then(|lfs| lfs.get("size"))
+                        .or_else(|| entry.get("size"))
+                        .and_then(Value::as_u64)?;
+                    Some((path, size))
+                })
+                .collect();
+
+            let sizes_path = fixtures_dir
+                .join(&descriptor.model_id)
+                .join("required_file_sizes.json");
+            let bytes = fs::read(&sizes_path).unwrap_or_else(|error| {
+                panic!("read size fixture {}: {error}", sizes_path.display())
+            });
+            let fixtured: std::collections::BTreeMap<String, u64> =
+                serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                    panic!("parse size fixture {}: {error}", sizes_path.display())
+                });
+
+            for (path, fixture_size) in &fixtured {
+                let live_size = live.get(path).unwrap_or_else(|| {
+                    panic!(
+                        "{}: {path} (in the size fixture) is absent from the HF tree at revision {}",
+                        descriptor.model_id, descriptor.hf_revision
+                    )
+                });
+                assert_eq!(
+                    fixture_size, live_size,
+                    "{}: {path} size fixture ({fixture_size}) drifted from live HuggingFace \
+                     ({live_size}) at revision {} — regenerate required_file_sizes.json and \
+                     re-check approx_download_bytes",
+                    descriptor.model_id, descriptor.hf_revision
+                );
+            }
+        }
+    }
+
     /// **Cross-model contamination guard.** Every catalog model MUST have a
     /// distinct vector dimension. This is a load-bearing invariant for the
     /// `app-infra` vector store: during a model switch, `store_vector_if_dimension_matches`
