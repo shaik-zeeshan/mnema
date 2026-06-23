@@ -1,0 +1,1266 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>mnema · onboarding · stack b · summaries</title>
+<style>
+  :root {
+    --app-bg:#0c0c0e; --app-fg:#e2e2e8; --app-fg-muted:#8a8aaa;
+    --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#7a7a9a; --app-text-subtle:#44445a; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15; --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-strong:#ff4455; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  }
+  [data-theme="light"] {
+    --app-bg:#f6f6f4; --app-fg:#14141a; --app-fg-muted:#5a5a6a;
+    --app-surface:#ffffff; --app-surface-subtle:#f6f6f4; --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#eeeeec;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+    --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a; --app-text-subtle:#7a7a86; --app-text-faint:#a4a4a0;
+    --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec; --app-accent-border:#9bd3b4; --app-accent-glow:rgba(31,122,74,0.16);
+    --app-warn:#9a5a12; --app-warn-bg:#fbf0dc; --app-warn-border:#d9b87a;
+    --app-danger:#c43a48; --app-danger-strong:#a82230; --app-danger-bg:#fbe6e8; --app-danger-border:#e0a8ae;
+    --app-info:#2b78c5; --app-info-bg:#e4effb; --app-info-border:#a8c8ec;
+  }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body {
+    height:100%;
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"Cascadia Code","Fira Code",monospace;
+    background:var(--app-bg);
+    color:var(--app-fg);
+    -webkit-font-smoothing:antialiased;
+  }
+  body {
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; padding:24px;
+    background:
+      radial-gradient(820px 380px at 50% -6%, var(--app-accent-glow), transparent 62%),
+      var(--app-bg);
+  }
+
+  /* ===== window chrome ===== */
+  .window {
+    width:940px; height:792px;
+    max-width:100%; max-height:96vh;
+    display:flex; flex-direction:column;
+    background:var(--app-surface);
+    border:1px solid var(--app-border);
+    border-radius:10px;
+    overflow:hidden;
+    position:relative;
+  }
+  .titlebar {
+    height:38px; flex:0 0 38px;
+    display:flex; align-items:center;
+    padding:0 14px;
+    border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    position:relative; user-select:none;
+  }
+  .traffic { display:flex; gap:8px; }
+  .traffic span { width:11px; height:11px; border-radius:999px; background:var(--app-text-faint); }
+  .wordmark {
+    position:absolute; left:50%; transform:translateX(-50%);
+    font-size:11px; letter-spacing:0.04em; color:var(--app-text-muted);
+  }
+  .theme-toggle {
+    position:absolute; right:12px; top:50%; transform:translateY(-50%);
+    display:flex; align-items:center; gap:6px;
+    font-size:10.5px; color:var(--app-text-muted);
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border);
+    border-radius:6px; padding:4px 8px; cursor:pointer;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  .theme-toggle:hover { border-color:var(--app-border-hover); color:var(--app-text); }
+
+  /* ===== top welcome header ===== */
+  .topbar {
+    flex:0 0 auto;
+    padding:18px 28px 16px;
+    border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    display:flex; align-items:center; gap:18px;
+    position:relative; z-index:4;
+  }
+  .topbar-left { flex:1 1 auto; min-width:0; }
+  .topbar-eyebrow {
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-text-subtle); margin-bottom:6px;
+  }
+  .topbar-title { font-size:18px; font-weight:700; letter-spacing:-0.012em; color:var(--app-text-strong); }
+  .topbar-sub { font-size:11px; line-height:1.4; color:var(--app-text-muted); margin-top:5px; }
+  .ready-hint {
+    flex:0 0 auto; text-align:right;
+    display:flex; flex-direction:column; align-items:flex-end; gap:6px;
+  }
+  .ready-count { font-size:12px; color:var(--app-text-muted); }
+  .ready-count b { color:var(--app-accent); font-size:13.5px; font-weight:700; }
+  .ready-track {
+    width:140px; height:5px; border-radius:999px;
+    background:var(--app-surface-active); border:1px solid var(--app-border); overflow:hidden;
+  }
+  .ready-fill {
+    height:100%; width:0%;
+    background:linear-gradient(90deg, var(--app-accent-strong), var(--app-accent));
+    box-shadow:0 0 8px var(--app-accent-glow);
+    transition:width .3s ease;
+  }
+
+  /* ===== scrolling content (rows stack) ===== */
+  .content {
+    flex:1 1 auto; min-height:0;
+    overflow-y:auto;
+    padding:20px 28px 12px;
+    position:relative;
+    background-image:radial-gradient(circle, color-mix(in srgb,var(--app-border-strong) 70%,transparent) 0.8px, transparent 0.8px);
+    background-size:22px 22px;
+  }
+  .content::-webkit-scrollbar { width:10px; }
+  .content::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:999px; border:3px solid var(--app-surface); }
+  .content::-webkit-scrollbar-track { background:transparent; }
+
+  .stack { display:flex; flex-direction:column; gap:14px; }
+
+  /* ===== row (accordion item) ===== */
+  .row {
+    border:1px solid var(--app-border);
+    border-radius:12px;
+    background:var(--app-surface-raised);
+    overflow:hidden;
+    transition:border-color .15s ease, background .15s ease;
+    position:relative;
+  }
+  .row.expanded {
+    border-color:var(--app-border-strong);
+    background:var(--app-surface);
+  }
+  .row.expanded::before {
+    content:""; position:absolute; top:0; left:14px; right:14px; height:1px; z-index:2;
+    background:linear-gradient(90deg,transparent, color-mix(in srgb,var(--app-accent) 12%,transparent) 22%, color-mix(in srgb,var(--app-accent) 50%,transparent) 50%, transparent);
+  }
+  .row.disabled-feat:not(.expanded) { opacity:0.72; }
+
+  /* ---- collapsed header (always present) ---- */
+  .row-head {
+    display:flex; align-items:center; gap:14px;
+    min-height:58px; padding:0 16px;
+    cursor:pointer; user-select:none;
+  }
+  .row.expanded .row-head {
+    min-height:auto; align-items:flex-start;
+    padding:18px 18px 6px;
+    cursor:default;
+  }
+  .head-idx {
+    flex:0 0 auto;
+    width:22px; height:22px; border-radius:6px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:10.5px; color:var(--app-text-subtle);
+    border:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+  }
+  .row.expanded .head-idx { margin-top:2px; }
+  .head-main { flex:1 1 auto; min-width:0; }
+  .head-name { font-size:13.5px; font-weight:550; color:var(--app-text-strong); display:flex; align-items:center; gap:9px; }
+  .row.expanded .head-name { font-size:19px; font-weight:700; letter-spacing:-0.012em; }
+  .head-eyebrow {
+    display:none;
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-text-subtle); margin-bottom:6px;
+  }
+  .row.expanded .head-eyebrow { display:block; }
+  .head-sub { display:none; font-size:11px; line-height:1.4; color:var(--app-text-muted); margin-top:6px; max-width:560px; }
+  .row.expanded .head-sub { display:block; }
+
+  /* collapsed live summary (right aligned, hidden when expanded) */
+  .head-summary {
+    flex:0 0 auto; max-width:340px;
+    font-size:11px; color:var(--app-text-muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    text-align:right;
+  }
+  .head-summary b { color:var(--app-text); font-weight:550; }
+  .head-summary .off { color:var(--app-text-subtle); }
+  .row.expanded .head-summary { display:none; }
+
+  /* required badge */
+  .req-badge {
+    font-size:8.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    color:var(--app-text-subtle); border:1px solid var(--app-border);
+    border-radius:3px; padding:2px 5px; background:var(--app-surface-subtle);
+  }
+
+  /* status chip (expanded only, left of header) */
+  .chip {
+    display:none; align-items:center; gap:5px;
+    font-size:9px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    border-radius:3px; padding:3px 7px; white-space:nowrap;
+  }
+  .row.expanded .chip { display:inline-flex; }
+  .chip .dot { width:5px; height:5px; border-radius:999px; background:currentColor; }
+  .chip.armed { color:var(--app-accent); background:var(--app-accent-bg); border:1px solid var(--app-accent-border); }
+  .chip.off { color:var(--app-text-subtle); background:var(--app-surface-subtle); border:1px solid var(--app-border); }
+  .chip.attn { color:var(--app-warn); background:var(--app-warn-bg); border:1px solid var(--app-warn-border); }
+  .chip.dl { color:var(--app-info); background:var(--app-info-bg); border:1px solid var(--app-info-border); }
+
+  /* ---- switch ---- */
+  .switch { flex:0 0 auto; position:relative; }
+  .row.expanded .switch { margin-top:2px; }
+  .switch input { position:absolute; opacity:0; width:0; height:0; }
+  .switch .track {
+    display:block; width:36px; height:20px; border-radius:999px;
+    border:1px solid var(--app-border-strong); background:transparent;
+    cursor:pointer; transition:background .18s ease, border-color .18s ease;
+    position:relative;
+  }
+  .switch .thumb {
+    position:absolute; top:2px; left:2px;
+    width:14px; height:14px; border-radius:999px;
+    background:var(--app-text-subtle);
+    transition:transform .18s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .switch input:checked + .track { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+  .switch input:checked + .track .thumb {
+    transform:translateX(16px); background:var(--app-accent);
+    box-shadow:0 0 8px var(--app-accent-glow);
+  }
+  .switch input:focus-visible + .track { box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .switch.locked .track { cursor:not-allowed; opacity:0.8; }
+  .switch .lock {
+    position:absolute; right:-15px; top:50%; transform:translateY(-50%);
+    font-size:9px; color:var(--app-text-subtle);
+  }
+
+  /* ---- expandable body ---- */
+  .row-body-wrap {
+    display:grid; grid-template-rows:0fr;
+    transition:grid-template-rows .18s ease, opacity .18s ease;
+    opacity:0;
+  }
+  .row.expanded .row-body-wrap { grid-template-rows:1fr; opacity:1; }
+  .row-body-inner { overflow:hidden; min-height:0; }
+  .row-body { padding:8px 18px 20px 18px; }
+
+  /* ===== controls within body ===== */
+  .group { margin-top:18px; }
+  .group:first-child { margin-top:6px; }
+  .group-title {
+    font-size:10.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    color:var(--app-text-muted); margin-bottom:12px;
+  }
+  .field { margin-bottom:16px; }
+  .field:last-child { margin-bottom:0; }
+  .field-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+  .field-label { font-size:12px; color:var(--app-text); }
+  .field-hint { font-size:10.5px; color:var(--app-text-muted); margin-top:4px; line-height:1.4; }
+
+  /* segmented */
+  .segmented { display:inline-flex; gap:4px; background:var(--app-surface-subtle); border:1px solid var(--app-border); border-radius:8px; padding:3px; flex-wrap:wrap; }
+  .seg {
+    font-size:11.5px; color:var(--app-text-muted);
+    border:none; background:transparent; border-radius:6px;
+    padding:5px 11px; cursor:pointer; transition:background .15s ease, color .15s ease;
+  }
+  .seg:hover { color:var(--app-text); }
+  .seg.active { background:var(--app-accent-bg); color:var(--app-accent); box-shadow:inset 0 0 0 1px var(--app-accent-border); }
+
+  /* slider */
+  .slider-row { display:flex; align-items:center; gap:14px; }
+  input[type=range] {
+    -webkit-appearance:none; appearance:none; height:5px; border-radius:999px;
+    background:var(--app-surface-active); border:1px solid var(--app-border);
+    flex:1 1 auto; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; appearance:none; width:14px; height:14px; border-radius:999px;
+    background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); cursor:pointer;
+    border:none;
+  }
+  .slider-val { flex:0 0 76px; text-align:right; font-size:12px; color:var(--app-accent); }
+
+  /* select / input */
+  select, .text-input {
+    font-family:inherit; font-size:12px; color:var(--app-text);
+    background:var(--app-surface-subtle); border:1px solid var(--app-border);
+    border-radius:8px; padding:7px 10px; outline:none;
+    transition:border-color .15s ease;
+  }
+  select:hover, .text-input:hover { border-color:var(--app-border-hover); }
+  select:focus, .text-input:focus { border-color:var(--app-accent-border); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .text-input { min-width:0; }
+
+  /* button */
+  .btn {
+    font-family:inherit; font-size:12px; font-weight:540; color:var(--app-text);
+    background:var(--app-surface-raised); border:1px solid var(--app-border-strong);
+    border-radius:8px; padding:7px 13px; cursor:pointer;
+    transition:border-color .15s ease, color .15s ease, background .15s ease;
+    white-space:nowrap;
+  }
+  .btn:hover { border-color:var(--app-border-hover); color:var(--app-text-strong); }
+  .btn.accent { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .btn.accent:hover { box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .btn.sm { padding:5px 10px; font-size:11px; }
+  .btn.danger { color:var(--app-danger); border-color:var(--app-danger-border); background:var(--app-danger-bg); }
+
+  /* radio */
+  .radio-group { display:flex; flex-direction:column; gap:9px; }
+  .radio {
+    display:flex; align-items:center; gap:10px; font-size:12px; color:var(--app-text); cursor:pointer;
+    padding:9px 12px; border:1px solid var(--app-border); border-radius:8px;
+    background:var(--app-surface-subtle); transition:border-color .15s ease, background .15s ease;
+  }
+  .radio:hover { border-color:var(--app-border-hover); }
+  .radio.sel { border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .radio .dot { width:13px; height:13px; border-radius:999px; border:1px solid var(--app-border-strong); flex:0 0 auto; position:relative; }
+  .radio.sel .dot { border-color:var(--app-accent); }
+  .radio.sel .dot::after { content:""; position:absolute; inset:3px; border-radius:999px; background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .radio .rtext { flex:1 1 auto; }
+  .radio .rsub { font-size:10.5px; color:var(--app-text-muted); margin-top:2px; }
+
+  /* permission pills */
+  .perm { display:flex; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid var(--app-border); }
+  .perm:last-child { border-bottom:none; }
+  .perm-name { flex:1 1 auto; }
+  .perm-title { font-size:12px; color:var(--app-text); }
+  .perm-desc { font-size:10.5px; color:var(--app-text-muted); margin-top:3px; }
+  .pill {
+    display:inline-flex; align-items:center; gap:5px;
+    font-size:9.5px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase;
+    border-radius:999px; padding:4px 9px; white-space:nowrap;
+  }
+  .pill .dot { width:5px; height:5px; border-radius:999px; background:currentColor; }
+  .pill.granted { color:var(--app-accent); background:var(--app-accent-bg); border:1px solid var(--app-accent-border); }
+  .pill.none { color:var(--app-text-muted); background:var(--app-surface-subtle); border:1px solid var(--app-border); }
+  .pill.denied { color:var(--app-danger); background:var(--app-danger-bg); border:1px solid var(--app-danger-border); }
+
+  /* model picker */
+  .model-card {
+    border:1px solid var(--app-border); border-radius:8px; padding:12px 14px;
+    background:var(--app-surface-subtle); margin-top:10px;
+  }
+  .model-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .model-name { font-size:12px; color:var(--app-text); }
+  .model-meta { font-size:10.5px; color:var(--app-text-muted); margin-top:3px; }
+  .dl-track { height:6px; border-radius:999px; background:var(--app-surface-active); border:1px solid var(--app-border); overflow:hidden; margin-top:11px; }
+  .dl-fill { height:100%; width:0%; background:linear-gradient(90deg, var(--app-info), #9ed0ff); transition:width .2s linear; }
+  .dl-status { display:flex; align-items:center; justify-content:space-between; margin-top:8px; font-size:10.5px; color:var(--app-info); }
+
+  /* chips combobox */
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .ex-chip {
+    display:inline-flex; align-items:center; gap:7px;
+    font-size:11px; color:var(--app-text);
+    background:var(--app-surface-raised); border:1px solid var(--app-border-strong);
+    border-radius:999px; padding:5px 6px 5px 11px;
+  }
+  .ex-chip button {
+    border:none; background:transparent; color:var(--app-text-muted);
+    cursor:pointer; font-size:13px; line-height:1; padding:0 3px;
+  }
+  .ex-chip button:hover { color:var(--app-danger); }
+  .combo-wrap { position:relative; margin-top:4px; }
+  .combo-pop {
+    position:absolute; top:100%; left:0; right:0; margin-top:5px; z-index:20;
+    background:var(--app-surface-raised); border:1px solid var(--app-border-strong); border-radius:8px;
+    overflow:hidden; display:none;
+  }
+  .combo-pop.open { display:block; }
+  .combo-opt { padding:8px 12px; font-size:12px; color:var(--app-text); cursor:pointer; }
+  .combo-opt:hover { background:var(--app-surface-hover); color:var(--app-text-strong); }
+  .combo-empty { padding:8px 12px; font-size:11px; color:var(--app-text-subtle); }
+
+  /* disclosure note */
+  .note {
+    font-size:11px; line-height:1.5; color:var(--app-text-muted);
+    background:var(--app-surface-subtle); border:1px solid var(--app-border);
+    border-left:2px solid var(--app-accent-border);
+    border-radius:8px; padding:11px 13px; margin-top:4px;
+  }
+  .note.warn { border-left-color:var(--app-warn-border); }
+
+  /* advanced reveal */
+  .reveal-toggle {
+    font-size:11px; color:var(--app-text-muted); cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px; margin-top:4px;
+    background:none; border:none; font-family:inherit;
+  }
+  .reveal-toggle:hover { color:var(--app-text); }
+  .reveal-toggle .caret { transition:transform .15s ease; }
+  .reveal-toggle.open .caret { transform:rotate(90deg); }
+  .reveal-body { display:none; margin-top:14px; }
+  .reveal-body.open { display:block; }
+
+  .feat-off-msg { font-size:11px; color:var(--app-text-subtle); margin-top:4px; }
+
+  /* ===== bottom CTA ===== */
+  .footer {
+    flex:0 0 auto;
+    padding:14px 28px;
+    border-top:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+  }
+  .footer-note { font-size:11px; color:var(--app-text-muted); }
+  .footer-note b { color:var(--app-accent); }
+  .footer-actions { display:flex; align-items:center; gap:10px; }
+  .btn.cta {
+    font-size:12.5px; font-weight:600; padding:9px 20px;
+    color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg);
+  }
+  .btn.cta:hover { box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .btn.ghost { color:var(--app-text-muted); border-color:transparent; background:transparent; }
+  .btn.ghost:hover { color:var(--app-text); }
+
+  .inline-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .device-line { display:flex; align-items:center; gap:12px; margin-top:12px; }
+</style>
+</head>
+<body>
+  <div class="window">
+    <!-- titlebar -->
+    <div class="titlebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="wordmark">mnema</div>
+      <button class="theme-toggle" id="themeToggle">◐ <span id="themeLabel">light</span></button>
+    </div>
+
+    <!-- welcome header -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="topbar-eyebrow">welcome</div>
+        <div class="topbar-title">Set up your capture</div>
+        <div class="topbar-sub">Review each feature. Toggle what you want on — everything stays local on this Mac.</div>
+      </div>
+      <div class="ready-hint">
+        <div class="ready-count"><b id="readyNum">0</b> of <span id="readyTotal">9</span> ready</div>
+        <div class="ready-track"><div class="ready-fill" id="readyFill"></div></div>
+      </div>
+    </div>
+
+    <!-- stacked rows -->
+    <div class="content">
+      <div class="stack" id="stack"></div>
+    </div>
+
+    <!-- footer CTA -->
+    <div class="footer">
+      <div class="footer-note"><b id="footerCount">0</b> features armed · you can change all of this later in Settings</div>
+      <div class="footer-actions">
+        <button class="btn ghost">Skip for now</button>
+        <button class="btn cta">Start capturing →</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+
+/* ---------- theme toggle ---------- */
+const html = document.documentElement;
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const dark = html.getAttribute("data-theme") === "dark";
+  html.setAttribute("data-theme", dark ? "light" : "dark");
+  document.getElementById("themeLabel").textContent = dark ? "dark" : "light";
+});
+
+/* ---------- feature state ---------- */
+const state = {
+  permissions: {
+    on:true, required:true,
+    perms:{ screen:"granted", mic:"none", sysaudio:"denied" }
+  },
+  screen: {
+    on:true, required:true,
+    res:"1080p", customW:1920, customH:1080,
+    bitrate:"Medium", fps:2, segment:300
+  },
+  storage: {
+    on:true, required:true,
+    dir:"~/Movies/Mnema", retention:"14",
+    cacheTtl:"7", autostart:true
+  },
+  mic: { on:false, device:"MacBook Pro Microphone" },
+  sysaudio: { on:false },
+  ocr: {
+    on:true, provider:"apple",
+    model:"vision-1", modelStatus:"available",
+    lang:"eng", mode:"Accurate", dl:0
+  },
+  transcription: {
+    on:true, provider:"whisper",
+    model:"base", modelStatus:"available", lang:"auto", dl:0
+  },
+  privacy: {
+    on:true,
+    excluded:["1Password","Messages"]
+  },
+  askai: { on:false, provider:null, model:null }
+};
+
+/* status chip resolution per feature */
+function chipFor(key){
+  const s = state[key];
+  if(key==="permissions"){
+    const p=s.perms; const granted=["screen","mic","sysaudio"].filter(k=>p[k]==="granted").length;
+    if(p.screen!=="granted") return {cls:"attn", txt:"Needs attention"};
+    if(granted===3) return {cls:"armed", txt:"Armed"};
+    return {cls:"attn", txt:"Partial"};
+  }
+  if(!s.on) return {cls:"off", txt:"Off"};
+  if(key==="ocr" && s.modelStatus==="downloading") return {cls:"dl", txt:"Downloading"};
+  if(key==="ocr" && s.modelStatus==="missing") return {cls:"attn", txt:"Needs attention"};
+  if(key==="transcription" && s.modelStatus==="downloading") return {cls:"dl", txt:"Downloading"};
+  if(key==="transcription" && s.modelStatus==="missing") return {cls:"attn", txt:"Needs attention"};
+  if(key==="askai" && !s.provider) return {cls:"attn", txt:"Needs attention"};
+  if(key==="sysaudio" && state.screen.on===false) return {cls:"attn", txt:"Needs screen"};
+  return {cls:"armed", txt:"Armed"};
+}
+
+/* one-line collapsed summary per feature */
+function summaryFor(key){
+  const s = state[key];
+  switch(key){
+    case "permissions": {
+      const p=s.perms; const g=["screen","mic","sysaudio"].filter(k=>p[k]==="granted").length;
+      return `<b>${g} of 3</b> granted`;
+    }
+    case "screen": {
+      if(!s.on) return `<span class="off">Off</span>`;
+      const res = s.res==="custom" ? `${s.customW}×${s.customH}` : s.res;
+      return `<b>${res}</b> · ${s.fps} fps · ${Math.round(s.segment/60*10)/10} min segments`;
+    }
+    case "storage": {
+      const ret = s.retention==="never" ? "keep forever" : `${s.retention}-day retention`;
+      return `<b>${s.dir.split("/").pop()}</b> · ${ret}`;
+    }
+    case "mic": {
+      if(!s.on) return `<span class="off">Off</span>`;
+      return `<b>On</b> · ${s.device}`;
+    }
+    case "sysaudio": {
+      if(!s.on) return `<span class="off">Off</span>`;
+      return `<b>On</b> · transcribed`;
+    }
+    case "ocr": {
+      if(!s.on) return `<span class="off">Off</span>`;
+      const prov = s.provider==="apple" ? "Apple Vision" : "Tesseract";
+      let st = s.modelStatus==="downloading" ? " · downloading" : (s.modelStatus==="missing" ? " · model missing" : "");
+      return `<b>${prov}</b> · ${s.mode}${st}`;
+    }
+    case "transcription": {
+      if(!s.on) return `<span class="off">Off</span>`;
+      const prov = s.provider==="whisper" ? "Whisper" : (s.provider==="apple" ? "Apple Speech" : "Parakeet");
+      const m = s.provider==="whisper" ? ` ${s.model}` : "";
+      let st = s.modelStatus==="downloading" ? " · downloading" : (s.modelStatus==="missing" ? " · model missing" : "");
+      return `<b>${prov}${m}</b> · ${s.lang}${st}`;
+    }
+    case "privacy": {
+      const n = s.excluded.length;
+      if(n===0) return `<span class="off">No apps excluded</span>`;
+      return `<b>${n} app${n===1?"":"s"}</b> excluded`;
+    }
+    case "askai": {
+      if(!s.on) return `<span class="off">Off</span>`;
+      if(!s.provider) return `<span class="off">On — not configured</span>`;
+      return `<b>${s.provider}</b> · ${s.model||"default"}`;
+    }
+  }
+  return "";
+}
+
+/* "ready" = required-ok OR optional-on-and-configured */
+function isReady(key){
+  const s = state[key];
+  const c = chipFor(key);
+  if(key==="permissions") return c.cls==="armed";
+  if(s.required) return c.cls!=="attn";
+  if(!s.on) return false;
+  return c.cls==="armed";
+}
+
+/* feature meta (order + titles) */
+const FEATURES = [
+  { key:"permissions", name:"Permissions", eyebrow:"Required · macOS", sub:"Mnema needs system permission to record your screen and capture audio. Nothing leaves your Mac.", required:true },
+  { key:"screen", name:"Screen capture", eyebrow:"Required · always on", sub:"How your screen is recorded into local video segments.", required:true },
+  { key:"storage", name:"Storage & retention", eyebrow:"Required", sub:"Where recordings live on disk and how long they're kept.", required:true },
+  { key:"mic", name:"Microphone capture", eyebrow:"Optional", sub:"Transcribe your voice from the microphone." },
+  { key:"sysaudio", name:"System audio", eyebrow:"Optional · requires screen", sub:"Transcribe audio playing through your speakers." },
+  { key:"ocr", name:"OCR", eyebrow:"Optional · on by default", sub:"Read on-screen text so you can search what you saw." },
+  { key:"transcription", name:"Audio transcription", eyebrow:"Optional · on by default", sub:"Turn captured audio into searchable text." },
+  { key:"privacy", name:"Privacy — excluded apps", eyebrow:"Optional", sub:"Apps in this list are never captured." },
+  { key:"askai", name:"Ask AI — Reasoning Engine", eyebrow:"Optional · off by default", sub:"Ask questions about what you've done. Needs a configured Reasoning Engine." }
+];
+
+let expanded = "screen"; // expand screen by default
+
+/* ---------- render ---------- */
+const stackEl = document.getElementById("stack");
+
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function switchHtml(key){
+  const s = state[key];
+  const locked = s.required;
+  return `
+    <label class="switch ${locked?'locked':''}" data-switch="${key}">
+      <input type="checkbox" ${s.on?'checked':''} ${locked?'disabled':''} data-toggle="${key}">
+      <span class="track"><span class="thumb"></span></span>
+      ${locked?'<span class="lock">🔒</span>':''}
+    </label>`;
+}
+
+function bodyHtml(key){
+  const s = state[key];
+  switch(key){
+    case "permissions": return permBody();
+    case "screen": return screenBody();
+    case "storage": return storageBody();
+    case "mic": return micBody();
+    case "sysaudio": return sysaudioBody();
+    case "ocr": return ocrBody();
+    case "transcription": return transcriptionBody();
+    case "privacy": return privacyBody();
+    case "askai": return askaiBody();
+  }
+  return "";
+}
+
+function render(){
+  stackEl.innerHTML = FEATURES.map(f=>{
+    const s = state[f.key];
+    const isOpen = expanded===f.key;
+    const chip = chipFor(f.key);
+    const reqBadge = f.required ? `<span class="req-badge">Required</span>` : "";
+    const chipHtml = `<span class="chip ${chip.cls}"><span class="dot"></span>${chip.txt}</span>`;
+    return `
+      <div class="row ${isOpen?'expanded':''} ${(!s.on && !s.required)?'disabled-feat':''}" data-row="${f.key}">
+        <div class="row-head" data-head="${f.key}">
+          <div class="head-idx">${String(FEATURES.indexOf(f)+1)}</div>
+          <div class="head-main">
+            <div class="head-eyebrow">${f.eyebrow}</div>
+            <div class="head-name">${f.name} ${reqBadge} ${chipHtml}</div>
+            <div class="head-sub">${f.sub}</div>
+          </div>
+          <div class="head-summary">${summaryFor(f.key)}</div>
+          ${switchHtml(f.key)}
+        </div>
+        <div class="row-body-wrap">
+          <div class="row-body-inner">
+            <div class="row-body">${isOpen ? bodyHtml(f.key) : ""}</div>
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+  wireBody();
+  updateMeters();
+}
+
+/* ---------- body templates ---------- */
+function permBody(){
+  const p = state.permissions.perms;
+  const pillFor = (st) => {
+    if(st==="granted") return `<span class="pill granted"><span class="dot"></span>Granted</span>`;
+    if(st==="denied") return `<span class="pill denied"><span class="dot"></span>Denied</span>`;
+    return `<span class="pill none"><span class="dot"></span>Not requested</span>`;
+  };
+  const btnFor = (k,st) => {
+    if(st==="granted") return "";
+    if(st==="denied") return `<button class="btn sm" data-perm-settings="${k}">Open Settings</button>`;
+    return `<button class="btn sm accent" data-perm-grant="${k}">Grant access</button>`;
+  };
+  const rows = [
+    ["screen","Screen recording","Capture the contents of your display."],
+    ["mic","Microphone","Record from your input device."],
+    ["sysaudio","System audio","Capture audio from apps and the system."]
+  ];
+  return `
+    <div class="group">
+      <div class="group-title">System permissions</div>
+      ${rows.map(([k,t,d])=>`
+        <div class="perm">
+          <div class="perm-name"><div class="perm-title">${t}</div><div class="perm-desc">${d}</div></div>
+          ${pillFor(p[k])}
+          ${btnFor(k,p[k])}
+        </div>`).join("")}
+    </div>`;
+}
+
+function screenBody(){
+  const s = state.screen;
+  const resOpts = ["Original","1080p","1440p","4K","Custom"];
+  const resVal = {Original:"original","1080p":"1080p","1440p":"1440p","4K":"4k",Custom:"custom"};
+  const segMin = Math.round(s.segment/60*10)/10;
+  return `
+    <div class="group">
+      <div class="group-title">Video</div>
+      <div class="field">
+        <div class="field-label">Resolution</div>
+        <div class="field-hint">Higher resolutions are sharper but use more disk.</div>
+        <div class="segmented" style="margin-top:10px">
+          ${resOpts.map(o=>`<button class="seg ${s.res===resVal[o]?'active':''}" data-seg="screen.res" data-val="${resVal[o]}">${o}</button>`).join("")}
+        </div>
+        ${s.res==="custom"?`<div class="inline-row" style="margin-top:12px">
+          <input class="text-input" style="width:90px" type="number" value="${s.customW}" data-num="screen.customW"> ×
+          <input class="text-input" style="width:90px" type="number" value="${s.customH}" data-num="screen.customH"> px
+        </div>`:""}
+      </div>
+      <div class="field">
+        <div class="field-label">Bitrate</div>
+        <div class="segmented" style="margin-top:10px">
+          ${["Low","Medium","High","Custom"].map(o=>`<button class="seg ${s.bitrate===o?'active':''}" data-seg="screen.bitrate" data-val="${o}">${o}</button>`).join("")}
+        </div>
+        ${s.bitrate==="Custom"?`<div class="slider-row" style="margin-top:12px">
+          <input type="range" min="1" max="40" value="12" data-range-label="Mbps" id="brCustom">
+          <div class="slider-val" id="brCustomVal">12 Mbps</div></div>`:""}
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-title">Timing</div>
+      <div class="field">
+        <div class="field-label">Frame rate</div>
+        <div class="slider-row" style="margin-top:10px">
+          <input type="range" min="1" max="120" value="${s.fps}" data-range="screen.fps">
+          <div class="slider-val" id="fpsVal">${s.fps} fps</div>
+        </div>
+        <div class="field-hint">Low frame rates capture a near-continuous log with minimal CPU. ~2 fps is recommended.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Segment duration</div>
+        <div class="slider-row" style="margin-top:10px">
+          <input type="range" min="10" max="300" value="${s.segment}" data-range="screen.segment">
+          <div class="slider-val" id="segVal">${segMin} min</div>
+        </div>
+        <div class="field-hint">Capped at 5 minutes per recording segment.</div>
+      </div>
+    </div>`;
+}
+
+function storageBody(){
+  const s = state.storage;
+  return `
+    <div class="group">
+      <div class="group-title">Location</div>
+      <div class="field">
+        <div class="field-label">Save directory</div>
+        <div class="inline-row" style="margin-top:10px">
+          <input class="text-input" style="flex:1 1 auto; min-width:240px" value="${escapeHtml(s.dir)}" data-text="storage.dir">
+          <button class="btn" data-browse>Browse…</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-row">
+          <div><div class="field-label">Retention</div><div class="field-hint">Older recordings are cleaned up automatically.</div></div>
+          <select data-select="storage.retention">
+            <option value="never" ${s.retention==="never"?"selected":""}>Never delete</option>
+            <option value="7" ${s.retention==="7"?"selected":""}>After 7 days</option>
+            <option value="14" ${s.retention==="14"?"selected":""}>After 14 days</option>
+            <option value="30" ${s.retention==="30"?"selected":""}>After 30 days</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <button class="reveal-toggle ${s.revealOpen?'open':''}" data-reveal="storage"><span class="caret">▸</span> Advanced</button>
+      <div class="reveal-body ${s.revealOpen?'open':''}" data-reveal-body="storage">
+        <div class="field">
+          <div class="field-row">
+            <div><div class="field-label">Preview cache TTL</div><div class="field-hint">How long generated thumbnails stay cached.</div></div>
+            <select data-select="storage.cacheTtl">
+              <option value="1" ${s.cacheTtl==="1"?"selected":""}>1 day</option>
+              <option value="7" ${s.cacheTtl==="7"?"selected":""}>7 days</option>
+              <option value="30" ${s.cacheTtl==="30"?"selected":""}>30 days</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <div class="field-row">
+            <div><div class="field-label">Start at login</div><div class="field-hint">Begin capturing automatically when you log in.</div></div>
+            ${miniSwitch("storage.autostart", s.autostart)}
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function miniSwitch(path, on){
+  return `<label class="switch" data-mini="${path}">
+    <input type="checkbox" ${on?'checked':''}>
+    <span class="track"><span class="thumb"></span></span></label>`;
+}
+
+function micBody(){
+  const s = state.mic;
+  if(!s.on) return offMsg("Turn on microphone capture to choose an input device.");
+  return `
+    <div class="group">
+      <div class="group-title">Microphone</div>
+      <div class="field">
+        <div class="field-row">
+          <div><div class="field-label">Transcribe microphone</div><div class="field-hint">Your spoken audio becomes searchable text.</div></div>
+          ${miniSwitch("mic.transcribe", true)}
+        </div>
+      </div>
+      <div class="device-line">
+        <div class="field-label">Input device</div>
+        <select data-select="mic.device" style="flex:1 1 auto">
+          <option ${s.device==="MacBook Pro Microphone"?"selected":""}>MacBook Pro Microphone</option>
+          <option ${s.device==="External USB Mic"?"selected":""}>External USB Mic</option>
+          <option ${s.device==="AirPods Pro"?"selected":""}>AirPods Pro</option>
+        </select>
+      </div>
+    </div>`;
+}
+
+function sysaudioBody(){
+  const s = state.sysaudio;
+  if(!state.screen.on){
+    return `<div class="note warn">System audio capture requires screen capture to be enabled. Enable Screen capture first.</div>`;
+  }
+  if(!s.on) return offMsg("Turn on system audio to transcribe what's playing through your speakers.");
+  return `
+    <div class="group">
+      <div class="group-title">System audio</div>
+      <div class="field">
+        <div class="field-row">
+          <div><div class="field-label">Transcribe system audio</div><div class="field-hint">Audio from meetings, videos, and apps becomes searchable.</div></div>
+          ${miniSwitch("sysaudio.transcribe", true)}
+        </div>
+      </div>
+      <div class="note">Captured alongside the screen recording. Mixed sources are diarized into separate speakers.</div>
+    </div>`;
+}
+
+function modelCard(featKey){
+  const s = state[featKey];
+  let body = "";
+  if(s.modelStatus==="available"){
+    body = `<button class="btn sm" data-model-remove="${featKey}">Remove</button>`;
+  } else if(s.modelStatus==="downloading"){
+    body = `<button class="btn sm danger" data-model-cancel="${featKey}">Cancel</button>`;
+  } else {
+    body = `<button class="btn sm accent" data-model-download="${featKey}">Download</button>`;
+  }
+  const meta = featKey==="ocr"
+    ? (s.provider==="apple" ? "Built into macOS · no download" : "Tesseract trained data")
+    : "Local model · runs on-device";
+  const dl = s.modelStatus==="downloading" ? `
+    <div class="dl-track"><div class="dl-fill" id="dlFill-${featKey}" style="width:${s.dl}%"></div></div>
+    <div class="dl-status"><span id="dlText-${featKey}">Downloading… ${s.dl}%</span><span>${featKey==="ocr"?"~30 MB":"~142 MB"}</span></div>` : "";
+  const statusBadge = s.modelStatus==="available"
+    ? `<span class="pill granted"><span class="dot"></span>Available</span>`
+    : (s.modelStatus==="downloading"
+      ? `<span class="pill" style="color:var(--app-info);background:var(--app-info-bg);border:1px solid var(--app-info-border)"><span class="dot"></span>Downloading</span>`
+      : `<span class="pill denied"><span class="dot"></span>Missing</span>`);
+  return `
+    <div class="model-card">
+      <div class="model-head">
+        <div><div class="model-name">${modelName(featKey)}</div><div class="model-meta">${meta}</div></div>
+        <div class="inline-row">${statusBadge}${(featKey==="apple-no-dl")?"":body}</div>
+      </div>
+      ${dl}
+    </div>`;
+}
+
+function modelName(featKey){
+  const s = state[featKey];
+  if(featKey==="ocr") return s.provider==="apple" ? "Apple Vision (system)" : "Tesseract · eng.traineddata";
+  return `Whisper ${s.model}`;
+}
+
+function ocrBody(){
+  const s = state.ocr;
+  if(!s.on) return offMsg("Turn on OCR to read and search on-screen text.");
+  return `
+    <div class="group">
+      <div class="group-title">Provider</div>
+      <div class="radio-group">
+        <div class="radio ${s.provider==="apple"?"sel":""}" data-radio="ocr.provider" data-val="apple">
+          <span class="dot"></span><div class="rtext">Apple Vision<div class="rsub">Fast, built into macOS, no download.</div></div></div>
+        <div class="radio ${s.provider==="tesseract"?"sel":""}" data-radio="ocr.provider" data-val="tesseract">
+          <span class="dot"></span><div class="rtext">Tesseract<div class="rsub">Open-source, language-pack based.</div></div></div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-title">Model</div>
+      ${modelCard("ocr")}
+    </div>
+    ${s.provider==="tesseract"?`
+    <div class="group">
+      <div class="field">
+        <div class="field-row">
+          <div class="field-label">Language</div>
+          <select data-select="ocr.lang">
+            <option value="eng" ${s.lang==="eng"?"selected":""}>English</option>
+            <option value="fra" ${s.lang==="fra"?"selected":""}>French</option>
+            <option value="deu" ${s.lang==="deu"?"selected":""}>German</option>
+          </select>
+        </div>
+      </div>
+    </div>`:""}
+    <div class="group">
+      <div class="field">
+        <div class="field-label">Recognition mode</div>
+        <div class="segmented" style="margin-top:10px">
+          ${["Fast","Accurate"].map(o=>`<button class="seg ${s.mode===o?'active':''}" data-seg="ocr.mode" data-val="${o}">${o}</button>`).join("")}
+        </div>
+      </div>
+    </div>`;
+}
+
+function transcriptionBody(){
+  const s = state.transcription;
+  if(!s.on) return offMsg("Turn on audio transcription to make captured audio searchable.");
+  const showModel = s.provider==="whisper";
+  return `
+    <div class="group">
+      <div class="group-title">Provider</div>
+      <div class="radio-group">
+        <div class="radio ${s.provider==="whisper"?"sel":""}" data-radio="transcription.provider" data-val="whisper">
+          <span class="dot"></span><div class="rtext">Local Whisper<div class="rsub">Runs fully on-device. Pick a model size below.</div></div></div>
+        <div class="radio ${s.provider==="apple"?"sel":""}" data-radio="transcription.provider" data-val="apple">
+          <span class="dot"></span><div class="rtext">Apple Speech<div class="rsub">System speech recognition, no download.</div></div></div>
+        <div class="radio ${s.provider==="parakeet"?"sel":""}" data-radio="transcription.provider" data-val="parakeet">
+          <span class="dot"></span><div class="rtext">Parakeet<div class="rsub">Fast NVIDIA on-device model.</div></div></div>
+      </div>
+    </div>
+    ${showModel?`
+    <div class="group">
+      <div class="group-title">Model size</div>
+      <div class="segmented" style="margin-top:2px">
+        ${["base","small","medium","large"].map(o=>`<button class="seg ${s.model===o?'active':''}" data-seg="transcription.model" data-val="${o}">${o}</button>`).join("")}
+      </div>
+      ${modelCard("transcription")}
+    </div>`:""}
+    <div class="group">
+      <div class="field">
+        <div class="field-row">
+          <div class="field-label">Language</div>
+          <select data-select="transcription.lang">
+            <option value="auto" ${s.lang==="auto"?"selected":""}>Auto-detect</option>
+            <option value="en" ${s.lang==="en"?"selected":""}>English</option>
+            <option value="fr" ${s.lang==="fr"?"selected":""}>French</option>
+            <option value="de" ${s.lang==="de"?"selected":""}>German</option>
+          </select>
+        </div>
+      </div>
+    </div>`;
+}
+
+const APP_LIBRARY = ["1Password","Bitwarden","Messages","Signal","Zoom","Slack","Chase","Bank of America","Mail","Notes","Photos","WhatsApp","Telegram","Keychain Access"];
+
+function privacyBody(){
+  const s = state.privacy;
+  return `
+    <div class="group">
+      <div class="group-title">Excluded apps · ${s.excluded.length}</div>
+      <div class="field-hint">When these apps are in front, Mnema records nothing.</div>
+      <div class="combo-wrap">
+        <input class="text-input" style="width:100%; margin-top:10px" placeholder="Search apps to exclude…" data-combo-input autocomplete="off">
+        <div class="combo-pop" data-combo-pop></div>
+      </div>
+      <div class="chips" data-chips>
+        ${s.excluded.map(a=>`<span class="ex-chip">${escapeHtml(a)}<button data-remove-app="${escapeHtml(a)}">×</button></span>`).join("")}
+      </div>
+      <div style="margin-top:14px"><button class="btn sm" data-recommended>Apply recommended (1Password · banking · Zoom)</button></div>
+    </div>`;
+}
+
+function askaiBody(){
+  const s = state.askai;
+  if(!s.on) return offMsg("Turn on Ask AI to ask questions about your captured activity.");
+  if(!s.provider){
+    return `
+    <div class="group">
+      <div class="note warn">The Reasoning Engine isn't configured yet. Choose a provider (cloud Anthropic / OpenAI, or local Ollama / Llamafile) and add an API key. Keys are stored only in your macOS Keychain — never in config files.</div>
+      <div style="margin-top:14px"><button class="btn accent" data-configure-ai>Choose provider + add API key</button></div>
+    </div>`;
+  }
+  return `
+    <div class="group">
+      <div class="group-title">Reasoning Engine</div>
+      <div class="field">
+        <div class="field-row">
+          <div><div class="field-label">Provider</div><div class="field-hint">Key stored in macOS Keychain.</div></div>
+          <select data-select="askai.provider">
+            <option ${s.provider==="Anthropic"?"selected":""}>Anthropic</option>
+            <option ${s.provider==="OpenAI"?"selected":""}>OpenAI</option>
+            <option ${s.provider==="Ollama (local)"?"selected":""}>Ollama (local)</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-row">
+          <div class="field-label">Model</div>
+          <select data-select="askai.model">
+            <option ${s.model==="claude-opus"?"selected":""} value="claude-opus">claude-opus</option>
+            <option ${s.model==="claude-sonnet"?"selected":""} value="claude-sonnet">claude-sonnet</option>
+            <option ${s.model==="gpt-4o"?"selected":""} value="gpt-4o">gpt-4o</option>
+          </select>
+        </div>
+      </div>
+      <div class="note">API key · <b style="color:var(--app-accent)">stored in Keychain</b> · <button class="btn sm" style="margin-left:6px" data-configure-ai>Replace key</button></div>
+    </div>`;
+}
+
+function offMsg(t){ return `<div class="feat-off-msg">${t}</div>`; }
+
+/* ---------- meters ---------- */
+function updateMeters(){
+  let ready = 0;
+  FEATURES.forEach(f=>{ if(isReady(f.key)) ready++; });
+  const total = FEATURES.length;
+  document.getElementById("readyNum").textContent = ready;
+  document.getElementById("readyTotal").textContent = total;
+  document.getElementById("readyFill").style.width = (ready/total*100)+"%";
+  const armed = FEATURES.filter(f=>{ const s=state[f.key]; return (s.required || s.on) && chipFor(f.key).cls==="armed"; }).length;
+  document.getElementById("footerCount").textContent = armed;
+}
+
+/* re-render only the open row's summary + chip without rebuilding (cheap path) */
+function refreshRowMeta(key){
+  const row = stackEl.querySelector(`[data-row="${key}"]`);
+  if(!row) return;
+  const chip = chipFor(key);
+  const chipEl = row.querySelector(".chip");
+  if(chipEl){ chipEl.className = "chip "+chip.cls; chipEl.innerHTML = `<span class="dot"></span>${chip.txt}`; }
+  const sumEl = row.querySelector(".head-summary");
+  if(sumEl) sumEl.innerHTML = summaryFor(key);
+  // toggle dim state
+  const s = state[key];
+  row.classList.toggle("disabled-feat", (!s.on && !s.required));
+  updateMeters();
+}
+
+/* ---------- accordion + toggle wiring (delegated) ---------- */
+stackEl.addEventListener("click", (e)=>{
+  // toggle switch (don't expand)
+  const sw = e.target.closest("[data-toggle]");
+  if(sw){ return; } // handled by change
+
+  const head = e.target.closest("[data-head]");
+  if(head){
+    // ignore clicks that started on the switch label
+    if(e.target.closest(".switch")) return;
+    const key = head.getAttribute("data-head");
+    expanded = (expanded===key) ? null : key;
+    render();
+    return;
+  }
+});
+
+/* main feature toggles */
+stackEl.addEventListener("change", (e)=>{
+  const t = e.target.closest("[data-toggle]");
+  if(t){
+    e.stopPropagation();
+    const key = t.getAttribute("data-toggle");
+    state[key].on = t.checked;
+    // if currently expanded, rebuild its body (on/off body differs); else just meta
+    if(expanded===key) render(); else refreshRowMeta(key);
+    return;
+  }
+});
+
+/* prevent switch clicks from bubbling to the head/expand */
+stackEl.addEventListener("click", (e)=>{
+  if(e.target.closest(".switch")) e.stopPropagation();
+}, true);
+
+/* ---------- body controls (wired after each render) ---------- */
+function wireBody(){
+  // segmented
+  stackEl.querySelectorAll("[data-seg]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const [k,prop] = btn.getAttribute("data-seg").split(".");
+      state[k][prop] = btn.getAttribute("data-val");
+      render();
+    });
+  });
+  // radios
+  stackEl.querySelectorAll("[data-radio]").forEach(r=>{
+    r.addEventListener("click", ()=>{
+      const [k,prop] = r.getAttribute("data-radio").split(".");
+      state[k][prop] = r.getAttribute("data-val");
+      // switching OCR provider flips model availability
+      if(k==="ocr"){ state.ocr.modelStatus = state.ocr.provider==="apple" ? "available" : "available"; }
+      render();
+    });
+  });
+  // sliders
+  stackEl.querySelectorAll("[data-range]").forEach(rg=>{
+    rg.addEventListener("input", ()=>{
+      const [k,prop] = rg.getAttribute("data-range").split(".");
+      state[k][prop] = parseInt(rg.value,10);
+      if(prop==="fps") document.getElementById("fpsVal").textContent = rg.value+" fps";
+      if(prop==="segment") document.getElementById("segVal").textContent = (Math.round(rg.value/60*10)/10)+" min";
+      refreshRowMeta(k);
+    });
+  });
+  const brc = stackEl.querySelector("#brCustom");
+  if(brc) brc.addEventListener("input", ()=>{ document.getElementById("brCustomVal").textContent = brc.value+" Mbps"; });
+  // selects
+  stackEl.querySelectorAll("[data-select]").forEach(sel=>{
+    sel.addEventListener("change", ()=>{
+      const [k,prop] = sel.getAttribute("data-select").split(".");
+      state[k][prop] = sel.value;
+      if(k==="askai" && prop==="provider"){ state.askai.model = sel.value==="OpenAI" ? "gpt-4o" : "claude-opus"; render(); return; }
+      refreshRowMeta(k);
+    });
+  });
+  // text inputs
+  stackEl.querySelectorAll("[data-text]").forEach(inp=>{
+    inp.addEventListener("input", ()=>{
+      const [k,prop] = inp.getAttribute("data-text").split(".");
+      state[k][prop] = inp.value;
+      refreshRowMeta(k);
+    });
+  });
+  // numeric (custom WxH)
+  stackEl.querySelectorAll("[data-num]").forEach(inp=>{
+    inp.addEventListener("input", ()=>{
+      const [k,prop] = inp.getAttribute("data-num").split(".");
+      state[k][prop] = parseInt(inp.value,10)||0;
+      refreshRowMeta(k);
+    });
+  });
+  // mini switches
+  stackEl.querySelectorAll("[data-mini]").forEach(ms=>{
+    ms.querySelector("input").addEventListener("change", (e)=>{
+      const [k,prop] = ms.getAttribute("data-mini").split(".");
+      state[k][prop] = e.target.checked;
+      refreshRowMeta(k);
+    });
+  });
+  // advanced reveal
+  stackEl.querySelectorAll("[data-reveal]").forEach(rt=>{
+    rt.addEventListener("click", ()=>{
+      const k = rt.getAttribute("data-reveal");
+      state[k].revealOpen = !state[k].revealOpen;
+      rt.classList.toggle("open");
+      const body = stackEl.querySelector(`[data-reveal-body="${k}"]`);
+      if(body) body.classList.toggle("open");
+    });
+  });
+  // browse (storage)
+  const browse = stackEl.querySelector("[data-browse]");
+  if(browse) browse.addEventListener("click", ()=>{
+    state.storage.dir = "~/Movies/Mnema-Captures";
+    render();
+  });
+  // permissions
+  stackEl.querySelectorAll("[data-perm-grant]").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      state.permissions.perms[b.getAttribute("data-perm-grant")] = "granted";
+      render();
+    });
+  });
+  stackEl.querySelectorAll("[data-perm-settings]").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      // simulate user returning from System Settings having granted
+      state.permissions.perms[b.getAttribute("data-perm-settings")] = "granted";
+      render();
+    });
+  });
+  // model download / cancel / remove
+  stackEl.querySelectorAll("[data-model-download]").forEach(b=>{
+    b.addEventListener("click", ()=>startDownload(b.getAttribute("data-model-download")));
+  });
+  stackEl.querySelectorAll("[data-model-cancel]").forEach(b=>{
+    b.addEventListener("click", ()=>cancelDownload(b.getAttribute("data-model-cancel")));
+  });
+  stackEl.querySelectorAll("[data-model-remove]").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      const k = b.getAttribute("data-model-remove");
+      if(k==="ocr" && state.ocr.provider==="apple") return; // system, can't remove
+      state[k].modelStatus = "missing"; render();
+    });
+  });
+  // privacy combobox
+  wirePrivacy();
+  // ask ai configure
+  stackEl.querySelectorAll("[data-configure-ai]").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      state.askai.provider = "Anthropic";
+      state.askai.model = "claude-opus";
+      render();
+    });
+  });
+  // restore fps/seg labels on render
+}
+
+/* ---------- model download simulation ---------- */
+const dlTimers = {};
+function startDownload(key){
+  state[key].modelStatus = "downloading";
+  state[key].dl = 0;
+  render();
+  dlTimers[key] = setInterval(()=>{
+    state[key].dl = Math.min(100, state[key].dl + Math.random()*9 + 3);
+    const fill = document.getElementById("dlFill-"+key);
+    const txt = document.getElementById("dlText-"+key);
+    if(fill) fill.style.width = state[key].dl+"%";
+    if(txt) txt.textContent = "Downloading… "+Math.round(state[key].dl)+"%";
+    refreshRowMeta(key);
+    if(state[key].dl >= 100){
+      clearInterval(dlTimers[key]);
+      state[key].modelStatus = "available";
+      if(expanded===key) render(); else refreshRowMeta(key);
+    }
+  }, 280);
+}
+function cancelDownload(key){
+  clearInterval(dlTimers[key]);
+  state[key].modelStatus = "missing";
+  state[key].dl = 0;
+  render();
+}
+
+/* ---------- privacy combobox ---------- */
+function wirePrivacy(){
+  const input = stackEl.querySelector("[data-combo-input]");
+  if(!input) return;
+  const pop = stackEl.querySelector("[data-combo-pop]");
+  const renderPop = ()=>{
+    const q = input.value.trim().toLowerCase();
+    const avail = APP_LIBRARY.filter(a=>!state.privacy.excluded.includes(a) && a.toLowerCase().includes(q));
+    if(!q){ pop.classList.remove("open"); return; }
+    if(avail.length===0){ pop.innerHTML = `<div class="combo-empty">No matching apps</div>`; }
+    else { pop.innerHTML = avail.slice(0,6).map(a=>`<div class="combo-opt" data-add-app="${escapeHtml(a)}">${escapeHtml(a)}</div>`).join(""); }
+    pop.classList.add("open");
+  };
+  input.addEventListener("input", renderPop);
+  input.addEventListener("focus", renderPop);
+  pop.addEventListener("click", (e)=>{
+    const opt = e.target.closest("[data-add-app]");
+    if(opt){ state.privacy.excluded.push(opt.getAttribute("data-add-app")); input.value=""; render(); }
+  });
+  document.addEventListener("click", (e)=>{
+    if(!e.target.closest(".combo-wrap")) pop.classList.remove("open");
+  });
+  stackEl.querySelectorAll("[data-remove-app]").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      const a = b.getAttribute("data-remove-app");
+      state.privacy.excluded = state.privacy.excluded.filter(x=>x!==a);
+      render();
+    });
+  });
+  const rec = stackEl.querySelector("[data-recommended]");
+  if(rec) rec.addEventListener("click", ()=>{
+    ["1Password","Chase","Bank of America","Zoom"].forEach(a=>{
+      if(!state.privacy.excluded.includes(a)) state.privacy.excluded.push(a);
+    });
+    render();
+  });
+}
+
+/* ---------- boot ---------- */
+render();
+</script>
+</body>
+</html>

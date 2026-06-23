@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>mnema · onboarding · stack a (refined)</title>
+<style>
+  :root {
+    --app-bg:#0c0c0e; --app-fg:#e2e2e8; --app-fg-muted:#8a8aaa;
+    --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#7a7a9a; --app-text-subtle:#44445a; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15; --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-strong:#ff4455; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  }
+  [data-theme="light"] {
+    --app-bg:#f6f6f4; --app-fg:#14141a; --app-fg-muted:#5a5a6a;
+    --app-surface:#ffffff; --app-surface-subtle:#f6f6f4; --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#eeeeec;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+    --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a; --app-text-subtle:#7a7a86; --app-text-faint:#a4a4a0;
+    --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec; --app-accent-border:#9bd3b4; --app-accent-glow:rgba(31,122,74,0.16);
+    --app-warn:#9a5a12; --app-warn-bg:#fbf0dc; --app-warn-border:#d9b87a;
+    --app-danger:#c43a48; --app-danger-strong:#a82230; --app-danger-bg:#fbe6e8; --app-danger-border:#e0a8ae;
+    --app-info:#2b78c5; --app-info-bg:#e4effb; --app-info-border:#a8c8ec;
+  }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body {
+    height:100%;
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"Cascadia Code","Fira Code",monospace;
+    background:var(--app-bg);
+    color:var(--app-fg);
+    -webkit-font-smoothing:antialiased;
+  }
+  body {
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh;
+    padding:28px;
+    background:
+      radial-gradient(820px 380px at 50% -6%, var(--app-accent-glow), transparent 62%),
+      var(--app-bg);
+  }
+
+  /* ===== window chrome ===== */
+  .window {
+    width:932px; height:792px;
+    max-width:100%; max-height:96vh;
+    display:flex; flex-direction:column;
+    background:var(--app-surface);
+    border:1px solid var(--app-border);
+    border-radius:10px;
+    overflow:hidden;
+    position:relative;
+  }
+  .titlebar {
+    height:38px; flex:0 0 38px;
+    display:flex; align-items:center;
+    padding:0 14px;
+    border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    position:relative;
+    user-select:none;
+  }
+  .traffic { display:flex; gap:8px; }
+  .traffic span { width:11px; height:11px; border-radius:999px; background:var(--app-text-faint); }
+  .wordmark {
+    position:absolute; left:50%; transform:translateX(-50%);
+    font-size:11px; letter-spacing:0.04em; color:var(--app-text-muted);
+  }
+  .theme-toggle {
+    position:absolute; right:12px; top:50%; transform:translateY(-50%);
+    display:flex; align-items:center; gap:6px;
+    font-size:10.5px; color:var(--app-text-muted);
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border);
+    border-radius:6px; padding:4px 8px;
+    cursor:pointer;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  .theme-toggle:hover { border-color:var(--app-border-hover); color:var(--app-text); }
+
+  /* ===== header line ===== */
+  .head {
+    flex:0 0 auto;
+    padding:24px 28px 16px;
+    position:relative; z-index:2;
+  }
+  .head .eyebrow {
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-text-subtle); margin-bottom:8px;
+  }
+  .head .subtitle {
+    font-size:12.5px; color:var(--app-text-muted); line-height:1.45;
+  }
+  .head .subtitle b { color:var(--app-text); font-weight:550; }
+
+  /* ===== scrolling stack area ===== */
+  .content {
+    flex:1 1 auto; min-height:0;
+    overflow-y:auto;
+    padding:4px 28px 28px;
+    position:relative; z-index:1;
+    background:
+      radial-gradient(620px 320px at 84% 8%, var(--app-accent-glow), transparent 64%);
+  }
+  /* very subtle dotted grid backdrop */
+  .content::before {
+    content:"";
+    position:absolute; inset:0;
+    pointer-events:none;
+    background-image:radial-gradient(currentColor 1px, transparent 1px);
+    background-size:22px 22px;
+    color:var(--app-text-faint);
+    opacity:0.14;
+    z-index:0;
+  }
+  .stack { display:flex; flex-direction:column; gap:14px; position:relative; z-index:1; }
+
+  /* scrollbar */
+  .content::-webkit-scrollbar { width:10px; }
+  .content::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:999px; border:3px solid var(--app-surface); }
+  .content::-webkit-scrollbar-track { background:transparent; }
+
+  /* ===== row (collapsed + expanded share base) ===== */
+  .row {
+    position:relative;
+    border:1px solid var(--app-border);
+    border-radius:12px;
+    background:var(--app-surface-subtle);
+    transition:border-color .15s ease, background .15s ease;
+  }
+  .row.open {
+    border-color:var(--app-border-strong);
+    background:var(--app-surface-raised);
+  }
+  /* accent hairline on expanded panel */
+  .row.open::after {
+    content:"";
+    position:absolute; left:14px; right:14px; top:0; height:1px;
+    border-radius:999px;
+    background:linear-gradient(90deg,
+      transparent,
+      color-mix(in srgb,var(--app-accent) 12%,transparent) 22%,
+      color-mix(in srgb,var(--app-accent) 50%,transparent) 50%,
+      transparent);
+  }
+
+  /* row header (click target to expand) */
+  .row-head {
+    display:flex; align-items:center; gap:12px;
+    min-height:56px;
+    padding:0 16px;
+    cursor:pointer;
+    user-select:none;
+  }
+  .row.open .row-head {
+    align-items:flex-start;
+    padding:18px 18px 14px;
+    cursor:default;
+    border-bottom:1px solid var(--app-border);
+  }
+
+  /* ===== icon chip (settings icon) ===== */
+  .icon-chip {
+    flex:0 0 auto;
+    width:30px; height:30px;
+    display:flex; align-items:center; justify-content:center;
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+    border:1px solid var(--app-border);
+    color:var(--app-text-muted);
+    transition:color .15s ease, background .15s ease, border-color .15s ease;
+  }
+  .icon-chip svg {
+    width:17px; height:17px;
+    fill:none; stroke:currentColor;
+    stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round;
+    display:block;
+  }
+  /* accent tint when row open OR feature enabled/armed */
+  .row.open .icon-chip,
+  .row.is-on .icon-chip {
+    color:var(--app-accent);
+    background:var(--app-accent-bg);
+    border-color:var(--app-accent-border);
+  }
+  .row.open .icon-chip { margin-top:1px; }
+
+  .row-titlewrap { flex:1 1 auto; min-width:0; }
+  .row-name {
+    font-size:13.5px; font-weight:550; color:var(--app-text-strong);
+    display:flex; align-items:center; gap:8px;
+    white-space:nowrap;
+  }
+  .row.open .row-name { font-size:20px; font-weight:700; letter-spacing:-0.012em; white-space:normal; }
+  .row-eyebrow {
+    display:none;
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-text-subtle); margin-bottom:6px;
+  }
+  .row.open .row-eyebrow { display:block; }
+  .row-sub {
+    display:none;
+    font-size:11px; color:var(--app-text-muted); line-height:1.45; margin-top:5px;
+  }
+  .row.open .row-sub { display:block; }
+
+  /* required badge */
+  .badge {
+    font-size:8.5px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
+    color:var(--app-text-muted);
+    background:var(--app-surface-active);
+    border:1px solid var(--app-border-strong);
+    border-radius:3px;
+    padding:2px 6px;
+    line-height:1.2;
+  }
+
+  /* tiny status dot / one-word label (collapsed only) */
+  .row-status {
+    flex:0 0 auto;
+    display:flex; align-items:center; gap:6px;
+    font-size:10.5px; color:var(--app-text-subtle);
+  }
+  .row.open .row-status { display:none; }
+  .status-dot { width:6px; height:6px; border-radius:999px; background:var(--app-text-faint); flex:0 0 auto; }
+  .status-dot.on { background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .status-dot.req { background:var(--app-warn); }
+
+  /* ===== switch ===== */
+  .switch {
+    flex:0 0 auto;
+    position:relative;
+    width:36px; height:20px;
+    border-radius:999px;
+    border:1px solid var(--app-border-strong);
+    background:transparent;
+    cursor:pointer;
+    transition:background .18s ease, border-color .18s ease;
+    padding:0;
+  }
+  .row.open .switch { margin-top:2px; }
+  .switch .thumb {
+    position:absolute; top:2px; left:2px;
+    width:14px; height:14px; border-radius:999px;
+    background:var(--app-text-subtle);
+    transition:transform .18s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .switch[aria-checked="true"] {
+    background:var(--app-accent-bg);
+    border-color:var(--app-accent-border);
+  }
+  .switch[aria-checked="true"] .thumb {
+    transform:translateX(16px);
+    background:var(--app-accent);
+    box-shadow:0 0 8px var(--app-accent-glow);
+  }
+  .switch:focus-visible { outline:none; box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .switch.locked { cursor:not-allowed; opacity:0.7; }
+  .switch .lock {
+    position:absolute; right:-15px; top:50%; transform:translateY(-50%);
+    font-size:9px; color:var(--app-text-subtle); line-height:1;
+  }
+  .switch-wrap { position:relative; display:flex; align-items:center; }
+  .switch.locked + .lock-pad { width:14px; }
+
+  /* ===== expanded body ===== */
+  .row-body {
+    overflow:hidden;
+    max-height:0; opacity:0;
+    transition:max-height .18s ease, opacity .18s ease;
+  }
+  .row.open .row-body {
+    max-height:1400px; opacity:1;
+    transition:max-height .18s ease, opacity .18s ease .04s;
+  }
+  .body-inner { padding:18px; display:flex; flex-direction:column; gap:20px; }
+
+  /* group within body */
+  .group { display:flex; flex-direction:column; gap:12px; }
+  .group-title {
+    font-size:10.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    color:var(--app-text-muted);
+  }
+
+  /* control row */
+  .ctl {
+    display:flex; align-items:center; gap:16px;
+    justify-content:space-between;
+  }
+  .ctl-label { flex:0 0 auto; min-width:0; }
+  .ctl-label .name { font-size:12.5px; color:var(--app-text); }
+  .ctl-label .desc { font-size:11px; color:var(--app-text-muted); margin-top:3px; line-height:1.4; }
+  .ctl-field { flex:0 0 auto; display:flex; align-items:center; gap:10px; }
+  .ctl.stack-field { flex-direction:column; align-items:stretch; gap:8px; }
+  .ctl.stack-field .ctl-field { justify-content:flex-start; flex-wrap:wrap; }
+
+  /* ===== segmented (real Segmented.svelte control) ===== */
+  .segmented {
+    display:inline-flex;
+    gap:2px;
+    padding:2px;
+    border:1px solid var(--app-border-strong);
+    border-radius:8px;
+    background:var(--app-surface);
+    flex-wrap:wrap;
+  }
+  .seg {
+    display:inline-flex; align-items:center; justify-content:center; gap:5px;
+    padding:5px 12px;
+    border:0;
+    border-radius:6px;
+    background:transparent;
+    color:var(--app-text-muted);
+    font:inherit; font-size:12px; font-weight:540; line-height:1;
+    cursor:pointer; user-select:none; outline:none;
+    transition:background .15s, color .15s, box-shadow .15s;
+  }
+  .seg:hover:not(.seg--active) { color:var(--app-text); background:var(--app-surface-hover); }
+  .seg:focus-visible { box-shadow:0 0 0 2px var(--app-accent-glow); }
+  .seg--active { color:var(--app-accent); background:var(--app-accent-bg); box-shadow:inset 0 0 0 1px var(--app-accent-border); }
+  .seg:disabled { cursor:not-allowed; }
+  .segmented--disabled { opacity:.4; pointer-events:none; }
+
+  /* select */
+  select.input, input.input {
+    font:inherit; font-size:12px; color:var(--app-text);
+    background:var(--app-surface-active);
+    border:1px solid var(--app-border-strong);
+    border-radius:8px;
+    padding:7px 10px;
+    cursor:pointer;
+    transition:border-color .15s ease;
+  }
+  select.input:hover, input.input:hover { border-color:var(--app-border-hover); }
+  select.input:focus, input.input:focus { outline:none; border-color:var(--app-accent-border); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  input.input { cursor:text; }
+  input.input.path { flex:1 1 auto; min-width:200px; }
+  input.input.num { width:84px; }
+  input.input.wh { width:74px; }
+
+  /* button */
+  .btn {
+    font:inherit; font-size:12px; font-weight:540; color:var(--app-text);
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border-strong);
+    border-radius:8px;
+    padding:7px 13px;
+    cursor:pointer;
+    white-space:nowrap;
+    transition:border-color .15s ease, color .15s ease, background .15s ease;
+  }
+  .btn:hover { border-color:var(--app-border-hover); color:var(--app-text-strong); }
+  .btn.accent { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .btn.accent:hover { box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .btn.danger { color:var(--app-danger); border-color:var(--app-danger-border); }
+  .btn.sm { font-size:11px; padding:5px 10px; }
+
+  /* sliders */
+  .slider-block { display:flex; flex-direction:column; gap:8px; width:100%; }
+  .slider-head { display:flex; justify-content:space-between; align-items:baseline; font-size:11px; color:var(--app-text-muted); }
+  .slider-head b { color:var(--app-accent); font-size:12px; font-weight:600; }
+  input[type=range] {
+    -webkit-appearance:none; appearance:none;
+    width:100%; height:6px; border-radius:999px;
+    background:var(--app-surface-active);
+    border:1px solid var(--app-border);
+    cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; appearance:none;
+    width:15px; height:15px; border-radius:999px;
+    background:var(--app-accent);
+    box-shadow:0 0 8px var(--app-accent-glow);
+    border:none; cursor:pointer;
+  }
+
+  /* pills (permission status) */
+  .pill {
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:11px; color:var(--app-text-muted);
+    background:var(--app-surface-active);
+    border:1px solid var(--app-border-strong);
+    border-radius:999px;
+    padding:4px 10px;
+  }
+  .pill .d { width:6px; height:6px; border-radius:999px; background:var(--app-text-faint); }
+  .pill.granted { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .pill.granted .d { background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .pill.pending { color:var(--app-warn); border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+  .pill.pending .d { background:var(--app-warn); }
+  .pill.denied { color:var(--app-danger); border-color:var(--app-danger-border); background:var(--app-danger-bg); }
+  .pill.denied .d { background:var(--app-danger); }
+
+  /* permission line */
+  .perm {
+    display:flex; align-items:center; gap:12px;
+    padding:11px 13px;
+    border:1px solid var(--app-border);
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+  }
+  .perm .pn { flex:1 1 auto; }
+  .perm .pn .t { font-size:12.5px; color:var(--app-text); }
+  .perm .pn .s { font-size:10.5px; color:var(--app-text-muted); margin-top:2px; }
+  .perm .pr { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
+
+  /* model picker */
+  .model-card {
+    border:1px solid var(--app-border);
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+    padding:13px;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .model-top { display:flex; align-items:center; gap:12px; justify-content:space-between; }
+  .model-id { font-size:12px; color:var(--app-text); }
+  .model-id .meta { font-size:10.5px; color:var(--app-text-muted); margin-top:2px; }
+  .dl { display:flex; flex-direction:column; gap:7px; }
+  .dl-track { height:6px; border-radius:999px; background:var(--app-surface-active); border:1px solid var(--app-border); overflow:hidden; }
+  .dl-fill { height:100%; width:62%; background:linear-gradient(90deg, var(--app-accent-strong), var(--app-accent)); box-shadow:0 0 10px var(--app-accent-glow); transition:width .3s ease; }
+  .dl-meta { display:flex; justify-content:space-between; align-items:center; font-size:10.5px; color:var(--app-text-muted); }
+  .dl-meta b { color:var(--app-accent); }
+
+  /* chips (excluded apps) */
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip {
+    display:inline-flex; align-items:center; gap:7px;
+    font-size:11.5px; color:var(--app-text);
+    background:var(--app-surface-active);
+    border:1px solid var(--app-border-strong);
+    border-radius:999px;
+    padding:4px 6px 4px 11px;
+  }
+  .chip button {
+    font:inherit; font-size:12px; line-height:1;
+    color:var(--app-text-subtle);
+    background:transparent; border:none; cursor:pointer;
+    width:16px; height:16px; border-radius:999px;
+    display:flex; align-items:center; justify-content:center;
+    transition:color .15s ease, background .15s ease;
+  }
+  .chip button:hover { color:var(--app-danger); background:var(--app-surface-hover); }
+  .typeahead { position:relative; width:100%; }
+  .typeahead-menu {
+    position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:20;
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border-strong);
+    border-radius:8px;
+    overflow:hidden;
+    display:none;
+  }
+  .typeahead-menu.show { display:block; }
+  .typeahead-menu .opt {
+    font-size:12px; color:var(--app-text);
+    padding:8px 11px; cursor:pointer;
+    transition:background .12s ease;
+  }
+  .typeahead-menu .opt:hover { background:var(--app-surface-hover); color:var(--app-text-strong); }
+  .count { font-size:11px; color:var(--app-text-muted); }
+  .count b { color:var(--app-accent); }
+
+  /* advanced reveal */
+  .reveal-btn {
+    font:inherit; font-size:11.5px; color:var(--app-text-muted);
+    background:transparent; border:none; cursor:pointer;
+    display:flex; align-items:center; gap:7px;
+    padding:0;
+    transition:color .15s ease;
+  }
+  .reveal-btn:hover { color:var(--app-text); }
+  .reveal-btn .caret { transition:transform .18s ease; font-size:9px; }
+  .reveal-btn.open .caret { transform:rotate(90deg); }
+  .reveal-body {
+    overflow:hidden; max-height:0; opacity:0;
+    transition:max-height .18s ease, opacity .18s ease;
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .reveal-body.open { max-height:300px; opacity:1; padding-top:4px; }
+
+  /* disclosure / note */
+  .note {
+    font-size:11px; line-height:1.5; color:var(--app-text-muted);
+    background:var(--app-info-bg);
+    border:1px solid var(--app-info-border);
+    border-radius:8px;
+    padding:11px 13px;
+  }
+  .note b { color:var(--app-info); font-weight:550; }
+  .note.muted { background:var(--app-surface-active); border-color:var(--app-border); }
+  .note.muted b { color:var(--app-text); }
+  .kbd-hint { font-size:10.5px; color:var(--app-text-subtle); }
+
+  /* disabled body (feature off but expanded) */
+  .row.disabled-feature .body-inner > .group:not(.always-on),
+  .row.disabled-feature .body-inner > .ctl,
+  .row.disabled-feature .body-inner > .model-card { opacity:0.42; pointer-events:none; }
+
+  /* ===== footer ===== */
+  .footer {
+    flex:0 0 auto;
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    padding:14px 28px;
+    border-top:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    position:relative; z-index:3;
+  }
+  .footer .hint { font-size:11px; color:var(--app-text-muted); }
+  .footer .hint b { color:var(--app-accent); }
+  .cta {
+    font:inherit; font-size:13px; font-weight:600; letter-spacing:-0.005em;
+    color:var(--app-bg);
+    background:var(--app-accent);
+    border:1px solid var(--app-accent);
+    border-radius:8px;
+    padding:10px 20px;
+    cursor:pointer;
+    transition:box-shadow .15s ease, transform .08s ease;
+  }
+  .cta:hover { box-shadow:0 0 0 4px var(--app-accent-glow); }
+  .cta:active { transform:translateY(1px); }
+
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+  <div class="window" role="application" aria-label="Mnema onboarding">
+    <!-- titlebar -->
+    <div class="titlebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="wordmark">mnema</div>
+      <button class="theme-toggle" id="themeToggle" type="button">
+        <span id="themeIcon">◐</span><span id="themeLabel">light</span>
+      </button>
+    </div>
+
+    <!-- header line -->
+    <div class="head">
+      <div class="eyebrow">Set up mnema</div>
+      <div class="subtitle">Turn on what you want recorded and reasoned over. <b>Required features are locked on</b> — everything else is yours to flip. Open a row to fine-tune it.</div>
+    </div>
+
+    <!-- scrolling stack -->
+    <div class="content">
+      <div class="stack" id="stack"><!-- rows injected --></div>
+    </div>
+
+    <!-- footer -->
+    <div class="footer">
+      <div class="hint"><b id="onCount">5</b> features on · 0 need attention</div>
+      <button class="cta" id="cta">Finish setup →</button>
+    </div>
+  </div>
+
+<script>
+"use strict";
+
+/* ---------- theme toggle ---------- */
+const html = document.documentElement;
+const themeToggle = document.getElementById('themeToggle');
+const themeIcon = document.getElementById('themeIcon');
+const themeLabel = document.getElementById('themeLabel');
+themeToggle.addEventListener('click', () => {
+  const light = html.getAttribute('data-theme') === 'light';
+  html.setAttribute('data-theme', light ? 'dark' : 'light');
+  themeIcon.textContent = light ? '◐' : '◑';
+  themeLabel.textContent = light ? 'light' : 'dark';
+});
+
+/* ---------- settings icons (24×24 inline SVGs, app's real glyphs) ---------- */
+const ICONS = {
+  permissions: '<svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="4"/><path d="M11 11l8 8M16 16l2-2M18 18l2-2"/></svg>',
+  capture:     '<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+  storage:     '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>',
+  audio:       '<svg viewBox="0 0 24 24"><path d="M3 12h2l2-6 4 14 3-9 2 4h5"/></svg>',
+  speakers:    '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.5a3 3 0 0 1 0 5M18 14a6 6 0 0 1 3 5"/></svg>',
+  ocr:         '<svg viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M8 10h0M12 10v4M16 10h0M9 16h6"/></svg>',
+  transcription:'<svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
+  privacy:     '<svg viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>',
+  askAi:       '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z"/><path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9L18 14z"/></svg>',
+};
+
+/* ---------- feature model ---------- */
+// state.on drives the toggle. required => locked on. body() returns innerHTML for the expanded panel.
+const features = [
+  {
+    id:'permissions', name:'Permissions', icon:ICONS.permissions,
+    required:true, on:true,
+    eyebrow:'Foundation', sub:'Mnema needs OS access to capture your screen and audio.',
+    status:'Locked',
+    body: permissionsBody
+  },
+  {
+    id:'screen', name:'Screen capture', icon:ICONS.capture,
+    required:true, on:true,
+    eyebrow:'What gets recorded', sub:'Resolution, bitrate, frame rate and segment length for the screen video stream.',
+    status:'Locked',
+    body: screenBody
+  },
+  {
+    id:'storage', name:'Storage & retention', icon:ICONS.storage,
+    required:true, on:true,
+    eyebrow:'Where it lives', sub:'Pick a save location and how long captures stick around before cleanup.',
+    status:'Locked',
+    body: storageBody
+  },
+  {
+    id:'mic', name:'Microphone capture', icon:ICONS.audio,
+    required:false, on:false,
+    eyebrow:'Optional', sub:'Record and transcribe your microphone alongside the screen.',
+    status:'Off',
+    body: micBody
+  },
+  {
+    id:'sysaudio', name:'System audio', icon:ICONS.speakers,
+    required:false, on:false,
+    eyebrow:'Optional · needs screen', sub:'Capture sound coming out of your speakers (macOS).',
+    status:'Off',
+    body: sysAudioBody
+  },
+  {
+    id:'ocr', name:'OCR — read on-screen text', icon:ICONS.ocr,
+    required:false, on:true,
+    eyebrow:'Optional · recommended', sub:'Make every frame searchable by reading the text it shows.',
+    status:'On',
+    body: ocrBody
+  },
+  {
+    id:'transcribe', name:'Audio transcription', icon:ICONS.transcription,
+    required:false, on:true,
+    eyebrow:'Optional · recommended', sub:'Turn captured speech into searchable transcripts.',
+    status:'On',
+    body: transcribeBody
+  },
+  {
+    id:'privacy', name:'Privacy — excluded apps', icon:ICONS.privacy,
+    required:false, on:true,
+    eyebrow:'Optional', sub:'Apps on this list are never captured — windows, audio, or text.',
+    status:'On',
+    body: privacyBody
+  },
+  {
+    id:'askai', name:'Ask AI — Reasoning Engine', icon:ICONS.askAi,
+    required:false, on:false,
+    eyebrow:'Optional · advanced', sub:'Ask questions about your recorded history in natural language.',
+    status:'Off',
+    body: askAiBody
+  },
+];
+
+/* ---------- render ---------- */
+const stack = document.getElementById('stack');
+let openId = 'screen'; // Screen capture expanded by default (reads like the sketch)
+
+function statusBlock(f){
+  if (f.required) return `<span class="row-status"><span class="status-dot req"></span>Required</span>`;
+  if (f.on)       return `<span class="row-status"><span class="status-dot on"></span>On</span>`;
+  return `<span class="row-status"><span class="status-dot"></span>Off</span>`;
+}
+
+function switchBlock(f){
+  if (f.required){
+    return `<div class="switch-wrap">
+      <button class="switch locked" role="switch" aria-checked="true" aria-disabled="true" tabindex="-1" data-id="${f.id}"><span class="thumb"></span></button>
+      <span class="lock" title="Required — always on">⚿</span>
+    </div>`;
+  }
+  return `<div class="switch-wrap">
+    <button class="switch" role="switch" aria-checked="${f.on}" data-id="${f.id}"><span class="thumb"></span></button>
+  </div>`;
+}
+
+function render(){
+  stack.innerHTML = '';
+  for (const f of features){
+    const open = f.id === openId;
+    const el = document.createElement('section');
+    // is-on tints the icon chip when the feature is enabled/armed (required or on)
+    const armed = f.required || f.on;
+    el.className = 'row'
+      + (open ? ' open' : '')
+      + (armed ? ' is-on' : '')
+      + ((!f.required && !f.on) ? ' disabled-feature' : '');
+    el.dataset.id = f.id;
+    el.innerHTML = `
+      <div class="row-head" data-head="${f.id}">
+        <div class="icon-chip">${f.icon}</div>
+        <div class="row-titlewrap">
+          <div class="row-eyebrow">${f.eyebrow}</div>
+          <div class="row-name">${f.name}${f.required ? ' <span class="badge">Required</span>' : ''}</div>
+          <div class="row-sub">${f.sub}</div>
+        </div>
+        ${open ? '' : statusBlock(f)}
+        ${switchBlock(f)}
+      </div>
+      <div class="row-body">
+        <div class="body-inner">${open ? f.body() : ''}</div>
+      </div>`;
+    stack.appendChild(el);
+  }
+  wire();
+  updateFooter();
+}
+
+function updateFooter(){
+  const onN = features.filter(f => f.on).length;
+  document.getElementById('onCount').textContent = onN;
+}
+
+/* ---------- interaction wiring ---------- */
+function wire(){
+  // expand on header body click (M1: separate from toggle)
+  document.querySelectorAll('[data-head]').forEach(h => {
+    h.addEventListener('click', (e) => {
+      if (e.target.closest('.switch') || e.target.closest('.switch-wrap')) return;
+      const id = h.dataset.head;
+      if (id === openId) return;       // already open; keep open (header not a toggle)
+      openId = id;
+      render();
+    });
+  });
+
+  // toggles (stopPropagation so they never expand/collapse)
+  document.querySelectorAll('.switch').forEach(sw => {
+    sw.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = sw.dataset.id;
+      const f = features.find(x => x.id === id);
+      if (!f || f.required) return;     // locked
+      f.on = !f.on;
+      sw.setAttribute('aria-checked', String(f.on));
+      // update the row's disabled styling + status dot + icon-chip tint
+      const row = sw.closest('.row');
+      row.classList.toggle('disabled-feature', !f.on);
+      row.classList.toggle('is-on', f.on);
+      const sd = row.querySelector('.row-status');
+      if (sd) {
+        sd.innerHTML = f.on
+          ? '<span class="status-dot on"></span>On'
+          : '<span class="status-dot"></span>Off';
+      }
+      updateFooter();
+    });
+  });
+
+  // wire any per-panel controls present
+  wirePanelControls();
+}
+
+/* ============================================================
+   SEGMENTED CONTROL helper (real Segmented.svelte behavior)
+   ------------------------------------------------------------
+   options: ['Original','1080p',...]; active index; per-option data attrs.
+   Renders role=radiogroup with role=radio buttons + roving tabindex.
+   ============================================================ */
+function segmented(opts){
+  // opts: { name, items:[{label, active, attrs}], disabled }
+  const groupAttrs = opts.disabled ? ' aria-disabled="true"' : '';
+  const cls = 'segmented' + (opts.disabled ? ' segmented--disabled' : '');
+  const data = opts.data ? ` data-seg="${opts.data}"` : '';
+  const buttons = opts.items.map((it, i) => {
+    const active = !!it.active;
+    const extra = it.attrs ? ' ' + it.attrs : '';
+    return `<button type="button" class="seg${active ? ' seg--active' : ''}" role="radio"`
+      + ` aria-checked="${active}" tabindex="${active ? 0 : -1}"`
+      + `${opts.disabled ? ' disabled' : ''}${extra}>${it.label}</button>`;
+  }).join('');
+  return `<div class="${cls}" role="radiogroup"${opts.name ? ` aria-label="${opts.name}"` : ''}${data}${groupAttrs}>${buttons}</div>`;
+}
+
+/* ============================================================
+   PANEL BODIES
+   ============================================================ */
+
+function permissionsBody(){
+  return `
+    <div class="group">
+      <div class="group-title">macOS access</div>
+      <div class="perm" data-perm="screen">
+        <div class="pn"><div class="t">Screen recording</div><div class="s">Required to capture window video.</div></div>
+        <div class="pr">
+          <span class="pill granted" data-pill><span class="d"></span>Granted</span>
+        </div>
+      </div>
+      <div class="perm" data-perm="mic">
+        <div class="pn"><div class="t">Microphone</div><div class="s">Needed only if microphone capture is on.</div></div>
+        <div class="pr">
+          <span class="pill pending" data-pill><span class="d"></span>Not requested</span>
+          <button class="btn sm" data-grant>Grant access</button>
+        </div>
+      </div>
+      <div class="perm" data-perm="sysaudio">
+        <div class="pn"><div class="t">System audio</div><div class="s">macOS audio capture entitlement.</div></div>
+        <div class="pr">
+          <span class="pill denied" data-pill><span class="d"></span>Denied</span>
+          <button class="btn sm" data-grant>Open Settings</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function screenBody(){
+  return `
+    <div class="group">
+      <div class="group-title">Video</div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">Resolution</div><div class="desc">Higher resolution = sharper text, larger files.</div></div>
+        <div class="ctl-field">
+          ${segmented({ name:'Resolution', data:'res', items:[
+            { label:'Original' },
+            { label:'1080p', active:true },
+            { label:'1440p' },
+            { label:'4K' },
+            { label:'Custom', attrs:'data-custom="wh"' },
+          ]})}
+          <span class="hidden" data-wh>
+            <input class="input wh" type="text" value="1920" /> × <input class="input wh" type="text" value="1080" />
+          </span>
+        </div>
+      </div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">Video bitrate</div><div class="desc">Quality of the encoded stream.</div></div>
+        <div class="ctl-field">
+          ${segmented({ name:'Video bitrate', data:'bitrate', items:[
+            { label:'Low' },
+            { label:'Medium', active:true },
+            { label:'High' },
+            { label:'Custom', attrs:'data-custom="mbps"' },
+          ]})}
+          <span class="hidden" data-mbps>
+            <input class="input num" type="text" value="12" /> <span class="kbd-hint">Mbps (1–40)</span>
+          </span>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-title">Timing</div>
+      <div class="slider-block">
+        <div class="slider-head"><span>Frame rate</span><b><span data-out="fps">2</span> fps</b></div>
+        <input type="range" min="1" max="120" value="2" data-slider="fps" />
+      </div>
+      <div class="slider-block">
+        <div class="slider-head"><span>Segment duration</span><b><span data-out="seg">60</span> s</b></div>
+        <input type="range" min="10" max="300" value="60" data-slider="seg" />
+        <span class="kbd-hint">Capped at 5 minutes per segment.</span>
+      </div>
+    </div>`;
+}
+
+function storageBody(){
+  return `
+    <div class="group">
+      <div class="group-title">Location</div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">Save directory</div></div>
+        <div class="ctl-field" style="width:100%">
+          <input class="input path" type="text" value="~/Library/Application Support/mnema/captures" />
+          <button class="btn">Browse…</button>
+        </div>
+      </div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">Retention</div><div class="desc">Captures older than this are cleaned up automatically.</div></div>
+        <div class="ctl-field">
+          ${segmented({ name:'Retention', data:'retention', items:[
+            { label:'Never' },
+            { label:'7 days' },
+            { label:'14 days' },
+            { label:'30 days', active:true },
+          ]})}
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <button class="reveal-btn" data-reveal><span class="caret">▸</span> Advanced</button>
+      <div class="reveal-body" data-reveal-body>
+        <div class="ctl stack-field">
+          <div class="ctl-label"><div class="name">Preview cache TTL</div><div class="desc">How long thumbnail previews are kept.</div></div>
+          <div class="ctl-field">
+            ${segmented({ name:'Preview cache TTL', data:'ttl', items:[
+              { label:'1 hour' },
+              { label:'24 hours', active:true },
+              { label:'7 days' },
+            ]})}
+          </div>
+        </div>
+        <div class="ctl">
+          <div class="ctl-label"><div class="name">Auto-start on login</div><div class="desc">Begin recording when you log in.</div></div>
+          <div class="ctl-field">
+            <button class="switch" role="switch" aria-checked="false" data-localsw><span class="thumb"></span></button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function micBody(){
+  return `
+    <div class="group">
+      <div class="ctl">
+        <div class="ctl-label"><div class="name">Transcribe microphone</div><div class="desc">Run captured mic audio through transcription.</div></div>
+        <div class="ctl-field">
+          <button class="switch" role="switch" aria-checked="true" data-localsw><span class="thumb"></span></button>
+        </div>
+      </div>
+      <div class="ctl">
+        <div class="ctl-label"><div class="name">Input device</div></div>
+        <div class="ctl-field">
+          <select class="input">
+            <option selected>MacBook Pro Microphone</option>
+            <option>External USB Mic</option>
+            <option>AirPods Pro</option>
+          </select>
+        </div>
+      </div>
+    </div>`;
+}
+
+function sysAudioBody(){
+  return `
+    <div class="group">
+      <div class="note muted">System audio requires <b>Screen capture</b> (already on) and the macOS audio entitlement granted in Permissions.</div>
+      <div class="ctl">
+        <div class="ctl-label"><div class="name">Transcribe system audio</div><div class="desc">Transcribe sound from meetings, videos, and apps.</div></div>
+        <div class="ctl-field">
+          <button class="switch" role="switch" aria-checked="false" data-localsw><span class="thumb"></span></button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function ocrBody(){
+  return `
+    <div class="group">
+      <div class="group-title">Provider</div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">OCR provider</div><div class="desc">Apple Vision is on-device with no download; Tesseract supports many languages.</div></div>
+        <div class="ctl-field">
+          ${segmented({ name:'OCR provider', data:'ocr', items:[
+            { label:'Apple Vision', active:true },
+            { label:'Tesseract' },
+          ]})}
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-title">Model</div>
+      <div class="model-card">
+        <div class="model-top">
+          <div class="model-id">tesseract-best · eng<div class="meta">English trained data · 12.4 MB</div></div>
+          <span class="pill" data-dlstate><span class="d"></span>Downloading</span>
+        </div>
+        <div class="dl" data-dl>
+          <div class="dl-track"><div class="dl-fill" style="width:62%"></div></div>
+          <div class="dl-meta"><span><b>62%</b> · 7.7 / 12.4 MB</span><button class="btn sm danger" data-cancel>Cancel</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="ctl">
+        <div class="ctl-label"><div class="name">Language</div><div class="desc">Tesseract only.</div></div>
+        <div class="ctl-field">
+          <select class="input">
+            <option selected>English (eng)</option>
+            <option>French (fra)</option>
+            <option>German (deu)</option>
+          </select>
+        </div>
+      </div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">Recognition mode</div></div>
+        <div class="ctl-field">
+          ${segmented({ name:'Recognition mode', data:'ocrmode', items:[
+            { label:'Fast', active:true },
+            { label:'Accurate' },
+          ]})}
+        </div>
+      </div>
+    </div>`;
+}
+
+function transcribeBody(){
+  return `
+    <div class="group">
+      <div class="group-title">Provider</div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">Transcription provider</div><div class="desc">Local Whisper is on-device and private; Apple Speech needs no download; Parakeet is a fast NeMo model.</div></div>
+        <div class="ctl-field">
+          ${segmented({ name:'Transcription provider', data:'asr', items:[
+            { label:'Local Whisper', active:true },
+            { label:'Apple Speech' },
+            { label:'Parakeet' },
+          ]})}
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="group-title">Model</div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">Model size</div><div class="desc">Bigger = more accurate, slower, more disk.</div></div>
+        <div class="ctl-field">
+          ${segmented({ name:'Model size', data:'whisper', items:[
+            { label:'base' },
+            { label:'small', active:true },
+            { label:'medium' },
+            { label:'large' },
+          ]})}
+        </div>
+      </div>
+      <div class="model-card">
+        <div class="model-top">
+          <div class="model-id">whisper-small · multilingual<div class="meta">466 MB · downloaded</div></div>
+          <span class="pill granted" data-dlstate><span class="d"></span>Available</span>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="ctl">
+        <div class="ctl-label"><div class="name">Language</div></div>
+        <div class="ctl-field">
+          <select class="input">
+            <option selected>Auto-detect</option>
+            <option>English (en)</option>
+            <option>French (fr)</option>
+            <option>German (de)</option>
+          </select>
+        </div>
+      </div>
+    </div>`;
+}
+
+function privacyBody(){
+  return `
+    <div class="group">
+      <div class="group-title">Add an app to exclude</div>
+      <div class="typeahead" data-typeahead>
+        <input class="input path" type="text" placeholder="Type an app name… (e.g. 1Password)" data-ta-input style="width:100%" />
+        <div class="typeahead-menu" data-ta-menu></div>
+      </div>
+      <div class="chips" data-chips>
+        <span class="chip" data-chip>1Password <button data-remove title="Remove">×</button></span>
+        <span class="chip" data-chip>Messages <button data-remove title="Remove">×</button></span>
+        <span class="chip" data-chip>Bitwarden <button data-remove title="Remove">×</button></span>
+      </div>
+      <div class="ctl">
+        <div class="count"><b data-chipcount>3</b> apps excluded</div>
+        <button class="btn sm" data-recommend>Apply recommended</button>
+      </div>
+    </div>`;
+}
+
+function askAiBody(){
+  return `
+    <div class="group">
+      <div class="note">The <b>Reasoning Engine</b> can run on the cloud (Anthropic / OpenAI) or locally (Ollama / Llamafile). It must be configured before Ask AI works. Your API key is stored only in the OS keychain — never in a config file.</div>
+      <div class="ctl stack-field">
+        <div class="ctl-label"><div class="name">Provider</div></div>
+        <div class="ctl-field">
+          ${segmented({ name:'Provider', data:'aiprovider', items:[
+            { label:'Anthropic', active:true },
+            { label:'OpenAI' },
+            { label:'Ollama' },
+            { label:'Llamafile' },
+          ]})}
+        </div>
+      </div>
+      <div class="ctl">
+        <div class="ctl-label"><div class="name">Model</div></div>
+        <div class="ctl-field">
+          <select class="input">
+            <option selected>claude-opus-4</option>
+            <option>claude-sonnet-4</option>
+            <option>gpt-4.1</option>
+          </select>
+        </div>
+      </div>
+      <div class="ctl">
+        <div class="ctl-label"><div class="name">API key</div><div class="desc">Stored in the OS keychain.</div></div>
+        <div class="ctl-field"><button class="btn accent" data-keybtn>Choose provider + add API key</button></div>
+      </div>
+    </div>`;
+}
+
+/* ============================================================
+   PANEL CONTROL WIRING (re-run after every render)
+   ============================================================ */
+function wirePanelControls(){
+  const root = document.querySelector('.row.open');
+  if (!root) return;
+
+  // segmented controls (real Segmented.svelte behavior: click + keyboard)
+  root.querySelectorAll('.segmented').forEach(seg => {
+    const btns = [...seg.querySelectorAll('.seg')];
+
+    const select = (btn) => {
+      btns.forEach(x => {
+        const isActive = x === btn;
+        x.classList.toggle('seg--active', isActive);
+        x.setAttribute('aria-checked', String(isActive));
+        x.tabIndex = isActive ? 0 : -1;
+      });
+      // custom field reveal (resolution / bitrate)
+      const field = seg.closest('.ctl-field');
+      if (field){
+        const wh = field.querySelector('[data-wh]');
+        const mbps = field.querySelector('[data-mbps]');
+        if (wh) wh.classList.toggle('hidden', btn.dataset.custom !== 'wh');
+        if (mbps) mbps.classList.toggle('hidden', btn.dataset.custom !== 'mbps');
+      }
+    };
+
+    btns.forEach((b, i) => {
+      b.addEventListener('click', () => { if (!b.disabled) { select(b); b.focus(); } });
+      b.addEventListener('keydown', (e) => {
+        if (seg.classList.contains('segmented--disabled')) return;
+        let target = null;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') target = btns[(i + 1) % btns.length];
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') target = btns[(i - 1 + btns.length) % btns.length];
+        else if (e.key === 'Home') target = btns[0];
+        else if (e.key === 'End') target = btns[btns.length - 1];
+        if (target){
+          e.preventDefault();
+          select(target);
+          target.focus();
+        }
+      });
+    });
+  });
+
+  // sliders
+  root.querySelectorAll('[data-slider]').forEach(s => {
+    const out = root.querySelector(`[data-out="${s.dataset.slider}"]`);
+    s.addEventListener('input', () => { if (out) out.textContent = s.value; });
+  });
+
+  // local switches inside a panel
+  root.querySelectorAll('[data-localsw]').forEach(sw => {
+    sw.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const on = sw.getAttribute('aria-checked') === 'true';
+      sw.setAttribute('aria-checked', String(!on));
+    });
+  });
+
+  // advanced reveal
+  root.querySelectorAll('[data-reveal]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.classList.toggle('open');
+      const body = btn.parentElement.querySelector('[data-reveal-body]');
+      if (body) body.classList.toggle('open');
+    });
+  });
+
+  // permission grant buttons cycle the pill state
+  root.querySelectorAll('[data-grant]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const perm = btn.closest('.perm');
+      const pill = perm.querySelector('[data-pill]');
+      // pending/denied -> granted; granted -> pending (so reviewers can cycle states)
+      const states = [
+        { cls:'pending', dot:'', label:'Not requested', btn:'Grant access' },
+        { cls:'granted', dot:'', label:'Granted', btn:'Re-check' },
+        { cls:'denied',  dot:'', label:'Denied', btn:'Open Settings' },
+      ];
+      const cur = pill.classList.contains('granted') ? 1 : pill.classList.contains('denied') ? 2 : 0;
+      const next = states[(cur + 1) % 3];
+      pill.className = 'pill ' + next.cls;
+      pill.innerHTML = `<span class="d"></span>${next.label}`;
+      pill.setAttribute('data-pill','');
+      btn.textContent = next.btn;
+    });
+  });
+
+  // OCR download cancel -> Missing/Download
+  root.querySelectorAll('[data-cancel]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const card = btn.closest('.model-card');
+      const state = card.querySelector('[data-dlstate]');
+      const dl = card.querySelector('[data-dl]');
+      state.className = 'pill denied';
+      state.innerHTML = '<span class="d"></span>Missing';
+      if (dl) dl.outerHTML = '<div class="ctl"><div class="count">Model not downloaded.</div><button class="btn sm accent" data-redownload>Download</button></div>';
+      const re = card.querySelector('[data-redownload]');
+      if (re) re.addEventListener('click', () => render());
+    });
+  });
+
+  // excluded-app chips
+  root.querySelectorAll('[data-remove]').forEach(b => b.addEventListener('click', () => removeChip(b)));
+
+  const taInput = root.querySelector('[data-ta-input]');
+  const taMenu = root.querySelector('[data-ta-menu]');
+  if (taInput && taMenu){
+    const all = ['Zoom','Slack','Banking','Keychain Access','Tor Browser','VPN Client','Signal','Mail'];
+    const refresh = () => {
+      const q = taInput.value.trim().toLowerCase();
+      const matches = all.filter(a => a.toLowerCase().includes(q)).slice(0,5);
+      taMenu.innerHTML = matches.map(m => `<div class="opt" data-opt="${m}">${m}</div>`).join('');
+      taMenu.classList.toggle('show', q.length > 0 && matches.length > 0);
+      taMenu.querySelectorAll('[data-opt]').forEach(o => {
+        o.addEventListener('click', () => { addChip(o.dataset.opt); taInput.value=''; taMenu.classList.remove('show'); });
+      });
+    };
+    taInput.addEventListener('input', refresh);
+    taInput.addEventListener('focus', refresh);
+    taInput.addEventListener('blur', () => setTimeout(() => taMenu.classList.remove('show'), 140));
+  }
+
+  const rec = root.querySelector('[data-recommend]');
+  if (rec) rec.addEventListener('click', () => { ['Zoom','Banking'].forEach(addChip); });
+}
+
+function recountChips(){
+  const root = document.querySelector('.row.open');
+  if (!root) return;
+  const n = root.querySelectorAll('[data-chip]').length;
+  const c = root.querySelector('[data-chipcount]');
+  if (c) c.textContent = n;
+}
+function removeChip(btn){
+  btn.closest('[data-chip]').remove();
+  recountChips();
+}
+function addChip(name){
+  const root = document.querySelector('.row.open');
+  const wrap = root && root.querySelector('[data-chips]');
+  if (!wrap) return;
+  // avoid dupes
+  const exists = [...wrap.querySelectorAll('[data-chip]')].some(c => c.textContent.replace('×','').trim() === name);
+  if (exists) return;
+  const chip = document.createElement('span');
+  chip.className = 'chip'; chip.setAttribute('data-chip','');
+  chip.innerHTML = `${name} <button data-remove title="Remove">×</button>`;
+  wrap.appendChild(chip);
+  chip.querySelector('[data-remove]').addEventListener('click', () => removeChip(chip.querySelector('[data-remove]')));
+  recountChips();
+}
+
+/* ---------- CTA ---------- */
+document.getElementById('cta').addEventListener('click', () => {
+  const cta = document.getElementById('cta');
+  cta.textContent = 'Start recording ●';
+});
+
+render();
+</script>
+</body>
+</html>
