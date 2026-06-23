@@ -16,6 +16,11 @@
     /** Disables the whole group. */
     disabled?: boolean;
     /**
+     * Individual option values to disable while keeping the rest interactive.
+     * Disabled segments can't be clicked and are skipped by keyboard nav.
+     */
+    disabledValues?: string[];
+    /**
      * Optional leading-icon snippet, keyed by option value. Receives the
      * option `value` so a single snippet can switch on it:
      *   {#snippet icon(value)} … {/snippet}
@@ -33,28 +38,43 @@
     value = $bindable(),
     onValueChange,
     disabled = false,
+    disabledValues = [],
     icon,
     ariaLabel,
     compact = false,
   }: Props = $props();
 
+  const isOff = (v: string): boolean => disabledValues.includes(v);
+
   function select(next: string) {
-    if (disabled || next === value) return;
+    if (disabled || isOff(next) || next === value) return;
     value = next;
     onValueChange?.(next);
+  }
+
+  // Step from `from` in `dir` (+1/-1), skipping disabled options. Returns the
+  // first enabled index, or null if every option is disabled.
+  function nextEnabledIndex(from: number, dir: number): number | null {
+    const n = options.length;
+    for (let step = 1; step <= n; step += 1) {
+      const candidate = (((from + dir * step) % n) + n) % n;
+      if (!isOff(options[candidate].value)) return candidate;
+    }
+    return null;
   }
 
   function onKeydown(event: KeyboardEvent, index: number) {
     if (disabled) return;
     let nextIndex: number | null = null;
     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      nextIndex = (index + 1) % options.length;
+      nextIndex = nextEnabledIndex(index, 1);
     } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      nextIndex = (index - 1 + options.length) % options.length;
+      nextIndex = nextEnabledIndex(index, -1);
     } else if (event.key === "Home") {
-      nextIndex = 0;
+      nextIndex = isOff(options[0].value) ? nextEnabledIndex(0, 1) : 0;
     } else if (event.key === "End") {
-      nextIndex = options.length - 1;
+      const last = options.length - 1;
+      nextIndex = isOff(options[last].value) ? nextEnabledIndex(last, -1) : last;
     }
     if (nextIndex === null) return;
     event.preventDefault();
@@ -74,12 +94,13 @@
       type="button"
       class="seg"
       class:seg--active={value === option.value}
+      class:seg--off={isOff(option.value)}
       role="radio"
       aria-checked={value === option.value}
       aria-label={option.label}
       title={option.label}
       tabindex={value === option.value || (value == null && index === 0) ? 0 : -1}
-      {disabled}
+      disabled={disabled || isOff(option.value)}
       onclick={() => select(option.value)}
       onkeydown={(e) => onKeydown(e, index)}
     >
@@ -145,6 +166,11 @@
 
   .seg:disabled {
     cursor: not-allowed;
+  }
+
+  /* Individually disabled segment (group stays interactive). */
+  .seg--off {
+    opacity: 0.4;
   }
 
   .seg__icon,

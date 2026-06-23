@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -75,11 +76,12 @@
 
     <SettingRow label="Preference" description="Which microphone capture should use." full>
       {#snippet control()}
-        <RadioGroup
+        <Segmented
           bind:value={audio.draftPreferenceMode}
+          ariaLabel="Microphone preference"
           options={[
-            { value: "default", label: "System Default", description: "Use the currently selected system microphone" },
-            { value: "specific_device", label: "Specific Device", description: "Lock to a particular microphone" },
+            { value: "default", label: "System Default" },
+            { value: "specific_device", label: "Specific Device" },
           ]}
         />
       {/snippet}
@@ -113,11 +115,12 @@
       divider={!!audio.micError}
     >
       {#snippet control()}
-        <RadioGroup
+        <Segmented
           bind:value={audio.draftDisconnectPolicy}
+          ariaLabel="On disconnect policy"
           options={[
-            { value: "fallback_to_default", label: "Fallback to Default", description: "Switch to system default when device disconnects" },
-            { value: "wait_for_same_device", label: "Wait for Same Device", description: "Pause microphone capture until the device reconnects" },
+            { value: "fallback_to_default", label: "Fallback to Default" },
+            { value: "wait_for_same_device", label: "Wait for Same Device" },
           ]}
         />
       {/snippet}

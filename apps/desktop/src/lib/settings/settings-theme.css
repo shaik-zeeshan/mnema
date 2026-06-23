@@ -97,25 +97,25 @@
     color: var(--app-text);
   }
 
-  [data-theme="light"] .settings-shell .preset-chip, [data-theme="light"] .bitrate-chip {
+  [data-theme="light"] .bitrate-chip {
     background: var(--app-surface-raised);
     border-color: var(--app-border-strong);
   }
-  [data-theme="light"] .settings-shell .preset-chip:hover, [data-theme="light"] .bitrate-chip:hover {
+  [data-theme="light"] .bitrate-chip:hover {
     background: var(--app-surface-hover);
     border-color: var(--app-border-hover);
   }
-  [data-theme="light"] .settings-shell .preset-chip--active, [data-theme="light"] .bitrate-chip--active {
+  [data-theme="light"] .bitrate-chip--active {
     background: var(--app-accent-bg);
     border-color: var(--app-accent);
   }
-  [data-theme="light"] .settings-shell .preset-chip__label, [data-theme="light"] .bitrate-chip__label {
+  [data-theme="light"] .bitrate-chip__label {
     color: var(--app-text-strong);
   }
-  [data-theme="light"] .settings-shell .preset-chip--active .preset-chip__label, [data-theme="light"] .bitrate-chip--active .bitrate-chip__label {
+  [data-theme="light"] .bitrate-chip--active .bitrate-chip__label {
     color: var(--app-accent-strong);
   }
-  [data-theme="light"] .settings-shell .preset-chip__dim, [data-theme="light"] .bitrate-chip__mbps {
+  [data-theme="light"] .bitrate-chip__mbps {
     color: var(--app-text-muted);
   }
 

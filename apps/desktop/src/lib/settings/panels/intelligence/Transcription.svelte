@@ -2,6 +2,7 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
@@ -154,13 +155,14 @@
   {#if rec.draftTranscriptionProvider === "parakeet"}
     <SettingRow label="Parakeet memory mode" full>
       {#snippet control()}
-        <RadioGroup
+        <Segmented
           value={rec.draftTranscriptionMemoryMode}
           onValueChange={(value) => rec.draftTranscriptionMemoryMode = value as AudioTranscriptionMemoryMode}
+          ariaLabel="Parakeet memory mode"
           options={[
-            { value: "balanced", label: "Balanced", description: "Unload ONNX sessions after idle timeout" },
-            { value: "low_memory", label: "Low memory", description: "Unload ONNX sessions after every transcription" },
-            { value: "performance", label: "Performance", description: "Keep ONNX sessions loaded for fastest repeat jobs" },
+            { value: "balanced", label: "Balanced" },
+            { value: "low_memory", label: "Low memory" },
+            { value: "performance", label: "Performance" },
           ]}
         />
       {/snippet}

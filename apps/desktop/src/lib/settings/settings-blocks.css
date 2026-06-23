@@ -4,66 +4,6 @@
  * shell imports the parts in source order — see settings-layout.css for the
  * full map). Every selector is namespaced under `.settings-shell`. */
 
-  /* ── Resolution preset chips ──────────────────────────────────────── */
-  .settings-shell .resolution-preset-grid {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-
-  .settings-shell .preset-chip {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    padding: 8px 16px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    cursor: pointer;
-    outline: none;
-    font-family: inherit;
-    transition: background 0.12s, border-color 0.12s;
-    min-width: 72px;
-  }
-
-  .settings-shell .preset-chip:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-
-  .settings-shell .preset-chip--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent);
-  }
-
-  .settings-shell .preset-chip:focus-visible {
-    outline: 1px solid var(--app-accent);
-    outline-offset: 1px;
-  }
-
-  .settings-shell .preset-chip__label {
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: var(--app-text);
-    text-transform: uppercase;
-  }
-
-  .settings-shell .preset-chip--active .preset-chip__label {
-    color: var(--app-accent);
-  }
-
-  .settings-shell .preset-chip__dim {
-    font-size: 9px;
-    color: var(--app-text-subtle);
-    letter-spacing: 0.04em;
-  }
-
-  .settings-shell .preset-chip--active .preset-chip__dim {
-    color: var(--app-accent-strong);
-  }
-
   /* ── Custom resolution inputs ─────────────────────────────────────── */
   .settings-shell .custom-resolution-inputs {
     display: flex;

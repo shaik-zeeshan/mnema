@@ -2,6 +2,7 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
@@ -119,12 +120,13 @@
   {#if rec.draftOcrProvider === "apple_vision"}
     <SettingRow label="Recognition mode" full>
       {#snippet control()}
-        <RadioGroup
+        <Segmented
           bind:value={rec.draftOcrRecognitionMode}
           disabled={!rec.draftOcrEnabled}
+          ariaLabel="Recognition mode"
           options={[
-            { value: "fast", label: "Fast", description: "Lower CPU usage; default for continuous capture." },
-            { value: "accurate", label: "Accurate", description: "Higher OCR cost with better Apple Vision accuracy." },
+            { value: "fast", label: "Fast" },
+            { value: "accurate", label: "Accurate" },
           ]}
         />
       {/snippet}

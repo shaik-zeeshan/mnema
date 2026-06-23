@@ -1,8 +1,10 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
+  import type { ResolutionPreset, VideoBitratePreset } from "$lib/types";
   import Slider from "$lib/components/Slider.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import Stepper from "$lib/components/Stepper.svelte";
+  import Input from "$lib/components/Input.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
 
@@ -52,7 +54,7 @@
           <div class="resolution-locked-notice">
             <span class="resolution-locked-notice__icon">ℹ</span>
             <span class="resolution-locked-notice__text">
-              Preset and custom resolutions require macOS 15 or later (ScreenCaptureKit).
+              Scaled and custom resolutions require macOS 15 or later (ScreenCaptureKit).
               Only <strong>Original</strong> resolution is available on this system.
             </span>
           </div>
@@ -60,7 +62,7 @@
           <div class="resolution-pending-notice">
             <span class="resolution-pending-notice__icon">⏳</span>
             <span class="resolution-pending-notice__text">
-              Checking capture support… Preset and Custom are disabled until support is confirmed.
+              Checking capture support… Scaled and custom resolutions are disabled until support is confirmed.
             </span>
           </div>
         {:else if captureSupportFailed}
@@ -75,47 +77,45 @@
           <div class="resolution-supported-notice">
             <span class="resolution-supported-notice__icon">✓</span>
             <span class="resolution-supported-notice__text">
-              Native capture supports Preset and Custom output resolutions.
+              Native capture supports scaled and custom output resolutions.
             </span>
           </div>
         {/if}
 
-        <RadioGroup
-          bind:value={rec.draftResolutionMode}
-          disabledValues={nonOriginalResolutionDisabled ? ["preset", "custom"] : []}
+        <!-- Original, the scaled presets, and Custom collapse into one
+             segmented control. Selecting a preset writes both mode and preset;
+             "Custom" flips mode to custom and reveals the width/height inputs. -->
+        <Segmented
+          value={rec.draftResolutionMode === "custom" ? "custom" : rec.draftResolutionMode === "original" ? "original" : rec.draftResolutionPreset}
+          onValueChange={(v) => {
+            if (v === "custom") {
+              rec.draftResolutionMode = "custom";
+            } else if (v === "original") {
+              rec.draftResolutionMode = "original";
+            } else {
+              rec.draftResolutionMode = "preset";
+              rec.draftResolutionPreset = v as ResolutionPreset;
+            }
+          }}
+          ariaLabel="Screen resolution"
+          disabledValues={nonOriginalResolutionDisabled ? ["1080p", "720p", "540p", "custom"] : []}
           options={[
-            { value: "original", label: "Original", description: "Capture at the display's native resolution" },
-            { value: "preset", label: "Preset", description: "Select a standard output resolution" },
-            { value: "custom", label: "Custom", description: "Enter exact width and height in pixels" },
+            { value: "original", label: "Original" },
+            { value: "1080p", label: "1080p" },
+            { value: "720p", label: "720p" },
+            { value: "540p", label: "540p" },
+            { value: "custom", label: "Custom" },
           ]}
         />
-
-        {#if rec.draftResolutionMode === "preset"}
-          <div class="resolution-preset-grid">
-            {#each (["1080p", "720p", "540p"] as const) as preset}
-              {@const presetMeta = { "1080p": { w: 1920, h: 1080 }, "720p": { w: 1280, h: 720 }, "540p": { w: 960, h: 540 } }[preset]}
-              <button
-                class="preset-chip"
-                class:preset-chip--active={rec.draftResolutionPreset === preset}
-                onclick={() => { rec.draftResolutionPreset = preset; }}
-                type="button"
-              >
-                <span class="preset-chip__label">{preset}</span>
-                <span class="preset-chip__dim">{presetMeta.w}×{presetMeta.h}</span>
-              </button>
-            {/each}
-          </div>
-        {/if}
 
         {#if rec.draftResolutionMode === "custom"}
           <div class="custom-resolution-inputs">
             <div class="custom-res-field">
               <label class="custom-res-label" for="res-width">Width (px)</label>
-              <Stepper
+              <Input
                 id="res-width"
                 bind:value={rec.customWidthRaw}
-                min={16}
-                max={8192}
+                inputmode="numeric"
                 placeholder="e.g. 1920"
                 ariaLabel="width"
                 invalid={!!rec.customWidthRaw && rec.draftCustomWidth === null}
@@ -124,11 +124,10 @@
             <span class="custom-res-sep" aria-hidden="true">×</span>
             <div class="custom-res-field">
               <label class="custom-res-label" for="res-height">Height (px)</label>
-              <Stepper
+              <Input
                 id="res-height"
                 bind:value={rec.customHeightRaw}
-                min={16}
-                max={8192}
+                inputmode="numeric"
                 placeholder="e.g. 1080"
                 ariaLabel="height"
                 invalid={!!rec.customHeightRaw && rec.draftCustomHeight === null}
@@ -169,30 +168,27 @@
   <SettingRow label="Bitrate" full divider={false}>
     {#snippet control()}
       <div class="control-stack">
-        <!-- Mode selector (preset chips + custom) -->
-        <div class="bitrate-mode-chips">
-          {#each (["low", "medium", "high"] as const) as bp}
-            {@const meta = { low: { mbps: "~3", hint: "Lower quality, smallest file" }, medium: { mbps: "~8", hint: "Balanced quality and size" }, high: { mbps: "~20", hint: "High quality, larger file" } }[bp]}
-            <button
-              type="button"
-              class="bitrate-chip"
-              class:bitrate-chip--active={rec.draftBitrateMode === "preset" && rec.draftBitratePreset === bp}
-              onclick={() => { rec.draftBitrateMode = "preset"; rec.draftBitratePreset = bp; }}
-            >
-              <span class="bitrate-chip__label">{bp}</span>
-              <span class="bitrate-chip__mbps">{meta.mbps} Mbps</span>
-            </button>
-          {/each}
-          <button
-            type="button"
-            class="bitrate-chip"
-            class:bitrate-chip--active={rec.draftBitrateMode === "custom"}
-            onclick={() => { rec.draftBitrateMode = "custom"; }}
-          >
-            <span class="bitrate-chip__label">Custom</span>
-            <span class="bitrate-chip__mbps">1–40 Mbps (integer)</span>
-          </button>
-        </div>
+        <!-- Mode selector: presets (low/medium/high) + custom as one segmented
+             control. Selecting a preset writes both mode and preset; "Custom"
+             flips mode to custom and reveals the Mbps stepper below. -->
+        <Segmented
+          value={rec.draftBitrateMode === "custom" ? "custom" : rec.draftBitratePreset}
+          onValueChange={(v) => {
+            if (v === "custom") {
+              rec.draftBitrateMode = "custom";
+            } else {
+              rec.draftBitrateMode = "preset";
+              rec.draftBitratePreset = v as VideoBitratePreset;
+            }
+          }}
+          ariaLabel="Video bitrate mode"
+          options={[
+            { value: "low", label: "Low · ~3 Mbps" },
+            { value: "medium", label: "Medium · ~8 Mbps" },
+            { value: "high", label: "High · ~20 Mbps" },
+            { value: "custom", label: "Custom" },
+          ]}
+        />
 
         {#if rec.draftBitrateMode === "preset"}
           <p class="group-hint bitrate-preset-hint">
@@ -284,5 +280,11 @@
 
   .control-stack :global(.group-hint) {
     margin: 0;
+  }
+
+  /* The segmented control hugs its options instead of stretching to the full
+     stack width; notices, hints, and the inputs row still span full width. */
+  .control-stack :global(.segmented) {
+    align-self: flex-start;
   }
 </style>
