@@ -1,0 +1,731 @@
+/* Onboarding accordion — GLOBAL stylesheet (Slice 2 + 4).
+ *
+ * Imported ONCE from FeatureStack.svelte (`import "./onboarding-ui.css";`) so it
+ * loads globally, mirroring how the settings shell imports
+ * lib/settings/settings-*.css. These classes are intentionally NOT Svelte-scoped
+ * because Slice 4 body components live in separate files and render markup that
+ * uses the body-layout primitives below.
+ *
+ * Tokens: this file uses ONLY the app-wide `--app-*` custom properties (they
+ * already exist globally and theme automatically in dark + light). It never
+ * redefines them — the mockup's `:root` block was just a copy for previewing.
+ *
+ * Everything is namespaced under `.onboarding-shell` so the global selectors
+ * cannot leak into the rest of the app. FeatureStack renders that root class. */
+
+/* ===== window-fill layout ===== */
+.onboarding-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-family:
+    "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, "Cascadia Code",
+    "Fira Code", monospace;
+  color: var(--app-text);
+}
+
+/* ===== header line ===== */
+.onboarding-shell .head {
+  flex: 0 0 auto;
+  padding: 24px 24px 16px;
+  position: relative;
+  z-index: 2;
+}
+.onboarding-shell .head .eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+  margin-bottom: 8px;
+}
+.onboarding-shell .head .subtitle {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  line-height: 1.5;
+}
+.onboarding-shell .head .subtitle b {
+  color: var(--app-text);
+  font-weight: 540;
+}
+
+/* ===== scrolling stack area =====
+   WKWebView: fill via flex:1 1 auto + min-height:0 on a flex-column parent.
+   Never height:100% against a flex-stretched parent. */
+.onboarding-shell .content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 24px 24px;
+  position: relative;
+  z-index: 1;
+}
+.onboarding-shell .stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  z-index: 1;
+}
+
+/* scrollbar */
+.onboarding-shell .content::-webkit-scrollbar {
+  width: 10px;
+}
+.onboarding-shell .content::-webkit-scrollbar-thumb {
+  background: var(--app-border-strong);
+  border-radius: 999px;
+  border: 3px solid var(--app-surface);
+}
+.onboarding-shell .content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ===== row (collapsed + expanded share base) ===== */
+.onboarding-shell .row {
+  position: relative;
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  background: transparent;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.onboarding-shell .row:not(.open):hover {
+  background: var(--app-surface-subtle);
+  border-color: var(--app-border-strong);
+}
+.onboarding-shell .row.open {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-raised);
+}
+/* accent hairline on expanded panel */
+.onboarding-shell .row.open::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 0;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--app-accent) 12%, transparent) 22%,
+    color-mix(in srgb, var(--app-accent) 50%, transparent) 50%,
+    transparent
+  );
+}
+
+/* row header (click target to expand) */
+.onboarding-shell .row-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 16px;
+  cursor: pointer;
+  user-select: none;
+  /* reset native button styles (the header is a <button> for keyboard focus) */
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+.onboarding-shell .row-head:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--app-accent-glow);
+  border-radius: 12px;
+}
+.onboarding-shell .row.open .row-head {
+  align-items: flex-start;
+  padding: 16px 16px 12px;
+  cursor: default;
+  border-bottom: 1px solid var(--app-border);
+}
+
+/* ===== icon chip (settings icon) ===== */
+.onboarding-shell .icon-chip {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--app-text-muted);
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.onboarding-shell .icon-chip svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: block;
+}
+/* accent tint when row open OR feature enabled/armed */
+.onboarding-shell .row.open .icon-chip,
+.onboarding-shell .row.is-on .icon-chip {
+  color: var(--app-accent);
+  background: var(--app-accent-bg);
+  border: 0;
+}
+/* nudge so the chip sits optically centered against the eyebrow + title pair */
+.onboarding-shell .row.open .icon-chip {
+  margin-top: 3px;
+}
+
+.onboarding-shell .row-titlewrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.onboarding-shell .row-name {
+  font-size: 13px;
+  font-weight: 540;
+  color: var(--app-text-strong);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.onboarding-shell .row.open .row-name {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: normal;
+}
+.onboarding-shell .row-eyebrow {
+  display: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+  margin-bottom: 6px;
+}
+.onboarding-shell .row.open .row-eyebrow {
+  display: block;
+}
+.onboarding-shell .row-sub {
+  display: none;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  line-height: 1.5;
+  margin-top: 5px;
+}
+.onboarding-shell .row.open .row-sub {
+  display: block;
+}
+
+/* tiny status dot / one-word label (collapsed only) */
+.onboarding-shell .row-status {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--app-text-muted);
+}
+.onboarding-shell .row.open .row-status {
+  display: none;
+}
+/* required rows keep the lock + Required marker by the toggle even when open */
+.onboarding-shell .row.open .row-status--req {
+  display: flex;
+  margin-top: 5px;
+}
+.onboarding-shell .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--app-text-faint);
+  flex: 0 0 auto;
+}
+.onboarding-shell .status-dot.on {
+  background: var(--app-accent);
+  box-shadow: 0 0 6px var(--app-accent-glow);
+}
+/* on-theme "needs setup" marker (warn-toned) — collapsed, non-required rows */
+.onboarding-shell .row-attn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--app-warn);
+  background: var(--app-warn-bg);
+  border: 1px solid var(--app-warn-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.onboarding-shell .row-attn .attn-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--app-warn);
+  flex: 0 0 auto;
+}
+.onboarding-shell .row.open .row-attn {
+  display: none;
+}
+/* required = locked: on-theme lock glyph in the app's SVG style (no orange) */
+.onboarding-shell .lock-ico {
+  display: flex;
+  align-items: center;
+  color: var(--app-text-subtle);
+}
+.onboarding-shell .lock-ico svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: block;
+}
+
+/* ===== switch (shared Switch.svelte renders .switch-track) ===== */
+.onboarding-shell .switch-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.onboarding-shell .row.open .switch-wrap {
+  margin-top: 2px;
+}
+/* the shared component already styles the 36x20 track/thumb; nothing to add */
+
+/* ===== expanded body ===== */
+.onboarding-shell .row-body {
+  overflow: hidden;
+}
+/* body content aligns UNDER the title (icon sits in a left gutter):
+   left = row-head padding(16) + icon(28) + gap(12) = 56px */
+.onboarding-shell .body-inner {
+  padding: 16px 16px 18px 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ===== body-layout primitives (Slice 4 components consume these) ===== */
+
+/* group within body */
+.onboarding-shell .group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.onboarding-shell .group-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+/* control row */
+.onboarding-shell .ctl {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+}
+.onboarding-shell .ctl-label {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.onboarding-shell .ctl-label .name {
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--app-text);
+}
+.onboarding-shell .ctl-label .desc {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  margin-top: 3px;
+  line-height: 1.5;
+}
+.onboarding-shell .ctl-field {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.onboarding-shell .ctl.stack-field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.onboarding-shell .ctl.stack-field .ctl-field {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+/* note / disclosure */
+.onboarding-shell .note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--app-text-muted);
+  background: var(--app-surface-subtle);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.onboarding-shell .note b {
+  color: var(--app-accent);
+  font-weight: 540;
+}
+.onboarding-shell .note.muted {
+  background: var(--app-surface-active);
+  border-color: var(--app-border);
+}
+.onboarding-shell .note.muted b {
+  color: var(--app-text);
+}
+.onboarding-shell .kbd-hint {
+  font-size: 10px;
+  color: var(--app-text-subtle);
+}
+
+/* model picker */
+.onboarding-shell .model-card {
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-subtle);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.onboarding-shell .model-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+.onboarding-shell .model-id {
+  font-size: 12px;
+  color: var(--app-text);
+}
+.onboarding-shell .model-id .meta {
+  font-size: 10px;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+}
+.onboarding-shell .dl {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.onboarding-shell .dl-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border);
+  overflow: hidden;
+}
+.onboarding-shell .dl-fill {
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--app-accent-strong),
+    var(--app-accent)
+  );
+  box-shadow: 0 0 10px var(--app-accent-glow);
+  transition: width 0.3s ease;
+}
+.onboarding-shell .dl-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: var(--app-text-muted);
+}
+.onboarding-shell .dl-meta b {
+  color: var(--app-accent);
+}
+
+/* permission line */
+.onboarding-shell .perm {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-subtle);
+}
+.onboarding-shell .perm .pn {
+  flex: 1 1 auto;
+}
+.onboarding-shell .perm .pn .t {
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--app-text);
+}
+.onboarding-shell .perm .pn .s {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+.onboarding-shell .perm .pr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+/* pills (permission / download status) */
+.onboarding-shell .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--app-text-muted);
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+.onboarding-shell .pill .d {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--app-text-faint);
+}
+.onboarding-shell .pill.granted {
+  color: var(--app-accent);
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-bg);
+}
+.onboarding-shell .pill.granted .d {
+  background: var(--app-accent);
+  box-shadow: 0 0 6px var(--app-accent-glow);
+}
+.onboarding-shell .pill.pending {
+  color: var(--app-warn);
+  border-color: var(--app-warn-border);
+  background: var(--app-warn-bg);
+}
+.onboarding-shell .pill.pending .d {
+  background: var(--app-warn);
+}
+.onboarding-shell .pill.denied {
+  color: var(--app-danger);
+  border-color: var(--app-danger-border);
+  background: var(--app-danger-bg);
+}
+.onboarding-shell .pill.denied .d {
+  background: var(--app-danger);
+}
+
+/* excluded-app count (PrivacyBody renders the chip list via the shared
+   AppPrivacyExclusion component, which carries its own scoped styling — only
+   the count line below is rendered with an onboarding primitive). */
+.onboarding-shell .count {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+.onboarding-shell .count b {
+  color: var(--app-accent);
+}
+
+/* slider block — wraps the shared Slider.svelte (which renders its own
+   `.slider-header`/value markup with scoped styling). Onboarding bodies use this
+   only to stack a slider with an optional `.kbd-hint` beneath it. */
+.onboarding-shell .slider-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+/* ===== disabled body (feature off but expanded) ===== */
+.onboarding-shell .row.disabled-feature .body-inner > .group:not(.always-on),
+.onboarding-shell .row.disabled-feature .body-inner > .ctl,
+.onboarding-shell .row.disabled-feature .body-inner > .model-card {
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+/* ===== footer ===== */
+.onboarding-shell .footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--app-border);
+  background: var(--app-surface-subtle);
+  position: relative;
+  z-index: 3;
+}
+.onboarding-shell .footer .hint {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+.onboarding-shell .footer .hint b {
+  color: var(--app-accent);
+}
+.onboarding-shell .footer .footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.onboarding-shell .footer .secondary {
+  font: inherit;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 2px;
+  transition: color 0.15s ease;
+}
+.onboarding-shell .footer .secondary:hover {
+  color: var(--app-text);
+}
+.onboarding-shell .footer .secondary:focus-visible {
+  outline: none;
+  color: var(--app-text);
+  text-decoration: underline;
+}
+.onboarding-shell .cta {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--app-bg);
+  background: var(--app-accent);
+  border: 1px solid var(--app-accent);
+  border-radius: 8px;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.08s ease;
+}
+.onboarding-shell .cta:hover:not(:disabled) {
+  box-shadow: 0 0 0 4px var(--app-accent-glow);
+}
+.onboarding-shell .cta:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.onboarding-shell .cta:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ===== text input (save-directory path field, custom-value inputs) ===== */
+/* Mirrors the mockup's `input.input`, swapped onto the app's --app-* tokens.
+   Slice 4 bodies (Storage) use `.input` / `.input.path` for the read-only path
+   field next to a Browse `.btn`. */
+.onboarding-shell input.input,
+.onboarding-shell select.input {
+  font: inherit;
+  font-size: 12px;
+  color: var(--app-text);
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: text;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.onboarding-shell input.input:hover,
+.onboarding-shell select.input:hover {
+  border-color: var(--app-border-hover);
+}
+.onboarding-shell input.input:focus,
+.onboarding-shell select.input:focus {
+  outline: none;
+  border-color: var(--app-accent-border);
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.onboarding-shell input.input.path {
+  flex: 1 1 auto;
+  min-width: 200px;
+}
+.onboarding-shell input.input[readonly] {
+  cursor: default;
+}
+
+/* ===== button family (download / cancel / grant / browse / configure) =====
+   Copied from the mockup's `.btn`/`.btn.accent`/`.btn.danger`/`.btn.sm`, with
+   the mockup's literal colors swapped for the app's --app-* tokens. The shared
+   onboarding stylesheet has no other button primitive, so sibling bodies
+   (OcrBody / TranscriptionBody / AskAiBody) consume these classes directly. */
+.onboarding-shell .btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--app-text);
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.onboarding-shell .btn:hover:not(:disabled) {
+  border-color: var(--app-border-hover);
+  color: var(--app-text-strong);
+}
+.onboarding-shell .btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.onboarding-shell .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.onboarding-shell .btn.accent {
+  color: var(--app-accent);
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-bg);
+}
+.onboarding-shell .btn.accent:hover:not(:disabled) {
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.onboarding-shell .btn.danger {
+  color: var(--app-danger);
+  border-color: var(--app-danger-border);
+}
+.onboarding-shell .btn.danger:hover:not(:disabled) {
+  color: var(--app-danger);
+  border-color: var(--app-danger-border);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--app-danger) 18%, transparent);
+}
+.onboarding-shell .btn.sm {
+  font-size: 11px;
+  padding: 5px 10px;
+}
+
+.onboarding-shell .hidden {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-shell .row,
+  .onboarding-shell .icon-chip,
+  .onboarding-shell .cta,
+  .onboarding-shell .dl-fill,
+  .onboarding-shell .footer .secondary {
+    transition: none;
+  }
+}

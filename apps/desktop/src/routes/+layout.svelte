@@ -55,7 +55,6 @@
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
-  const isOnboarding = $derived(normalizedPathname.startsWith("/onboarding"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   // Settings renders inside the Main window as the `/settings` route. The Main
   // titlebar (record controls, source pills, surface toggle, gear) stays visible
@@ -231,7 +230,10 @@
 
   // Routes that want a centered, padded reading column. Settings is excluded:
   // it renders full-bleed inside the Main window with its own sidebar shell.
-  const isNarrow = $derived(isOnboarding || isDebug);
+  // Onboarding is excluded too (Slice 3): the accordion shell fills the window
+  // and owns its own scroll region — the narrow column's max-width/padding would
+  // shrink it and break the shell's `height:100%` fill.
+  const isNarrow = $derived(isDebug);
   const notificationCount = $derived(appNotifications.count);
   const hasNotifications = $derived(notificationCount > 0);
 
