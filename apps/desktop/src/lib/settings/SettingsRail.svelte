@@ -13,6 +13,7 @@
   // footer shows the live auto-save status, styled per the mockup.
 
   import { goto } from "$app/navigation";
+  import Icon from "./Icon.svelte";
   import {
     SETTINGS_GROUPS,
     type SettingsGroupId,
@@ -121,69 +122,6 @@
   }
 </script>
 
-<!-- Per-section nav glyphs — one per sub-section, drawn on a 24 viewBox with a
-     1.7 stroke so the rail reads as one icon family (mockup-2b). -->
-{#snippet navIcon(section: SettingsSectionId)}
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    {#if section === "appearance"}
-      <path d="M12 2a10 10 0 1 0 0 20 2.5 2.5 0 0 0 2-4 2.5 2.5 0 0 1 2-4h2A4 4 0 0 0 22 10 10 10 0 0 0 12 2z" />
-      <circle cx="7.5" cy="10.5" r="1" />
-      <circle cx="12" cy="7.5" r="1" />
-      <circle cx="16.5" cy="10.5" r="1" />
-    {:else if section === "startup"}
-      <path d="M12 2v8" />
-      <path d="M18.4 6.6a9 9 0 1 1-12.8 0" />
-    {:else if section === "shortcuts"}
-      <rect x="2" y="6" width="20" height="12" rx="2" />
-      <path d="M6 10h0M10 10h0M14 10h0M18 10h0M6 14h0M18 14h0M9 14h6" />
-    {:else if section === "capture"}
-      <rect x="2" y="3" width="20" height="14" rx="2" />
-      <path d="M8 21h8M12 17v4" />
-    {:else if section === "video"}
-      <rect x="2" y="6" width="20" height="13" rx="2" />
-      <path d="M2 9h20M6 6V4M10 6V4M14 6V4M18 6V4" />
-    {:else if section === "audio"}
-      <path d="M3 12h2l2-6 4 14 3-9 2 4h5" />
-    {:else if section === "privacy"}
-      <path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z" />
-    {:else if section === "intelligence"}
-      <path d="M9 2v6M15 2v6M8 8h8v3a4 4 0 0 1-8 0V8zM12 15v3a3 3 0 0 0 3 3h2" />
-    {:else if section === "askAi"}
-      <path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z" />
-      <path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9L18 14z" />
-    {:else if section === "userContext"}
-      <circle cx="12" cy="8" r="4" />
-      <path d="M4 21a8 8 0 0 1 16 0" />
-    {:else if section === "ocr"}
-      <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" />
-      <path d="M8 10h0M12 10v4M16 10h0M9 16h6" />
-    {:else if section === "transcription"}
-      <rect x="9" y="2" width="6" height="12" rx="3" />
-      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-    {:else if section === "speakers"}
-      <circle cx="9" cy="8" r="3" />
-      <path d="M3 20a6 6 0 0 1 12 0" />
-      <path d="M16 5.5a3 3 0 0 1 0 5M18 14a6 6 0 0 1 3 5" />
-    {:else if section === "semanticSearch"}
-      <circle cx="11" cy="11" r="7" />
-      <path d="M21 21l-4.3-4.3" />
-      <circle cx="11" cy="11" r="1.5" fill="currentColor" stroke="none" />
-    {:else if section === "storage"}
-      <ellipse cx="12" cy="5" rx="8" ry="3" />
-      <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
-      <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
-    {:else if section === "access"}
-      <circle cx="8" cy="8" r="4" />
-      <path d="M11 11l8 8M16 16l2-2M18 18l2-2" />
-    {:else if section === "about"}
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 16v-4M12 8h.01" />
-    {:else if section === "developer"}
-      <path d="M8 9l-4 3 4 3M16 9l4 3-4 3M13 6l-2 12" />
-    {/if}
-  </svg>
-{/snippet}
-
 <aside id="settings-sidebar" class="settings-sidebar settings-rail">
   <!-- Fixed top zone: back link + search -->
   <div class="rail-top">
@@ -228,7 +166,7 @@
               tabindex={activeSection === section.id ? 0 : -1}
               onclick={() => onNavigate(section.id)}
             >
-              {@render navIcon(section.id)}
+              <Icon name={section.id} />
               <span>{section.label}</span>
             </button>
           {/each}
