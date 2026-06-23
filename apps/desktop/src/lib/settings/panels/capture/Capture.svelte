@@ -187,40 +187,40 @@
           {/snippet}
         </SettingRow>
 
-        <SettingRow label="Microphone Activity Sensitivity" full>
-          {#snippet control()}
-            <div class="control-stack">
-            <Slider
-              bind:value={rec.draftMicrophoneActivitySensitivity}
-              min={0}
-              max={100}
-              step={1}
-              label="Mic sensitivity"
-              unit="%"
-              disabled={!rec.draftCaptureMicrophone}
-            />
-            {#if !rec.draftCaptureMicrophone}
-              <p class="group-hint group-hint--warn">Microphone capture is disabled — this setting has no effect until enabled.</p>
-            {:else}
-              <p class="group-hint">
-                {#if rec.draftMicrophoneVadAdapter !== "off"}
-                  Tunes the compatibility peak-level fallback used when no speech adapter is available.
-                {:else if rec.draftMicrophoneActivitySensitivity >= 80}
-                  <strong>Very high</strong> — whispers and background noise keep capture active.
-                {:else if rec.draftMicrophoneActivitySensitivity >= 60}
-                  <strong>High</strong> — quiet speech counts as activity.
-                {:else if rec.draftMicrophoneActivitySensitivity >= 40}
-                  <strong>Medium</strong> — normal speech triggers activity. Recommended.
-                {:else if rec.draftMicrophoneActivitySensitivity >= 20}
-                  <strong>Low</strong> — only louder audio keeps capture active.
-                {:else}
-                  <strong>Very low</strong> — only very loud audio triggers activity.
-                {/if}
-              </p>
-            {/if}
-            </div>
-          {/snippet}
-        </SettingRow>
+        {#if rec.draftMicrophoneVadAdapter === "off"}
+          <SettingRow label="Microphone Activity Sensitivity" full>
+            {#snippet control()}
+              <div class="control-stack">
+              <Slider
+                bind:value={rec.draftMicrophoneActivitySensitivity}
+                min={0}
+                max={100}
+                step={1}
+                label="Mic sensitivity"
+                unit="%"
+                disabled={!rec.draftCaptureMicrophone}
+              />
+              {#if !rec.draftCaptureMicrophone}
+                <p class="group-hint group-hint--warn">Microphone capture is disabled — this setting has no effect until enabled.</p>
+              {:else}
+                <p class="group-hint">
+                  {#if rec.draftMicrophoneActivitySensitivity >= 80}
+                    <strong>Very high</strong> — whispers and background noise keep capture active.
+                  {:else if rec.draftMicrophoneActivitySensitivity >= 60}
+                    <strong>High</strong> — quiet speech counts as activity.
+                  {:else if rec.draftMicrophoneActivitySensitivity >= 40}
+                    <strong>Medium</strong> — normal speech triggers activity. Recommended.
+                  {:else if rec.draftMicrophoneActivitySensitivity >= 20}
+                    <strong>Low</strong> — only louder audio keeps capture active.
+                  {:else}
+                    <strong>Very low</strong> — only very loud audio triggers activity.
+                  {/if}
+                </p>
+              {/if}
+              </div>
+            {/snippet}
+          </SettingRow>
+        {/if}
 
         <SettingRow label="System Audio Activity Sensitivity" full>
           {#snippet control()}
