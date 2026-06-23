@@ -3009,6 +3009,18 @@ fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBas
         base_dir,
     })
 }
+
+/// The resolved on-disk storage root where captures, the database, and model
+/// caches live. This is the authoritative, env-honoring resolution: when no
+/// `save_directory` is persisted it falls back to `default_save_directory()`
+/// (`MNEMA_SAVE_DIRECTORY`, else `~/.mnema`). Settings › Storage shows this
+/// read-only; the folder is changed by writing `save_directory` through the
+/// recording-settings update (Browse), not by editing this string directly.
+#[tauri::command]
+pub fn get_storage_location(app_handle: tauri::AppHandle) -> Result<String, String> {
+    Ok(resolve_base_dir(&app_handle)?.base_dir.display().to_string())
+}
+
 fn processing_subject(subject_type: String, subject_id: i64) -> ::app_infra::ProcessingSubject {
     ::app_infra::ProcessingSubject::new(subject_type, subject_id)
 }

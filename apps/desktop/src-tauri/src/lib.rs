@@ -448,6 +448,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
+            app_infra::get_storage_location,
             app_updates::get_app_update_status,
             app_updates::check_for_app_update,
             app_updates::set_app_update_channel,
