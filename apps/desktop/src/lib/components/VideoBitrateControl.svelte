@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Stepper from "$lib/components/Stepper.svelte";
   import type { VideoBitrateMode, VideoBitratePreset } from "$lib/types";
 
   let {
@@ -45,8 +46,7 @@
     <div class="custom-res-field">
       <label class="custom-res-label" for="bitrate-mbps">Bitrate (Mbps, whole number)</label>
       <div class="custom-bitrate-input-wrap">
-        <input id="bitrate-mbps" type="text" inputmode="numeric" class="text-input custom-bitrate-input" bind:value={customMbpsRaw} placeholder="e.g. 12" autocomplete="off" />
-        <span class="custom-bitrate-unit">Mbps</span>
+        <Stepper id="bitrate-mbps" bind:value={customMbpsRaw} min={1} max={40} unit="Mbps" placeholder="e.g. 12" ariaLabel="bitrate in Mbps" invalid={customErrors.length > 0} />
       </div>
     </div>
   </div>
@@ -149,44 +149,7 @@
   }
 
   .custom-bitrate-input-wrap {
-    position: relative;
     max-width: 240px;
-  }
-
-  .text-input {
-    width: 100%;
-    min-width: 0;
-    height: 34px;
-    padding: 0 58px 0 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-size: 12px;
-    outline: none;
-    transition: border-color 0.12s, background 0.12s;
-  }
-
-  .text-input:focus {
-    border-color: var(--app-accent);
-    background: var(--app-surface-raised);
-  }
-
-  .text-input::placeholder {
-    color: var(--app-text-faint);
-  }
-
-  .custom-bitrate-unit {
-    position: absolute;
-    top: 50%;
-    right: 10px;
-    transform: translateY(-50%);
-    color: var(--app-text-faint);
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    pointer-events: none;
   }
 
   .inline-validation {

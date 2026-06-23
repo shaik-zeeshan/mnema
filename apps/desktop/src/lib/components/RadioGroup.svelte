@@ -15,6 +15,12 @@
     /** Individual values that should be rendered as non-interactive disabled items. */
     disabledValues?: string[];
     label?: string;
+    /**
+     * Visual shape. `list` (default, the original behaviour) renders a
+     * vertical stack of compact rows. `card` renders a grid of bordered
+     * selectable tiles (the gallery card-radio).
+     */
+    variant?: "list" | "card";
   }
 
   let {
@@ -24,6 +30,7 @@
     disabled = false,
     disabledValues = [],
     label,
+    variant = "list",
   }: Props = $props();
 
   function handleValueChange(v: string) {
@@ -40,14 +47,14 @@
     bind:value
     onValueChange={handleValueChange}
     {disabled}
-    class="rg-root"
+    class={variant === "card" ? "rg-root rg-root--card" : "rg-root"}
   >
     {#each options as option (option.value)}
       {@const isItemDisabled = disabledValues.includes(option.value)}
       <BitsRadioGroup.Item
         value={option.value}
         disabled={isItemDisabled}
-        class="rg-item"
+        class={variant === "card" ? "rg-item rg-item--card" : "rg-item"}
         data-item-disabled={isItemDisabled ? "" : undefined}
       >
         {#snippet children({ checked })}
@@ -73,6 +80,9 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    /* Match Select/Combobox wrappers: stretch to fill the row's control slot
+       instead of shrinking to the widest item's content width. */
+    width: 100%;
   }
 
   .rg-wrapper--disabled {
@@ -171,6 +181,65 @@
     opacity: 0.38;
     cursor: not-allowed;
     pointer-events: none;
+  }
+
+  /* ── Card variant ────────────────────────────────────────────── */
+  :global(.rg-root--card) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  :global(.rg-item--card) {
+    align-items: flex-start;
+    gap: 11px;
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px solid var(--app-border-strong);
+    background: var(--app-surface);
+  }
+
+  :global(.rg-item--card:hover) {
+    background: var(--app-surface);
+    border-color: var(--app-border-hover);
+  }
+
+  :global(.rg-item--card[data-state="checked"]) {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+
+  :global(.rg-item--card) .rg-indicator {
+    margin-top: 1px;
+    width: 16px;
+    height: 16px;
+    border-color: var(--app-border-hover);
+  }
+
+  :global(.rg-item--card) .rg-indicator--checked {
+    border-color: var(--app-accent);
+    background: transparent;
+    box-shadow: 0 0 8px var(--app-accent-glow);
+  }
+
+  :global(.rg-item--card) .rg-item-text {
+    gap: 3px;
+  }
+
+  :global(.rg-item--card) .rg-item-label {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--app-text-strong);
+  }
+
+  :global(.rg-item--card[data-state="checked"]) .rg-item-label {
+    color: var(--app-accent);
+  }
+
+  :global(.rg-item--card) .rg-item-desc {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--app-text-muted);
   }
 
   .rg-indicator--disabled {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Stepper from "$lib/components/Stepper.svelte";
   import type { ResolutionMode, ResolutionPreset } from "$lib/types";
 
   let {
@@ -146,30 +147,6 @@
     font-weight: 800;
   }
 
-  .text-input {
-    width: 100%;
-    min-width: 0;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-size: 12px;
-    outline: none;
-    transition: border-color 0.12s, background 0.12s;
-  }
-
-  .text-input:focus {
-    border-color: var(--app-accent);
-    background: var(--app-surface-raised);
-  }
-
-  .text-input::placeholder {
-    color: var(--app-text-faint);
-  }
-
   .inline-validation {
     display: flex;
     flex-direction: column;
@@ -214,12 +191,12 @@
   <div class="custom-resolution-inputs">
     <div class="custom-res-field">
       <label class="custom-res-label" for="res-width">Width (px)</label>
-      <input id="res-width" type="text" inputmode="numeric" class="text-input custom-res-input" bind:value={widthRaw} placeholder="e.g. 1920" autocomplete="off" />
+      <Stepper id="res-width" bind:value={widthRaw} min={16} max={8192} placeholder="e.g. 1920" ariaLabel="width" invalid={customErrors.length > 0} />
     </div>
     <span class="custom-res-sep" aria-hidden="true">x</span>
     <div class="custom-res-field">
       <label class="custom-res-label" for="res-height">Height (px)</label>
-      <input id="res-height" type="text" inputmode="numeric" class="text-input custom-res-input" bind:value={heightRaw} placeholder="e.g. 1080" autocomplete="off" />
+      <Stepper id="res-height" bind:value={heightRaw} min={16} max={8192} placeholder="e.g. 1080" ariaLabel="height" invalid={customErrors.length > 0} />
     </div>
   </div>
 

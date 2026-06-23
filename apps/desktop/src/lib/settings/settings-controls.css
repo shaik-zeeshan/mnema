@@ -484,23 +484,49 @@
 
   .settings-shell .text-input {
     flex: 1;
-    padding: 7px 10px;
+    padding: 8px 12px;
     background: var(--app-surface);
     border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    font-family: inherit;
+    border-radius: 8px;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 12px;
     color: var(--app-text);
     outline: none;
-    transition: border-color 0.12s;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+
+  .settings-shell .text-input:hover:not(:disabled):not([readonly]) {
+    border-color: var(--app-border-hover);
   }
 
   .settings-shell .text-input:focus {
     border-color: var(--app-accent);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
   }
 
   .settings-shell .text-input--empty {
     border-color: var(--app-warn-border);
+  }
+
+  .settings-shell .text-input--error {
+    border-color: var(--app-danger-border);
+  }
+
+  .settings-shell .text-input--error:focus {
+    border-color: var(--app-danger);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+      0 0 0 3px color-mix(in srgb, var(--app-danger) 16%, transparent);
+  }
+
+  .settings-shell .text-input:disabled,
+  .settings-shell .text-input.is-disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .settings-shell .text-input[readonly] {
+    color: var(--app-text-muted);
   }
 
   .settings-shell .text-input::placeholder {
@@ -512,55 +538,90 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
+    gap: 7px;
+    padding: 9px 18px;
+    border-radius: 8px;
     font-family: inherit;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
+    white-space: nowrap;
     cursor: pointer;
     border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+    transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s,
+      opacity 0.15s;
     outline: none;
   }
 
+  .settings-shell .btn:focus-visible {
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
+  }
+
   .settings-shell .btn:disabled {
-    opacity: 0.35;
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
   .settings-shell .btn--ghost {
     background: transparent;
-    color: var(--app-text-muted);
+    color: var(--app-text);
     border-color: var(--app-border-strong);
-    font-size: 10px;
   }
 
   .settings-shell .btn--ghost:not(:disabled):hover {
     background: var(--app-surface-hover);
-    color: var(--app-text);
+    color: var(--app-text-strong);
     border-color: var(--app-border-hover);
   }
 
   .settings-shell .btn--sm {
-    padding: 3px 8px;
-    font-size: 9px;
+    padding: 6px 12px;
+    font-size: 9.5px;
+    background: transparent;
+    color: var(--app-text-muted);
+    border-color: var(--app-border-strong);
+  }
+
+  .settings-shell .btn--sm:not(:disabled):hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    border-color: var(--app-border-hover);
   }
 
   /* The About tab's update actions are the only primary buttons in this
      page. Without this rule they fall back to the UA default button face
      (a light fill) which looks foreign in the dark shell — match the soft
-     green primary used by the debug and access-request pages. */
+     green primary from the controls gallery. */
   .settings-shell .btn--primary {
     background: var(--app-accent-bg);
     color: var(--app-accent);
     border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-accent) 6%, transparent);
   }
 
   .settings-shell .btn--primary:not(:disabled):hover {
+    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
     border-color: var(--app-accent);
-    color: var(--app-text-strong);
+    color: var(--app-accent);
+    box-shadow: 0 0 14px var(--app-accent-glow);
+  }
+
+  .settings-shell .btn--danger {
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+
+  .settings-shell .btn--danger:not(:disabled):hover {
+    background: color-mix(in srgb, var(--app-danger) 14%, transparent);
+    border-color: var(--app-danger);
+    color: var(--app-danger);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--app-danger) 18%, transparent);
+  }
+
+  .settings-shell .btn--danger:focus-visible {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-danger) 18%, transparent);
   }
 
   .settings-shell .saved-badge {
@@ -582,28 +643,45 @@
   .settings-shell .badge {
     display: inline-flex;
     align-items: center;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    gap: 6px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--app-border-strong);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
   }
 
   .settings-shell .badge--ok {
     background: var(--app-accent-bg);
     color: var(--app-accent);
-    border: 1px solid var(--app-accent-border);
+    border-color: var(--app-accent-border);
   }
 
   .settings-shell .badge--neutral {
     background: var(--app-neutral-bg);
     color: var(--app-neutral-text);
-    border: 1px solid var(--app-neutral-border);
+    border-color: var(--app-neutral-border);
+  }
+
+  .settings-shell .badge--warn {
+    background: var(--app-warn-bg);
+    color: var(--app-warn);
+    border-color: var(--app-warn-border);
+  }
+
+  .settings-shell .badge--danger {
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
   }
 
   .settings-shell .badge--sm {
-    padding: 0 5px;
+    padding: 1px 7px;
     font-size: 9px;
   }
 
@@ -702,11 +780,11 @@
   .settings-shell .inline-error {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
-    padding: 10px 12px;
-    background: var(--app-danger-bg-soft);
+    gap: 11px;
+    padding: 12px 14px;
+    background: var(--app-danger-bg);
     border: 1px solid var(--app-danger-border);
-    border-radius: 4px;
+    border-radius: 10px;
   }
 
   .settings-shell .inline-error__icon {
@@ -741,10 +819,10 @@
     display: flex;
     flex-direction: column;
     gap: 5px;
-    padding: 10px 12px;
+    padding: 12px 14px;
     background: var(--app-warn-bg);
     border: 1px solid var(--app-warn-border);
-    border-radius: 4px;
+    border-radius: 10px;
   }
 
   .settings-shell .inline-validation__item {

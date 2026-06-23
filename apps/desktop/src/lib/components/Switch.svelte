@@ -79,22 +79,30 @@
     height: 20px;
     background: var(--app-surface);
     border: 1px solid var(--app-border-strong);
-    border-radius: 10px;
+    border-radius: 999px;
     cursor: pointer;
-    transition: background 0.18s ease, border-color 0.18s ease;
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     flex-shrink: 0;
     padding: 0;
     outline: none;
   }
 
+  :global(.switch-track:hover:not([data-disabled])) {
+    border-color: var(--app-border-hover);
+  }
+
   :global(.switch-track:focus-visible) {
-    outline: 1px solid var(--app-accent);
-    outline-offset: 2px;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
   :global(.switch-track[data-state="checked"]) {
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
+  }
+
+  :global(.switch-track[data-state="checked"]:hover:not([data-disabled])) {
+    border-color: var(--app-accent);
   }
 
   :global(.switch-track[data-disabled]) {
@@ -108,12 +116,13 @@
     height: 14px;
     border-radius: 50%;
     background: var(--app-text-subtle);
-    transition: transform 0.18s ease, background 0.18s ease;
+    transition: transform 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
     pointer-events: none;
   }
 
   :global(.switch-track[data-state="checked"] .switch-thumb) {
     transform: translateX(16px);
     background: var(--app-accent);
+    box-shadow: 0 0 8px var(--app-accent-glow);
   }
 </style>
