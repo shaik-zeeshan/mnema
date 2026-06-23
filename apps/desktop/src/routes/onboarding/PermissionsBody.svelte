@@ -29,8 +29,6 @@
 </script>
 
 <div class="group">
-  <div class="group-title">macOS access</div>
-
   {#each rows as row (row.key)}
     {@const value = controller.permissions?.[row.key]}
     {@const action = controller.permissionAction(value)}
