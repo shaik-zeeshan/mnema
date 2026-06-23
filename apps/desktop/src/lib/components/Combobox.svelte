@@ -15,6 +15,7 @@
     filterComboboxOptions,
     type ComboboxOption,
   } from "./combobox-filter";
+  import { pinAncestorScrollOnOpen } from "./pin-scroll-on-open";
 
   interface Props {
     value?: string | null;
@@ -79,8 +80,10 @@
   // Reset the query whenever the popover closes so the next open starts clean.
   function handleOpenChange(next: boolean) {
     open = next;
-    if (next) recomputeOpenDirection();
-    else search = "";
+    if (next) {
+      recomputeOpenDirection();
+      pinAncestorScrollOnOpen(wrapperEl);
+    } else search = "";
   }
 </script>
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Select as BitsSelect } from "bits-ui";
+  import { pinAncestorScrollOnOpen } from "./pin-scroll-on-open";
 
   interface Option {
     value: string;
@@ -58,7 +59,10 @@
   }
 
   function handleOpenChange(next: boolean) {
-    if (next) recomputeOpenDirection();
+    if (next) {
+      recomputeOpenDirection();
+      pinAncestorScrollOnOpen(wrapperEl);
+    }
   }
 </script>
 

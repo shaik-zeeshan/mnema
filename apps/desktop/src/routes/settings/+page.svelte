@@ -29,12 +29,13 @@
     setSettingsController,
   } from "$lib/settings/state/controller.svelte";
   import {
-    SETTINGS_GROUPS,
     groupForSection,
     resolveTabDeeplink,
     resolveFocusDeeplink,
     sectionForFocus,
     sectionAnchor,
+    DEFAULT_SETTINGS_GROUP,
+    DEFAULT_SETTINGS_SECTION,
     type SettingsGroupId,
     type SettingsSectionId,
   } from "$lib/settings/groups";
@@ -103,12 +104,10 @@
   const loadSettingsModels = () => c.loadSettingsModels();
 
   // ─── Active group + sub-section + deeplink routing (driven by groups.ts) ─────
-  let activeGroup = $state<SettingsGroupId>("capture");
+  let activeGroup = $state<SettingsGroupId>(DEFAULT_SETTINGS_GROUP);
   // The currently-active sub-section (drives the rail's active item + scroll-spy).
-  // Defaults to the first section of the active group.
-  let activeSection = $state<SettingsSectionId>(
-    SETTINGS_GROUPS.find((g) => g.id === "capture")!.sections[0].id,
-  );
+  // Defaults to the first section of the default group.
+  let activeSection = $state<SettingsSectionId>(DEFAULT_SETTINGS_SECTION);
   let scrollRegion = $state<HTMLDivElement | null>(null);
   let scrollRegionScrolling = $state(false);
   let scrollRegionScrollTimer: ReturnType<typeof setTimeout> | null = null;

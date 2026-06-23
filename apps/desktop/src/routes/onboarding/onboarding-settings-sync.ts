@@ -38,6 +38,7 @@ import {
   defaultTranscriptionModelIdForProvider,
   isSelectableOcrProvider,
 } from "./onboarding-mapping";
+import { syncPrivacyDraftInto } from "./onboarding-privacy-sync";
 
 // The exact slice of `OnboardingController` these transforms read/write. The
 // controller satisfies this structurally, so passing `this` here keeps the
@@ -92,6 +93,7 @@ export interface OnboardingDraftTarget {
   draftSpeakerModelId: string | null;
   draftSpeakerTimeoutMinutes: number;
   draftExcludedApps: ExcludedAppEntry[];
+  privacyEnabled: boolean;
   draftAskAiEnabled: boolean;
   draftSemanticSearchEnabled: boolean;
   draftSemanticSearchModelId: string | null;
@@ -189,7 +191,7 @@ export function syncDraftsInto(draft: OnboardingDraftTarget, next: RecordingSett
     ? DEFAULT_SPEAKER_MODEL_ID
     : (next.speakerAnalysis?.modelId ?? DEFAULT_SPEAKER_MODEL_ID);
   draft.draftSpeakerTimeoutMinutes = Math.round((next.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
-  draft.draftExcludedApps = [...(next.privacy?.excludedApps ?? [])];
+  syncPrivacyDraftInto(draft, next);
   draft.draftAskAiEnabled = next.access?.askAiEnabled ?? false;
   draft.draftSemanticSearchEnabled = next.semanticSearch?.enabled ?? false;
   draft.draftSemanticSearchModelId = next.semanticSearch?.modelId ?? null;

@@ -128,6 +128,13 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   },
 ];
 
+// The group + section the Settings shell lands on when opened with no
+// ?tab/?focus deeplink: the first rail group (General) and its first section
+// (Appearance). Derived from rail order so a reorder updates the default;
+// pinned by settings-groups.test.ts.
+export const DEFAULT_SETTINGS_GROUP: SettingsGroupId = SETTINGS_GROUPS[0].id;
+export const DEFAULT_SETTINGS_SECTION: SettingsSectionId = SETTINGS_GROUPS[0].sections[0].id;
+
 // Reverse index: section id → its owning group id.
 const SECTION_TO_GROUP: Record<SettingsSectionId, SettingsGroupId> = (() => {
   const map = {} as Record<SettingsSectionId, SettingsGroupId>;

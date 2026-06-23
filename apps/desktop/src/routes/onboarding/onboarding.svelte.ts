@@ -58,6 +58,7 @@ import {
   buildSettingsRequestFrom,
   syncDraftsInto,
 } from "./onboarding-settings-sync";
+import { syncPrivacyDraftInto } from "./onboarding-privacy-sync";
 import { startOnboardingListeners } from "./onboarding-listeners";
 import {
   customBitrateErrors as buildCustomBitrateErrors,
@@ -188,10 +189,10 @@ export class OnboardingController {
   // recording-settings save command here). The recommended privacy exclusions
   // are the one exception: like the legacy welcome "Use recommended setup", they
   // commit eagerly through the privacy controller (the existing pattern — privacy
-  // is never deferred to the finish-only draft). Applied FIRST, because each
-  // privacy command re-syncs drafts from its server response (via
-  // `onSettingsUpdated` → `syncDrafts`), which would otherwise clobber the smart
-  // defaults set below. Safe no-op when nothing is pending.
+  // is never deferred to the finish-only draft). Applied first; each privacy
+  // command's `onSettingsUpdated` now syncs ONLY the privacy slice, so the smart
+  // defaults set below are no longer at risk of being clobbered. Safe no-op when
+  // nothing is pending.
   async applyRecommendedSetup(): Promise<void> {
     this.applyingRecommended = true;
     try {
@@ -231,14 +232,17 @@ export class OnboardingController {
   // committed as the `aiRuntime` domain in buildSettingsRequest().
   readonly ai = createOnboardingAiStore();
 
-  // The privacy controller updates settings via `onSettingsUpdated`, which
-  // re-syncs drafts (so `draftExcludedApps` re-derives from the server). Mirrors
-  // the legacy page's wiring.
+  // The privacy controller updates settings via `onSettingsUpdated` on every
+  // add/remove/recommend command. We sync ONLY the privacy slice — a full
+  // `syncDrafts` would re-derive EVERY draft (OCR/transcription/sysaudio/...)
+  // from server settings and clobber unsaved in-progress toggles (onboarding
+  // doesn't save until finish). `this.settings` is still updated as the base for
+  // buildSettingsRequest.
   readonly appPrivacyExclusion = createAppPrivacyExclusionController({
     getExcludedApps: () => this.draftExcludedApps,
     onSettingsUpdated: (updated) => {
       this.settings = updated.settings;
-      this.syncDrafts(updated.settings);
+      syncPrivacyDraftInto(this, updated.settings);
     },
     setError: (message) => {
       this.errorMessage = message;

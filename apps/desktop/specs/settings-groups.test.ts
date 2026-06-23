@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   SETTINGS_GROUPS,
+  DEFAULT_SETTINGS_GROUP,
+  DEFAULT_SETTINGS_SECTION,
   groupForSection,
   resolveTabDeeplink,
   resolveFocusDeeplink,
@@ -67,6 +69,14 @@ describe("settings rail: 5-group structure", () => {
   test("section anchors are unique", () => {
     const anchors = SETTINGS_GROUPS.flatMap((g) => g.sections.map((s) => sectionAnchor(s.id)));
     expect(new Set(anchors).size).toBe(anchors.length);
+  });
+
+  // Regression guard (bug #4): opening Settings with no deeplink must land on
+  // General / Appearance. The shell initializes its active group + section from
+  // these constants, which are derived from rail order.
+  test("default group + section land on General / Appearance", () => {
+    expect(DEFAULT_SETTINGS_GROUP).toBe("general");
+    expect(DEFAULT_SETTINGS_SECTION).toBe("appearance");
   });
 });
 
