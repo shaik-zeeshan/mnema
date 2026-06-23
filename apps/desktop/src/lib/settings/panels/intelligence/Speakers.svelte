@@ -6,6 +6,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import { speakerStatusLabel } from "$lib/settings/state/models-format";
   import { formatBytes } from "$lib/settings/state/format";
 
@@ -128,9 +129,7 @@
           {#if selectedSpeakerModel.installPath}
             <p class="group-hint"><strong>Install path:</strong> {selectedSpeakerModel.installPath}</p>
           {/if}
-          {#if selectedSpeakerModel.missingFiles.length > 0}
-            <p class="group-hint group-hint--warn"><strong>Missing files:</strong> {selectedSpeakerModel.missingFiles.join(", ")}</p>
-          {/if}
+          <ModelMissingFiles files={selectedSpeakerModel.missingFiles} />
           {#if selectedSpeakerModel.failureMessage}
             <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedSpeakerModel.failureMessage}</p>
           {/if}

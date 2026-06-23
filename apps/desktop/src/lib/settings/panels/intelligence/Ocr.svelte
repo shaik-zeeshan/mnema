@@ -7,6 +7,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import { ocrStatusLabel } from "$lib/settings/state/models-format";
   import { formatBytes } from "$lib/settings/state/format";
   import type { OcrTesseractPageSegmentationMode, OcrTesseractPreprocessMode } from "$lib/types";
@@ -241,9 +242,7 @@
           {#if selectedOcrModel.installPath}
             <p class="group-hint"><strong>Install path:</strong> {selectedOcrModel.installPath}</p>
           {/if}
-          {#if selectedOcrModel.missingFiles.length > 0}
-            <p class="group-hint group-hint--warn"><strong>Missing files:</strong> {selectedOcrModel.missingFiles.join(", ")}</p>
-          {/if}
+          <ModelMissingFiles files={selectedOcrModel.missingFiles} />
           {#if selectedOcrModel.failureMessage}
             <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedOcrModel.failureMessage}</p>
           {/if}

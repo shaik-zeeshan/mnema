@@ -6,6 +6,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import {
     transcriptionStatusLabel,
     appleSpeechPermissionLabel,
@@ -242,9 +243,7 @@
           {#if selectedTranscriptionModel.installPath}
             <p class="group-hint"><strong>Install path:</strong> {selectedTranscriptionModel.installPath}</p>
           {/if}
-          {#if selectedTranscriptionModel.missingFiles.length > 0}
-            <p class="group-hint group-hint--warn"><strong>Missing files:</strong> {selectedTranscriptionModel.missingFiles.join(", ")}</p>
-          {/if}
+          <ModelMissingFiles files={selectedTranscriptionModel.missingFiles} />
           {#if selectedTranscriptionModel.failureMessage}
             <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedTranscriptionModel.failureMessage}</p>
           {/if}
