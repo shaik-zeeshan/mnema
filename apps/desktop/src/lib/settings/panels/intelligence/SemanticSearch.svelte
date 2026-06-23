@@ -4,6 +4,7 @@
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { semanticSearchProgressPercent } from "$lib/settings/state/models-format";
   import { formatBytes } from "$lib/settings/state/format";
 
@@ -52,13 +53,12 @@
   hint="Meaning-based search runs fully on-device — on the GPU where available, otherwise the CPU. Pick a supported model, then Mnema embeds your captures in the background. Nothing is downloaded until you choose a model. The model stays on as a background indexer — it keeps re-embedding new captures (ongoing CPU/GPU and battery while it catches up), and switching models re-indexes every existing capture."
 >
   {#snippet actions()}
-    <button
-      class="btn btn--ghost btn--sm"
+    <ReloadButton
       onclick={() => void loadSemanticSearchModelStatus()}
-      disabled={loadingSemanticSearchModelStatus}
-    >
-      {loadingSemanticSearchModelStatus ? "Checking" : "Refresh"}
-    </button>
+      busy={loadingSemanticSearchModelStatus}
+      title="Refresh"
+      label="Refresh semantic search model status"
+    />
   {/snippet}
 
   <SettingRow

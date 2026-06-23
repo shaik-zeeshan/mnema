@@ -8,11 +8,15 @@
     id?: string;
     /** Optional snippet rendered at the right of the header (e.g. a reset button). */
     actions?: Snippet;
+    /** Drop the card chrome (border, background, accent hairline) so children
+        sit directly on the page. Used by the keybinding lists, whose rows
+        already carry their own borders — the parent frame is redundant. */
+    bare?: boolean;
     /** The stack of <SettingRow>s. */
     children: Snippet;
   }
 
-  let { title, hint, id, actions, children }: Props = $props();
+  let { title, hint, id, actions, bare = false, children }: Props = $props();
 </script>
 
 <!-- `id` is the deeplink + scroll-spy anchor — it MUST stay on this outer
@@ -32,7 +36,7 @@
     {/if}
   </header>
 
-  <div class="setting-group__card">
+  <div class="setting-group__card" class:setting-group__card--bare={bare}>
     {@render children()}
   </div>
 </section>
@@ -96,6 +100,17 @@
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border);
     border-radius: 12px;
+  }
+
+  /* Bare: no frame — children (which carry their own borders) sit flush. */
+  .setting-group__card--bare {
+    background: none;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .setting-group__card--bare::before {
+    display: none;
   }
 
   /* Faint top-edge accent hairline — Mnema signature, inset L/R. */

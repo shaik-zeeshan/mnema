@@ -5,6 +5,7 @@
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { speakerStatusLabel } from "$lib/settings/state/models-format";
   import { formatBytes } from "$lib/settings/state/format";
 
@@ -44,9 +45,12 @@
   hint="Anonymous diarization first; saved-person recognition only when you explicitly opt in."
 >
   {#snippet actions()}
-    <button class="btn btn--ghost btn--sm" onclick={loadSpeakerModelStatus} disabled={loadingSpeakerModelStatus}>
-      {loadingSpeakerModelStatus ? "Checking" : "Refresh"}
-    </button>
+    <ReloadButton
+      onclick={loadSpeakerModelStatus}
+      busy={loadingSpeakerModelStatus}
+      title="Refresh"
+      label="Refresh speaker model status"
+    />
   {/snippet}
 
   <SettingRow label="Speaker separation" full>

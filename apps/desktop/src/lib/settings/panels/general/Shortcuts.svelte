@@ -3,6 +3,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
 
   const c = getSettingsController();
   const keyboard = c.keyboard;
@@ -56,11 +57,23 @@
   hint="Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears. Changes save automatically."
 >
   {#snippet actions()}
-    <button class="btn btn--ghost btn--sm" onclick={loadKeyboardBindingsSettings} disabled={savingKeyboardBindings}>
-      Reload
-    </button>
-    <button class="btn btn--ghost btn--sm" onclick={restoreDefaultShortcuts} disabled={savingKeyboardBindings}>
-      Restore defaults
+    <ReloadButton
+      onclick={loadKeyboardBindingsSettings}
+      disabled={savingKeyboardBindings}
+      label="Reload shortcuts from saved settings"
+    />
+    <button
+      class="settings-icon-btn"
+      type="button"
+      title="Restore defaults"
+      aria-label="Restore default shortcuts"
+      onclick={restoreDefaultShortcuts}
+      disabled={savingKeyboardBindings}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 4v5h5" />
+        <path d="M4 9a8 8 0 1 1-1.5 5" />
+      </svg>
     </button>
   {/snippet}
 
@@ -89,7 +102,7 @@
 
 {#if keyboardBindingsSettings !== null}
   {#each ["global", "app", "dashboard", "audioDrawer"] as category (category)}
-    <SettingGroup title={shortcutCategoryLabel(category)}>
+    <SettingGroup title={shortcutCategoryLabel(category)} bare>
       <div class="shortcut-editor-list">
         {#each shortcutCategoryActions(category) as action (action.id)}
           {@const binding = shortcutDraftBinding(action.id)}
@@ -128,7 +141,7 @@
                 {/if}
               </button>
               <button
-                class="shortcut-icon-btn"
+                class="settings-icon-btn"
                 type="button"
                 title="Reset to default"
                 aria-label={`Reset ${action.label} to default`}
@@ -140,7 +153,7 @@
                 </svg>
               </button>
               <button
-                class="shortcut-icon-btn"
+                class="settings-icon-btn"
                 type="button"
                 title="Clear shortcut"
                 aria-label={`Clear ${action.label}`}

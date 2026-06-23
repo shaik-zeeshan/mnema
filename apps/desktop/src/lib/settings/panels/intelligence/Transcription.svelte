@@ -5,6 +5,7 @@
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import {
     transcriptionStatusLabel,
     appleSpeechPermissionLabel,
@@ -64,9 +65,12 @@
   hint="Local speech-to-text provider and model setup for microphone audio."
 >
   {#snippet actions()}
-    <button class="btn btn--ghost btn--sm" onclick={loadTranscriptionModelStatus} disabled={loadingTranscriptionModelStatus}>
-      {loadingTranscriptionModelStatus ? "Checking" : "Refresh"}
-    </button>
+    <ReloadButton
+      onclick={loadTranscriptionModelStatus}
+      busy={loadingTranscriptionModelStatus}
+      title="Refresh"
+      label="Refresh transcription model status"
+    />
   {/snippet}
 
   <SettingRow

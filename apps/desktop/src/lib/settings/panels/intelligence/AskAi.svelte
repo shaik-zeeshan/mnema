@@ -4,6 +4,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { ASK_AI_DEFAULT_TOOL_CALL_LIMIT } from "$lib/settings/state/recording.svelte";
 
   const c = getSettingsController();
@@ -127,9 +128,12 @@
           <p class="error-text">{askAiAvailabilityError}</p>
         {/if}
         <div class="row-actions">
-          <button class="btn btn--ghost btn--sm" type="button" disabled={askAiAvailabilityLoading} onclick={() => { void loadAskAiAvailability(); void loadSettingsModels(); }}>
-            {askAiAvailabilityLoading ? "Checking" : "Refresh"}
-          </button>
+          <ReloadButton
+            onclick={() => { void loadAskAiAvailability(); void loadSettingsModels(); }}
+            busy={askAiAvailabilityLoading}
+            title="Refresh"
+            label="Refresh Ask AI availability"
+          />
         </div>
       </div>
     {/snippet}

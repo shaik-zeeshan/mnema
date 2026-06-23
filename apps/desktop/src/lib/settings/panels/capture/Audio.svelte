@@ -3,6 +3,7 @@
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
 
   const c = getSettingsController();
   const audio = c.audio;
@@ -15,9 +16,7 @@
 
 <SettingGroup id="settings-section-audio" title="Microphone Controller">
   {#snippet actions()}
-    <button class="btn btn--ghost btn--sm" onclick={loadMicState} disabled={loadingMicState}>
-      {loadingMicState ? "…" : "Reload"}
-    </button>
+    <ReloadButton onclick={loadMicState} busy={loadingMicState} label="Reload microphone state" />
   {/snippet}
 
   {#if loadingMicState}

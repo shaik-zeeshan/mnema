@@ -7,6 +7,7 @@
   } from "$lib/settings/state/cli-access.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
 
   const c = getSettingsController();
   const cliAccess = c.cliAccess;
@@ -67,9 +68,13 @@
             <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
               {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
             </button>
-            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}>
-              Refresh
-            </button>
+            <ReloadButton
+              onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}
+              busy={brokerGrantLoading || mnemaCliLoading}
+              disabled={brokerGrantSaving}
+              title="Refresh"
+              label="Refresh CLI access status"
+            />
           </div>
           {#if mnemaCliError}
             <p class="error-text">{mnemaCliError}</p>

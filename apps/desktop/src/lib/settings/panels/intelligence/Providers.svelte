@@ -4,6 +4,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -271,9 +272,12 @@
           <p class="error-text">{aiRuntimeStatusError}</p>
         {/if}
         <div class="row-actions">
-          <button class="btn btn--ghost btn--sm" type="button" disabled={aiRuntimeStatusLoading} onclick={loadAiRuntimeStatus}>
-            {aiRuntimeStatusLoading ? "Refreshing" : "Refresh"}
-          </button>
+          <ReloadButton
+            onclick={loadAiRuntimeStatus}
+            busy={aiRuntimeStatusLoading}
+            title="Refresh"
+            label="Refresh AI runtime status"
+          />
           <button
             class="btn btn--ghost btn--sm"
             type="button"

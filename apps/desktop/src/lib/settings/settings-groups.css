@@ -192,7 +192,7 @@
     }
   }
 
-  .settings-shell .shortcut-icon-btn {
+  .settings-shell .settings-icon-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -207,7 +207,7 @@
     transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
   }
 
-  .settings-shell .shortcut-icon-btn svg {
+  .settings-shell .settings-icon-btn svg {
     width: 15px;
     height: 15px;
     display: block;
@@ -218,16 +218,31 @@
     stroke-linejoin: round;
   }
 
-  .settings-shell .shortcut-icon-btn:hover:not(:disabled), .settings-shell .shortcut-icon-btn:focus-visible {
+  .settings-shell .settings-icon-btn:hover:not(:disabled), .settings-shell .settings-icon-btn:focus-visible {
     border-color: var(--app-border-strong);
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
     outline: none;
   }
 
-  .settings-shell .shortcut-icon-btn:disabled {
+  .settings-shell .settings-icon-btn:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+
+  /* Spin the icon while a reload is in flight (replaces the old "…" label). */
+  .settings-shell .settings-icon-btn--spin svg {
+    animation: settings-icon-spin 0.7s linear infinite;
+  }
+
+  @keyframes settings-icon-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-shell .settings-icon-btn--spin svg {
+      animation: none;
+    }
   }
 
   @media (max-width: 720px) {

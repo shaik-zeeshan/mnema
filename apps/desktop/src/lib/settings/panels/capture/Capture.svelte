@@ -5,6 +5,7 @@
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -18,9 +19,7 @@
   hint="What gets recorded and how often segments roll over."
 >
   {#snippet actions()}
-    <button class="btn btn--ghost btn--sm" onclick={loadRecordingSettings} disabled={rec.loadingRecSettings}>
-      {rec.loadingRecSettings ? "…" : "Reload"}
-    </button>
+    <ReloadButton onclick={loadRecordingSettings} busy={rec.loadingRecSettings} label="Reload capture settings" />
   {/snippet}
 
   {#if rec.loadingRecSettings}
