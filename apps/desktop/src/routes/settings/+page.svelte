@@ -125,6 +125,22 @@
     }, 700);
   }
 
+  // The last sub-section of a group — the "tail" the scroll-spy can't otherwise
+  // reach: the spy marks a section active only once its head clears the top
+  // detection band (see `rootMargin` below), but the final section has nothing
+  // below it to scroll its anchor up that far, so it never wins the top-most
+  // test. We force-select it on bottom-out instead.
+  function lastSectionOfGroup(group: SettingsGroupId): SettingsSectionId | null {
+    const sections = SETTINGS_GROUPS.find((g) => g.id === group)?.sections ?? [];
+    return sections.length ? sections[sections.length - 1].id : null;
+  }
+
+  // True once the scroll region has effectively bottomed out (small tolerance
+  // for fractional scroll heights / sub-pixel rounding).
+  function isScrolledToBottom(root: HTMLElement): boolean {
+    return root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
+  }
+
   function handleScrollRegionScroll() {
     scrollRegionScrolling = true;
     if (scrollRegionScrollTimer !== null) clearTimeout(scrollRegionScrollTimer);
@@ -132,6 +148,15 @@
       scrollRegionScrolling = false;
       scrollRegionScrollTimer = null;
     }, 800);
+
+    // Scroll-spy tail fix: when the region bottoms out, the last section's
+    // anchor can't reach the top detection band, so the IntersectionObserver
+    // leaves the highlight stuck on the second-to-last section. Force-select
+    // the tail here (unless a programmatic scroll is in flight).
+    if (!spySuppressed && scrollRegion && isScrolledToBottom(scrollRegion)) {
+      const last = lastSectionOfGroup(activeGroup);
+      if (last && last !== activeSection) activeSection = last;
+    }
   }
 
   // Scroll a section's anchor into view after the group panel has mounted.
@@ -216,6 +241,10 @@
         cancelAnimationFrame(frame);
         frame = requestAnimationFrame(() => {
           if (spySuppressed || intersecting.size === 0) return;
+          // At the bottom, the tail section can't reach the top detection band;
+          // the scroll handler force-selects it, so don't override it back to a
+          // mid-band section here.
+          if (isScrolledToBottom(root)) return;
           // Top-most = smallest top offset relative to the root.
           const rootTop = root.getBoundingClientRect().top;
           let top: HTMLElement | null = null;
