@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { OnboardingController } from "./onboarding.svelte";
+  import type { MicrophoneVadAdapter } from "$lib/types";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
 
   let { controller }: { controller: OnboardingController } = $props();
 
@@ -14,6 +16,19 @@
     if (value >= 40) return "Medium — normal speech triggers activity. Recommended.";
     if (value >= 20) return "Low — only louder audio keeps capture active.";
     return "Very low — only very loud audio triggers activity.";
+  };
+
+  // With a Segmented the per-option blurb that RadioGroup showed inline collapses
+  // to one contextual hint line for the active adapter.
+  const vadHint = (value: MicrophoneVadAdapter): string => {
+    switch (value) {
+      case "silero":
+        return "Silero — default on-device speech detector; falls back to WebRTC when unavailable.";
+      case "webrtc":
+        return "WebRTC — lightweight on-device speech detector.";
+      case "off":
+        return "Off — legacy microphone peak-level activity, tuned by the sensitivity slider below.";
+    }
   };
 </script>
 
@@ -47,15 +62,38 @@
 
 <div class="group">
   <div class="group-title">Detection</div>
-  <div class="slider-block">
-    <Slider
-      bind:value={controller.draftMicrophoneActivitySensitivity}
-      min={0}
-      max={100}
-      step={1}
-      label="Microphone activity sensitivity"
-      unit="%"
-    />
-    <span class="kbd-hint">{sensitivityHint(controller.draftMicrophoneActivitySensitivity)}</span>
-  </div>
+  <!-- Onboarding always forces activityMode to
+       "system_input_or_screen_or_audio" (syncDraftsInto + buildSettingsRequestFrom),
+       so unlike Capture.svelte there is no activity-mode {#if} gate — the VAD
+       control always renders when the mic body is shown. Three mutually-exclusive
+       adapters fit a Segmented (matching the provider pickers in the other
+       bodies); the per-adapter detail moves to the hint line below. -->
+  <Segmented
+    value={controller.draftMicrophoneVadAdapter}
+    onValueChange={(v) => controller.chooseMicrophoneVadAdapter(v)}
+    ariaLabel="Microphone voice activity detection"
+    disabled={!controller.draftCaptureMicrophone}
+    options={[
+      { value: "silero", label: "Silero" },
+      { value: "webrtc", label: "WebRTC" },
+      { value: "off", label: "Off" },
+    ]}
+  />
+  <span class="kbd-hint">{vadHint(controller.draftMicrophoneVadAdapter)}</span>
+
+  <!-- The peak-level sensitivity slider only matters when VAD is Off (matches
+       Capture.svelte). With Silero/WebRTC the adapter owns activity decisions. -->
+  {#if controller.draftMicrophoneVadAdapter === "off"}
+    <div class="slider-block">
+      <Slider
+        bind:value={controller.draftMicrophoneActivitySensitivity}
+        min={0}
+        max={100}
+        step={1}
+        label="Microphone activity sensitivity"
+        unit="%"
+      />
+      <span class="kbd-hint">{sensitivityHint(controller.draftMicrophoneActivitySensitivity)}</span>
+    </div>
+  {/if}
 </div>

@@ -16,6 +16,7 @@ import type {
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
   ExcludedAppEntry,
+  MicrophoneVadAdapter,
   OcrProvider,
   OcrRecognitionMode,
   OcrTesseractPageSegmentationMode,
@@ -65,6 +66,7 @@ export interface OnboardingDraftTarget {
   draftIdleTimeoutSeconds: number;
   draftActivityMode: ActivityMode;
   draftMicrophoneActivitySensitivity: number;
+  draftMicrophoneVadAdapter: MicrophoneVadAdapter;
   draftSystemAudioActivitySensitivity: number;
   draftOcrEnabled: boolean;
   draftOcrProvider: OcrProvider;
@@ -145,6 +147,10 @@ export function syncDraftsInto(draft: OnboardingDraftTarget, next: RecordingSett
   draft.draftIdleTimeoutSeconds = next.idleTimeoutSeconds;
   draft.draftActivityMode = "system_input_or_screen_or_audio";
   draft.draftMicrophoneActivitySensitivity = next.microphoneActivitySensitivity ?? 50;
+  // Mirror real settings' fallback chain so a returning user's saved VAD
+  // ("webrtc"/"off") round-trips instead of being clobbered to "silero".
+  draft.draftMicrophoneVadAdapter =
+    next.audioSpeechDetection?.detector ?? next.microphoneVadAdapter ?? "silero";
   draft.draftSystemAudioActivitySensitivity = next.systemAudioActivitySensitivity ?? 50;
   draft.draftOcrEnabled = next.ocr?.enabled ?? true;
   const loadedOcrProvider = next.ocr?.provider;
@@ -217,6 +223,9 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
     idleTimeoutSeconds: draft.draftIdleTimeoutSeconds,
     activityMode: "system_input_or_screen_or_audio",
     microphoneActivitySensitivity: draft.draftMicrophoneActivitySensitivity,
+    // Persist the mic VAD adapter alongside the sync-read above — writing this
+    // WITHOUT the read would clobber a returning user's saved "webrtc"/"off".
+    audioSpeechDetection: { detector: draft.draftMicrophoneVadAdapter },
     systemAudioActivitySensitivity: draft.draftSystemAudioActivitySensitivity,
     ocr: {
       enabled: draft.draftOcrEnabled,

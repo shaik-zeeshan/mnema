@@ -18,6 +18,11 @@ import type { PermissionKey, PermissionValue } from "./onboarding-attention";
 type OnboardingState = {
   schemaVersion: number;
   completedAtUnixMs: number | null;
+  // True once the user has explicitly saved recording settings at least once
+  // (the recording-settings.json file exists). Distinguishes a GENUINE first run
+  // from a returning user re-opening onboarding. Hand-mirrored from the Rust
+  // `OnboardingStateView` (serde camelCase) — keep the field name in sync.
+  recordingSettingsEverSaved: boolean;
 };
 
 // Just enough of the privacy controller for `loadOnboarding` to kick off its
@@ -65,12 +70,18 @@ export async function loadOnboarding(target: OnboardingLifecycleTarget): Promise
     target.settings = loadedSettings;
     target.permissions = permissionResponse.permissions as Record<PermissionKey, PermissionValue>;
     target.syncDrafts(loadedSettings);
-    // Fresh onboarding starts every OPTIONAL feature OFF — the user opts in
-    // per-row. `syncDrafts` is a verbatim settings round-trip (and the default
-    // RecordingSettings ships OCR/transcription enabled), so we force the
-    // optional toggles off after the initial load. Required features (screen,
-    // storage, permissions) are untouched.
-    target.resetOptionalFeaturesOff();
+    // Force every OPTIONAL feature OFF for a GENUINE first run only. `syncDrafts`
+    // is a verbatim settings round-trip (and the default RecordingSettings ships
+    // OCR/transcription enabled), so on a true first run we force the optional
+    // toggles off so the user opts in per-row. A RETURNING user (one who has
+    // explicitly saved settings before — `recordingSettingsEverSaved`) keeps the
+    // real persisted enable toggles that syncDrafts already seeded, so re-opening
+    // onboarding reflects/preserves their saved configuration rather than
+    // silently disabling enabled features. Required features (screen, storage,
+    // permissions) are untouched either way.
+    if (!state.recordingSettingsEverSaved) {
+      target.resetOptionalFeaturesOff();
+    }
     target.ai.init();
     void target.appPrivacyExclusion.loadPrivacyAppCandidates();
     void target.appPrivacyExclusion.loadSensitiveCaptureRecommendations();

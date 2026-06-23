@@ -110,6 +110,30 @@ impl OnboardingState {
     }
 }
 
+/// Command-only return shape for `get_onboarding_state`. Mirrors the persisted
+/// `OnboardingState` fields and adds `recording_settings_ever_saved` — a
+/// LIVE-COMPUTED, NON-PERSISTED signal (the existence of `recording-settings.json`
+/// on disk). It lives on a SEPARATE type so the persisted file shape
+/// (`OnboardingState`) stays unchanged: the computed flag is never written into
+/// `onboarding-state.json` and never required when deserializing existing files.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardingStateView {
+    schema_version: u32,
+    completed_at_unix_ms: Option<u64>,
+    recording_settings_ever_saved: bool,
+}
+
+impl OnboardingStateView {
+    fn from_state_and_disk(state: OnboardingState, recording_settings_ever_saved: bool) -> Self {
+        Self {
+            schema_version: state.schema_version,
+            completed_at_unix_ms: state.completed_at_unix_ms,
+            recording_settings_ever_saved,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct OnboardingStateRuntime {
     state: Option<OnboardingState>,
@@ -1280,8 +1304,17 @@ pub fn toggle_main_window_visibility_command(app: tauri::AppHandle) {
 pub fn get_onboarding_state(
     app: tauri::AppHandle,
     state: tauri::State<'_, OnboardingStateStore>,
-) -> OnboardingState {
-    current_onboarding_state(&app, state.inner())
+) -> OnboardingStateView {
+    // `recording-settings.json` is written ONLY by explicit user saves (never at
+    // install/startup), so its existence == "the user has saved settings at least
+    // once" == returning user. It must be read LIVE per call (NOT cached in
+    // OnboardingStateStore) so a save performed between two onboarding entries in
+    // one process lifetime is visible. Use the same path resolver saves land in.
+    let ever_saved = crate::native_capture::settings::recording_settings_file_path(&app).exists();
+    OnboardingStateView::from_state_and_disk(
+        current_onboarding_state(&app, state.inner()),
+        ever_saved,
+    )
 }
 
 #[tauri::command]
@@ -1306,8 +1339,8 @@ mod tests {
         close_window_focuses_main_before_close, destroyed_window_action, enqueue_cold_open_settings,
         is_known_settings_tab, load_onboarding_state_from_path, normalize_settings_focus,
         normalize_settings_tab, normalized_open_settings_payload, settings_tab_focus_path,
-        AppExitCoordinatorState, DestroyedWindowAction, OpenSettingsTabPayload,
-        PendingOpenSettingsState,
+        AppExitCoordinatorState, DestroyedWindowAction, OnboardingState, OnboardingStateView,
+        OpenSettingsTabPayload, PendingOpenSettingsState,
     };
 
     #[test]
@@ -1546,6 +1579,34 @@ mod tests {
         ));
 
         assert!(!load_onboarding_state_from_path(path).is_complete());
+    }
+
+    #[test]
+    fn onboarding_state_view_serializes_recording_settings_ever_saved_in_camel_case() {
+        let view = OnboardingStateView::from_state_and_disk(
+            OnboardingState {
+                schema_version: 1,
+                completed_at_unix_ms: Some(42),
+            },
+            true,
+        );
+        let json = serde_json::to_value(&view).expect("view serializes");
+        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["completedAtUnixMs"], 42);
+        assert_eq!(json["recordingSettingsEverSaved"], true);
+    }
+
+    #[test]
+    fn onboarding_state_view_carries_ever_saved_signal_independently() {
+        // The signal is independent of completion: a not-yet-completed onboarding
+        // can still report a returning user (settings saved), and vice versa.
+        let returning = OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), true);
+        assert!(returning.recording_settings_ever_saved);
+        assert_eq!(returning.completed_at_unix_ms, None);
+
+        let first_run =
+            OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), false);
+        assert!(!first_run.recording_settings_ever_saved);
     }
 
     #[test]

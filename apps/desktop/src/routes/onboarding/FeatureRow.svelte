@@ -21,6 +21,10 @@
     // `lockReason` is the human "why" shown in the collapsed status block.
     toggleDisabled?: boolean;
     lockReason?: string | null;
+    // Live model-download status for this feature's row. When `running`, a
+    // compact "Downloading… N%" badge is shown (even while open) so a download
+    // started here stays visible after navigating to another feature.
+    download?: { running: boolean; percent: number | null } | null;
     onToggle: () => void;
     onExpand: () => void;
     body?: Snippet;
@@ -37,6 +41,7 @@
     attention = false,
     toggleDisabled = false,
     lockReason = null,
+    download = null,
     onToggle,
     onExpand,
     body,
@@ -103,17 +108,27 @@
       </span>
     {:else}
       <span class="row-status">
-        <span class="status-dot" class:on={enabled}></span>{enabled
-          ? "On"
-          : "Off"}
-        {#if attention}
-          <span class="row-attn"
-            ><span class="attn-dot"></span>Needs setup</span
+        {#if download?.running}
+          <!-- A live download takes precedence over the On/Off + Needs-setup /
+               lock labels: the row should read "Downloading N%" while fetching.
+               Kept shown even when open, to confirm continuity. percent may be
+               null (unknown totalBytes) — always render `{percent ?? 0}%`. -->
+          <span class="row-dl"
+            ><span class="dl-dot"></span>Downloading {download.percent ?? 0}%</span
           >
-        {:else if !enabled && lockReason}
-          <span class="row-lock"
-            ><span class="lock-ico"><Icon name="lock" /></span>{lockReason}</span
-          >
+        {:else}
+          <span class="status-dot" class:on={enabled}></span>{enabled
+            ? "On"
+            : "Off"}
+          {#if attention}
+            <span class="row-attn"
+              ><span class="attn-dot"></span>Needs setup</span
+            >
+          {:else if !enabled && lockReason}
+            <span class="row-lock"
+              ><span class="lock-ico"><Icon name="lock" /></span>{lockReason}</span
+            >
+          {/if}
         {/if}
       </span>
     {/if}

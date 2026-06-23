@@ -20,6 +20,7 @@ import type {
   AudioTranscriptionProvider,
   ExcludedAppEntry,
   GetPermissionsResponse,
+  MicrophoneVadAdapter,
   OcrModelDownloadProgress,
   OcrProvider,
   OcrRecognitionMode,
@@ -104,6 +105,10 @@ export class OnboardingController {
   draftIdleTimeoutSeconds = $state(30);
   draftActivityMode = $state<ActivityMode>("system_input_only");
   draftMicrophoneActivitySensitivity = $state(50);
+  // Voice Activity Detection adapter for the mic — mirrors real settings. "off"
+  // falls back to the legacy peak-level sensitivity slider (the only mode where
+  // draftMicrophoneActivitySensitivity is meaningful).
+  draftMicrophoneVadAdapter = $state<MicrophoneVadAdapter>("silero");
   draftSystemAudioActivitySensitivity = $state(50);
   // Optional feature — starts OFF; the user opts in via its accordion toggle.
   draftOcrEnabled = $state(false);
@@ -452,6 +457,12 @@ export class OnboardingController {
     this.draftTranscriptionModelId = value === "__os_managed__" ? null : value;
   }
 
+  // Mic VAD adapter is a closed union (silero/webrtc/off) surfaced as a
+  // Segmented in MicBody, so the cast from the control's string value is safe.
+  chooseMicrophoneVadAdapter(value: string): void {
+    this.draftMicrophoneVadAdapter = value as MicrophoneVadAdapter;
+  }
+
   // ── Accordion + per-feature enable/attention ─────────────────────────────
   // Toggle behavior: clicking a collapsed row opens it (and collapses whatever
   // was open — one-open-at-a-time); clicking the already-open row collapses it.
@@ -459,11 +470,14 @@ export class OnboardingController {
     this.openId = this.openId === id ? null : id;
   }
 
-  // Every OPTIONAL feature defaults OFF for a fresh onboarding. Called once after
-  // the initial `syncDrafts` (which is a verbatim settings round-trip and would
-  // otherwise inherit the default RecordingSettings' OCR/transcription = on).
-  // Required features (permissions/screen/storage) have no toggle and are left
-  // alone. Cascades that hang off these toggles are reset here too.
+  // Force every OPTIONAL feature OFF — applied ONLY for a GENUINE first run (no
+  // persisted recording-settings.json; see `loadOnboarding`). Called after the
+  // initial `syncDrafts` (a verbatim settings round-trip that would otherwise
+  // inherit the default RecordingSettings' OCR/transcription = on) so a fresh
+  // onboarding is opt-in. A RETURNING user skips this, so re-opening onboarding
+  // reflects/preserves their saved enables. Required features
+  // (permissions/screen/storage) have no toggle and are left alone. Cascades that
+  // hang off these toggles are reset here too.
   resetOptionalFeaturesOff(): void {
     this.draftCaptureMicrophone = false;
     this.draftCaptureSystemAudio = false;
@@ -650,6 +664,36 @@ export class OnboardingController {
   // unmet — turning a feature OFF is always allowed.
   featureToggleDisabled(id: FeatureId): boolean {
     return !this.isEnabled(id) && this.featureLockReason(id) !== null;
+  }
+
+  // Live model-download status for a feature's COLLAPSED row, so a download
+  // started on one feature stays visible after navigating to another (the
+  // progress bar only renders inside the OPEN body). Reuses the existing
+  // selected*DownloadRunning/Percent getters (which already exclude terminal
+  // statuses, so the badge auto-clears). Returns null for features without a
+  // model download and when no download is running. Percent may be null when
+  // totalBytes is unknown — callers render `{percent ?? 0}%`.
+  featureDownload(id: FeatureId): { running: boolean; percent: number | null } | null {
+    switch (id) {
+      case "ocr":
+        return this.selectedOcrDownloadRunning
+          ? { running: true, percent: this.selectedOcrDownloadPercent }
+          : null;
+      case "transcribe":
+        return this.selectedTranscriptionDownloadRunning
+          ? { running: true, percent: this.selectedTranscriptionDownloadPercent }
+          : null;
+      case "speakers":
+        return this.selectedSpeakerDownloadRunning
+          ? { running: true, percent: this.selectedSpeakerDownloadPercent }
+          : null;
+      case "semanticSearch":
+        return this.selectedSemanticSearchDownloadRunning
+          ? { running: true, percent: this.selectedSemanticSearchDownloadPercent }
+          : null;
+      default:
+        return null;
+    }
   }
 
   // ── Footer / CTA deriveds ────────────────────────────────────────────────

@@ -95,6 +95,7 @@
         attention={c.featureAttention(f.id)}
         toggleDisabled={c.featureToggleDisabled(f.id)}
         lockReason={c.featureLockReason(f.id)}
+        download={c.featureDownload(f.id)}
         onToggle={() => c.toggleFeature(f.id)}
         onExpand={() => c.setOpen(f.id)}
       >

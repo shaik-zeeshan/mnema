@@ -275,6 +275,38 @@
 .onboarding-shell .row.open .row-attn {
   display: none;
 }
+/* live model-download indicator on a (possibly collapsed) feature row. Accent
+   (green) chip so an in-progress fetch reads as active work, not a warning;
+   stays visible even when the row is open to confirm continuity. */
+.onboarding-shell .row-dl {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--app-accent);
+  background: var(--app-accent-bg);
+  border: 1px solid var(--app-accent-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.onboarding-shell .row-dl .dl-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--app-accent);
+  flex: 0 0 auto;
+  animation: onboarding-row-dl-pulse 1.1s ease-in-out infinite;
+}
+@keyframes onboarding-row-dl-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
 /* muted "needs prerequisite" hint — collapsed, non-required, OFF rows whose
    enable is gated. Same scale as .row-attn but MUTED (not warn): a subtle
    surface chip with a lock glyph and the reason text. Hidden when open (the
