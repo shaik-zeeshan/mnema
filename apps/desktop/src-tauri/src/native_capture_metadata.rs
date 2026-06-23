@@ -1,9 +1,9 @@
 use capture_metadata::MetadataSettings;
 use capture_metadata::{
-    browser_url_script_app_name, evaluate_privacy, is_known_browser_bundle,
-    metadata_collection_plan, sanitize_url, select_frontmost_pid_window, BrowserUrlProbeCache,
-    FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot,
-    PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
+    browser_url_applescript, evaluate_privacy, is_known_browser_bundle, metadata_collection_plan,
+    sanitize_url, select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
+    MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot, PrivacyFilterDecision,
+    PrivacySettings, RawWindowInfo,
 };
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -209,6 +209,7 @@ struct ActiveWindowMetadata {
 #[cfg(target_os = "macos")]
 fn browser_url_probe_for_active_bundle(
     bundle_id: Option<&str>,
+    window_title: Option<&str>,
     plan: MetadataCollectionPlan,
     cache: &BrowserUrlProbeCache,
     now: Instant,
@@ -222,6 +223,7 @@ fn browser_url_probe_for_active_bundle(
             raw_url.clone(),
             Some(BrowserUrlProbeCache::from_probe(
                 Some(bundle_id.to_string()),
+                window_title.map(str::to_string),
                 raw_url,
                 now,
             )),
@@ -230,7 +232,7 @@ fn browser_url_probe_for_active_bundle(
     if !plan.collect_browser_url_for_metadata {
         return (None, None);
     }
-    if let Some(cached_url) = cache.cached_url_for(bundle_id, now) {
+    if let Some(cached_url) = cache.cached_url_for(bundle_id, window_title, now) {
         return (cached_url, None);
     }
     let raw_url = active_browser_url(bundle_id);
@@ -238,6 +240,7 @@ fn browser_url_probe_for_active_bundle(
         raw_url.clone(),
         Some(BrowserUrlProbeCache::from_probe(
             Some(bundle_id.to_string()),
+            window_title.map(str::to_string),
             raw_url,
             now,
         )),
@@ -270,6 +273,7 @@ fn collect_active_window_metadata(
         let window_title = active_window.window_title.clone();
         let (raw_browser_url, browser_url_probe_cache) = browser_url_probe_for_active_bundle(
             bundle_id.as_deref(),
+            window_title.as_deref(),
             plan,
             browser_url_probe_cache,
             Instant::now(),
@@ -467,16 +471,7 @@ fn cf_f64(
 
 #[cfg(target_os = "macos")]
 fn active_browser_url(bundle_id: &str) -> Option<String> {
-    let app = browser_url_script_app_name(bundle_id)?;
-    let script = format!(
-        r#"tell application "{app}"
-try
-  return URL of active tab of front window
-on error
-  return ""
-end try
-end tell"#
-    );
+    let script = browser_url_applescript(bundle_id)?;
     run_osascript(&script)
         .trim()
         .split('\n')
@@ -616,6 +611,7 @@ mod tests {
             let mut runtime = state.lock().expect("capture metadata state should lock");
             runtime.browser_url_probe_cache = BrowserUrlProbeCache::from_probe(
                 Some("com.google.Chrome".to_string()),
+                Some("Old Tab — Example".to_string()),
                 Some("https://example.com/old-tab".to_string()),
                 Instant::now(),
             );
@@ -625,9 +621,11 @@ mod tests {
 
         let runtime = state.lock().expect("capture metadata state should lock");
         assert_eq!(
-            runtime
-                .browser_url_probe_cache
-                .cached_url_for("com.google.Chrome", Instant::now()),
+            runtime.browser_url_probe_cache.cached_url_for(
+                "com.google.Chrome",
+                Some("Old Tab — Example"),
+                Instant::now()
+            ),
             None
         );
     }

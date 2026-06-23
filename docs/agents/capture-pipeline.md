@@ -131,6 +131,17 @@ App startup is split so the window opens fast:
 
 ---
 
+## Browser URL Metadata
+
+Native URL probing only (ADR 0013 — no extensions/add-ons). Strategy lives in `crates/capture-metadata/src/lib.rs` (`KNOWN_BROWSER_APPS`, `BrowserUrlDialect`, `browser_url_applescript`, `BrowserUrlProbeCache`); execution in `apps/desktop/src-tauri/src/native_capture_metadata.rs` (`active_browser_url`, `browser_url_probe_for_active_bundle`).
+
+- **Dialect matters — Safari is NOT `front document`.** Chromium browsers read `URL of active tab of front window`; WebKit (Safari/Orion) reads `URL of current tab of front window`. `front document` is ordered by *focus recency*, not window z-order, so with multiple Safari windows it can return a background window's URL instead of the visually-frontmost tab.
+- **The URL cache is title-gated, not time-gated.** The front-window title is captured fresh every tick; `BrowserUrlProbeCache::cached_url_for` forces a re-probe whenever the title changes for the same browser. This is what prevents the desync where a previous tab's URL is served under a new page's title (e.g. an old GitHub URL stamped on a frame whose title already reads "…Start Page"). `BROWSER_URL_PROBE_BACKSTOP_INTERVAL` (5s) is only a backstop for navigations that change the URL without changing the title (some single-page apps).
+- The probe runs **only when the frontmost app is a known browser bundle** (`is_known_browser_bundle`); the cache exists to throttle the per-probe `osascript` subprocess, not to poll.
+- Firefox/Gecko is recognized but exposes no scriptable URL surface (`url_script_app_name`/`url_dialect` both `None`) → no URL captured.
+
+---
+
 ## Deletion Semantics
 
 - **Delete Recent Capture** ≠ Retention Cleanup. It is a confirmed recovery action that deletes whole overlapping Capture Segments/Audio Segments and derived app data. No secure erase promise.

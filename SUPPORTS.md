@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-06-18_
+_Last reviewed: 2026-06-23_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -33,7 +33,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Sleep/wake recovery | [x] | [ ] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. |
 | Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
 | Active app/window metadata | [x] | [ ] | [ ] | macOS uses NSWorkspace/CoreGraphics. |
-| Browser URL metadata | [x] | [ ] | [ ] | macOS uses AppleScript for supported browsers. |
+| Browser URL metadata | [x] | [ ] | [ ] | macOS uses AppleScript for supported Chromium and WebKit browsers. Firefox-family (Gecko) browsers expose no scriptable URL and are not supported. |
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
 | Quick Recall launcher panel | [x] | [~] | [~] | macOS summons a non-activating NSPanel (key without activating Mnema, like Spotlight/Raycast); non-macOS falls back to a plain shown/focused always-on-top window without non-activating semantics. |
 | Ask AI (in-process Reasoning Engine) | [x] | [~] | [~] | Quick Recall + Insights Chat run in-process on the shared Reasoning Engine (`crates/ai-runtime` via `rig-core`) — no installed PI/Node runtime, no shim, no `node`/`pi`-on-PATH resolution. Brokered `search`/`timeline`/`show_text`/`recall_context` tools (plus presentation-only `reference_captures`) are injected from the Tauri layer under the All-Retained Ask AI broker scope. Cross-platform Rust like the engine itself; a cloud engine needs the bring-your-own-key in the Encrypted Capture Index key store (macOS Keychain only today, see that row), a local Ollama/Llamafile engine needs no key and is platform-agnostic. Windows/Linux are blocked only on the platform key store for cloud keys. |
@@ -81,7 +81,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Screen and microphone permission checks/prompts.
 - [x] Open macOS Privacy & Security panes for denied permissions.
 - [x] Active app/window metadata from NSWorkspace/CoreGraphics.
-- [x] Browser URL metadata for supported browsers via AppleScript.
+- [x] Browser URL metadata for supported Chromium/WebKit browsers via AppleScript. Firefox-family (Gecko) browsers expose no scriptable URL and are not supported.
 - [x] Live App Privacy Exclusion through ScreenCaptureKit app filters.
 - [x] Exclude Current App tray action.
 - [x] Recommended sensitive app exclusion catalog using macOS bundle IDs.

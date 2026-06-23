@@ -4,7 +4,12 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use url::Url;
 
-pub const BROWSER_URL_METADATA_POLL_INTERVAL: Duration = Duration::from_secs(15);
+/// Backstop re-probe interval for a browser whose front-window title has *not*
+/// changed. The primary freshness signal is the window title (re-probe on every
+/// change — see [`BrowserUrlProbeCache::cached_url_for`]); this only bounds
+/// staleness for navigations that change the URL without changing the title
+/// (e.g. some single-page apps).
+pub const BROWSER_URL_PROBE_BACKSTOP_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -109,25 +114,48 @@ pub struct PrivacyFilterDecision {
 #[derive(Debug, Clone, Default)]
 pub struct BrowserUrlProbeCache {
     bundle_id: Option<String>,
+    window_title: Option<String>,
     raw_url: Option<String>,
     probed_at: Option<Instant>,
 }
 
 impl BrowserUrlProbeCache {
-    pub fn cached_url_for(&self, bundle_id: &str, now: Instant) -> Option<Option<String>> {
+    /// Returns the cached URL when it is still trustworthy for `bundle_id`.
+    ///
+    /// The front-window title is captured fresh every tick and almost always
+    /// changes on a tab switch or navigation, so a title mismatch forces an
+    /// immediate re-probe — this is what keeps the cached URL from going stale
+    /// against the title (the desync that surfaced an old tab's URL under a new
+    /// page's title). [`BROWSER_URL_PROBE_BACKSTOP_INTERVAL`] is only a backstop
+    /// for URL changes that leave the title untouched.
+    pub fn cached_url_for(
+        &self,
+        bundle_id: &str,
+        window_title: Option<&str>,
+        now: Instant,
+    ) -> Option<Option<String>> {
         if self.bundle_id.as_deref() != Some(bundle_id) {
             return None;
         }
+        if self.window_title.as_deref() != window_title {
+            return None;
+        }
         let probed_at = self.probed_at?;
-        if now.saturating_duration_since(probed_at) >= BROWSER_URL_METADATA_POLL_INTERVAL {
+        if now.saturating_duration_since(probed_at) >= BROWSER_URL_PROBE_BACKSTOP_INTERVAL {
             return None;
         }
         Some(self.raw_url.clone())
     }
 
-    pub fn from_probe(bundle_id: Option<String>, raw_url: Option<String>, now: Instant) -> Self {
+    pub fn from_probe(
+        bundle_id: Option<String>,
+        window_title: Option<String>,
+        raw_url: Option<String>,
+        now: Instant,
+    ) -> Self {
         Self {
             bundle_id,
+            window_title,
             raw_url,
             probed_at: Some(now),
         }
@@ -184,10 +212,22 @@ pub fn metadata_collection_plan(metadata: &MetadataSettings) -> MetadataCollecti
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserUrlDialect {
+    Chromium, // URL of active tab of front window
+    WebKit,   // URL of current tab of front window  (Safari family)
+}
+
+/// How Mnema reads a browser's active-tab URL.
+///
+/// Browsers that expose the URL via AppleScript carry `url_script_app_name` +
+/// `url_dialect`; both are `None` for a browser that is recognized but has no
+/// scriptable URL surface (e.g. Firefox).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrowserAppDescriptor {
     pub bundle_id: &'static str,
     pub display_name: &'static str,
     pub url_script_app_name: Option<&'static str>,
+    pub url_dialect: Option<BrowserUrlDialect>,
 }
 
 pub const KNOWN_BROWSER_APPS: &[BrowserAppDescriptor] = &[
@@ -195,41 +235,128 @@ pub const KNOWN_BROWSER_APPS: &[BrowserAppDescriptor] = &[
         bundle_id: "com.apple.Safari",
         display_name: "Safari",
         url_script_app_name: Some("Safari"),
+        url_dialect: Some(BrowserUrlDialect::WebKit),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.apple.SafariTechnologyPreview",
+        display_name: "Safari Technology Preview",
+        url_script_app_name: Some("Safari Technology Preview"),
+        url_dialect: Some(BrowserUrlDialect::WebKit),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.kagi.kagimacOS",
+        display_name: "Orion",
+        url_script_app_name: Some("Orion"),
+        url_dialect: Some(BrowserUrlDialect::WebKit),
     },
     BrowserAppDescriptor {
         bundle_id: "com.google.Chrome",
         display_name: "Google Chrome",
         url_script_app_name: Some("Google Chrome"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
     },
     BrowserAppDescriptor {
         bundle_id: "com.google.Chrome.canary",
         display_name: "Google Chrome Canary",
         url_script_app_name: Some("Google Chrome Canary"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.google.Chrome.beta",
+        display_name: "Google Chrome Beta",
+        url_script_app_name: Some("Google Chrome Beta"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.google.Chrome.dev",
+        display_name: "Google Chrome Dev",
+        url_script_app_name: Some("Google Chrome Dev"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "org.chromium.Chromium",
+        display_name: "Chromium",
+        url_script_app_name: Some("Chromium"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
     },
     BrowserAppDescriptor {
         bundle_id: "com.microsoft.edgemac",
         display_name: "Microsoft Edge",
         url_script_app_name: Some("Microsoft Edge"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
     },
+    BrowserAppDescriptor {
+        bundle_id: "com.microsoft.edgemac.Beta",
+        display_name: "Microsoft Edge Beta",
+        url_script_app_name: Some("Microsoft Edge Beta"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.microsoft.edgemac.Dev",
+        display_name: "Microsoft Edge Dev",
+        url_script_app_name: Some("Microsoft Edge Dev"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.microsoft.edgemac.Canary",
+        display_name: "Microsoft Edge Canary",
+        url_script_app_name: Some("Microsoft Edge Canary"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    // Firefox is recognized but has no scriptable URL surface, so no URL is captured.
     BrowserAppDescriptor {
         bundle_id: "org.mozilla.firefox",
         display_name: "Firefox",
         url_script_app_name: None,
+        url_dialect: None,
     },
     BrowserAppDescriptor {
         bundle_id: "com.brave.Browser",
         display_name: "Brave Browser",
         url_script_app_name: Some("Brave Browser"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.brave.Browser.beta",
+        display_name: "Brave Browser Beta",
+        url_script_app_name: Some("Brave Browser Beta"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.brave.Browser.nightly",
+        display_name: "Brave Browser Nightly",
+        url_script_app_name: Some("Brave Browser Nightly"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
     },
     BrowserAppDescriptor {
         bundle_id: "company.thebrowser.Browser",
         display_name: "Arc",
         url_script_app_name: Some("Arc"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
     },
     BrowserAppDescriptor {
         bundle_id: "net.imput.helium",
         display_name: "Helium",
         url_script_app_name: Some("Helium"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.vivaldi.Vivaldi",
+        display_name: "Vivaldi",
+        url_script_app_name: Some("Vivaldi"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.operasoftware.Opera",
+        display_name: "Opera",
+        url_script_app_name: Some("Opera"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.operasoftware.OperaGX",
+        display_name: "Opera GX",
+        url_script_app_name: Some("Opera GX"),
+        url_dialect: Some(BrowserUrlDialect::Chromium),
     },
 ];
 
@@ -247,8 +374,26 @@ pub fn browser_url_script_app_name(bundle_id: &str) -> Option<&'static str> {
     known_browser_app(bundle_id).and_then(|browser| browser.url_script_app_name)
 }
 
+/// Whether Mnema can read this browser's active-tab URL via AppleScript. The
+/// privacy disclosure relies on this.
 pub fn browser_url_metadata_supported(bundle_id: &str) -> bool {
     browser_url_script_app_name(bundle_id).is_some()
+}
+
+pub fn browser_url_applescript(bundle_id: &str) -> Option<String> {
+    let descriptor = known_browser_app(bundle_id)?;
+    let app = descriptor.url_script_app_name?;
+    let dialect = descriptor.url_dialect?;
+    let target = match dialect {
+        BrowserUrlDialect::Chromium => "URL of active tab of front window",
+        // `current tab of front window` tracks the visually-frontmost window's
+        // selected tab; `front document` is ordered by focus recency and can
+        // return a background window's URL. See the Safari URL-accuracy fix.
+        BrowserUrlDialect::WebKit => "URL of current tab of front window",
+    };
+    Some(format!(
+        "tell application \"{app}\"\ntry\n  return {target}\non error\n  return \"\"\nend try\nend tell"
+    ))
 }
 
 pub const REDACTION_REASON_EXCLUDED_APP: &str = "excluded_app";
@@ -415,5 +560,181 @@ mod tests {
         assert_eq!(decision.matched_rule_ids, vec!["a"]);
         assert!(decision.privacy_filter_applied);
         assert!(decision.metadata_redaction_reason.is_none());
+    }
+
+    #[test]
+    fn chromium_family_browsers_are_recognized_with_url_support() {
+        let expected = [
+            ("com.vivaldi.Vivaldi", "Vivaldi"),
+            ("com.operasoftware.Opera", "Opera"),
+            ("com.operasoftware.OperaGX", "Opera GX"),
+            ("org.chromium.Chromium", "Chromium"),
+            ("com.google.Chrome.beta", "Google Chrome Beta"),
+            ("com.google.Chrome.dev", "Google Chrome Dev"),
+            ("com.microsoft.edgemac.Beta", "Microsoft Edge Beta"),
+            ("com.microsoft.edgemac.Dev", "Microsoft Edge Dev"),
+            ("com.microsoft.edgemac.Canary", "Microsoft Edge Canary"),
+            ("com.brave.Browser.beta", "Brave Browser Beta"),
+            ("com.brave.Browser.nightly", "Brave Browser Nightly"),
+        ];
+
+        for (bundle_id, app_name) in expected {
+            assert!(
+                is_known_browser_bundle(bundle_id),
+                "{bundle_id} should be a known browser bundle"
+            );
+            assert!(
+                browser_url_metadata_supported(bundle_id),
+                "{bundle_id} should support browser URL metadata"
+            );
+            assert_eq!(
+                browser_url_script_app_name(bundle_id),
+                Some(app_name),
+                "{bundle_id} should map to AppleScript app name {app_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_browser_apps_have_no_duplicate_bundle_ids() {
+        let mut seen = std::collections::HashSet::new();
+        for browser in KNOWN_BROWSER_APPS {
+            assert!(
+                seen.insert(browser.bundle_id),
+                "duplicate bundle id in KNOWN_BROWSER_APPS: {}",
+                browser.bundle_id
+            );
+        }
+    }
+
+    #[test]
+    fn safari_applescript_uses_webkit_dialect() {
+        let script = browser_url_applescript("com.apple.Safari")
+            .expect("Safari should produce a URL AppleScript");
+        assert!(
+            script.contains("URL of current tab of front window"),
+            "Safari script should read the front window's current tab: {script}"
+        );
+        assert!(
+            !script.contains("front document"),
+            "Safari script must not use the focus-ordered front document: {script}"
+        );
+    }
+
+    #[test]
+    fn chrome_applescript_uses_chromium_dialect() {
+        let script = browser_url_applescript("com.google.Chrome")
+            .expect("Chrome should produce a URL AppleScript");
+        assert!(
+            script.contains("active tab of front window"),
+            "Chrome script should target the active tab of the front window: {script}"
+        );
+    }
+
+    #[test]
+    fn firefox_has_no_applescript() {
+        assert_eq!(browser_url_applescript("org.mozilla.firefox"), None);
+    }
+
+    #[test]
+    fn firefox_is_recognized_but_has_no_url_support() {
+        assert!(is_known_browser_bundle("org.mozilla.firefox"));
+        assert!(!browser_url_metadata_supported("org.mozilla.firefox"));
+        assert_eq!(browser_url_script_app_name("org.mozilla.firefox"), None);
+    }
+
+    #[test]
+    fn new_webkit_browsers_are_recognized_with_url_support() {
+        for bundle_id in ["com.apple.SafariTechnologyPreview", "com.kagi.kagimacOS"] {
+            assert!(
+                is_known_browser_bundle(bundle_id),
+                "{bundle_id} should be a known browser bundle"
+            );
+            assert!(
+                browser_url_metadata_supported(bundle_id),
+                "{bundle_id} should support browser URL metadata"
+            );
+            let script = browser_url_applescript(bundle_id)
+                .unwrap_or_else(|| panic!("{bundle_id} should produce a URL AppleScript"));
+            assert!(
+                script.contains("URL of current tab of front window"),
+                "{bundle_id} should read the front window's current tab: {script}"
+            );
+            assert!(
+                !script.contains("front document"),
+                "{bundle_id} must not use the focus-ordered front document: {script}"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_url_cache_reprobes_when_window_title_changes() {
+        let base = Instant::now();
+        let cache = BrowserUrlProbeCache::from_probe(
+            Some("com.apple.Safari".to_string()),
+            Some("OxLM — GitHub".to_string()),
+            Some("https://github.com/pauldb89/OxLM".to_string()),
+            base,
+        );
+
+        // Same browser, same title, within the backstop -> reuse the cached URL.
+        assert_eq!(
+            cache.cached_url_for("com.apple.Safari", Some("OxLM — GitHub"), base),
+            Some(Some("https://github.com/pauldb89/OxLM".to_string()))
+        );
+
+        // Title moved on (e.g. switched to the Start Page) -> force a re-probe so the
+        // stale URL is never served under the new title. This is the desync fix.
+        assert_eq!(
+            cache.cached_url_for("com.apple.Safari", Some("Personal — Start Page"), base),
+            None
+        );
+
+        // A different browser never hits this cache.
+        assert_eq!(
+            cache.cached_url_for("com.google.Chrome", Some("OxLM — GitHub"), base),
+            None
+        );
+
+        // Same title but past the backstop -> re-probe to catch title-stable (SPA)
+        // navigations that change the URL without changing the title.
+        assert_eq!(
+            cache.cached_url_for(
+                "com.apple.Safari",
+                Some("OxLM — GitHub"),
+                base + BROWSER_URL_PROBE_BACKSTOP_INTERVAL
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn browser_url_strategy_fields_are_consistent() {
+        // A known browser is either AppleScript-scriptable (url_script_app_name +
+        // url_dialect both set) or recognized-but-unsupported (both none).
+        for browser in KNOWN_BROWSER_APPS {
+            assert_eq!(
+                browser.url_script_app_name.is_some(),
+                browser.url_dialect.is_some(),
+                "url_script_app_name and url_dialect must agree for {}",
+                browser.bundle_id
+            );
+
+            let applescript = browser.url_script_app_name.is_some();
+            // browser_url_metadata_supported is true iff the AppleScript strategy applies.
+            assert_eq!(
+                browser_url_metadata_supported(browser.bundle_id),
+                applescript,
+                "metadata-supported flag must reflect the resolved strategy for {}",
+                browser.bundle_id
+            );
+            // AppleScript is produced only for the AppleScript strategy.
+            assert_eq!(
+                browser_url_applescript(browser.bundle_id).is_some(),
+                applescript,
+                "AppleScript presence must match the AppleScript strategy for {}",
+                browser.bundle_id
+            );
+        }
     }
 }
