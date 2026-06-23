@@ -13,7 +13,8 @@ export type FeatureId =
   | "transcribe"
   | "speakers"
   | "privacy"
-  | "askai";
+  | "askai"
+  | "semanticSearch";
 
 export interface FeatureMeta {
   id: FeatureId;
@@ -105,6 +106,14 @@ export const FEATURES: FeatureMeta[] = [
     name: "Ask AI — Reasoning Engine",
     eyebrow: "Optional · advanced",
     sub: "Ask questions about your recorded history in natural language.",
+    required: false,
+  },
+  {
+    id: "semanticSearch",
+    icon: "semanticSearch",
+    name: "Semantic Search",
+    eyebrow: "Optional · advanced",
+    sub: "Meaning-based search fused with keyword search — runs fully on-device. Pick a model to activate.",
     required: false,
   },
 ];

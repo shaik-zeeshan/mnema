@@ -22,6 +22,7 @@
   import SpeakersBody from "./SpeakersBody.svelte";
   import PrivacyBody from "./PrivacyBody.svelte";
   import AskAiBody from "./AskAiBody.svelte";
+  import SemanticSearchBody from "./SemanticSearchBody.svelte";
 
   const c = new OnboardingController();
 
@@ -117,6 +118,8 @@
             <PrivacyBody controller={c} />
           {:else if f.id === "askai"}
             <AskAiBody controller={c} />
+          {:else if f.id === "semanticSearch"}
+            <SemanticSearchBody controller={c} />
           {/if}
         {/snippet}
       </FeatureRow>

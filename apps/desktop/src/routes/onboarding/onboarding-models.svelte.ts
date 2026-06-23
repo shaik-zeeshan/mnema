@@ -17,10 +17,15 @@ import type {
   OcrModelStatus,
   OcrModelStatusResponse,
   OcrProvider,
+  SemanticSearchModelDownloadProgress,
+  SemanticSearchModelStatus,
+  SemanticSearchModelStatusResponse,
+  SemanticSearchSupportedModel,
   SpeakerAnalysisModelDownloadProgress,
   SpeakerAnalysisModelStatus,
   SpeakerAnalysisModelStatusResponse,
 } from "$lib/types";
+import { semanticSearchTierLabel } from "$lib/settings/state/models-format";
 import {
   formatBytes,
   isSelectableOcrProvider,
@@ -452,3 +457,216 @@ export function createSpeakerModelStore(access: SpeakerModelStoreAccess) {
 }
 
 export type SpeakerModelStore = ReturnType<typeof createSpeakerModelStore>;
+
+// ── Semantic search model subsystem ────────────────────────────────────────
+// Mirrors the OCR store, but the picker mixes a guided/recommended tier list
+// (from `get_semantic_search_model_status`) with a custom catalog (from
+// `list_semantic_search_supported_models`), so the picked-model view resolves
+// live status first and falls back to the catalog (mirrors the Settings
+// controller's `semanticSearchPickedModel`). Onboarding only DOWNLOADS live
+// (matching OCR/transcription); model SELECTION is a draft committed at finish,
+// so this store never calls `select_semantic_search_model`.
+export interface SemanticSearchModelStoreAccess {
+  semanticSearchModelId: () => string | null;
+}
+
+// The render-ready view the body reads for the picked-model card. `available`
+// is true only when the live status reports the model installed; catalog-only
+// (custom) models are never installed yet.
+export interface SemanticSearchPickedModel {
+  modelId: string;
+  provider: string | null;
+  displayName: string;
+  description: string;
+  metaLine: string;
+  available: boolean;
+  approxDownloadBytes: number | null;
+}
+
+export function createSemanticSearchModelStore(access: SemanticSearchModelStoreAccess) {
+  let semanticSearchModelStatus = $state<SemanticSearchModelStatusResponse | null>(null);
+  let loadingSemanticSearchModelStatus = $state(false);
+  let semanticSearchModelError = $state<string | null>(null);
+  let semanticSearchSupportedModels = $state<SemanticSearchSupportedModel[]>([]);
+  let loadingSemanticSearchSupportedModels = $state(false);
+  let semanticSearchSupportedModelsError = $state<string | null>(null);
+  let semanticSearchDownloadProgress = $state<SemanticSearchModelDownloadProgress | null>(null);
+  let startingSemanticSearchDownload = $state(false);
+  let cancellingSemanticSearchDownload = $state(false);
+  let semanticSearchDownloadError = $state<string | null>(null);
+
+  // Provider is uniform across the live status list (one on-device provider);
+  // catalog-only picks inherit it so a download can name the provider.
+  const semanticSearchProvider = $derived(
+    (semanticSearchModelStatus?.models ?? [])[0]?.provider ?? null,
+  );
+  const semanticSearchGuidedModels = $derived(
+    (semanticSearchModelStatus?.models ?? []).filter((m) => m.tier !== "custom"),
+  );
+  const semanticSearchGuidedModelIds = $derived(
+    new Set(semanticSearchGuidedModels.map((m) => m.modelId)),
+  );
+  const semanticSearchCustomOptions = $derived(
+    semanticSearchSupportedModels.filter((m) => !semanticSearchGuidedModelIds.has(m.modelId)),
+  );
+  // Guided/recommended tiers first, then custom catalog models (mirrors the
+  // Settings controller's `semanticSearchModelOptions`).
+  const semanticSearchModelOptions = $derived([
+    ...semanticSearchGuidedModels.map((m) => ({
+      value: m.modelId,
+      label: `${m.displayName} · ${m.dimension}d${m.tier === "multilingual" ? " · multilingual" : ""} · recommended`,
+    })),
+    ...semanticSearchCustomOptions.map((m) => ({
+      value: m.modelId,
+      label: `${m.displayName} — ${m.dimension}d${m.multilingual ? " · multilingual" : ""}`,
+    })),
+  ]);
+
+  const selectedSemanticSearchModel = $derived.by((): SemanticSearchPickedModel | null => {
+    const id = access.semanticSearchModelId();
+    if (!id) return null;
+    const live = (semanticSearchModelStatus?.models ?? []).find((m) => m.modelId === id);
+    if (live) {
+      return {
+        modelId: live.modelId,
+        provider: live.provider,
+        displayName: live.displayName,
+        description: live.description,
+        metaLine: `${semanticSearchTierLabel(live.tier)} · ${formatBytes(live.approxDownloadBytes)} on disk · ${live.dimension}-dim · runs on-device${live.licenseLabel ? ` · ${live.licenseLabel}` : ""}`,
+        available: live.available,
+        approxDownloadBytes: live.approxDownloadBytes,
+      };
+    }
+    const catalog = semanticSearchSupportedModels.find((m) => m.modelId === id);
+    if (catalog) {
+      const size =
+        catalog.approxDownloadBytes != null ? `${formatBytes(catalog.approxDownloadBytes)} on disk · ` : "";
+      return {
+        modelId: catalog.modelId,
+        provider: semanticSearchProvider,
+        displayName: catalog.displayName,
+        description: catalog.description,
+        metaLine: `${semanticSearchTierLabel("custom")} · ${size}${catalog.dimension}-dim · runs on-device${catalog.multilingual ? " · multilingual" : ""}`,
+        available: false,
+        approxDownloadBytes: catalog.approxDownloadBytes,
+      };
+    }
+    return null;
+  });
+
+  const selectedSemanticSearchDownloadProgress = $derived(
+    semanticSearchDownloadProgress
+      && semanticSearchDownloadProgress.modelId === access.semanticSearchModelId()
+      ? semanticSearchDownloadProgress
+      : null,
+  );
+  const selectedSemanticSearchDownloadRunning = $derived(
+    selectedSemanticSearchDownloadProgress !== null
+      && RUNNING_DOWNLOAD_STATUSES.includes(selectedSemanticSearchDownloadProgress.status),
+  );
+  const selectedSemanticSearchDownloadPercent = $derived.by(() => {
+    const progress = selectedSemanticSearchDownloadProgress;
+    if (!progress?.totalBytes || progress.totalBytes <= 0) return null;
+    return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+  });
+
+  async function loadSemanticSearchModelStatus(): Promise<void> {
+    loadingSemanticSearchModelStatus = true;
+    semanticSearchModelError = null;
+    try {
+      semanticSearchModelStatus = await invoke<SemanticSearchModelStatusResponse>(
+        "get_semantic_search_model_status",
+      );
+    } catch (err) {
+      semanticSearchModelError = serializeError(err);
+    } finally {
+      loadingSemanticSearchModelStatus = false;
+    }
+  }
+
+  async function loadSemanticSearchSupportedModels(): Promise<void> {
+    loadingSemanticSearchSupportedModels = true;
+    semanticSearchSupportedModelsError = null;
+    try {
+      semanticSearchSupportedModels = await invoke<SemanticSearchSupportedModel[]>(
+        "list_semantic_search_supported_models",
+      );
+    } catch (err) {
+      semanticSearchSupportedModelsError = serializeError(err);
+    } finally {
+      loadingSemanticSearchSupportedModels = false;
+    }
+  }
+
+  async function startSelectedSemanticSearchModelDownload(): Promise<void> {
+    const model = selectedSemanticSearchModel;
+    if (!model?.provider) return;
+    startingSemanticSearchDownload = true;
+    semanticSearchDownloadError = null;
+    try {
+      semanticSearchDownloadProgress = await invoke<SemanticSearchModelDownloadProgress>(
+        "start_semantic_search_model_download",
+        {
+          request: {
+            provider: model.provider,
+            modelId: model.modelId,
+          },
+        },
+      );
+    } catch (err) {
+      semanticSearchDownloadError = serializeError(err);
+    } finally {
+      startingSemanticSearchDownload = false;
+    }
+  }
+
+  async function cancelSelectedSemanticSearchModelDownload(): Promise<void> {
+    cancellingSemanticSearchDownload = true;
+    semanticSearchDownloadError = null;
+    try {
+      await invoke("cancel_semantic_search_model_download");
+    } catch (err) {
+      semanticSearchDownloadError = serializeError(err);
+    } finally {
+      cancellingSemanticSearchDownload = false;
+    }
+  }
+
+  async function handleSemanticSearchDownloadProgress(
+    progress: SemanticSearchModelDownloadProgress,
+  ): Promise<void> {
+    semanticSearchDownloadProgress = progress;
+    if (progress.status === "failed") {
+      semanticSearchDownloadError = progress.message ?? "Download failed.";
+    }
+    if (TERMINAL_DOWNLOAD_STATUSES.includes(progress.status)) {
+      await loadSemanticSearchModelStatus();
+    }
+  }
+
+  return {
+    get semanticSearchModelStatus() { return semanticSearchModelStatus; },
+    get loadingSemanticSearchModelStatus() { return loadingSemanticSearchModelStatus; },
+    get semanticSearchModelError() { return semanticSearchModelError; },
+    get semanticSearchSupportedModels() { return semanticSearchSupportedModels; },
+    get loadingSemanticSearchSupportedModels() { return loadingSemanticSearchSupportedModels; },
+    get semanticSearchSupportedModelsError() { return semanticSearchSupportedModelsError; },
+    get semanticSearchDownloadProgress() { return semanticSearchDownloadProgress; },
+    get startingSemanticSearchDownload() { return startingSemanticSearchDownload; },
+    get cancellingSemanticSearchDownload() { return cancellingSemanticSearchDownload; },
+    get semanticSearchDownloadError() { return semanticSearchDownloadError; },
+    get semanticSearchModelOptions() { return semanticSearchModelOptions; },
+    get selectedSemanticSearchModel() { return selectedSemanticSearchModel; },
+    get selectedSemanticSearchDownloadProgress() { return selectedSemanticSearchDownloadProgress; },
+    get selectedSemanticSearchDownloadRunning() { return selectedSemanticSearchDownloadRunning; },
+    get selectedSemanticSearchDownloadPercent() { return selectedSemanticSearchDownloadPercent; },
+    semanticSearchTierLabel: (model: SemanticSearchModelStatus) => semanticSearchTierLabel(model.tier),
+    loadSemanticSearchModelStatus,
+    loadSemanticSearchSupportedModels,
+    startSelectedSemanticSearchModelDownload,
+    cancelSelectedSemanticSearchModelDownload,
+    handleSemanticSearchDownloadProgress,
+  };
+}
+
+export type SemanticSearchModelStore = ReturnType<typeof createSemanticSearchModelStore>;

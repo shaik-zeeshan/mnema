@@ -33,6 +33,7 @@ import type {
   ResolutionMode,
   ResolutionPreset,
   RetentionPolicy,
+  SemanticSearchModelDownloadProgress,
   SpeakerAnalysisModelDownloadProgress,
   VideoBitrateMode,
   VideoBitratePreset,
@@ -41,6 +42,7 @@ import type { FeatureId, FeatureLockContext } from "./feature-model";
 import { FEATURES, featureLockReason as lockReasonFor } from "./feature-model";
 import {
   createOcrModelStore,
+  createSemanticSearchModelStore,
   createSpeakerModelStore,
   createTranscriptionModelStore,
 } from "./onboarding-models.svelte";
@@ -51,6 +53,7 @@ import {
   DEFAULT_SPEAKER_PROVIDER,
   OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
   RECORDING_SETTINGS_CHANGED_EVENT,
+  SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
   SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
   defaultOcrLanguageForProvider,
   defaultOcrModelIdForProvider,
@@ -127,6 +130,12 @@ export class OnboardingController {
   draftSpeakerTimeoutMinutes = $state(10);
   draftExcludedApps = $state<ExcludedAppEntry[]>([]);
   draftAskAiEnabled = $state(false);
+  // Optional feature — starts OFF; the user opts in via its accordion toggle.
+  // Semantic search self-gates on model presence (surfaced via attention), so it
+  // has no hard dependency. Selection is draft-only (committed at finish); only
+  // the model DOWNLOAD runs live, like OCR/transcription.
+  draftSemanticSearchEnabled = $state(false);
+  draftSemanticSearchModelId = $state<string | null>(null);
 
   // Onboarding-only UI flag — NOT backend-mapped. There is no `privacy.enabled`
   // field in RecordingSettings; excluded apps are ALWAYS persisted from
@@ -200,6 +209,9 @@ export class OnboardingController {
   private readonly speakerStore = createSpeakerModelStore({
     speakerProvider: () => this.draftSpeakerProvider,
     speakerModelId: () => this.draftSpeakerModelId,
+  });
+  private readonly semanticSearchStore = createSemanticSearchModelStore({
+    semanticSearchModelId: () => this.draftSemanticSearchModelId,
   });
 
   // Reasoning-Engine (Ask AI) provider setup. Public so AskAiBody can render the
@@ -396,6 +408,37 @@ export class OnboardingController {
     this.draftSpeakerModelId = modelId;
   }
 
+  // ── Semantic search model subsystem (flat delegation) ────────────────────
+  get semanticSearchModelStatus() { return this.semanticSearchStore.semanticSearchModelStatus; }
+  get loadingSemanticSearchModelStatus() { return this.semanticSearchStore.loadingSemanticSearchModelStatus; }
+  get semanticSearchModelError() { return this.semanticSearchStore.semanticSearchModelError; }
+  get semanticSearchSupportedModels() { return this.semanticSearchStore.semanticSearchSupportedModels; }
+  get loadingSemanticSearchSupportedModels() { return this.semanticSearchStore.loadingSemanticSearchSupportedModels; }
+  get semanticSearchSupportedModelsError() { return this.semanticSearchStore.semanticSearchSupportedModelsError; }
+  get semanticSearchDownloadError() { return this.semanticSearchStore.semanticSearchDownloadError; }
+  get startingSemanticSearchDownload() { return this.semanticSearchStore.startingSemanticSearchDownload; }
+  get cancellingSemanticSearchDownload() { return this.semanticSearchStore.cancellingSemanticSearchDownload; }
+  get semanticSearchModelOptions() { return this.semanticSearchStore.semanticSearchModelOptions; }
+  get selectedSemanticSearchModel() { return this.semanticSearchStore.selectedSemanticSearchModel; }
+  get selectedSemanticSearchDownloadProgress() { return this.semanticSearchStore.selectedSemanticSearchDownloadProgress; }
+  get selectedSemanticSearchDownloadRunning() { return this.semanticSearchStore.selectedSemanticSearchDownloadRunning; }
+  get selectedSemanticSearchDownloadPercent() { return this.semanticSearchStore.selectedSemanticSearchDownloadPercent; }
+  loadSemanticSearchModelStatus = () => this.semanticSearchStore.loadSemanticSearchModelStatus();
+  loadSemanticSearchSupportedModels = () => this.semanticSearchStore.loadSemanticSearchSupportedModels();
+  startSelectedSemanticSearchModelDownload = () =>
+    this.semanticSearchStore.startSelectedSemanticSearchModelDownload();
+  cancelSelectedSemanticSearchModelDownload = () =>
+    this.semanticSearchStore.cancelSelectedSemanticSearchModelDownload();
+  handleSemanticSearchDownloadProgress = (payload: SemanticSearchModelDownloadProgress) =>
+    this.semanticSearchStore.handleSemanticSearchDownloadProgress(payload);
+
+  // Draft-only selection: picking a model just sets the draft id (persisted at
+  // finish via buildSettingsRequest). Onboarding never calls the live
+  // `select_semantic_search_model` command (that triggers a reindex).
+  chooseSemanticSearchModel(value: string): void {
+    this.draftSemanticSearchModelId = value || null;
+  }
+
   // ── Provider / model selection helpers (used by Slice 4 bodies) ──────────
   chooseOcrProvider(value: string): void {
     if (!isSelectableOcrProvider(value)) return;
@@ -444,6 +487,7 @@ export class OnboardingController {
     this.draftSpeakerRecognizeSavedPeople = false;
     this.privacyEnabled = false;
     this.draftAskAiEnabled = false;
+    this.draftSemanticSearchEnabled = false;
   }
 
   isEnabled(id: FeatureId): boolean {
@@ -466,6 +510,8 @@ export class OnboardingController {
         return this.privacyEnabled;
       case "askai":
         return this.draftAskAiEnabled;
+      case "semanticSearch":
+        return this.draftSemanticSearchEnabled;
     }
   }
 
@@ -525,6 +571,9 @@ export class OnboardingController {
       case "askai":
         this.draftAskAiEnabled = !this.draftAskAiEnabled;
         return;
+      case "semanticSearch":
+        this.draftSemanticSearchEnabled = !this.draftSemanticSearchEnabled;
+        return;
     }
   }
 
@@ -566,6 +615,17 @@ export class OnboardingController {
     return !model.available;
   }
 
+  // Semantic search is inert until a model is installed: enabled but no model
+  // selected, or the selected model isn't downloaded yet (mirrors the
+  // transcription attention rule). A completed download flips `available` true
+  // on the next status reload.
+  private semanticSearchModelNeedsAttention(): boolean {
+    if (!this.draftSemanticSearchEnabled) return false;
+    const model = this.selectedSemanticSearchModel;
+    if (!model) return true;
+    return !model.available;
+  }
+
   // Single-owner attention so the footer count never double-counts an issue.
   featureAttention(id: FeatureId): boolean {
     switch (id) {
@@ -590,6 +650,10 @@ export class OnboardingController {
       // tracking the provider/model/key state it depends on.
       case "askai":
         return this.draftAskAiEnabled && !this.ai.aiConfigReady;
+      // Semantic search on but no installed model selected — inert until one is
+      // downloaded, surfaced as attention (it self-gates, no hard dependency).
+      case "semanticSearch":
+        return this.semanticSearchModelNeedsAttention();
       case "screen":
       case "storage":
       case "privacy":
@@ -632,7 +696,11 @@ export class OnboardingController {
     && (!this.draftSpeakerSeparateSpeakers
       || (!!this.selectedSpeakerModel
         && this.selectedSpeakerModel.available
-        && !this.selectedSpeakerDownloadRunning)),
+        && !this.selectedSpeakerDownloadRunning))
+    && (!this.draftSemanticSearchEnabled
+      || (!!this.selectedSemanticSearchModel
+        && this.selectedSemanticSearchModel.available
+        && !this.selectedSemanticSearchDownloadRunning)),
   );
 
   // Finishing requires model readiness AND zero outstanding attention items
@@ -738,6 +806,8 @@ export class OnboardingController {
     this.draftSpeakerTimeoutMinutes = Math.round((next.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
     this.draftExcludedApps = [...(next.privacy?.excludedApps ?? [])];
     this.draftAskAiEnabled = next.access?.askAiEnabled ?? false;
+    this.draftSemanticSearchEnabled = next.semanticSearch?.enabled ?? false;
+    this.draftSemanticSearchModelId = next.semanticSearch?.modelId ?? null;
     // Re-seed the inline Reasoning-Engine setup from the canonical aiRuntime
     // domain (the whole-settings round-trip flows back through here after save).
     this.ai.syncFromSettings(next.aiRuntime?.providers ?? [], next.aiRuntime?.defaultModel ?? null);
@@ -801,6 +871,16 @@ export class OnboardingController {
           60,
           Math.min(3600, Math.trunc(Number(this.draftSpeakerTimeoutMinutes) || 10) * 60),
         ),
+      },
+      // Semantic search: draft enable + draft model selection committed here
+      // (the live `select_semantic_search_model`/`update_semantic_search_settings`
+      // commands are never called from onboarding). Prefer the picked model's
+      // provider when known, else the base provider, else the on-device default.
+      semanticSearch: {
+        enabled: this.draftSemanticSearchEnabled,
+        provider:
+          this.selectedSemanticSearchModel?.provider ?? base.semanticSearch?.provider ?? "local",
+        modelId: this.draftSemanticSearchModelId ?? base.semanticSearch?.modelId ?? null,
       },
       access: {
         askAiEnabled: this.draftAskAiEnabled,
@@ -890,6 +970,8 @@ export class OnboardingController {
       this.loadOcrModelStatus(),
       this.loadTranscriptionModelStatus(),
       this.loadSpeakerModelStatus(),
+      this.loadSemanticSearchModelStatus(),
+      this.loadSemanticSearchSupportedModels(),
     ]);
   }
 
@@ -900,6 +982,7 @@ export class OnboardingController {
     let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
     let unlistenSpeakerDownloadProgress: (() => void) | undefined;
+    let unlistenSemanticSearchDownloadProgress: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let destroyed = false;
 
@@ -908,6 +991,7 @@ export class OnboardingController {
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
       unlistenSpeakerDownloadProgress?.();
+      unlistenSemanticSearchDownloadProgress?.();
       unlistenRecordingSettingsChanged?.();
     };
 
@@ -931,6 +1015,13 @@ export class OnboardingController {
       ).then((fn) => {
         if (destroyed) fn();
         else unlistenSpeakerDownloadProgress = fn;
+      }),
+      listen<SemanticSearchModelDownloadProgress>(
+        SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
+        (event) => { void this.handleSemanticSearchDownloadProgress(event.payload); },
+      ).then((fn) => {
+        if (destroyed) fn();
+        else unlistenSemanticSearchDownloadProgress = fn;
       }),
       listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
         this.settings = event.payload;

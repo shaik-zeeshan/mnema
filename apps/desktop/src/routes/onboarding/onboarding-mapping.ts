@@ -16,6 +16,8 @@ export const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT =
 export const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
 export const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT =
   "speaker_analysis_model_download_progress";
+export const SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT =
+  "semantic_search_model_download_progress";
 
 // speakrs is the sole on-device diarization provider; pyannote-community-1 +
 // WeSpeaker is its default preset (mirrors recording.svelte.ts defaults).
