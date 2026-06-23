@@ -117,6 +117,11 @@
 <style>
   .segmented {
     display: inline-flex;
+    /* Hug the options even inside a stretch flex column, so the pill doesn't
+       blow out to full width with the segments packed on one side. Callers that
+       want a full-width control opt in by setting width:100% (+ flex segments),
+       as ThemeModeControl does. */
+    width: fit-content;
     gap: 2px;
     padding: 2px;
     border: 1px solid var(--app-border-strong);

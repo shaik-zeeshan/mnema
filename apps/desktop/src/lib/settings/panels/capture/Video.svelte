@@ -281,10 +281,4 @@
   .control-stack :global(.group-hint) {
     margin: 0;
   }
-
-  /* The segmented control hugs its options instead of stretching to the full
-     stack width; notices, hints, and the inputs row still span full width. */
-  .control-stack :global(.segmented) {
-    align-self: flex-start;
-  }
 </style>

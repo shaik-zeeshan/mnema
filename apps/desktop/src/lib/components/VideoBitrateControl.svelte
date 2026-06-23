@@ -62,7 +62,6 @@
   .bitrate-control {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
     gap: 8px;
     width: 100%;
     min-width: 0;

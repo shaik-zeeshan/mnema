@@ -70,17 +70,13 @@
   .resolution-control {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
     gap: 8px;
     width: 100%;
     min-width: 0;
   }
 
-  /* The segmented control hugs its options (parent is align-items:flex-start);
-     the inputs row spans the full width. */
   .custom-resolution-inputs {
     display: flex;
-    align-self: stretch;
     align-items: flex-end;
     gap: 8px;
     min-width: 0;
