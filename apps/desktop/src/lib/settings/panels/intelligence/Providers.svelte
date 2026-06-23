@@ -272,12 +272,6 @@
           <p class="error-text">{aiRuntimeStatusError}</p>
         {/if}
         <div class="row-actions">
-          <ReloadButton
-            onclick={loadAiRuntimeStatus}
-            busy={aiRuntimeStatusLoading}
-            title="Refresh"
-            label="Refresh AI runtime status"
-          />
           <button
             class="btn btn--ghost btn--sm"
             type="button"
@@ -286,6 +280,12 @@
           >
             {aiRuntimeTestRunning ? "Testing" : "Test connection"}
           </button>
+          <ReloadButton
+            onclick={loadAiRuntimeStatus}
+            busy={aiRuntimeStatusLoading}
+            title="Refresh"
+            label="Refresh AI runtime status"
+          />
         </div>
         <p class="group-hint">
           Test connection runs one structured round trip against the global default model — it
