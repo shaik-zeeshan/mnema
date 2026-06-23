@@ -42,6 +42,13 @@
     body,
   }: Props = $props();
 
+  // Stable ids so the header button can `aria-controls` the body region and the
+  // body region can be `aria-labelledby` the row title (a11y). Slug from `name`
+  // (unique across FEATURES) so screen readers announce the right pairing.
+  const slug = $derived(name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""));
+  const bodyId = $derived(`feature-row-body-${slug}`);
+  const titleId = $derived(`feature-row-title-${slug}`);
+
   // The icon chip tints to accent when the row is open OR the feature is armed
   // (required rows are always armed; optional rows when enabled).
   let armed = $derived(required || enabled);
@@ -80,12 +87,13 @@
     class="row-head"
     data-feature-head
     aria-expanded={open}
+    aria-controls={bodyId}
     onclick={onHeadClick}
   >
     <div class="icon-chip"><Icon name={icon} /></div>
     <div class="row-titlewrap">
       <div class="row-eyebrow">{eyebrow}</div>
-      <div class="row-name">{name}</div>
+      <div class="row-name" id={titleId}>{name}</div>
       <div class="row-sub">{sub}</div>
     </div>
 
@@ -119,7 +127,7 @@
     </div>
   </button>
 
-  <div class="row-body">
+  <div class="row-body" id={bodyId} role="region" aria-labelledby={titleId}>
     {#if open}
       <div class="body-inner">
         {#if body}{@render body()}{/if}

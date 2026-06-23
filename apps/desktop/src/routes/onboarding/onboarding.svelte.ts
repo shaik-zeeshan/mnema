@@ -5,17 +5,14 @@
 // thin wiring layer over this; the per-feature body components (Slice 4) read
 // `controller.<field>` / call `controller.<method>()` exclusively.
 //
-// Behavior parity is mandatory: `syncDrafts()` and `buildSettingsRequest()` are
-// VERBATIM copies of the legacy page (only `let x` → `this.x`), so a fresh
-// onboarding produces the same `RecordingSettings` the old flow would. The OCR
-// and transcription model subsystems are factored into `onboarding-models`
-// (delegated below, so this stays one flat public surface) to keep every file
-// under the size budget.
-import { goto } from "$app/navigation";
+// Behavior parity is mandatory. To keep every file under the size budget the
+// pure/cohesive chunks are factored into siblings and delegated below so this
+// stays one flat public surface: the model subsystems (`onboarding-models`), the
+// settings round-trip (`onboarding-settings-sync`, VERBATIM from the legacy page),
+// the attention/validation predicates (`onboarding-attention`), and the
+// download-progress event wiring (`onboarding-listeners`).
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { createAppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
-import { theme } from "$lib/theme.svelte";
 import type {
   ActivityMode,
   AudioTranscriptionMemoryMode,
@@ -28,7 +25,6 @@ import type {
   OcrRecognitionMode,
   OcrTesseractPageSegmentationMode,
   OcrTesseractPreprocessMode,
-  PermissionStatus,
   RecordingSettings,
   ResolutionMode,
   ResolutionPreset,
@@ -48,13 +44,8 @@ import {
 } from "./onboarding-models.svelte";
 import { createOnboardingAiStore } from "./onboarding-ai.svelte";
 import {
-  AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
   DEFAULT_SPEAKER_MODEL_ID,
   DEFAULT_SPEAKER_PROVIDER,
-  OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
-  RECORDING_SETTINGS_CHANGED_EVENT,
-  SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
-  SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
   defaultOcrLanguageForProvider,
   defaultOcrModelIdForProvider,
   defaultTranscriptionModelIdForProvider,
@@ -62,15 +53,31 @@ import {
   parsePositiveInteger,
   serializeError,
 } from "./onboarding-mapping";
+import {
+  buildSettingsRequestFrom,
+  syncDraftsInto,
+} from "./onboarding-settings-sync";
+import { startOnboardingListeners } from "./onboarding-listeners";
+import {
+  customBitrateErrors as buildCustomBitrateErrors,
+  customResolutionErrors as buildCustomResolutionErrors,
+  ocrModelNeedsAttention as ocrModelNeedsAttentionFor,
+  permissionActionFor,
+  permissionLabelFor,
+  permissionToneFor,
+  semanticSearchModelNeedsAttention as semanticSearchModelNeedsAttentionFor,
+  speakerModelNeedsAttention as speakerModelNeedsAttentionFor,
+  transcriptionModelNeedsAttention as transcriptionModelNeedsAttentionFor,
+} from "./onboarding-attention";
+import type { PermissionKey, PermissionValue } from "./onboarding-attention";
+import {
+  finishOnboarding,
+  loadOnboarding,
+} from "./onboarding-lifecycle";
 
-type OnboardingState = {
-  schemaVersion: number;
-  completedAtUnixMs: number | null;
-};
-// PermissionValue mirrors the legacy page: the backend may return statuses the
-// `PermissionStatus` union doesn't model, plus the synthetic "unsupported".
-export type PermissionValue = PermissionStatus | "unsupported" | "unknown";
-export type PermissionKey = "screen" | "microphone" | "systemAudio";
+// Permission types live in `onboarding-attention` (shared by the lifecycle +
+// listener helpers); re-exported here so body components keep their import site.
+export type { PermissionKey, PermissionValue } from "./onboarding-attention";
 
 export class OnboardingController {
   // ── Draft fields (same names/types/defaults as the legacy page) ───────────
@@ -234,38 +241,28 @@ export class OnboardingController {
   });
 
   // ── Validation effects (parse raw custom inputs → clamped numbers) ────────
-  // Exposed so the +page can run them as `$effect`s with the SAME clamp ranges
-  // as the legacy page (width 320-7680, height 240-4320, mbps 1-40).
+  // Exposed so the +page can run them as `$effect`s. The clamp ranges match the
+  // Settings page's `recording-validation` (width/height 16-8192, mbps 1-40) so
+  // the two surfaces agree on what a valid custom resolution/bitrate is.
   syncCustomWidth(): void {
     const parsed = parsePositiveInteger(this.customWidthRaw);
-    this.draftCustomWidth = parsed !== null && parsed >= 320 && parsed <= 7680 ? parsed : null;
+    this.draftCustomWidth = parsed !== null && parsed >= 16 && parsed <= 8192 ? parsed : null;
   }
   syncCustomHeight(): void {
     const parsed = parsePositiveInteger(this.customHeightRaw);
-    this.draftCustomHeight = parsed !== null && parsed >= 240 && parsed <= 4320 ? parsed : null;
+    this.draftCustomHeight = parsed !== null && parsed >= 16 && parsed <= 8192 ? parsed : null;
   }
   syncCustomMbps(): void {
     const parsed = parsePositiveInteger(this.draftCustomMbpsRaw);
     this.draftCustomMbps = parsed !== null && parsed >= 1 && parsed <= 40 ? parsed : null;
   }
 
-  customResolutionErrors = $derived(this.validateCustomResolution());
-  customBitrateErrors = $derived(this.validateCustomBitrate());
-
-  private validateCustomResolution(): string[] {
-    if (this.draftResolutionMode !== "custom") return [];
-    const errors: string[] = [];
-    if (this.draftCustomWidth === null) errors.push("Width must be between 320 and 7680 pixels.");
-    if (this.draftCustomHeight === null) errors.push("Height must be between 240 and 4320 pixels.");
-    return errors;
-  }
-
-  private validateCustomBitrate(): string[] {
-    if (this.draftBitrateMode !== "custom") return [];
-    return this.draftCustomMbps === null
-      ? ["Bitrate must be a whole number from 1 to 40 Mbps."]
-      : [];
-  }
+  customResolutionErrors = $derived(
+    buildCustomResolutionErrors(this.draftResolutionMode, this.draftCustomWidth, this.draftCustomHeight),
+  );
+  customBitrateErrors = $derived(
+    buildCustomBitrateErrors(this.draftBitrateMode, this.draftCustomMbps),
+  );
 
   // ── Permissions ──────────────────────────────────────────────────────────
   grantedCount = $derived(
@@ -294,9 +291,7 @@ export class OnboardingController {
   permissionAction(
     value: PermissionValue | undefined,
   ): { label: string; mode: "request" | "settings" } | null {
-    if (value === "granted" || value === "unsupported") return null;
-    if (value === "denied" || value === "restricted") return { label: "Open Settings", mode: "settings" };
-    return { label: "Grant access", mode: "request" };
+    return permissionActionFor(value);
   }
 
   async requestPermission(key: PermissionKey): Promise<void> {
@@ -319,20 +314,11 @@ export class OnboardingController {
   }
 
   permissionLabel(value: PermissionValue | undefined): string {
-    switch (value) {
-      case "granted": return "Granted";
-      case "denied": return "Denied";
-      case "not_determined": return "Not requested";
-      case "restricted": return "Restricted";
-      case "unsupported": return "Unsupported";
-      default: return "Unknown";
-    }
+    return permissionLabelFor(value);
   }
 
   permissionTone(value: PermissionValue | undefined): "ok" | "pending" | "blocked" {
-    if (value === "granted") return "ok";
-    if (value === "not_determined") return "pending";
-    return "blocked";
+    return permissionToneFor(value);
   }
 
   // ── OCR model subsystem (flat delegation) ────────────────────────────────
@@ -554,6 +540,12 @@ export class OnboardingController {
           this.draftTranscriptionMicrophoneEnabled = this.draftCaptureMicrophone;
           this.draftTranscriptionSystemAudioEnabled = this.draftCaptureSystemAudio;
         } else {
+          // Turning the master OFF: clear the per-source transcribe requests too,
+          // else a lingering "transcribe this source" flag keeps the transcribe
+          // row stuck on attention (`transcriptionRequestedWhileOff`) after the
+          // user fully turned transcription off.
+          this.draftTranscriptionMicrophoneEnabled = false;
+          this.draftTranscriptionSystemAudioEnabled = false;
           // Speaker separation needs a transcript to split — cascade off.
           this.draftSpeakerSeparateSpeakers = false;
           this.draftSpeakerRecognizeSavedPeople = false;
@@ -577,25 +569,13 @@ export class OnboardingController {
     }
   }
 
-  // A model is "not available" for attention/finish purposes when its feature
-  // is on but the selected model isn't ready: app-managed and not currently a
-  // completed download. (Completed downloads flip `available` true on reload.)
-  private ocrModelNeedsAttention(): boolean {
-    if (!this.draftOcrEnabled) return false;
-    const model = this.selectedOcrModel;
-    if (!model) return true;
-    if (model.available) return false;
-    if (this.selectedOcrDownloadRunning) return true;
-    return true;
-  }
-
-  private transcriptionModelNeedsAttention(): boolean {
-    if (!this.draftTranscriptionEnabled) return false;
-    const model = this.selectedTranscriptionModel;
-    if (!model) return true;
-    return !model.available;
-  }
-
+  // Per-feature "model not ready" predicates delegate to the pure helpers in
+  // `onboarding-attention` (which read only `available` + an in-flight flag), so
+  // the attention/finish gates and the body callouts share one source of truth.
+  // (The OCR/transcription/speaker/semantic predicates are inlined into
+  // `featureAttention` below — `transcriptionRequestedWhileOff` stays a derived
+  // because TranscriptionBody renders it directly.)
+  //
   // An audio source is actively set to be transcribed (source on + its per-source
   // "transcribe" toggle on) while the master Audio transcription feature is OFF —
   // the request silently never runs, so the transcribe row needs attention.
@@ -607,24 +587,6 @@ export class OnboardingController {
     const sysWants = this.draftCaptureSystemAudio && this.draftTranscriptionSystemAudioEnabled;
     return micWants || sysWants;
   });
-
-  private speakerModelNeedsAttention(): boolean {
-    if (!this.draftSpeakerSeparateSpeakers) return false;
-    const model = this.selectedSpeakerModel;
-    if (!model) return true;
-    return !model.available;
-  }
-
-  // Semantic search is inert until a model is installed: enabled but no model
-  // selected, or the selected model isn't downloaded yet (mirrors the
-  // transcription attention rule). A completed download flips `available` true
-  // on the next status reload.
-  private semanticSearchModelNeedsAttention(): boolean {
-    if (!this.draftSemanticSearchEnabled) return false;
-    const model = this.selectedSemanticSearchModel;
-    if (!model) return true;
-    return !model.available;
-  }
 
   // Single-owner attention so the footer count never double-counts an issue.
   featureAttention(id: FeatureId): boolean {
@@ -639,11 +601,18 @@ export class OnboardingController {
       case "sysaudio":
         return this.draftCaptureSystemAudio && this.permissions?.systemAudio !== "granted";
       case "ocr":
-        return this.ocrModelNeedsAttention();
+        return ocrModelNeedsAttentionFor(
+          this.draftOcrEnabled,
+          this.selectedOcrModel,
+          this.selectedOcrDownloadRunning,
+        );
       case "transcribe":
-        return this.transcriptionModelNeedsAttention() || this.transcriptionRequestedWhileOff;
+        return (
+          transcriptionModelNeedsAttentionFor(this.draftTranscriptionEnabled, this.selectedTranscriptionModel)
+          || this.transcriptionRequestedWhileOff
+        );
       case "speakers":
-        return this.speakerModelNeedsAttention();
+        return speakerModelNeedsAttentionFor(this.draftSpeakerSeparateSpeakers, this.selectedSpeakerModel);
       // Ask AI on but no usable reasoning engine (no provider, no default model,
       // or the default model's provider isn't configured). Readiness lives in the
       // onboarding-ai store; reading the derived here keeps `attentionCount`
@@ -653,7 +622,10 @@ export class OnboardingController {
       // Semantic search on but no installed model selected — inert until one is
       // downloaded, surfaced as attention (it self-gates, no hard dependency).
       case "semanticSearch":
-        return this.semanticSearchModelNeedsAttention();
+        return semanticSearchModelNeedsAttentionFor(
+          this.draftSemanticSearchEnabled,
+          this.selectedSemanticSearchModel,
+        );
       case "screen":
       case "storage":
       case "privacy":
@@ -684,6 +656,16 @@ export class OnboardingController {
   onCount = $derived(FEATURES.filter((feature) => this.isEnabled(feature.id)).length);
   attentionCount = $derived(FEATURES.filter((feature) => this.featureAttention(feature.id)).length);
 
+  // The configure→finale CTA ("Review & finish"): block leaving configure while
+  // anything needs attention OR a selected custom resolution/bitrate is invalid
+  // (those serialize as null and break the backend save). Mirrors the legacy
+  // `canProceedFromActiveStep`/armed-video gate.
+  canProceedToFinale = $derived(
+    this.attentionCount === 0
+      && this.customResolutionErrors.length === 0
+      && this.customBitrateErrors.length === 0,
+  );
+
   // The legacy completion gate (`processingReady`): finishing is blocked only
   // when a selected, enabled model isn't ready. Permissions never block finish.
   canFinish = $derived(
@@ -703,266 +685,41 @@ export class OnboardingController {
         && !this.selectedSemanticSearchDownloadRunning)),
   );
 
-  // Finishing requires model readiness AND zero outstanding attention items
-  // (permissions, undownloaded models, etc.). This is what blocks the finale CTA.
-  canComplete = $derived(this.canFinish && this.attentionCount === 0);
+  // Finishing requires model readiness, zero outstanding attention items
+  // (permissions, undownloaded models, etc.), AND a valid custom
+  // resolution/bitrate when those modes are selected — an invalid custom value
+  // serializes as null and breaks the backend save (ScreenResolution::Custom /
+  // the custom bitrate need non-null u32). This is what blocks the finale CTA.
+  canComplete = $derived(
+    this.canFinish
+      && this.attentionCount === 0
+      && this.customResolutionErrors.length === 0
+      && this.customBitrateErrors.length === 0,
+  );
 
   // ── Finale summary helpers ───────────────────────────────────────────────
   selectedSourceCount = $derived(
     Number(this.draftCaptureScreen) + Number(this.draftCaptureMicrophone) + Number(this.draftCaptureSystemAudio),
-  );
-  // Human names of every feature currently flagged for attention (for the finale list).
-  attentionItems = $derived(
-    FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name),
   );
 
   ctaLabel = $derived("Start recording");
   ctaDisabled = $derived(this.loading || this.saving || this.completing || !this.canComplete);
 
   // ── Settings round-trip (VERBATIM from the legacy page) ──────────────────
+  // The two transforms are factored into `onboarding-settings-sync` (operating
+  // on this controller's draft fields) to keep this file under the size budget;
+  // these stay as thin delegators so the public surface + behavior are identical.
   syncDrafts(next: RecordingSettings): void {
-    this.draftCaptureScreen = next.captureScreen;
-    this.draftCaptureMicrophone = next.captureMicrophone;
-    this.draftCaptureSystemAudio = next.captureSystemAudio;
-    this.draftFrameRate = next.screenFrameRate;
-    this.draftSegmentDuration = next.segmentDurationSeconds;
-    if (next.screenResolution.mode === "custom") {
-      this.draftResolutionMode = "custom";
-      this.draftCustomWidth = next.screenResolution.width;
-      this.draftCustomHeight = next.screenResolution.height;
-      this.customWidthRaw = String(next.screenResolution.width);
-      this.customHeightRaw = String(next.screenResolution.height);
-    } else if (next.screenResolution.preset === "original") {
-      this.draftResolutionMode = "original";
-      this.draftResolutionPreset = "1080p";
-      this.draftCustomWidth = null;
-      this.draftCustomHeight = null;
-      this.customWidthRaw = "";
-      this.customHeightRaw = "";
-    } else {
-      this.draftResolutionMode = "preset";
-      this.draftResolutionPreset = next.screenResolution.preset;
-      this.draftCustomWidth = null;
-      this.draftCustomHeight = null;
-      this.customWidthRaw = "";
-      this.customHeightRaw = "";
-    }
-    if (next.videoBitrate.mode === "custom") {
-      this.draftBitrateMode = "custom";
-      this.draftBitratePreset = "medium";
-      this.draftCustomMbps = next.videoBitrate.customMbps;
-      this.draftCustomMbpsRaw = String(next.videoBitrate.customMbps);
-    } else {
-      this.draftBitrateMode = "preset";
-      this.draftBitratePreset = next.videoBitrate.preset;
-      this.draftCustomMbps = null;
-      this.draftCustomMbpsRaw = "";
-    }
-    this.draftSaveDirectory = next.saveDirectory;
-    this.draftPreviewCacheTtlSeconds = next.previewCacheTtlSeconds ?? 3600;
-    this.draftRetentionPolicy = next.retentionPolicy ?? "never";
-    this.draftAutoStart = next.autoStart;
-    this.draftPauseCaptureOnInactivity = next.pauseCaptureOnInactivity;
-    this.draftIdleTimeoutSeconds = next.idleTimeoutSeconds;
-    this.draftActivityMode = "system_input_or_screen_or_audio";
-    this.draftMicrophoneActivitySensitivity = next.microphoneActivitySensitivity ?? 50;
-    this.draftSystemAudioActivitySensitivity = next.systemAudioActivitySensitivity ?? 50;
-    this.draftOcrEnabled = next.ocr?.enabled ?? true;
-    const loadedOcrProvider = next.ocr?.provider;
-    const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
-    this.draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
-    this.draftOcrModelId = loadedOcrProviderSelectable
-      ? (next.ocr?.modelId ?? defaultOcrModelIdForProvider(this.draftOcrProvider))
-      : defaultOcrModelIdForProvider(this.draftOcrProvider);
-    this.draftOcrLanguage = loadedOcrProviderSelectable
-      ? (next.ocr?.language ?? defaultOcrLanguageForProvider(this.draftOcrProvider) ?? "")
-      : defaultOcrLanguageForProvider(this.draftOcrProvider) ?? "";
-    this.draftOcrRecognitionMode = next.ocr?.recognitionMode ?? "fast";
-    this.draftOcrLanguageCorrection = next.ocr?.languageCorrection ?? false;
-    this.draftOcrTesseractPageSegmentationMode = next.ocr?.tesseractPageSegmentationMode ?? "single_block";
-    this.draftOcrTesseractPreprocessMode = next.ocr?.tesseractPreprocessMode ?? "grayscale";
-    this.draftOcrTesseractUpscaleFactor = next.ocr?.tesseractUpscaleFactor ?? 1;
-    this.draftTranscriptionEnabled = next.transcription?.enabled ?? true;
-    this.draftTranscriptionMicrophoneEnabled = next.transcription?.microphoneEnabled ?? true;
-    this.draftTranscriptionSystemAudioEnabled = next.transcription?.systemAudioEnabled ?? false;
-    this.draftTranscriptionProvider = next.transcription?.provider ?? "local_whisper";
-    this.draftTranscriptionModelId = next.transcription?.modelId ?? defaultTranscriptionModelIdForProvider(this.draftTranscriptionProvider);
-    this.draftTranscriptionLanguage = next.transcription?.language ?? "auto";
-    this.draftTranscriptionMemoryMode = next.transcription?.memoryMode ?? "balanced";
-    this.draftTranscriptionIdleUnloadSeconds = next.transcription?.idleUnloadSeconds ?? 300;
-    this.draftTranscriptionChunkSeconds = next.transcription?.chunkSeconds ?? 30;
-    this.draftSpeakerSeparateSpeakers = next.speakerAnalysis?.separateSpeakers ?? false;
-    this.draftSpeakerRecognizeSavedPeople = next.speakerAnalysis?.recognizeSavedPeople ?? false;
-    // Coerce legacy saved values: the sherpa_onnx provider (and its model ids)
-    // no longer exist, so old settings resolve to the speakrs default — else the
-    // preset picker would select a provider/model the backend manifest never
-    // returns. Mirrors recording.svelte.ts.
-    const savedSpeakerProvider = next.speakerAnalysis?.provider;
-    const isLegacySpeakerProvider = !savedSpeakerProvider || savedSpeakerProvider === "sherpa_onnx";
-    this.draftSpeakerProvider = isLegacySpeakerProvider ? DEFAULT_SPEAKER_PROVIDER : savedSpeakerProvider;
-    this.draftSpeakerModelId = isLegacySpeakerProvider
-      ? DEFAULT_SPEAKER_MODEL_ID
-      : (next.speakerAnalysis?.modelId ?? DEFAULT_SPEAKER_MODEL_ID);
-    this.draftSpeakerTimeoutMinutes = Math.round((next.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
-    this.draftExcludedApps = [...(next.privacy?.excludedApps ?? [])];
-    this.draftAskAiEnabled = next.access?.askAiEnabled ?? false;
-    this.draftSemanticSearchEnabled = next.semanticSearch?.enabled ?? false;
-    this.draftSemanticSearchModelId = next.semanticSearch?.modelId ?? null;
-    // Re-seed the inline Reasoning-Engine setup from the canonical aiRuntime
-    // domain (the whole-settings round-trip flows back through here after save).
-    this.ai.syncFromSettings(next.aiRuntime?.providers ?? [], next.aiRuntime?.defaultModel ?? null);
+    syncDraftsInto(this, next);
   }
 
   buildSettingsRequest(): RecordingSettings {
-    const base = this.settings;
-    if (base === null) throw new Error("Recording settings are not loaded.");
-    return {
-      ...base,
-      captureScreen: this.draftCaptureScreen,
-      captureMicrophone: this.draftCaptureMicrophone,
-      captureSystemAudio: this.draftCaptureScreen && this.draftCaptureSystemAudio,
-      screenFrameRate: this.draftFrameRate,
-      screenResolution: this.draftResolutionMode === "custom"
-        ? { mode: "custom", width: this.draftCustomWidth!, height: this.draftCustomHeight! }
-        : { mode: "preset", preset: this.draftResolutionMode === "original" ? "original" : this.draftResolutionPreset },
-      videoBitrate: this.draftBitrateMode === "custom"
-        ? { mode: "custom", preset: null, customMbps: this.draftCustomMbps! }
-        : { mode: "preset", preset: this.draftBitratePreset, customMbps: null },
-      segmentDurationSeconds: this.draftSegmentDuration,
-      saveDirectory: this.draftSaveDirectory.trim(),
-      previewCacheTtlSeconds: this.draftPreviewCacheTtlSeconds,
-      retentionPolicy: this.draftRetentionPolicy,
-      appearance: theme.loaded ? theme.appearance : base.appearance,
-      autoStart: this.draftAutoStart,
-      pauseCaptureOnInactivity: this.draftPauseCaptureOnInactivity,
-      idleTimeoutSeconds: this.draftIdleTimeoutSeconds,
-      activityMode: "system_input_or_screen_or_audio",
-      microphoneActivitySensitivity: this.draftMicrophoneActivitySensitivity,
-      systemAudioActivitySensitivity: this.draftSystemAudioActivitySensitivity,
-      ocr: {
-        enabled: this.draftOcrEnabled,
-        provider: this.draftOcrProvider,
-        modelId: this.draftOcrModelId,
-        language: this.draftOcrLanguage.trim() || null,
-        recognitionMode: this.draftOcrRecognitionMode,
-        languageCorrection: this.draftOcrLanguageCorrection,
-        tesseractPageSegmentationMode: this.draftOcrTesseractPageSegmentationMode,
-        tesseractPreprocessMode: this.draftOcrTesseractPreprocessMode,
-        tesseractUpscaleFactor: Math.max(1, Math.min(4, Math.trunc(Number(this.draftOcrTesseractUpscaleFactor) || 1))),
-        tesseractCharWhitelist: null,
-      },
-      transcription: {
-        enabled: this.draftTranscriptionEnabled,
-        microphoneEnabled: this.draftTranscriptionMicrophoneEnabled,
-        systemAudioEnabled: this.draftTranscriptionSystemAudioEnabled,
-        provider: this.draftTranscriptionProvider,
-        modelId: this.draftTranscriptionModelId,
-        language: this.draftTranscriptionLanguage.trim() || "auto",
-        memoryMode: this.draftTranscriptionMemoryMode,
-        idleUnloadSeconds: Math.max(0, Math.trunc(Number(this.draftTranscriptionIdleUnloadSeconds) || 0)),
-        chunkSeconds: Math.max(0, Math.trunc(Number(this.draftTranscriptionChunkSeconds) || 0)),
-      },
-      speakerAnalysis: {
-        separateSpeakers: this.draftSpeakerSeparateSpeakers,
-        recognizeSavedPeople: this.draftSpeakerRecognizeSavedPeople,
-        provider: this.draftSpeakerProvider,
-        modelId: this.draftSpeakerModelId,
-        timeoutSeconds: Math.max(
-          60,
-          Math.min(3600, Math.trunc(Number(this.draftSpeakerTimeoutMinutes) || 10) * 60),
-        ),
-      },
-      // Semantic search: draft enable + draft model selection committed here
-      // (the live `select_semantic_search_model`/`update_semantic_search_settings`
-      // commands are never called from onboarding). Prefer the picked model's
-      // provider when known, else the base provider, else the on-device default.
-      semanticSearch: {
-        enabled: this.draftSemanticSearchEnabled,
-        provider:
-          this.selectedSemanticSearchModel?.provider ?? base.semanticSearch?.provider ?? "local",
-        modelId: this.draftSemanticSearchModelId ?? base.semanticSearch?.modelId ?? null,
-      },
-      access: {
-        askAiEnabled: this.draftAskAiEnabled,
-        askAiMaxToolCalls: base.access?.askAiMaxToolCalls ?? 12,
-        // `access` is sent whole and is authoritative, so we must round-trip the
-        // Ask AI model selection (chosen on the Settings page); omitting it would
-        // reset the selection back to the PI runtime default on every full save.
-        // Left null so Ask AI inherits the global default model chosen below.
-        askAiModel: base.access?.askAiModel ?? null,
-      },
-      // Reasoning Engine config connected inline during onboarding (AskAiBody).
-      // The master AI switch follows the Ask AI feature toggle — onboarding only
-      // surfaces Ask AI, so enabling it opts into AI features. The per-provider
-      // key is keychain-only (saved eagerly) and never travels in this payload.
-      aiRuntime: {
-        enabled: this.draftAskAiEnabled,
-        providers: this.ai.draftAiProviders.map((p) => ({
-          id: p.id,
-          kind: p.kind,
-          label: p.label,
-          baseUrl: p.baseUrl,
-        })),
-        defaultModel: this.ai.draftAiDefaultModel
-          ? { provider: this.ai.draftAiDefaultModel.provider, model: this.ai.draftAiDefaultModel.model }
-          : null,
-      },
-    };
+    return buildSettingsRequestFrom(this);
   }
 
-  private async saveSettings(): Promise<void> {
-    this.saving = true;
-    this.errorMessage = null;
-    try {
-      // Onboarding commits the whole recording config in one shot. The
-      // domain-scoped commands exist for the Settings page's per-domain
-      // debounced autosave; here we deliberately use the atomic full-settings
-      // command so a late validation failure can't leave a partially-persisted
-      // configuration behind.
-      const updated = await invoke<RecordingSettings>("update_recording_settings", {
-        request: this.buildSettingsRequest(),
-      });
-      this.settings = updated;
-      this.syncDrafts(updated);
-    } catch (err) {
-      this.errorMessage = serializeError(err);
-      throw err;
-    } finally {
-      this.saving = false;
-    }
-  }
-
-  // ── Lifecycle ────────────────────────────────────────────────────────────
+  // ── Lifecycle (load/save/finish factored into `onboarding-lifecycle`) ─────
   async load(): Promise<void> {
-    this.loading = true;
-    this.errorMessage = null;
-    try {
-      const state = await invoke<OnboardingState>("get_onboarding_state");
-      if (state.completedAtUnixMs !== null) {
-        await goto("/", { replaceState: true });
-        return;
-      }
-      const [loadedSettings, permissionResponse] = await Promise.all([
-        invoke<RecordingSettings>("get_recording_settings"),
-        invoke<GetPermissionsResponse>("get_capture_permissions"),
-      ]);
-      this.settings = loadedSettings;
-      this.permissions = permissionResponse.permissions as Record<PermissionKey, PermissionValue>;
-      this.syncDrafts(loadedSettings);
-      // Fresh onboarding starts every OPTIONAL feature OFF — the user opts in
-      // per-row. `syncDrafts` is a verbatim settings round-trip (and the default
-      // RecordingSettings ships OCR/transcription enabled), so we force the
-      // optional toggles off after the initial load. Required features (screen,
-      // storage, permissions) are untouched.
-      this.resetOptionalFeaturesOff();
-      this.ai.init();
-      void this.appPrivacyExclusion.loadPrivacyAppCandidates();
-      void this.appPrivacyExclusion.loadSensitiveCaptureRecommendations();
-    } catch (err) {
-      this.errorMessage = serializeError(err);
-    } finally {
-      this.loading = false;
-    }
+    await loadOnboarding(this);
   }
 
   async loadModelStatuses(): Promise<void> {
@@ -975,95 +732,15 @@ export class OnboardingController {
     ]);
   }
 
-  // Subscribes to the three onboarding events and returns a single combined
-  // unlisten for the +page's `$effect` cleanup. Guards against an async resolve
-  // landing after the effect/component is torn down.
+  // Subscribes to the model-download-progress + settings-changed events and
+  // returns a single combined unlisten for the +page's `$effect` cleanup. The
+  // wiring lives in `onboarding-listeners` to keep this file under the size
+  // budget; it guards against an async resolve landing after teardown.
   async startListeners(): Promise<() => void> {
-    let unlistenOcrDownloadProgress: (() => void) | undefined;
-    let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
-    let unlistenSpeakerDownloadProgress: (() => void) | undefined;
-    let unlistenSemanticSearchDownloadProgress: (() => void) | undefined;
-    let unlistenRecordingSettingsChanged: (() => void) | undefined;
-    let destroyed = false;
-
-    const unlisten = () => {
-      destroyed = true;
-      unlistenOcrDownloadProgress?.();
-      unlistenTranscriptionDownloadProgress?.();
-      unlistenSpeakerDownloadProgress?.();
-      unlistenSemanticSearchDownloadProgress?.();
-      unlistenRecordingSettingsChanged?.();
-    };
-
-    await Promise.all([
-      listen<OcrModelDownloadProgress>(OCR_MODEL_DOWNLOAD_PROGRESS_EVENT, (event) => {
-        void this.handleOcrDownloadProgress(event.payload);
-      }).then((fn) => {
-        if (destroyed) fn();
-        else unlistenOcrDownloadProgress = fn;
-      }),
-      listen<AudioTranscriptionModelDownloadProgress>(
-        AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
-        (event) => { void this.handleTranscriptionDownloadProgress(event.payload); },
-      ).then((fn) => {
-        if (destroyed) fn();
-        else unlistenTranscriptionDownloadProgress = fn;
-      }),
-      listen<SpeakerAnalysisModelDownloadProgress>(
-        SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
-        (event) => { void this.handleSpeakerDownloadProgress(event.payload); },
-      ).then((fn) => {
-        if (destroyed) fn();
-        else unlistenSpeakerDownloadProgress = fn;
-      }),
-      listen<SemanticSearchModelDownloadProgress>(
-        SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
-        (event) => { void this.handleSemanticSearchDownloadProgress(event.payload); },
-      ).then((fn) => {
-        if (destroyed) fn();
-        else unlistenSemanticSearchDownloadProgress = fn;
-      }),
-      listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
-        this.settings = event.payload;
-      }).then((fn) => {
-        if (destroyed) fn();
-        else unlistenRecordingSettingsChanged = fn;
-      }),
-    ]);
-
-    return unlisten;
+    return startOnboardingListeners(this);
   }
 
   async finish(startRecording: boolean): Promise<void> {
-    if (this.settings === null || !this.canComplete) return;
-    this.completing = true;
-    this.starting = startRecording;
-    this.errorMessage = null;
-    try {
-      await this.saveSettings();
-      if (startRecording) {
-        // Defense-in-depth: never request a source whose OS permission isn't
-        // granted, independent of the attention gate. Capture must not outrun
-        // authorization even if the gating logic ever changes. (System audio
-        // uses the `systemAudio` PermissionKey; screen is required-on and
-        // already gates system audio.)
-        await invoke("start_native_capture", {
-          request: {
-            captureScreen: this.draftCaptureScreen,
-            captureMicrophone: this.draftCaptureMicrophone && this.permissions?.microphone === "granted",
-            captureSystemAudio:
-              this.draftCaptureScreen
-              && this.draftCaptureSystemAudio
-              && this.permissions?.systemAudio === "granted",
-          },
-        });
-      }
-      await invoke("complete_onboarding");
-      await goto("/");
-    } catch (err) {
-      this.errorMessage = serializeError(err);
-      this.completing = false;
-      this.starting = false;
-    }
+    await finishOnboarding(this, startRecording);
   }
 }

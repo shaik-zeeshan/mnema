@@ -131,6 +131,12 @@ export function createOcrModelStore(access: OcrModelStoreAccess) {
 
   async function handleOcrDownloadProgress(progress: OcrModelDownloadProgress): Promise<void> {
     ocrDownloadProgress = progress;
+    // Surface async download failures (mirrors the semantic-search store); the
+    // initial `start_*` rejection is caught synchronously, but a failure that
+    // arrives later only flows through this progress event.
+    if (progress.status === "failed") {
+      ocrDownloadError = progress.message ?? "Download failed.";
+    }
     if (TERMINAL_DOWNLOAD_STATUSES.includes(progress.status)) {
       await loadOcrModelStatus();
     }
@@ -270,6 +276,12 @@ export function createTranscriptionModelStore(access: TranscriptionModelStoreAcc
     progress: AudioTranscriptionModelDownloadProgress,
   ): Promise<void> {
     transcriptionDownloadProgress = progress;
+    // Surface async download failures (mirrors the semantic-search store); the
+    // initial `start_*` rejection is caught synchronously, but a failure that
+    // arrives later only flows through this progress event.
+    if (progress.status === "failed") {
+      transcriptionDownloadError = progress.message ?? "Download failed.";
+    }
     if (TERMINAL_DOWNLOAD_STATUSES.includes(progress.status)) {
       await loadTranscriptionModelStatus();
     }
@@ -420,6 +432,12 @@ export function createSpeakerModelStore(access: SpeakerModelStoreAccess) {
     progress: SpeakerAnalysisModelDownloadProgress,
   ): Promise<void> {
     speakerDownloadProgress = progress;
+    // Surface async download failures (mirrors the semantic-search store); the
+    // initial `start_*` rejection is caught synchronously, but a failure that
+    // arrives later only flows through this progress event.
+    if (progress.status === "failed") {
+      speakerDownloadError = progress.message ?? "Download failed.";
+    }
     if (TERMINAL_DOWNLOAD_STATUSES.includes(progress.status)) {
       await loadSpeakerModelStatus();
     }

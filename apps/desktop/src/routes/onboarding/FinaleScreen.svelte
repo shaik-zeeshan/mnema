@@ -48,15 +48,8 @@
           : ""}.
       </p>
 
-      {#if c.attentionCount > 0}
-        <div class="finale__attn" role="alert">
-          <div class="finale__attn-head">
-            {c.attentionCount} item{c.attentionCount === 1 ? "" : "s"} need attention
-          </div>
-          <p class="finale__attn-body">
-            Finish setup before recording: <b>{c.attentionItems.join(", ")}</b>.
-          </p>
-        </div>
+      {#if c.errorMessage}
+        <div class="finale__err" role="alert">{c.errorMessage}</div>
       {/if}
 
       <div class="finale__chips">
@@ -95,3 +88,20 @@
     </div>
   </section>
 </div>
+
+<style>
+  /* Failure banner near the CTA — a failed save / start-recording / complete
+     would otherwise leave the user pressing a button that silently does nothing.
+     Terminal/green danger tokens, consistent with the rest of onboarding. */
+  .finale__err {
+    margin: 4px auto 0;
+    max-width: 40ch;
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--app-danger);
+    background: var(--app-danger-bg);
+    border: 1px solid var(--app-danger-border);
+    border-radius: 8px;
+  }
+</style>

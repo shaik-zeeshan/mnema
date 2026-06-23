@@ -21,6 +21,9 @@
     onFinish: () => void;
     secondaryLabel?: string;
     onSecondary?: () => void;
+    // Surfaced from the controller; a failed load/permission/save would otherwise
+    // be silent. Rendered as a `role="alert"` banner in the always-mounted footer.
+    errorMessage?: string | null;
     children: Snippet;
   }
 
@@ -34,6 +37,7 @@
     onFinish,
     secondaryLabel,
     onSecondary,
+    errorMessage = null,
     children,
   }: Props = $props();
 
@@ -109,6 +113,10 @@
     </div>
   </div>
 
+  {#if errorMessage}
+    <div class="stack-error" role="alert">{errorMessage}</div>
+  {/if}
+
   <div class="footer">
     <div class="hint">
       <b>{onCount}</b> features on · {attentionCount} need attention
@@ -125,3 +133,20 @@
     </div>
   </div>
 </div>
+
+<style>
+  /* Failure banner above the footer — flat row, terminal/green danger tokens, so
+     a failed load/permission/save isn't silent. Lives outside the two-column
+     footer flex to avoid disturbing its hint/actions layout. */
+  .stack-error {
+    flex: 0 0 auto;
+    margin: 0 24px 12px;
+    padding: 10px 14px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--app-danger);
+    background: var(--app-danger-bg);
+    border: 1px solid var(--app-danger-border);
+    border-radius: 8px;
+  }
+</style>

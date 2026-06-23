@@ -77,7 +77,8 @@
       onCount={c.onCount}
       attentionCount={c.attentionCount}
       ctaLabel="Review &amp; finish →"
-      ctaDisabled={c.attentionCount > 0}
+      ctaDisabled={!c.canProceedToFinale}
+      errorMessage={c.errorMessage}
       onFinish={() => c.reviewAndFinish()}
       secondaryLabel="← Back"
       onSecondary={() => c.backToWelcome()}

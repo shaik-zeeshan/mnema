@@ -56,6 +56,26 @@
       >
         Use recommended setup →
       </button>
+      {#if c.errorMessage}
+        <div class="welcome__err" role="alert">{c.errorMessage}</div>
+      {/if}
     </div>
   </section>
 </div>
+
+<style>
+  /* Surfaces a failed "Use recommended setup" — without it, a failed privacy-app
+     exclusion silently leaves the recommended apps un-excluded (a privacy
+     regression). Terminal/green danger tokens. */
+  .welcome__err {
+    margin: 12px auto 0;
+    max-width: 44ch;
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--app-danger);
+    background: var(--app-danger-bg);
+    border: 1px solid var(--app-danger-border);
+    border-radius: 8px;
+  }
+</style>

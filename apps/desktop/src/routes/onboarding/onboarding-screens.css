@@ -321,34 +321,6 @@
   max-width: 46ch;
 }
 
-/* warn-toned callout explaining WHY the finish buttons are disabled */
-.ob-screen .finale__attn {
-  width: 100%;
-  max-width: 46ch;
-  text-align: left;
-  color: var(--app-warn);
-  background: var(--app-warn-bg);
-  border: 1px solid var(--app-warn-border);
-  border-radius: 8px;
-  padding: 10px 14px;
-}
-.ob-screen .finale__attn-head {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.ob-screen .finale__attn-body {
-  margin: 4px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--app-text);
-}
-.ob-screen .finale__attn-body b {
-  color: var(--app-warn);
-  font-weight: 540;
-}
-
 .ob-screen .finale__chips {
   display: inline-flex;
   flex-wrap: wrap;
