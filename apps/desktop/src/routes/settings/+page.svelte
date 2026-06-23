@@ -98,12 +98,32 @@
   const loadAskAiAvailability = () => c.askAi.loadAskAiAvailability();
   const loadSettingsModels = () => c.loadSettingsModels();
 
-  // ─── Active group + deeplink routing (driven by groups.ts) ──────────────────
+  // ─── Active group + sub-section + deeplink routing (driven by groups.ts) ─────
   let activeGroup = $state<SettingsGroupId>("capture");
-  let settingsShell = $state<HTMLDivElement | null>(null);
+  // The currently-active sub-section (drives the rail's active item + scroll-spy).
+  // Defaults to the first section of the active group.
+  let activeSection = $state<SettingsSectionId>(
+    SETTINGS_GROUPS.find((g) => g.id === "capture")!.sections[0].id,
+  );
   let scrollRegion = $state<HTMLDivElement | null>(null);
   let scrollRegionScrolling = $state(false);
   let scrollRegionScrollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Scroll-spy suppression: while a programmatic scroll (deeplink / rail click)
+  // is in flight, the IntersectionObserver must NOT fight it by re-deriving
+  // `activeSection` from intersection ratios mid-animation. The flag is raised
+  // by `focusSettingsSection` and cleared on a short timer.
+  let spySuppressed = $state(false);
+  let spySuppressTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function suppressSpy() {
+    spySuppressed = true;
+    if (spySuppressTimer !== null) clearTimeout(spySuppressTimer);
+    spySuppressTimer = setTimeout(() => {
+      spySuppressed = false;
+      spySuppressTimer = null;
+    }, 700);
+  }
 
   function handleScrollRegionScroll() {
     scrollRegionScrolling = true;
@@ -122,11 +142,15 @@
     });
   }
 
-  // Select a section's group and scroll to it. Used by deeplink resolution.
+  // Select a section's group + sub-section and scroll to it. Used by both the
+  // rail (onNavigate) and deeplink resolution. Suppresses scroll-spy so it does
+  // not fight the programmatic scroll.
   function focusSettingsSection(section: SettingsSectionId, smooth = true) {
     const group = groupForSection(section);
     const groupChanged = group !== activeGroup;
     activeGroup = group;
+    activeSection = section;
+    suppressSpy();
     // Reset the scroll to the top when the group itself changes, mirroring the
     // legacy "scroll to top on tab switch" behavior, then scroll to the anchor.
     if (groupChanged) scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
@@ -147,6 +171,8 @@
       const focusSection = sectionForFocus(focus);
       c.brokerAuthorizationPromptVisible = true;
       activeGroup = groupForSection(focusSection);
+      activeSection = focusSection;
+      suppressSpy();
       void tick().then(() => {
         c.agentAccessSection?.scrollIntoView({ block: "start", behavior: "smooth" });
         c.agentAccessSection?.focus({ preventScroll: true });
@@ -159,6 +185,74 @@
   $effect(() => {
     activeGroup;
     untrack(() => scrollRegion?.scrollTo({ top: 0, behavior: "auto" }));
+  });
+
+  // ─── Scroll-spy ─────────────────────────────────────────────────────────────
+  // Observe the `#settings-section-*` anchors inside the scroll region and set
+  // `activeSection` to the top-most visible one as the user scrolls. Re-armed on
+  // group change (only the active group's panel is mounted, so spy only moves
+  // `activeSection` within the current group). No-ops while suppression is active
+  // so it never fights a programmatic deeplink / rail-click scroll.
+  $effect(() => {
+    // Re-run when the group changes (its anchors mount) or the scroll region
+    // (re)attaches. Read both so the effect tracks them.
+    activeGroup;
+    const root = scrollRegion;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+
+    let frame = 0;
+    // Each callback reports only the entries that changed, so accumulate the
+    // latest intersection state per element and re-derive the top-most one.
+    const intersecting = new Set<HTMLElement>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const el = e.target as HTMLElement;
+          if (e.isIntersecting) intersecting.add(el);
+          else intersecting.delete(el);
+        }
+        if (spySuppressed) return;
+        // Coalesce to the next frame: pick the top-most intersecting section.
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          if (spySuppressed || intersecting.size === 0) return;
+          // Top-most = smallest top offset relative to the root.
+          const rootTop = root.getBoundingClientRect().top;
+          let top: HTMLElement | null = null;
+          let topDelta = Infinity;
+          for (const el of intersecting) {
+            const delta = el.getBoundingClientRect().top - rootTop;
+            if (delta < topDelta) {
+              topDelta = delta;
+              top = el;
+            }
+          }
+          const id = top?.id?.replace(/^settings-section-/, "") as
+            | SettingsSectionId
+            | undefined;
+          if (id && id !== activeSection && groupForSection(id) === activeGroup) {
+            activeSection = id;
+          }
+        });
+      },
+      // Bias toward the top of the viewport so a section is "active" once its
+      // head clears the top edge — matches the deeplink scroll target.
+      { root, rootMargin: "0px 0px -70% 0px", threshold: [0, 0.1, 0.5, 1] },
+    );
+
+    // The anchors live inside the just-mounted group panel; observe after tick.
+    void tick().then(() => {
+      for (const el of root.querySelectorAll<HTMLElement>(
+        '[id^="settings-section-"]',
+      )) {
+        observer.observe(el);
+      }
+    });
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   });
 
   // ─── Auto-save (shared engine) ──────────────────────────────────────────────
@@ -371,8 +465,12 @@
      A fixed left rail lists the 5 groups; only the right-hand content pane
      scrolls. One group panel is mounted at a time, so the rail and window
      chrome stay pinned. -->
-<div class="settings-shell" bind:this={settingsShell}>
-  <SettingsRail bind:activeGroup shellEl={settingsShell} />
+<div class="settings-shell">
+  <SettingsRail
+    {activeGroup}
+    {activeSection}
+    onNavigate={(section) => focusSettingsSection(section)}
+  />
 
   <!-- ── Content pane — only this column scrolls. -->
   <div class="settings-content">

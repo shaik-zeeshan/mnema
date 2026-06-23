@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import SelectMenu from "$lib/components/Select.svelte";
+  import RadioGroup from "$lib/components/RadioGroup.svelte";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
@@ -25,22 +25,21 @@
 
   <SettingRow
     label="Browser URL mode"
-    description="Sanitized URLs keep scheme, host, port, and path while dropping query strings and fragments."
+    description="How much of a captured browser URL is stored with the frame."
     disabled={!rec.draftMetadataEnabled}
+    full
   >
     {#snippet control()}
-      <div class="select-cell">
-        <SelectMenu
-          value={rec.draftBrowserUrlMode}
-          onValueChange={setBrowserUrlMode}
-          options={[
-            { value: "off", label: "Off" },
-            { value: "sanitized", label: "Sanitized" },
-            { value: "full", label: "Full" },
-          ]}
-          disabled={!rec.draftMetadataEnabled}
-        />
-      </div>
+      <RadioGroup
+        value={rec.draftBrowserUrlMode}
+        onValueChange={setBrowserUrlMode}
+        disabled={!rec.draftMetadataEnabled}
+        options={[
+          { value: "off", label: "Off", description: "Don't store browser URLs with captured frames." },
+          { value: "sanitized", label: "Sanitized", description: "Keep scheme, host, port, and path; drop query strings and fragments." },
+          { value: "full", label: "Full", description: "Store the complete URL, including query strings and fragments." },
+        ]}
+      />
     {/snippet}
   </SettingRow>
 
@@ -59,13 +58,6 @@
 </SettingGroup>
 
 <style>
-  /* Keep the browser-URL select compact in the right gutter rather than letting
-     it grow full width inside the row control. */
-  .select-cell {
-    width: 200px;
-    max-width: 100%;
-  }
-
   /* The exclusion editor owns a combobox dropdown that overlays following rows;
      elevate this cell while it is open so the panel isn't covered. */
   .exclusion-cell {

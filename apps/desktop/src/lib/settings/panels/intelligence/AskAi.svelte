@@ -103,7 +103,6 @@
           loading={settingsModelLoader.loading}
           failures={settingsModelFailureRows}
           onretry={() => void settingsModelLoader.load(settingsModelRetryTargets)}
-          portal
           bind:open={c.askAiModelOpen}
           onopen={() => void loadSettingsModels()}
           onselect={(engine) => { rec.draftAskAiModel = engine ? engine.model : ""; }}

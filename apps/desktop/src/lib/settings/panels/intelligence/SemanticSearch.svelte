@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import SelectMenu from "$lib/components/Select.svelte";
+  import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { semanticSearchProgressPercent } from "$lib/settings/state/models-format";
@@ -88,9 +88,10 @@
         {/if}
 
         {#if semanticSearchModelStatus}
-          <SelectMenu
+          <Combobox
             label=""
             placeholder="Select a model — recommended tiers first…"
+            searchPlaceholder="Search models…"
             value={c.semanticSearchPickedModelId}
             onValueChange={(v) => (c.semanticSearchPickedModelId = v)}
             options={semanticSearchModelOptions}

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
-  import SelectMenu from "$lib/components/Select.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
 
@@ -91,12 +90,15 @@
       <SettingRow label="Device" description="Pick the microphone to lock to." full>
         {#snippet control()}
           <div class="control-stack">
-            <SelectMenu
-              bind:value={audio.draftDeviceId}
-              options={micDeviceOptions}
-              placeholder="— pick a device —"
-              warn={!audio.draftDeviceId}
-            />
+            {#if micDeviceOptions.length > 0}
+              <RadioGroup
+                value={audio.draftDeviceId ?? ""}
+                onValueChange={(v) => (audio.draftDeviceId = v)}
+                options={micDeviceOptions}
+              />
+            {:else}
+              <p class="empty-state">No microphone devices to choose from.</p>
+            {/if}
             {#if !audio.draftDeviceId}
               <p class="group-hint group-hint--warn">Select a device before saving Specific Device mode.</p>
             {/if}

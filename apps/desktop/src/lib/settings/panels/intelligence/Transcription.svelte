@@ -2,7 +2,7 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
-  import SelectMenu from "$lib/components/Select.svelte";
+  import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import {
@@ -120,9 +120,10 @@
 
   <SettingRow label="Model" full>
     {#snippet control()}
-      <SelectMenu
+      <Combobox
         value={rec.draftTranscriptionModelId ?? "__os_managed__"}
         onValueChange={chooseTranscriptionModel}
+        searchPlaceholder="Search models…"
         options={transcriptionModelOptions.length > 0 ? transcriptionModelOptions : [
           { value: rec.draftTranscriptionModelId ?? "__os_managed__", label: "Loading model options" },
         ]}

@@ -10,40 +10,6 @@
      consume layout-level semantic tokens. Keeping the override flat
      (one selector per affected rule) makes it easy to audit which
      tokens still hard-code dark values. */
-  /* Sidebar rail, nav, and save status read from semantic tokens that
-     already flip per theme; only the status text needs a touch more
-     contrast against the light surface. */
-  [data-theme="light"] .settings-shell .status-text {
-    color: var(--app-text-muted);
-  }
-  [data-theme="light"] .settings-shell .settings-nav__item:hover .settings-nav__icon {
-    border-color: var(--app-border-strong);
-  }
-
-  [data-theme="light"] .settings-shell .status-pill {
-    border-color: var(--app-border);
-    background: var(--app-surface);
-  }
-  [data-theme="light"] .settings-shell .status-pill--on {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-  [data-theme="light"] .settings-shell .status-pill--info {
-    border-color: var(--app-border);
-    background: var(--app-surface-raised);
-  }
-  [data-theme="light"] .settings-shell .status-pill__dot {
-    background: var(--app-text-faint);
-  }
-  [data-theme="light"] .settings-shell .status-pill--on .status-pill__dot {
-    background: var(--app-accent);
-  }
-  [data-theme="light"] .settings-shell .status-pill__label {
-    color: var(--app-text-muted);
-  }
-  [data-theme="light"] .settings-shell .status-pill--on .status-pill__label {
-    color: var(--app-accent-strong);
-  }
   [data-theme="light"] .settings-shell .group-label {
     color: var(--app-text-subtle);
   }

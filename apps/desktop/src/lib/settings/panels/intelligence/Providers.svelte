@@ -227,7 +227,6 @@
           loading={settingsModelLoader.loading}
           failures={settingsModelFailureRows}
           onretry={() => void settingsModelLoader.load(settingsModelRetryTargets)}
-          portal
           bind:open={c.aiModelOpen}
           onopen={() => void loadSettingsModels()}
           onselect={(engine) => { rec.draftAiDefaultModel = engine; }}

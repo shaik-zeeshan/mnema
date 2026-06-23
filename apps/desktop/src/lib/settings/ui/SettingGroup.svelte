@@ -15,6 +15,8 @@
   let { title, hint, id, actions, children }: Props = $props();
 </script>
 
+<!-- `id` is the deeplink + scroll-spy anchor — it MUST stay on this outer
+     scrollable <section>, never on the inner card. -->
 <section class="setting-group" {id}>
   <header class="setting-group__header">
     <div class="setting-group__heading">
@@ -29,7 +31,8 @@
       </div>
     {/if}
   </header>
-  <div class="setting-group__rows">
+
+  <div class="setting-group__card">
     {@render children()}
   </div>
 </section>
@@ -38,14 +41,16 @@
   .setting-group {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
   }
 
+  /* ── Section head (above the card) ─────────────────────────── */
   .setting-group__header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
+    padding: 0 3px;
   }
 
   .setting-group__heading {
@@ -56,11 +61,11 @@
   }
 
   .setting-group__title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 10.5px;
+    letter-spacing: 0.13em;
     text-transform: uppercase;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .setting-group__hint {
@@ -79,29 +84,35 @@
     flex-shrink: 0;
   }
 
-  /* Flat list of rows — not a heavy card. A single understated top hairline
-     echoes the existing `.card::before` accent without boxing the rows in. */
-  .setting-group__rows {
+  /* ── Card (wraps the rows) ─────────────────────────────────── */
+  /* NB: no `overflow: hidden` here. Controls that open a dropdown/popover
+     anchored inside a row (e.g. the app-exclusion combobox, which is
+     positioned, not portaled) must be able to overflow the card; clipping
+     them was cutting the menu at the card's bottom edge. The rows are
+     transparent and the accent hairline below is inset within the card
+     bounds, so nothing relies on clipping for the rounded-corner look. */
+  .setting-group__card {
     position: relative;
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid var(--app-border);
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
+    border-radius: 12px;
   }
 
-  .setting-group__rows::before {
+  /* Faint top-edge accent hairline — Mnema signature, inset L/R. */
+  .setting-group__card::before {
     content: "";
     position: absolute;
-    inset: 0 0 auto 0;
+    top: 0;
+    left: 14px;
+    right: 14px;
     height: 1px;
     background: linear-gradient(
       90deg,
       transparent,
-      var(--app-accent-strong) 20%,
-      var(--app-accent) 50%,
-      var(--app-accent-strong) 80%,
+      color-mix(in srgb, var(--app-accent) 12%, transparent) 22%,
+      color-mix(in srgb, var(--app-accent) 12%, transparent) 78%,
       transparent
     );
-    opacity: 0.14;
     pointer-events: none;
   }
 </style>

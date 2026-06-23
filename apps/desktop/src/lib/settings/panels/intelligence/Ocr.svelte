@@ -3,6 +3,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
+  import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { ocrStatusLabel } from "$lib/settings/state/models-format";
@@ -84,10 +85,11 @@
 
   <SettingRow label="Model" full>
     {#snippet control()}
-      <SelectMenu
+      <Combobox
         value={rec.draftOcrModelId ?? "__os_managed__"}
         onValueChange={chooseOcrModel}
         disabled={!rec.draftOcrEnabled}
+        searchPlaceholder="Search models…"
         options={ocrModelOptions.length > 0 ? ocrModelOptions : [
           { value: rec.draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
         ]}

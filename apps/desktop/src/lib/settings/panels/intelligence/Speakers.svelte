@@ -2,7 +2,7 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
-  import SelectMenu from "$lib/components/Select.svelte";
+  import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { speakerStatusLabel } from "$lib/settings/state/models-format";
@@ -100,11 +100,12 @@
   >
     {#snippet control()}
       <div class="speaker-stack">
-        <SelectMenu
+        <Combobox
           value={selectedSpeakerPresetKey}
           onValueChange={chooseSpeakerModel}
           disabled={!rec.draftSpeakerSeparateSpeakers || switchingSpeakerModel}
           label="Preset"
+          searchPlaceholder="Search presets…"
           options={speakerModelOptions.length > 0 ? speakerModelOptions : [
             { value: selectedSpeakerPresetKey, label: "Loading preset options" },
           ]}

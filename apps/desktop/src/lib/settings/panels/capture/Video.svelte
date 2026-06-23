@@ -2,6 +2,7 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Stepper from "$lib/components/Stepper.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
 
@@ -110,29 +111,27 @@
           <div class="custom-resolution-inputs">
             <div class="custom-res-field">
               <label class="custom-res-label" for="res-width">Width (px)</label>
-              <input
+              <Stepper
                 id="res-width"
-                type="text"
-                inputmode="numeric"
-                class="text-input custom-res-input"
-                class:text-input--empty={rec.customWidthRaw && rec.draftCustomWidth === null}
                 bind:value={rec.customWidthRaw}
+                min={16}
+                max={8192}
                 placeholder="e.g. 1920"
-                autocomplete="off"
+                ariaLabel="width"
+                invalid={!!rec.customWidthRaw && rec.draftCustomWidth === null}
               />
             </div>
             <span class="custom-res-sep" aria-hidden="true">×</span>
             <div class="custom-res-field">
               <label class="custom-res-label" for="res-height">Height (px)</label>
-              <input
+              <Stepper
                 id="res-height"
-                type="text"
-                inputmode="numeric"
-                class="text-input custom-res-input"
-                class:text-input--empty={rec.customHeightRaw && rec.draftCustomHeight === null}
                 bind:value={rec.customHeightRaw}
+                min={16}
+                max={8192}
                 placeholder="e.g. 1080"
-                autocomplete="off"
+                ariaLabel="height"
+                invalid={!!rec.customHeightRaw && rec.draftCustomHeight === null}
               />
             </div>
           </div>
@@ -218,17 +217,16 @@
             <div class="custom-res-field">
               <label class="custom-res-label" for="bitrate-mbps">Bitrate (Mbps, whole number)</label>
               <div class="custom-bitrate-input-wrap">
-                <input
+                <Stepper
                   id="bitrate-mbps"
-                  type="text"
-                  inputmode="numeric"
-                  class="text-input custom-bitrate-input"
-                  class:text-input--empty={rec.draftCustomMbpsRaw && rec.draftCustomMbps === null}
                   bind:value={rec.draftCustomMbpsRaw}
+                  min={1}
+                  max={40}
+                  unit="Mbps"
                   placeholder="e.g. 12"
-                  autocomplete="off"
+                  ariaLabel="bitrate in Mbps"
+                  invalid={!!rec.draftCustomMbpsRaw && rec.draftCustomMbps === null}
                 />
-                <span class="custom-bitrate-unit">Mbps</span>
               </div>
             </div>
           </div>
