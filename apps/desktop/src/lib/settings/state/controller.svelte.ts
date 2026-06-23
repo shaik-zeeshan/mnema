@@ -15,6 +15,7 @@
 import { getContext, setContext } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, confirm } from "@tauri-apps/plugin-dialog";
+import { retentionToDays } from "$lib/components/retention";
 import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
 import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
 import { setAppearance } from "$lib/theme.svelte";
@@ -111,6 +112,10 @@ export class SettingsController {
     refreshAiProviderKeyPresence: () => void this.aiRuntime.refreshAiProviderKeyPresence(),
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),
     gates: () => ({ resolutionSupportPendingForNonOriginal: this.resolutionSupportPendingForNonOriginal }),
+    // Re-seed the semantic-search picker once settings land — closes the init
+    // race where the picker status resolved before recording settings, leaving
+    // the picker blank while a model is actually persisted. Dirty-guarded.
+    onRecordingSettingsLoaded: () => this.reseedSemanticSearchPickedModel(),
   });
   cliAccess = createCliAccessStore();
   logs = createLogsStore();
@@ -252,14 +257,20 @@ export class SettingsController {
     void this.aiRuntime.refreshAiProviderKeyPresence();
   }
 
-  removeAiProvider(id: string): void {
+  async removeAiProvider(id: string): Promise<void> {
     const removed = this.rec.draftAiProviders.find((p) => p.id === id);
     this.rec.draftAiProviders = this.rec.draftAiProviders.filter((p) => p.id !== id);
     if (this.rec.draftAiDefaultModel?.provider === id) {
       this.rec.draftAiDefaultModel = null;
     }
+    // The last test-connection banner names the tested provider/model; once it is
+    // removed the banner would misrepresent the live config, so clear it.
+    this.aiRuntime.resetTestResult();
     if (removed && this.isCloudAiProviderKind(removed.kind)) {
-      this.aiRuntime.clearKeyForRemovedProvider(id);
+      // AWAIT the keychain clear so a same-kind re-add (which reuses the bare
+      // kind id, ADR 0035) re-probes only after the clear has resolved — never
+      // racing an in-flight clear into a false "key in keychain".
+      await this.aiRuntime.clearKeyForRemovedProvider(id);
     }
   }
 
@@ -414,18 +425,26 @@ export class SettingsController {
     this.models.startSemanticSearchModelDownload(model);
   cancelSemanticSearchModelDownload = () => this.models.cancelSemanticSearchModelDownload();
 
-  async loadSemanticSearchModelStatus() {
-    await this.models.loadSemanticSearchModelStatus();
+  // Seed the page picker from the persisted (sticky) selection, but ONLY while
+  // the picker has not been touched (`semanticSearchPickedModelId === null`), so
+  // a live user edit is never clobbered. Idempotent — safe to call from every
+  // path that might learn the persisted selection (status load, download
+  // progress, or a post-settings-load re-seed that fixes the init race where the
+  // picker status resolved before recording settings).
+  reseedSemanticSearchPickedModel() {
     if (this.semanticSearchPickedModelId === null && this.rec.semanticSearchSelectedModelId !== null) {
       this.semanticSearchPickedModelId = this.rec.semanticSearchSelectedModelId;
     }
   }
 
+  async loadSemanticSearchModelStatus() {
+    await this.models.loadSemanticSearchModelStatus();
+    this.reseedSemanticSearchPickedModel();
+  }
+
   async handleSemanticSearchDownloadProgress(progress: SemanticSearchModelDownloadProgress) {
     await this.models.handleSemanticSearchDownloadProgress(progress);
-    if (this.semanticSearchPickedModelId === null && this.rec.semanticSearchSelectedModelId !== null) {
-      this.semanticSearchPickedModelId = this.rec.semanticSearchSelectedModelId;
-    }
+    this.reseedSemanticSearchPickedModel();
   }
 
   async chooseSemanticSearchModel(model: SemanticSearchModelStatus) {
@@ -571,64 +590,84 @@ export class SettingsController {
       return;
     }
 
-    const previousRetentionPolicy = this.rec.recordingSettings?.retentionPolicy ?? "never";
+    // Arm the per-domain in-flight guard BEFORE the (awaited) retention preview +
+    // confirm dialog. The autosave engine's only re-entry gate for this domain is
+    // `savingRecDomains[domain]`; without setting it here, a concurrent draft edit
+    // made while the confirm dialog is open re-arms the debounce and stacks a
+    // SECOND preview + confirm. Setting it now closes that window; the single
+    // `finally` below always clears it.
+    if (this.rec.savingRecDomains[domain]) return;
+    this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: true };
 
-    if (domain === "storage" && previousRetentionPolicy === "never" && this.rec.draftRetentionPolicy !== "never") {
-      try {
-        const preview = await invoke<RetentionCleanupSummary>("preview_retention_cleanup", {
-          request: { policy: this.rec.draftRetentionPolicy },
-        });
-        this.retentionCleanupSummary = preview;
-        const ok = await ask(
-          `Retention will delete ${preview.deletedFrames} frame row(s), ${preview.deletedAudioSegments} audio segment row(s), and ${preview.eligibleCaptureSegments} capture segment(s) before ${preview.cutoffEndedBefore ?? "the cutoff"}. Continue?`,
-          {
-            title: "Confirm retention cleanup",
-            kind: "warning",
-            okLabel: "Continue",
-            cancelLabel: "Cancel",
-          },
-        );
-        if (!ok) {
-          this.rec.draftRetentionPolicy = this.rec.recordingSettings?.retentionPolicy ?? "never";
+    try {
+      const previousRetentionPolicy = this.rec.recordingSettings?.retentionPolicy ?? "never";
+
+      // Confirm whenever the NEW retention window is SHORTER than the previous
+      // one — i.e. tightening to a bounded policy that can delete newly-eligible
+      // data. `retentionToDays` returns null for the unbounded "Forever" policy;
+      // going from unbounded (prev === null) to any bounded window shortens, as
+      // does shrinking one bounded window to a smaller one (newDays < prevDays).
+      const prevDays = retentionToDays(previousRetentionPolicy);
+      const newDays = retentionToDays(this.rec.draftRetentionPolicy);
+      const retentionShortened =
+        prevDays === null ? newDays !== null : newDays !== null && newDays < prevDays;
+
+      if (domain === "storage" && retentionShortened) {
+        try {
+          const preview = await invoke<RetentionCleanupSummary>("preview_retention_cleanup", {
+            request: { policy: this.rec.draftRetentionPolicy },
+          });
+          this.retentionCleanupSummary = preview;
+          const ok = await ask(
+            `Retention will delete ${preview.deletedFrames} frame row(s), ${preview.deletedAudioSegments} audio segment row(s), and ${preview.eligibleCaptureSegments} capture segment(s) before ${preview.cutoffEndedBefore ?? "the cutoff"}. Continue?`,
+            {
+              title: "Confirm retention cleanup",
+              kind: "warning",
+              okLabel: "Continue",
+              cancelLabel: "Cancel",
+            },
+          );
+          if (!ok) {
+            this.rec.draftRetentionPolicy = this.rec.recordingSettings?.retentionPolicy ?? "never";
+            return;
+          }
+        } catch (err) {
+          this.rec.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
           return;
+        }
+      }
+
+      this.rec.recError = null;
+      this.rec.recSaved = false;
+      // Snapshot the drafts EXACTLY as dispatched to `invoke`, so the post-save
+      // sync can tell whether the user edited during the flight (edit C). If the
+      // live drafts still equal this on success, adopt canonical; if they diverged,
+      // the newer edit is kept and the reactive driver schedules a follow-up save.
+      const dispatchedSnapshot = this.rec.buildRecDomainSnapshot(domain);
+      try {
+        const response = await invoke<RecordingSettingsDomainUpdateResponse>(RECORDING_DOMAIN_COMMANDS[domain], {
+          request: this.rec.buildRecDomainRequest(domain),
+        });
+        const updated = response.settings;
+        this.rec.recordingSettings = updated;
+        this.rec.syncRecordingDomainFromCanonical(response.domain, updated, { dispatchedSnapshot });
+        this.rec.recSaved = true;
+        setTimeout(() => { this.rec.recSaved = false; }, 2200);
+
+        if (domain === "storage" && previousRetentionPolicy !== updated.retentionPolicy && updated.retentionPolicy !== "never") {
+          this.retentionCleanupRunning = true;
+          this.retentionCleanupError = null;
+          try {
+            this.retentionCleanupSummary = await invoke<RetentionCleanupSummary>("run_retention_cleanup_now");
+          } catch (err) {
+            this.retentionCleanupError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+          } finally {
+            this.retentionCleanupRunning = false;
+          }
         }
       } catch (err) {
         this.rec.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-        return;
       }
-    }
-
-    this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: true };
-    this.rec.recError = null;
-    this.rec.recSaved = false;
-    // Snapshot the drafts EXACTLY as dispatched to `invoke`, so the post-save
-    // sync can tell whether the user edited during the flight (edit C). If the
-    // live drafts still equal this on success, adopt canonical; if they diverged,
-    // the newer edit is kept and the reactive driver schedules a follow-up save.
-    const dispatchedSnapshot = this.rec.buildRecDomainSnapshot(domain);
-    try {
-      const response = await invoke<RecordingSettingsDomainUpdateResponse>(RECORDING_DOMAIN_COMMANDS[domain], {
-        request: this.rec.buildRecDomainRequest(domain),
-      });
-      const updated = response.settings;
-      this.rec.recordingSettings = updated;
-      this.rec.syncRecordingDomainFromCanonical(response.domain, updated, { dispatchedSnapshot });
-      this.rec.recSaved = true;
-      setTimeout(() => { this.rec.recSaved = false; }, 2200);
-
-      if (domain === "storage" && previousRetentionPolicy !== updated.retentionPolicy && updated.retentionPolicy !== "never") {
-        this.retentionCleanupRunning = true;
-        this.retentionCleanupError = null;
-        try {
-          this.retentionCleanupSummary = await invoke<RetentionCleanupSummary>("run_retention_cleanup_now");
-        } catch (err) {
-          this.retentionCleanupError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-        } finally {
-          this.retentionCleanupRunning = false;
-        }
-      }
-    } catch (err) {
-      this.rec.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: false };
     }

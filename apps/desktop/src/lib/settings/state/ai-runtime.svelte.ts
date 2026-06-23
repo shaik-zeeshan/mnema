@@ -40,6 +40,11 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   let aiRuntimeTestRunning = $state(false);
   let aiRuntimeTestResult = $state<AiRuntimeTestResult | null>(null);
   let aiRuntimeTestError = $state<string | null>(null);
+  // Error from clearing the keychain key of a provider the user just removed.
+  // Recorded against a STILL-VISIBLE surface (not `aiProviderKeyErrors`, whose
+  // entry is keyed by an id no longer in the list and would never render), so a
+  // genuine clear failure — which orphans the key — is at least seen by the user.
+  let aiProviderRemovalError = $state<string | null>(null);
 
   // Human-facing label for an AiRuntimeStatus.reason code (the shared
   // engine-configured prerequisite codes, plus user_context_disabled).
@@ -155,20 +160,31 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   }
 
   // Clear the keychain key for a provider instance the user just removed from
-  // the draft list, and drop its presence entry. Best-effort: a clear failure
-  // shouldn't block the remove (the caller already removed it from the draft).
-  function clearKeyForRemovedProvider(id: string) {
-    void invoke("ai_runtime_clear_provider_key", { request: { provider: id } })
-      .then(() => {
-        const { [id]: _orphaned, ...rest } = aiProviderKeySavedByProvider;
-        aiProviderKeySavedByProvider = rest;
-      })
-      .catch((error) => {
-        aiProviderKeyErrors = {
-          ...aiProviderKeyErrors,
-          [id]: error instanceof Error ? error.message : String(error),
-        };
-      });
+  // the draft list, and drop its presence entry. AWAITED (not fire-and-forget):
+  // the first instance of a kind reuses the bare kind as its id, so removing then
+  // immediately re-adding the same kind must not race an in-flight clear — the
+  // re-add probes only after this resolves (the caller awaits). On a genuine
+  // FAILURE the key is orphaned in the keychain; we surface that on a visible
+  // error so the user can retry, instead of recording it against a now-absent id.
+  async function clearKeyForRemovedProvider(id: string): Promise<void> {
+    aiProviderRemovalError = null;
+    try {
+      await invoke("ai_runtime_clear_provider_key", { request: { provider: id } });
+      const { [id]: _cleared, ...rest } = aiProviderKeySavedByProvider;
+      aiProviderKeySavedByProvider = rest;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      aiProviderRemovalError = `Could not clear the saved key for the removed provider — it may still be in the keychain. ${message}`;
+    }
+  }
+
+  // Clear the last test-connection banner (result + error). The banner reports
+  // the provider/model that was tested; after the user changes the default model
+  // or removes the tested provider it no longer reflects the live config, so the
+  // callers that mutate either reset it to avoid showing a stale "succeeded" line.
+  function resetTestResult() {
+    aiRuntimeTestResult = null;
+    aiRuntimeTestError = null;
   }
 
   async function runAiRuntimeTestConnection() {
@@ -199,12 +215,14 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     get aiRuntimeTestRunning() { return aiRuntimeTestRunning; },
     get aiRuntimeTestResult() { return aiRuntimeTestResult; },
     get aiRuntimeTestError() { return aiRuntimeTestError; },
+    get aiProviderRemovalError() { return aiProviderRemovalError; },
     aiRuntimeReasonLabel,
     loadAiRuntimeStatus,
     refreshAiProviderKeyPresence,
     saveAiProviderKey,
     clearAiProviderKey,
     clearKeyForRemovedProvider,
+    resetTestResult,
     runAiRuntimeTestConnection,
   };
 }

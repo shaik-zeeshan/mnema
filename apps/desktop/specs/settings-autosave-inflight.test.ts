@@ -1,33 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { isDirty } from "../src/lib/settings/state/autosave-core";
+import { computeApplyDrafts as applyDrafts } from "../src/lib/settings/state/recording-build";
 
 // Regression for FIX 1 — "autosave drops an edit made while a save is in flight".
 //
 // The store (`recording.svelte.ts`) is a Svelte-runes module ($state class
-// fields), so it cannot be instantiated under bun:test (no rune compiler) — the
-// existing autosave specs likewise pin the PURE decision at its smallest seam
-// rather than driving the live runtime. The load-bearing decision this fix
-// introduces lives in `RecordingStore.syncRecordingDomainFromCanonical`: on a
-// save echo, ALWAYS refresh the baseline, but only clobber the live drafts back
-// to canonical when the live snapshot still equals the snapshot that was
-// dispatched to `invoke`. This file mirrors that decision and the diff/baseline
-// machinery the engine consults, then walks the B/C scenario end to end.
-
-// Faithful mirror of the `applyDrafts` gate in `syncRecordingDomainFromCanonical`.
-//   • save echo (dispatchedSnapshot given): apply only if drafts == dispatched
-//   • otherwise (force / external echo): apply on force OR when not dirty
-function applyDrafts(args: {
-  liveSnapshot: string;
-  baseline: string | null;
-  force: boolean;
-  dispatchedSnapshot?: string;
-}): boolean {
-  if (args.dispatchedSnapshot !== undefined) {
-    return args.liveSnapshot === args.dispatchedSnapshot;
-  }
-  const dirty = isDirty(args.liveSnapshot, args.baseline);
-  return args.force || !dirty;
-}
+// fields), so it cannot be instantiated under bun:test (no rune compiler). The
+// load-bearing decision this fix introduces lives in
+// `RecordingStore.syncRecordingDomainFromCanonical`: on a save echo, ALWAYS
+// refresh the baseline, but only clobber the live drafts back to canonical when
+// the live snapshot still equals the snapshot that was dispatched to `invoke`.
+//
+// To keep that decision actually covered (not a re-implemented copy), the gate
+// was extracted into the pure, importable `recording-build.computeApplyDrafts`,
+// and the store calls it. This spec drives THAT real function (imported above as
+// `applyDrafts`) through the B/C scenario plus the diff/baseline machinery the
+// engine consults — so the production code path is the thing under test.
 
 describe("settings autosave: edit-during-in-flight-save is not dropped (FIX 1)", () => {
   // The canonical "edit B was persisted" snapshot the backend echoes back.

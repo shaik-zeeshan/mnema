@@ -25,6 +25,7 @@
   const aiRuntimeTestRunning = $derived(aiRuntime.aiRuntimeTestRunning);
   const aiRuntimeTestResult = $derived(aiRuntime.aiRuntimeTestResult);
   const aiRuntimeTestError = $derived(aiRuntime.aiRuntimeTestError);
+  const aiProviderRemovalError = $derived(aiRuntime.aiProviderRemovalError);
 
   // Controller derived selectors.
   const anyCloudAiProviderConnected = $derived(c.anyCloudAiProviderConnected);
@@ -42,7 +43,7 @@
   const aiProviderInstanceLabel = (p: Parameters<typeof c.aiProviderInstanceLabel>[0]) =>
     c.aiProviderInstanceLabel(p);
   const addAiProvider = (k: Parameters<typeof c.addAiProvider>[0]) => c.addAiProvider(k);
-  const removeAiProvider = (id: string) => c.removeAiProvider(id);
+  const removeAiProvider = (id: string) => void c.removeAiProvider(id);
   const loadSettingsModels = () => c.loadSettingsModels();
 
   // Store action methods.
@@ -187,6 +188,9 @@
           {/each}
         </div>
         <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider instance, shared by every feature. Add a kind more than once to connect several instances (e.g. two OpenAI-compatible servers).</p>
+        {#if aiProviderRemovalError}
+          <p class="error-text">{aiProviderRemovalError}</p>
+        {/if}
         {#if anyCloudAiProviderConnected}
           <div class="cloud-egress-disclosure" role="note">
             <span class="cloud-egress-disclosure__icon" aria-hidden="true">⚠</span>
@@ -230,7 +234,13 @@
           onretry={() => void settingsModelLoader.load(settingsModelRetryTargets)}
           bind:open={c.aiModelOpen}
           onopen={() => void loadSettingsModels()}
-          onselect={(engine) => { rec.draftAiDefaultModel = engine; }}
+          onselect={(engine) => {
+            rec.draftAiDefaultModel = engine;
+            // The last test-connection banner named the previously-tested model;
+            // changing the default model would leave it misrepresenting the
+            // current config, so clear it.
+            aiRuntime.resetTestResult();
+          }}
         />
         {#if settingsModelsError}
           <p class="group-hint group-hint--warn">

@@ -59,6 +59,7 @@ import {
   buildRecDomainRequest,
   buildRecDomainSnapshot,
   buildRecDomainSnapshotFromSettings,
+  computeApplyDrafts,
   type RecordingDomainRequest,
 } from "./recording-build";
 import {
@@ -92,6 +93,12 @@ export interface RecordingStoreDeps {
   loadAiRuntimeStatus: () => void;
   // The capture-support-derived save-block gates (page state).
   gates: () => RecordingValidationGates;
+  // Run once the canonical recording settings (incl. the persisted
+  // semantic-search selection) have just landed from a full load. The page-owned
+  // semantic-search picker re-seeds its selection here, closing the init race
+  // where the picker status resolved before settings (so the picker would read a
+  // still-null `semanticSearchSelectedModelId` and never re-seed).
+  onRecordingSettingsLoaded?: () => void;
 }
 
 export class RecordingStore {
@@ -410,6 +417,17 @@ export class RecordingStore {
     this.semanticSearchSelectedModelId = s.semanticSearch?.modelId ?? null;
   }
 
+  // Semantic-search enable + selected-model drafts. These live in the
+  // `processing` sync above but ALSO arrive on their own `semantic_search`
+  // ownership domain (committed through `update_semantic_search_settings` /
+  // `select_semantic_search_model`, not the generic autosave engine), which is
+  // NOT a recording draft domain — so the generic per-domain sync skips it. This
+  // helper is the seam a cross-window `semantic_search` echo refreshes through.
+  syncSemanticSearchDrafts(s: RecordingSettings): void {
+    this.draftSemanticSearchEnabled = s.semanticSearch?.enabled ?? true;
+    this.semanticSearchSelectedModelId = s.semanticSearch?.modelId ?? null;
+  }
+
   syncRecDomainDrafts(domain: RecordingSettingsDraftDomain, s: RecordingSettings): void {
     switch (domain) {
       case "capture_sources":
@@ -481,21 +499,28 @@ export class RecordingStore {
     s: RecordingSettings,
     opts: boolean | { force?: boolean; dispatchedSnapshot?: string } = false,
   ): void {
-    if (!RECORDING_DRAFT_DOMAINS.includes(domain as RecordingSettingsDraftDomain)) return;
+    if (!RECORDING_DRAFT_DOMAINS.includes(domain as RecordingSettingsDraftDomain)) {
+      // `semantic_search` is a settings ownership domain but NOT a generic
+      // recording draft domain (it commits through its own command), so it falls
+      // through here. Still refresh its local drafts so a cross-window enable/
+      // model change isn't left stale on the toggle + picker.
+      if (domain === "semantic_search") this.syncSemanticSearchDrafts(s);
+      return;
+    }
     const draftDomain = domain as RecordingSettingsDraftDomain;
     const force = typeof opts === "boolean" ? opts : (opts.force ?? false);
     const dispatchedSnapshot = typeof opts === "boolean" ? undefined : opts.dispatchedSnapshot;
 
-    const baseline = this.lastSavedRecSnapshots[draftDomain];
-    const dirty = baseline !== null && this.buildRecDomainSnapshot(draftDomain) !== baseline;
-
-    // Whether to overwrite the live drafts with canonical. For a save echo the
-    // gate is "drafts still match what we dispatched" (no concurrent edit C);
-    // otherwise it is the classic force-or-clean rule.
-    const applyDrafts =
-      dispatchedSnapshot !== undefined
-        ? this.buildRecDomainSnapshot(draftDomain) === dispatchedSnapshot
-        : force || !dirty;
+    // Whether to overwrite the live drafts with canonical. The pure decision —
+    // unit-tested in `recording-build.computeApplyDrafts` — is: on a save echo,
+    // adopt only when the live drafts still equal what was dispatched (no edit C
+    // mid-flight); otherwise adopt on force or when the domain is clean.
+    const applyDrafts = computeApplyDrafts({
+      liveSnapshot: this.buildRecDomainSnapshot(draftDomain),
+      baseline: this.lastSavedRecSnapshots[draftDomain],
+      force,
+      dispatchedSnapshot,
+    });
 
     if (applyDrafts) {
       this.syncRecDomainDrafts(draftDomain, s);
@@ -542,6 +567,7 @@ export class RecordingStore {
       this.syncRecDrafts(s);
       // Settings (incl. the persisted semantic-search selection) are now known.
       this.recordingSettingsLoaded = true;
+      this.#deps.onRecordingSettingsLoaded?.();
     } catch (err) {
       this.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {

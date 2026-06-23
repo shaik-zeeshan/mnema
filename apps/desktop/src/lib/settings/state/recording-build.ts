@@ -432,3 +432,28 @@ export function buildRecDomainSnapshotFromSettings(
 ): string {
   return JSON.stringify(buildRecDomainRequestFromSettings(domain, s));
 }
+
+// The "adopt canonical drafts?" decision for `syncRecordingDomainFromCanonical`.
+//
+// Extracted here (a pure `.ts`) so the load-bearing in-flight-save rule is
+// testable in isolation — the store that calls it (`recording.svelte.ts`) is a
+// runes module and cannot be instantiated under bun:test. The store passes the
+// CURRENT live snapshot, the established baseline, and either:
+//   • a `dispatchedSnapshot` (a save echo): adopt canonical only when the live
+//     drafts STILL equal what was dispatched to `invoke` — i.e. no edit landed
+//     during the flight. If they diverged, leave the newer drafts alone so the
+//     reactive driver schedules a follow-up save (the edit is never dropped).
+//   • no dispatched snapshot (force / external echo): the classic rule — adopt
+//     on `force`, or when the domain is clean (not dirty vs its baseline).
+export function computeApplyDrafts(args: {
+  liveSnapshot: string;
+  baseline: string | null;
+  force: boolean;
+  dispatchedSnapshot?: string;
+}): boolean {
+  if (args.dispatchedSnapshot !== undefined) {
+    return args.liveSnapshot === args.dispatchedSnapshot;
+  }
+  const dirty = args.baseline !== null && args.liveSnapshot !== args.baseline;
+  return args.force || !dirty;
+}
