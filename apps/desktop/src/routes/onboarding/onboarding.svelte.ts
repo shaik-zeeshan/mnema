@@ -113,7 +113,12 @@ export class OnboardingController {
   draftTranscriptionMemoryMode = $state<AudioTranscriptionMemoryMode>("balanced");
   draftTranscriptionIdleUnloadSeconds = $state(300);
   draftTranscriptionChunkSeconds = $state(30);
-  draftTranscriptionMicrophoneEnabled = $state(true);
+  // Per-source transcribe flags default OFF: enabling a capture source alone
+  // (e.g. "record mic, don't transcribe") must NOT silently request a transcript
+  // while the Audio-transcription master is off (which would trip the transcribe
+  // attention rule). The master toggle (`toggleFeature("transcribe")`) turns
+  // these on for the currently-enabled audio sources when the feature is enabled.
+  draftTranscriptionMicrophoneEnabled = $state(false);
   draftTranscriptionSystemAudioEnabled = $state(false);
   draftSpeakerSeparateSpeakers = $state(false);
   draftSpeakerRecognizeSavedPeople = $state(false);
@@ -157,10 +162,22 @@ export class OnboardingController {
   reviewAndFinish(): void { this.phase = "done"; }
   backToConfigure(): void { this.phase = "configure"; }
 
-  // One-tap recommended defaults. DRAFT-ONLY (the redesign's invariant is "save
-  // only on finish" — do NOT call any Tauri save command here). Mirrors the old
-  // welcome "Use recommended setup" intent without the mid-flow server writes.
-  applyRecommendedSetup(): void {
+  // One-tap recommended defaults. The capture/processing defaults are DRAFT-ONLY
+  // (the redesign's invariant is "save only on finish" — do NOT call any
+  // recording-settings save command here). The recommended privacy exclusions
+  // are the one exception: like the legacy welcome "Use recommended setup", they
+  // commit eagerly through the privacy controller (the existing pattern — privacy
+  // is never deferred to the finish-only draft). Applied FIRST, because each
+  // privacy command re-syncs drafts from its server response (via
+  // `onSettingsUpdated` → `syncDrafts`), which would otherwise clobber the smart
+  // defaults set below. Safe no-op when nothing is pending.
+  async applyRecommendedSetup(): Promise<void> {
+    this.applyingRecommended = true;
+    try {
+      await this.appPrivacyExclusion.applyAllRecommendedPrivacyApps();
+    } finally {
+      this.applyingRecommended = false;
+    }
     this.draftCaptureScreen = true;
     this.draftOcrEnabled = true;
     this.chooseOcrProvider("apple_vision");
@@ -462,20 +479,36 @@ export class OnboardingController {
         // Recording the mic needs Microphone permission — gate the enable only.
         if (!this.draftCaptureMicrophone && this.featureLockReason("mic")) return;
         this.draftCaptureMicrophone = !this.draftCaptureMicrophone;
+        // Keep transcription symmetric with the master toggle: if Audio
+        // transcription is already on, a newly-enabled source should be
+        // transcribed (else it'd be silently captured-but-not-transcribed); a
+        // disabled source carries no transcript request.
+        if (this.draftTranscriptionEnabled) {
+          this.draftTranscriptionMicrophoneEnabled = this.draftCaptureMicrophone;
+        }
         return;
       case "sysaudio":
         // Capturing system audio needs System audio permission — gate the
         // enable only. (Screen capture is required-on in this flow.)
         if (!this.draftCaptureSystemAudio && this.featureLockReason("sysaudio")) return;
         this.draftCaptureSystemAudio = !this.draftCaptureSystemAudio;
+        if (this.draftTranscriptionEnabled) {
+          this.draftTranscriptionSystemAudioEnabled = this.draftCaptureSystemAudio;
+        }
         return;
       case "ocr":
         this.draftOcrEnabled = !this.draftOcrEnabled;
         return;
       case "transcribe":
         this.draftTranscriptionEnabled = !this.draftTranscriptionEnabled;
-        // Speaker separation needs a transcript to split — cascade off.
-        if (!this.draftTranscriptionEnabled) {
+        if (this.draftTranscriptionEnabled) {
+          // Turning the master ON: transcribe whatever audio sources are
+          // currently enabled, so the feature isn't a no-op. (Sources default to
+          // per-source-transcribe OFF; this binds them to the master at enable.)
+          this.draftTranscriptionMicrophoneEnabled = this.draftCaptureMicrophone;
+          this.draftTranscriptionSystemAudioEnabled = this.draftCaptureSystemAudio;
+        } else {
+          // Speaker separation needs a transcript to split — cascade off.
           this.draftSpeakerSeparateSpeakers = false;
           this.draftSpeakerRecognizeSavedPeople = false;
         }
@@ -537,7 +570,10 @@ export class OnboardingController {
   featureAttention(id: FeatureId): boolean {
     switch (id) {
       case "permissions":
-        return this.permissions?.screen !== "granted";
+        // "unsupported" needs no action (mirrors `permissionAction`, which
+        // returns no button for granted/unsupported) — treating it as blocking
+        // would be an unrecoverable dead-end (no fix button to clear it).
+        return this.permissions?.screen !== "granted" && this.permissions?.screen !== "unsupported";
       case "mic":
         return this.draftCaptureMicrophone && this.permissions?.microphone !== "granted";
       case "sysaudio":
@@ -915,11 +951,19 @@ export class OnboardingController {
     try {
       await this.saveSettings();
       if (startRecording) {
+        // Defense-in-depth: never request a source whose OS permission isn't
+        // granted, independent of the attention gate. Capture must not outrun
+        // authorization even if the gating logic ever changes. (System audio
+        // uses the `systemAudio` PermissionKey; screen is required-on and
+        // already gates system audio.)
         await invoke("start_native_capture", {
           request: {
             captureScreen: this.draftCaptureScreen,
-            captureMicrophone: this.draftCaptureMicrophone,
-            captureSystemAudio: this.draftCaptureScreen && this.draftCaptureSystemAudio,
+            captureMicrophone: this.draftCaptureMicrophone && this.permissions?.microphone === "granted",
+            captureSystemAudio:
+              this.draftCaptureScreen
+              && this.draftCaptureSystemAudio
+              && this.permissions?.systemAudio === "granted",
           },
         });
       }

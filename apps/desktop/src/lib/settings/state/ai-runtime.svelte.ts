@@ -78,18 +78,30 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
 
   // Re-check which connected cloud provider instances have a key in the
   // keychain. Keyed by instance id (the keychain account).
+  //
+  // A failed probe is TRANSIENT, not an assertion of absence: seed `next` from
+  // the prior presence (only for ids still being probed, so removed providers
+  // don't leak stale presence) and, on a probe error, keep that id's last-known
+  // value instead of dropping it — otherwise a provider that genuinely has a
+  // saved key would flip to "no key saved" (and the UI prompt to re-add it) on
+  // any flaky keychain read. The per-id error is still recorded.
   async function refreshAiProviderKeyPresence() {
     const cloudProviderIds = deps
       .getProviders()
       .filter((p) => deps.isCloudProviderKind(p.kind))
       .map((p) => p.id);
+    // Carry over last-known presence ONLY for ids in the current probe set.
     const next: Record<string, boolean> = {};
+    for (const id of cloudProviderIds) {
+      if (id in aiProviderKeySavedByProvider) next[id] = aiProviderKeySavedByProvider[id];
+    }
     for (const id of cloudProviderIds) {
       try {
         next[id] = await invoke<boolean>("ai_runtime_has_provider_key", {
           request: { provider: id },
         });
       } catch (error) {
+        // Leave the seeded last-known presence for `id` intact; record the error.
         aiProviderKeyErrors = {
           ...aiProviderKeyErrors,
           [id]: error instanceof Error ? error.message : String(error),

@@ -601,13 +601,18 @@ export class SettingsController {
     this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: true };
     this.rec.recError = null;
     this.rec.recSaved = false;
+    // Snapshot the drafts EXACTLY as dispatched to `invoke`, so the post-save
+    // sync can tell whether the user edited during the flight (edit C). If the
+    // live drafts still equal this on success, adopt canonical; if they diverged,
+    // the newer edit is kept and the reactive driver schedules a follow-up save.
+    const dispatchedSnapshot = this.rec.buildRecDomainSnapshot(domain);
     try {
       const response = await invoke<RecordingSettingsDomainUpdateResponse>(RECORDING_DOMAIN_COMMANDS[domain], {
         request: this.rec.buildRecDomainRequest(domain),
       });
       const updated = response.settings;
       this.rec.recordingSettings = updated;
-      this.rec.syncRecordingDomainFromCanonical(response.domain, updated, true);
+      this.rec.syncRecordingDomainFromCanonical(response.domain, updated, { dispatchedSnapshot });
       this.rec.recSaved = true;
       setTimeout(() => { this.rec.recSaved = false; }, 2200);
 

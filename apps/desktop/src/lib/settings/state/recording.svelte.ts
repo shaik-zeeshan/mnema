@@ -466,29 +466,50 @@ export class RecordingStore {
   // domains keep their in-flight edits (only the baseline refreshes) unless
   // `force` is set (a save/privacy echo that should adopt the persisted truth).
   // Mirrors the prior page behavior including the per-domain side effects.
+  //
+  // `opts.dispatchedSnapshot` is the save-echo seam: a domain save serializes the
+  // drafts it shipped to `invoke` and passes that string here on success. The
+  // baseline ALWAYS refreshes (the canonical truth is now persisted), but the
+  // drafts are only clobbered back to canonical when the live drafts STILL equal
+  // what was dispatched — i.e. the user did not edit during the save's flight. If
+  // they diverged (edit C arrived mid-save), we leave the newer drafts alone so
+  // the reactive driver schedules a follow-up save instead of losing the edit.
+  // `force` (no dispatched snapshot) keeps the old unconditional-clobber meaning
+  // for the privacy echo, which has no in-flight-edit window to protect.
   syncRecordingDomainFromCanonical(
     domain: SettingsOwnershipDomain,
     s: RecordingSettings,
-    force = false,
+    opts: boolean | { force?: boolean; dispatchedSnapshot?: string } = false,
   ): void {
     if (!RECORDING_DRAFT_DOMAINS.includes(domain as RecordingSettingsDraftDomain)) return;
     const draftDomain = domain as RecordingSettingsDraftDomain;
+    const force = typeof opts === "boolean" ? opts : (opts.force ?? false);
+    const dispatchedSnapshot = typeof opts === "boolean" ? undefined : opts.dispatchedSnapshot;
+
     const baseline = this.lastSavedRecSnapshots[draftDomain];
     const dirty = baseline !== null && this.buildRecDomainSnapshot(draftDomain) !== baseline;
 
-    if (force || !dirty) {
+    // Whether to overwrite the live drafts with canonical. For a save echo the
+    // gate is "drafts still match what we dispatched" (no concurrent edit C);
+    // otherwise it is the classic force-or-clean rule.
+    const applyDrafts =
+      dispatchedSnapshot !== undefined
+        ? this.buildRecDomainSnapshot(draftDomain) === dispatchedSnapshot
+        : force || !dirty;
+
+    if (applyDrafts) {
       this.syncRecDomainDrafts(draftDomain, s);
     }
     this.setRecDomainBaseline(draftDomain, s);
 
-    if (draftDomain === "display" && (force || !dirty)) {
+    if (draftDomain === "display" && applyDrafts) {
       this.#deps.setAppearance(s.appearance ?? "system");
     }
-    if (draftDomain === "developer" && (force || !dirty)) {
+    if (draftDomain === "developer" && applyDrafts) {
       this.#deps.setDeveloperOptionsEnabled(s.developerOptionsEnabled ?? false);
       this.#deps.loadDebugLogStatus();
     }
-    if (draftDomain === "ai_runtime" && (force || !dirty)) {
+    if (draftDomain === "ai_runtime" && applyDrafts) {
       this.#deps.refreshAiProviderKeyPresence();
       this.#deps.loadAiRuntimeStatus();
     }

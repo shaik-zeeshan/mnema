@@ -63,6 +63,19 @@
     return null;
   }
 
+  // Roving tabindex: exactly one enabled segment is tab-reachable. Prefer the
+  // active value, but if it's disabled (or there's no active value) fall back to
+  // the first enabled segment — otherwise the whole group becomes
+  // keyboard-unreachable when the selected value is also in disabledValues.
+  // -1 when every option is disabled (nothing focusable, which is correct).
+  const focusableIndex = $derived.by(() => {
+    const activeIndex = options.findIndex((o) => o.value === value);
+    if (activeIndex !== -1 && !isOff(options[activeIndex].value)) {
+      return activeIndex;
+    }
+    return options.findIndex((o) => !isOff(o.value));
+  });
+
   function onKeydown(event: KeyboardEvent, index: number) {
     if (disabled) return;
     let nextIndex: number | null = null;
@@ -99,7 +112,7 @@
       aria-checked={value === option.value}
       aria-label={option.label}
       title={option.label}
-      tabindex={value === option.value || (value == null && index === 0) ? 0 : -1}
+      tabindex={index === focusableIndex ? 0 : -1}
       disabled={disabled || isOff(option.value)}
       onclick={() => select(option.value)}
       onkeydown={(e) => onKeydown(e, index)}

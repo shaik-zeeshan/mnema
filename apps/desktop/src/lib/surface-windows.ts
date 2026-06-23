@@ -12,6 +12,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { goto } from "$app/navigation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
 
 export type SurfaceWindowLabel = "main" | "onboarding" | "cli-access-request" | "debug" | "quick-recall";
 
@@ -111,6 +112,34 @@ export function settingsRoutePath(tab?: SettingsWindowTab, focus?: SettingsWindo
   return query ? `/settings?${query}` : "/settings";
 }
 
+// The last main surface (Timeline `/` or Insights `/insights`) the user was on
+// before entering Settings, so the settings rail's "← Back to app" can return
+// there instead of always landing on Timeline. Only the two known main surfaces
+// are accepted; anything else (`/settings`, `/onboarding`, …) is rejected and we
+// keep the `/` fallback. Survives navigations because it's module-level, not
+// route state; resets to `/` on a cold load (e.g. tray deeplink straight into
+// Settings), which is the desired fallback.
+let lastMainSurfacePath = "/";
+
+/** Is `pathname` one of the two main app surfaces (Timeline or Insights)? */
+function isMainSurface(pathname: string): boolean {
+  return isMainAppRoute(pathname) || normalizeAppPathname(pathname).startsWith("/insights");
+}
+
+/**
+ * Record the main surface the user is leaving, so the settings rail knows where
+ * to return. No-ops for any path that isn't a known main surface, leaving the
+ * `/` fallback in place.
+ */
+export function recordMainSurface(path: string): void {
+  if (isMainSurface(path)) lastMainSurfacePath = normalizeAppPathname(path);
+}
+
+/** The last recorded main surface path, falling back to Timeline (`/`). */
+export function getLastMainSurface(): string {
+  return lastMainSurfacePath;
+}
+
 /**
  * Open the Settings surface. From the Main window this is an in-window route
  * navigation; from any other window (e.g. Quick Recall) it asks Rust to focus
@@ -122,6 +151,10 @@ export async function openSettings(
   focus?: SettingsWindowFocus,
 ): Promise<void> {
   if (currentWindowLabel() === "main") {
+    // Remember where we came from so "← Back to app" returns to it. The other
+    // branch (focusing Main from a non-main window) has no meaningful previous
+    // main surface, so we leave the stored fallback untouched.
+    recordMainSurface(window.location.pathname);
     await goto(settingsRoutePath(tab, focus));
     return;
   }

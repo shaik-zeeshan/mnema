@@ -1,28 +1,20 @@
 <script lang="ts" module>
-  export interface ComboboxOption {
-    value: string;
-    label: string;
-  }
-
-  /**
-   * Case-insensitive substring filter over option labels (and values, so an
-   * id-typed query still matches). Pure + exported so it can be unit-tested.
-   */
-  export function filterComboboxOptions(
-    options: ComboboxOption[],
-    query: string,
-  ): ComboboxOption[] {
-    const q = query.trim().toLowerCase();
-    if (q.length === 0) return options;
-    return options.filter(
-      (o) =>
-        o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q),
-    );
-  }
+  // Pure filter logic lives in combobox-filter.ts so it can be unit-tested
+  // without Svelte/runes. Re-exported here so existing importers (`import {
+  // ComboboxOption, filterComboboxOptions } from ".../Combobox.svelte"`) keep
+  // working unchanged.
+  export {
+    filterComboboxOptions,
+    type ComboboxOption,
+  } from "./combobox-filter";
 </script>
 
 <script lang="ts">
   import { Combobox as BitsCombobox } from "bits-ui";
+  import {
+    filterComboboxOptions,
+    type ComboboxOption,
+  } from "./combobox-filter";
 
   interface Props {
     value?: string | null;
@@ -49,6 +41,12 @@
 
   let open = $state(false);
   let search = $state("");
+  let openUp = $state(false);
+  let wrapperEl = $state<HTMLDivElement | null>(null);
+
+  // Stable id so the visible label can be programmatically associated with the
+  // trigger via aria-labelledby (the label renders as a plain <span>).
+  const labelId = `combobox-label-${Math.random().toString(36).slice(2, 9)}`;
 
   function handleValueChange(v: string) {
     value = v;
@@ -62,16 +60,38 @@
     value ? (options.find((o) => o.value === value)?.label ?? value) : null,
   );
 
+  // The inline popover can't drift, so it can clip at the bottom of Settings'
+  // inner scroll container. On open, measure room below vs. above the trigger
+  // and flip upward when there isn't enough room below (and there's more above).
+  // `max-height` (CSS) still bounds the panel; this just chooses which edge it
+  // anchors to. Conservative: default is the existing downward open.
+  function recomputeOpenDirection() {
+    const trigger = wrapperEl?.querySelector<HTMLElement>(".combobox-trigger");
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    // Keep in sync with the .combobox-content max-height (260px).
+    const needed = 260;
+    openUp = spaceBelow < needed && spaceAbove > spaceBelow;
+  }
+
   // Reset the query whenever the popover closes so the next open starts clean.
   function handleOpenChange(next: boolean) {
     open = next;
-    if (!next) search = "";
+    if (next) recomputeOpenDirection();
+    else search = "";
   }
 </script>
 
-<div class="combobox-wrapper" class:combobox-wrapper--disabled={disabled}>
+<div
+  class="combobox-wrapper"
+  class:combobox-wrapper--disabled={disabled}
+  class:combobox-wrapper--up={openUp}
+  bind:this={wrapperEl}
+>
   {#if label}
-    <span class="combobox-label">{label}</span>
+    <span class="combobox-label" id={labelId}>{label}</span>
   {/if}
   <BitsCombobox.Root
     type="single"
@@ -85,6 +105,7 @@
   >
     <BitsCombobox.Trigger
       class={warn ? "combobox-trigger combobox-trigger--warn" : "combobox-trigger"}
+      aria-labelledby={label ? labelId : undefined}
     >
       <span
         class={selectedLabel
@@ -165,6 +186,14 @@
     transform: none !important;
     width: 100% !important;
     min-width: 0 !important;
+  }
+
+  /* Flip upward when there isn't enough room below the trigger (measured on
+     open). Anchors the panel above the trigger instead of below — still pinned,
+     never drifting. */
+  .combobox-wrapper--up :global([data-bits-floating-content-wrapper]) {
+    top: auto !important;
+    bottom: calc(100% + 4px) !important;
   }
 
   .combobox-wrapper--disabled {

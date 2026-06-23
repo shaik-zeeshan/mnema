@@ -71,6 +71,32 @@ export class AudioStore {
     this.lastSavedMicSnapshot = this.buildMicSnapshot();
   }
 
+  // Resync drafts + baseline from a REALTIME `microphone_controller_changed`
+  // event (device hotplug / auto-disconnect). Mirrors the recording store's
+  // dirty-guard (`resyncRecordingDraftsFromCanonical`): if the user has an
+  // unsaved pending mic edit (snapshot ≠ baseline), keep their in-flight edit
+  // and only refresh the baseline; otherwise adopt the new canonical drafts.
+  // The baseline ALWAYS refreshes so the next autosave diffs against the new
+  // canonical truth (and a clean domain doesn't fire a redundant save).
+  resyncMicDraftsFromCanonical(s: MicrophoneControllerState) {
+    const dirty =
+      this.lastSavedMicSnapshot !== null &&
+      this.buildMicSnapshot() !== this.lastSavedMicSnapshot;
+    if (!dirty) {
+      this.draftPreferenceMode = s.preference.mode;
+      this.draftDeviceId = s.preference.deviceId ?? null;
+      this.draftDisconnectPolicy = s.disconnectPolicy;
+    }
+    // Refresh the baseline to the new canonical value regardless of dirtiness.
+    this.lastSavedMicSnapshot = JSON.stringify({
+      preference: {
+        mode: s.preference.mode,
+        deviceId: s.preference.mode === "specific_device" ? (s.preference.deviceId ?? null) : null,
+      },
+      disconnectPolicy: s.disconnectPolicy,
+    });
+  }
+
   // ─── Load / save ────────────────────────────────────────────────────────────
   async loadMicState() {
     this.loadingMicState = true;
@@ -127,7 +153,10 @@ export class AudioStore {
 
     listen<MicrophoneControllerState>("microphone_controller_changed", (event) => {
       this.micState = event.payload;
-      this.syncMicDrafts(event.payload);
+      // Dirty-guard: a hotplug/auto-disconnect echo must NOT clobber an unsaved
+      // pending mic edit (nor cancel its in-flight autosave by resetting the
+      // baseline to match). Initial load keeps its unconditional `syncMicDrafts`.
+      this.resyncMicDraftsFromCanonical(event.payload);
       this.micError = null;
     }).then((fn) => {
       if (destroyed) fn();

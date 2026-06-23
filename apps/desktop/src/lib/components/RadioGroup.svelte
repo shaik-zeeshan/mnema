@@ -33,6 +33,12 @@
     variant = "list",
   }: Props = $props();
 
+  // Stable id so the visible label can be programmatically associated with the
+  // radiogroup container via aria-labelledby (the label renders as a plain
+  // <span>). BitsRadioGroup.Root renders the role="radiogroup" element and
+  // spreads extra attributes onto it.
+  const labelId = `rg-label-${Math.random().toString(36).slice(2, 9)}`;
+
   function handleValueChange(v: string) {
     value = v;
     onValueChange?.(v);
@@ -41,12 +47,13 @@
 
 <div class="rg-wrapper" class:rg-wrapper--disabled={disabled}>
   {#if label}
-    <span class="rg-label">{label}</span>
+    <span class="rg-label" id={labelId}>{label}</span>
   {/if}
   <BitsRadioGroup.Root
     bind:value
     onValueChange={handleValueChange}
     {disabled}
+    aria-labelledby={label ? labelId : undefined}
     class={variant === "card" ? "rg-root rg-root--card" : "rg-root"}
   >
     {#each options as option (option.value)}

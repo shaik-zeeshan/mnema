@@ -22,6 +22,7 @@
   } from "./groups";
   import { filterGroups, flattenSections } from "./rail-filter";
   import { getSettingsController } from "./state/controller.svelte";
+  import { getLastMainSurface } from "$lib/surface-windows";
 
   interface Props {
     /** The active group (the one group panel currently mounted). */
@@ -74,9 +75,10 @@
   }
 
   // "← Back to app" — Settings is the `/settings` route inside the Main window,
-  // so leaving it is a plain in-window navigation back to the app root.
+  // so leaving it is a plain in-window navigation back to the last main surface
+  // the user was on (Timeline or Insights), falling back to `/`.
   function backToApp() {
-    void goto("/");
+    void goto(getLastMainSurface());
   }
 
   // ─── Flattened tablist keyboard nav (roving tabindex) ─────────────────────

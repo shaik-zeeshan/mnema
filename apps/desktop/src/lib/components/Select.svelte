@@ -26,6 +26,13 @@
     warn = false,
   }: Props = $props();
 
+  let openUp = $state(false);
+  let wrapperEl = $state<HTMLDivElement | null>(null);
+
+  // Stable id so the visible label can be programmatically associated with the
+  // trigger via aria-labelledby (the label renders as a plain <span>).
+  const labelId = `select-label-${Math.random().toString(36).slice(2, 9)}`;
+
   function handleValueChange(v: string) {
     value = v;
     onValueChange?.(v);
@@ -34,19 +41,47 @@
   const selectedLabel = $derived(
     value ? (options.find((o) => o.value === value)?.label ?? value) : null
   );
+
+  // The inline popover can't drift, so it can clip at the bottom of Settings'
+  // inner scroll container. On open, measure room below vs. above the trigger
+  // and flip upward when there isn't enough room below (and there's more above).
+  // `max-height` (CSS) still bounds the panel; this just picks the anchor edge.
+  function recomputeOpenDirection() {
+    const trigger = wrapperEl?.querySelector<HTMLElement>(".select-trigger");
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    // Keep in sync with the .select-content max-height (220px).
+    const needed = 220;
+    openUp = spaceBelow < needed && spaceAbove > spaceBelow;
+  }
+
+  function handleOpenChange(next: boolean) {
+    if (next) recomputeOpenDirection();
+  }
 </script>
 
-<div class="select-wrapper" class:select-wrapper--disabled={disabled}>
+<div
+  class="select-wrapper"
+  class:select-wrapper--disabled={disabled}
+  class:select-wrapper--up={openUp}
+  bind:this={wrapperEl}
+>
   {#if label}
-    <span class="select-label">{label}</span>
+    <span class="select-label" id={labelId}>{label}</span>
   {/if}
   <BitsSelect.Root
     type="single"
     value={value ?? ""}
     onValueChange={handleValueChange}
+    onOpenChange={handleOpenChange}
     {disabled}
   >
-    <BitsSelect.Trigger class={warn ? "select-trigger select-trigger--warn" : "select-trigger"}>
+    <BitsSelect.Trigger
+      class={warn ? "select-trigger select-trigger--warn" : "select-trigger"}
+      aria-labelledby={label ? labelId : undefined}
+    >
       <span class={selectedLabel ? "select-trigger-text" : "select-trigger-text select-trigger-text--placeholder"}>
         {selectedLabel ?? placeholder}
       </span>
@@ -102,6 +137,14 @@
     transform: none !important;
     width: 100% !important;
     min-width: 0 !important;
+  }
+
+  /* Flip upward when there isn't enough room below the trigger (measured on
+     open). Anchors the panel above the trigger instead of below — still pinned,
+     never drifting. */
+  .select-wrapper--up :global([data-bits-floating-content-wrapper]) {
+    top: auto !important;
+    bottom: calc(100% + 4px) !important;
   }
 
   .select-wrapper--disabled {

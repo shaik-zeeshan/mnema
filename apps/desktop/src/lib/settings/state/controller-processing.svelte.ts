@@ -34,10 +34,20 @@ import type {
 type ModelStatusStore = ReturnType<typeof createModelStatusStore>;
 
 const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
+const SELECTABLE_TRANSCRIPTION_PROVIDERS: readonly AudioTranscriptionProvider[] = [
+  "local_whisper",
+  "apple_speech_on_device",
+  "parakeet",
+];
 
 export function createProcessingModelsView(rec: RecordingStore, models: ModelStatusStore) {
   function isSelectableOcrProvider(value: string | null | undefined): value is OcrProvider {
     return SELECTABLE_OCR_PROVIDERS.includes(value as OcrProvider);
+  }
+  function isSelectableTranscriptionProvider(
+    value: string | null | undefined,
+  ): value is AudioTranscriptionProvider {
+    return SELECTABLE_TRANSCRIPTION_PROVIDERS.includes(value as AudioTranscriptionProvider);
   }
 
   // ─── OCR option derivations ────────────────────────────────────────────────
@@ -157,7 +167,8 @@ export function createProcessingModelsView(rec: RecordingStore, models: ModelSta
     return defaultModel?.modelId ?? providerStatus.models[0]?.modelId ?? defaultModelId;
   }
   function chooseTranscriptionProvider(provider: string) {
-    rec.draftTranscriptionProvider = provider as AudioTranscriptionProvider;
+    if (!isSelectableTranscriptionProvider(provider)) return;
+    rec.draftTranscriptionProvider = provider;
     rec.draftTranscriptionModelId = preferredTranscriptionModelIdForProvider(rec.draftTranscriptionProvider);
   }
   function chooseTranscriptionModel(value: string) {
@@ -239,6 +250,7 @@ export function createProcessingModelsView(rec: RecordingStore, models: ModelSta
   // ─── Model loaders / download wrappers (draft-derived) ──────────────────────
   return {
     isSelectableOcrProvider,
+    isSelectableTranscriptionProvider,
     chooseOcrProvider,
     chooseOcrModel,
     preferredOcrModelIdForProvider,

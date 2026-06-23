@@ -639,6 +639,12 @@
     100% { opacity: 0; }
   }
 
+  @media (prefers-reduced-motion: reduce) {
+    .settings-shell .saved-badge {
+      animation: none;
+    }
+  }
+
   /* ── Badges ────────────────────────────────────────────────── */
   .settings-shell .badge {
     display: inline-flex;
