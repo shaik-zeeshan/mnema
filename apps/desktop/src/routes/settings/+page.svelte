@@ -38,6 +38,10 @@
     type SettingsGroupId,
     type SettingsSectionId,
   } from "$lib/settings/groups";
+  import {
+    isScrolledToBottom,
+    lastSectionOfGroup,
+  } from "$lib/settings/scroll-spy";
   // Shared `.settings-shell` styles, split per concern (≤800 lines each),
   // imported in SOURCE ORDER (cascade-critical; theme last). Map: settings-layout.css.
   import "$lib/settings/settings-layout.css";
@@ -125,22 +129,6 @@
     }, 700);
   }
 
-  // The last sub-section of a group — the "tail" the scroll-spy can't otherwise
-  // reach: the spy marks a section active only once its head clears the top
-  // detection band (see `rootMargin` below), but the final section has nothing
-  // below it to scroll its anchor up that far, so it never wins the top-most
-  // test. We force-select it on bottom-out instead.
-  function lastSectionOfGroup(group: SettingsGroupId): SettingsSectionId | null {
-    const sections = SETTINGS_GROUPS.find((g) => g.id === group)?.sections ?? [];
-    return sections.length ? sections[sections.length - 1].id : null;
-  }
-
-  // True once the scroll region has effectively bottomed out (small tolerance
-  // for fractional scroll heights / sub-pixel rounding).
-  function isScrolledToBottom(root: HTMLElement): boolean {
-    return root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
-  }
-
   function handleScrollRegionScroll() {
     scrollRegionScrolling = true;
     if (scrollRegionScrollTimer !== null) clearTimeout(scrollRegionScrollTimer);
@@ -153,7 +141,15 @@
     // anchor can't reach the top detection band, so the IntersectionObserver
     // leaves the highlight stuck on the second-to-last section. Force-select
     // the tail here (unless a programmatic scroll is in flight).
-    if (!spySuppressed && scrollRegion && isScrolledToBottom(scrollRegion)) {
+    if (
+      !spySuppressed &&
+      scrollRegion &&
+      isScrolledToBottom({
+        scrollHeight: scrollRegion.scrollHeight,
+        scrollTop: scrollRegion.scrollTop,
+        clientHeight: scrollRegion.clientHeight,
+      })
+    ) {
       const last = lastSectionOfGroup(activeGroup);
       if (last && last !== activeSection) activeSection = last;
     }
@@ -244,7 +240,14 @@
           // At the bottom, the tail section can't reach the top detection band;
           // the scroll handler force-selects it, so don't override it back to a
           // mid-band section here.
-          if (isScrolledToBottom(root)) return;
+          if (
+            isScrolledToBottom({
+              scrollHeight: root.scrollHeight,
+              scrollTop: root.scrollTop,
+              clientHeight: root.clientHeight,
+            })
+          )
+            return;
           // Top-most = smallest top offset relative to the root.
           const rootTop = root.getBoundingClientRect().top;
           let top: HTMLElement | null = null;

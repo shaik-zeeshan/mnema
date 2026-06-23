@@ -97,25 +97,25 @@
     color: var(--app-text);
   }
 
-  [data-theme="light"] .bitrate-chip {
+  [data-theme="light"] .settings-shell .bitrate-chip {
     background: var(--app-surface-raised);
     border-color: var(--app-border-strong);
   }
-  [data-theme="light"] .bitrate-chip:hover {
+  [data-theme="light"] .settings-shell .bitrate-chip:hover {
     background: var(--app-surface-hover);
     border-color: var(--app-border-hover);
   }
-  [data-theme="light"] .bitrate-chip--active {
+  [data-theme="light"] .settings-shell .bitrate-chip--active {
     background: var(--app-accent-bg);
     border-color: var(--app-accent);
   }
-  [data-theme="light"] .bitrate-chip__label {
+  [data-theme="light"] .settings-shell .bitrate-chip__label {
     color: var(--app-text-strong);
   }
-  [data-theme="light"] .bitrate-chip--active .bitrate-chip__label {
+  [data-theme="light"] .settings-shell .bitrate-chip--active .bitrate-chip__label {
     color: var(--app-accent-strong);
   }
-  [data-theme="light"] .bitrate-chip__mbps {
+  [data-theme="light"] .settings-shell .bitrate-chip__mbps {
     color: var(--app-text-muted);
   }
 
@@ -131,7 +131,7 @@
     color: var(--app-text-muted);
   }
 
-  [data-theme="light"] .settings-shell .resolution-unsupported-notice, [data-theme="light"] .resolution-locked-notice, [data-theme="light"] .resolution-pending-notice, [data-theme="light"] .resolution-warn-notice, [data-theme="light"] .resolution-supported-notice, [data-theme="light"] .bitrate-compat-notice, [data-theme="light"] .audio-activity-notice {
+  [data-theme="light"] .settings-shell .resolution-unsupported-notice, [data-theme="light"] .settings-shell .resolution-locked-notice, [data-theme="light"] .settings-shell .resolution-pending-notice, [data-theme="light"] .settings-shell .resolution-warn-notice, [data-theme="light"] .settings-shell .resolution-supported-notice, [data-theme="light"] .settings-shell .bitrate-compat-notice, [data-theme="light"] .settings-shell .audio-activity-notice {
     background: var(--app-surface-raised);
     border-color: var(--app-border);
   }
@@ -139,16 +139,16 @@
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
   }
-  [data-theme="light"] .settings-shell .resolution-supported-notice__icon, [data-theme="light"] .audio-activity-notice__icon {
+  [data-theme="light"] .settings-shell .resolution-supported-notice__icon, [data-theme="light"] .settings-shell .audio-activity-notice__icon {
     color: var(--app-accent-strong);
   }
-  [data-theme="light"] .settings-shell .resolution-supported-notice__text, [data-theme="light"] .audio-activity-notice__text {
+  [data-theme="light"] .settings-shell .resolution-supported-notice__text, [data-theme="light"] .settings-shell .audio-activity-notice__text {
     color: var(--app-accent-strong);
   }
   [data-theme="light"] .settings-shell .audio-activity-notice__text strong {
     color: var(--app-accent-strong);
   }
-  [data-theme="light"] .settings-shell .resolution-locked-notice__text, [data-theme="light"] .bitrate-compat-notice__text {
+  [data-theme="light"] .settings-shell .resolution-locked-notice__text, [data-theme="light"] .settings-shell .bitrate-compat-notice__text {
     color: var(--app-info-strong);
   }
   [data-theme="light"] .settings-shell .resolution-locked-notice__text strong {
@@ -181,7 +181,7 @@
     color: var(--app-danger);
   }
 
-  [data-theme="light"] .settings-shell .loading-text, [data-theme="light"] .empty-state {
+  [data-theme="light"] .settings-shell .loading-text, [data-theme="light"] .settings-shell .empty-state {
     color: var(--app-text-muted);
   }
 

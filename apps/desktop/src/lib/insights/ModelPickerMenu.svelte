@@ -107,6 +107,14 @@
   let triggerEl = $state<HTMLButtonElement | null>(null);
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Block (Settings) flip: the popover is CSS-pinned below the trigger, so inside
+  // Settings' inner `overflow:auto` scroll region it can clip when opened near the
+  // bottom. Mirror the Combobox/Select flip — on open, measure room below vs above
+  // the trigger and anchor upward when there isn't enough room below. Purely
+  // additive: the default stays the existing downward open, and the inline (Chat)
+  // pill is untouched (it already opens upward by design).
+  let openUp = $state(false);
+
   // Connected providers, in config order, with their display labels.
   let connectedProviders = $derived(
     (providers ?? []).map((p) => ({
@@ -231,6 +239,24 @@
   // The selectable subset, for keyboard navigation bounds.
   let pickerOptions = $derived(pickerRows.filter((row) => row.type === "option"));
 
+  // Measure room below vs above the trigger and flip the block popover upward
+  // when there isn't enough room below (and there's more above). The inline pill
+  // keeps its fixed upward open — only `--block` consults this. CSS `max-height`
+  // still bounds the panel; this just chooses which edge it anchors to.
+  function recomputeOpenDirection(): void {
+    if (!block || !triggerEl) {
+      openUp = false;
+      return;
+    }
+    const rect = triggerEl.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    // Search row (~37px) + list (max 260px) + chrome — keep in sync with the
+    // .mpm-list max-height below.
+    const needed = 300;
+    openUp = spaceBelow < needed && spaceAbove > spaceBelow;
+  }
+
   function openMenu(): void {
     if (closeTimer !== null) {
       clearTimeout(closeTimer);
@@ -239,6 +265,7 @@
     open = true;
     query = "";
     highlight = 0;
+    recomputeOpenDirection();
     onopen?.();
     void tick().then(() => searchEl?.focus());
   }
@@ -289,7 +316,12 @@
 </script>
 
 {#snippet popover()}
-  <div class="mpm-pop" class:mpm-pop--block={block} class:mpm-pop--inline={!block}>
+  <div
+    class="mpm-pop"
+    class:mpm-pop--block={block}
+    class:mpm-pop--inline={!block}
+    class:mpm-pop--up={openUp}
+  >
     <div class="mpm-search">
       <svg
         class="mpm-search-icon"
@@ -530,6 +562,15 @@
     top: calc(100% + 4px);
     left: 0;
     width: 100%;
+  }
+  /* Flip upward when there isn't room below the trigger (measured on open) —
+     mirrors the Combobox/Select flip so the Settings menu never clips at the
+     bottom of the inner scroll region. Anchors above instead of below; still
+     CSS-pinned to the trigger, never drifting. Block-only (the inline pill
+     already opens upward). */
+  .mpm-pop--block.mpm-pop--up {
+    top: auto;
+    bottom: calc(100% + 4px);
   }
   /* Chat composer pill: opens upward (the pill sits at the bottom of the view). */
   .mpm-pop--inline {

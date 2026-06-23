@@ -55,6 +55,17 @@
   // whatever is visible, and is a no-op on an empty list).
   const flatItems = $derived<SettingsSection[]>(flattenSections(visibleGroups));
 
+  // The single roving-tabindex target: the one visible tab that gets `tabindex=0`
+  // (so the tablist is reachable by Tab). It's `activeSection` while that section
+  // is still visible; once a search query filters the active section OUT of
+  // `flatItems`, fall back to the first visible item so the list never becomes
+  // entirely `tabindex=-1` (which would make it unreachable by keyboard).
+  const rovingTarget = $derived<SettingsSectionId | undefined>(
+    flatItems.some((s) => s.id === activeSection)
+      ? activeSection
+      : flatItems[0]?.id,
+  );
+
   // Clearing the query on blur must NOT eat a click on a nav item: a click that
   // moves focus out of the input fires `blur` BEFORE the item's `click`. If we
   // cleared synchronously here, the item would unmount before its click landed.
@@ -90,9 +101,18 @@
     const focusedIndex = focusedSection
       ? flatItems.findIndex((s) => s.id === focusedSection)
       : -1;
+    // Anchor nav on the focused tab; else the active section if it's still
+    // visible; else the first survivor (a query may have filtered the active
+    // section out, but the visible survivors must still be steppable). Bail only
+    // when there's genuinely nothing to navigate.
+    const activeIndex = flatItems.findIndex((s) => s.id === activeSection);
     const currentIndex = focusedIndex >= 0
       ? focusedIndex
-      : flatItems.findIndex((s) => s.id === activeSection);
+      : activeIndex >= 0
+        ? activeIndex
+        : flatItems.length > 0
+          ? 0
+          : -1;
     if (currentIndex === -1) return;
 
     let nextIndex: number | null = null;
@@ -165,7 +185,7 @@
               data-section={section.id}
               aria-selected={activeSection === section.id}
               aria-controls="settings-panel-{groupOf(section.id)}"
-              tabindex={activeSection === section.id ? 0 : -1}
+              tabindex={rovingTarget === section.id ? 0 : -1}
               onclick={() => onNavigate(section.id)}
             >
               <Icon name={section.id} />
