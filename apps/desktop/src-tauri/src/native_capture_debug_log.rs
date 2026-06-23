@@ -1,10 +1,51 @@
 use capture_runtime::{configure_debug_log, debug_log_files_exist, delete_debug_log_files};
 use capture_types::{CaptureErrorResponse, NativeCaptureDebugLogStatus};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use tauri::Manager;
 
 const NATIVE_CAPTURE_DEBUG_LOG_FILE_NAME: &str = "native-capture-debug.log";
+
+/// Runtime gate for whether app-target Debug/Trace records reach the
+/// `tauri_plugin_log` sinks (stderr + the `rust` application log file).
+///
+/// Mirrors the developer-options setting in release builds so that a packaged
+/// app stays at Info verbosity until the user opts in. Info/Warn/Error are never
+/// gated, and debug builds always emit Debug regardless (see
+/// [`app_log_record_allowed`]).
+static APP_DEBUG_LOGGING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Mirror the developer-options setting into the app-log verbosity gate.
+pub(crate) fn set_app_debug_logging_enabled(enabled: bool) {
+    APP_DEBUG_LOGGING_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether a record at `level` from an app target should reach the plugin sinks.
+///
+/// `Info`/`Warn`/`Error` always pass. `Debug`/`Trace` pass unconditionally in
+/// debug builds, and in release builds only while developer options have enabled
+/// debug logging.
+pub(crate) fn app_log_record_allowed(level: tauri_plugin_log::log::Level) -> bool {
+    record_allowed(
+        level,
+        cfg!(debug_assertions),
+        APP_DEBUG_LOGGING_ENABLED.load(Ordering::Relaxed),
+    )
+}
+
+/// Pure decision used by [`app_log_record_allowed`], split out so the
+/// release-build gating branch is exercisable under a debug test build.
+fn record_allowed(
+    level: tauri_plugin_log::log::Level,
+    debug_build: bool,
+    runtime_enabled: bool,
+) -> bool {
+    if level <= tauri_plugin_log::log::Level::Info {
+        return true;
+    }
+    debug_build || runtime_enabled
+}
 
 pub(crate) fn native_capture_debug_log_path(app_handle: &tauri::AppHandle) -> PathBuf {
     if let Ok(config_dir) = app_handle.path().app_config_dir() {
@@ -151,6 +192,47 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn record_allowed_always_passes_info_and_more_severe_levels() {
+        use tauri_plugin_log::log::Level;
+
+        for level in [Level::Error, Level::Warn, Level::Info] {
+            // Severe records pass even in a release build with the gate off.
+            assert!(record_allowed(level, false, false));
+        }
+    }
+
+    #[test]
+    fn record_allowed_gates_debug_on_runtime_flag_in_release_builds() {
+        use tauri_plugin_log::log::Level;
+
+        // Release build, developer options off: Debug/Trace are suppressed.
+        assert!(!record_allowed(Level::Debug, false, false));
+        assert!(!record_allowed(Level::Trace, false, false));
+
+        // Release build, developer options on: Debug/Trace flow through.
+        assert!(record_allowed(Level::Debug, false, true));
+        assert!(record_allowed(Level::Trace, false, true));
+
+        // Debug build: Debug/Trace always flow through, ignoring the flag.
+        assert!(record_allowed(Level::Debug, true, false));
+        assert!(record_allowed(Level::Trace, true, false));
+    }
+
+    #[test]
+    fn set_app_debug_logging_enabled_toggles_the_runtime_gate() {
+        use tauri_plugin_log::log::Level;
+
+        set_app_debug_logging_enabled(true);
+        assert!(app_log_record_allowed(Level::Info));
+        // In a debug test build Debug always passes; assert the gate read itself
+        // reflects the stored value.
+        assert!(APP_DEBUG_LOGGING_ENABLED.load(Ordering::Relaxed));
+
+        set_app_debug_logging_enabled(false);
+        assert!(!APP_DEBUG_LOGGING_ENABLED.load(Ordering::Relaxed));
     }
 
     #[test]

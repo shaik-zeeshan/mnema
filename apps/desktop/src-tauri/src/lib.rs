@@ -405,7 +405,10 @@ pub fn run() {
                 .level(tauri_plugin_log::log::LevelFilter::Info)
                 .level_for("capture_runtime", tauri_plugin_log::log::LevelFilter::Debug)
                 .level_for("mnema_lib", tauri_plugin_log::log::LevelFilter::Debug)
-                .filter(|metadata| is_app_log_target(metadata.target()))
+                .filter(|metadata| {
+                    is_app_log_target(metadata.target())
+                        && native_capture::debug_log::app_log_record_allowed(metadata.level())
+                })
                 .targets([
                     Target::new(TargetKind::Stderr),
                     Target::new(TargetKind::LogDir {
