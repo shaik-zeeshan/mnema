@@ -11,6 +11,7 @@
   // ─── c.logs read aliases ────────────────────────────────────────────────
   const debugLogStatus = $derived(logs.debugLogStatus);
   const loadingDebugLogStatus = $derived(logs.loadingDebugLogStatus);
+  const openingDebugLog = $derived(logs.openingDebugLog);
   const deletingDebugLog = $derived(logs.deletingDebugLog);
   const debugLogDeleted = $derived(logs.debugLogDeleted);
   const generalLogStatus = $derived(logs.generalLogStatus);
@@ -24,6 +25,7 @@
   // read-only `$derived` aliases.
 
   // ─── method wrappers ────────────────────────────────────────────────────
+  const openDebugLog = () => logs.openDebugLog();
   const deleteDebugLog = () => logs.deleteDebugLog();
   const openGeneralLog = () => logs.openGeneralLog();
   const deleteGeneralLog = () => logs.deleteGeneralLog();
@@ -74,8 +76,21 @@
               </div>
             </div>
 
-            {#if debugLogStatus.exists}
-              <div class="debug-log-actions">
+            <div class="debug-log-actions">
+              <button
+                class="btn btn--ghost btn--sm"
+                onclick={openDebugLog}
+                disabled={openingDebugLog}
+              >
+                {#if openingDebugLog}
+                  Opening…
+                {:else if debugLogStatus.exists}
+                  Open Log File
+                {:else}
+                  Open Containing Folder
+                {/if}
+              </button>
+              {#if debugLogStatus.exists}
                 <button
                   class="btn btn--danger btn--sm"
                   onclick={deleteDebugLog}
@@ -83,11 +98,11 @@
                 >
                   {deletingDebugLog ? "Deleting…" : "Delete Log File"}
                 </button>
-                {#if debugLogDeleted}
-                  <span class="saved-badge">✓ Deleted</span>
-                {/if}
-              </div>
-            {/if}
+              {/if}
+              {#if debugLogDeleted}
+                <span class="saved-badge">✓ Deleted</span>
+              {/if}
+            </div>
           {:else if loadingDebugLogStatus}
             <p class="loading-text">Loading log status…</p>
           {/if}

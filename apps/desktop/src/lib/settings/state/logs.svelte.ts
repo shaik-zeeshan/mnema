@@ -10,6 +10,7 @@ export function createLogsStore() {
   // Debug log status
   let debugLogStatus = $state<NativeCaptureDebugLogStatus | null>(null);
   let loadingDebugLogStatus = $state(false);
+  let openingDebugLog = $state(false);
   let deletingDebugLog = $state(false);
   let debugLogError = $state<string | null>(null);
   let debugLogDeleted = $state(false);
@@ -33,6 +34,20 @@ export function createLogsStore() {
       debugLogError = errorText(err);
     } finally {
       loadingDebugLogStatus = false;
+    }
+  }
+
+  async function openDebugLog() {
+    openingDebugLog = true;
+    debugLogError = null;
+    try {
+      debugLogStatus = await invoke<NativeCaptureDebugLogStatus>(
+        "open_native_capture_debug_log",
+      );
+    } catch (err) {
+      debugLogError = errorText(err);
+    } finally {
+      openingDebugLog = false;
     }
   }
 
@@ -109,6 +124,7 @@ export function createLogsStore() {
   return {
     get debugLogStatus() { return debugLogStatus; },
     get loadingDebugLogStatus() { return loadingDebugLogStatus; },
+    get openingDebugLog() { return openingDebugLog; },
     get deletingDebugLog() { return deletingDebugLog; },
     get debugLogError() { return debugLogError; },
     set debugLogError(v: string | null) { debugLogError = v; },
@@ -121,6 +137,7 @@ export function createLogsStore() {
     set generalLogError(v: string | null) { generalLogError = v; },
     get generalLogDeleted() { return generalLogDeleted; },
     loadDebugLogStatus,
+    openDebugLog,
     deleteDebugLog,
     loadGeneralLogStatus,
     openGeneralLog,

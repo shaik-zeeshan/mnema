@@ -2591,6 +2591,16 @@ pub fn get_native_capture_debug_log_status(
 }
 
 #[tauri::command]
+pub fn open_native_capture_debug_log(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<NativeCaptureDebugLogStatus, CaptureErrorResponse> {
+    let enabled = current_native_capture_debug_logging_enabled(state.inner());
+
+    debug_log::open(&app_handle, enabled)
+}
+
+#[tauri::command]
 pub fn delete_native_capture_debug_log(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
