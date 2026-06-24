@@ -274,7 +274,7 @@
   function notificationActionLabel(notification: AppNotification): string {
     if (notification.action?.type !== "open_settings_tab") return "Open";
     if (notification.action.tab === "about") return "Open update settings";
-    if (notification.action.tab === "processing") return "Open processing settings";
+    if (notification.action.tab === "processing") return "Open OCR settings";
     if (notification.action.tab === "transcription") return "Open transcription settings";
     if (notification.action.tab === "speakers") return "Open speaker settings";
     if (notification.action.tab === "shortcuts") return "Open shortcut settings";
@@ -1078,7 +1078,9 @@
         <button
           type="button"
           class="titlebar__settings"
+          class:active={isSettings}
           aria-label="Open settings"
+          aria-current={isSettings ? "page" : undefined}
           title={`Settings (${shortcutDisplay("openSettings")})`}
           onclick={() => void openSettings()}
         >
@@ -2144,6 +2146,11 @@
     background: var(--app-icon-bg-hover);
     color: var(--app-icon-fg-hover);
     border-color: var(--app-icon-border-hover);
+  }
+  .titlebar__settings.active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
   }
   .titlebar__settings-icon {
     display: block;
