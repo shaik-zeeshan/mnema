@@ -109,6 +109,9 @@ jobs:
       - name: Check frontend
         run: bun run check
 
+      - name: Generate third-party license attribution
+        run: ./scripts/generate-third-party-licenses.sh
+
       - name: Prepare Mnema CLI sidecar for Tauri check
         run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked
 
