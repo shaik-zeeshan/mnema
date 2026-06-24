@@ -1,4 +1,7 @@
 mod activity;
+#[cfg(target_os = "macos")]
+#[path = "native_capture_browser_url_ax.rs"]
+pub(crate) mod browser_url_ax;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
 #[path = "native_capture_inactivity.rs"]
@@ -2263,6 +2266,98 @@ pub fn open_capture_privacy_settings(
         .opener()
         .open_url(url, None::<String>)
         .map_err(|error| format!("failed to open privacy settings: {error}"))
+}
+
+/// One Gecko browser Mnema knows about (reads its active-tab URL via the macOS
+/// Accessibility API) and whether it is installed on this machine.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeckoBrowserInstall {
+    pub bundle_id: String,
+    pub display_name: String,
+    pub installed: bool,
+}
+
+/// Whether Mnema holds the macOS Accessibility permission plus the Gecko
+/// browsers whose active-tab URL capture depends on it. Drives the onboarding
+/// and settings surfaces that gate Gecko URL capture behind the permission.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserUrlAccessibilityStatus {
+    /// Whether Mnema currently holds the macOS Accessibility permission.
+    pub trusted: bool,
+    /// The Gecko browsers Mnema knows about and whether each is installed.
+    pub gecko_browsers: Vec<GeckoBrowserInstall>,
+}
+
+/// Builds the current Accessibility-permission + installed-Gecko status. The
+/// Gecko list is exactly the `KNOWN_BROWSER_APPS` whose URL strategy is the
+/// Accessibility API; `trusted`/`installed` are environment-dependent (always
+/// `false` off macOS).
+fn browser_url_accessibility_status() -> BrowserUrlAccessibilityStatus {
+    use capture_metadata::BrowserUrlStrategy;
+
+    #[cfg(target_os = "macos")]
+    let trusted = browser_url_ax::accessibility_trusted();
+    #[cfg(not(target_os = "macos"))]
+    let trusted = false;
+
+    let gecko_browsers = capture_metadata::KNOWN_BROWSER_APPS
+        .iter()
+        .filter(|app| matches!(app.url_strategy, Some(BrowserUrlStrategy::Accessibility)))
+        .map(|app| {
+            #[cfg(target_os = "macos")]
+            let installed = macos_application_bundle_path_for_bundle_id(app.bundle_id).is_some();
+            #[cfg(not(target_os = "macos"))]
+            let installed = false;
+            GeckoBrowserInstall {
+                bundle_id: app.bundle_id.to_string(),
+                display_name: app.display_name.to_string(),
+                installed,
+            }
+        })
+        .collect();
+
+    BrowserUrlAccessibilityStatus {
+        trusted,
+        gecko_browsers,
+    }
+}
+
+/// Current macOS Accessibility-permission state plus the known Gecko browsers
+/// and whether each is installed. Gecko active-tab URL capture is gated on this
+/// permission.
+#[tauri::command]
+pub fn get_browser_url_accessibility_status() -> BrowserUrlAccessibilityStatus {
+    browser_url_accessibility_status()
+}
+
+/// Raise the macOS Accessibility permission prompt (adds Mnema to the
+/// Accessibility list and points the user at System Settings), then return the
+/// refreshed status. The grant itself is asynchronous — the user flips the
+/// toggle in System Settings, so `trusted` may still be `false` right after.
+#[tauri::command]
+pub fn request_browser_url_accessibility() -> BrowserUrlAccessibilityStatus {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = browser_url_ax::request_accessibility_with_prompt();
+    }
+    browser_url_accessibility_status()
+}
+
+/// Open the macOS Privacy & Security → Accessibility pane so the user can grant
+/// (or re-grant) Mnema the Accessibility permission.
+#[tauri::command]
+pub fn open_browser_url_accessibility_settings(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    app_handle
+        .opener()
+        .open_url(
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            None::<String>,
+        )
+        .map_err(|error| format!("failed to open accessibility settings: {error}"))
 }
 
 #[tauri::command]

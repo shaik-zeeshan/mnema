@@ -1,7 +1,9 @@
 use capture_metadata::MetadataSettings;
+#[cfg(target_os = "macos")]
+use capture_metadata::{browser_url_applescript, browser_url_strategy, BrowserUrlStrategy};
 use capture_metadata::{
-    browser_url_applescript, evaluate_privacy, is_known_browser_bundle, metadata_collection_plan,
-    sanitize_url, select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
+    evaluate_privacy, is_known_browser_bundle, metadata_collection_plan, sanitize_url,
+    select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
     MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot, PrivacyFilterDecision,
     PrivacySettings, RawWindowInfo,
 };
@@ -210,6 +212,7 @@ struct ActiveWindowMetadata {
 fn browser_url_probe_for_active_bundle(
     bundle_id: Option<&str>,
     window_title: Option<&str>,
+    pid: Option<i32>,
     plan: MetadataCollectionPlan,
     cache: &BrowserUrlProbeCache,
     now: Instant,
@@ -218,7 +221,7 @@ fn browser_url_probe_for_active_bundle(
         return (None, None);
     };
     if plan.collect_browser_url_for_privacy {
-        let raw_url = active_browser_url(bundle_id);
+        let raw_url = active_browser_url(bundle_id, pid);
         return (
             raw_url.clone(),
             Some(BrowserUrlProbeCache::from_probe(
@@ -235,7 +238,7 @@ fn browser_url_probe_for_active_bundle(
     if let Some(cached_url) = cache.cached_url_for(bundle_id, window_title, now) {
         return (cached_url, None);
     }
-    let raw_url = active_browser_url(bundle_id);
+    let raw_url = active_browser_url(bundle_id, pid);
     (
         raw_url.clone(),
         Some(BrowserUrlProbeCache::from_probe(
@@ -274,6 +277,7 @@ fn collect_active_window_metadata(
         let (raw_browser_url, browser_url_probe_cache) = browser_url_probe_for_active_bundle(
             bundle_id.as_deref(),
             window_title.as_deref(),
+            active_window.pid,
             plan,
             browser_url_probe_cache,
             Instant::now(),
@@ -470,7 +474,21 @@ fn cf_f64(
 }
 
 #[cfg(target_os = "macos")]
-fn active_browser_url(bundle_id: &str) -> Option<String> {
+fn active_browser_url(bundle_id: &str, pid: Option<i32>) -> Option<String> {
+    match browser_url_strategy(bundle_id) {
+        Some(BrowserUrlStrategy::AppleScript(_)) => active_browser_url_applescript(bundle_id),
+        Some(BrowserUrlStrategy::Accessibility) => {
+            // First-sighting prompt: the first time a Gecko browser is frontmost
+            // while browser-URL capture is enabled and trust is missing, ask once.
+            crate::native_capture::browser_url_ax::maybe_prompt_on_gecko_frontmost();
+            pid.and_then(crate::native_capture::browser_url_ax::read_active_tab_url)
+        }
+        None => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn active_browser_url_applescript(bundle_id: &str) -> Option<String> {
     let script = browser_url_applescript(bundle_id)?;
     run_osascript(&script)
         .trim()
@@ -628,5 +646,30 @@ mod tests {
             ),
             None
         );
+    }
+
+    // The strategy dispatch in `active_browser_url` routes a Chromium bundle to
+    // the AppleScript path and a Gecko bundle to the Accessibility path. We do
+    // not run osascript or a live Accessibility read here (those need a running
+    // browser + permission — that is a manual verify step); we assert the
+    // routing inputs the dispatch keys off. `browser_url_applescript` backs the
+    // AppleScript branch, `browser_url_strategy` selects the branch.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn active_browser_url_routes_chromium_to_applescript_and_gecko_away() {
+        // Chromium routes to AppleScript, which has a script to run.
+        assert!(matches!(
+            browser_url_strategy("com.google.Chrome"),
+            Some(BrowserUrlStrategy::AppleScript(_))
+        ));
+        assert!(browser_url_applescript("com.google.Chrome")
+            .is_some_and(|script| script.contains("active tab of front window")));
+        // Gecko routes to Accessibility and has no AppleScript surface at all, so
+        // dispatch never reaches the osascript path for it.
+        assert_eq!(
+            browser_url_strategy("org.mozilla.firefox"),
+            Some(BrowserUrlStrategy::Accessibility),
+        );
+        assert_eq!(browser_url_applescript("org.mozilla.firefox"), None);
     }
 }
