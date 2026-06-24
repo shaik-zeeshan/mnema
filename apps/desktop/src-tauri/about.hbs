@@ -1,0 +1,9 @@
+{{#each licenses}}
+@@@LICENSE@@@ {{name}} ({{id}})
+@@@USEDBY@@@
+{{#each used_by}}- {{crate.name}} {{crate.version}}
+{{/each}}
+@@@TEXT@@@
+{{text}}
+@@@ENDLICENSE@@@
+{{/each}}

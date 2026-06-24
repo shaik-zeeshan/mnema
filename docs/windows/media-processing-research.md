@@ -50,7 +50,7 @@ For a Windows 11 first port, keep Mnema's local-processing architecture and repl
 Current Mnema details:
 
 - Crate: `tesseract-rs = 0.2.0` with default `build-tesseract`.
-- Runtime layout expected by Mnema: `tessdata/eng.traineddata`, `tessdata/osd.traineddata`, `tessdata/snum.traineddata` under `ocr-models/tesseract/tesseract-5.5.2/`.
+- Runtime layout expected by Mnema: `tessdata/eng.traineddata`, `tessdata/osd.traineddata` under `ocr-models/tesseract/tesseract-5.5.2/`.
 - The provider preprocesses frames itself: decode with `image`, grayscale, optional threshold/upscale, then calls `TesseractAPI` on raw pixels.
 
 Windows research:
