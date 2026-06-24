@@ -69,6 +69,7 @@
   >
     {#snippet control()}
       <Switch
+        ariaLabel="Enable semantic search"
         checked={rec.draftSemanticSearchEnabled}
         onCheckedChange={(value) => void setSemanticSearchEnabled(value)}
       />
@@ -176,6 +177,7 @@
                     <button
                       class="btn btn--primary btn--sm"
                       onclick={() => void chooseSemanticSearchPickedModel(picked)}
+                      disabled={semanticSearchReindexing}
                     >
                       Use this model
                     </button>

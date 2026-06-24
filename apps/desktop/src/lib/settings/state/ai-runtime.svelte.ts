@@ -36,6 +36,11 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   let aiProviderKeySavedByProvider = $state<Record<string, boolean>>({});
   // Provider id whose key save/clear is currently in flight (one at a time).
   let aiProviderKeySavingProvider = $state<string | null>(null);
+  // Per-id in-flight guard so a rapid double-invoke for the SAME provider id
+  // (e.g. save+clear, or two saves) can't race — correctness doesn't depend on
+  // the UI `disabled` attribute alone. Non-reactive: it gates re-entry only, the
+  // UI reads `aiProviderKeySavingProvider`. Different ids may run concurrently.
+  const aiProviderKeyInFlight = new Set<string>();
   let aiProviderKeyErrors = $state<Record<string, string>>({});
   let aiRuntimeTestRunning = $state(false);
   let aiRuntimeTestResult = $state<AiRuntimeTestResult | null>(null);
@@ -86,10 +91,13 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   //
   // A failed probe is TRANSIENT, not an assertion of absence: seed `probed` from
   // the prior presence (only for ids still being probed, so removed providers
-  // don't leak stale presence) and, on a probe error, keep that id's last-known
-  // value instead of dropping it — otherwise a provider that genuinely has a
-  // saved key would flip to "no key saved" (and the UI prompt to re-add it) on
-  // any flaky keychain read. The per-id error is still recorded.
+  // don't leak stale presence) and, on a probe error, DROP that id from `probed`
+  // so the final merge doesn't overlay it — the existing last-known base value
+  // (or any fresher value a concurrent save wrote in the meantime) survives,
+  // instead of a flaky keychain read flipping a saved key to "no key saved".
+  // Keeping the call-start seed would instead let the final `...probed` overlay
+  // clobber a concurrent fresh `true` (a lost update). The per-id error is still
+  // recorded.
   //
   // Two refreshes can overlap (e.g. two rapid `addAiProvider`s). This call only
   // owns the ids in its OWN probe set, so it MERGES those results into the
@@ -112,7 +120,9 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
           request: { provider: id },
         });
       } catch (error) {
-        // Leave the seeded last-known presence for `id` intact; record the error.
+        // Drop this id from `probed` so the final merge does NOT overlay it: a
+        // concurrent save's fresh `true` (or the existing base value) survives.
+        delete probed[id];
         aiProviderKeyErrors = {
           ...aiProviderKeyErrors,
           [id]: error instanceof Error ? error.message : String(error),
@@ -133,6 +143,9 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   }
 
   async function saveAiProviderKey(provider: string) {
+    // A save/clear for this same id is already in flight — bail so a rapid
+    // double-invoke (save+clear, or two saves) can't race on the keychain.
+    if (aiProviderKeyInFlight.has(provider)) return;
     const key = (aiProviderKeyInputs[provider] ?? "").trim();
     if (!key) {
       aiProviderKeyErrors = { ...aiProviderKeyErrors, [provider]: "Enter an API key first." };
@@ -142,6 +155,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     // this click landing — bail before touching the keychain so a late save can
     // never write an orphaned key for a removed instance.
     if (!providerStillConnected(provider)) return;
+    aiProviderKeyInFlight.add(provider);
     aiProviderKeySavingProvider = provider;
     const { [provider]: _saveErr, ...restSaveErrors } = aiProviderKeyErrors;
     aiProviderKeyErrors = restSaveErrors;
@@ -159,11 +173,16 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
         [provider]: error instanceof Error ? error.message : String(error),
       };
     } finally {
+      aiProviderKeyInFlight.delete(provider);
       aiProviderKeySavingProvider = null;
     }
   }
 
   async function clearAiProviderKey(provider: string) {
+    // A save/clear for this same id is already in flight — bail so a rapid
+    // double-invoke (save+clear, or two clears) can't race on the keychain.
+    if (aiProviderKeyInFlight.has(provider)) return;
+    aiProviderKeyInFlight.add(provider);
     aiProviderKeySavingProvider = provider;
     const { [provider]: _clearErr, ...restClearErrors } = aiProviderKeyErrors;
     aiProviderKeyErrors = restClearErrors;
@@ -180,6 +199,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
         [provider]: error instanceof Error ? error.message : String(error),
       };
     } finally {
+      aiProviderKeyInFlight.delete(provider);
       aiProviderKeySavingProvider = null;
     }
   }

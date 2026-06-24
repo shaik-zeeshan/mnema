@@ -482,37 +482,47 @@ export class SettingsController {
     if (this.models.semanticSearchReindexing) return;
     if (!this.rec.recordingSettingsLoaded) await this.rec.loadRecordingSettings();
     if (this.rec.semanticSearchSelectedModelId === model.modelId) return;
-    const isFirstSelection = this.rec.semanticSearchSelectedModelId === null;
-    if (!isFirstSelection) {
-      const confirmed = await confirm(
-        `Switching to “${model.displayName}” re-indexes every recording: all existing meaning vectors are cleared and re-derived under the new model in the background. Your captures are not changed.`,
-        {
-          title: "Re-index for new search model?",
-          kind: "warning",
-          okLabel: "Switch & Re-index",
-          cancelLabel: "Keep Current Model",
-        },
-      );
-      if (!confirmed) return;
-    }
 
-    this.models.semanticSearchModelError = null;
+    // Arm the in-flight guard BEFORE the (awaited) confirm dialog — same as
+    // `saveRecordingDomain` arms `savingRecDomains[domain]` before its retention
+    // preview + confirm. The earlier check at the top is checked while the flag is
+    // still false through the whole dialog, so two rapid selections could both pass
+    // and stack two clear/reindex passes. Setting it here closes that window; the
+    // single `finally` below always clears it on every early-return path (including
+    // the cancel path).
     this.models.semanticSearchReindexing = true;
-    this.models.semanticSearchReindexMessage = null;
     try {
-      const cleared = await invoke<number>("select_semantic_search_model", {
-        modelId: model.modelId,
-      });
-      this.rec.semanticSearchSelectedModelId = model.modelId;
+      const isFirstSelection = this.rec.semanticSearchSelectedModelId === null;
       if (!isFirstSelection) {
-        this.models.semanticSearchReindexMessage =
-          cleared > 0
-            ? `Cleared ${cleared} vector${cleared === 1 ? "" : "s"}; re-indexing in the background.`
-            : "Re-index started in the background.";
+        const confirmed = await confirm(
+          `Switching to “${model.displayName}” re-indexes every recording: all existing meaning vectors are cleared and re-derived under the new model in the background. Your captures are not changed.`,
+          {
+            title: "Re-index for new search model?",
+            kind: "warning",
+            okLabel: "Switch & Re-index",
+            cancelLabel: "Keep Current Model",
+          },
+        );
+        if (!confirmed) return;
       }
-      await this.loadSemanticSearchModelStatus();
-    } catch (err) {
-      this.models.semanticSearchModelError = errorText(err);
+
+      this.models.semanticSearchModelError = null;
+      this.models.semanticSearchReindexMessage = null;
+      try {
+        const cleared = await invoke<number>("select_semantic_search_model", {
+          modelId: model.modelId,
+        });
+        this.rec.semanticSearchSelectedModelId = model.modelId;
+        if (!isFirstSelection) {
+          this.models.semanticSearchReindexMessage =
+            cleared > 0
+              ? `Cleared ${cleared} vector${cleared === 1 ? "" : "s"}; re-indexing in the background.`
+              : "Re-index started in the background.";
+        }
+        await this.loadSemanticSearchModelStatus();
+      } catch (err) {
+        this.models.semanticSearchModelError = errorText(err);
+      }
     } finally {
       this.models.semanticSearchReindexing = false;
     }
