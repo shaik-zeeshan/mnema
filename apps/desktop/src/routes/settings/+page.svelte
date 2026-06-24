@@ -48,6 +48,7 @@
   import "$lib/settings/settings-layout.css";
   import "$lib/settings/settings-groups.css";
   import "$lib/settings/settings-controls.css";
+  import "$lib/settings/settings-controls-fields.css";
   import "$lib/settings/settings-blocks.css";
   import "$lib/settings/settings-theme.css";
   import SettingsRail from "$lib/settings/SettingsRail.svelte";

@@ -5,6 +5,7 @@
   // and finale `.ob-screen` styles must be loaded from the always-mounted page.
   // The import is global + idempotent, so the duplicate in FeatureStack is fine.
   import "./onboarding-ui.css";
+  import "./onboarding-body.css";
   import "./onboarding-screens.css";
   import FeatureStack from "./FeatureStack.svelte";
   import FeatureRow from "./FeatureRow.svelte";

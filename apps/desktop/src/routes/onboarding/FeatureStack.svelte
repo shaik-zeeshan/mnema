@@ -6,6 +6,7 @@
   // files and render with these class names). Mirrors how the settings shell
   // imports lib/settings/settings-*.css from its +page.svelte.
   import "./onboarding-ui.css";
+  import "./onboarding-body.css";
 
   // The accordion chrome: welcome header + scrolling stack (rows via the
   // `children` snippet) + footer. PRESENTATIONAL — it holds no draft state.

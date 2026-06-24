@@ -8,7 +8,10 @@
  * must load last). The five parts are:
  *   settings-layout.css   — shell / rail / scroll layout (this file)
  *   settings-groups.css   — settings groups & bordered sub-blocks
- *   settings-controls.css — shared controls + notices viewer
+ *   settings-controls.css        — shared controls (part 1): notices/update/
+ *                                  status/permission/download/cleanup viewer
+ *   settings-controls-fields.css — shared controls (part 2): text input,
+ *                                  buttons, badges, devices, errors, validation
  *   settings-blocks.css   — capture-config blocks (resolution/bitrate/CLI/etc.)
  *   settings-theme.css    — [data-theme="light"] overrides
  *
