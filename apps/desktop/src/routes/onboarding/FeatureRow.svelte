@@ -84,13 +84,17 @@
   data-feature-row
 >
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- Keyboard handling for the header is centralized in FeatureStack's
-       window capture-phase listener (WKWebView does not reliably focus/keydown
-       on per-element button handlers). -->
-  <button
-    type="button"
+  <!-- A `role="button"` DIV, not a real <button>: the enable Switch is a nested
+       bits-ui `role="switch"` button and a <button>-in-<button> is invalid HTML
+       (and lets header keys steal the Switch's Space/Enter). Keyboard handling
+       for the header is centralized in FeatureStack's window capture-phase
+       listener (WKWebView does not reliably focus/keydown on per-element button
+       handlers); it calls `head.click()`, which fires onclick on this div too. -->
+  <div
     class="row-head"
     data-feature-head
+    role="button"
+    tabindex="0"
     aria-expanded={open}
     aria-controls={bodyId}
     onclick={onHeadClick}
@@ -140,9 +144,10 @@
         <Switch checked={enabled} disabled={toggleDisabled} onCheckedChange={onSwitchChange} />
       {/if}
     </div>
-  </button>
+  </div>
 
-  <div class="row-body" id={bodyId} role="region" aria-labelledby={titleId}>
+  <!-- `hidden` when collapsed so a closed row exposes no empty labelled region. -->
+  <div class="row-body" id={bodyId} role="region" aria-labelledby={titleId} hidden={!open}>
     {#if open}
       <div class="body-inner">
         {#if body}{@render body()}{/if}

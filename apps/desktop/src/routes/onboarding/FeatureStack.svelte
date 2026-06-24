@@ -59,6 +59,11 @@
 
   function onKeydown(event: KeyboardEvent) {
     const active = document.activeElement;
+    // The enable Switch (`.switch-track`, a bits-ui `role="switch"` button) sits
+    // inside the header. It must own its own Space/Enter/Arrow keys, so bail out
+    // before the header navigation below ever sees them — otherwise the header
+    // would expand/collapse (or move focus) instead of toggling the feature.
+    if (active instanceof Element && active.closest(".switch-track")) return;
     // Only act when focus is on (or within) a row header.
     const head =
       active instanceof Element

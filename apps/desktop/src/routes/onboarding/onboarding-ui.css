@@ -130,7 +130,7 @@
   padding: 0 16px;
   cursor: pointer;
   user-select: none;
-  /* reset native button styles (the header is a <button> for keyboard focus) */
+  /* reset styles for the role="button" header div (the Switch must not be nested inside an interactive <button>) */
   width: 100%;
   text-align: left;
   background: transparent;
