@@ -6,7 +6,8 @@
   import { listen } from "@tauri-apps/api/event";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
-  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings, recordMainSurface, settingsRoutePath, type SettingsWindowTab, type SettingsWindowFocus } from "$lib/surface-windows";
+  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
+  import { createSettingsDeeplink } from "$lib/settings/deeplink.svelte";
   import {
     bootstrapCaptureControls,
     captureControls,
@@ -139,34 +140,27 @@
     void bootstrapCaptureControls();
   });
 
+  // Settings deeplink transport, owned by `$lib/settings/deeplink.svelte`. The
+  // Main window turns an `open_settings_tab` deeplink (live event + a cold-window
+  // drain) into a `/settings` navigation; the module holds the listener + drain
+  // and reads the live shell state through these getters so reactivity and the
+  // exact navigation semantics are preserved. The cold drain stays sequenced with
+  // the insights peek below via the single `coldDrainsDone` one-shot gate.
+  const settingsDeeplink = createSettingsDeeplink({
+    currentPathname: () => $page.url.pathname,
+    goto,
+    isMainWindow: () => isMainWindow,
+    isSettings: () => isSettings,
+  });
+
   $effect(() => {
     let destroyed = false;
     let unlistenBrokerOpenCaptureResult: (() => void) | undefined;
     let unlistenInsightsOpenConversation: (() => void) | undefined;
-    let unlistenOpenSettingsTab: (() => void) | undefined;
 
-    // Settings deeplink transport. The Main window owns the `/settings` route, so
-    // it is the single place that turns an `open_settings_tab` event (emitted by
-    // Rust's `focus_main_and_open_settings` for the tray and other windows) into
-    // a route navigation. The settings page reacts to the resulting `?tab`/`?focus`
-    // query reactively, so this is the one navigation — no double-handling.
-    listen<{ tab?: string; focus?: string }>("open_settings_tab", (event) => {
-      if (destroyed || !isMainWindow) return;
-      // Remember the main surface we're leaving so the settings rail's "← Back to
-      // app" returns there instead of a stale path. The in-window `openSettings`
-      // helper does this for its own caller, but a deeplink (tray / Quick Recall)
-      // navigates here directly without going through it. `recordMainSurface`
-      // no-ops for any non-main path, so calling it unconditionally is safe.
-      recordMainSurface($page.url.pathname);
-      const target = settingsRoutePath(
-        event.payload?.tab as SettingsWindowTab | undefined,
-        event.payload?.focus as SettingsWindowFocus | undefined,
-      );
-      void goto(target);
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenOpenSettingsTab = fn;
-    });
+    // Settings deeplink transport (the `open_settings_tab` listener). Cleanup is
+    // the module's returned unlisten, torn down alongside the others below.
+    const unlistenOpenSettingsTab = settingsDeeplink.listen();
 
     listen("broker_open_capture_result", () => {
       if (isMainWindow && !isMainRoute) {
@@ -226,47 +220,18 @@
         });
     }
 
-    // Cold-window Settings deeplink drain. A freshly-built main window (cold-start
-    // tray "Open Settings") boots on Timeline, and the live `open_settings_tab`
-    // event fires from Rust before the listener above has attached — Tauri drops
-    // an event with no listener, so without this drain the user would be stranded
-    // on Timeline. Rust queues the normalized payload only when Main had to be
-    // built, so a warm window's queue is empty here. We drain (consume) it on
-    // mount and, if a deeplink is pending, navigate to `/settings?tab=…&focus=…`.
-    // Records the leaving surface first so "← Back to app" returns there (on cold
-    // start that's the `/` fallback, which is correct).
-    if (isMainWindow && !isSettings) {
-      void invoke<{ tab?: string; focus?: string }[]>("drain_pending_open_settings")
-        .then((payloads) => {
-          const next = payloads?.[payloads.length - 1];
-          if (destroyed || !next) return;
-          // The drain CONSUMES the Rust queue, so the payload is already gone and
-          // unrecoverable. Unlike the non-consuming insights peek above, we cannot
-          // bail on a mid-drain navigation without losing the deeplink forever —
-          // so we honor it even after a same-tick navigation. The `isSettings`
-          // guard still skips a redundant navigation when we're already on
-          // /settings; the user reached a cold-built window expecting Settings, so
-          // navigating there is the correct default.
-          if (isSettings) return;
-          recordMainSurface($page.url.pathname);
-          void goto(
-            settingsRoutePath(
-              next.tab as SettingsWindowTab | undefined,
-              next.focus as SettingsWindowFocus | undefined,
-            ),
-          );
-        })
-        .catch(() => {
-          // Best-effort: leave the route as-is if the drain is unavailable.
-        });
-    }
+    // Cold-window Settings deeplink drain — owned by the settings-deeplink
+    // module, kept sequenced after the insights peek under this same one-shot
+    // gate. `() => !destroyed` mirrors the inline `destroyed` bail the drain made
+    // inside its resolved `.then` (this run's cleanup flips `destroyed`).
+    settingsDeeplink.drainColdWindow(() => !destroyed);
     }
 
     return () => {
       destroyed = true;
       unlistenBrokerOpenCaptureResult?.();
       unlistenInsightsOpenConversation?.();
-      unlistenOpenSettingsTab?.();
+      unlistenOpenSettingsTab();
     };
   });
 

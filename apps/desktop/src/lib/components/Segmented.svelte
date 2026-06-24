@@ -4,6 +4,12 @@
   interface Option {
     value: string;
     label: string;
+    /**
+     * Accessible name for the segment, when it should differ from the visible
+     * `label` (e.g. compact pills that show only an icon). Falls back to
+     * `label` when omitted.
+     */
+    ariaLabel?: string;
   }
 
   interface Props {
@@ -131,8 +137,8 @@
       class:seg--off={isOff(option.value)}
       role="radio"
       aria-checked={value === option.value}
-      aria-label={option.label}
-      title={option.label}
+      aria-label={option.ariaLabel ?? option.label}
+      title={option.ariaLabel ?? option.label}
       tabindex={index === focusableIndex ? 0 : -1}
       disabled={disabled || isOff(option.value)}
       onclick={() => select(option.value)}

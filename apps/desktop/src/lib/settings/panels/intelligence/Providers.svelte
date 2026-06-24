@@ -38,6 +38,11 @@
   // Controller helper functions.
   const isCloudAiProviderKind = (k: string) => c.isCloudAiProviderKind(k);
   const aiProviderKindLabel = (k: string) => c.aiProviderKindLabel(k);
+  // Instance-aware label: resolves a per-instance id (e.g. "anthropic-2") to its
+  // custom label / host, not the bare kind. Used for runtime-status + test-result
+  // lines that carry an instance id (ADR 0035), where aiProviderKindLabel would
+  // fall through to the raw id for a 2nd+ same-kind instance.
+  const aiProviderLabelById = (id: string) => c.aiProviderLabelById(id);
   const aiProviderKindDescription = (k: Parameters<typeof c.aiProviderKindDescription>[0]) =>
     c.aiProviderKindDescription(k);
   const aiProviderInstanceLabel = (p: Parameters<typeof c.aiProviderInstanceLabel>[0]) =>
@@ -280,7 +285,7 @@
                 Checking providers…
               {:else if aiRuntimeStatus?.available}
                 Default model {aiRuntimeStatus.defaultModel
-                  ? `${aiProviderKindLabel(aiRuntimeStatus.defaultModel.provider)} · ${aiRuntimeStatus.defaultModel.model}`
+                  ? `${aiProviderLabelById(aiRuntimeStatus.defaultModel.provider)} · ${aiRuntimeStatus.defaultModel.model}`
                   : "(none)"} is configured and reachable.
               {:else}
                 {aiRuntimeReasonLabel(aiRuntimeStatus?.reason)}
@@ -315,7 +320,7 @@
         {#if aiRuntimeTestResult}
           <div class="cleanup-result" aria-live="polite">
             <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
-            <p>Provider: {aiProviderKindLabel(aiRuntimeTestResult.provider)} · Model: {aiRuntimeTestResult.model || "(none)"}</p>
+            <p>Provider: {aiProviderLabelById(aiRuntimeTestResult.provider)} · Model: {aiRuntimeTestResult.model || "(none)"}</p>
             {#if aiRuntimeTestResult.rawJson}
               <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
             {/if}

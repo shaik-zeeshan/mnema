@@ -291,8 +291,19 @@ export class SettingsController {
   }
 
   // ─── Model-pool picker ──────────────────────────────────────────────────────
+  // Only surface failures for providers STILL in the connected (draft) set. The
+  // shared loader prunes its slice for providers still in a load target, but a
+  // removed provider's failure lingers until the next load/route re-entry — and
+  // removal has no reachable path that re-runs a load. Filtering here clears the
+  // stale banner immediately on removal (the derivation re-runs when
+  // `connectedAiProviderIds` changes) without disturbing legitimate failures for
+  // providers that are still connected. `connectedAiProviderIds` already keys off
+  // the instance id, matching `failures[].provider`.
+  settingsModelLoaderFailures = $derived(
+    this.settingsModelLoader.failures.filter((f) => this.connectedAiProviderIds.includes(f.provider)),
+  );
   settingsModelFailureRows = $derived(
-    this.settingsModelLoader.failures.map((f) => ({
+    this.settingsModelLoaderFailures.map((f) => ({
       provider: f.provider,
       label: this.aiProviderLabelById(f.provider),
       reason: f.reason,
@@ -300,12 +311,12 @@ export class SettingsController {
   );
   settingsModelRetryTargets = $derived(
     this.rec.draftAiProviders.filter((p) =>
-      this.settingsModelLoader.failures.some((f) => f.provider === p.id),
+      this.settingsModelLoaderFailures.some((f) => f.provider === p.id),
     ),
   );
   settingsModelsError = $derived(
-    this.settingsModelLoader.failures.length > 0
-      ? this.settingsModelLoader.failures
+    this.settingsModelLoaderFailures.length > 0
+      ? this.settingsModelLoaderFailures
           .map((f) => `${this.aiProviderLabelById(f.provider)}: ${f.reason}`)
           .join("; ")
       : null,

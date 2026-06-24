@@ -23,8 +23,10 @@
   ];
 
   // In the compact (titlebar) variant we show icons only; otherwise icon + label.
+  // Either way the full theme name rides along as the accessible name, so the
+  // icon-only compact pill still announces "System theme" / "Light theme" / etc.
   const segmentedOptions = $derived(
-    options.map((o) => ({ value: o.value, label: compact ? "" : o.shortLabel }))
+    options.map((o) => ({ value: o.value, label: compact ? "" : o.shortLabel, ariaLabel: o.label }))
   );
 
   async function select(next: string) {

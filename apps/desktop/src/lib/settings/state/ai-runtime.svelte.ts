@@ -84,25 +84,31 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   // Re-check which connected cloud provider instances have a key in the
   // keychain. Keyed by instance id (the keychain account).
   //
-  // A failed probe is TRANSIENT, not an assertion of absence: seed `next` from
+  // A failed probe is TRANSIENT, not an assertion of absence: seed `probed` from
   // the prior presence (only for ids still being probed, so removed providers
   // don't leak stale presence) and, on a probe error, keep that id's last-known
   // value instead of dropping it — otherwise a provider that genuinely has a
   // saved key would flip to "no key saved" (and the UI prompt to re-add it) on
   // any flaky keychain read. The per-id error is still recorded.
+  //
+  // Two refreshes can overlap (e.g. two rapid `addAiProvider`s). This call only
+  // owns the ids in its OWN probe set, so it MERGES those results into the
+  // current map at the end rather than replacing the whole object — an id a
+  // concurrent call freshly probed (but this snapshot never saw) is preserved,
+  // instead of being clobbered back to absent by whichever call resolves last.
   async function refreshAiProviderKeyPresence() {
     const cloudProviderIds = deps
       .getProviders()
       .filter((p) => deps.isCloudProviderKind(p.kind))
       .map((p) => p.id);
     // Carry over last-known presence ONLY for ids in the current probe set.
-    const next: Record<string, boolean> = {};
+    const probed: Record<string, boolean> = {};
     for (const id of cloudProviderIds) {
-      if (id in aiProviderKeySavedByProvider) next[id] = aiProviderKeySavedByProvider[id];
+      if (id in aiProviderKeySavedByProvider) probed[id] = aiProviderKeySavedByProvider[id];
     }
     for (const id of cloudProviderIds) {
       try {
-        next[id] = await invoke<boolean>("ai_runtime_has_provider_key", {
+        probed[id] = await invoke<boolean>("ai_runtime_has_provider_key", {
           request: { provider: id },
         });
       } catch (error) {
@@ -113,7 +119,11 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
         };
       }
     }
-    aiProviderKeySavedByProvider = next;
+    // Merge per-id: overwrite only the ids THIS call probed; keep any id another
+    // concurrent refresh probed in the meantime. (Removal drops a provider via
+    // `clearKeyForRemovedProvider`, not here, so this never resurrects a removed
+    // id — its kind is gone from `getProviders()`, so it isn't in `probed`.)
+    aiProviderKeySavedByProvider = { ...aiProviderKeySavedByProvider, ...probed };
   }
 
   // Is this provider instance still in the draft list? A key save that lost the

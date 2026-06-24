@@ -622,7 +622,13 @@ export class OnboardingController {
       case "mic":
         return this.draftCaptureMicrophone && this.permissions?.microphone !== "granted";
       case "sysaudio":
-        return this.draftCaptureSystemAudio && this.permissions?.systemAudio !== "granted";
+        // "unsupported" (macOS < 15) needs no action and has no fix button —
+        // treat it as non-blocking, mirroring the `permissions` rule above.
+        return (
+          this.draftCaptureSystemAudio
+          && this.permissions?.systemAudio !== "granted"
+          && this.permissions?.systemAudio !== "unsupported"
+        );
       case "ocr":
         return ocrModelNeedsAttentionFor(this.draftOcrEnabled, this.selectedOcrModel);
       case "transcribe":
