@@ -65,16 +65,74 @@ pub(crate) struct AppliedRecordingSettingsUpdate {
     pub(crate) debug_logging_enabled_changed: bool,
 }
 
-pub(crate) fn default_save_directory() -> String {
-    // Resolve the user's home directory cross-platform. `std::env::home_dir`
-    // reads `%USERPROFILE%` on Windows (where `HOME` is usually unset) and
-    // `$HOME` on Unix, so the default lands at `<home>/.mnema` everywhere
-    // instead of a bare relative `.mnema` when `HOME` is absent.
+/// The Tauri bundle identifier (`tauri.conf.json` -> `identifier`), used to
+/// scope the Windows default capture library under LocalAppData so it matches
+/// the convention used for Mnema's other Windows app folders.
+#[cfg(windows)]
+const APP_IDENTIFIER: &str = "com.shaikzeeshan.mnema";
+
+/// `<home>/.mnema`, falling back to a bare relative `.mnema` only when the
+/// home directory cannot be resolved. Shared last-resort for both platforms.
+///
+/// `std::env::home_dir` reads `$HOME` on Unix, so the default lands at
+/// `<home>/.mnema` instead of a bare relative `.mnema` when `HOME` is absent.
+fn home_dot_mnema_save_directory() -> String {
     std::env::home_dir()
         .map(|home| home.join(".mnema"))
         .unwrap_or_else(|| PathBuf::from(".mnema"))
         .to_string_lossy()
         .to_string()
+}
+
+#[cfg(not(windows))]
+pub(crate) fn default_save_directory() -> String {
+    // Resolve the user's home directory cross-platform, landing at
+    // `<home>/.mnema` (see `home_dot_mnema_save_directory`).
+    home_dot_mnema_save_directory()
+}
+
+/// Pure Windows default-library logic, isolated from the process environment so
+/// it can be unit-tested without mutating the global `LOCALAPPDATA` (which other
+/// tests in this multi-threaded binary observe). Prefers
+/// `%LOCALAPPDATA%\com.shaikzeeshan.mnema\library`, falling back to the shared
+/// `<home>/.mnema` last resort when LocalAppData is unset or empty.
+#[cfg(windows)]
+fn windows_default_save_directory(local_app_data: Option<std::ffi::OsString>) -> String {
+    if let Some(local_app_data) = local_app_data {
+        let local_app_data = PathBuf::from(local_app_data);
+        if !local_app_data.as_os_str().is_empty() {
+            return local_app_data
+                .join(APP_IDENTIFIER)
+                .join("library")
+                .to_string_lossy()
+                .to_string();
+        }
+    }
+
+    home_dot_mnema_save_directory()
+}
+
+/// Windows default capture library: a shallow, NON-roaming location under
+/// `%LOCALAPPDATA%\com.shaikzeeshan.mnema\library` (see
+/// `docs/windows/storage-access-release-research.md`). This avoids AppData
+/// roaming for the large capture library, follows Windows conventions, and
+/// keeps the path shallow to leave headroom under the legacy `MAX_PATH`
+/// (260-char) limit for the nested `recordings/YYYY/MM/DD/` tree underneath it.
+///
+/// Prefer `%LOCALAPPDATA%` directly to stay dependency-light (this crate does
+/// not depend on `dirs`). Fall back to `<USERPROFILE>\.mnema` if LocalAppData is
+/// unset, and only as an absolute last resort use a bare relative `.mnema`.
+///
+/// MIGRATION NOTE: `default_save_directory()` is only the *fresh-install*
+/// default. Once any recording setting is saved, `save_directory` is persisted
+/// to `recording-settings.json` and that persisted value is reused on every
+/// launch (see `initialize_recording_settings_state_from_disk`). Changing this
+/// default therefore only affects installs that have never persisted settings.
+/// On Windows (unreleased) that means dev-only recordings made under the old
+/// `HOME/.mnema` default and never saved would be orphaned on the next launch.
+#[cfg(windows)]
+pub(crate) fn default_save_directory() -> String {
+    windows_default_save_directory(std::env::var_os("LOCALAPPDATA"))
 }
 
 pub(crate) fn default_recording_settings() -> RecordingSettings {
@@ -1354,6 +1412,65 @@ mod tests {
         assert_eq!(
             default_recording_settings().microphone_vad_adapter,
             capture_types::default_microphone_vad_adapter()
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn default_save_directory_uses_home_dot_mnema_on_unix() {
+        let save_directory = default_save_directory();
+        assert!(
+            save_directory.ends_with(".mnema"),
+            "expected default save directory to end with .mnema, got {save_directory}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_save_directory_uses_local_app_data_library() {
+        // Exercise the pure helper directly so we never mutate the process-global
+        // `LOCALAPPDATA`, which a concurrently-running sibling test reading
+        // `default_save_directory()` could otherwise observe (this binary runs
+        // tests multi-threaded).
+        let save_directory =
+            windows_default_save_directory(Some(std::ffi::OsString::from(
+                r"C:\Users\test\AppData\Local",
+            )));
+
+        assert_eq!(
+            save_directory,
+            r"C:\Users\test\AppData\Local\com.shaikzeeshan.mnema\library"
+        );
+        assert!(
+            save_directory.contains(APP_IDENTIFIER),
+            "expected default save directory to contain the bundle identifier, got {save_directory}"
+        );
+        assert!(
+            save_directory.ends_with("library"),
+            "expected default save directory to end with the library subfolder, got {save_directory}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_save_directory_falls_back_for_empty_local_app_data() {
+        let save_directory =
+            windows_default_save_directory(Some(std::ffi::OsString::new()));
+
+        assert!(
+            save_directory.ends_with(".mnema"),
+            "expected empty LocalAppData to fall back to the home/.mnema path, got {save_directory}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_save_directory_falls_back_for_missing_local_app_data() {
+        let save_directory = windows_default_save_directory(None);
+
+        assert!(
+            save_directory.ends_with(".mnema"),
+            "expected missing LocalAppData to fall back to the home/.mnema path, got {save_directory}"
         );
     }
 
