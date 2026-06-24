@@ -2506,11 +2506,14 @@ pub(super) fn resume_runtime_from_inactivity(
 
 /// Windows audio-segment persistence.
 ///
-/// Commits produced microphone Audio Segments to the index but enqueues **no**
-/// audio processing jobs yet — capture-and-store only. Passing disabled
-/// admissions guarantees `upsert_audio_segment_and_maybe_enqueue_processing`
-/// upserts the segment without enqueuing transcription/speaker/system-audio
-/// work; a future audio-decode slice will backfill those jobs.
+/// Commits produced Audio Segments to the index and auto-enqueues the
+/// **system-audio speech-activity** job for system-audio segments at capture
+/// time (computing the real admission from current settings via
+/// `crate::app_infra::system_audio_speech_admission_for_current_settings`).
+/// Transcription and speaker-analysis admissions are still passed disabled, so
+/// `upsert_audio_segment_and_maybe_enqueue_processing` upserts the segment
+/// without enqueuing those jobs; a future audio-decode slice will backfill
+/// transcription/speaker work.
 #[cfg(target_os = "windows")]
 pub(super) fn persist_committed_audio_segments(
     app_handle: Option<&tauri::AppHandle>,
@@ -2540,10 +2543,16 @@ pub(super) fn persist_committed_audio_segments(
     let infra = std::sync::Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
     let app_handle = app_handle.clone();
     let persistence = run_native_capture_async("audio-segment-persistence", async move {
+        // Transcription and speaker-analysis jobs are still backfilled by a
+        // future audio-decode slice, so their admissions stay disabled. The
+        // system-audio speech-activity job, however, auto-enqueues at capture
+        // time: compute its real admission once from current settings (only
+        // system-audio segments enqueue, since `should_enqueue_for` gates on
+        // `source_kind == SystemAudio`).
         let transcription_admission = ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
         let speaker_admission = ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
         let system_audio_speech_admission =
-            ::app_infra::SystemAudioSpeechActivityAdmission::disabled();
+            crate::app_infra::system_audio_speech_admission_for_current_settings(&app_handle);
         let mut persisted_any = false;
         for segment in segments {
             match infra

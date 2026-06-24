@@ -2064,7 +2064,7 @@ fn audio_transcription_admission_for_settings(
     }
 }
 
-fn system_audio_speech_admission_for_current_settings(
+pub(crate) fn system_audio_speech_admission_for_current_settings(
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::SystemAudioSpeechActivityAdmission {
     let settings = match app_handle
