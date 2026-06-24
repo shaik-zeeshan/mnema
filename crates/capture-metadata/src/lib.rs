@@ -11,6 +11,18 @@ use url::Url;
 /// (e.g. some single-page apps).
 pub const BROWSER_URL_PROBE_BACKSTOP_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Minimum spacing between re-probes triggered by a *title change* for the same
+/// front window. Title-gating ([`BrowserUrlProbeCache::cached_url_for`]) re-probes
+/// on every title change, but pages with dynamic titles (unread counters like
+/// "(5) Inbox", live timers, "● Recording", per-second clocks) change their title
+/// on nearly every ~1s metadata tick — without a floor that means an `osascript`
+/// spawn (Chromium/WebKit) or a blocking AX read (Gecko) every tick. This floor
+/// caps title-driven re-probes to at most once per interval, trading a brief
+/// (<~1.5s) URL/title desync for not hammering the probe. Kept below
+/// [`BROWSER_URL_PROBE_BACKSTOP_INTERVAL`] so the same-title backstop still wins
+/// past it.
+pub const BROWSER_URL_PROBE_REPROBE_FLOOR: Duration = Duration::from_millis(1500);
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserUrlMode {
@@ -128,6 +140,12 @@ impl BrowserUrlProbeCache {
     /// against the title (the desync that surfaced an old tab's URL under a new
     /// page's title). [`BROWSER_URL_PROBE_BACKSTOP_INTERVAL`] is only a backstop
     /// for URL changes that leave the title untouched.
+    ///
+    /// A title change forces a re-probe — but no more often than
+    /// [`BROWSER_URL_PROBE_REPROBE_FLOOR`], so a dynamic-title page (live counter,
+    /// timer, clock) that mutates its title every tick can't hammer the probe.
+    /// Within the floor a changed title serves the cached URL (brief desync);
+    /// past the floor it re-probes.
     pub fn cached_url_for(
         &self,
         bundle_id: &str,
@@ -137,11 +155,17 @@ impl BrowserUrlProbeCache {
         if self.bundle_id.as_deref() != Some(bundle_id) {
             return None;
         }
+        let probed_at = self.probed_at?;
+        let elapsed = now.saturating_duration_since(probed_at);
         if self.window_title.as_deref() != window_title {
+            // Title moved on: re-probe, but not more than once per floor so a
+            // dynamic title (changing every tick) can't trigger a probe storm.
+            if elapsed < BROWSER_URL_PROBE_REPROBE_FLOOR {
+                return Some(self.raw_url.clone());
+            }
             return None;
         }
-        let probed_at = self.probed_at?;
-        if now.saturating_duration_since(probed_at) >= BROWSER_URL_PROBE_BACKSTOP_INTERVAL {
+        if elapsed >= BROWSER_URL_PROBE_BACKSTOP_INTERVAL {
             return None;
         }
         Some(self.raw_url.clone())
@@ -760,10 +784,22 @@ mod tests {
             Some(Some("https://github.com/pauldb89/OxLM".to_string()))
         );
 
-        // Title moved on (e.g. switched to the Start Page) -> force a re-probe so the
-        // stale URL is never served under the new title. This is the desync fix.
+        // Title moved on (e.g. switched to the Start Page) but still within the
+        // re-probe floor -> serve the cached URL rather than re-probing. The floor
+        // keeps a dynamic title from triggering a probe on every tick (brief desync).
         assert_eq!(
             cache.cached_url_for("com.apple.Safari", Some("Personal — Start Page"), base),
+            Some(Some("https://github.com/pauldb89/OxLM".to_string()))
+        );
+
+        // Title moved on and the floor has elapsed -> force a re-probe so the stale
+        // URL is never served indefinitely under the new title. This is the desync fix.
+        assert_eq!(
+            cache.cached_url_for(
+                "com.apple.Safari",
+                Some("Personal — Start Page"),
+                base + BROWSER_URL_PROBE_REPROBE_FLOOR
+            ),
             None
         );
 
@@ -782,6 +818,46 @@ mod tests {
                 base + BROWSER_URL_PROBE_BACKSTOP_INTERVAL
             ),
             None
+        );
+    }
+
+    #[test]
+    fn browser_url_cache_floor_throttles_dynamic_title_reprobes() {
+        let base = Instant::now();
+        let cache = BrowserUrlProbeCache::from_probe(
+            Some("com.apple.Safari".to_string()),
+            Some("(1) Inbox".to_string()),
+            Some("https://mail.example.com/inbox".to_string()),
+            base,
+        );
+
+        // A dynamic title (unread counter) mutates every ~1s tick. While each tick
+        // lands inside the re-probe floor the cached URL is reused — no probe storm.
+        for (offset_ms, title) in [
+            (0_u64, "(1) Inbox"),
+            (1000, "(2) Inbox"),
+            (1499, "(3) Inbox"),
+        ] {
+            assert_eq!(
+                cache.cached_url_for(
+                    "com.apple.Safari",
+                    Some(title),
+                    base + Duration::from_millis(offset_ms)
+                ),
+                Some(Some("https://mail.example.com/inbox".to_string())),
+                "title change within the floor (t+{offset_ms}ms) should reuse the cached URL"
+            );
+        }
+
+        // Once a changed-title tick lands past the floor, we re-probe.
+        assert_eq!(
+            cache.cached_url_for(
+                "com.apple.Safari",
+                Some("(4) Inbox"),
+                base + BROWSER_URL_PROBE_REPROBE_FLOOR
+            ),
+            None,
+            "title change past the floor should force a re-probe"
         );
     }
 
