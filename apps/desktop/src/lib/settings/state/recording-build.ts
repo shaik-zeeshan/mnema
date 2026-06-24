@@ -71,10 +71,36 @@ export function clampAskAiMaxToolCalls(cap: number): number {
   return Math.min(ASK_AI_MAX_TOOL_CALL_LIMIT, Math.max(1, n));
 }
 
+// Processing-domain clamps, shared by the request builders AND the draft-load
+// sync (`recording.svelte.ts` `syncProcessingDrafts`). The backend REJECTS (does
+// not clamp) idle/chunk above the segment-cap ceilings, and the UI Stepper for
+// the upscale factor advertises [1,4]; loading a raw out-of-band value would
+// render unclamped in the Stepper while the effective saved value is clamped, so
+// the load path must clamp to the SAME ceilings the request builders use.
+export function clampTranscriptionIdleUnloadSeconds(value: number): number {
+  return Math.max(0, Math.min(1800, Math.trunc(Number(value) || 0)));
+}
+export function clampTranscriptionChunkSeconds(value: number): number {
+  return Math.max(0, Math.min(300, Math.trunc(Number(value) || 0)));
+}
+export function clampOcrTesseractUpscaleFactor(value: number): number {
+  return Math.max(1, Math.min(4, Math.trunc(Number(value) || 1)));
+}
+
+// The live video request is structurally `UpdateVideoSettingsRequest` except its
+// custom resolution/bitrate fields can carry a null while the user is mid-edit
+// (the builders are total — see `buildScreenResolutionRequest`). The wire never
+// sees the null (the save is gated), but the snapshot/diff path must type it.
+export type VideoDomainRequest = {
+  screenFrameRate?: number;
+  screenResolution?: ScreenResolutionRequest;
+  videoBitrate?: VideoBitrateRequest;
+};
+
 export type RecordingDomainRequest =
   | UpdateCaptureSourceSettingsRequest
   | UpdateCaptureTimingSettingsRequest
-  | UpdateVideoSettingsRequest
+  | VideoDomainRequest
   | UpdateStorageSettingsRequest
   | UpdateDisplaySettingsRequest
   | UpdateMetadataSettingsRequest
@@ -166,17 +192,30 @@ export interface RecordingDraftState {
   draftSpeakerTimeoutMinutes: number;
 }
 
-function buildScreenResolutionRequest(
-  rec: RecordingDraftState,
-): UpdateVideoSettingsRequest["screenResolution"] {
+// Widened return shapes for the video sub-builders: in custom mode the raw
+// width/height/mbps drafts can still be null (first click into custom mode,
+// before the parse effect fills them). The builders are TOTAL — they serialize
+// that null as-is so the autosave snapshot stays deterministic — so their
+// return type must admit the null. The actual save is independently gated on
+// `customResolutionBlocked` / `customBitrateBlocked`, so a null never persists.
+type ScreenResolutionRequest =
+  | Extract<UpdateVideoSettingsRequest["screenResolution"], { mode: "preset" }>
+  | { mode: "custom"; width: number | null; height: number | null };
+type VideoBitrateRequest =
+  | Extract<UpdateVideoSettingsRequest["videoBitrate"], { mode: "preset" }>
+  | { mode: "custom"; preset: null; customMbps: number | null };
+
+function buildScreenResolutionRequest(rec: RecordingDraftState): ScreenResolutionRequest {
   if (rec.draftResolutionMode === "custom") {
-    // The save path is gated on `customResolutionBlocked` (both raw fields must
-    // parse), so these are non-null when we get here. Fail fast rather than
-    // serialize a `null` width/height the backend would reject — and without a
-    // `!` type-lie on the `number | null` drafts.
-    if (rec.draftCustomWidth === null || rec.draftCustomHeight === null) {
-      throw new Error("Custom resolution requires both width and height.");
-    }
+    // TOTAL on purpose: this builder feeds BOTH the autosave snapshot (for
+    // dirty-diffing) AND the request payload, and it is evaluated UNGATED by the
+    // reactive driver + the engine's snapshot closure — before the
+    // `customResolutionBlocked` save gate runs. The first click into custom mode
+    // leaves width/height null (the parse effect hasn't filled them yet); if we
+    // threw here, that throw would abort the driver effect and silently block
+    // ALL domains from autosaving. So serialize the null as-is: the SAVE is
+    // independently gated on `customResolutionBlocked`, so a null can never
+    // persist; we only need a stable, deterministic snapshot here.
     return {
       mode: "custom" as const,
       width: rec.draftCustomWidth,
@@ -192,16 +231,14 @@ function buildScreenResolutionRequest(
   };
 }
 
-function buildVideoBitrateRequest(
-  rec: RecordingDraftState,
-): UpdateVideoSettingsRequest["videoBitrate"] {
+function buildVideoBitrateRequest(rec: RecordingDraftState): VideoBitrateRequest {
   if (rec.draftBitrateMode === "custom") {
-    // Gated on `customBitrateBlocked` (the raw field must parse), so this is
-    // non-null here. Fail fast rather than serialize a `null` the backend would
-    // reject — and without a `!` type-lie on the `number | null` draft.
-    if (rec.draftCustomMbps === null) {
-      throw new Error("Custom bitrate requires a value.");
-    }
+    // TOTAL on purpose (same rationale as `buildScreenResolutionRequest`): the
+    // raw mbps draft is still null on the first click into custom mode, and this
+    // builder is evaluated UNGATED for the autosave snapshot before the
+    // `customBitrateBlocked` save gate runs. Throwing here would abort the
+    // reactive driver and silently block ALL domains from autosaving, so we
+    // serialize the null as-is; the gated save guarantees it never persists.
     return { mode: "custom" as const, preset: null, customMbps: rec.draftCustomMbps };
   }
   return { mode: "preset" as const, preset: rec.draftBitratePreset, customMbps: null };
@@ -219,10 +256,7 @@ function buildProcessingRequest(rec: RecordingDraftState): UpdateProcessingSetti
       languageCorrection: rec.draftOcrLanguageCorrection,
       tesseractPageSegmentationMode: rec.draftOcrTesseractPageSegmentationMode,
       tesseractPreprocessMode: rec.draftOcrTesseractPreprocessMode,
-      tesseractUpscaleFactor: Math.max(
-        1,
-        Math.min(4, Math.trunc(Number(rec.draftOcrTesseractUpscaleFactor) || 1)),
-      ),
+      tesseractUpscaleFactor: clampOcrTesseractUpscaleFactor(rec.draftOcrTesseractUpscaleFactor),
       tesseractCharWhitelist: rec.draftOcrTesseractCharWhitelist.trim() || null,
     },
     transcription: {
@@ -238,14 +272,10 @@ function buildProcessingRequest(rec: RecordingDraftState): UpdateProcessingSetti
       // or chunk > 3600, and a rejected save retries forever. 1800/300 are the
       // maxes the UI advertises (the onboarding Slider enforces them); chunk's
       // 300s also respects the 5-minute capture-segment cap.
-      idleUnloadSeconds: Math.max(
-        0,
-        Math.min(1800, Math.trunc(Number(rec.draftTranscriptionIdleUnloadSeconds) || 0)),
+      idleUnloadSeconds: clampTranscriptionIdleUnloadSeconds(
+        rec.draftTranscriptionIdleUnloadSeconds,
       ),
-      chunkSeconds: Math.max(
-        0,
-        Math.min(300, Math.trunc(Number(rec.draftTranscriptionChunkSeconds) || 0)),
-      ),
+      chunkSeconds: clampTranscriptionChunkSeconds(rec.draftTranscriptionChunkSeconds),
     },
     speakerAnalysis: {
       separateSpeakers: rec.draftSpeakerSeparateSpeakers,
@@ -417,6 +447,11 @@ export function buildRecDomainRequestFromSettings(
           ...s.ocr,
           language: (s.ocr.language ?? "").trim() || null,
           tesseractCharWhitelist: (s.ocr.tesseractCharWhitelist ?? "").trim() || null,
+          // Mirror the live builder's [1,4] upscale clamp so a persisted
+          // out-of-range factor (older build / CLI) doesn't read perpetually
+          // dirty against the clamped request (and the loaded draft, now clamped
+          // in `syncProcessingDrafts`, equals the effective value).
+          tesseractUpscaleFactor: clampOcrTesseractUpscaleFactor(s.ocr.tesseractUpscaleFactor),
         },
         transcription: {
           ...s.transcription,
@@ -425,14 +460,8 @@ export function buildRecDomainRequestFromSettings(
           // backend only rejects idle > 86400 / chunk > 3600, so a persisted
           // value above the UI ceiling (e.g. saved by an older build or the CLI)
           // would otherwise read perpetually dirty against the clamped request.
-          idleUnloadSeconds: Math.max(
-            0,
-            Math.min(1800, Math.trunc(Number(s.transcription.idleUnloadSeconds) || 0)),
-          ),
-          chunkSeconds: Math.max(
-            0,
-            Math.min(300, Math.trunc(Number(s.transcription.chunkSeconds) || 0)),
-          ),
+          idleUnloadSeconds: clampTranscriptionIdleUnloadSeconds(s.transcription.idleUnloadSeconds),
+          chunkSeconds: clampTranscriptionChunkSeconds(s.transcription.chunkSeconds),
         },
         speakerAnalysis: {
           ...s.speakerAnalysis,

@@ -60,6 +60,9 @@ import {
   buildRecDomainSnapshot,
   buildRecDomainSnapshotFromSettings,
   clampAskAiMaxToolCalls,
+  clampTranscriptionIdleUnloadSeconds,
+  clampTranscriptionChunkSeconds,
+  clampOcrTesseractUpscaleFactor,
   computeApplyDrafts,
   type RecordingDomainRequest,
 } from "./recording-build";
@@ -386,7 +389,12 @@ export class RecordingStore {
     this.draftOcrTesseractPageSegmentationMode =
       s.ocr?.tesseractPageSegmentationMode ?? "single_block";
     this.draftOcrTesseractPreprocessMode = s.ocr?.tesseractPreprocessMode ?? "grayscale";
-    this.draftOcrTesseractUpscaleFactor = s.ocr?.tesseractUpscaleFactor ?? 1;
+    // Clamp on load to the SAME [1,4] ceiling `buildProcessingRequest` uses, so
+    // an out-of-band-persisted value (older build / CLI) renders in the Stepper
+    // as the effective value, not the unclamped raw one.
+    this.draftOcrTesseractUpscaleFactor = clampOcrTesseractUpscaleFactor(
+      s.ocr?.tesseractUpscaleFactor ?? 1,
+    );
     this.draftOcrTesseractCharWhitelist = s.ocr?.tesseractCharWhitelist ?? "";
     this.draftTranscriptionEnabled = s.transcription?.enabled ?? true;
     this.draftTranscriptionMicrophoneEnabled = s.transcription?.microphoneEnabled ?? true;
@@ -397,8 +405,15 @@ export class RecordingStore {
       (this.draftTranscriptionProvider === "apple_speech_on_device" ? null : "base");
     this.draftTranscriptionLanguage = s.transcription?.language ?? "auto";
     this.draftTranscriptionMemoryMode = s.transcription?.memoryMode ?? "balanced";
-    this.draftTranscriptionIdleUnloadSeconds = s.transcription?.idleUnloadSeconds ?? 300;
-    this.draftTranscriptionChunkSeconds = s.transcription?.chunkSeconds ?? 30;
+    // Clamp idle/chunk on load to the SAME ceilings `buildProcessingRequest`
+    // applies ([0,1800] / [0,300]), so the Stepper shows the effective value an
+    // out-of-band-persisted setting actually resolves to (not the raw value).
+    this.draftTranscriptionIdleUnloadSeconds = clampTranscriptionIdleUnloadSeconds(
+      s.transcription?.idleUnloadSeconds ?? 300,
+    );
+    this.draftTranscriptionChunkSeconds = clampTranscriptionChunkSeconds(
+      s.transcription?.chunkSeconds ?? 30,
+    );
     this.draftSpeakerSeparateSpeakers = s.speakerAnalysis?.separateSpeakers ?? false;
     this.draftSpeakerRecognizeSavedPeople = s.speakerAnalysis?.recognizeSavedPeople ?? false;
     // Coerce legacy saved values: the sherpa_onnx provider (and its model ids)

@@ -270,4 +270,54 @@ describe("recording autosave dirty-diff round-trip", () => {
     );
     expect(live).toBe(baseline);
   });
+
+  // FIX #1 (data-loss): custom mode is reachable with EMPTY/NULL width/height/
+  // mbps on the first click (Video.svelte flips the mode before the parse effect
+  // fills the dims). The builders are evaluated UNGATED by the autosave driver +
+  // the engine snapshot closure, BEFORE the customResolution/Bitrate save gate.
+  // If they threw on null, that throw aborted the driver and silently blocked
+  // ALL domains from autosaving. So the builders must be TOTAL: serialize the
+  // null as-is (the gated save guarantees it never persists). Pin that the video
+  // snapshot builds without throwing and is stable (deterministic, not a moving
+  // target that would perpetually re-fire the driver).
+  test("video: custom mode with null width/height/mbps builds without throwing", () => {
+    const emptyCustomDrafts: RecordingDraftState = {
+      ...draftsFromCanonical(CANONICAL_SETTINGS),
+      draftResolutionMode: "custom",
+      draftCustomWidth: null,
+      draftCustomHeight: null,
+      draftBitrateMode: "custom",
+      draftCustomMbps: null,
+    };
+
+    let snapshot = "";
+    expect(() => {
+      snapshot = JSON.stringify(buildRecDomainRequest("video", emptyCustomDrafts));
+    }).not.toThrow();
+
+    // The null is serialized as-is so the snapshot is deterministic (no throw,
+    // no NaN, no Infinity) — the same drafts always produce the same string, so
+    // the autosave dirty-diff has a stable fixed point.
+    expect(snapshot).toBe(
+      JSON.stringify(buildRecDomainRequest("video", emptyCustomDrafts)),
+    );
+    expect(snapshot).toContain('"mode":"custom"');
+    expect(snapshot).toContain('"width":null');
+    expect(snapshot).toContain('"height":null');
+    expect(snapshot).toContain('"customMbps":null');
+  });
+
+  // Partial custom (one dim typed, the other still empty) must also be total —
+  // this is the exact intermediate state while the user is filling the inputs.
+  test("video: custom mode with one null dim builds without throwing", () => {
+    const partialCustomDrafts: RecordingDraftState = {
+      ...draftsFromCanonical(CANONICAL_SETTINGS),
+      draftResolutionMode: "custom",
+      draftCustomWidth: 2560,
+      draftCustomHeight: null,
+      draftBitrateMode: "custom",
+      draftCustomMbps: null,
+    };
+    expect(() => buildRecDomainRequest("video", partialCustomDrafts)).not.toThrow();
+  });
 });
