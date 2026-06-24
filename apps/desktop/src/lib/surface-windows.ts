@@ -35,7 +35,9 @@ export type SettingsWindowTab =
   | "microphone"
   | "ocr"
   | "transcription"
-  | "speakers";
+  | "speakers"
+  | "semanticSearch"
+  | "userContext";
 
 export type SettingsWindowFocus = "agentAccess" | "cliAccess";
 
@@ -58,8 +60,13 @@ export function normalizeSettingsTab(tab?: SettingsWindowTab | string | null): s
     case "intelligence":
     case "reasoning":
     case "ai":
-    case "user-context":
       return "intelligence";
+    // User Context has its own Intelligence-group section, so it deep-links 1:1
+    // (the page resolves "userContext" to that section) rather than collapsing
+    // onto Providers.
+    case "user-context":
+    case "userContext":
+      return "userContext";
     case "privacy":
     case "metadata":
       return "privacy";
@@ -82,6 +89,9 @@ export function normalizeSettingsTab(tab?: SettingsWindowTab | string | null): s
       return "transcription";
     case "speakers":
       return "speakers";
+    case "semanticSearch":
+    case "semantic-search":
+      return "semanticSearch";
     // Legacy "processing" alias kept for back-compat; the page maps it to OCR.
     case "processing":
       return "processing";

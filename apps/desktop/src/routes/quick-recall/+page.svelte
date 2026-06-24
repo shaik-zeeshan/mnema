@@ -3038,7 +3038,7 @@
     }
   }
   async function openSemanticSearchSettings(): Promise<void> {
-    await openSettings("processing");
+    await openSettings("semanticSearch");
   }
   // Show the hint once results have run and no model is installed — the hint is
   // most useful exactly when keyword-only search underwhelms.

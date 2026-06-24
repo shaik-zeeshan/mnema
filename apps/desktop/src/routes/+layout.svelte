@@ -290,6 +290,7 @@
     if (notification.action?.type !== "open_settings_tab") return "Open";
     if (notification.action.tab === "about") return "Open update settings";
     if (notification.action.tab === "processing") return "Open processing settings";
+    if (notification.action.tab === "transcription") return "Open transcription settings";
     if (notification.action.tab === "shortcuts") return "Open shortcut settings";
     return "Open settings";
   }

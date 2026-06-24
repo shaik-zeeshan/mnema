@@ -4,7 +4,9 @@
 //   • which (group, section) pairs survive a query, and
 //   • the flattened sub-section order used by the keyboard roving-tabindex model.
 //
-// Matching is a case-insensitive substring against each section's label, and
+// Matching is a case-insensitive substring against each section's label and its
+// optional `keywords` (search terms for settings that live inside the section
+// but aren't in its label — e.g. "retention" → Storage, "bitrate" → Video), and
 // (as an affordance) the owning group's label — so typing a category name like
 // "intel" keeps that whole group. A group is kept only if ≥1 of its sections
 // match (group-label matches keep ALL of that group's sections). An empty or
@@ -18,7 +20,10 @@ function norm(value: string): string {
 }
 
 function sectionMatches(section: SettingsSection, needle: string): boolean {
-  return section.label.toLowerCase().includes(needle);
+  if (section.label.toLowerCase().includes(needle)) return true;
+  return (section.keywords ?? []).some((keyword) =>
+    keyword.toLowerCase().includes(needle),
+  );
 }
 
 function groupLabelMatches(group: SettingsGroup, needle: string): boolean {
@@ -31,9 +36,9 @@ function groupLabelMatches(group: SettingsGroup, needle: string): boolean {
  * - Empty / whitespace-only query → returns `groups` unchanged (same reference
  *   contents; a pass-through so callers can render the full rail).
  * - Otherwise returns a new array of groups, each carrying only the sections
- *   that match (case-insensitive substring on the section label). A group whose
- *   own label matches keeps ALL its sections. Groups that end up with zero
- *   sections are dropped, so a no-match query returns `[]`.
+ *   that match (case-insensitive substring on the section label or its
+ *   `keywords`). A group whose own label matches keeps ALL its sections. Groups
+ *   that end up with zero sections are dropped, so a no-match query returns `[]`.
  *
  * Group order and within-group section order are preserved.
  */

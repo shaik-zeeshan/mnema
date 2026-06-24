@@ -55,6 +55,12 @@ export interface SettingsSection {
   // sections that already had a panel id; new sub-section anchors get their own.
   anchor: string;
   label: string;
+  // Extra search terms the rail filter also matches (case-insensitive
+  // substring), so queries users actually type for a setting that lives inside a
+  // section ("theme", "retention", "bitrate") reach the right section even
+  // though they aren't in its label. Optional; sections without searchable
+  // settings can omit it.
+  keywords?: string[];
 }
 
 export interface SettingsGroup {
@@ -78,9 +84,24 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: "General",
     description: "Appearance, startup, shortcuts",
     sections: [
-      { id: "appearance", anchor: "settings-section-appearance", label: "Appearance" },
-      { id: "startup", anchor: "settings-section-startup", label: "Startup" },
-      { id: "shortcuts", anchor: "settings-section-shortcuts", label: "Shortcuts" },
+      {
+        id: "appearance",
+        anchor: "settings-section-appearance",
+        label: "Appearance",
+        keywords: ["theme", "dark", "light", "follow live recording"],
+      },
+      {
+        id: "startup",
+        anchor: "settings-section-startup",
+        label: "Startup",
+        keywords: ["auto-start", "launch", "login", "auto start recording"],
+      },
+      {
+        id: "shortcuts",
+        anchor: "settings-section-shortcuts",
+        label: "Shortcuts",
+        keywords: ["keyboard", "hotkey", "global shortcuts", "key binding"],
+      },
     ],
   },
   {
@@ -88,10 +109,40 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: "Capture",
     description: "Sources, video, audio, privacy",
     sections: [
-      { id: "capture", anchor: "settings-section-capture", label: "Capture" },
-      { id: "video", anchor: "settings-section-video", label: "Video" },
-      { id: "audio", anchor: "settings-section-audio", label: "Audio" },
-      { id: "privacy", anchor: "settings-section-privacy", label: "Privacy" },
+      {
+        id: "capture",
+        anchor: "settings-section-capture",
+        label: "Capture",
+        keywords: [
+          "screen",
+          "microphone",
+          "system audio",
+          "segment duration",
+          "idle",
+          "pause",
+          "sensitivity",
+          "vad",
+          "voice detection",
+        ],
+      },
+      {
+        id: "video",
+        anchor: "settings-section-video",
+        label: "Video",
+        keywords: ["bitrate", "resolution", "frame rate", "fps"],
+      },
+      {
+        id: "audio",
+        anchor: "settings-section-audio",
+        label: "Audio",
+        keywords: ["microphone", "device", "input", "on disconnect"],
+      },
+      {
+        id: "privacy",
+        anchor: "settings-section-privacy",
+        label: "Privacy",
+        keywords: ["excluded apps", "browser url", "frame context", "metadata"],
+      },
     ],
   },
   {
@@ -99,13 +150,48 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: "Intelligence",
     description: "Providers, Ask AI, processing",
     sections: [
-      { id: "intelligence", anchor: "settings-section-intelligence", label: "Providers" },
-      { id: "askAi", anchor: "settings-section-askAi", label: "Ask AI" },
-      { id: "userContext", anchor: "settings-section-userContext", label: "User Context" },
-      { id: "ocr", anchor: "settings-section-ocr", label: "OCR" },
-      { id: "transcription", anchor: "settings-section-transcription", label: "Transcription" },
-      { id: "speakers", anchor: "settings-section-speakers", label: "Speakers" },
-      { id: "semanticSearch", anchor: "settings-section-semanticSearch", label: "Semantic Search" },
+      {
+        id: "intelligence",
+        anchor: "settings-section-intelligence",
+        label: "Providers",
+        keywords: ["api key", "anthropic", "openai", "ollama", "default model", "ai runtime"],
+      },
+      {
+        id: "askAi",
+        anchor: "settings-section-askAi",
+        label: "Ask AI",
+        keywords: ["chat", "quick recall", "tool calls", "model override"],
+      },
+      {
+        id: "userContext",
+        anchor: "settings-section-userContext",
+        label: "User Context",
+        keywords: ["derive context", "derivation", "backfill", "subjects"],
+      },
+      {
+        id: "ocr",
+        anchor: "settings-section-ocr",
+        label: "OCR",
+        keywords: ["text recognition", "language", "preview cache", "tesseract"],
+      },
+      {
+        id: "transcription",
+        anchor: "settings-section-transcription",
+        label: "Transcription",
+        keywords: ["whisper", "parakeet", "audio", "transcribe", "model"],
+      },
+      {
+        id: "speakers",
+        anchor: "settings-section-speakers",
+        label: "Speakers",
+        keywords: ["diarization", "speaker separation", "recognize people"],
+      },
+      {
+        id: "semanticSearch",
+        anchor: "settings-section-semanticSearch",
+        label: "Semantic Search",
+        keywords: ["embedding", "vector search", "model"],
+      },
     ],
   },
   {
@@ -113,8 +199,18 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: "Data",
     description: "Storage, CLI access",
     sections: [
-      { id: "storage", anchor: "settings-section-storage", label: "Storage" },
-      { id: "access", anchor: "settings-section-access", label: "Access" },
+      {
+        id: "storage",
+        anchor: "settings-section-storage",
+        label: "Storage",
+        keywords: ["retention", "save directory", "storage location", "disk"],
+      },
+      {
+        id: "access",
+        anchor: "settings-section-access",
+        label: "Access",
+        keywords: ["cli access", "agent", "broker"],
+      },
     ],
   },
   {
@@ -122,8 +218,18 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: "About",
     description: "Version, updates, developer",
     sections: [
-      { id: "about", anchor: "settings-section-about", label: "About" },
-      { id: "developer", anchor: "settings-section-developer", label: "Developer" },
+      {
+        id: "about",
+        anchor: "settings-section-about",
+        label: "About",
+        keywords: ["version", "update channel", "third-party notices", "acknowledgements"],
+      },
+      {
+        id: "developer",
+        anchor: "settings-section-developer",
+        label: "Developer",
+        keywords: ["logs", "debug logging", "developer options"],
+      },
     ],
   },
 ];
@@ -210,6 +316,9 @@ export function resolveTabDeeplink(
       return "transcription";
     case "speakers":
       return "speakers";
+    case "semanticSearch":
+    case "semantic-search":
+      return "semanticSearch";
     case "storage":
       return "storage";
     case "appearance":

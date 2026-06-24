@@ -436,12 +436,17 @@ fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
         "ocr" => Some("ocr"),
         "transcription" => Some("transcription"),
         "speakers" => Some("speakers"),
+        "semanticSearch" | "semantic-search" => Some("semanticSearch"),
         // Legacy "processing" alias kept for back-compat (page maps it to OCR).
         "processing" => Some("processing"),
         "storage" => Some("storage"),
         "appearance" => Some("appearance"),
         "developer" => Some("developer"),
-        "intelligence" | "reasoning" | "ai" | "user-context" => Some("intelligence"),
+        "intelligence" | "reasoning" | "ai" => Some("intelligence"),
+        // User Context has its own Intelligence-group section, so it deep-links
+        // 1:1 (the page resolves "userContext" to that section) rather than
+        // collapsing onto Providers.
+        "user-context" | "userContext" => Some("userContext"),
         _ => None,
     }
 }
@@ -1497,7 +1502,18 @@ mod tests {
         assert_eq!(normalize_settings_tab("intelligence"), Some("intelligence"));
         assert_eq!(normalize_settings_tab("reasoning"), Some("intelligence"));
         assert_eq!(normalize_settings_tab("ai"), Some("intelligence"));
-        assert_eq!(normalize_settings_tab("user-context"), Some("intelligence"));
+        // User Context and Semantic Search deep-link 1:1 to their own sections
+        // rather than collapsing onto Providers / OCR.
+        assert_eq!(normalize_settings_tab("user-context"), Some("userContext"));
+        assert_eq!(normalize_settings_tab("userContext"), Some("userContext"));
+        assert_eq!(
+            normalize_settings_tab("semanticSearch"),
+            Some("semanticSearch")
+        );
+        assert_eq!(
+            normalize_settings_tab("semantic-search"),
+            Some("semanticSearch")
+        );
     }
 
     #[test]

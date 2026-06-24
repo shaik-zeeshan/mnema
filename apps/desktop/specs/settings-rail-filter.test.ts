@@ -55,16 +55,26 @@ describe("rail-filter: filterGroups", () => {
     expect(groups[0].sections.map((s) => s.id)).toEqual(["video"]);
   });
 
-  test("a query that hits sections in two groups keeps both, narrowed", () => {
-    // "st" → "startup" (general) + "storage" (data); also Transcription? no.
+  test("a query that hits sections in several groups keeps each, narrowed", () => {
+    // "st" → "startup" (general) + "storage" (data) by label, and "capture"
+    // (capture) via its "system audio" keyword — keyword matches surface a
+    // section just like label matches do.
     const groups = filterGroups(SETTINGS_GROUPS, "st");
     const byGroup = Object.fromEntries(
       groups.map((g) => [g.id, g.sections.map((s) => s.id)]),
     );
     expect(byGroup.general).toEqual(["startup"]);
+    expect(byGroup.capture).toEqual(["capture"]);
     expect(byGroup.data).toEqual(["storage"]);
-    // Capture/Intelligence/About have no "st" section labels → dropped.
-    expect(groups.map((g) => g.id)).toEqual(["general", "data"]);
+    // Intelligence/About have no "st" label or keyword match → dropped.
+    expect(groups.map((g) => g.id)).toEqual(["general", "capture", "data"]);
+  });
+
+  test("a keyword match surfaces a section whose label does not match", () => {
+    // "retention" lives only in Storage's keywords, not its label.
+    const groups = filterGroups(SETTINGS_GROUPS, "retention");
+    expect(groups.map((g) => g.id)).toEqual(["data"]);
+    expect(groups[0].sections.map((s) => s.id)).toEqual(["storage"]);
   });
 
   test("a group-label match surfaces the whole group", () => {
