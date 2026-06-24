@@ -84,7 +84,10 @@
       aria-checked={active}
       aria-label={preset.label}
       title={preset.label}
-      tabindex={active || (value == null && index === 0) ? 0 : -1}
+      tabindex={active ||
+      (!presets.some((p) => p.value === value) && index === 0)
+        ? 0
+        : -1}
       {disabled}
       onclick={() => select(preset.value)}
       onkeydown={(e) => onKeydown(e, index)}

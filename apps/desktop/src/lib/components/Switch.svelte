@@ -7,6 +7,9 @@
     disabled?: boolean;
     label?: string;
     description?: string;
+    // Accessible name for the switch when there is no visible `label` to link
+    // via `aria-labelledby` (e.g. icon-only / externally-labelled toggles).
+    ariaLabel?: string;
   }
 
   let {
@@ -15,6 +18,7 @@
     disabled = false,
     label,
     description,
+    ariaLabel,
   }: Props = $props();
 
   // Stable ids so the visible label/description (plain <span>s, not associated
@@ -41,6 +45,7 @@
     {onCheckedChange}
     class="switch-track"
     aria-labelledby={label ? labelId : undefined}
+    aria-label={!label && ariaLabel ? ariaLabel : undefined}
     aria-describedby={description ? descriptionId : undefined}
   >
     <BitsSwitch.Thumb class="switch-thumb" />

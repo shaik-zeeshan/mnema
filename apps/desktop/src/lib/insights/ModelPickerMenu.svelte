@@ -106,6 +106,19 @@
   let searchEl = $state<HTMLInputElement | null>(null);
   let triggerEl = $state<HTMLButtonElement | null>(null);
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  // Per-option element refs, keyed by flat option index, so keyboard navigation
+  // can scroll the highlighted row into the capped (`overflow-y:auto`) list.
+  let optionEls: Record<number, HTMLButtonElement | null> = {};
+
+  // After `highlight` moves via the keyboard, keep the active row in view so
+  // Enter never commits an option that has scrolled out of the viewport. Only
+  // meaningful while the menu is open and an option is highlighted.
+  function scrollHighlightIntoView(): void {
+    if (!open) return;
+    void tick().then(() => {
+      optionEls[highlight]?.scrollIntoView({ block: "nearest" });
+    });
+  }
 
   // Block (Settings) flip: the popover is CSS-pinned below the trigger, so inside
   // Settings' inner `overflow:auto` scroll region it can clip when opened near the
@@ -275,6 +288,15 @@
     query = "";
   }
 
+  // Closing tears down the popover (and its focused search input) via `{#if open}`,
+  // so on keyboard-originated closes (Escape, Enter-commit) return focus to the
+  // trigger rather than letting it fall to <body>. Not used on outside-click /
+  // mount, where stealing focus would be surprising.
+  function closeMenuToTrigger(): void {
+    closeMenu();
+    void tick().then(() => triggerEl?.focus());
+  }
+
   function toggleMenu(): void {
     if (disabled) return;
     if (open) closeMenu();
@@ -301,16 +323,22 @@
     if (event.key === "ArrowDown") {
       event.preventDefault();
       highlight = Math.min(highlight + 1, options.length - 1);
+      scrollHighlightIntoView();
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       highlight = Math.max(highlight - 1, 0);
+      scrollHighlightIntoView();
     } else if (event.key === "Enter") {
       event.preventDefault();
       const choice = options[highlight];
-      if (choice && choice.type === "option") selectOption(choice.option);
+      if (choice && choice.type === "option") {
+        selectOption(choice.option);
+        // Keyboard-commit: return focus to the trigger (the search input is gone).
+        void tick().then(() => triggerEl?.focus());
+      }
     } else if (event.key === "Escape") {
       event.stopPropagation();
-      closeMenu();
+      closeMenuToTrigger();
     }
   }
 </script>
@@ -361,6 +389,7 @@
           <li role="presentation">
             <button
               type="button"
+              bind:this={optionEls[row.index]}
               class="mpm-option"
               class:mpm-option--active={row.selected}
               class:mpm-option--cursor={row.index === highlight}
@@ -698,7 +727,7 @@
     white-space: nowrap;
   }
   .mpm-failure-warn {
-    color: var(--app-warn, #c9920a);
+    color: var(--app-warn);
   }
   .mpm-retry {
     width: 100%;

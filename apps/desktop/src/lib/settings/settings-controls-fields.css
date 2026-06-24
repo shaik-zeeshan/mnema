@@ -14,6 +14,10 @@
   }
 
   .settings-shell .text-input {
+    /* Inset "recess" shadow for the field. Tokenized so the light theme can
+       soften it (settings-theme.css) instead of carrying 25% black into a
+       light surface — the dark default below is visually unchanged. */
+    --app-input-recess: inset 0 1px 2px rgba(0, 0, 0, 0.25);
     flex: 1;
     padding: 8px 12px;
     background: var(--app-surface);
@@ -23,7 +27,7 @@
     font-size: 12px;
     color: var(--app-text);
     outline: none;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    box-shadow: var(--app-input-recess);
     transition: border-color 0.15s, box-shadow 0.15s;
   }
 
@@ -33,7 +37,7 @@
 
   .settings-shell .text-input:focus {
     border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-input-recess), 0 0 0 3px var(--app-accent-glow);
   }
 
   .settings-shell .text-input--empty {
@@ -46,7 +50,7 @@
 
   .settings-shell .text-input--error:focus {
     border-color: var(--app-danger);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    box-shadow: var(--app-input-recess),
       0 0 0 3px color-mix(in srgb, var(--app-danger) 16%, transparent);
   }
 
