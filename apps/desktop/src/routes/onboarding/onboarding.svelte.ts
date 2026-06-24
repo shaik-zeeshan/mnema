@@ -65,15 +65,16 @@ import { startOnboardingListeners } from "./onboarding-listeners";
 import {
   customBitrateErrors as buildCustomBitrateErrors,
   customResolutionErrors as buildCustomResolutionErrors,
-  ocrModelNeedsAttention as ocrModelNeedsAttentionFor,
   permissionActionFor,
   permissionLabelFor,
   permissionToneFor,
-  semanticSearchModelNeedsAttention as semanticSearchModelNeedsAttentionFor,
-  speakerModelNeedsAttention as speakerModelNeedsAttentionFor,
-  transcriptionModelNeedsAttention as transcriptionModelNeedsAttentionFor,
 } from "./onboarding-attention";
 import type { PermissionKey, PermissionValue } from "./onboarding-attention";
+import {
+  featureAttentionFor,
+  featureDownloadFor,
+  isFeatureEnabled,
+} from "./onboarding-feature-state";
 import {
   finishOnboarding,
   loadOnboarding,
@@ -500,28 +501,7 @@ export class OnboardingController {
   }
 
   isEnabled(id: FeatureId): boolean {
-    switch (id) {
-      case "permissions":
-      case "screen":
-      case "storage":
-        return true; // required — always on
-      case "mic":
-        return this.draftCaptureMicrophone;
-      case "sysaudio":
-        return this.draftCaptureSystemAudio;
-      case "ocr":
-        return this.draftOcrEnabled;
-      case "transcribe":
-        return this.draftTranscriptionEnabled;
-      case "speakers":
-        return this.draftSpeakerSeparateSpeakers;
-      case "privacy":
-        return this.privacyEnabled;
-      case "askai":
-        return this.draftAskAiEnabled;
-      case "semanticSearch":
-        return this.draftSemanticSearchEnabled;
-    }
+    return isFeatureEnabled(this, id);
   }
 
   toggleFeature(id: FeatureId): void {
@@ -595,9 +575,10 @@ export class OnboardingController {
   // Per-feature "model not ready" predicates delegate to the pure helpers in
   // `onboarding-attention` (which read only `available` + an in-flight flag), so
   // the attention/finish gates and the body callouts share one source of truth.
-  // (The OCR/transcription/speaker/semantic predicates are inlined into
-  // `featureAttention` below — `transcriptionRequestedWhileOff` stays a derived
-  // because TranscriptionBody renders it directly.)
+  // (The OCR/transcription/speaker/semantic predicates are composed in
+  // `featureAttentionFor` — see `onboarding-feature-state`; whereas
+  // `transcriptionRequestedWhileOff` stays a derived here because
+  // TranscriptionBody renders it directly.)
   //
   // An audio source is actively set to be transcribed (source on + its per-source
   // "transcribe" toggle on) while the master Audio transcription feature is OFF —
@@ -613,49 +594,7 @@ export class OnboardingController {
 
   // Single-owner attention so the footer count never double-counts an issue.
   featureAttention(id: FeatureId): boolean {
-    switch (id) {
-      case "permissions":
-        // "unsupported" needs no action (mirrors `permissionAction`, which
-        // returns no button for granted/unsupported) — treating it as blocking
-        // would be an unrecoverable dead-end (no fix button to clear it).
-        return this.permissions?.screen !== "granted" && this.permissions?.screen !== "unsupported";
-      case "mic":
-        return this.draftCaptureMicrophone && this.permissions?.microphone !== "granted";
-      case "sysaudio":
-        // "unsupported" (macOS < 15) needs no action and has no fix button —
-        // treat it as non-blocking, mirroring the `permissions` rule above.
-        return (
-          this.draftCaptureSystemAudio
-          && this.permissions?.systemAudio !== "granted"
-          && this.permissions?.systemAudio !== "unsupported"
-        );
-      case "ocr":
-        return ocrModelNeedsAttentionFor(this.draftOcrEnabled, this.selectedOcrModel);
-      case "transcribe":
-        return (
-          transcriptionModelNeedsAttentionFor(this.draftTranscriptionEnabled, this.selectedTranscriptionModel)
-          || this.transcriptionRequestedWhileOff
-        );
-      case "speakers":
-        return speakerModelNeedsAttentionFor(this.draftSpeakerSeparateSpeakers, this.selectedSpeakerModel);
-      // Ask AI on but no usable reasoning engine (no provider, no default model,
-      // or the default model's provider isn't configured). Readiness lives in the
-      // onboarding-ai store; reading the derived here keeps `attentionCount`
-      // tracking the provider/model/key state it depends on.
-      case "askai":
-        return this.draftAskAiEnabled && !this.ai.aiConfigReady;
-      // Semantic search on but no installed model selected — inert until one is
-      // downloaded, surfaced as attention (it self-gates, no hard dependency).
-      case "semanticSearch":
-        return semanticSearchModelNeedsAttentionFor(
-          this.draftSemanticSearchEnabled,
-          this.selectedSemanticSearchModel,
-        );
-      case "screen":
-      case "storage":
-      case "privacy":
-        return false;
-    }
+    return featureAttentionFor(this, id);
   }
 
   // ── Feature dependency relations ─────────────────────────────────────────
@@ -685,26 +624,7 @@ export class OnboardingController {
   // model download and when no download is running. Percent may be null when
   // totalBytes is unknown — callers render `{percent ?? 0}%`.
   featureDownload(id: FeatureId): { running: boolean; percent: number | null } | null {
-    switch (id) {
-      case "ocr":
-        return this.selectedOcrDownloadRunning
-          ? { running: true, percent: this.selectedOcrDownloadPercent }
-          : null;
-      case "transcribe":
-        return this.selectedTranscriptionDownloadRunning
-          ? { running: true, percent: this.selectedTranscriptionDownloadPercent }
-          : null;
-      case "speakers":
-        return this.selectedSpeakerDownloadRunning
-          ? { running: true, percent: this.selectedSpeakerDownloadPercent }
-          : null;
-      case "semanticSearch":
-        return this.selectedSemanticSearchDownloadRunning
-          ? { running: true, percent: this.selectedSemanticSearchDownloadPercent }
-          : null;
-      default:
-        return null;
-    }
+    return featureDownloadFor(this, id);
   }
 
   // ── Footer / CTA deriveds ────────────────────────────────────────────────
