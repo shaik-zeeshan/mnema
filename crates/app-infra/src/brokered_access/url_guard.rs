@@ -19,28 +19,39 @@
 //!    split into sub-parts so a keyword sub-part can arm the following sub-part
 //!    (e.g. `verify%2F<token>`); the original `%2F`/`%2f` delimiter is preserved
 //!    on rejoin so the keyword stays readable.
-//! 3. **High-entropy backstop** — even with no armed predecessor, an obviously
-//!    random, separator-light token (`len >= 12`, mixed character class, a
-//!    single run with no hyphen-separated word structure) is redacted UNLESS it
-//!    is a recognized resource id: a UUID, an all-hex string (commit SHAs), or
-//!    a segment whose immediate predecessor is a resource-id carrier
-//!    (`d`, `document`, `commit`, `blob`, `tree`, `users`, … see
-//!    `RESOURCE_ID_PREDECESSORS`). This catches share/reset tokens that ride
-//!    generic carriers like `/s/`, `/scl/fi/`, or `/ls/click/`.
+//! 3. **High-entropy backstop** — even with no armed predecessor, an opaque
+//!    token (`len >= 12`, mixed character class) is redacted by default. The
+//!    opaque run counts `-`, `_`, `.`, `~`, and `+` as part of one token, so
+//!    base64url (`A-Za-z0-9-_`), underscore-joined, and dotted (`v1.<rand>`)
+//!    secrets no longer slip through on the strength of a single separator.
+//!    A backstop token is PRESERVED only when it is a human-readable hyphen
+//!    word slug (`getting-started-with-rust`, ≥1 purely-alphabetic part) or a
+//!    recognized PUBLIC-ID shape (a UUID or an all-hex string / commit SHA).
+//!    Generic resource-id carriers (`d`, `document`, `commit`, `users`, `id`,
+//!    `raw`, … see `RESOURCE_ID_PREDECESSORS`) no longer blanket-rescue their
+//!    successor: a token after such a carrier survives ONLY if it is itself a
+//!    public-id shape (UUID / all-hex / all-numeric); a mixed-class opaque token
+//!    after `/id/`, `/raw/`, `/user/` is redacted like any other.
 //!
-//! Accepted residual (what still passes):
-//!   - A high-entropy token that is ALSO a recognized resource id — i.e. it
-//!     sits directly after a resource-id carrier (`/d/<id>`), or it is itself a
-//!     UUID or an all-hex string — is preserved by design, even if some such
-//!     carriers occasionally front a private token.
-//!   - A content slug that happens to look token-ish but is hyphen-separated
-//!     into word-like parts (e.g. `getting-started-with-rust`) is preserved;
-//!     a credential value crafted to mimic that shape (random parts joined by
-//!     hyphens) with no armed predecessor would also pass.
+//! Accepted residual (what still passes — kept deliberately, stated honestly):
+//!   - A UUID or an all-hex string (commit SHA / object id) is preserved as a
+//!     public-id shape even though, without surrounding context, a 32-hex string
+//!     COULD in principle be a secret. This residual is unavoidable here: bare
+//!     SHAs and UUIDs legitimately appear in paths and the model needs them.
+//!   - A carrier-LESS opaque PUBLIC id with no hyphen-word structure (e.g. a
+//!     Spotify `track/4cOdK2wGLETKBW3PvgPWqT` base62 id) is OVER-redacted — it
+//!     is indistinguishable from a share token at read time, and we favor
+//!     redaction. This is an accepted false-positive, not a leak.
+//!   - A content slug that is hyphen-separated into word-like parts with ≥1
+//!     purely-alphabetic part (`getting-started-with-rust`) is preserved; a
+//!     credential crafted to mimic that exact shape (random parts joined by
+//!     hyphens, at least one all-alpha part) with no armed predecessor would
+//!     also pass. Note the armed pass drops this exemption entirely.
 //!   - A short opaque token (`len < 12`) with no known shape and no armed
 //!     predecessor still passes.
-//! These are the deliberate false-negatives kept to avoid mangling legitimate
-//! document ids, SHAs, UUIDs, and human-readable slugs.
+//! Everything else opaque — base64url / underscore / dotted high-entropy tokens,
+//! mixed-class tokens after generic carriers, and ANY `len >= 12` token after an
+//! armed credential keyword (hyphens and all) — is now redacted.
 
 use secret_redaction::{redact_searchable_text, RedactionContext};
 use url::Url;
@@ -231,17 +242,24 @@ fn process_segment(
             .map(is_resource_id_predecessor)
             .unwrap_or(false);
 
+        // A resource-id carrier (`d`, `commit`, `id`, `raw`, `user`, …) only
+        // rescues its successor when that successor is itself a recognized
+        // public-id shape (UUID / all-hex / all-numeric). A mixed-class opaque
+        // token after a generic carrier (e.g. `/id/SuperSecretSessionToken…`)
+        // is NOT a public id and must still fall through to the backstop.
+        let carrier_rescues = prev_is_resource_carrier && is_public_id_shape(part);
+
         if armed && is_armed_opaque(part) {
             // Positional-arming pass: an opaque token after a credential
             // keyword. Arming establishes credential intent, so we redact ANY
-            // opaque `len >= 12` token regardless of character class.
+            // opaque `len >= 12` token regardless of character class (hyphens
+            // included — the hyphen-word-slug exemption is dropped here).
             rebuilt.push_str(ARMED_TOKEN_PLACEHOLDER);
             *redacted_count += 1;
-        } else if !prev_is_resource_carrier && is_backstop_token(part) {
-            // High-entropy backstop: an obviously-random token with no armed
-            // predecessor and no resource-id carrier in front of it. UUIDs,
-            // all-hex SHAs, and resource ids are excluded inside
-            // `is_backstop_token` / via `prev_is_resource_carrier`.
+        } else if !carrier_rescues && is_backstop_token(part) {
+            // High-entropy backstop: an opaque token with no armed predecessor
+            // that the carrier did not rescue. UUIDs, all-hex SHAs, and
+            // hyphen-word slugs are excluded inside `is_backstop_token`.
             rebuilt.push_str(ARMED_TOKEN_PLACEHOLDER);
             *redacted_count += 1;
         } else {
@@ -316,19 +334,16 @@ fn normalize_keyword(segment: &str) -> String {
 /// Aggressive opacity test used ONLY on the ARMED path. Because the predecessor
 /// already established credential intent, any opaque token of `len >= 12` is
 /// redacted regardless of character class — this catches all-lowercase,
-/// all-upper, all-digit, and `prefix_<opaque>` reset / invite / OTP / share
-/// tokens that the conservative `is_token_shaped` test would miss.
+/// all-upper, all-digit, `prefix_<opaque>`, and hyphen-broken reset / invite /
+/// OTP / share tokens that the conservative `is_token_shaped` test would miss.
 ///
 /// We still require `len >= 12` so a short dictionary word after a keyword
-/// (e.g. `verify/email`) survives. The ONLY thing we refuse to redact here is a
-/// hyphen-separated word slug, so an armed-but-human-readable tail (rare) is
-/// not mangled. Underscore-joined tokens like `test_abc123XYZ…` are NOT word
-/// slugs and ARE redacted.
+/// (e.g. `verify/email`) survives. Unlike the backstop, the armed path does NOT
+/// exempt hyphen word slugs: once a credential keyword has armed the position,
+/// intent is established, so `reset-password/abc-9f3a2b-def-1c4e` is redacted
+/// just like `reset/<opaque>`.
 fn is_armed_opaque(segment: &str) -> bool {
-    if segment.chars().count() < 12 {
-        return false;
-    }
-    !is_hyphen_word_slug(segment)
+    segment.chars().count() >= 12
 }
 
 /// True when the segment looks like a hyphen-separated sequence of
@@ -353,14 +368,20 @@ fn is_hyphen_word_slug(segment: &str) -> bool {
     has_alpha_word
 }
 
-/// Conservative "token-shaped" test — favors PRESERVING resource ids.
+/// Opaque-token shape test for the backstop — `len >= 12`, drawn entirely from
+/// the OPAQUE charset (`A-Za-z0-9` plus the token separators `-`, `_`, `.`,
+/// `~`, `+`), with a mixed character class.
 ///
-/// A segment qualifies only if `len >= 12` AND
-/// (`has_digit && has_ascii_alpha`) OR (`has_uppercase && has_lowercase`).
+/// Counting `-`/`_`/`.`/`~`/`+` as part of one opaque run is the priority fix:
+/// real session / share / magic-link / reset tokens are overwhelmingly
+/// base64url (`A-Za-z0-9-_`), underscore-joined, or dotted (`v1.<rand>`), and a
+/// single such separator must NOT take the token out of scope.
 ///
-/// This makes dictionary words like `email` survive (so `/verify/email` is
-/// preserved) while high-entropy tokens like `AbC9xK2mP4qR7s` or a long hex
-/// `8f3a9c...` (len >= 12) get redacted.
+/// A segment qualifies only if every char is in the opaque charset AND `len >=
+/// 12` AND (`has_digit && has_ascii_alpha`) OR (`has_uppercase &&
+/// has_lowercase`). Dictionary words like `email` survive (not mixed class, too
+/// short), while `AbC9xK2mP4qR7s`, `ABCdef-123_GHIjkl`, and `v1.MR9aBcDeF_…`
+/// all qualify.
 fn is_token_shaped(segment: &str) -> bool {
     if segment.chars().count() < 12 {
         return false;
@@ -370,6 +391,12 @@ fn is_token_shaped(segment: &str) -> bool {
     let mut has_upper = false;
     let mut has_lower = false;
     for c in segment.chars() {
+        if !is_opaque_char(c) {
+            // A char outside the opaque charset (e.g. an escaped `%`, a CJK
+            // glyph) means this is not a single opaque run; leave it to the
+            // known-shape pass.
+            return false;
+        }
         if c.is_ascii_digit() {
             has_digit = true;
         }
@@ -386,41 +413,59 @@ fn is_token_shaped(segment: &str) -> bool {
     (has_digit && has_ascii_alpha) || (has_upper && has_lower)
 }
 
-/// High-entropy backstop candidate test. Redact a segment when it is an
-/// obviously-random, separator-light token — but NEVER a recognized resource
-/// id. Resource ids are excluded here so that document ids, commit SHAs, and
-/// UUIDs survive even though they are token-shaped.
+/// True for a character that may appear inside one opaque token run: an ASCII
+/// alphanumeric or one of the base64url / token separators `-`, `_`, `.`, `~`,
+/// `+`. A single such separator no longer splits the token (the old
+/// `is_single_run` bug, where `ABCdef-123_GHIjkl` read as a non-token).
+fn is_opaque_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '+')
+}
+
+/// High-entropy backstop candidate test. Redact a segment when it is an opaque
+/// token — but NEVER a human-readable slug or a recognized PUBLIC-ID shape.
+///
+/// This is the priority-bug fix: opacity, not "pure single alphanumeric run",
+/// is the gate. A base64url / underscore / dotted token like
+/// `ABCdef-123_GHIjkl` or `v1.MR9aBcDeF_…` is now redacted instead of passing
+/// through on the strength of one separator.
 ///
 /// A segment is a backstop token when:
-///   - it is token-shaped (`len >= 12`, mixed character class), AND
-///   - it is a single run (no hyphen-separated dictionary-word structure), so
-///     human-readable slugs like `getting-started-with-rust` are preserved, AND
-///   - it is NOT a UUID, AND
-///   - it is NOT all-hex (covers commit SHAs).
+///   - it is token-shaped (`len >= 12`, opaque charset, mixed character class),
+///     AND
+///   - it is NOT a hyphen WORD slug (`getting-started-with-rust`, ≥1 all-alpha
+///     part), so human-readable content slugs are preserved, AND
+///   - it is NOT a recognized public-id shape (UUID, or all-hex commit SHA).
 ///
 /// (Resource-id carriers in front of the token are handled by the caller via
-/// `is_resource_id_predecessor`, so a token after `/d/` survives.)
+/// `is_resource_id_predecessor` + `is_public_id_shape`, so a UUID after `/d/`
+/// survives while a mixed-class token after `/id/` does not.)
 fn is_backstop_token(segment: &str) -> bool {
     if !is_token_shaped(segment) {
         return false;
     }
-    if !is_single_run(segment) {
+    if is_hyphen_word_slug(segment) {
         return false;
     }
-    if is_uuid(segment) {
-        return false;
-    }
-    if is_all_hex(segment) {
+    if is_public_id_shape(segment) {
         return false;
     }
     true
 }
 
-/// True when the segment is a single contiguous alphanumeric run — no `-`, `_`,
-/// `.`, or other separators that would indicate a hyphen-joined word slug.
-/// Random opaque tokens are single runs; content slugs are not.
-fn is_single_run(segment: &str) -> bool {
-    segment.chars().all(|c| c.is_ascii_alphanumeric())
+/// True when the segment is a recognized PUBLIC-ID shape: a UUID, an all-hex
+/// string (commit SHA / object id), or an all-numeric id. These are the only
+/// shapes a generic resource-id carrier is allowed to rescue, and the only
+/// token-shaped strings the backstop preserves outright. All-numeric strings are
+/// not token-shaped (no alpha) so they never reach the backstop, but the carrier
+/// path uses this predicate directly.
+fn is_public_id_shape(segment: &str) -> bool {
+    is_uuid(segment) || is_all_hex(segment) || is_all_numeric(segment)
+}
+
+/// True when every character is an ASCII digit (a bare numeric resource id).
+/// Requires at least one character.
+fn is_all_numeric(segment: &str) -> bool {
+    !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// True for the canonical 8-4-4-4-12 hex UUID shape (case-insensitive).
@@ -616,16 +661,34 @@ mod tests {
     // --- MUST be preserved ---
 
     #[test]
-    fn google_doc_id_survives() {
+    fn document_d_uuid_survives() {
+        // Policy change: the `d` resource-id carrier now rescues its successor
+        // ONLY when the successor is itself a public-id shape (UUID / all-hex /
+        // all-numeric). A UUID document id after `/d/` survives.
         let out =
-            guard("https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit").unwrap();
+            guard("https://docs.google.com/document/d/550e8400-e29b-41d4-a716-446655440000/edit")
+                .unwrap();
         assert!(
-            out.contains("1AbCdEfGhIjKlMnOpQrStUvWxYz"),
-            "doc id must survive (predecessor `d` is a resource-id carrier): {out}"
+            out.contains("550e8400-e29b-41d4-a716-446655440000"),
+            "UUID doc id after resource-id carrier `d` must survive: {out}"
         );
         assert_eq!(
             out,
-            "docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit"
+            "docs.google.com/document/d/550e8400-e29b-41d4-a716-446655440000/edit"
+        );
+    }
+
+    #[test]
+    fn mixed_class_doc_id_after_carrier_is_redacted() {
+        // Policy change (was `google_doc_id_survives`): a mixed-class opaque
+        // Google-style doc id after `/d/` is NOT a public-id shape, so the
+        // generic carrier no longer rescues it. Over-redacting an opaque public
+        // id here is the accepted security-favoring tradeoff.
+        let out =
+            guard("https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit").unwrap();
+        assert!(
+            !out.contains("1AbCdEfGhIjKlMnOpQrStUvWxYz"),
+            "mixed-class opaque id after generic carrier must be redacted: {out}"
         );
     }
 
@@ -759,9 +822,125 @@ mod tests {
     }
 
     #[test]
-    fn single_run_distinguishes_token_from_slug() {
-        assert!(is_single_run("AbC9xK2mP4qR7sT0"));
-        assert!(!is_single_run("my-awesome-post-2024"));
-        assert!(!is_single_run("getting-started-with-rust"));
+    fn backstop_token_distinguishes_opaque_from_slug() {
+        // Opaque tokens (alnum runs OR separator-broken base64url/dotted) are
+        // backstop tokens; hyphen WORD slugs and public-id shapes are not.
+        assert!(is_backstop_token("AbC9xK2mP4qR7sT0"));
+        assert!(is_backstop_token("ABCdef-123_GHIjkl-456_MNOpqr"));
+        assert!(is_backstop_token("v1.MR9aBcDeF_gHiJkLmNoPqRsTuVwXyZ"));
+        assert!(!is_backstop_token("my-awesome-post-2024"));
+        assert!(!is_backstop_token("getting-started-with-rust"));
+        assert!(!is_backstop_token("550e8400-e29b-41d4-a716-446655440000")); // UUID
+        assert!(!is_backstop_token("9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f")); // all-hex
+    }
+
+    #[test]
+    fn opaque_char_counts_separators_as_one_run() {
+        assert!(is_opaque_char('a'));
+        assert!(is_opaque_char('9'));
+        assert!(is_opaque_char('-'));
+        assert!(is_opaque_char('_'));
+        assert!(is_opaque_char('.'));
+        assert!(is_opaque_char('~'));
+        assert!(is_opaque_char('+'));
+        assert!(!is_opaque_char('/'));
+        assert!(!is_opaque_char('%'));
+    }
+
+    #[test]
+    fn public_id_shape_covers_uuid_hex_numeric() {
+        assert!(is_public_id_shape("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(is_public_id_shape("9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"));
+        assert!(is_public_id_shape("019283746501928374"));
+        assert!(!is_public_id_shape("1AbCdEfGhIjKlMnOpQrStUvWxYz")); // mixed class, not a public-id shape
+    }
+
+    // --- Priority bug: base64url / underscore / dotted opaque token leak ---
+    // Each of these previously slipped through the `is_single_run` gate because
+    // a single `-`/`_`/`.` made the run "not pure alphanumeric". They MUST now
+    // redact via the opacity backstop.
+
+    #[test]
+    fn base64url_hyphen_underscore_token_is_redacted() {
+        let out = guard("https://app.com/u/ABCdef-123_GHIjkl-456_MNOpqr").unwrap();
+        assert!(
+            !out.contains("ABCdef-123_GHIjkl-456_MNOpqr"),
+            "base64url opaque token must be redacted: {out}"
+        );
+        assert_eq!(out, format!("app.com/u/{ARMED_TOKEN_PLACEHOLDER}"));
+    }
+
+    #[test]
+    fn dotted_prefix_token_is_redacted() {
+        let out = guard("https://app.com/p/v1.MR9aBcDeF_gHiJkLmNoPqRsTuVwXyZ").unwrap();
+        assert!(
+            !out.contains("v1.MR9aBcDeF_gHiJkLmNoPqRsTuVwXyZ"),
+            "dotted `v1.<rand>` token must be redacted: {out}"
+        );
+        assert_eq!(out, format!("app.com/p/{ARMED_TOKEN_PLACEHOLDER}"));
+    }
+
+    #[test]
+    fn underscore_joined_token_is_redacted() {
+        let out = guard("https://app.com/p/aBcDeF123456_GHIjkl789012").unwrap();
+        assert!(
+            !out.contains("aBcDeF123456_GHIjkl789012"),
+            "underscore-joined opaque token must be redacted: {out}"
+        );
+        assert_eq!(out, format!("app.com/p/{ARMED_TOKEN_PLACEHOLDER}"));
+    }
+
+    // --- New policy boundary: mixed-class token after a generic carrier ---
+
+    #[test]
+    fn mixed_class_token_after_id_carrier_is_redacted() {
+        // `id` is a resource-id carrier, but it only rescues public-id shapes.
+        // A mixed-class opaque token after `/id/` is redacted, not preserved.
+        let out = guard("https://app.com/id/SuperSecretSessionToken12345").unwrap();
+        assert!(
+            !out.contains("SuperSecretSessionToken12345"),
+            "mixed-class token after `id` carrier must be redacted: {out}"
+        );
+        assert_eq!(out, format!("app.com/id/{ARMED_TOKEN_PLACEHOLDER}"));
+    }
+
+    // --- New policy: armed path drops the hyphen-word-slug exemption ---
+
+    #[test]
+    fn armed_hyphen_broken_token_is_redacted() {
+        // After a credential keyword, ANY `len >= 12` token redacts — even one
+        // that would read as a hyphen word slug outside the armed position.
+        let out = guard("https://app.com/reset-password/abc-9f3a2b-def-1c4e").unwrap();
+        assert!(
+            !out.contains("abc-9f3a2b-def-1c4e"),
+            "armed hyphen-broken token must be redacted: {out}"
+        );
+        assert!(out.contains("reset-password"), "{out}");
+        assert_eq!(out, format!("app.com/reset-password/{ARMED_TOKEN_PLACEHOLDER}"));
+    }
+
+    #[test]
+    fn armed_invite_hyphen_token_is_redacted() {
+        let out = guard("https://app.com/invite/team-x9f3a2b1c4e7").unwrap();
+        assert!(
+            !out.contains("team-x9f3a2b1c4e7"),
+            "armed invite token must be redacted: {out}"
+        );
+        assert!(out.contains("invite"), "{out}");
+    }
+
+    // --- New policy: carrier-less opaque public id over-redacts (tradeoff) ---
+
+    #[test]
+    fn carrier_less_opaque_id_is_over_redacted() {
+        // ACCEPTED TRADEOFF: a Spotify-style base62 track id has no carrier and
+        // no hyphen-word structure, so it is indistinguishable from a share
+        // token at read time and is redacted. This is a false-positive, not a
+        // leak — we favor redaction.
+        let out = guard("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT").unwrap();
+        assert!(
+            !out.contains("4cOdK2wGLETKBW3PvgPWqT"),
+            "carrier-less opaque id is over-redacted by design: {out}"
+        );
     }
 }
