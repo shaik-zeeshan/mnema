@@ -891,4 +891,90 @@ mod tests {
             );
         }
     }
+
+    /// Drives the probe cache exactly the way the Live-mode metadata caller does
+    /// (`browser_url_probe_for_active_bundle`): each ~1s metadata tick calls
+    /// `cached_url_for`; a `None` return is a probe (osascript spawn / AX read)
+    /// and rebuilds the cache via `from_probe`. This counts the real probes over
+    /// a one-hour frontmost session with a per-second-changing title, which is
+    /// the workload INV-P1 (the floor) is meant to bound.
+    fn count_probes_over_session(
+        tick: Duration,
+        session: Duration,
+        mut title_at: impl FnMut(u64) -> String,
+    ) -> u64 {
+        let bundle = "com.apple.Safari";
+        let base = Instant::now();
+        // Seed the cache with the first probe (tick 0).
+        let mut cache = BrowserUrlProbeCache::from_probe(
+            Some(bundle.to_string()),
+            Some(title_at(0)),
+            Some("https://mail.example.com/inbox".to_string()),
+            base,
+        );
+        let mut probes = 1; // the seed probe at tick 0
+        let ticks = (session.as_millis() / tick.as_millis()) as u64;
+        for n in 1..=ticks {
+            let now = base + tick * (n as u32);
+            let title = title_at(n);
+            match cache.cached_url_for(bundle, Some(&title), now) {
+                Some(_cached) => {} // served from cache, no probe
+                None => {
+                    // A real caller re-probes and rebuilds the cache here.
+                    probes += 1;
+                    cache = BrowserUrlProbeCache::from_probe(
+                        Some(bundle.to_string()),
+                        Some(title),
+                        Some("https://mail.example.com/inbox".to_string()),
+                        now,
+                    );
+                }
+            }
+        }
+        probes
+    }
+
+    #[test]
+    fn dynamic_title_probe_rate_is_floor_bounded_not_per_tick() {
+        // Gmail-style per-second unread counter, held frontmost for one hour at a
+        // 1s metadata tick (3600 ticks). The title changes on EVERY tick.
+        let tick = Duration::from_secs(1);
+        let session = Duration::from_secs(3600);
+        let probes =
+            count_probes_over_session(tick, session, |n| format!("({n}) Inbox — Gmail"));
+
+        // INV-P1: a dynamic-title page cannot probe faster than once per
+        // BROWSER_URL_PROBE_REPROBE_FLOOR. Over a 3600s session that is an upper
+        // bound of ceil(3600s / 1.5s) = 2400 probes. We assert the realized count
+        // matches the floor cadence (every other 1s tick, since 1.5s floor lands
+        // a re-probe on every 2nd tick): 1 seed + floor(3599/2) re-probes.
+        let floor_secs = BROWSER_URL_PROBE_REPROBE_FLOOR.as_secs_f64();
+        let max_probes_per_floor = (session.as_secs_f64() / floor_secs).ceil() as u64 + 1;
+        assert!(
+            probes <= max_probes_per_floor,
+            "probe count {probes} must not exceed the floor bound {max_probes_per_floor} \
+             (1 probe / {floor_secs}s over {}s)",
+            session.as_secs()
+        );
+
+        // Quantify the realized cadence: with a 1s tick and a 1.5s floor, a changed
+        // title re-probes on every 2nd tick (the 1.5s floor is only cleared at the
+        // 2s tick boundary), i.e. ~1800 probes/hour = ~30 probes/min.
+        let per_min = (probes as f64) / 60.0;
+        assert!(
+            (29.0..=31.0).contains(&per_min),
+            "expected ~30 probes/min under a 1s tick + 1.5s floor, got {per_min:.1} \
+             ({probes} probes/hour)"
+        );
+
+        // Contrast: the pre-PR flat 15s poll probed once per 15s = 4 probes/min =
+        // 240 probes/hour. The new title-gating is ~7.5x MORE probes for this
+        // dynamic-title workload. Documented here so the tradeoff is explicit.
+        let pre_pr_probes_per_hour = 3600 / 15;
+        assert!(
+            probes > pre_pr_probes_per_hour * 5,
+            "sanity: title-gating should be a large multiple of the old 15s poll \
+             ({probes} vs {pre_pr_probes_per_hour})"
+        );
+    }
 }
