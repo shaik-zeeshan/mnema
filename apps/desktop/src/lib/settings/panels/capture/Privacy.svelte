@@ -19,7 +19,7 @@
     description="Store app, window, and supported browser context with frames"
   >
     {#snippet control()}
-      <Switch bind:checked={rec.draftMetadataEnabled} />
+      <Switch bind:checked={rec.draftMetadataEnabled} ariaLabel="Capture frame context" />
     {/snippet}
   </SettingRow>
 

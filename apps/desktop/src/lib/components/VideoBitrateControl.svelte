@@ -44,9 +44,9 @@
   {#if mode === "custom"}
     <div class="custom-bitrate-row">
       <div class="custom-res-field">
-        <label class="custom-res-label" for="bitrate-mbps">Bitrate (Mbps, whole number)</label>
+        <label class="custom-res-label" for="bitrate-mbps">Bitrate (Mbps)</label>
         <div class="custom-bitrate-input-wrap">
-          <Stepper id="bitrate-mbps" bind:value={customMbpsRaw} min={1} max={40} unit="Mbps" placeholder="e.g. 12" ariaLabel="bitrate in Mbps" invalid={customErrors.length > 0} />
+          <Stepper id="bitrate-mbps" bind:value={customMbpsRaw} min={1} max={40} unit="Mbps" placeholder="e.g. 12" ariaLabel="Bitrate (Mbps)" invalid={customErrors.length > 0} />
         </div>
       </div>
       <FieldWarning messages={customErrors} />

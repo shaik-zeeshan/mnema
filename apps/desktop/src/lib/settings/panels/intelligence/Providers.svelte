@@ -74,6 +74,7 @@
     {#snippet aside()}
       <Switch
         bind:checked={rec.draftAiEnabled}
+        ariaLabel="Enable AI features"
         onCheckedChange={(checked) => {
           // A "Connection succeeded" banner must never sit next to a disabled
           // master switch, so clear it when AI features are turned off.

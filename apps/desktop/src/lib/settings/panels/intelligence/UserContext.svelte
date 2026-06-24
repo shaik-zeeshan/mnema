@@ -42,7 +42,7 @@
     full
   >
     {#snippet aside()}
-      <Switch bind:checked={rec.draftUserContextEnabled} />
+      <Switch bind:checked={rec.draftUserContextEnabled} ariaLabel="Derive context continuously" />
     {/snippet}
     {#snippet control()}
       <div class="privacy-disclosure">

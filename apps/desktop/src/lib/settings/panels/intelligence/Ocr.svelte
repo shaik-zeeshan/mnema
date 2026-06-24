@@ -66,7 +66,7 @@
     description="Automatically queue OCR for captured screen frames when the selected engine is available"
   >
     {#snippet control()}
-      <Switch bind:checked={rec.draftOcrEnabled} />
+      <Switch bind:checked={rec.draftOcrEnabled} ariaLabel="Enable OCR" />
     {/snippet}
   </SettingRow>
 
@@ -131,7 +131,7 @@
       description="Let Apple Vision spend extra work correcting recognized text using language models"
     >
       {#snippet control()}
-        <Switch bind:checked={rec.draftOcrLanguageCorrection} disabled={!rec.draftOcrEnabled} />
+        <Switch bind:checked={rec.draftOcrLanguageCorrection} disabled={!rec.draftOcrEnabled} ariaLabel="Language correction" />
       {/snippet}
     </SettingRow>
   {:else if rec.draftOcrProvider === "tesseract"}

@@ -77,7 +77,7 @@
     description="Master switch for source-specific audio transcription"
   >
     {#snippet control()}
-      <Switch bind:checked={rec.draftTranscriptionEnabled} />
+      <Switch bind:checked={rec.draftTranscriptionEnabled} ariaLabel="Enable audio transcription" />
     {/snippet}
   </SettingRow>
 
@@ -90,6 +90,7 @@
       <Switch
         bind:checked={rec.draftTranscriptionMicrophoneEnabled}
         disabled={!rec.draftTranscriptionEnabled}
+        ariaLabel="Transcribe microphone"
       />
     {/snippet}
   </SettingRow>
@@ -103,6 +104,7 @@
       <Switch
         bind:checked={rec.draftTranscriptionSystemAudioEnabled}
         disabled={!rec.draftTranscriptionEnabled}
+        ariaLabel="Transcribe system audio"
       />
     {/snippet}
   </SettingRow>

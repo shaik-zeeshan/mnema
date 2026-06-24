@@ -37,7 +37,7 @@
     description="Reveal the Debug surface in the navigation bar (raw session, system probe, idle policy, app-infra and background-job tools) and record verbose Debug-level entries in the General Application Log. When disabled, the Debug page is hidden, visiting it redirects to the Timeline, and the General Application Log keeps only high-level events and errors. Development builds always log verbosely. Changes auto-save and apply immediately."
   >
     {#snippet control()}
-      <Switch bind:checked={rec.draftDeveloperOptionsEnabled} />
+      <Switch bind:checked={rec.draftDeveloperOptionsEnabled} ariaLabel="Enable developer options" />
     {/snippet}
   </SettingRow>
 
@@ -46,7 +46,7 @@
     description="Write native capture diagnostic output to a log file on disk for troubleshooting. Changes auto-save and apply immediately."
   >
     {#snippet control()}
-      <Switch bind:checked={rec.draftNativeCaptureDebugLoggingEnabled} />
+      <Switch bind:checked={rec.draftNativeCaptureDebugLoggingEnabled} ariaLabel="Native capture debug logging" />
     {/snippet}
   </SettingRow>
 

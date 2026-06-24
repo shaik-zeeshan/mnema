@@ -85,7 +85,7 @@
       description="Use system-wide shortcuts for recording and showing Mnema while it is in the background. Background shortcuts require Command/Control or Alt; foreground shortcuts are ignored while typing in text fields."
     >
       {#snippet control()}
-        <Switch bind:checked={keyboard.draftGlobalShortcutsEnabled} />
+        <Switch bind:checked={keyboard.draftGlobalShortcutsEnabled} ariaLabel="Global shortcuts" />
       {/snippet}
     </SettingRow>
 

@@ -14,7 +14,7 @@
     description="Begin capturing immediately when the app opens"
   >
     {#snippet control()}
-      <Switch bind:checked={rec.draftAutoStart} />
+      <Switch bind:checked={rec.draftAutoStart} ariaLabel="Auto-start recording on launch" />
     {/snippet}
   </SettingRow>
 </SettingGroup>

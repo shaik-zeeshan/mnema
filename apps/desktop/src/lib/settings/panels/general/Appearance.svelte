@@ -29,7 +29,7 @@
     description="Keep the timeline pinned to the latest captured data while recording"
   >
     {#snippet control()}
-      <Switch bind:checked={rec.draftFollowTimelineLive} />
+      <Switch bind:checked={rec.draftFollowTimelineLive} ariaLabel="Follow live recording" />
     {/snippet}
   </SettingRow>
 </SettingGroup>

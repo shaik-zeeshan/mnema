@@ -154,7 +154,14 @@
   <!-- `hidden` when collapsed so a closed row exposes no empty labelled region. -->
   <div class="row-body" id={bodyId} role="region" aria-labelledby={titleId} hidden={!open}>
     {#if open}
-      <div class="body-inner">
+      <!-- When the feature is OFF but expanded, its body is visually dimmed
+           (`.disabled-feature` in onboarding-body.css). `pointer-events: none`
+           blocks the mouse but NOT the keyboard, so without `inert` the dimmed
+           draft controls / model-download buttons stay tab-reachable and
+           keyboard-activatable. `inert` removes the whole subtree from the tab
+           order and blocks activation, matching the visual dim. Same condition
+           that drives `disabled-feature` on the row above. -->
+      <div class="body-inner" inert={open && !enabled && !required}>
         {#if body}{@render body()}{/if}
       </div>
     {/if}

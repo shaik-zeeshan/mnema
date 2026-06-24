@@ -35,13 +35,13 @@
   {:else}
     <SettingRow label="Screen" description="Capture the display">
       {#snippet control()}
-        <Switch bind:checked={rec.draftCaptureScreen} />
+        <Switch bind:checked={rec.draftCaptureScreen} ariaLabel="Screen" />
       {/snippet}
     </SettingRow>
 
     <SettingRow label="Microphone" description="Capture audio from microphone">
       {#snippet control()}
-        <Switch bind:checked={rec.draftCaptureMicrophone} />
+        <Switch bind:checked={rec.draftCaptureMicrophone} ariaLabel="Microphone" />
       {/snippet}
     </SettingRow>
 
@@ -56,6 +56,7 @@
         <Switch
           bind:checked={rec.draftCaptureSystemAudio}
           disabled={!rec.draftCaptureScreen}
+          ariaLabel="System Audio"
         />
       {/snippet}
     </SettingRow>
@@ -89,7 +90,7 @@
       divider={rec.draftPauseCaptureOnInactivity}
     >
       {#snippet control()}
-        <Switch bind:checked={rec.draftPauseCaptureOnInactivity} />
+        <Switch bind:checked={rec.draftPauseCaptureOnInactivity} ariaLabel="Pause capture when idle" />
       {/snippet}
     </SettingRow>
 

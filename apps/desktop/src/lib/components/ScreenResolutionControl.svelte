@@ -54,12 +54,12 @@
     <div class="custom-resolution-inputs">
       <div class="custom-res-field">
         <label class="custom-res-label" for="res-width">Width (px)</label>
-        <Input id="res-width" bind:value={widthRaw} inputmode="numeric" placeholder="e.g. 1920" ariaLabel="width" invalid={customErrors.length > 0} />
+        <Input id="res-width" bind:value={widthRaw} inputmode="numeric" placeholder="e.g. 1920" invalid={customErrors.length > 0} />
       </div>
       <span class="custom-res-sep" aria-hidden="true">x</span>
       <div class="custom-res-field">
         <label class="custom-res-label" for="res-height">Height (px)</label>
-        <Input id="res-height" bind:value={heightRaw} inputmode="numeric" placeholder="e.g. 1080" ariaLabel="height" invalid={customErrors.length > 0} />
+        <Input id="res-height" bind:value={heightRaw} inputmode="numeric" placeholder="e.g. 1080" invalid={customErrors.length > 0} />
       </div>
       <FieldWarning messages={customErrors} />
     </div>

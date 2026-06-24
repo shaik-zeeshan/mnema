@@ -261,9 +261,12 @@
 /* ===== unmet-prerequisite callout (in-body inline action) =====
    Rendered at the TOP of a locked feature's body. It is a direct child of
    `.body-inner` that is NEITHER `.group`/`.ctl`/`.model-card`, so the feature-off
-   dim below leaves it fully visible + interactive — the user can satisfy the
-   prerequisite (grant a permission / flip transcription on) from right here.
-   Accent-toned to read as "action needed". */
+   dim below leaves it fully visible — accent-toned to read as "action needed".
+   Note: when the feature is OFF the body wrapper carries `inert` (FeatureRow), so
+   this callout's button is non-operable here too; the same prerequisite action is
+   always reachable from a never-inert surface — permission grants from the
+   (required) Permissions row, "enable transcription" from the Transcription row's
+   header toggle. */
 .onboarding-shell .lock-callout {
   display: flex;
   align-items: center;
