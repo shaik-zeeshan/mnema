@@ -4,41 +4,6 @@
  * shell imports the parts in source order — see settings-layout.css for the
  * full map). Every selector is namespaced under `.settings-shell`. */
 
-  /* ── Custom resolution inputs ─────────────────────────────────────── */
-  .settings-shell .custom-resolution-inputs {
-    display: flex;
-    align-items: flex-end;
-    gap: 8px;
-  }
-
-  .settings-shell .custom-res-field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    flex: 1;
-  }
-
-  .settings-shell .custom-res-label {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--app-text-faint);
-  }
-
-  .settings-shell .custom-res-input {
-    width: 100%;
-  }
-
-  .settings-shell .custom-res-sep {
-    font-size: 18px;
-    font-weight: 300;
-    color: var(--app-text-faint);
-    padding-bottom: 7px;
-    flex-shrink: 0;
-    line-height: 1;
-  }
-
   /* ── Resolution locked notice ─────────────────────────────────────── */
   .settings-shell .resolution-unsupported-notice {
     display: flex;
@@ -167,104 +132,10 @@
     line-height: 1.55;
   }
 
-  /* ── Video Bitrate chips ──────────────────────────────────────────── */
-  .settings-shell .bitrate-mode-chips {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-
-  .settings-shell .bitrate-chip {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    padding: 8px 16px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    cursor: pointer;
-    outline: none;
-    font-family: inherit;
-    transition: background 0.12s, border-color 0.12s;
-    min-width: 72px;
-  }
-
-  .settings-shell .bitrate-chip:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-
-  .settings-shell .bitrate-chip--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent);
-  }
-
-  .settings-shell .bitrate-chip:focus-visible {
-    outline: 1px solid var(--app-accent);
-    outline-offset: 1px;
-  }
-
-  .settings-shell .bitrate-chip__label {
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: var(--app-text);
-    text-transform: uppercase;
-  }
-
-  .settings-shell .bitrate-chip--active .bitrate-chip__label {
-    color: var(--app-accent);
-  }
-
-  .settings-shell .bitrate-chip__mbps {
-    font-size: 9px;
-    color: var(--app-text-subtle);
-    letter-spacing: 0.04em;
-  }
-
-  .settings-shell .bitrate-chip--active .bitrate-chip__mbps {
-    color: var(--app-accent-strong);
-  }
-
   /* ── Bitrate preset hint ──────────────────────────────────────────── */
   .settings-shell .bitrate-preset-hint strong {
     color: var(--app-neutral-text);
     font-weight: 700;
-  }
-
-  /* ── Custom bitrate input row ─────────────────────────────────────── */
-  .settings-shell .custom-bitrate-row {
-    display: flex;
-    align-items: flex-end;
-    gap: 8px;
-  }
-
-  .settings-shell .custom-bitrate-input-wrap {
-    display: flex;
-    align-items: center;
-    gap: 0;
-  }
-
-  .settings-shell .custom-bitrate-input {
-    width: 120px;
-    border-radius: 4px 0 0 4px;
-    flex: unset;
-  }
-
-  .settings-shell .custom-bitrate-unit {
-    padding: 7px 10px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-left: none;
-    border-radius: 0 4px 4px 0;
-    font-size: 11px;
-    color: var(--app-text-subtle);
-    letter-spacing: 0.06em;
-    white-space: nowrap;
-    font-weight: 600;
-    text-transform: uppercase;
-    user-select: none;
   }
 
   /* ── Bitrate compatibility notice ─────────────────────────────────── */

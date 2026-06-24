@@ -100,40 +100,6 @@
     color: var(--app-text);
   }
 
-  [data-theme="light"] .settings-shell .bitrate-chip {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border-strong);
-  }
-  [data-theme="light"] .settings-shell .bitrate-chip:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  [data-theme="light"] .settings-shell .bitrate-chip--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent);
-  }
-  [data-theme="light"] .settings-shell .bitrate-chip__label {
-    color: var(--app-text-strong);
-  }
-  [data-theme="light"] .settings-shell .bitrate-chip--active .bitrate-chip__label {
-    color: var(--app-accent-strong);
-  }
-  [data-theme="light"] .settings-shell .bitrate-chip__mbps {
-    color: var(--app-text-muted);
-  }
-
-  [data-theme="light"] .settings-shell .custom-res-label {
-    color: var(--app-text-muted);
-  }
-  [data-theme="light"] .settings-shell .custom-res-sep {
-    color: var(--app-text-muted);
-  }
-  [data-theme="light"] .settings-shell .custom-bitrate-unit {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border-strong);
-    color: var(--app-text-muted);
-  }
-
   [data-theme="light"] .settings-shell .resolution-unsupported-notice, [data-theme="light"] .settings-shell .resolution-locked-notice, [data-theme="light"] .settings-shell .resolution-pending-notice, [data-theme="light"] .settings-shell .resolution-warn-notice, [data-theme="light"] .settings-shell .resolution-supported-notice, [data-theme="light"] .settings-shell .bitrate-compat-notice, [data-theme="light"] .settings-shell .audio-activity-notice {
     background: var(--app-surface-raised);
     border-color: var(--app-border);
