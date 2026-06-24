@@ -3836,16 +3836,22 @@
 
   // Open the current frame's captured http(s) page in the default browser via
   // the brokered Rust command (the raw URL stays in Rust; only the guarded
-  // host+path ever reaches the UI). Best-effort — a missing/unopenable URL just
-  // does nothing.
+  // host+path ever reaches the UI). The command returns false when the frame
+  // has no openable http(s) URL — surface that to the user rather than no-op.
   async function openCurrentFrameUrl(): Promise<void> {
     const frame = timelineActive;
     if (!frame) return;
     try {
-      await invoke("open_captured_url", { frameId: frame.id });
+      const opened = await invoke<boolean>("open_captured_url", { frameId: frame.id });
+      if (!opened) {
+        setFrameActionStatus("No openable URL for this frame");
+        return;
+      }
       stageActionsMenuOpen = false;
-    } catch {
-      // Best-effort: silently no-op when the URL cannot be opened.
+    } catch (err) {
+      setFrameActionStatus(
+        `Couldn't open URL: ${typeof err === "string" ? err : "the page could not be opened"}`,
+      );
     }
   }
 

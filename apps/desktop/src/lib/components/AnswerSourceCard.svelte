@@ -115,10 +115,14 @@
   </div>
 </button>
 {#if openHost}
+  <!-- Keyboard-reachable as its own tab stop: this card lives in a plain
+       horizontal source strip (role="presentation", no roving-focus model), so a
+       tab stop here doesn't conflict with anything — it just makes the open
+       action reachable without a mouse. Tabbing onto it reveals it (the
+       :focus-within reveal + :focus-visible ring below are now genuinely live). -->
   <button
     type="button"
     class="source-card__open"
-    tabindex="-1"
     title={`Open ${url} in browser`}
     aria-label={`Open ${openHost} in browser`}
     onclick={handleOpen}
@@ -321,8 +325,9 @@
       background 0.12s ease;
   }
 
-  /* Reveal the control on tile hover/focus or whenever it itself is the focus
-     target, so it stays keyboard-reachable without cluttering resting cards. */
+  /* Reveal the control on tile hover, or whenever focus is within the tile — the
+     open button is a real tab stop (see markup), so tabbing onto it brings it into
+     view here without cluttering resting cards. */
   .source-card-wrap:hover .source-card__open,
   .source-card-wrap:focus-within .source-card__open {
     opacity: 1;

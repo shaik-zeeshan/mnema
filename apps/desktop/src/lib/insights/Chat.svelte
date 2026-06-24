@@ -32,6 +32,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { openSettingsWindow } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { openCapturedUrl } from "$lib/open-captured-url";
   import { askAiClock } from "$lib/askAiClock";
   import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerProse from "$lib/AnswerProse.svelte";
@@ -695,15 +696,11 @@
   }
 
   // Open the captured page behind a frame source in the default browser via the
-  // brokered Rust command. Frame sources only (audio has frameId/url null). The
+  // shared brokered helper. Frame sources only (audio has frameId/url null). The
   // raw URL stays in Rust; the UI never sees it. Best-effort.
-  async function openSourceUrl(source: AskAiSource): Promise<void> {
+  function openSourceUrl(source: AskAiSource): void {
     if (source.frameId == null) return;
-    try {
-      await invoke("open_captured_url", { frameId: source.frameId });
-    } catch {
-      // Best-effort: a missing/unopenable URL simply does nothing.
-    }
+    void openCapturedUrl(source.frameId);
   }
 
   // ── Versioned update transport (the SOLE Ask AI stream listener) ─────────

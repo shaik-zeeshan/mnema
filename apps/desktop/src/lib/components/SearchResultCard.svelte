@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import type { FrameSearchResultDto, AudioSearchResultDto } from "$lib/types/app-infra";
   import { parseSearchSnippet } from "$lib/search-snippet";
   import { formatTimestampCompact } from "$lib/format-time";
+  import { openCapturedUrl } from "$lib/open-captured-url";
   import AudioWaveform from "$lib/components/AudioWaveform.svelte";
 
   let {
@@ -46,17 +46,13 @@
     kind === "frame" && frame?.url ? frame.url.split("/")[0] : "",
   );
 
-  // Open the captured http(s) page in the default browser via the brokered Rust
-  // command (the raw URL stays in Rust). Stop propagation so the surrounding
+  // Open the captured http(s) page in the default browser via the shared brokered
+  // helper (the raw URL stays in Rust). Stop propagation so the surrounding
   // card-select button does not also fire. Best-effort.
-  async function openCapturedUrl(event: MouseEvent): Promise<void> {
+  function handleOpen(event: MouseEvent): void {
     event.stopPropagation();
     if (kind !== "frame" || !frame) return;
-    try {
-      await invoke("open_captured_url", { frameId: frame.thumbnailFrameId });
-    } catch {
-      // Best-effort: a missing/unopenable URL simply does nothing.
-    }
+    void openCapturedUrl(frame.thumbnailFrameId);
   }
 </script>
 
@@ -113,13 +109,19 @@
     </div>
   </button>
   {#if openHost}
+    <!-- This card is a non-focusable option in an aria-activedescendant listbox
+         (Quick Recall keeps DOM focus on the search input), so this control stays
+         out of the tab order — a tab stop here would break the listbox's roving
+         model. It is reached by mouse, and by keyboard via the listbox container's
+         "open selected result's page" shortcut (⌘/Ctrl+O on the search input,
+         in quick-recall/+page.svelte), which calls the same brokered helper. -->
     <button
       type="button"
       class="search-card__open"
       tabindex="-1"
       title={`Open ${frame.url} in browser`}
       aria-label={`Open ${openHost} in browser`}
-      onclick={openCapturedUrl}
+      onclick={handleOpen}
     >
       <svg class="search-card__open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M5.5 2.5H2.5v9h9v-3" />
@@ -433,15 +435,15 @@
       background 0.12s ease;
   }
 
-  /* Reveal the control on card hover/focus or whenever it itself is the focus
-     target, so it stays keyboard-reachable without cluttering resting cards. */
-  .search-card-wrap:hover .search-card__open,
-  .search-card-wrap:focus-within .search-card__open {
+  /* Reveal the control on card hover, so it doesn't clutter resting cards. This
+     card is a non-focusable listbox option (DOM focus stays on the search input),
+     so there is no keyboard focus to reveal it; the keyboard path is the listbox
+     container's "open selected result" shortcut, not a focus traversal here. */
+  .search-card-wrap:hover .search-card__open {
     opacity: 1;
   }
 
-  .search-card__open:hover,
-  .search-card__open:focus-visible {
+  .search-card__open:hover {
     outline: none;
     opacity: 1;
     border-color: var(--app-accent-border);

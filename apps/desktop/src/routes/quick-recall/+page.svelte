@@ -8,6 +8,7 @@
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { openCapturedUrl } from "$lib/open-captured-url";
   import { closeCurrentWindow, openSettingsWindow } from "$lib/surface-windows";
   import type {
     SemanticSearchModelStatusResponse,
@@ -301,15 +302,11 @@
   }
 
   // Open the captured page behind a frame source in the default browser via the
-  // brokered Rust command. Frame sources only (audio has frameId/url null). The
+  // shared brokered helper. Frame sources only (audio has frameId/url null). The
   // raw URL stays in Rust; the UI never sees it. Best-effort.
-  async function openSourceUrl(source: AskAiSource): Promise<void> {
+  function openSourceUrl(source: AskAiSource): void {
     if (source.frameId == null) return;
-    try {
-      await invoke("open_captured_url", { frameId: source.frameId });
-    } catch {
-      // Best-effort: a missing/unopenable URL simply does nothing.
-    }
+    void openCapturedUrl(source.frameId);
   }
 
   // Load thumbnails for answer-source frames, mirroring loadThumbnails. Best
@@ -367,6 +364,20 @@
     } else {
       void selectAudio(audio[index - frames.length]);
     }
+  }
+
+  // Open the captured page behind the currently-selected frame result in the
+  // default browser. The result cards live in an aria-activedescendant listbox
+  // (DOM focus stays on the search input), so the per-card open chip can't sit in
+  // the tab order without breaking the roving model. This is the keyboard path to
+  // that chip's action (⌘/Ctrl+O, wired in handleSearchKeydown): it opens the
+  // selected frame's page through the same brokered helper the chip uses. Audio
+  // results and frames without an openable URL are a no-op.
+  function openSelectedResultUrl(): void {
+    if (selectedIndex < 0 || selectedIndex >= frames.length) return;
+    const frame = frames[selectedIndex];
+    if (frame.url == null) return;
+    void openCapturedUrl(frame.thumbnailFrameId);
   }
 
   function moveSelection(delta: number): void {
@@ -525,6 +536,21 @@
         event.preventDefault();
         openResultAt(index);
       }
+      return;
+    }
+
+    // ⌘/Ctrl+O opens the selected frame result's captured page in the browser —
+    // the keyboard path to each card's hover-only "open in browser" chip, which
+    // can't be a tab stop inside this aria-activedescendant listbox. A no-op when
+    // nothing is selected or the selection has no openable URL (audio / no link).
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      (event.key === "o" || event.key === "O")
+    ) {
+      event.preventDefault();
+      openSelectedResultUrl();
       return;
     }
 
