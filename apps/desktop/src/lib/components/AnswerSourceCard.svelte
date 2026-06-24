@@ -25,18 +25,32 @@
      *  raw URL never reaches the UI; only the host is shown as the control label. */
     url?: string | null;
     onselect: () => void;
-    /** Open the captured page in the browser (frame sources with a `url`). */
-    onopenurl?: () => void;
+    /** Open the captured page in the browser (frame sources with a `url`). May
+     *  return a promise (the brokered open); the chip awaits it to drive its
+     *  in-flight latch. */
+    onopenurl?: () => void | Promise<void>;
   } = $props();
 
   // Label the open control with the host only (the substring before the first
   // "/" of the guarded host+path); the full guarded form goes in the tooltip.
   let openHost = $derived(kind === "frame" && url ? url.split("/")[0] : "");
 
-  function handleOpen(event: MouseEvent): void {
+  // In-flight latch for this card's open chip: a second click while the first
+  // open await is still pending is ignored, so a double-click can't open the page
+  // twice or stack two feedback dialogs. Per-instance (a local boolean), so one
+  // card's in-flight state never disables another card's chip.
+  let opening = $state(false);
+
+  async function handleOpen(event: MouseEvent): Promise<void> {
     // Stop the surrounding card-select button from also firing.
     event.stopPropagation();
-    onopenurl?.();
+    if (opening) return;
+    opening = true;
+    try {
+      await onopenurl?.();
+    } finally {
+      opening = false;
+    }
   }
 
   // Fade the thumbnail image in once it decodes so it eases over the reserved
@@ -123,8 +137,10 @@
   <button
     type="button"
     class="source-card__open"
+    class:source-card__open--busy={opening}
     title={`Open ${url} in browser`}
     aria-label={`Open ${openHost} in browser`}
+    disabled={opening}
     onclick={handleOpen}
   >
     <svg class="source-card__open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -341,6 +357,16 @@
     background: var(--app-surface-raised);
     color: var(--app-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 12%, transparent);
+  }
+
+  /* In-flight open: the chip is disabled while the brokered open is pending, so a
+     double-click can't stack opens. Dim it slightly and drop the pointer cursor
+     so the busy state reads without shifting the layout. */
+  .source-card__open--busy,
+  .source-card__open:disabled {
+    cursor: default;
+    opacity: 0.6;
+    box-shadow: none;
   }
 
   .source-card__open-glyph {

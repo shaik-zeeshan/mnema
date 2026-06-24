@@ -20,6 +20,7 @@
   import { developerOptions } from "$lib/developer-options.svelte";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
+  import { openCapturedUrl } from "$lib/open-captured-url";
   import {
     activeExactPreviewDelayMs,
     scrubPreviewResponseShouldApply,
@@ -561,6 +562,10 @@
   let frameActionStatusTimer: ReturnType<typeof setTimeout> | null = null;
   let frameActionStatusHovered = $state(false);
   let stageActionsMenuOpen = $state(false);
+  // In-flight latch for the stage's "open captured URL" action: only one open
+  // runs at a time on the stage, so a single boolean keeps a double-click on the
+  // menu item from stacking opens. Reset in openCurrentFrameUrl's finally.
+  let openingCurrentFrameUrl = $state(false);
   let stageActionsOpenedByKeyboard = false;
   let stageActionsTriggerEl = $state<HTMLButtonElement | null>(null);
   let stageActionsMenuEl = $state<HTMLDivElement | null>(null);
@@ -3835,23 +3840,29 @@
   }
 
   // Open the current frame's captured http(s) page in the default browser via
-  // the brokered Rust command (the raw URL stays in Rust; only the guarded
-  // host+path ever reaches the UI). The command returns false when the frame
-  // has no openable http(s) URL — surface that to the user rather than no-op.
+  // the shared brokered helper (the raw URL stays in Rust; only the guarded
+  // host+path ever reaches the UI). Pass `{ silent: true }` so the helper does
+  // NOT pop its own dialog — the dashboard has its own inline frame-action
+  // status line, so it branches on the returned status instead: `no-url` and
+  // `error` surface that status (and leave the actions menu open), `opened`
+  // closes the menu.
   async function openCurrentFrameUrl(): Promise<void> {
     const frame = timelineActive;
-    if (!frame) return;
+    if (!frame || openingCurrentFrameUrl) return;
+    openingCurrentFrameUrl = true;
     try {
-      const opened = await invoke<boolean>("open_captured_url", { frameId: frame.id });
-      if (!opened) {
+      const { status, error } = await openCapturedUrl(frame.id, { silent: true });
+      if (status === "no-url") {
         setFrameActionStatus("No openable URL for this frame");
         return;
       }
+      if (status === "error") {
+        setFrameActionStatus(`Couldn't open URL: ${error}`);
+        return;
+      }
       stageActionsMenuOpen = false;
-    } catch (err) {
-      setFrameActionStatus(
-        `Couldn't open URL: ${typeof err === "string" ? err : "the page could not be opened"}`,
-      );
+    } finally {
+      openingCurrentFrameUrl = false;
     }
   }
 
@@ -7106,6 +7117,7 @@
                   type="button"
                   class="timeline__stage-action-menu-item timeline__stage-action-menu-item--open"
                   onclick={openCurrentFrameUrl}
+                  disabled={openingCurrentFrameUrl}
                   title={`Open ${currentFrameHost} in browser`}
                   aria-label={`Open ${currentFrameHost} in browser`}
                 >
@@ -9517,6 +9529,19 @@
     border-color: var(--app-border-hover);
     color: var(--app-text);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-border-hover) 32%, transparent);
+  }
+
+  /* Disabled menu item (preview-not-ready, or an open already in flight): dim it
+     and drop the pointer cursor so it reads as inert without shifting layout. */
+  .timeline__stage-action-menu-item:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+
+  .timeline__stage-action-menu-item:disabled:hover {
+    background: transparent;
+    border-color: transparent;
+    color: var(--app-text-muted);
   }
 
   /* The "open in browser" peer reuses the menu-item shell so it reads as a

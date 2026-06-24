@@ -302,16 +302,26 @@
     await closeCurrentWindow();
   }
 
-  // Open a captured page via the shared brokered helper, surfacing a real opener
-  // failure (mirroring the timeline's "Couldn't open URL: …"). A no-openable-URL
-  // result is a benign no-op. The raw URL stays in Rust; the UI never sees it.
+  // In-flight latch for the captured-page open: one selected result (and one
+  // answer-source chip) opens at a time, so a single boolean is enough to keep the
+  // ⌃O key or a chip double-click from stacking opens / feedback dialogs. The
+  // latch wraps the actual brokered open, so it covers the keyboard path
+  // (openSelectedResultUrl → here) and the answer-source chips (openSourceUrl →
+  // here) alike. (Search result chips have their own per-instance latch inside
+  // SearchResultCard.)
+  let openingCapturedUrl = $state(false);
+
+  // Open a captured page via the shared brokered helper. The helper owns the
+  // feedback: a no-openable-URL result shows a brief info note and a real opener
+  // failure shows an error dialog (mirroring the timeline's "Couldn't open
+  // URL: …"). The raw URL stays in Rust; the UI never sees it.
   async function openCapturedFrameUrl(frameId: number): Promise<void> {
-    const { error } = await openCapturedUrl(frameId);
-    if (error) {
-      await message(`Couldn't open URL: ${error}`, {
-        title: "Couldn't open page",
-        kind: "error",
-      });
+    if (openingCapturedUrl) return;
+    openingCapturedUrl = true;
+    try {
+      await openCapturedUrl(frameId);
+    } finally {
+      openingCapturedUrl = false;
     }
   }
 
@@ -362,10 +372,17 @@
   // ---------------------------------------------------------------------------
 
   let resultCount = $derived(frames.length + audio.length);
-  // At least one frame result carries an openable captured page, so the ⌘/Ctrl+O
-  // "open page" footer hint (and its per-card chip) actually has a target. Gates
-  // the footer hint so it never advertises an action that can't fire.
-  let hasOpenableResult = $derived(frames.some((frame) => frame.url != null));
+  // The currently-selected result is an openable frame: selection is within the
+  // frame section (audio selections sit past frames.length) AND that frame
+  // carries a captured page. Gates the ⌃/⌘+O "open page" footer hint so it
+  // tracks the *selected* result — the hint only shows when the action the
+  // keypress fires (openSelectedResultUrl on the selection) actually has a
+  // target, never advertising a no-op for an audio/url-less selection.
+  let selectedResultIsOpenable = $derived(
+    selectedIndex >= 0 &&
+      selectedIndex < frames.length &&
+      frames[selectedIndex]?.url != null,
+  );
   const OPTION_ID_PREFIX = "qr-opt-";
   let activeOptionId = $derived(
     selectedIndex >= 0 ? `${OPTION_ID_PREFIX}${selectedIndex}` : undefined,
@@ -388,13 +405,20 @@
   // (DOM focus stays on the search input), so the per-card open chip can't sit in
   // the tab order without breaking the roving model. This is the keyboard path to
   // that chip's action (⌘/Ctrl+O, wired in handleSearchKeydown): it opens the
-  // selected frame's page through the same brokered helper the chip uses. Audio
-  // results and frames without an openable URL are a no-op.
+  // selected frame's page through the same brokered helper the chip uses. The
+  // footer hint is gated on `selectedResultIsOpenable`, so the keypress should
+  // only land here on an openable frame — but the ⌃O shortcut still fires while a
+  // non-openable result is selected, so surface a benign note (same opener
+  // feedback path as a real failure) instead of silently doing nothing.
   function openSelectedResultUrl(): void {
-    if (selectedIndex < 0 || selectedIndex >= frames.length) return;
-    const frame = frames[selectedIndex];
-    if (frame.url == null) return;
-    void openCapturedFrameUrl(frame.thumbnailFrameId);
+    if (selectedResultIsOpenable) {
+      void openCapturedFrameUrl(frames[selectedIndex].thumbnailFrameId);
+      return;
+    }
+    void message("No openable page for this result.", {
+      title: "Couldn't open page",
+      kind: "info",
+    });
   }
 
   function moveSelection(delta: number): void {
@@ -4190,7 +4214,7 @@
                                       : null}
                                     url={s.url}
                                     onselect={() => void selectSource(s)}
-                                    onopenurl={() => void openSourceUrl(s)}
+                                    onopenurl={() => openSourceUrl(s)}
                                   />
                                 {/each}
                               </div>
@@ -4303,7 +4327,7 @@
       {:else if resultCount > 0}
         <span class="quick-recall__hint-item"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
         <span class="quick-recall__hint-item"><kbd>↵</kbd> open</span>
-        {#if hasOpenableResult}
+        {#if selectedResultIsOpenable}
           <span class="quick-recall__hint-item"><kbd>⌃O</kbd> open page</span>
         {/if}
         {#if askAvailable}

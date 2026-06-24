@@ -30,7 +30,6 @@
   import { onMount, onDestroy, tick, untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { message } from "@tauri-apps/plugin-dialog";
   import { openSettingsWindow } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
@@ -696,19 +695,25 @@
     }
   }
 
+  // Per-source in-flight latch: `openSourceUrl` is a SINGLE function shared across
+  // every frame source chip rendered in the loop, so a plain boolean would wrongly
+  // disable ALL chips while one opens. Track the frameId of the in-flight open
+  // instead, ignore a re-click on that same source, and disable only its chip.
+  let openingFrameId = $state<number | null>(null);
+
   // Open the captured page behind a frame source in the default browser via the
   // shared brokered helper. Frame sources only (audio has frameId/url null). The
-  // raw URL stays in Rust; the UI never sees it. A no-openable-URL result is a
-  // benign no-op; a real opener failure surfaces an error dialog (mirroring the
-  // timeline's "Couldn't open URL: …").
+  // raw URL stays in Rust; the UI never sees it. The helper owns the feedback: a
+  // no-openable-URL result shows a brief info note and a real opener failure
+  // shows an error dialog (mirroring the timeline's "Couldn't open URL: …").
   async function openSourceUrl(source: AskAiSource): Promise<void> {
-    if (source.frameId == null) return;
-    const { error } = await openCapturedUrl(source.frameId);
-    if (error) {
-      await message(`Couldn't open URL: ${error}`, {
-        title: "Couldn't open page",
-        kind: "error",
-      });
+    const frameId = source.frameId;
+    if (frameId == null || openingFrameId === frameId) return;
+    openingFrameId = frameId;
+    try {
+      await openCapturedUrl(frameId);
+    } finally {
+      if (openingFrameId === frameId) openingFrameId = null;
     }
   }
 
@@ -1162,7 +1167,7 @@
                                       : null}
                                     url={s.url}
                                     onselect={() => void selectSource(s)}
-                                    onopenurl={() => void openSourceUrl(s)}
+                                    onopenurl={() => openSourceUrl(s)}
                                   />
                                 {/each}
                               </div>

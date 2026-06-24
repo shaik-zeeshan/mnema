@@ -3,7 +3,6 @@
   import { parseSearchSnippet } from "$lib/search-snippet";
   import { formatTimestampCompact } from "$lib/format-time";
   import { openCapturedUrl } from "$lib/open-captured-url";
-  import { message } from "@tauri-apps/plugin-dialog";
   import AudioWaveform from "$lib/components/AudioWaveform.svelte";
 
   let {
@@ -47,20 +46,25 @@
     kind === "frame" && frame?.url ? frame.url.split("/")[0] : "",
   );
 
+  // In-flight latch for this card's open chip: a second activation while the
+  // first open await is still pending is ignored, so a double-click can't open
+  // the page twice or stack two feedback dialogs. Per-instance (a local boolean),
+  // so one card's in-flight state never disables another card's chip.
+  let opening = $state(false);
+
   // Open the captured http(s) page in the default browser via the shared brokered
   // helper (the raw URL stays in Rust). Stop propagation so the surrounding
-  // card-select button does not also fire. A no-openable-URL result is a benign
-  // no-op; a real opener failure surfaces an error dialog (mirroring the
-  // timeline's "Couldn't open URL: …").
+  // card-select button does not also fire. The helper owns the feedback: a
+  // no-openable-URL result shows a brief info note and a real opener failure
+  // shows an error dialog (mirroring the timeline's "Couldn't open URL: …").
   async function handleOpen(event: MouseEvent): Promise<void> {
     event.stopPropagation();
-    if (kind !== "frame" || !frame) return;
-    const { error } = await openCapturedUrl(frame.thumbnailFrameId);
-    if (error) {
-      await message(`Couldn't open URL: ${error}`, {
-        title: "Couldn't open page",
-        kind: "error",
-      });
+    if (kind !== "frame" || !frame || opening) return;
+    opening = true;
+    try {
+      await openCapturedUrl(frame.thumbnailFrameId);
+    } finally {
+      opening = false;
     }
   }
 </script>
@@ -129,9 +133,11 @@
     <button
       type="button"
       class="search-card__open"
+      class:search-card__open--busy={opening}
       tabindex="-1"
       title={`Open ${frame.url} in browser`}
       aria-label={`Open ${openHost} in browser`}
+      disabled={opening}
       onclick={handleOpen}
     >
       <svg class="search-card__open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -465,6 +471,16 @@
     background: var(--app-surface-raised);
     color: var(--app-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 12%, transparent);
+  }
+
+  /* In-flight open: the chip is disabled while the brokered open is pending, so a
+     double-click can't stack opens. Dim it slightly and drop the pointer cursor
+     so the busy state reads without shifting the layout. */
+  .search-card__open--busy,
+  .search-card__open:disabled {
+    cursor: default;
+    opacity: 0.6;
+    box-shadow: none;
   }
 
   .search-card__open-glyph {
