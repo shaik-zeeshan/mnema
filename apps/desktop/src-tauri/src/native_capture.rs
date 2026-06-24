@@ -123,6 +123,7 @@ const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unava
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
 const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
+const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
 #[cfg(target_os = "macos")]
 const APP_ICON_CACHE_DIR: &str = "app-icons";
 // Point size we render cached app icons at. Displayed at 20–24 CSS px, so a
@@ -978,7 +979,7 @@ fn audio_transcription_unavailable_notification(
         ),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
+            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }

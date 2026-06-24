@@ -430,7 +430,14 @@ fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
         "shortcuts" | "keyboard" | "keyboard-shortcuts" | "keyboard_bindings" => Some("shortcuts"),
         "video" => Some("video"),
         "audio" | "microphone" => Some("audio"),
-        "processing" | "ocr" | "transcription" | "speakers" => Some("processing"),
+        // Granular processing sub-tabs pass through so a notification targeting
+        // (e.g.) transcription lands on the transcription section instead of
+        // being collapsed to "processing" (which the page resolves to OCR).
+        "ocr" => Some("ocr"),
+        "transcription" => Some("transcription"),
+        "speakers" => Some("speakers"),
+        // Legacy "processing" alias kept for back-compat (page maps it to OCR).
+        "processing" => Some("processing"),
         "storage" => Some("storage"),
         "appearance" => Some("appearance"),
         "developer" => Some("developer"),
@@ -1466,9 +1473,13 @@ mod tests {
 
     #[test]
     fn settings_tab_aliases_normalize_to_canonical_tabs() {
-        assert_eq!(normalize_settings_tab("ocr"), Some("processing"));
-        assert_eq!(normalize_settings_tab("transcription"), Some("processing"));
-        assert_eq!(normalize_settings_tab("speakers"), Some("processing"));
+        // Granular processing sub-tabs pass through (no longer collapsed to
+        // "processing") so notifications can target a specific section.
+        assert_eq!(normalize_settings_tab("ocr"), Some("ocr"));
+        assert_eq!(normalize_settings_tab("transcription"), Some("transcription"));
+        assert_eq!(normalize_settings_tab("speakers"), Some("speakers"));
+        // Legacy "processing" alias is still accepted for back-compat.
+        assert_eq!(normalize_settings_tab("processing"), Some("processing"));
         assert_eq!(normalize_settings_tab("microphone"), Some("audio"));
         assert_eq!(normalize_settings_tab("behavior"), Some("capture"));
         assert_eq!(normalize_settings_tab("metadata"), Some("privacy"));
@@ -1502,7 +1513,7 @@ mod tests {
     fn settings_tab_deeplink_path_targets_canonical_tab() {
         assert_eq!(
             settings_tab_focus_path("transcription", None).as_deref(),
-            Ok("/settings?tab=processing")
+            Ok("/settings?tab=transcription")
         );
         assert_eq!(
             settings_tab_focus_path("audio", None).as_deref(),
@@ -1535,7 +1546,7 @@ mod tests {
     #[test]
     fn open_settings_payload_normalizes_aliases() {
         let payload = normalized_open_settings_payload(Some("ocr"), Some("agent-access"));
-        assert_eq!(payload.tab.as_deref(), Some("processing"));
+        assert_eq!(payload.tab.as_deref(), Some("ocr"));
         assert_eq!(payload.focus.as_deref(), Some("cliAccess"));
 
         // Unknown values are dropped, not errored, so a stale deeplink still lands

@@ -73,10 +73,17 @@ export function normalizeSettingsTab(tab?: SettingsWindowTab | string | null): s
     case "audio":
     case "microphone":
       return "audio";
-    case "processing":
+    // Granular processing sub-tabs pass through so a notification targeting
+    // (say) transcription lands on the transcription section rather than being
+    // collapsed to the legacy "processing" tab (which the page resolves to OCR).
     case "ocr":
+      return "ocr";
     case "transcription":
+      return "transcription";
     case "speakers":
+      return "speakers";
+    // Legacy "processing" alias kept for back-compat; the page maps it to OCR.
+    case "processing":
       return "processing";
     case "storage":
       return "storage";
