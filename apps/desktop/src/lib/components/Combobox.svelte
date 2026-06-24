@@ -16,6 +16,7 @@
     type ComboboxOption,
   } from "./combobox-filter";
   import { pinAncestorScrollOnOpen } from "./pin-scroll-on-open";
+  import { shouldOpenUpward } from "./popover-direction";
 
   interface Props {
     value?: string | null;
@@ -74,7 +75,7 @@
     const spaceAbove = rect.top;
     // Keep in sync with the .combobox-content max-height (260px).
     const needed = 260;
-    openUp = spaceBelow < needed && spaceAbove > spaceBelow;
+    openUp = shouldOpenUpward(spaceBelow, spaceAbove, needed);
   }
 
   // Reset the query whenever the popover closes so the next open starts clean.

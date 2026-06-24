@@ -8,6 +8,20 @@
 // The pin releases immediately on a genuine user gesture (wheel/touch/pointer/key)
 // so it never fights intentional scrolling, and always tears down after the window.
 
+// Snap-back decision for the pin's scroll listener, extracted as a pure
+// predicate so it's unit-testable without the DOM. Snap the ancestor back to
+// the pinned `top` only while the pin is NOT released and the scroll has
+// actually drifted off the pin. A real user gesture releases the pin first
+// (so `released` short-circuits), and a scroll already sitting at `top`
+// (e.g. our own corrective write) is left alone — never fight it.
+export function shouldSnapBack(
+  released: boolean,
+  currentScrollTop: number,
+  pinnedTop: number,
+): boolean {
+  return !released && currentScrollTop !== pinnedTop;
+}
+
 function nearestScrollableAncestor(el: HTMLElement | null): HTMLElement | null {
   let node: HTMLElement | null = el?.parentElement ?? null;
   while (node) {
@@ -31,7 +45,7 @@ export function pinAncestorScrollOnOpen(wrapper: HTMLElement | null, windowMs = 
   const onScroll = () => {
     // A programmatic scrollIntoView fired — snap back. A real user gesture would
     // have released the pin first (handlers below), so this only counters the jump.
-    if (!released && ancestor.scrollTop !== top) ancestor.scrollTop = top;
+    if (shouldSnapBack(released, ancestor.scrollTop, top)) ancestor.scrollTop = top;
   };
 
   const release = () => {

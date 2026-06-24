@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Select as BitsSelect } from "bits-ui";
   import { pinAncestorScrollOnOpen } from "./pin-scroll-on-open";
+  import { shouldOpenUpward } from "./popover-direction";
 
   interface Option {
     value: string;
@@ -55,7 +56,7 @@
     const spaceAbove = rect.top;
     // Keep in sync with the .select-content max-height (220px).
     const needed = 220;
-    openUp = spaceBelow < needed && spaceAbove > spaceBelow;
+    openUp = shouldOpenUpward(spaceBelow, spaceAbove, needed);
   }
 
   function handleOpenChange(next: boolean) {

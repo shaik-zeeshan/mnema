@@ -20,6 +20,10 @@ const MAX_LINES = 800;
 const roots = [
   fileURLToPath(new URL("../src/lib/settings", import.meta.url)),
   fileURLToPath(new URL("../src/routes/settings", import.meta.url)),
+  // The onboarding shell shares the same 800-line cap; its feature-state was
+  // extracted (commit df6ff74c) specifically to keep `onboarding.svelte.ts` /
+  // `onboarding-models.svelte.ts` under the limit, so guard that tree too.
+  fileURLToPath(new URL("../src/routes/onboarding", import.meta.url)),
 ];
 
 function sourceFiles(): string[] {

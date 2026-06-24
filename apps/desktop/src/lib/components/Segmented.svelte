@@ -1,5 +1,9 @@
 <script lang="ts">
   import { tick, type Snippet } from "svelte";
+  import {
+    focusableIndex as computeFocusableIndex,
+    navTargetIndex,
+  } from "./segmented-nav";
 
   interface Option {
     value: string;
@@ -73,43 +77,19 @@
     }
   }
 
-  // Step from `from` in `dir` (+1/-1), skipping disabled options. Returns the
-  // first enabled index, or null if every option is disabled.
-  function nextEnabledIndex(from: number, dir: number): number | null {
-    const n = options.length;
-    for (let step = 1; step <= n; step += 1) {
-      const candidate = (((from + dir * step) % n) + n) % n;
-      if (!isOff(options[candidate].value)) return candidate;
-    }
-    return null;
-  }
-
   // Roving tabindex: exactly one enabled segment is tab-reachable. Prefer the
   // active value, but if it's disabled (or there's no active value) fall back to
   // the first enabled segment — otherwise the whole group becomes
   // keyboard-unreachable when the selected value is also in disabledValues.
   // -1 when every option is disabled (nothing focusable, which is correct).
-  const focusableIndex = $derived.by(() => {
-    const activeIndex = options.findIndex((o) => o.value === value);
-    if (activeIndex !== -1 && !isOff(options[activeIndex].value)) {
-      return activeIndex;
-    }
-    return options.findIndex((o) => !isOff(o.value));
-  });
+  // Index math lives in segmented-nav.ts so it's unit-testable.
+  const focusableIndex = $derived(
+    computeFocusableIndex(options, disabledValues, value),
+  );
 
   function onKeydown(event: KeyboardEvent, index: number) {
     if (disabled) return;
-    let nextIndex: number | null = null;
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      nextIndex = nextEnabledIndex(index, 1);
-    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      nextIndex = nextEnabledIndex(index, -1);
-    } else if (event.key === "Home") {
-      nextIndex = isOff(options[0].value) ? nextEnabledIndex(0, 1) : 0;
-    } else if (event.key === "End") {
-      const last = options.length - 1;
-      nextIndex = isOff(options[last].value) ? nextEnabledIndex(last, -1) : last;
-    }
+    const nextIndex = navTargetIndex(options, disabledValues, index, event.key);
     if (nextIndex === null) return;
     const target = nextIndex;
     event.preventDefault();
