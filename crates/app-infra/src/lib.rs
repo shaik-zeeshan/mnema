@@ -671,6 +671,15 @@ impl AppInfra {
         self.processing.get_frame(frame_id).await
     }
 
+    pub async fn get_frame_metadata_snapshots(
+        &self,
+        frame_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, capture_metadata::FrameMetadataSnapshot>> {
+        self.processing
+            .get_frame_metadata_snapshots(frame_ids)
+            .await
+    }
+
     pub async fn get_nearest_earlier_equivalent_frame(
         &self,
         frame_id: i64,

@@ -1587,27 +1587,32 @@ async fn broker_frame_timeline(
     query.push_bind(limit as i64);
 
     let rows = query.build().fetch_all(infra.pool()).await?;
+
+    // Read-time URL guard: load the representative (landing) frames' metadata
+    // snapshots in a SINGLE batched query (keyed by frame id), NOT one sequential
+    // `get_frame` round-trip per interval. With `limit` clamped to
+    // MAX_SEARCH_LIMIT=100 the old per-interval loop was an N+1 of up to 100
+    // sequential DB round-trips on this interactive broker tool path; the IN-query
+    // collapses them to one. The raw frame id never crosses to the wire, and only
+    // guarded http(s) host+path survives — everything else guards to `None`.
+    let representative_frame_ids: Vec<i64> = rows
+        .iter()
+        .filter_map(|row| row.get::<Option<i64>, _>("representative_frame_id"))
+        .collect();
+    let snapshots = infra
+        .get_frame_metadata_snapshots(&representative_frame_ids)
+        .await?;
+
     let mut intervals = Vec::with_capacity(rows.len());
     for row in rows {
         let app_bundle_id: Option<String> = row.get("app_bundle_id");
         let app_name: Option<String> = row.get("app_name");
         let window_title: Option<String> = row.get("window_title");
-        // Read-time URL guard: load the representative (landing) frame's captured
-        // `browser_url` from its metadata snapshot and sanitize + secret-redact it
-        // before it leaves the broker boundary. The lookup is bounded by `limit`
-        // (one per interval), the raw frame id never crosses to the wire, and only
-        // guarded http(s) host+path survives — everything else guards to `None`.
         let representative_frame_id: Option<i64> = row.get("representative_frame_id");
-        let url = match representative_frame_id {
-            Some(frame_id) => infra
-                .get_frame(frame_id)
-                .await?
-                .and_then(|frame| frame.metadata_snapshot)
-                .and_then(|snapshot| snapshot.browser_url)
-                .as_deref()
-                .and_then(url_guard::guard_url),
-            None => None,
-        };
+        let url = representative_frame_id
+            .and_then(|frame_id| snapshots.get(&frame_id))
+            .and_then(|snapshot| snapshot.browser_url.as_deref())
+            .and_then(url_guard::guard_url);
         intervals.push(BrokerTimelineInterval {
             kind: "screen".to_string(),
             started_at: row.get("started_at"),
@@ -3909,6 +3914,83 @@ mod tests {
                     .and_then(|context| context.url.as_deref()),
                 Some("example.com/landing-page"),
                 "interval url is deterministically the MAX(id) landing frame's guarded url"
+            );
+        });
+    }
+
+    #[test]
+    fn broker_timeline_batches_representative_snapshot_loads_preserving_urls() {
+        // `broker_frame_timeline` loads every interval's representative-frame
+        // snapshot in ONE batched query (`get_frame_metadata_snapshots`) instead of
+        // a per-interval `get_frame` round-trip (the N+1 that, with `limit` clamped
+        // to MAX_SEARCH_LIMIT=100, was up to 100 sequential round-trips on this
+        // interactive broker path). The batching is a perf property; asserting it
+        // via a global call counter is non-deterministic under the parallel test
+        // harness, so this test pins the OBSERVABLE correctness the batching must
+        // preserve — every group still surfaces with its guarded url resolved
+        // through the single snapshot load — and relies on the batched
+        // implementation for the perf win.
+        run_async_test(async {
+            let config_dir = temp_config_dir("timeline-batch-snapshots");
+            let save_dir = temp_save_dir("timeline-batch-snapshots");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            // Seed N distinct timeline groups (distinct group_key => distinct
+            // interval => distinct representative frame), each carrying a browser_url
+            // so every interval must resolve a guarded url through the batch load.
+            const GROUPS: usize = 8;
+            for i in 0..GROUPS {
+                seed_grouped_frame_search_row(
+                    &infra,
+                    &save_dir,
+                    &format!("timeline-batch-{i}.jpg"),
+                    "2026-05-17T10:00:00Z",
+                    &format!("frame:eq:batch-group-{i}"),
+                    &format!("https://example.com/page-{i}"),
+                )
+                .await;
+            }
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_timeline(
+                &infra,
+                &[grant],
+                BrokerTimelineRequest {
+                    from: "2026-05-17T00:00:00Z".to_string(),
+                    to: "2026-05-18T00:00:00Z".to_string(),
+                    limit: Some(100),
+                    app: None,
+                    window_title: None,
+                },
+            )
+            .await
+            .expect("timeline should run")
+            .expect("timeline should be authorized");
+
+            let screen_with_url = response
+                .intervals
+                .iter()
+                .filter(|interval| interval.kind == "screen")
+                .filter(|interval| {
+                    interval
+                        .context
+                        .as_ref()
+                        .and_then(|context| context.url.as_deref())
+                        .is_some()
+                })
+                .count();
+            assert_eq!(
+                screen_with_url, GROUPS,
+                "every group's guarded url must resolve through the batched snapshot load"
             );
         });
     }
