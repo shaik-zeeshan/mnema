@@ -550,18 +550,6 @@
     color: var(--app-text-faint);
   }
 
-  /* ── Danger button variant ───────────────────────────────────────── */
-  .settings-shell .btn--danger {
-    background: var(--app-danger-bg-soft);
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-  }
-
-  .settings-shell .btn--danger:not(:disabled):hover {
-    background: var(--app-danger-bg);
-    border-color: var(--app-danger);
-  }
-
   /* ── Wipe User Context (destructive end of the User Context block) ── */
   .settings-shell .user-context-wipe {
     display: flex;
@@ -569,7 +557,7 @@
     gap: 0.5rem;
     margin-top: 0.25rem;
     padding-top: 0.75rem;
-    border-top: 1px solid var(--app-border-subtle, var(--app-border));
+    border-top: 1px solid var(--app-border);
   }
 
   /* A subtly destructive ghost button: ghost shape, danger-tinted text so it

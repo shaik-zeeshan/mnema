@@ -207,7 +207,7 @@
     border: 1px solid color-mix(in srgb, var(--app-accent) 20%, var(--app-border));
     border-radius: 10px;
     background:
-      radial-gradient(circle at 18% 20%, color-mix(in srgb, #f59e0b 12%, transparent), transparent 38%),
+      radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--app-warn) 12%, transparent), transparent 38%),
       radial-gradient(circle at 84% 8%, color-mix(in srgb, var(--app-accent) 14%, transparent), transparent 42%),
       color-mix(in srgb, var(--app-surface) 88%, transparent);
   }
