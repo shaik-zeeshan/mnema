@@ -195,24 +195,36 @@
   </div>
 {/if}
 
-<div class="group">
-  <div class="ctl stack-field">
-    <div class="ctl-label">
-      <div class="name">Recognition mode</div>
-      <div class="desc">Fast trades accuracy for speed; Accurate spends more time per frame.</div>
+{#if controller.draftOcrProvider === "apple_vision"}
+  <div class="group">
+    <div class="ctl stack-field">
+      <div class="ctl-label">
+        <div class="name">Recognition mode</div>
+        <div class="desc">Fast trades accuracy for speed; Accurate spends more time per frame.</div>
+      </div>
+      <div class="ctl-field">
+        <Segmented
+          bind:value={controller.draftOcrRecognitionMode}
+          ariaLabel="Recognition mode"
+          options={[
+            { value: "fast", label: "Fast" },
+            { value: "accurate", label: "Accurate" },
+          ]}
+        />
+      </div>
     </div>
-    <div class="ctl-field">
-      <Segmented
-        bind:value={controller.draftOcrRecognitionMode}
-        ariaLabel="Recognition mode"
-        options={[
-          { value: "fast", label: "Fast" },
-          { value: "accurate", label: "Accurate" },
-        ]}
-      />
+
+    <div class="ctl">
+      <div class="ctl-label">
+        <div class="name">Language correction</div>
+        <div class="desc">Let Apple Vision spend extra work correcting recognized text using language models.</div>
+      </div>
+      <div class="ctl-field">
+        <Switch bind:checked={controller.draftOcrLanguageCorrection} />
+      </div>
     </div>
   </div>
-</div>
+{/if}
 
 {#if controller.draftOcrProvider === "tesseract"}
   <div class="group">
@@ -248,11 +260,12 @@
           <div class="desc">Grayscale suits clean UI text; Thresholded helps muddy edges or weak contrast.</div>
         </div>
         <div class="ctl-field">
-          <SelectMenu
+          <Segmented
             value={controller.draftOcrTesseractPreprocessMode}
             onValueChange={(v) => {
               controller.draftOcrTesseractPreprocessMode = v as OcrTesseractPreprocessMode;
             }}
+            ariaLabel="Image preprocessing"
             options={[
               { value: "grayscale", label: "Grayscale" },
               { value: "thresholded", label: "Thresholded" },
@@ -267,11 +280,12 @@
           <div class="desc">Tesseract works best near 300 DPI; for tiny screenshots try 2× first.</div>
         </div>
         <div class="ctl-field">
-          <SelectMenu
+          <Segmented
             value={String(controller.draftOcrTesseractUpscaleFactor)}
             onValueChange={(v) => {
               controller.draftOcrTesseractUpscaleFactor = parseInt(v, 10) || 1;
             }}
+            ariaLabel="Upscale before OCR"
             options={[
               { value: "1", label: "1×" },
               { value: "2", label: "2×" },
@@ -279,16 +293,6 @@
               { value: "4", label: "4×" },
             ]}
           />
-        </div>
-      </div>
-
-      <div class="ctl">
-        <div class="ctl-label">
-          <div class="name">Language correction</div>
-          <div class="desc">Spend extra work correcting recognized text using language models.</div>
-        </div>
-        <div class="ctl-field">
-          <Switch bind:checked={controller.draftOcrLanguageCorrection} />
         </div>
       </div>
     </AdvancedReveal>
