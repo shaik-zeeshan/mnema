@@ -619,11 +619,7 @@ export class OnboardingController {
       case "sysaudio":
         return this.draftCaptureSystemAudio && this.permissions?.systemAudio !== "granted";
       case "ocr":
-        return ocrModelNeedsAttentionFor(
-          this.draftOcrEnabled,
-          this.selectedOcrModel,
-          this.selectedOcrDownloadRunning,
-        );
+        return ocrModelNeedsAttentionFor(this.draftOcrEnabled, this.selectedOcrModel);
       case "transcribe":
         return (
           transcriptionModelNeedsAttentionFor(this.draftTranscriptionEnabled, this.selectedTranscriptionModel)

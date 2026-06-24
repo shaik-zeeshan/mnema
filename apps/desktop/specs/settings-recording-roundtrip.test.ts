@@ -244,4 +244,30 @@ describe("recording autosave dirty-diff round-trip", () => {
     );
     expect(live).toBe(baseline);
   });
+
+  // Custom resolution + bitrate is the highest serde-drift risk: the live
+  // builder reconstructs `{ mode: "custom", width, height }` and
+  // `{ mode: "custom", preset: null, customMbps }` field-by-field, while the
+  // baseline passes the raw canonical objects. Pin that the two agree so a
+  // user with custom video settings isn't perpetually dirty on every mount.
+  test("video: builders agree on custom resolution + bitrate shape", () => {
+    const customSettings: RecordingSettings = {
+      ...CANONICAL_SETTINGS,
+      screenResolution: { mode: "custom", width: 2560, height: 1440 },
+      videoBitrate: { mode: "custom", preset: null, customMbps: 24 },
+    };
+    const customDrafts: RecordingDraftState = {
+      ...draftsFromCanonical(customSettings),
+      draftResolutionMode: "custom",
+      draftCustomWidth: 2560,
+      draftCustomHeight: 1440,
+      draftBitrateMode: "custom",
+      draftCustomMbps: 24,
+    };
+    const live = JSON.stringify(buildRecDomainRequest("video", customDrafts));
+    const baseline = JSON.stringify(
+      buildRecDomainRequestFromSettings("video", customSettings),
+    );
+    expect(live).toBe(baseline);
+  });
 });

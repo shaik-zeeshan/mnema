@@ -72,23 +72,22 @@ export function customBitrateErrors(
 
 // ── Per-feature model "needs attention" predicates ─────────────────────────
 // A model is "not available" for attention/finish purposes when its feature is
-// on but the selected model isn't ready. Each predicate only reads `available`
-// (and, for OCR, an in-flight download), so a minimal `{ available }` view keeps
-// them decoupled from the four distinct model-status shapes.
+// on but the selected model isn't ready. Each predicate only reads `available`,
+// so a minimal `{ available }` view keeps them decoupled from the four distinct
+// model-status shapes.
 type ModelAvailability = { available: boolean } | null | undefined;
 
-// OCR: app-managed and not currently a completed download. (Completed downloads
-// flip `available` true on reload; an in-flight download still needs attention.)
+// OCR: needs attention whenever the feature is on and the selected model isn't
+// available — whether unselected, missing, downloading, or failed. A completed
+// download flips `available` true on the next status reload (mirrors the
+// transcription/speaker rules).
 export function ocrModelNeedsAttention(
   enabled: boolean,
   model: ModelAvailability,
-  downloadRunning: boolean,
 ): boolean {
   if (!enabled) return false;
   if (!model) return true;
-  if (model.available) return false;
-  if (downloadRunning) return true;
-  return true;
+  return !model.available;
 }
 
 export function transcriptionModelNeedsAttention(

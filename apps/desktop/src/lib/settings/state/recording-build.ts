@@ -368,10 +368,24 @@ export function buildRecDomainRequestFromSettings(
         },
       };
     case "processing":
+      // Symmetrize the empty-string/null/"auto" normalization with the live
+      // request builder (`buildProcessingRequest`). The live builder coerces
+      // `ocr.language`/`ocr.tesseractCharWhitelist` ""->null and
+      // `transcription.language` ""->"auto"; passing the raw canonical values
+      // here would make those fields read perpetually dirty if the backend ever
+      // persisted an empty string. Defensive: unreachable today (backend
+      // validates), but keeps the dirty-diff fixed point stable either way.
       return {
         previewCacheTtlSeconds: s.previewCacheTtlSeconds ?? 3600,
-        ocr: s.ocr,
-        transcription: s.transcription,
+        ocr: {
+          ...s.ocr,
+          language: (s.ocr.language ?? "").trim() || null,
+          tesseractCharWhitelist: (s.ocr.tesseractCharWhitelist ?? "").trim() || null,
+        },
+        transcription: {
+          ...s.transcription,
+          language: (s.transcription.language ?? "").trim() || "auto",
+        },
         speakerAnalysis: s.speakerAnalysis,
       };
     case "developer":
