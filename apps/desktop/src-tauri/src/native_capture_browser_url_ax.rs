@@ -14,12 +14,20 @@
 //! ([`maybe_prompt_on_gecko_frontmost`]) is fired by the metadata dispatch when
 //! a Gecko browser is frontmost and trust is missing.
 //!
-//! A 0.5s AX messaging timeout bounds a hung browser so a stuck app can't stall
-//! the metadata tick. The first read may find the a11y engine dormant (cold);
-//! we poll for up to 500ms (50ms steps) to wake it — measured cold→live is
-//! ~100–150ms. The whole read runs on the metadata refresh tick's background
-//! thread, so the poll/sleep is acceptable and these AX reads are fine off the
-//! main thread.
+//! Bounding a hung/slow browser is wall-clock, not per-message. The 0.5s
+//! `AXUIElementSetMessagingTimeout` is PER MESSAGE, but a single read issues many
+//! messages (one `AXFocusedUIElement` plus up to `MAX_PARENT_HOPS` hops, each
+//! reading `AXRole`/`AXURL`/`AXParent`), so a slow-but-responding browser could
+//! otherwise stall one attempt for ~50 × 0.5s ≈ 25s. To prevent that, a single
+//! attempt carries its own wall-clock deadline (`READ_ATTEMPT_BUDGET`): the
+//! parent-hop climb stops early once the budget is spent, so the worst case for
+//! one attempt is the budget plus at most one in-flight message timeout (~0.5s).
+//! The cold-poll loop then bounds total time across attempts to
+//! `COLD_READ_POLL_BUDGET` plus one final attempt. The first read may find the
+//! a11y engine dormant (cold); we poll for up to 500ms (50ms steps) to wake it —
+//! measured cold→live is ~100–150ms. The whole read runs on the metadata refresh
+//! tick's background thread, so the poll/sleep is acceptable and these AX reads
+//! are fine off the main thread.
 
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
@@ -91,7 +99,15 @@ pub fn maybe_prompt_on_gecko_frontmost() {
 const COLD_READ_POLL_BUDGET: Duration = Duration::from_millis(500);
 /// Step between polls while waking the a11y engine.
 const COLD_READ_POLL_STEP: Duration = Duration::from_millis(50);
-/// Per-message AX timeout; bounds a hung browser.
+/// Wall-clock budget for a SINGLE focused-web-area read attempt. The per-message
+/// AX timeout below only bounds one message, but one attempt issues ~50 of them;
+/// this caps the whole attempt so a slow-but-responding browser can't stall a
+/// read for seconds. The parent-hop climb checks this between hops and stops
+/// early once it is spent.
+const READ_ATTEMPT_BUDGET: Duration = Duration::from_millis(400);
+/// Per-message AX timeout. NOTE: this is per AX *message*, not per read — a read
+/// issues many messages, so a wall-clock budget (`READ_ATTEMPT_BUDGET`) is what
+/// actually bounds a slow browser.
 const AX_MESSAGING_TIMEOUT_SECS: f32 = 0.5;
 /// Upper bound on parent-chain hops while searching for the web area.
 const MAX_PARENT_HOPS: u32 = 16;
@@ -124,15 +140,21 @@ pub fn read_active_tab_url(pid: i32) -> Option<String> {
     }
     let app = unsafe { CFType::wrap_under_create_rule(app) };
 
-    // Bound a hung browser; ignore the AXError.
+    // Per-message timeout only bounds one AX message; ignore the AXError.
     unsafe {
         AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), AX_MESSAGING_TIMEOUT_SECS);
     }
 
-    // First read; if the a11y engine is dormant (cold), poll briefly.
+    // First read; if the a11y engine is dormant (cold), poll briefly. Each
+    // attempt carries its own wall-clock deadline (`READ_ATTEMPT_BUDGET`) so a
+    // slow-but-responding browser can't stall a single attempt for ~50 message
+    // timeouts (~25s). This wall-clock bound is what makes the synchronous
+    // inactivity-resume read safe: that read runs while the `NativeCaptureState`
+    // mutex is held, so it must never block stop/refresh/capture for seconds.
     let started = Instant::now();
     loop {
-        match read_focused_outermost_url(app.as_CFTypeRef()) {
+        let attempt_deadline = Instant::now() + READ_ATTEMPT_BUDGET;
+        match read_focused_outermost_url(app.as_CFTypeRef(), attempt_deadline) {
             ReadOutcome::Url(url) => return Some(url),
             // a11y engine cold — keep polling.
             ReadOutcome::Dormant => {}
@@ -149,7 +171,13 @@ pub fn read_active_tab_url(pid: i32) -> Option<String> {
 /// Reads the URL of the outermost `AXWebArea` on the focused element's parent
 /// chain. Returns [`ReadOutcome::Dormant`] when the a11y engine looks cold and
 /// [`ReadOutcome::NoWeb`] when a real non-web element is focused.
-fn read_focused_outermost_url(app: AXUIElementRef) -> ReadOutcome {
+///
+/// `deadline` is a wall-clock bound for this single attempt. The per-message AX
+/// timeout only bounds one message, but this climb issues many; once `deadline`
+/// passes we stop climbing and return whatever outermost URL was found so far
+/// (or [`ReadOutcome::Dormant`] if none yet), so a slow browser can't drag one
+/// attempt out to ~50 message timeouts.
+fn read_focused_outermost_url(app: AXUIElementRef, deadline: Instant) -> ReadOutcome {
     // No focused element yet = the a11y engine is cold.
     let Some(focused) = copy_attribute(app, "AXFocusedUIElement") else {
         return ReadOutcome::Dormant;
@@ -164,6 +192,12 @@ fn read_focused_outermost_url(app: AXUIElementRef) -> ReadOutcome {
     let mut hops = 0;
     while let Some(el) = cur {
         if hops >= MAX_PARENT_HOPS {
+            break;
+        }
+        // Wall-clock bound: stop climbing once this attempt's budget is spent and
+        // use whatever outermost URL we have. A responding browser finishes far
+        // inside the budget, so the fast path is unaffected.
+        if Instant::now() >= deadline {
             break;
         }
         let el_role = string_attribute(el.as_CFTypeRef(), "AXRole").unwrap_or_default();
