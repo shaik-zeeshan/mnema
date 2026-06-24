@@ -140,4 +140,11 @@
     background: var(--app-accent);
     box-shadow: 0 0 8px var(--app-accent-glow);
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.switch-track),
+    :global(.switch-thumb) {
+      transition: none;
+    }
+  }
 </style>

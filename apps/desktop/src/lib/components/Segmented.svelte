@@ -265,4 +265,10 @@
     width: 16px;
     height: 16px;
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    .seg {
+      transition: none;
+    }
+  }
 </style>

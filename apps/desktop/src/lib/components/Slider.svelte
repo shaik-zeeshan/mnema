@@ -11,6 +11,9 @@
     label?: string;
     unit?: string;
     formatValue?: (v: number) => string;
+    // Accessible name for sliders rendered without a visible `label` to link via
+    // aria-labelledby (otherwise BitsSlider.Root's role="slider" has no name).
+    ariaLabel?: string;
   }
 
   let {
@@ -23,7 +26,13 @@
     label,
     unit = "",
     formatValue,
+    ariaLabel,
   }: Props = $props();
+
+  // Stable id so the visible label (a plain <span>, not associated by
+  // BitsSlider.Root) can be linked to the slider via aria-labelledby —
+  // otherwise the role="slider" has no accessible name.
+  const labelId = `slider-label-${Math.random().toString(36).slice(2, 9)}`;
 
   function handleValueChange(v: number) {
     value = v;
@@ -36,7 +45,7 @@
 <div class="slider-wrapper" class:slider-wrapper--disabled={disabled}>
   {#if label}
     <div class="slider-header">
-      <span class="slider-label">{label}</span>
+      <span class="slider-label" id={labelId}>{label}</span>
       <span class="slider-value">{displayValue}</span>
     </div>
   {/if}
@@ -49,6 +58,9 @@
     {step}
     {disabled}
     class="slider-root"
+    aria-labelledby={label ? labelId : undefined}
+    aria-label={!label && ariaLabel ? ariaLabel : undefined}
+    aria-valuetext={`${displayValue}`}
   >
     {#snippet children({ thumbItems })}
       <BitsSlider.Range class="slider-range" />
@@ -151,5 +163,11 @@
 
   :global(.slider-thumb:hover) {
     transform: translateX(-50%) scale(1.15);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.slider-thumb) {
+      transition: none;
+    }
   }
 </style>

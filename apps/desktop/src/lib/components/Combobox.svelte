@@ -398,4 +398,12 @@
     font-style: italic;
     color: var(--app-text-subtle);
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.combobox-trigger),
+    .combobox-chevron,
+    :global(.combobox-item) {
+      transition: none;
+    }
+  }
 </style>

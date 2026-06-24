@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { clampToRange, parseStepperRaw, stepRaw } from "./stepper-clamp";
+  import { clampNumber, clampToRange, parseStepperRaw, stepRaw } from "./stepper-clamp";
 
   // `value` is a RAW STRING so it can flow upward unchanged into the settings
   // shell's raw fields (customWidthRaw / customHeightRaw / draftCustomMbpsRaw),
@@ -88,7 +88,9 @@
       {disabled}
       aria-label={ariaLabel}
       aria-invalid={invalid}
-      aria-valuenow={numericValue ?? undefined}
+      aria-valuenow={numericValue !== null
+        ? clampNumber(numericValue, min, max)
+        : undefined}
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuetext={numericValue !== null && unit
@@ -227,5 +229,12 @@
     font-weight: 800;
     letter-spacing: 0.06em;
     pointer-events: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .step-btn,
+    .num-input {
+      transition: none;
+    }
   }
 </style>

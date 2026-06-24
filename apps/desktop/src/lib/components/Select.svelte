@@ -304,4 +304,12 @@
     flex-shrink: 0;
     font-family: inherit;
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.select-trigger),
+    .select-chevron,
+    :global(.select-item) {
+      transition: none;
+    }
+  }
 </style>
