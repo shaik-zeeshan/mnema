@@ -27,6 +27,7 @@ import {
   type EditableShortcutActionId,
 } from "$lib/keyboard-bindings.svelte";
 import { RECORDING_AUTOSAVE_DEBOUNCE_MS } from "./autosave-core";
+import { computeApplyDrafts } from "./recording-build";
 import type { AutosaveEngine } from "./autosave.svelte";
 import type { KeyboardBindingsSettings } from "$lib/types";
 
@@ -59,6 +60,13 @@ export class KeyboardStore {
 
   buildKeyboardBindingsSnapshot(): string {
     return JSON.stringify(this.buildKeyboardBindingsRequest());
+  }
+
+  // The persisted-baseline snapshot for a canonical settings value (defaults
+  // applied, like a fresh sync). Used to advance the baseline without clobbering
+  // live drafts when an edit lands mid-flight.
+  buildSnapshotFromKeyboardBindings(s: KeyboardBindingsSettings): string {
+    return JSON.stringify(withKeyboardBindingDefaults(s));
   }
 
   syncKeyboardBindingsDrafts(s: KeyboardBindingsSettings) {
@@ -223,12 +231,30 @@ export class KeyboardStore {
     this.savingKeyboardBindings = true;
     this.keyboardBindingsError = null;
     this.keyboardBindingsSaved = false;
+    // Snapshot what we are dispatching so we can detect an edit that lands while
+    // the invoke is in flight (mirrors the recording path's dispatched-snapshot
+    // guard — see `recording-build.computeApplyDrafts`).
+    const dispatchedSnapshot = this.buildKeyboardBindingsSnapshot();
     try {
       const updated = await invoke<KeyboardBindingsSettings>("update_keyboard_bindings_settings", {
         request: this.buildKeyboardBindingsRequest(),
       });
-      this.keyboardBindingsSettings = updated;
-      this.syncKeyboardBindingsDrafts(updated);
+      // Adopt canonical drafts only when the live drafts STILL equal what we
+      // dispatched (no edit landed during the flight). Otherwise leave the newer
+      // drafts alone and only advance the baseline, so the reactive driver
+      // schedules a follow-up save for the in-flight edit (it is never dropped).
+      const applyDrafts = computeApplyDrafts({
+        liveSnapshot: this.buildKeyboardBindingsSnapshot(),
+        baseline: this.lastSavedKeyboardBindingsSnapshot,
+        force: false,
+        dispatchedSnapshot,
+      });
+      if (applyDrafts) {
+        this.keyboardBindingsSettings = updated;
+        this.syncKeyboardBindingsDrafts(updated);
+      } else {
+        this.lastSavedKeyboardBindingsSnapshot = this.buildSnapshotFromKeyboardBindings(updated);
+      }
       this.keyboardBindingsSaved = true;
       setTimeout(() => { this.keyboardBindingsSaved = false; }, 2200);
     } catch (err) {

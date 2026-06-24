@@ -71,3 +71,60 @@ describe("settings autosave: edit-during-in-flight-save is not dropped (FIX 1)",
     ).toBe(true);
   });
 });
+
+// FIX 2 — the SEPARATE microphone + keyboard-bindings autosave domains share the
+// recording path's dispatched-snapshot guard (`audio.svelte.saveMicSettings` and
+// `keyboard.svelte.saveKeyboardBindingsSettings` route their save-success
+// decision through the same pure `computeApplyDrafts`). These stores are runes
+// modules and can't be instantiated under bun:test, so — like the recording case
+// above — we drive the real shared gate with the snapshot strings the builders
+// produce. The mic snapshot serializes a `{preference, disconnectPolicy}` request
+// (`buildMicSnapshot`); the keyboard snapshot serializes a defaulted
+// `KeyboardBindingsSettings` (`buildKeyboardBindingsSnapshot`).
+
+describe("settings autosave: mic in-flight edit is preserved (FIX 2)", () => {
+  const dispatchedMic = '{"preference":{"mode":"default","deviceId":null},"disconnectPolicy":"fallback_to_default"}';
+  const canonicalMic = dispatchedMic;
+
+  test("no concurrent edit → save echo adopts canonical drafts", () => {
+    // Live still equals what was dispatched → clobber back to canonical.
+    expect(
+      applyDrafts({ liveSnapshot: dispatchedMic, baseline: "A", force: false, dispatchedSnapshot: dispatchedMic }),
+    ).toBe(true);
+    expect(isDirty(canonicalMic, canonicalMic)).toBe(false);
+  });
+
+  test("edit during flight → drafts preserved (applyDrafts false) and baseline still advances", () => {
+    // While the mic invoke was in flight the user picked a specific device, so
+    // the live snapshot diverged from what was dispatched.
+    const liveMic = '{"preference":{"mode":"specific_device","deviceId":"mic-2"},"disconnectPolicy":"fallback_to_default"}';
+    expect(
+      applyDrafts({ liveSnapshot: liveMic, baseline: "A", force: false, dispatchedSnapshot: dispatchedMic }),
+    ).toBe(false);
+    // Baseline advances to the persisted canonical; with drafts left at the newer
+    // edit, the domain reads dirty again → the driver schedules a follow-up save.
+    expect(isDirty(liveMic, canonicalMic)).toBe(true);
+  });
+});
+
+describe("settings autosave: keyboard-bindings in-flight edit is preserved (FIX 2)", () => {
+  const dispatchedKb = '{"globalShortcuts":{"enabled":true}}';
+  const canonicalKb = dispatchedKb;
+
+  test("no concurrent edit → save echo adopts canonical drafts", () => {
+    expect(
+      applyDrafts({ liveSnapshot: dispatchedKb, baseline: "A", force: false, dispatchedSnapshot: dispatchedKb }),
+    ).toBe(true);
+    expect(isDirty(canonicalKb, canonicalKb)).toBe(false);
+  });
+
+  test("edit during flight → drafts preserved (applyDrafts false) and baseline still advances", () => {
+    // While the keyboard invoke was in flight the user toggled global shortcuts
+    // off, so the live snapshot diverged from what was dispatched.
+    const liveKb = '{"globalShortcuts":{"enabled":false}}';
+    expect(
+      applyDrafts({ liveSnapshot: liveKb, baseline: "A", force: false, dispatchedSnapshot: dispatchedKb }),
+    ).toBe(false);
+    expect(isDirty(liveKb, canonicalKb)).toBe(true);
+  });
+});

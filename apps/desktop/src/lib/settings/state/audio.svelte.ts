@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MIC_AUTOSAVE_DEBOUNCE_MS } from "./autosave-core";
+import { computeApplyDrafts } from "./recording-build";
 import type { AutosaveEngine } from "./autosave.svelte";
 import type {
   MicrophoneControllerState,
@@ -64,6 +65,19 @@ export class AudioStore {
     return JSON.stringify(this.buildMicRequest());
   }
 
+  // The persisted-baseline snapshot for a canonical controller state (the same
+  // serialization `buildMicSnapshot` produces from drafts). Used to advance the
+  // baseline without clobbering live drafts.
+  buildSnapshotFromMicState(s: MicrophoneControllerState): string {
+    return JSON.stringify({
+      preference: {
+        mode: s.preference.mode,
+        deviceId: s.preference.mode === "specific_device" ? (s.preference.deviceId ?? null) : null,
+      },
+      disconnectPolicy: s.disconnectPolicy,
+    });
+  }
+
   syncMicDrafts(s: MicrophoneControllerState) {
     this.draftPreferenceMode = s.preference.mode;
     this.draftDeviceId = s.preference.deviceId ?? null;
@@ -88,13 +102,7 @@ export class AudioStore {
       this.draftDisconnectPolicy = s.disconnectPolicy;
     }
     // Refresh the baseline to the new canonical value regardless of dirtiness.
-    this.lastSavedMicSnapshot = JSON.stringify({
-      preference: {
-        mode: s.preference.mode,
-        deviceId: s.preference.mode === "specific_device" ? (s.preference.deviceId ?? null) : null,
-      },
-      disconnectPolicy: s.disconnectPolicy,
-    });
+    this.lastSavedMicSnapshot = this.buildSnapshotFromMicState(s);
   }
 
   // ─── Load / save ────────────────────────────────────────────────────────────
@@ -116,12 +124,30 @@ export class AudioStore {
     this.savingMicSettings = true;
     this.micError = null;
     this.micSaved = false;
+    // Snapshot what we are dispatching so we can detect an edit that lands while
+    // the invoke is in flight (mirrors the recording path's dispatched-snapshot
+    // guard — see `recording-build.computeApplyDrafts`).
+    const dispatchedSnapshot = this.buildMicSnapshot();
     try {
       const updated = await invoke<MicrophoneControllerState>("update_microphone_controller", {
         request: this.buildMicRequest(),
       });
       this.micState = updated;
-      this.syncMicDrafts(updated);
+      // Adopt canonical drafts only when the live drafts STILL equal what we
+      // dispatched (no edit landed during the flight). Otherwise leave the newer
+      // drafts alone and only advance the baseline, so the reactive driver
+      // schedules a follow-up save for the in-flight edit (it is never dropped).
+      const applyDrafts = computeApplyDrafts({
+        liveSnapshot: this.buildMicSnapshot(),
+        baseline: this.lastSavedMicSnapshot,
+        force: false,
+        dispatchedSnapshot,
+      });
+      if (applyDrafts) {
+        this.syncMicDrafts(updated);
+      } else {
+        this.lastSavedMicSnapshot = this.buildSnapshotFromMicState(updated);
+      }
       this.micSaved = true;
       setTimeout(() => { this.micSaved = false; }, 2200);
     } catch (err) {
