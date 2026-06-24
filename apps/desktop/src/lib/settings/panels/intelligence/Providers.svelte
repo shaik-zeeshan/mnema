@@ -67,7 +67,14 @@
     divider={false}
   >
     {#snippet aside()}
-      <Switch bind:checked={rec.draftAiEnabled} />
+      <Switch
+        bind:checked={rec.draftAiEnabled}
+        onCheckedChange={(checked) => {
+          // A "Connection succeeded" banner must never sit next to a disabled
+          // master switch, so clear it when AI features are turned off.
+          if (!checked) aiRuntime.resetTestResult();
+        }}
+      />
     {/snippet}
     {#snippet control()}
       <div class="privacy-disclosure">
@@ -119,6 +126,7 @@
                     autocomplete="off"
                     placeholder="https://api.fireworks.ai/inference/v1"
                     bind:value={provider.baseUrl}
+                    oninput={() => aiRuntime.resetTestResult()}
                   />
                   {#if provider.baseUrl.trim().length === 0}
                     <p class="group-hint group-hint--warn">OpenAI-compatible providers need a base URL.</p>
@@ -131,6 +139,7 @@
                     autocomplete="off"
                     placeholder={AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind] ?? "http://localhost"}
                     bind:value={provider.baseUrl}
+                    oninput={() => aiRuntime.resetTestResult()}
                   />
                   <p class="group-hint">Leave empty to use the default endpoint {AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind]}. No key, no egress.</p>
                 {/if}

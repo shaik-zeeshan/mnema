@@ -138,6 +138,9 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       await invoke("ai_runtime_set_provider_key", { request: { provider, key } });
       aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: "" };
+      // The key just changed for this provider, so any prior "Connection
+      // succeeded" banner no longer reflects the config that would be tested.
+      resetTestResult();
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
     } catch (error) {
@@ -157,6 +160,8 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       await invoke("ai_runtime_clear_provider_key", { request: { provider } });
       aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: "" };
+      // Clearing the key invalidates any prior "Connection succeeded" banner.
+      resetTestResult();
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
     } catch (error) {
@@ -176,15 +181,24 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   // re-add probes only after this resolves (the caller awaits). On a genuine
   // FAILURE the key is orphaned in the keychain; we surface that on a visible
   // error so the user can retry, instead of recording it against a now-absent id.
+  //
+  // The error is a single visible slot, so do NOT reset it at the start of every
+  // attempt: clearing it on entry would silently wipe an earlier removal's
+  // orphaned-key warning the moment a later removal succeeds. Instead clear it
+  // only on a SUCCESSFUL clear and set it — naming the affected provider so the
+  // warning is identifiable — on failure, keeping a genuine failure visible until
+  // it is resolved. The label is resolved BEFORE the await (the instance is
+  // already gone from the draft list, so resolve it while it may still match).
   async function clearKeyForRemovedProvider(id: string): Promise<void> {
-    aiProviderRemovalError = null;
+    const label = deps.labelForProvider(id);
     try {
       await invoke("ai_runtime_clear_provider_key", { request: { provider: id } });
       const { [id]: _cleared, ...rest } = aiProviderKeySavedByProvider;
       aiProviderKeySavedByProvider = rest;
+      aiProviderRemovalError = null;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      aiProviderRemovalError = `Could not clear the saved key for the removed provider — it may still be in the keychain. ${message}`;
+      aiProviderRemovalError = `Could not clear the saved key for the removed provider ${label} — it may still be in the keychain. ${message}`;
     }
   }
 
