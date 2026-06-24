@@ -4702,6 +4702,16 @@ pub async fn get_frame(
         .map_err(|error| format!("failed to get frame {}: {error}", request.frame_id))
 }
 
+/// Whether a captured `browser_url` may be handed to the OS opener: it must parse
+/// and carry an `http`/`https` scheme. This is the security gate — a captured URL
+/// of `javascript:`, `file:`, `data:`, `mnema:`, etc. must NEVER reach the opener.
+/// Extracted as a pure helper so the gate is unit-testable without a live opener.
+fn captured_url_is_openable(raw_url: &str) -> bool {
+    url::Url::parse(raw_url)
+        .map(|url| matches!(url.scheme(), "http" | "https"))
+        .unwrap_or(false)
+}
+
 /// App-mediated open of a frame's RAW captured `browser_url` in the default
 /// browser. The trusted local frontend opens captures by frame id (it never uses
 /// opaque broker ids). Loads the frame's raw URL, gates it to `http`/`https`, and
@@ -4731,10 +4741,7 @@ pub async fn open_captured_url(
     };
     // Scheme gate: only ever hand http(s) to the OS opener. The raw URL never
     // crosses into the error path or a log line.
-    let is_http = url::Url::parse(&raw_url)
-        .map(|url| matches!(url.scheme(), "http" | "https"))
-        .unwrap_or(false);
-    if !is_http {
+    if !captured_url_is_openable(&raw_url) {
         return Ok(false);
     }
     app_handle
@@ -5138,6 +5145,31 @@ mod tests {
 
     use super::frame_preview::*;
     use super::*;
+
+    // The `open_captured_url` scheme gate is the security boundary between a
+    // captured `browser_url` and the OS opener. Only `http`/`https` may pass; a
+    // captured `javascript:`/`file:`/`data:`/`mnema:` URL (or an unparseable
+    // string) must be rejected so it can never reach the opener. Pinning the pure
+    // gate guards that boundary without a live Tauri opener.
+    #[test]
+    fn captured_url_open_gate_admits_only_http_and_https() {
+        assert!(captured_url_is_openable("https://example.com/x"));
+        assert!(captured_url_is_openable("http://example.com/x"));
+        for rejected in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,<script>alert(1)</script>",
+            "mnema://open/abc",
+            "ftp://example.com/x",
+            "not a url",
+            "",
+        ] {
+            assert!(
+                !captured_url_is_openable(rejected),
+                "non-http(s) captured url must be rejected by the open gate: {rejected:?}"
+            );
+        }
+    }
 
     struct TestDir {
         path: PathBuf,
