@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import type { RetentionPolicy } from "$lib/types";
   import { retentionPresets } from "./retention";
 
@@ -22,10 +23,25 @@
 
   const presets = retentionPresets();
 
+  // Per-chip button refs, so keyboard nav can move DOM focus onto the newly
+  // active chip (focus-follows-selection — the roving tabindex alone leaves
+  // focus stranded on the now tabindex=-1 button).
+  let chipEls = $state<(HTMLButtonElement | null)[]>([]);
+
   function select(next: RetentionPolicy) {
     if (disabled || next === value) return;
     value = next;
     onValueChange?.(next);
+  }
+
+  // After a keyboard selection, move focus to the new chip — but only when
+  // focus is already inside this picker, so we never steal focus on mount or on
+  // a programmatic value change.
+  function focusSelected(index: number) {
+    const group = chipEls[index]?.closest(".retention-picker");
+    if (group && group.contains(document.activeElement)) {
+      chipEls[index]?.focus();
+    }
   }
 
   function onKeydown(event: KeyboardEvent, index: number) {
@@ -41,8 +57,13 @@
       nextIndex = presets.length - 1;
     }
     if (nextIndex === null) return;
+    const target = nextIndex;
     event.preventDefault();
-    select(presets[nextIndex].value);
+    select(presets[target].value);
+    // Selecting flips the roving tabindex to `target`; follow it with DOM focus
+    // so the new chip is what the user is actually on. tick() lets the
+    // tabindex/active classes update first.
+    void tick().then(() => focusSelected(target));
   }
 </script>
 
@@ -56,6 +77,7 @@
     {@const active = value === preset.value}
     <button
       type="button"
+      bind:this={chipEls[index]}
       class="preset"
       class:preset--active={active}
       role="radio"

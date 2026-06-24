@@ -25,9 +25,11 @@
 </script>
 
 <div class="switch-wrapper" class:switch-wrapper--disabled={disabled}>
-  {#if label}
+  {#if label || description}
     <div class="switch-text">
-      <span class="switch-label" id={labelId}>{label}</span>
+      {#if label}
+        <span class="switch-label" id={labelId}>{label}</span>
+      {/if}
       {#if description}
         <span class="switch-description" id={descriptionId}>{description}</span>
       {/if}
@@ -39,7 +41,7 @@
     {onCheckedChange}
     class="switch-track"
     aria-labelledby={label ? labelId : undefined}
-    aria-describedby={label && description ? descriptionId : undefined}
+    aria-describedby={description ? descriptionId : undefined}
   >
     <BitsSwitch.Thumb class="switch-thumb" />
   </BitsSwitch.Root>
