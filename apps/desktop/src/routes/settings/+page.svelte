@@ -17,7 +17,7 @@
   //  • the realtime listeners + their teardown.
 
   import { page } from "$app/stores";
-  import { tick, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import AppPrivacyExclusionPrompt from "$lib/components/AppPrivacyExclusionPrompt.svelte";
   import {
@@ -145,6 +145,22 @@
     // Safety upper bound only — settle normally clears via the scroll handler.
     spySuppressTimer = setTimeout(clearSpySuppression, 700);
   }
+
+  // Both scroll-spy timers are armed from event handlers (suppress-on-navigate
+  // and the onscroll is-scrolling flag), not from the IntersectionObserver
+  // $effect, so that effect's cleanup never clears them. Clear on destroy so a
+  // navigate-away mid-settle (e.g. "← Back to app" within the 700ms suppression
+  // window) leaves no timer firing into a torn-down shell.
+  onDestroy(() => {
+    if (spySuppressTimer !== null) {
+      clearTimeout(spySuppressTimer);
+      spySuppressTimer = null;
+    }
+    if (scrollRegionScrollTimer !== null) {
+      clearTimeout(scrollRegionScrollTimer);
+      scrollRegionScrollTimer = null;
+    }
+  });
 
   // Record where the in-flight programmatic scroll is heading (the anchor's
   // offset, clamped to the region's max scrollTop) so the scroll handler can
