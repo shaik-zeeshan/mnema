@@ -170,8 +170,17 @@ export function syncDraftsInto(draft: OnboardingDraftTarget, next: RecordingSett
   draft.draftOcrTesseractPreprocessMode = next.ocr?.tesseractPreprocessMode ?? "grayscale";
   draft.draftOcrTesseractUpscaleFactor = next.ocr?.tesseractUpscaleFactor ?? 1;
   draft.draftTranscriptionEnabled = next.transcription?.enabled ?? true;
-  draft.draftTranscriptionMicrophoneEnabled = next.transcription?.microphoneEnabled ?? true;
-  draft.draftTranscriptionSystemAudioEnabled = next.transcription?.systemAudioEnabled ?? false;
+  // Reconcile the per-source transcribe flags to the master on rehydrate, mirroring
+  // `toggleFeature("transcribe")`'s off-branch (onboarding.svelte.ts): when the master
+  // is off, zero the per-source requests so a returning user (saved enabled=false,
+  // microphoneEnabled=true, captureMicrophone=true) doesn't get phantom attention
+  // (`transcriptionRequestedWhileOff`) that deadlocks the finale CTAs.
+  draft.draftTranscriptionMicrophoneEnabled = next.transcription?.enabled
+    ? (next.transcription?.microphoneEnabled ?? true)
+    : false;
+  draft.draftTranscriptionSystemAudioEnabled = next.transcription?.enabled
+    ? (next.transcription?.systemAudioEnabled ?? false)
+    : false;
   draft.draftTranscriptionProvider = next.transcription?.provider ?? "local_whisper";
   draft.draftTranscriptionModelId = next.transcription?.modelId ?? defaultTranscriptionModelIdForProvider(draft.draftTranscriptionProvider);
   draft.draftTranscriptionLanguage = next.transcription?.language ?? "auto";
