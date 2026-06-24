@@ -210,6 +210,12 @@ export class OnboardingController {
     this.draftOcrEnabled = true;
     this.chooseOcrProvider("apple_vision");
     this.draftTranscriptionEnabled = true;
+    // Mirror `toggleFeature("transcribe")`'s ON-branch: bind the master to the
+    // currently-enabled audio sources, so a source enabled BEFORE this runs
+    // (configure → enable mic → "← Back" → "Use recommended setup") is actually
+    // transcribed rather than silently captured-but-not-transcribed.
+    this.draftTranscriptionMicrophoneEnabled = this.draftCaptureMicrophone;
+    this.draftTranscriptionSystemAudioEnabled = this.draftCaptureSystemAudio;
     this.chooseTranscriptionProvider("local_whisper");
     this.draftTranscriptionModelId = "base";
     this.phase = "configure";
