@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-06-23_
+_Last reviewed: 2026-06-24_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -33,7 +33,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Sleep/wake recovery | [x] | [ ] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. |
 | Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
 | Active app/window metadata | [x] | [ ] | [ ] | macOS uses NSWorkspace/CoreGraphics. |
-| Browser URL metadata | [x] | [ ] | [ ] | macOS uses AppleScript for supported Chromium and WebKit browsers. Firefox-family (Gecko) browsers expose no scriptable URL and are not supported. |
+| Browser URL metadata | [x] | [ ] | [ ] | macOS reads the active-tab URL through a per-browser **Browser URL Strategy**: AppleScript for supported Chromium and WebKit browsers (no extra permission), and the macOS Accessibility API for Firefox-family (Gecko) browsers — Firefox and Zen — reading `AXURL` off the focused web area. The Accessibility path is opt-in and Gecko-only: it requires the macOS Accessibility permission; if the permission is not granted, Gecko browsers yield no URL. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md). |
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
 | Quick Recall launcher panel | [x] | [~] | [~] | macOS summons a non-activating NSPanel (key without activating Mnema, like Spotlight/Raycast); non-macOS falls back to a plain shown/focused always-on-top window without non-activating semantics. |
 | Ask AI (in-process Reasoning Engine) | [x] | [~] | [~] | Quick Recall + Insights Chat run in-process on the shared Reasoning Engine (`crates/ai-runtime` via `rig-core`) — no installed PI/Node runtime, no shim, no `node`/`pi`-on-PATH resolution. Brokered `search`/`timeline`/`show_text`/`recall_context` tools (plus presentation-only `reference_captures`) are injected from the Tauri layer under the All-Retained Ask AI broker scope. Cross-platform Rust like the engine itself; a cloud engine needs the bring-your-own-key in the Encrypted Capture Index key store (macOS Keychain only today, see that row), a local Ollama/Llamafile engine needs no key and is platform-agnostic. Windows/Linux are blocked only on the platform key store for cloud keys. |
@@ -81,7 +81,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Screen and microphone permission checks/prompts.
 - [x] Open macOS Privacy & Security panes for denied permissions.
 - [x] Active app/window metadata from NSWorkspace/CoreGraphics.
-- [x] Browser URL metadata for supported Chromium/WebKit browsers via AppleScript. Firefox-family (Gecko) browsers expose no scriptable URL and are not supported.
+- [x] Browser URL metadata for supported Chromium/WebKit browsers via AppleScript. Firefox-family (Gecko) browsers — Firefox and Zen — are supported through the macOS Accessibility API (reading `AXURL` off the focused web area); this path is opt-in and requires the macOS Accessibility permission, and Gecko browsers yield no URL until it is granted. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md).
 - [x] Live App Privacy Exclusion through ScreenCaptureKit app filters.
 - [x] Exclude Current App tray action.
 - [x] Recommended sensitive app exclusion catalog using macOS bundle IDs.
@@ -267,7 +267,8 @@ Use this map when turning checklist items into implementation slices.
 | `crates/capture-microphone/src/lib.rs` | AVFoundation microphone capture, device list/change notifications, permission prompt, VAD PCM feed | WASAPI/CPAL/PipeWire/etc. microphone adapter, device policy, permission UX |
 | `crates/capture-writers/src/lib.rs` | AVAssetWriter/AVAudioFile, `afconvert`, AVFoundation duration/decode helpers | Cross-platform writer, duration validation, decode/trim/convert |
 | `apps/desktop/src-tauri/src/native_capture/*` | Runtime active sessions and lifecycle operations are mostly macOS-gated | Promote runtime fields/adapters to platform-neutral traits or add Windows/Linux gated implementations |
-| `apps/desktop/src-tauri/src/native_capture_metadata.rs` | NSWorkspace, CoreGraphics window list, AppleScript browser URL probe | Foreground-window/app metadata and optional browser metadata per OS |
+| `apps/desktop/src-tauri/src/native_capture_metadata.rs` | NSWorkspace, CoreGraphics window list, AppleScript browser URL probe (Chromium/WebKit) | Foreground-window/app metadata and optional browser metadata per OS |
+| `apps/desktop/src-tauri/src/native_capture_browser_url_ax.rs` | macOS Accessibility (`AXUIElement`) reader for Gecko (Firefox/Zen) active-tab URL — `AXURL` off the focused→outermost web area, gated by `AXIsProcessTrusted`, with the first-sighting trust prompt | OS-specific Gecko URL source if a non-AppleScript browser must be supported, or explicit unsupported behavior |
 | `apps/desktop/src-tauri/src/native_capture/privacy.rs` | ScreenCaptureKit app exclusion filters | OS-specific live exclusion or explicit unsupported/degraded behavior |
 | `apps/desktop/src-tauri/src/native_capture_system_idle.rs` | CoreGraphics idle time | `GetLastInputInfo` on Windows; portal/X11/compositor path on Linux |
 | `apps/desktop/src-tauri/src/app_infra/frame_preview.rs` | AVAssetImageGenerator exact/scrub previews | FFmpeg/GStreamer/Media Foundation extractor |
