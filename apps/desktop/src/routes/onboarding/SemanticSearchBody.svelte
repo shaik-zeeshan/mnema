@@ -50,9 +50,35 @@
   </div>
 
   {#if controller.semanticSearchModelError}
-    <div class="note">Failed to load search model status: {controller.semanticSearchModelError}</div>
+    <div class="note">
+      <div>Failed to load search model status: {controller.semanticSearchModelError}</div>
+      <div class="dl-meta">
+        <span>This is a fetch error, not a missing model — retry to recheck.</span>
+        <button
+          type="button"
+          class="btn sm"
+          disabled={controller.loadingSemanticSearchModelStatus}
+          onclick={() => controller.loadSemanticSearchModelStatus()}
+        >
+          {controller.loadingSemanticSearchModelStatus ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    </div>
   {:else if controller.semanticSearchSupportedModelsError}
-    <div class="note">Custom model list failed: {controller.semanticSearchSupportedModelsError}</div>
+    <div class="note">
+      <div>Custom model list failed: {controller.semanticSearchSupportedModelsError}</div>
+      <div class="dl-meta">
+        <span>Retry to reload the custom model catalog.</span>
+        <button
+          type="button"
+          class="btn sm"
+          disabled={controller.loadingSemanticSearchSupportedModels}
+          onclick={() => controller.loadSemanticSearchSupportedModels()}
+        >
+          {controller.loadingSemanticSearchSupportedModels ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    </div>
   {:else if model}
     <div class="model-card">
       <div class="model-top">

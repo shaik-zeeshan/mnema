@@ -52,9 +52,13 @@
         type="button"
         class="welcome__accel"
         onclick={() => c.applyRecommendedSetup()}
-        disabled={c.loading}
+        disabled={c.loading || c.applyingRecommended}
       >
-        Use recommended setup →
+        {#if c.applyingRecommended}
+          Applying…
+        {:else}
+          Use recommended setup →
+        {/if}
       </button>
       {#if c.errorMessage}
         <div class="welcome__err" role="alert">{c.errorMessage}</div>

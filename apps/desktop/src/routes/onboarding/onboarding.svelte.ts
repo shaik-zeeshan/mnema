@@ -104,7 +104,7 @@ export class OnboardingController {
   draftAutoStart = $state(false);
   draftPauseCaptureOnInactivity = $state(false);
   draftIdleTimeoutSeconds = $state(30);
-  draftActivityMode = $state<ActivityMode>("system_input_only");
+  draftActivityMode = $state<ActivityMode>("system_input_or_screen_or_audio");
   draftMicrophoneActivitySensitivity = $state(50);
   // Voice Activity Detection adapter for the mic — mirrors real settings. "off"
   // falls back to the legacy peak-level sensitivity slider (the only mode where
@@ -194,6 +194,9 @@ export class OnboardingController {
   // defaults set below are no longer at risk of being clobbered. Safe no-op when
   // nothing is pending.
   async applyRecommendedSetup(): Promise<void> {
+    // Always start from a clean banner so a retry isn't shadowed by a stale
+    // error — independent of whether the privacy command below actually runs.
+    this.errorMessage = null;
     this.applyingRecommended = true;
     try {
       await this.appPrivacyExclusion.applyAllRecommendedPrivacyApps();

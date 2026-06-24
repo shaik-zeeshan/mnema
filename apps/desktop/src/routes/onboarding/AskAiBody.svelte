@@ -19,6 +19,9 @@
   const keySaving = $derived(controller.ai.aiRuntime.aiProviderKeySavingProvider);
   const keyErrors = $derived(controller.ai.aiRuntime.aiProviderKeyErrors);
   const keyInputs = $derived(controller.ai.aiRuntime.aiProviderKeyInputs);
+  // Surface a failed keychain clear on provider removal (mirrors Settings →
+  // Providers.svelte) — read-only access to the shared ai-runtime state.
+  const removalError = $derived(controller.ai.aiRuntime.aiProviderRemovalError);
 
   const EXAMPLES = [
     "What was that error I hit in the terminal yesterday?",
@@ -44,6 +47,12 @@
       <div class="lock-callout-text">{ai.aiConfigMissing}</div>
     </div>
   </div>
+{/if}
+
+<!-- Soft hint for the false-green case: a key is saved but we couldn't list
+     models to verify it, so config is nominally "ready" but unconfirmed. -->
+{#if ai.aiUnverifiedNote}
+  <p class="prov-hint warn">{ai.aiUnverifiedNote}</p>
 {/if}
 
 <div class="group always-on">
@@ -177,6 +186,10 @@
       </button>
     {/each}
   </div>
+
+  {#if removalError}
+    <p class="prov-hint err">{removalError}</p>
+  {/if}
 
   {#if ai.anyCloudConnected}
     <div class="note">

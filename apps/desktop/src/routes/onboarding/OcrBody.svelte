@@ -5,6 +5,7 @@
     OcrTesseractPreprocessMode,
   } from "$lib/types";
   import Segmented from "$lib/components/Segmented.svelte";
+  import RadioGroup from "$lib/components/RadioGroup.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
@@ -17,6 +18,21 @@
   // the resolved `selectedOcrModel` and drives the in-app download. The status
   // pill reuses the mockup's `.pill` family (granted/pending/denied).
   const model = $derived(controller.selectedOcrModel);
+
+  // Provider picker uses RadioGroup-with-descriptions (matching Settings →
+  // Ocr.svelte): each provider has a meaningful description, so per the control
+  // convention this is a RadioGroup, not a Segmented control. Descriptions come
+  // from the live model status (mirrors controller-processing's option deriving);
+  // fall back to a static loading description before the status arrives.
+  const ocrProviderOptions = $derived(
+    (controller.ocrModelStatus?.providers ?? []).map((provider) => ({
+      value: provider.provider,
+      label: provider.displayName,
+      description: provider.models.some((m) => m.available)
+        ? "At least one model is available"
+        : "No available model detected",
+    })),
+  );
 
   const pillClass = $derived.by(() => {
     if (!model) return "pending";
@@ -36,15 +52,17 @@
         Apple Vision is on-device with no download; Tesseract supports many languages.
       </div>
     </div>
-    <div class="ctl-field">
-      <Segmented
+    <div class="ctl-field" style="width: 100%">
+      <RadioGroup
         value={controller.draftOcrProvider}
         onValueChange={(v) => controller.chooseOcrProvider(v)}
-        ariaLabel="OCR provider"
-        options={[
-          { value: "apple_vision", label: "Apple Vision" },
-          { value: "tesseract", label: "Tesseract" },
-        ]}
+        label="OCR provider"
+        options={ocrProviderOptions.length > 0
+          ? ocrProviderOptions
+          : [
+              { value: "apple_vision", label: "Apple Vision", description: "Model status is loading" },
+              { value: "tesseract", label: "Tesseract", description: "Model status is loading" },
+            ]}
       />
     </div>
   </div>
@@ -70,7 +88,20 @@
   </div>
 
   {#if controller.ocrModelError}
-    <div class="note">Failed to load OCR model status: {controller.ocrModelError}</div>
+    <div class="note">
+      <div>Failed to load OCR model status: {controller.ocrModelError}</div>
+      <div class="dl-meta">
+        <span>This is a fetch error, not a missing model — retry to recheck.</span>
+        <button
+          type="button"
+          class="btn sm"
+          disabled={controller.loadingOcrModelStatus}
+          onclick={() => controller.loadOcrModelStatus()}
+        >
+          {controller.loadingOcrModelStatus ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    </div>
   {:else if model}
     <div class="model-card">
       <div class="model-top">

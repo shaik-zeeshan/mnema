@@ -173,6 +173,18 @@ export function createOnboardingAiStore() {
           .join("; ")
       : null,
   );
+  // Soft note (NOT a blocker): the attention gate (`aiConfigReady`) clears once a
+  // cloud key is merely SAVED, but a save alone doesn't prove the key works —
+  // onboarding can't run the persisted-settings status/test surfaces, so a live
+  // model listing is the only proof. When the config looks ready yet the model
+  // list could not be fetched, the green state would falsely imply a working
+  // engine; this surfaces a brief caveat so the user knows the key is unverified.
+  // Deliberately a hint, not a hard gate (see the NOTE on validation surface above).
+  const aiUnverifiedNote = $derived(
+    aiConfigReady && modelsError !== null
+      ? "Key saved but unverified — models could not be listed."
+      : null,
+  );
 
   return {
     // Re-exported constants/helpers the markup references verbatim.
@@ -201,6 +213,7 @@ export function createOnboardingAiStore() {
     get aiConfigReady() { return aiConfigReady; },
     get aiConfigMissing() { return aiConfigMissing; },
     get aiModelValue() { return aiModelValue; },
+    get aiUnverifiedNote() { return aiUnverifiedNote; },
     get modelFailureRows() { return modelFailureRows; },
     get modelRetryTargets() { return modelRetryTargets; },
     get modelsError() { return modelsError; },
