@@ -21,6 +21,7 @@
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { message } from "@tauri-apps/plugin-dialog";
   import type {
     Conversation,
     ConversationTurn,
@@ -301,12 +302,24 @@
     await closeCurrentWindow();
   }
 
-  // Open the captured page behind a frame source in the default browser via the
-  // shared brokered helper. Frame sources only (audio has frameId/url null). The
-  // raw URL stays in Rust; the UI never sees it. Best-effort.
-  function openSourceUrl(source: AskAiSource): void {
+  // Open a captured page via the shared brokered helper, surfacing a real opener
+  // failure (mirroring the timeline's "Couldn't open URL: …"). A no-openable-URL
+  // result is a benign no-op. The raw URL stays in Rust; the UI never sees it.
+  async function openCapturedFrameUrl(frameId: number): Promise<void> {
+    const { error } = await openCapturedUrl(frameId);
+    if (error) {
+      await message(`Couldn't open URL: ${error}`, {
+        title: "Couldn't open page",
+        kind: "error",
+      });
+    }
+  }
+
+  // Open the captured page behind a frame source in the default browser.
+  // Frame sources only (audio has frameId/url null).
+  async function openSourceUrl(source: AskAiSource): Promise<void> {
     if (source.frameId == null) return;
-    void openCapturedUrl(source.frameId);
+    await openCapturedFrameUrl(source.frameId);
   }
 
   // Load thumbnails for answer-source frames, mirroring loadThumbnails. Best
@@ -349,6 +362,10 @@
   // ---------------------------------------------------------------------------
 
   let resultCount = $derived(frames.length + audio.length);
+  // At least one frame result carries an openable captured page, so the ⌘/Ctrl+O
+  // "open page" footer hint (and its per-card chip) actually has a target. Gates
+  // the footer hint so it never advertises an action that can't fire.
+  let hasOpenableResult = $derived(frames.some((frame) => frame.url != null));
   const OPTION_ID_PREFIX = "qr-opt-";
   let activeOptionId = $derived(
     selectedIndex >= 0 ? `${OPTION_ID_PREFIX}${selectedIndex}` : undefined,
@@ -377,7 +394,7 @@
     if (selectedIndex < 0 || selectedIndex >= frames.length) return;
     const frame = frames[selectedIndex];
     if (frame.url == null) return;
-    void openCapturedUrl(frame.thumbnailFrameId);
+    void openCapturedFrameUrl(frame.thumbnailFrameId);
   }
 
   function moveSelection(delta: number): void {
@@ -4286,6 +4303,9 @@
       {:else if resultCount > 0}
         <span class="quick-recall__hint-item"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
         <span class="quick-recall__hint-item"><kbd>↵</kbd> open</span>
+        {#if hasOpenableResult}
+          <span class="quick-recall__hint-item"><kbd>⌃O</kbd> open page</span>
+        {/if}
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> Ask AI</span>
         {/if}

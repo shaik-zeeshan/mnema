@@ -3,6 +3,7 @@
   import { parseSearchSnippet } from "$lib/search-snippet";
   import { formatTimestampCompact } from "$lib/format-time";
   import { openCapturedUrl } from "$lib/open-captured-url";
+  import { message } from "@tauri-apps/plugin-dialog";
   import AudioWaveform from "$lib/components/AudioWaveform.svelte";
 
   let {
@@ -48,11 +49,19 @@
 
   // Open the captured http(s) page in the default browser via the shared brokered
   // helper (the raw URL stays in Rust). Stop propagation so the surrounding
-  // card-select button does not also fire. Best-effort.
-  function handleOpen(event: MouseEvent): void {
+  // card-select button does not also fire. A no-openable-URL result is a benign
+  // no-op; a real opener failure surfaces an error dialog (mirroring the
+  // timeline's "Couldn't open URL: …").
+  async function handleOpen(event: MouseEvent): Promise<void> {
     event.stopPropagation();
     if (kind !== "frame" || !frame) return;
-    void openCapturedUrl(frame.thumbnailFrameId);
+    const { error } = await openCapturedUrl(frame.thumbnailFrameId);
+    if (error) {
+      await message(`Couldn't open URL: ${error}`, {
+        title: "Couldn't open page",
+        kind: "error",
+      });
+    }
   }
 </script>
 
@@ -114,7 +123,9 @@
          out of the tab order — a tab stop here would break the listbox's roving
          model. It is reached by mouse, and by keyboard via the listbox container's
          "open selected result's page" shortcut (⌘/Ctrl+O on the search input,
-         in quick-recall/+page.svelte), which calls the same brokered helper. -->
+         in quick-recall/+page.svelte), which calls the same brokered helper. That
+         shortcut is surfaced to keyboard users in the Quick Recall footer hints
+         (⌃O open page), so it isn't documented only in source. -->
     <button
       type="button"
       class="search-card__open"
@@ -437,13 +448,17 @@
 
   /* Reveal the control on card hover, so it doesn't clutter resting cards. This
      card is a non-focusable listbox option (DOM focus stays on the search input),
-     so there is no keyboard focus to reveal it; the keyboard path is the listbox
-     container's "open selected result" shortcut, not a focus traversal here. */
-  .search-card-wrap:hover .search-card__open {
+     so its keyboard path is the listbox container's ⌘/Ctrl+O "open selected
+     result" shortcut (surfaced in the footer), not a focus traversal here. The
+     :focus-within reveal keeps the chip visible if focus ever does land on it
+     (e.g. a mouse click), mirroring AnswerSourceCard's focus-aware reveal. */
+  .search-card-wrap:hover .search-card__open,
+  .search-card-wrap:focus-within .search-card__open {
     opacity: 1;
   }
 
-  .search-card__open:hover {
+  .search-card__open:hover,
+  .search-card__open:focus-visible {
     outline: none;
     opacity: 1;
     border-color: var(--app-accent-border);

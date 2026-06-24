@@ -30,6 +30,7 @@
   import { onMount, onDestroy, tick, untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { openSettingsWindow } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
@@ -697,10 +698,18 @@
 
   // Open the captured page behind a frame source in the default browser via the
   // shared brokered helper. Frame sources only (audio has frameId/url null). The
-  // raw URL stays in Rust; the UI never sees it. Best-effort.
-  function openSourceUrl(source: AskAiSource): void {
+  // raw URL stays in Rust; the UI never sees it. A no-openable-URL result is a
+  // benign no-op; a real opener failure surfaces an error dialog (mirroring the
+  // timeline's "Couldn't open URL: …").
+  async function openSourceUrl(source: AskAiSource): Promise<void> {
     if (source.frameId == null) return;
-    void openCapturedUrl(source.frameId);
+    const { error } = await openCapturedUrl(source.frameId);
+    if (error) {
+      await message(`Couldn't open URL: ${error}`, {
+        title: "Couldn't open page",
+        kind: "error",
+      });
+    }
   }
 
   // ── Versioned update transport (the SOLE Ask AI stream listener) ─────────
