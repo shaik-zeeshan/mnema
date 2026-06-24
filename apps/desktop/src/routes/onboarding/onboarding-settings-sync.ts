@@ -300,11 +300,14 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
       askAiModel: base.access?.askAiModel ?? null,
     },
     // Reasoning Engine config connected inline during onboarding (AskAiBody).
-    // The master AI switch follows the Ask AI feature toggle — onboarding only
-    // surfaces Ask AI, so enabling it opts into AI features. The per-provider
-    // key is keychain-only (saved eagerly) and never travels in this payload.
+    // The master AI switch is MONOTONIC w.r.t. the base: onboarding only surfaces
+    // Ask AI, so enabling Ask AI can turn the engine ON, but it must NOT turn the
+    // engine OFF for a returning user who enabled it elsewhere (e.g. for User
+    // Context / digests with Ask AI off — `aiRuntime.enabled=true`,
+    // `askAiEnabled=false`). The per-provider key is keychain-only (saved
+    // eagerly) and never travels in this payload.
     aiRuntime: {
-      enabled: draft.draftAskAiEnabled,
+      enabled: draft.draftAskAiEnabled || (base.aiRuntime?.enabled ?? false),
       providers: draft.ai.draftAiProviders.map((p) => ({
         id: p.id,
         kind: p.kind,
