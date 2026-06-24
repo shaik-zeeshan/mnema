@@ -24,7 +24,6 @@
   const cancellingOcrDownload = $derived(models.cancellingOcrDownload);
   const ocrDownloadError = $derived(models.ocrDownloadError);
   const deletingUnusedOcrModels = $derived(models.deletingUnusedOcrModels);
-  const confirmingDeleteUnusedOcrModels = $derived(models.confirmingDeleteUnusedOcrModels);
   const deleteUnusedOcrModelsMessage = $derived(models.deleteUnusedOcrModelsMessage);
   const deletedUnusedOcrModelLabels = $derived(models.deletedUnusedOcrModelLabels);
   const skippedUnusedOcrModelLabels = $derived(models.skippedUnusedOcrModelLabels);
@@ -46,10 +45,6 @@
   const startSelectedOcrModelDownload = () => c.startSelectedOcrModelDownload();
   const cancelSelectedOcrModelDownload = () => c.cancelSelectedOcrModelDownload();
   const requestDeleteUnusedOcrModels = () => c.requestDeleteUnusedOcrModels();
-  // The legacy confirmation block (`confirmingDeleteUnusedOcrModels`) is inert —
-  // `requestDeleteUnusedOcrModels` runs its own dialog and performs the delete —
-  // so this verbatim onclick target routes to the same public path.
-  const deleteUnusedOcrModels = () => c.requestDeleteUnusedOcrModels();
 </script>
 
 <SettingGroup
@@ -298,20 +293,6 @@
             </button>
           </div>
           <p class="group-hint">Removes app-managed OCR model files except the model selected above.</p>
-          {#if confirmingDeleteUnusedOcrModels}
-            <div class="delete-confirmation" role="alert">
-              <strong>Delete unused OCR models?</strong>
-              <p>This removes app-managed OCR model directories that are not currently selected. The selected model, active downloads, and running OCR jobs are kept. Queued and failed OCR jobs using deleted models are moved to the current OCR selection.</p>
-              <div class="debug-log-actions">
-                <button class="btn btn--danger" onclick={deleteUnusedOcrModels} disabled={deletingUnusedOcrModels}>
-                  {deletingUnusedOcrModels ? "Deleting" : "Confirm delete"}
-                </button>
-                <button class="btn btn--ghost" onclick={() => { models.confirmingDeleteUnusedOcrModels = false; }} disabled={deletingUnusedOcrModels}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          {/if}
           {#if deleteUnusedOcrModelsMessage}
             <div class="cleanup-result" aria-live="polite">
               <strong>{deleteUnusedOcrModelsMessage}</strong>

@@ -2,10 +2,14 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
+  import Stepper from "$lib/components/Stepper.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
-  import { ASK_AI_DEFAULT_TOOL_CALL_LIMIT } from "$lib/settings/state/recording.svelte";
+  import {
+    ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
+    ASK_AI_MAX_TOOL_CALL_LIMIT,
+  } from "$lib/settings/state/recording.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -64,14 +68,16 @@
       <div class="ask-ai-stack">
         {#if rec.draftAskAiLimitToolCalls}
           <label class="field-label" for="ask-ai-max-tool-calls">Max tool calls per question</label>
-          <input
+          <Stepper
             id="ask-ai-max-tool-calls"
-            class="text-input"
-            type="number"
-            min="1"
-            max="64"
-            step="1"
-            bind:value={rec.draftAskAiMaxToolCalls}
+            bind:value={
+              () => String(rec.draftAskAiMaxToolCalls),
+              (v) => { rec.draftAskAiMaxToolCalls = parseInt(v, 10) || ASK_AI_DEFAULT_TOOL_CALL_LIMIT; }
+            }
+            min={1}
+            max={ASK_AI_MAX_TOOL_CALL_LIMIT}
+            step={1}
+            ariaLabel="max tool calls per question"
           />
           <p class="group-hint">
             Each tool call is one brokered query into your redacted capture history. A lower cap bounds how much a single answer can pull; the default is {ASK_AI_DEFAULT_TOOL_CALL_LIMIT}.

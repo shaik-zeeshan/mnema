@@ -4,6 +4,7 @@
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
+  import Stepper from "$lib/components/Stepper.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -28,7 +29,6 @@
   const cancellingTranscriptionDownload = $derived(models.cancellingTranscriptionDownload);
   const transcriptionDownloadError = $derived(models.transcriptionDownloadError);
   const deletingUnusedTranscriptionModels = $derived(models.deletingUnusedTranscriptionModels);
-  const confirmingDeleteUnusedTranscriptionModels = $derived(models.confirmingDeleteUnusedTranscriptionModels);
   const deleteUnusedTranscriptionModelsMessage = $derived(models.deleteUnusedTranscriptionModelsMessage);
   const deletedUnusedTranscriptionModelLabels = $derived(models.deletedUnusedTranscriptionModelLabels);
   const skippedUnusedTranscriptionModelLabels = $derived(models.skippedUnusedTranscriptionModelLabels);
@@ -56,10 +56,6 @@
   const startSelectedTranscriptionModelDownload = () => c.startSelectedTranscriptionModelDownload();
   const cancelSelectedTranscriptionModelDownload = () => c.cancelSelectedTranscriptionModelDownload();
   const requestDeleteUnusedTranscriptionModels = () => c.requestDeleteUnusedTranscriptionModels();
-  // The legacy confirmation block (`confirmingDeleteUnusedTranscriptionModels`) is
-  // inert — `requestDeleteUnusedTranscriptionModels` runs its own dialog and
-  // performs the delete — so this verbatim onclick target routes to it too.
-  const deleteUnusedTranscriptionModels = () => c.requestDeleteUnusedTranscriptionModels();
 </script>
 
 <SettingGroup
@@ -171,14 +167,17 @@
     {#if rec.draftTranscriptionMemoryMode === "balanced"}
       <SettingRow label="Idle unload seconds" full>
         {#snippet control()}
-          <input
+          <Stepper
             id="transcription-idle-unload"
-            class="text-input"
-            type="number"
-            min="0"
-            max="1800"
-            step="1"
-            bind:value={rec.draftTranscriptionIdleUnloadSeconds}
+            bind:value={
+              () => String(rec.draftTranscriptionIdleUnloadSeconds),
+              (v) => { rec.draftTranscriptionIdleUnloadSeconds = parseInt(v, 10) || 0; }
+            }
+            min={0}
+            max={1800}
+            step={30}
+            unit="s"
+            ariaLabel="idle unload seconds"
           />
         {/snippet}
       </SettingRow>
@@ -189,14 +188,17 @@
       full
     >
       {#snippet control()}
-        <input
+        <Stepper
           id="transcription-chunk-seconds"
-          class="text-input"
-          type="number"
-          min="0"
-          max="300"
-          step="1"
-          bind:value={rec.draftTranscriptionChunkSeconds}
+          bind:value={
+            () => String(rec.draftTranscriptionChunkSeconds),
+            (v) => { rec.draftTranscriptionChunkSeconds = parseInt(v, 10) || 0; }
+          }
+          min={0}
+          max={300}
+          step={15}
+          unit="s"
+          ariaLabel="chunk seconds"
         />
       {/snippet}
     </SettingRow>
@@ -295,20 +297,6 @@
             </button>
           </div>
           <p class="group-hint">Removes app-managed transcription model files except the model selected above.</p>
-          {#if confirmingDeleteUnusedTranscriptionModels}
-            <div class="delete-confirmation" role="alert">
-              <strong>Delete unused transcription models?</strong>
-              <p>This removes app-managed transcription model directories that are not currently selected. The selected model, active downloads, and running transcription jobs are kept. Queued and failed transcription jobs using deleted models are moved to the current transcription selection.</p>
-              <div class="debug-log-actions">
-                <button class="btn btn--danger" onclick={deleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels}>
-                  {deletingUnusedTranscriptionModels ? "Deleting" : "Confirm delete"}
-                </button>
-                <button class="btn btn--ghost" onclick={() => { models.confirmingDeleteUnusedTranscriptionModels = false; }} disabled={deletingUnusedTranscriptionModels}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          {/if}
           {#if deleteUnusedTranscriptionModelsMessage}
             <div class="cleanup-result" aria-live="polite">
               <strong>{deleteUnusedTranscriptionModelsMessage}</strong>

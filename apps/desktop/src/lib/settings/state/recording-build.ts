@@ -53,8 +53,23 @@ import type {
 // splits that into a "limit on/off" toggle plus the numeric value.
 export const ASK_AI_DEFAULT_TOOL_CALL_LIMIT = 12;
 
+// Tool-call cap ceiling = the runtime MULTI_TURN_CEILING. A value above this is
+// not honored by the engine, so clamp the effective cap (and the UI Stepper) to
+// it rather than persisting a number that silently has no effect.
+export const ASK_AI_MAX_TOOL_CALL_LIMIT = 64;
+
 export const DEFAULT_USER_CONTEXT_BUDGET_TIER: DerivationBudgetTier = "balanced";
 export const DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS = 30;
+
+// Effective tool-call cap normalization, shared by the live access request
+// (via the store's `effectiveAskAiMaxToolCalls` derived) and the canonical
+// baseline builder so both land on the same fixed point: 0 (= no cap) passes
+// through, any positive value is clamped to [1, ASK_AI_MAX_TOOL_CALL_LIMIT].
+export function clampAskAiMaxToolCalls(cap: number): number {
+  const n = Math.floor(Number(cap) || 0);
+  if (n <= 0) return 0;
+  return Math.min(ASK_AI_MAX_TOOL_CALL_LIMIT, Math.max(1, n));
+}
 
 export type RecordingDomainRequest =
   | UpdateCaptureSourceSettingsRequest
@@ -154,27 +169,42 @@ export interface RecordingDraftState {
 function buildScreenResolutionRequest(
   rec: RecordingDraftState,
 ): UpdateVideoSettingsRequest["screenResolution"] {
-  return rec.draftResolutionMode === "custom"
-    ? {
-        mode: "custom" as const,
-        width: rec.draftCustomWidth!,
-        height: rec.draftCustomHeight!,
-      }
-    : {
-        mode: "preset" as const,
-        preset:
-          rec.draftResolutionMode === "original"
-            ? ("original" as const)
-            : rec.draftResolutionPreset,
-      };
+  if (rec.draftResolutionMode === "custom") {
+    // The save path is gated on `customResolutionBlocked` (both raw fields must
+    // parse), so these are non-null when we get here. Fail fast rather than
+    // serialize a `null` width/height the backend would reject — and without a
+    // `!` type-lie on the `number | null` drafts.
+    if (rec.draftCustomWidth === null || rec.draftCustomHeight === null) {
+      throw new Error("Custom resolution requires both width and height.");
+    }
+    return {
+      mode: "custom" as const,
+      width: rec.draftCustomWidth,
+      height: rec.draftCustomHeight,
+    };
+  }
+  return {
+    mode: "preset" as const,
+    preset:
+      rec.draftResolutionMode === "original"
+        ? ("original" as const)
+        : rec.draftResolutionPreset,
+  };
 }
 
 function buildVideoBitrateRequest(
   rec: RecordingDraftState,
 ): UpdateVideoSettingsRequest["videoBitrate"] {
-  return rec.draftBitrateMode === "custom"
-    ? { mode: "custom" as const, preset: null, customMbps: rec.draftCustomMbps! }
-    : { mode: "preset" as const, preset: rec.draftBitratePreset, customMbps: null };
+  if (rec.draftBitrateMode === "custom") {
+    // Gated on `customBitrateBlocked` (the raw field must parse), so this is
+    // non-null here. Fail fast rather than serialize a `null` the backend would
+    // reject — and without a `!` type-lie on the `number | null` draft.
+    if (rec.draftCustomMbps === null) {
+      throw new Error("Custom bitrate requires a value.");
+    }
+    return { mode: "custom" as const, preset: null, customMbps: rec.draftCustomMbps };
+  }
+  return { mode: "preset" as const, preset: rec.draftBitratePreset, customMbps: null };
 }
 
 function buildProcessingRequest(rec: RecordingDraftState): UpdateProcessingSettingsRequest {
@@ -203,11 +233,19 @@ function buildProcessingRequest(rec: RecordingDraftState): UpdateProcessingSetti
       modelId: rec.draftTranscriptionModelId,
       language: rec.draftTranscriptionLanguage.trim() || "auto",
       memoryMode: rec.draftTranscriptionMemoryMode,
+      // Clamp to the product UI ceilings so an out-of-range typed value can
+      // never reach `invoke`: the backend REJECTS (does not clamp) idle > 86400
+      // or chunk > 3600, and a rejected save retries forever. 1800/300 are the
+      // maxes the UI advertises (the onboarding Slider enforces them); chunk's
+      // 300s also respects the 5-minute capture-segment cap.
       idleUnloadSeconds: Math.max(
         0,
-        Math.trunc(Number(rec.draftTranscriptionIdleUnloadSeconds) || 0),
+        Math.min(1800, Math.trunc(Number(rec.draftTranscriptionIdleUnloadSeconds) || 0)),
       ),
-      chunkSeconds: Math.max(0, Math.trunc(Number(rec.draftTranscriptionChunkSeconds) || 0)),
+      chunkSeconds: Math.max(
+        0,
+        Math.min(300, Math.trunc(Number(rec.draftTranscriptionChunkSeconds) || 0)),
+      ),
     },
     speakerAnalysis: {
       separateSpeakers: rec.draftSpeakerSeparateSpeakers,
@@ -383,6 +421,18 @@ export function buildRecDomainRequestFromSettings(
         transcription: {
           ...s.transcription,
           language: (s.transcription.language ?? "").trim() || "auto",
+          // Mirror the live builder's idle/chunk clamp (0..1800 / 0..300). The
+          // backend only rejects idle > 86400 / chunk > 3600, so a persisted
+          // value above the UI ceiling (e.g. saved by an older build or the CLI)
+          // would otherwise read perpetually dirty against the clamped request.
+          idleUnloadSeconds: Math.max(
+            0,
+            Math.min(1800, Math.trunc(Number(s.transcription.idleUnloadSeconds) || 0)),
+          ),
+          chunkSeconds: Math.max(
+            0,
+            Math.min(300, Math.trunc(Number(s.transcription.chunkSeconds) || 0)),
+          ),
         },
         speakerAnalysis: {
           ...s.speakerAnalysis,
@@ -409,7 +459,13 @@ export function buildRecDomainRequestFromSettings(
     case "access":
       return {
         askAiEnabled: s.access?.askAiEnabled ?? false,
-        askAiMaxToolCalls: s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
+        // Mirror the live builder's effective cap: a positive cap is clamped to
+        // [1, 64]; 0 (= no cap) passes through. A persisted value above the
+        // ceiling (the backend stores the cap verbatim) would otherwise read
+        // perpetually dirty against the clamped request.
+        askAiMaxToolCalls: clampAskAiMaxToolCalls(
+          s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
+        ),
         askAiModel: s.access?.askAiModel ?? "",
       };
     case "ai_runtime":

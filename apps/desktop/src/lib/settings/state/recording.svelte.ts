@@ -53,11 +53,13 @@ import {
 import type { AutosaveEngine } from "./autosave.svelte";
 import {
   ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
+  ASK_AI_MAX_TOOL_CALL_LIMIT,
   DEFAULT_USER_CONTEXT_BUDGET_TIER,
   DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS,
   buildRecDomainRequest,
   buildRecDomainSnapshot,
   buildRecDomainSnapshotFromSettings,
+  clampAskAiMaxToolCalls,
   computeApplyDrafts,
   type RecordingDomainRequest,
 } from "./recording-build";
@@ -70,7 +72,7 @@ import {
   defaultOcrLanguageForProvider,
 } from "./models-format";
 
-export { ASK_AI_DEFAULT_TOOL_CALL_LIMIT, DEFAULT_USER_CONTEXT_BUDGET_TIER, DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS };
+export { ASK_AI_DEFAULT_TOOL_CALL_LIMIT, ASK_AI_MAX_TOOL_CALL_LIMIT, DEFAULT_USER_CONTEXT_BUDGET_TIER, DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS };
 export type { RecordingDomainRequest };
 
 const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
@@ -219,11 +221,13 @@ export class RecordingStore {
   semanticSearchSelectedModelId = $state<string | null>(null);
 
   // Effective persisted tool-call cap: 0 when the cap is off, else the chosen
-  // number (floored to 1 so an empty/invalid input never silently becomes
-  // unlimited). Used by the access build payload.
+  // number clamped to [1, 64] (the runtime ceiling, MULTI_TURN_CEILING). Floored
+  // to 1 so an empty/invalid input never silently becomes unlimited, and capped
+  // so a typed 9999 can't persist past what the engine honors. Shares the
+  // `clampAskAiMaxToolCalls` fixed point with the canonical baseline builder.
   effectiveAskAiMaxToolCalls = $derived(
     this.draftAskAiLimitToolCalls
-      ? Math.max(1, Math.floor(this.draftAskAiMaxToolCalls || ASK_AI_DEFAULT_TOOL_CALL_LIMIT))
+      ? clampAskAiMaxToolCalls(this.draftAskAiMaxToolCalls || ASK_AI_DEFAULT_TOOL_CALL_LIMIT)
       : 0,
   );
 
