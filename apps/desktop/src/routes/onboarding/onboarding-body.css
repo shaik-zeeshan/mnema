@@ -10,8 +10,16 @@
  * and the reduced-motion fallback. */
 
 /* ===== expanded body ===== */
+/* NB: no `overflow: hidden` here. Feature bodies (Transcription/OCR/Semantic
+   Search/Ask AI) render NON-portaled popovers (Combobox, ModelPickerMenu)
+   anchored inside `.body-inner`; clipping them cut the dropdown at the body's
+   bottom edge, making lower options unreachable. FeatureRow toggles this body
+   with a plain `hidden` attribute (no collapse animation), so nothing relied
+   on the clip — and the `.row.open` accent hairline lives on the `.row`
+   pseudo-element, inset within the row bounds, not here. (Mirrors the same
+   precedent in lib/settings/ui/SettingGroup.svelte.) */
 .onboarding-shell .row-body {
-  overflow: hidden;
+  overflow: visible;
 }
 /* body content aligns UNDER the title (icon sits in a left gutter):
    left = row-head padding(16) + icon(28) + gap(12) = 56px */
