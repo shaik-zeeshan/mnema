@@ -20,8 +20,10 @@
 //! reading `AXRole`/`AXURL`/`AXParent`), so a slow-but-responding browser could
 //! otherwise stall one attempt for ~50 × 0.5s ≈ 25s. To prevent that, a single
 //! attempt carries its own wall-clock deadline (`READ_ATTEMPT_BUDGET`): the
-//! parent-hop climb stops early once the budget is spent, so the worst case for
-//! one attempt is the budget plus at most one in-flight message timeout (~0.5s).
+//! deadline is checked BEFORE every AX message (the two pre-loop reads and each
+//! hop's `AXRole`/`AXURL`/`AXParent`), so once the budget is spent at most ONE
+//! more message can already be in flight. The worst case for one attempt is thus
+//! the budget (~0.4s) plus at most one in-flight message timeout (~0.5s) ≈ 0.9s.
 //! The cold-poll loop then bounds total time across attempts to
 //! `COLD_READ_POLL_BUDGET` plus one final attempt. The first read may find the
 //! a11y engine dormant (cold); we poll for up to 500ms (50ms steps) to wake it —
@@ -34,6 +36,10 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::url::CFURL;
+// `CFURLGetString` (raw FFI) so we can null-check it ourselves: the safe
+// `CFURL::get_string` wrapper does `wrap_under_get_rule`, which asserts non-null
+// and would PANIC on a degenerate CFURL instead of degrading to `None`.
+use core_foundation_sys::url::CFURLGetString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -178,6 +184,13 @@ pub fn read_active_tab_url(pid: i32) -> Option<String> {
 /// (or [`ReadOutcome::Dormant`] if none yet), so a slow browser can't drag one
 /// attempt out to ~50 message timeouts.
 fn read_focused_outermost_url(app: AXUIElementRef, deadline: Instant) -> ReadOutcome {
+    // Wall-clock bound BEFORE the first messages: the two pre-loop reads below
+    // (`AXFocusedUIElement` + `AXRole`) each cost up to one per-message timeout,
+    // so if the budget is already spent we bail without issuing them. Treat an
+    // already-spent attempt as cold (worth re-polling within the poll budget).
+    if Instant::now() >= deadline {
+        return ReadOutcome::Dormant;
+    }
     // No focused element yet = the a11y engine is cold.
     let Some(focused) = copy_attribute(app, "AXFocusedUIElement") else {
         return ReadOutcome::Dormant;
@@ -195,16 +208,25 @@ fn read_focused_outermost_url(app: AXUIElementRef, deadline: Instant) -> ReadOut
             break;
         }
         // Wall-clock bound: stop climbing once this attempt's budget is spent and
-        // use whatever outermost URL we have. A responding browser finishes far
-        // inside the budget, so the fast path is unaffected.
+        // use whatever outermost URL we have. The deadline is re-checked before
+        // EACH of this hop's messages (AXRole, then AXURL, then AXParent), so once
+        // the budget is spent at most ONE more in-flight message can overrun it —
+        // never all three. A responding browser finishes far inside the budget, so
+        // the fast path is unaffected.
         if Instant::now() >= deadline {
             break;
         }
         let el_role = string_attribute(el.as_CFTypeRef(), "AXRole").unwrap_or_default();
         if el_role == "AXWebArea" {
+            if Instant::now() >= deadline {
+                break;
+            }
             if let Some(url) = url_attribute(el.as_CFTypeRef(), "AXURL") {
                 outermost = Some(url);
             }
+        }
+        if Instant::now() >= deadline {
+            break;
         }
         cur = copy_attribute(el.as_CFTypeRef(), "AXParent");
         hops += 1;
@@ -257,9 +279,20 @@ fn url_attribute(element: AXUIElementRef, name: &str) -> Option<String> {
             .downcast::<CFString>()
             .map(|string| string.to_string())
     } else if value.type_of() == CFURL::type_id() {
-        value
-            .downcast::<CFURL>()
-            .map(|url| url.get_string().to_string())
+        // NOT `CFURL::get_string`: that wrapper does `wrap_under_get_rule`, which
+        // ASSERTS non-null and would PANIC this background thread on a degenerate
+        // CFURL. Drop to the raw FFI so a null `CFURLGetString` degrades to `None`
+        // like every other failure branch here.
+        value.downcast::<CFURL>().and_then(|url| {
+            let string_ref = unsafe { CFURLGetString(url.as_concrete_TypeRef()) };
+            if string_ref.is_null() {
+                return None;
+            }
+            // Get rule: CFURLGetString does not transfer ownership, so wrap under
+            // the get rule (this is exactly what `CFURL::get_string` does, minus
+            // the null-assert we already guarded above).
+            Some(unsafe { CFString::wrap_under_get_rule(string_ref) }.to_string())
+        })
     } else {
         None
     }?;
