@@ -105,7 +105,7 @@
             step={5}
             label="Idle timeout"
             unit="s"
-            formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m ${v%60 > 0 ? ` ${v%60}s` : ""}`.trim() : `${v}s`}
+            formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m${v%60 > 0 ? ` ${v%60}s` : ""}` : `${v}s`}
           />
           <p class="group-hint">
             Capture pauses after <strong>{rec.draftIdleTimeoutSeconds}s</strong> of system-wide inactivity (no mouse, keyboard,
