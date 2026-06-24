@@ -311,6 +311,13 @@
     opacity: 0.35;
   }
 }
+/* Respect reduced-motion: stop the infinite download-pulse (mirrors the Settings
+   status-pulse/spin guards; the dot stays fully visible). */
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-shell .row-dl .dl-dot {
+    animation: none;
+  }
+}
 /* muted "needs prerequisite" hint — collapsed, non-required, OFF rows whose
    enable is gated. Same scale as .row-attn but MUTED (not warn): a subtle
    surface chip with a lock glyph and the reason text. Hidden when open (the

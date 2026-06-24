@@ -45,23 +45,8 @@
   </div>
 {/if}
 
-{#if controller.errorMessage}
-  <div class="privacy-err" role="alert">{controller.errorMessage}</div>
-{/if}
-
-<style>
-  /* Surfaces a failed exclusion add/remove/recommend — the privacy controller
-     routes those failures to `controller.errorMessage`. Without this, a failed
-     "Apply recommended" silently leaves apps un-excluded (a privacy regression).
-     Terminal/green danger tokens. */
-  .privacy-err {
-    margin-top: 10px;
-    padding: 10px 14px;
-    font-size: 11px;
-    line-height: 1.5;
-    color: var(--app-danger);
-    background: var(--app-danger-bg);
-    border: 1px solid var(--app-danger-border);
-    border-radius: 8px;
-  }
-</style>
+<!-- A failed exclusion add/remove/recommend is surfaced once, by FeatureStack's
+     always-mounted `.stack-error` role=alert shell banner (it renders the same
+     `controller.errorMessage` during the configure phase). Rendering it again
+     here duplicated the visible banner and announced it twice to screen
+     readers, so PrivacyBody relies on the shell banner alone. -->

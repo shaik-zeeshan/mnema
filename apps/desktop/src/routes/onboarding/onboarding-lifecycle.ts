@@ -124,6 +124,12 @@ export async function finishOnboarding(
   target.errorMessage = null;
   try {
     await saveSettings(target);
+    // Persist the completion flag BEFORE the side-effecting capture start.
+    // `start_native_capture` and `complete_onboarding` are independent, so if
+    // we started capture first and `complete_onboarding` (or the goto) then
+    // threw, capture would be live while onboarding stayed incomplete —
+    // re-showing onboarding next launch with capture already running.
+    await invoke("complete_onboarding");
     if (startRecording) {
       // Defense-in-depth: never request a source whose OS permission isn't
       // granted, independent of the attention gate. Capture must not outrun
@@ -141,7 +147,6 @@ export async function finishOnboarding(
         },
       });
     }
-    await invoke("complete_onboarding");
     await goto("/");
   } catch (err) {
     target.errorMessage = serializeError(err);

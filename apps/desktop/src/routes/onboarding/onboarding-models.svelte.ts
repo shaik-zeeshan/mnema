@@ -36,7 +36,11 @@ import {
   transcriptionStatusLabel,
 } from "./onboarding-mapping";
 
-const OS_MANAGED_OPTION_VALUE = "__os_managed__";
+// Sentinel `value` for an option whose model has no concrete id (OS-managed,
+// e.g. apple_vision / parakeet): the picker carries this string and the choose*
+// handlers map it back to `null`. Exported so onboarding.svelte.ts shares the
+// one source of truth instead of re-checking the bare literal.
+export const OS_MANAGED_OPTION_VALUE = "__os_managed__";
 const RUNNING_DOWNLOAD_STATUSES = ["starting", "downloading", "installing"];
 const TERMINAL_DOWNLOAD_STATUSES = ["completed", "failed", "cancelled"];
 
@@ -447,7 +451,7 @@ export function createSpeakerModelStore(access: SpeakerModelStoreAccess) {
   // warn about (first run), so the parse just splits and applies — no dialog.
   function parseSpeakerPresetKey(value: string): { provider: string; modelId: string | null } {
     const [provider, rawModelId] = value.split("::");
-    const modelId = !rawModelId || rawModelId === "__os_managed__" ? null : rawModelId;
+    const modelId = !rawModelId || rawModelId === OS_MANAGED_OPTION_VALUE ? null : rawModelId;
     return { provider, modelId };
   }
 

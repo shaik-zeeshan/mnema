@@ -141,7 +141,12 @@
       {#if required}
         <Switch checked={true} disabled={true} />
       {:else}
-        <Switch checked={enabled} disabled={toggleDisabled} onCheckedChange={onSwitchChange} />
+        <Switch
+          checked={enabled}
+          disabled={toggleDisabled}
+          onCheckedChange={onSwitchChange}
+          ariaLabel={`Enable ${name}`}
+        />
       {/if}
     </div>
   </div>

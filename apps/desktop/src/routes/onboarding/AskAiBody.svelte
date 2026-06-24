@@ -90,7 +90,12 @@
             {#if ai.isCloudAiProviderKind(provider.kind) && keySaved[provider.id]}
               <span class="prov-saved">✓ key saved</span>
             {/if}
-            <button class="btn sm prov-remove" type="button" onclick={() => ai.removeProvider(provider.id)}>
+            <button
+              class="btn sm prov-remove"
+              type="button"
+              disabled={keySaving !== null || ai.aiProviderRemoving}
+              onclick={() => ai.removeProvider(provider.id)}
+            >
               Remove
             </button>
           </div>

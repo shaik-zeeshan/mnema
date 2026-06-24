@@ -42,6 +42,7 @@ import {
   createSemanticSearchModelStore,
   createSpeakerModelStore,
   createTranscriptionModelStore,
+  OS_MANAGED_OPTION_VALUE,
 } from "./onboarding-models.svelte";
 import { createOnboardingAiStore } from "./onboarding-ai.svelte";
 import {
@@ -56,6 +57,7 @@ import {
 } from "./onboarding-mapping";
 import {
   buildSettingsRequestFrom,
+  finaleBlockReasonFor,
   syncDraftsInto,
 } from "./onboarding-settings-sync";
 import { syncPrivacyDraftInto } from "./onboarding-privacy-sync";
@@ -449,7 +451,7 @@ export class OnboardingController {
   }
 
   chooseOcrModel(value: string): void {
-    this.draftOcrModelId = value === "__os_managed__" ? null : value;
+    this.draftOcrModelId = value === OS_MANAGED_OPTION_VALUE ? null : value;
   }
 
   chooseTranscriptionProvider(value: string): void {
@@ -461,7 +463,7 @@ export class OnboardingController {
   }
 
   chooseTranscriptionModel(value: string): void {
-    this.draftTranscriptionModelId = value === "__os_managed__" ? null : value;
+    this.draftTranscriptionModelId = value === OS_MANAGED_OPTION_VALUE ? null : value;
   }
 
   // Mic VAD adapter is a closed union (silero/webrtc/off) surfaced as a
@@ -751,6 +753,10 @@ export class OnboardingController {
 
   ctaLabel = $derived("Start recording");
   ctaDisabled = $derived(this.loading || this.saving || this.completing || !this.canComplete);
+
+  // Surfaced reason the finale CTAs are dead for an attention regression (not an in-flight op). Helper owns gate + copy.
+  finaleBlockReason = $derived(finaleBlockReasonFor(this.phase === "done" && !this.loading && !this.saving && !this.completing,
+    FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name)));
 
   // ── Settings round-trip (VERBATIM from the legacy page) ──────────────────
   // The two transforms are factored into `onboarding-settings-sync` (operating

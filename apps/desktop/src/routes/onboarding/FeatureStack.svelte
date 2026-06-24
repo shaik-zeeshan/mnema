@@ -107,7 +107,7 @@
   });
 </script>
 
-<div class="onboarding-shell" bind:this={shellEl} role="application" aria-label="Mnema onboarding">
+<div class="onboarding-shell" bind:this={shellEl} aria-label="Mnema onboarding">
   <div class="head">
     <div class="eyebrow">{eyebrow}</div>
     <div class="subtitle">{subtitle}</div>

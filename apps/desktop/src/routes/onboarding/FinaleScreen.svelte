@@ -80,6 +80,10 @@
         </button>
       </div>
 
+      {#if c.finaleBlockReason}
+        <p class="finale__hint" role="alert">{c.finaleBlockReason}</p>
+      {/if}
+
       <button type="button" class="finale__back" onclick={() => c.backToConfigure()}>
         ← Back to setup
       </button>
@@ -103,5 +107,16 @@
     background: var(--app-danger-bg);
     border: 1px solid var(--app-danger-border);
     border-radius: 8px;
+  }
+
+  /* Muted guidance hint when the CTAs are disabled by an attention regression
+     (not a failure) — explains WHY both buttons are dead and points back to
+     setup. Quieter than `.finale__err`: muted text, no danger fill. */
+  .finale__hint {
+    margin: 8px auto 0;
+    max-width: 40ch;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--app-text-muted);
   }
 </style>

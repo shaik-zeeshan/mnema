@@ -252,8 +252,17 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
     },
     transcription: {
       enabled: draft.draftTranscriptionEnabled,
-      microphoneEnabled: draft.draftTranscriptionMicrophoneEnabled,
-      systemAudioEnabled: draft.draftTranscriptionSystemAudioEnabled,
+      // `syncDraftsInto` deliberately zeroes the per-source draft flags while the
+      // master is off (the phantom-attention fix). Persisting those zeroes would
+      // wipe a returning user's saved per-source preference (saved enabled=false,
+      // microphoneEnabled=true). When the master is off, round-trip the SAVED
+      // per-source flags instead so re-enabling transcription later restores them.
+      microphoneEnabled: draft.draftTranscriptionEnabled
+        ? draft.draftTranscriptionMicrophoneEnabled
+        : (base.transcription?.microphoneEnabled ?? draft.draftTranscriptionMicrophoneEnabled),
+      systemAudioEnabled: draft.draftTranscriptionEnabled
+        ? draft.draftTranscriptionSystemAudioEnabled
+        : (base.transcription?.systemAudioEnabled ?? draft.draftTranscriptionSystemAudioEnabled),
       provider: draft.draftTranscriptionProvider,
       modelId: draft.draftTranscriptionModelId,
       language: draft.draftTranscriptionLanguage.trim() || "auto",
@@ -307,4 +316,16 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
         : null,
     },
   };
+}
+
+// Concise reason the finale CTAs are disabled, or null when nothing to surface.
+// Lives here (not in the controller) only to keep `onboarding.svelte.ts` under
+// the file-size budget. `active` is the controller's "on the finale and not
+// busy" gate; `names` are the regressed FEATURE rows. Surfaces ONLY for an
+// attention regression (gate active AND ≥1 named row) — never for an in-flight
+// load/save/complete (those CTAs render their own busy labels) and never when
+// nothing regressed (empty names → null, so the finale stays clean).
+export function finaleBlockReasonFor(active: boolean, names: string[]): string | null {
+  if (!active || names.length === 0) return null;
+  return `Needs attention: ${names.join(", ")}. Return to setup to fix it.`;
 }
