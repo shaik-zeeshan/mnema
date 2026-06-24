@@ -104,6 +104,7 @@ export function createModelStatusStore() {
   }
 
   async function startOcrModelDownload(provider: string, modelId: string) {
+    if (startingOcrDownload) return;
     startingOcrDownload = true;
     ocrDownloadError = null;
     try {
@@ -213,6 +214,7 @@ export function createModelStatusStore() {
   }
 
   async function startTranscriptionModelDownload(provider: string, modelId: string) {
+    if (startingTranscriptionDownload) return;
     startingTranscriptionDownload = true;
     transcriptionDownloadError = null;
     try {
@@ -312,6 +314,7 @@ export function createModelStatusStore() {
   }
 
   async function startSpeakerModelDownload(provider: string, modelId: string) {
+    if (startingSpeakerDownload) return;
     startingSpeakerDownload = true;
     speakerDownloadError = null;
     speakerModelDeleteMessage = null;
