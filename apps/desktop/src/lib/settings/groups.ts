@@ -13,11 +13,13 @@
 // section ids match the existing per-section panel anchor ids
 // (`settings-panel-<section>`) so scroll-to-anchor keeps working unchanged.
 //
-// IMPORTANT — behavior preservation: the deeplink alias set below is a 1:1 port
-// of the legacy `normalizeSettingsTab`/`normalizeSettingsFocus` in
-// `routes/settings/+page.svelte`. Keep the two in sync until the page is fully
-// converted to the shell; the `settings-groups.test.ts` spec pins the verified
-// deeplink expectations.
+// IMPORTANT — behavior preservation: a deeplink reaches `resolveTabDeeplink`
+// only AFTER passing through the upstream normalizers (`normalize_settings_tab`
+// in Rust and `normalizeSettingsTab` in `surface-windows.ts`), so the alias set
+// below is kept consistent with what those normalizers actually emit — any alias
+// they drop to null can never arrive here. Keep the three in sync until the page
+// is fully converted to the shell; `settings-groups.test.ts` and
+// `settings-deeplink-aliases.test.ts` pin the verified deeplink expectations.
 
 // The 12 legacy sections (each had its own `{#if activeTab === ...}` block and a
 // `settings-panel-<id>` anchor). These are the scroll targets within a group.
@@ -262,7 +264,7 @@ export function sectionAnchor(section: SettingsSectionId): string {
   return `settings-section-${section}`;
 }
 
-// ── Deeplink resolution (1:1 port of the legacy normalizers) ─────────────────
+// ── Deeplink resolution (downstream of the upstream normalizers) ─────────────
 //
 // Resolve a `?tab=` value (or legacy alias) to the section it should land on.
 // The shell maps that section to its group via `groupForSection` and scrolls to

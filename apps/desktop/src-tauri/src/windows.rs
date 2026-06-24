@@ -442,7 +442,9 @@ fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
         "storage" => Some("storage"),
         "appearance" => Some("appearance"),
         "developer" => Some("developer"),
-        "intelligence" | "reasoning" | "ai" => Some("intelligence"),
+        "intelligence" | "reasoning" | "reasoning-engine" | "ai" | "ai-runtime" => {
+            Some("intelligence")
+        }
         // User Context has its own Intelligence-group section, so it deep-links
         // 1:1 (the page resolves "userContext" to that section) rather than
         // collapsing onto Providers.
@@ -1501,7 +1503,12 @@ mod tests {
         assert_eq!(normalize_settings_tab("about"), Some("about"));
         assert_eq!(normalize_settings_tab("intelligence"), Some("intelligence"));
         assert_eq!(normalize_settings_tab("reasoning"), Some("intelligence"));
+        assert_eq!(
+            normalize_settings_tab("reasoning-engine"),
+            Some("intelligence")
+        );
         assert_eq!(normalize_settings_tab("ai"), Some("intelligence"));
+        assert_eq!(normalize_settings_tab("ai-runtime"), Some("intelligence"));
         // User Context and Semantic Search deep-link 1:1 to their own sections
         // rather than collapsing onto Providers / OCR.
         assert_eq!(normalize_settings_tab("user-context"), Some("userContext"));

@@ -59,7 +59,9 @@ export function normalizeSettingsTab(tab?: SettingsWindowTab | string | null): s
       return "access";
     case "intelligence":
     case "reasoning":
+    case "reasoning-engine":
     case "ai":
+    case "ai-runtime":
       return "intelligence";
     // User Context has its own Intelligence-group section, so it deep-links 1:1
     // (the page resolves "userContext" to that section) rather than collapsing
