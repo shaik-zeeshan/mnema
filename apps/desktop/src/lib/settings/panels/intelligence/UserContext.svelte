@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { formatLastDerived, distillationWithheldLine } from "$lib/settings/state/user-context.svelte";
@@ -122,30 +122,25 @@
   >
     {#snippet control()}
       <div class="uc-stack">
-        <RadioGroup
+        <Segmented
           value={rec.draftUserContextBudgetTier}
           onValueChange={(value) =>
             (rec.draftUserContextBudgetTier = value as DerivationBudgetTier)}
           disabled={!userContextCloudDefault}
-          label="Intensity"
+          ariaLabel="Derivation budget intensity"
           options={[
-            {
-              value: "light",
-              label: "Light",
-              description: "Slowest pacing, fewest tokens. Understanding fills in gradually.",
-            },
-            {
-              value: "balanced",
-              label: "Balanced",
-              description: "Moderate pacing and token spend. A sensible default.",
-            },
-            {
-              value: "thorough",
-              label: "Thorough",
-              description: "Fastest pacing, most tokens. Covers your history sooner.",
-            },
+            { value: "light", label: "Light" },
+            { value: "balanced", label: "Balanced" },
+            { value: "thorough", label: "Thorough" },
           ]}
         />
+        {#if userContextCloudDefault}
+          <p class="group-hint">
+            Light — slowest pacing, fewest tokens; understanding fills in gradually.
+            Balanced — moderate pacing and token spend, a sensible default.
+            Thorough — fastest pacing, most tokens; covers your history sooner.
+          </p>
+        {/if}
         {#if userContextLocalDefault}
           <p class="group-hint">
             Budget tiers apply to a cloud default model. A local default uses fixed

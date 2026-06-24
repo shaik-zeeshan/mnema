@@ -3,10 +3,10 @@
   import type { AudioTranscriptionMemoryMode } from "$lib/types";
   import Segmented from "$lib/components/Segmented.svelte";
   import Slider from "$lib/components/Slider.svelte";
-  import SelectMenu from "$lib/components/Select.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import AdvancedReveal from "./AdvancedReveal.svelte";
   import { formatBytes } from "./onboarding-mapping";
+  import { TRANSCRIPTION_LANGUAGE_OPTIONS } from "$lib/settings/transcription-languages";
 
   let { controller }: { controller: OnboardingController } = $props();
 
@@ -150,21 +150,11 @@
       <div class="desc">Auto detects the spoken language, or pin a specific one.</div>
     </div>
     <div class="ctl-field">
-      <SelectMenu
+      <Combobox
         value={controller.draftTranscriptionLanguage || "auto"}
         onValueChange={(v) => (controller.draftTranscriptionLanguage = v)}
-        options={[
-          { value: "auto", label: "Auto-detect" },
-          { value: "en", label: "English (en)" },
-          { value: "fr", label: "French (fr)" },
-          { value: "de", label: "German (de)" },
-          { value: "es", label: "Spanish (es)" },
-          { value: "it", label: "Italian (it)" },
-          { value: "pt", label: "Portuguese (pt)" },
-          { value: "nl", label: "Dutch (nl)" },
-          { value: "ja", label: "Japanese (ja)" },
-          { value: "zh", label: "Chinese (zh)" },
-        ]}
+        options={TRANSCRIPTION_LANGUAGE_OPTIONS}
+        searchPlaceholder="Search languages…"
       />
     </div>
   </div>

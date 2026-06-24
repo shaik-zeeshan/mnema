@@ -12,6 +12,7 @@
     appUpdateProgressText,
     appUpdateProgressPercent,
   } from "$lib/settings/state/about.svelte";
+  import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import type { AppUpdateChannel, AppUpdateStatus } from "$lib/types";
@@ -130,30 +131,16 @@
 <SettingGroup title="Updates" hint="Mnema checks the selected channel at startup after onboarding.">
   <SettingRow label="Update channel" description={switchingAppUpdateChannel ? "Saving channel and checking for updates." : `Current channel: ${updateChannelLabel(appUpdateStatus?.channel)}. Switching channels checks immediately.`} full>
     {#snippet control()}
-      <div class="update-channel-control" role="radiogroup" aria-label="Update channel">
-        <button
-          type="button"
-          class:update-channel-control__option--active={appUpdateStatus?.channel !== "preview"}
-          class="update-channel-control__option"
-          aria-pressed={appUpdateStatus?.channel !== "preview"}
-          onclick={() => chooseAppUpdateChannel("stable")}
-          disabled={switchingAppUpdateChannel || installingAppUpdate}
-        >
-          <span>Stable</span>
-          <small>Published releases</small>
-        </button>
-        <button
-          type="button"
-          class:update-channel-control__option--active={appUpdateStatus?.channel === "preview"}
-          class="update-channel-control__option"
-          aria-pressed={appUpdateStatus?.channel === "preview"}
-          onclick={() => chooseAppUpdateChannel("preview")}
-          disabled={switchingAppUpdateChannel || installingAppUpdate}
-        >
-          <span>Preview</span>
-          <small>Opt-in prereleases</small>
-        </button>
-      </div>
+      <RadioGroup
+        value={appUpdateStatus?.channel === "preview" ? "preview" : "stable"}
+        onValueChange={(v) => chooseAppUpdateChannel(v as AppUpdateChannel)}
+        disabled={switchingAppUpdateChannel || installingAppUpdate}
+        label="Update channel"
+        options={[
+          { value: "stable", label: "Stable", description: "Published releases" },
+          { value: "preview", label: "Preview", description: "Opt-in prereleases" },
+        ]}
+      />
     {/snippet}
   </SettingRow>
 

@@ -67,7 +67,7 @@
             class="text-input"
             type="number"
             min="1"
-            max="500"
+            max="64"
             step="1"
             bind:value={rec.draftAskAiMaxToolCalls}
           />

@@ -166,10 +166,11 @@
       full
     >
       {#snippet control()}
-        <SelectMenu
+        <Segmented
           value={rec.draftOcrTesseractPreprocessMode}
           onValueChange={(value) => { rec.draftOcrTesseractPreprocessMode = value as OcrTesseractPreprocessMode; }}
           disabled={!rec.draftOcrEnabled}
+          ariaLabel="Image preprocessing"
           options={[
             { value: "grayscale", label: "Grayscale" },
             { value: "thresholded", label: "Thresholded" },
@@ -183,10 +184,11 @@
       full
     >
       {#snippet control()}
-        <SelectMenu
+        <Segmented
           value={String(rec.draftOcrTesseractUpscaleFactor)}
           onValueChange={(value) => { rec.draftOcrTesseractUpscaleFactor = parseInt(value, 10) || 1; }}
           disabled={!rec.draftOcrEnabled}
+          ariaLabel="Upscale before OCR"
           options={[
             { value: "1", label: "1×" },
             { value: "2", label: "2×" },

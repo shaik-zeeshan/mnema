@@ -14,6 +14,7 @@
     appleSpeechPermissionHint,
   } from "$lib/settings/state/models-format";
   import { formatBytes } from "$lib/settings/state/format";
+  import { TRANSCRIPTION_LANGUAGE_OPTIONS } from "$lib/settings/transcription-languages";
   import type { AudioTranscriptionMemoryMode } from "$lib/types";
 
   const c = getSettingsController();
@@ -143,11 +144,11 @@
     full
   >
     {#snippet control()}
-      <input
-        id="transcription-language"
-        class="text-input"
-        bind:value={rec.draftTranscriptionLanguage}
-        placeholder="auto"
+      <Combobox
+        value={rec.draftTranscriptionLanguage || "auto"}
+        onValueChange={(v) => (rec.draftTranscriptionLanguage = v)}
+        options={TRANSCRIPTION_LANGUAGE_OPTIONS}
+        searchPlaceholder="Search languages…"
       />
     {/snippet}
   </SettingRow>
@@ -175,7 +176,7 @@
             class="text-input"
             type="number"
             min="0"
-            max="86400"
+            max="1800"
             step="1"
             bind:value={rec.draftTranscriptionIdleUnloadSeconds}
           />
@@ -193,7 +194,7 @@
           class="text-input"
           type="number"
           min="0"
-          max="3600"
+          max="300"
           step="1"
           bind:value={rec.draftTranscriptionChunkSeconds}
         />
