@@ -5475,7 +5475,7 @@
           <p class="group-hint">Sanitized URLs keep scheme, host, port, and path while dropping query strings and fragments.</p>
         </div>
 
-        {#if geckoInstalled}
+        {#if geckoInstalled && draftMetadataEnabled && draftBrowserUrlMode !== "off"}
           <div class="settings-group">
             <span class="group-label">Browser URL access (Firefox / Zen)</span>
             <div class="permission-callout" class:permission-callout--ok={geckoTrusted}>
