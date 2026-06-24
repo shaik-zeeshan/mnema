@@ -68,6 +68,15 @@ jobs:
       - name: Prepare Mnema CLI sidecar
         run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked
 
+      # tauri.conf.json bundles apps/desktop/THIRD_PARTY_LICENSES.md, a
+      # gitignored build output generated only at release time
+      # (scripts/generate-third-party-licenses.sh). The Tauri build script
+      # validates that every declared bundle resource exists even under
+      # `cargo check`, so stub a placeholder here to keep type-check fast
+      # (no cargo-about install / dep-graph resolve needed for a check).
+      - name: Stub third-party licenses resource
+        run: printf 'Placeholder for type-check only; real file is generated at release.\n' > apps/desktop/THIRD_PARTY_LICENSES.md
+
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
 
