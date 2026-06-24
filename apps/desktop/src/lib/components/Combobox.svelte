@@ -148,7 +148,7 @@
           <BitsCombobox.Input
             class="combobox-search-input"
             placeholder={searchPlaceholder}
-            aria-label={searchPlaceholder}
+            aria-label={label ? `${label} — ${searchPlaceholder}` : searchPlaceholder}
             oninput={(e) => (search = e.currentTarget.value)}
           />
         </div>

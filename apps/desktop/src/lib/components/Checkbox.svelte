@@ -13,10 +13,14 @@
     /** Optional secondary description under the label. */
     description?: string;
     /**
-     * Optional indeterminate (mixed) state. When `true` a dash is shown
-     * instead of the check; the box still reports `checked` via binding.
+     * Optional indeterminate (mixed) state (bindable). When `true` a dash is
+     * shown instead of the check; the box still reports `checked` via binding.
+     * Bound two-way so bits-ui's clear-on-toggle propagates back to the parent
+     * instead of being silently re-applied.
      */
     indeterminate?: boolean;
+    /** Called when the indeterminate state changes. */
+    onIndeterminateChange?: (v: boolean) => void;
   }
 
   let {
@@ -25,17 +29,28 @@
     disabled = false,
     label,
     description,
-    indeterminate = false,
+    indeterminate = $bindable(false),
+    onIndeterminateChange,
   }: Props = $props();
+
+  // Stable ids so the visible label/description (plain <span>s, not associated
+  // by BitsCheckbox.Root) can be linked to the box via aria-labelledby /
+  // aria-describedby — keeping only the label as the accessible name and the
+  // description as supplementary text (mirrors Switch.svelte).
+  const labelId = `checkbox-label-${Math.random().toString(36).slice(2, 9)}`;
+  const descriptionId = `checkbox-desc-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
-<label class="checkbox-wrapper" class:checkbox-wrapper--disabled={disabled}>
+<div class="checkbox-wrapper" class:checkbox-wrapper--disabled={disabled}>
   <BitsCheckbox.Root
     bind:checked
     {disabled}
-    {indeterminate}
+    bind:indeterminate
     {onCheckedChange}
+    {onIndeterminateChange}
     class="checkbox-box"
+    aria-labelledby={label ? labelId : undefined}
+    aria-describedby={description ? descriptionId : undefined}
   >
     {#snippet children({ checked: isChecked, indeterminate: isIndeterminate })}
       {#if isIndeterminate}
@@ -56,28 +71,28 @@
       {/if}
     {/snippet}
   </BitsCheckbox.Root>
-  {#if label}
+  {#if label || description}
     <span class="checkbox-text">
-      <span class="checkbox-label">{label}</span>
+      {#if label}
+        <span class="checkbox-label" id={labelId}>{label}</span>
+      {/if}
       {#if description}
-        <span class="checkbox-description">{description}</span>
+        <span class="checkbox-description" id={descriptionId}>{description}</span>
       {/if}
     </span>
   {/if}
-</label>
+</div>
 
 <style>
   .checkbox-wrapper {
     display: inline-flex;
     align-items: flex-start;
     gap: 9px;
-    cursor: pointer;
     user-select: none;
   }
 
   .checkbox-wrapper--disabled {
     opacity: 0.4;
-    cursor: not-allowed;
     pointer-events: none;
   }
 

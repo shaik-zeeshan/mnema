@@ -31,21 +31,19 @@
   // Commit clamps the raw string into range (blank stays blank, non-numeric is
   // left for the upstream validator to flag). Typing updates `value` live via
   // bind:value so the parent's effects react exactly as with the old <input>.
+  // BOTH bounds are deferred to commit (blur/Enter): rewriting the field while
+  // the user is mid-keystroke jumps the caret in WKWebView, and an integer
+  // above `max` is no different from one below `min` — both are numbers the
+  // user may still be typing toward, so neither is clamped live.
   function commit() {
     const clamped = clampToRange(value, { min, max });
     if (clamped !== value) value = clamped;
   }
 
-  // Reflect the upper bound back while typing so the +/- buttons and the text
-  // field never disagree on an over-max value: an integer above `max` can only
-  // grow with more digits, so there's no legitimate keystroke we'd be eating by
-  // clamping it now. The lower bound is left for commit (blur/Enter) — a value
-  // below `min` is still a number the user may be typing up to.
-  function clampMaxLive() {
-    if (typeof max !== "number") return;
-    const parsed = parseStepperRaw(value);
-    if (parsed !== null && parsed > max) value = String(max);
-  }
+  // The current numeric value (or null when blank/non-numeric), surfaced to
+  // assistive tech via the spinbutton aria-value* attributes so the +/- buttons
+  // announce the resulting value and its bounds.
+  const numericValue = $derived(parseStepperRaw(value));
 
   function bump(direction: 1 | -1) {
     if (disabled) return;
@@ -82,6 +80,7 @@
       {id}
       type="text"
       inputmode="numeric"
+      role="spinbutton"
       class="num-input"
       class:num-input--invalid={invalid}
       bind:value
@@ -89,8 +88,13 @@
       {disabled}
       aria-label={ariaLabel}
       aria-invalid={invalid}
+      aria-valuenow={numericValue ?? undefined}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuetext={numericValue !== null && unit
+        ? `${numericValue} ${unit}`
+        : undefined}
       autocomplete="off"
-      oninput={clampMaxLive}
       onblur={commit}
       onkeydown={onKeydown}
     />

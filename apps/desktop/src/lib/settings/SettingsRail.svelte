@@ -3,10 +3,13 @@
   //
   // Renders the 5 navigation groups from `groups.ts` (the source of truth) as
   // category headers (`.nav-cat`) each followed by their sub-sections as bare
-  // `.nav-item`s. The nav is modeled as ONE flattened WAI-ARIA tablist of
-  // sub-section tabs with roving tabindex + arrow/Home/End keyboard nav; the
-  // active sub-section is driven by the shell via `activeSection`, and clicks /
-  // keyboard activation call `onNavigate(section)`.
+  // `.nav-item`s. The nav is a NAVIGATION landmark (a `role="list"` of grouped
+  // section buttons), NOT a tablist: settings is a single scrolling panel with
+  // scroll-spy, so the items behave like in-page links — the active one carries
+  // `aria-current="page"`. A roving tabindex + arrow/Home/End keyboard nav keeps
+  // the whole list reachable with one Tab stop; the active sub-section is driven
+  // by the shell via `activeSection`, and clicks / keyboard activation call
+  // `onNavigate(section)`.
   //
   // The rail is always expanded (the collapse-to-icons feature was dropped).
   // A fixed top zone holds the "← Back to app" link + a search field; a pinned
@@ -92,10 +95,13 @@
     void goto(getLastMainSurface());
   }
 
-  // ─── Flattened tablist keyboard nav (roving tabindex) ─────────────────────
+  // ─── Flattened nav keyboard nav (roving tabindex) ─────────────────────────
+  // The rail is a NAVIGATION landmark (a single scrolling panel with scroll-spy
+  // highlighting), not a tablist — but it keeps the roving-tabindex + arrow/
+  // Home/End stepping so the whole list is reachable with one Tab stop.
   function handleNavKeydown(event: KeyboardEvent) {
     const focusedTab = event.target instanceof Element
-      ? event.target.closest<HTMLElement>('[role="tab"]')
+      ? event.target.closest<HTMLElement>(".nav-item")
       : null;
     const focusedSection = focusedTab?.dataset.section as SettingsSectionId | undefined;
     const focusedIndex = focusedSection
@@ -134,14 +140,6 @@
     onNavigate(next.id);
     document.getElementById(`settings-tab-${next.id}`)?.focus();
   }
-
-  // Group a section belongs to controls which panel id its tab `aria-controls`.
-  function groupOf(section: SettingsSectionId): SettingsGroupId {
-    for (const g of SETTINGS_GROUPS) {
-      if (g.sections.some((s) => s.id === section)) return g.id;
-    }
-    return activeGroup;
-  }
 </script>
 
 <aside id="settings-sidebar" class="settings-sidebar settings-rail">
@@ -169,24 +167,30 @@
     </div>
   </div>
 
-  <!-- Scrolling nav: flattened tablist of sub-section tabs. -->
+  <!-- Scrolling nav: a NAVIGATION landmark whose items are buttons that scroll
+       the single settings panel to a section (scroll-spy drives the active one).
+       Modeled as a list of groups rather than a tablist — every "tab" would have
+       pointed at the one mounted panel id, and most targets are unmounted, which
+       a real tablist mustn't do. The active section carries aria-current="page".
+       The roving-tabindex keyboard stepping (arrow/Home/End) lives on the
+       .nav-item buttons themselves — keeping the keydown on the interactive
+       elements, not the non-interactive role="list" container. -->
   <nav class="settings-nav rail-nav" aria-label="Settings sections">
-    <div class="rail-nav__list" role="tablist" aria-orientation="vertical" tabindex="-1" onkeydown={handleNavKeydown}>
+    <div class="rail-nav__list" role="list">
       {#each visibleGroups as group (group.id)}
-        <div class="nav-group">
-          <p class="nav-cat" role="presentation">{group.label}</p>
+        <div class="nav-group" role="group" aria-labelledby="settings-cat-{group.id}">
+          <p class="nav-cat" id="settings-cat-{group.id}">{group.label}</p>
           {#each group.sections as section (section.id)}
             <button
               class="nav-item"
               class:nav-item--active={activeSection === section.id}
               type="button"
-              role="tab"
               id="settings-tab-{section.id}"
               data-section={section.id}
-              aria-selected={activeSection === section.id}
-              aria-controls="settings-panel-{groupOf(section.id)}"
+              aria-current={activeSection === section.id ? "page" : undefined}
               tabindex={rovingTarget === section.id ? 0 : -1}
               onclick={() => onNavigate(section.id)}
+              onkeydown={handleNavKeydown}
             >
               <Icon name={section.id} />
               <span>{section.label}</span>
