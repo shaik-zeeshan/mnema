@@ -58,6 +58,17 @@ export interface GetPermissionsResponse {
 	session: CaptureSession | null;
 }
 
+export interface GeckoBrowserInfo {
+	bundleId: string;
+	displayName: string;
+	installed: boolean;
+}
+
+export interface BrowserUrlAccessibilityStatus {
+	trusted: boolean;
+	geckoBrowsers: GeckoBrowserInfo[];
+}
+
 export interface StartCaptureResponse {
 	session: CaptureSession;
 }

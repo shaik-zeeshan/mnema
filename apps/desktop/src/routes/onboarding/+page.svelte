@@ -23,6 +23,7 @@
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
     AudioTranscriptionProvider,
+    BrowserUrlAccessibilityStatus,
     ExcludedAppEntry,
     GetPermissionsResponse,
     OcrModelDownloadProgress,
@@ -116,6 +117,17 @@
   let refreshingPerms = $state(false);
   let requestingPerm = $state<PermissionKey | null>(null);
   let applyingRecommended = $state(false);
+
+  // Optional Gecko (Firefox/Zen) browser-URL access via the macOS Accessibility
+  // API. Surfaced only when a Gecko browser is installed; never gates progression.
+  let geckoUrlAccess = $state<BrowserUrlAccessibilityStatus | null>(null);
+  let requestingGeckoAccess = $state(false);
+  let recheckingGeckoAccess = $state(false);
+  const geckoInstalled = $derived((geckoUrlAccess?.geckoBrowsers ?? []).some((b) => b.installed));
+  const geckoTrusted = $derived(geckoUrlAccess?.trusted ?? false);
+  const geckoInstalledNames = $derived(
+    (geckoUrlAccess?.geckoBrowsers ?? []).filter((b) => b.installed).map((b) => b.displayName),
+  );
   let error = $state<string | null>(null);
 
   let draftCaptureScreen = $state(true);
@@ -303,6 +315,13 @@
       settings = loadedSettings;
       permissions = permissionResponse.permissions as Record<PermissionKey, PermissionValue>;
       syncDrafts(loadedSettings);
+      // Optional browser-URL access: failure to probe is non-fatal — leave the
+      // status null so the optional sub-section simply stays hidden.
+      try {
+        geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("get_browser_url_accessibility_status");
+      } catch {
+        geckoUrlAccess = null;
+      }
       void appPrivacyExclusion.loadPrivacyAppCandidates();
       void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
     } catch (err) {
@@ -512,6 +531,44 @@
       error = serializeError(err);
     } finally {
       requestingPerm = null;
+    }
+  }
+
+  // Raises the macOS Accessibility prompt (and adds Mnema to the list). The grant
+  // is completed by the user in System Settings, so `trusted` usually stays false
+  // here until they enable Mnema and we re-poll via recheck.
+  async function requestGeckoAccess(): Promise<void> {
+    if (requestingGeckoAccess) return;
+    error = null;
+    requestingGeckoAccess = true;
+    try {
+      geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("request_browser_url_accessibility");
+    } catch (err) {
+      error = serializeError(err);
+    } finally {
+      requestingGeckoAccess = false;
+    }
+  }
+
+  async function openGeckoAccessSettings(): Promise<void> {
+    error = null;
+    try {
+      await invoke("open_browser_url_accessibility_settings");
+    } catch (err) {
+      error = serializeError(err);
+    }
+  }
+
+  async function recheckGeckoAccess(): Promise<void> {
+    if (recheckingGeckoAccess) return;
+    error = null;
+    recheckingGeckoAccess = true;
+    try {
+      geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("get_browser_url_accessibility_status");
+    } catch (err) {
+      error = serializeError(err);
+    } finally {
+      recheckingGeckoAccess = false;
     }
   }
 
@@ -1182,6 +1239,48 @@
                       {applyingRecommended ? "Arming…" : "Use recommended setup"}
                     </button>
                   </div>
+
+                  {#if geckoInstalled}
+                    {@const geckoTone = geckoTrusted ? "ok" : "pending"}
+                    <div class="perm-optional">
+                      <span class="group-label">Browser URLs · optional</span>
+                      <ul class="perm-list">
+                        <li class="perm perm--{geckoTone}">
+                          <span class="perm__name">
+                            {geckoInstalledNames.length > 0 ? `${geckoInstalledNames.join(" / ")} page URLs` : "Firefox / Zen page URLs"}
+                          </span>
+                          <span class="perm__right">
+                            <span class="perm__pill">
+                              <span class="perm__dot"></span>{geckoTrusted ? "Granted" : "Not granted"}
+                            </span>
+                            {#if !geckoTrusted}
+                              <button
+                                type="button"
+                                class="btn btn--ghost btn--sm perm__action"
+                                onclick={requestGeckoAccess}
+                                disabled={requestingGeckoAccess}
+                              >
+                                {requestingGeckoAccess ? "Requesting…" : "Grant access"}
+                              </button>
+                            {/if}
+                          </span>
+                        </li>
+                      </ul>
+
+                      <p class="hint">Optional. Lets Mnema capture the page address for Firefox and Zen (they have no scriptable URL like Chrome/Safari). Requires the macOS Accessibility permission; enable Mnema under <em>Privacy &amp; Security → Accessibility</em>.</p>
+
+                      {#if !geckoTrusted}
+                        <div class="row">
+                          <button type="button" class="btn btn--ghost btn--sm" onclick={openGeckoAccessSettings}>
+                            Open Settings
+                          </button>
+                          <button type="button" class="btn btn--ghost btn--sm" onclick={recheckGeckoAccess} disabled={recheckingGeckoAccess}>
+                            {recheckingGeckoAccess ? "Checking…" : "Recheck"}
+                          </button>
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
                 </SceneShell>
               {:else if activeStep === "sources"}
                 <SceneShell
@@ -1967,6 +2066,14 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+  /* ── Optional browser-URL access (Gecko) — separated sub-section ─ */
+  .perm-optional {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--app-border);
   }
   .perm {
     display: flex;
