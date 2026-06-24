@@ -49,6 +49,17 @@
 //!     also pass. Note the armed pass drops this exemption entirely.
 //!   - A short opaque token (`len < 12`) with no known shape and no armed
 //!     predecessor still passes.
+//!   - A `len >= 12` opaque token that is SINGLE character class with no digit
+//!     (all-lowercase OR all-uppercase letters) and has no armed predecessor is
+//!     PRESERVED (e.g. `/s/abcdefghijklmnopqr`). The backstop's mixed-class gate
+//!     is exactly what keeps human-readable dictionary path words
+//!     (`documentation`, `introduction`, `accessibility`, `notifications`) from
+//!     being redacted, so we cannot tighten it without gutting readable URL
+//!     content; telling a random all-lowercase token from a dictionary word
+//!     would need a dictionary/entropy heuristic that is out of scope and
+//!     fragile. The armed pass (`is_armed_opaque`, len-only) still redacts these
+//!     in credential flows, and query/fragment — the dominant token vector — is
+//!     already stripped wholesale, so this residual is narrow.
 //! Everything else opaque — base64url / underscore / dotted high-entropy tokens,
 //! mixed-class tokens after generic carriers, and ANY `len >= 12` token after an
 //! armed credential keyword (hyphens and all) — is now redacted.
@@ -382,6 +393,14 @@ fn is_hyphen_word_slug(segment: &str) -> bool {
 /// has_lowercase`). Dictionary words like `email` survive (not mixed class, too
 /// short), while `AbC9xK2mP4qR7s`, `ABCdef-123_GHIjkl`, and `v1.MR9aBcDeF_…`
 /// all qualify.
+///
+/// The mixed-class requirement INTENTIONALLY lets single-character-class strings
+/// pass: a long all-lowercase (or all-uppercase) word like `documentation` or
+/// `accessibility` is exactly the human-readable URL content the backstop must
+/// preserve. The unavoidable consequence is that a single-class opaque token
+/// (`/s/abcdefghijklmnopqr`) with no armed predecessor also passes — an accepted
+/// residual documented in the module header. The armed pass still covers
+/// credential flows.
 fn is_token_shaped(segment: &str) -> bool {
     if segment.chars().count() < 12 {
         return false;
@@ -942,5 +961,51 @@ mod tests {
             !out.contains("4cOdK2wGLETKBW3PvgPWqT"),
             "carrier-less opaque id is over-redacted by design: {out}"
         );
+    }
+
+    // --- Documented residual: single-class opaque token with no armed
+    //     predecessor passes (the mixed-class gate that preserves dictionary
+    //     path words also lets this through). This pins an ACCEPTED residual,
+    //     not a desired outcome — see the module header. ---
+
+    #[test]
+    fn single_class_lowercase_token_is_a_documented_residual() {
+        // `s` is neither an armed predecessor nor a resource-id carrier, so the
+        // 18-char all-lowercase token reaches only the backstop. The backstop's
+        // mixed-class gate (which exists to preserve words like `documentation`)
+        // does not fire on a single-class token, so it PASSES. This is the
+        // accepted residual documented in the module header, not a goal.
+        let out = guard("https://app.com/s/abcdefghijklmnopqr").unwrap();
+        assert!(
+            out.contains("abcdefghijklmnopqr"),
+            "single-class lowercase token is preserved as a documented residual: {out}"
+        );
+        assert_eq!(out, "app.com/s/abcdefghijklmnopqr");
+    }
+
+    #[test]
+    fn single_class_token_after_armed_predecessor_is_redacted() {
+        // The SAME token, when it follows an armed credential keyword, IS
+        // redacted by the armed pass (`is_armed_opaque`, len-only), proving the
+        // armed path closes the residual for credential flows.
+        let out = guard("https://app.com/reset/abcdefghijklmnopqr").unwrap();
+        assert!(
+            !out.contains("abcdefghijklmnopqr"),
+            "single-class token after armed `reset` must be redacted: {out}"
+        );
+        assert!(out.contains("reset"), "{out}");
+        assert_eq!(out, format!("app.com/reset/{ARMED_TOKEN_PLACEHOLDER}"));
+    }
+
+    #[test]
+    fn dictionary_word_after_plain_segment_is_preserved() {
+        // Why we don't blanket-redact single-class `len >= 12` tokens: ordinary
+        // English path words are all-lowercase and long, and must survive.
+        let out = guard("https://docs.example.com/page/documentation").unwrap();
+        assert!(
+            out.contains("documentation"),
+            "dictionary path word must survive (this is why the gate is mixed-class): {out}"
+        );
+        assert_eq!(out, "docs.example.com/page/documentation");
     }
 }
