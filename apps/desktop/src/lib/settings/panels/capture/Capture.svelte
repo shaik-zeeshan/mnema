@@ -10,6 +10,10 @@
   const c = getSettingsController();
   const rec = c.rec;
 
+  // Recording-wide save-block reasons (controller-derived). Surfaced inline so a
+  // blocked save shows the specific guidance instead of failing silently.
+  const recValidationErrors = $derived(c.recValidationErrors);
+
   const loadRecordingSettings = () => rec.loadRecordingSettings();
 </script>
 
@@ -110,49 +114,20 @@
         {/snippet}
       </SettingRow>
 
-      <SettingRow label="Activity Mode" full>
+      <SettingRow label="Activity sources" full>
         {#snippet control()}
-          <div class="control-stack">
-          <RadioGroup
-            bind:value={rec.draftActivityMode}
-            options={[
-              {
-                value: "system_input_only",
-                label: "Input only",
-                description: "Only keyboard and mouse/pointer events count as activity. Recording pauses whenever direct input stops, even during video calls or media playback.",
-              },
-              {
-                value: "system_input_or_screen",
-                label: "Input or screen change",
-                description: "Keyboard/mouse input AND visible on-screen changes (video calls, animations, media) both count as activity. Helps keep recordings running during calls or video playback with no direct input.",
-              },
-              {
-                value: "system_input_or_screen_or_audio",
-                label: "Input, screen, or audio",
-                description: "All of the above, plus microphone and system audio levels. Sound picked up by the microphone or played through the system keeps capture active — useful for meetings, voice sessions, or any audio-driven workflow.",
-              },
-            ]}
-          />
-          <p class="group-hint">
-            {#if rec.draftActivityMode === "system_input_or_screen_or_audio"}
-              <strong>Audio mode</strong> monitors keyboard/mouse, on-screen changes, <em>and</em>
-              source-specific audio activity. Microphone activity is speech-first when voice detection
-              is enabled, while system audio still uses the configured level threshold.
-            {:else if rec.draftActivityMode === "system_input_or_screen"}
-              <strong>Screen change mode</strong> monitors on-screen activity in addition to input events — useful for
-              keeping recordings active during video calls, live streams, or media playback where you may not be
-              typing or moving the mouse.
-            {:else}
-              <strong>Input-only mode</strong> triggers the idle timeout strictly on keyboard and mouse inactivity.
-              Suitable for general screen recording when you want pauses to match direct interaction gaps exactly.
-            {/if}
-          </p>
+          <div class="audio-activity-notice">
+            <span class="audio-activity-notice__icon">♪</span>
+            <span class="audio-activity-notice__text">
+              Activity is detected from keyboard/mouse input, on-screen changes, <em>and</em>
+              source-specific audio. Microphone activity is speech-first when voice detection is
+              enabled, while system audio uses the configured level threshold.
+            </span>
           </div>
         {/snippet}
       </SettingRow>
 
-      {#if rec.draftActivityMode === "system_input_or_screen_or_audio"}
-        <SettingRow label="Microphone Voice Detection" full>
+      <SettingRow label="Microphone Voice Detection" full>
           {#snippet control()}
             <div class="control-stack">
             <RadioGroup
@@ -274,9 +249,25 @@
             </div>
           {/snippet}
         </SettingRow>
-      {/if}
     {/if}
   </SettingGroup>
+
+  {#if recValidationErrors.length > 0}
+    <SettingGroup title="Unsaved changes blocked" hint="Resolve these before recording settings can save.">
+      <SettingRow label="Validation" full divider={false}>
+        {#snippet control()}
+          <div class="inline-validation">
+            {#each recValidationErrors as err}
+              <p class="inline-validation__item">
+                <span class="inline-validation__icon">⚠</span>
+                {err}
+              </p>
+            {/each}
+          </div>
+        {/snippet}
+      </SettingRow>
+    </SettingGroup>
+  {/if}
 {/if}
 
 <style>

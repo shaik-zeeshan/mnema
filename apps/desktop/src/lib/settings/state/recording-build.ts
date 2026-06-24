@@ -28,7 +28,6 @@ import type {
   AiProviderConfig,
   AiEngineRef,
   AppearanceSetting,
-  ActivityMode,
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
   BrowserUrlMode,
@@ -93,7 +92,6 @@ export interface RecordingDraftState {
 
   draftPauseCaptureOnInactivity: boolean;
   draftIdleTimeoutSeconds: number;
-  draftActivityMode: ActivityMode;
   draftMicrophoneActivitySensitivity: number;
   draftSystemAudioActivitySensitivity: number;
   draftMicrophoneVadAdapter: MicrophoneVadAdapter;
@@ -386,7 +384,22 @@ export function buildRecDomainRequestFromSettings(
           ...s.transcription,
           language: (s.transcription.language ?? "").trim() || "auto",
         },
-        speakerAnalysis: s.speakerAnalysis,
+        speakerAnalysis: {
+          ...s.speakerAnalysis,
+          // Mirror the live builder's clamp+round-to-minute fixed point exactly.
+          // The draft minutes are `round(canonicalSeconds / 60)`, and the live
+          // request is `max(60, min(3600, (truncMinutes || 10) * 60))`. A
+          // canonical value that is not a 60s multiple or is out of range
+          // (e.g. 90, or a sub-30s value that rounds to 0 minutes) would
+          // otherwise read perpetually dirty against that normalized request.
+          timeoutSeconds: Math.max(
+            60,
+            Math.min(
+              3600,
+              (Math.round((s.speakerAnalysis?.timeoutSeconds ?? 600) / 60) || 10) * 60,
+            ),
+          ),
+        },
       };
     case "developer":
       return {

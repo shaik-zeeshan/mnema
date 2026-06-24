@@ -25,7 +25,6 @@ import type {
   AiProviderConfig,
   AiEngineRef,
   AppearanceSetting,
-  ActivityMode,
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
   BrowserUrlMode,
@@ -146,7 +145,6 @@ export class RecordingStore {
   // Inactivity drafts
   draftPauseCaptureOnInactivity = $state(false);
   draftIdleTimeoutSeconds = $state(30);
-  draftActivityMode = $state<ActivityMode>("system_input_only");
   draftMicrophoneActivitySensitivity = $state(50);
   draftSystemAudioActivitySensitivity = $state(50);
   draftMicrophoneVadAdapter = $state<MicrophoneVadAdapter>("silero");
@@ -356,7 +354,6 @@ export class RecordingStore {
   syncInactivityDrafts(s: RecordingSettings): void {
     this.draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     this.draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
-    this.draftActivityMode = "system_input_or_screen_or_audio";
     this.draftMicrophoneActivitySensitivity = s.microphoneActivitySensitivity ?? 50;
     this.draftSystemAudioActivitySensitivity = s.systemAudioActivitySensitivity ?? 50;
     this.draftMicrophoneVadAdapter =
