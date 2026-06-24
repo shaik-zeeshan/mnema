@@ -464,6 +464,11 @@ export class SettingsController {
   }
 
   async chooseSemanticSearchModel(model: SemanticSearchModelStatus) {
+    // In-flight re-entry guard (mirrors `saveRecordingDomain`'s `savingRecDomains`
+    // gate). The confirm() dialog below awaits, so without this a second invocation
+    // while a `select_semantic_search_model` invoke is in flight would stack a
+    // second clear/reindex. Correctness must not depend solely on the UI `disabled`.
+    if (this.models.semanticSearchReindexing) return;
     if (!this.rec.recordingSettingsLoaded) await this.rec.loadRecordingSettings();
     if (this.rec.semanticSearchSelectedModelId === model.modelId) return;
     const isFirstSelection = this.rec.semanticSearchSelectedModelId === null;

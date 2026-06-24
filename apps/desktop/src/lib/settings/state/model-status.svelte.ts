@@ -391,6 +391,9 @@ export function createModelStatusStore() {
   }
 
   async function startSemanticSearchModelDownload(model: SemanticSearchModelStatus) {
+    // In-flight re-entry guard so a programmatic/rapid double call is idempotent
+    // and correctness doesn't depend solely on the UI `disabled` attribute.
+    if (startingSemanticSearchDownload) return;
     startingSemanticSearchDownload = true;
     semanticSearchDownloadError = null;
     try {
