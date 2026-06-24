@@ -6,6 +6,14 @@
     description?: string;
     /** The right-side (or, with `full`, full-width) control slot. */
     control: Snippet;
+    /**
+     * Optional compact control (e.g. a Switch) pinned beside the label/
+     * description in the header. Use this — not `control` — for the primary
+     * toggle when `control` carries wide, full-width content below (a
+     * disclosure callout, status card, conditional fields). The toggle then
+     * bounds the description's measure instead of stranding on its own line.
+     */
+    aside?: Snippet;
     /** Optional anchor id for deeplink scroll-to. */
     id?: string;
     /** Tint the row for an attention/warning state. */
@@ -22,6 +30,7 @@
     label,
     description,
     control,
+    aside,
     id,
     warn = false,
     disabled = false,
@@ -38,10 +47,15 @@
   class:setting-row--no-divider={!divider}
   {id}
 >
-  <div class="setting-row__text">
-    <span class="setting-row__label">{label}</span>
-    {#if description}
-      <span class="setting-row__description">{description}</span>
+  <div class="setting-row__main">
+    <div class="setting-row__text">
+      <span class="setting-row__label">{label}</span>
+      {#if description}
+        <span class="setting-row__description">{description}</span>
+      {/if}
+    </div>
+    {#if aside}
+      <div class="setting-row__aside">{@render aside()}</div>
     {/if}
   </div>
   <div class="setting-row__control">
@@ -90,12 +104,32 @@
     pointer-events: none;
   }
 
+  /* Header line: label/description column on the left, optional compact
+     `aside` control (a Switch) on the right. In a `full` row this is the row's
+     top line and the wide `control` content drops below it; in a normal row it
+     sits opposite the `control` and is the only thing left of it. Either way
+     the `flex: 1 1 auto` text + `flex-shrink: 0` aside split bounds the
+     description against the control beside it. */
+  .setting-row__main {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
   .setting-row__text {
     display: flex;
     flex-direction: column;
     gap: 3px;
     min-width: 0;
     flex: 1 1 auto;
+  }
+
+  .setting-row__aside {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
   }
 
   .setting-row__label {
@@ -115,7 +149,11 @@
     color: var(--app-text-muted);
     letter-spacing: 0.01em;
     line-height: 1.45;
-    max-width: 420px;
+    /* Fill the text column. The flex split (`.setting-row__text` is
+       `flex: 1 1 auto`, `.setting-row__control` is `flex-shrink: 0`) already
+       reserves room for a beside control, so 100% wraps against the toggle —
+       not the card edge — when the toggle sits inline. */
+    max-width: 100%;
   }
 
   .setting-row__control {
@@ -134,6 +172,13 @@
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
+  }
+
+  /* In a `full` row the header can be tall (multi-line description), so pin the
+     aside control to the top — aligned with the label, not floating against the
+     middle of the paragraph. */
+  .setting-row--full .setting-row__main {
+    align-items: flex-start;
   }
 
   .setting-row--full .setting-row__control {

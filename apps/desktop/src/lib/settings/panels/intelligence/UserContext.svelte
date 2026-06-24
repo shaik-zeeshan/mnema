@@ -41,13 +41,13 @@
     description="Let Mnema build a private, on-device understanding of your activity by deriving from your capture history in the background, 24/7. Distinct from Ask AI — this is the high-consent continuous worker, off by default. Needs a provider and default model configured above."
     full
   >
+    {#snippet aside()}
+      <Switch bind:checked={rec.draftUserContextEnabled} />
+    {/snippet}
     {#snippet control()}
-      <div class="uc-stack">
-        <Switch bind:checked={rec.draftUserContextEnabled} />
-        <div class="privacy-disclosure">
-          <p>While on, the default model runs over your redacted screen text and transcripts as a background trickle to derive Activities and Conclusions. With a cloud default that means continuous outbound egress billed to your key; a local default keeps everything on this machine.</p>
-          <p>The derived understanding deliberately outlives raw-capture retention. Turning this off pauses derivation; it does not erase what was already learned — use Wipe User Context below for that.</p>
-        </div>
+      <div class="privacy-disclosure">
+        <p>While on, the default model runs over your redacted screen text and transcripts as a background trickle to derive Activities and Conclusions. With a cloud default that means continuous outbound egress billed to your key; a local default keeps everything on this machine.</p>
+        <p>The derived understanding deliberately outlives raw-capture retention. Turning this off pauses derivation; it does not erase what was already learned — use Wipe User Context below for that.</p>
       </div>
     {/snippet}
   </SettingRow>

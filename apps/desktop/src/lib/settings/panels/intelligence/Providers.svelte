@@ -66,13 +66,13 @@
     full
     divider={false}
   >
+    {#snippet aside()}
+      <Switch bind:checked={rec.draftAiEnabled} />
+    {/snippet}
     {#snippet control()}
-      <div class="prov-stack">
-        <Switch bind:checked={rec.draftAiEnabled} />
-        <div class="privacy-disclosure">
-          <p>A cloud provider receives redacted capture text over HTTPS to reason about it — continuous outbound egress and per-token cost billed to your own key.</p>
-          <p>A local runtime (Ollama or Llamafile) runs entirely on this machine — nothing is sent anywhere and no API key is needed.</p>
-        </div>
+      <div class="privacy-disclosure">
+        <p>A cloud provider receives redacted capture text over HTTPS to reason about it — continuous outbound egress and per-token cost billed to your own key.</p>
+        <p>A local runtime (Ollama or Llamafile) runs entirely on this machine — nothing is sent anywhere and no API key is needed.</p>
       </div>
     {/snippet}
   </SettingRow>

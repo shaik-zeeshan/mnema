@@ -41,13 +41,13 @@
     description="Allow Quick Recall and Insights Chat to answer questions over your redacted capture history. Off by default."
     full
   >
+    {#snippet aside()}
+      <Switch bind:checked={rec.draftAskAiEnabled} />
+    {/snippet}
     {#snippet control()}
-      <div class="ask-ai-stack">
-        <Switch bind:checked={rec.draftAskAiEnabled} />
-        <div class="privacy-disclosure">
-          <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
-          <p>Questions and the redacted context needed to answer them run through the providers configured above — a cloud provider with your own key, or a local model that never leaves this machine.</p>
-        </div>
+      <div class="privacy-disclosure">
+        <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
+        <p>Questions and the redacted context needed to answer them run through the providers configured above — a cloud provider with your own key, or a local model that never leaves this machine.</p>
       </div>
     {/snippet}
   </SettingRow>
@@ -57,9 +57,11 @@
     description="Cap how many follow-up searches Ask AI can run for one question. Off means no cap."
     full
   >
+    {#snippet aside()}
+      <Switch bind:checked={rec.draftAskAiLimitToolCalls} />
+    {/snippet}
     {#snippet control()}
       <div class="ask-ai-stack">
-        <Switch bind:checked={rec.draftAskAiLimitToolCalls} />
         {#if rec.draftAskAiLimitToolCalls}
           <label class="field-label" for="ask-ai-max-tool-calls">Max tool calls per question</label>
           <input
