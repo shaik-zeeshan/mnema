@@ -218,16 +218,32 @@ pub enum BrowserUrlDialect {
 }
 
 /// How Mnema reads a browser's active-tab URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserUrlStrategy {
+    /// Chromium/WebKit families — read via AppleScript (`osascript`). No extra permission.
+    AppleScript(BrowserUrlDialect),
+    /// Gecko family (Firefox/Zen) — read `AXURL` off the focused web area via the
+    /// macOS Accessibility API. Requires the Accessibility permission, opt-in.
+    Accessibility,
+}
+
+/// A recognized browser and how (if at all) Mnema reads its active-tab URL.
 ///
-/// Browsers that expose the URL via AppleScript carry `url_script_app_name` +
-/// `url_dialect`; both are `None` for a browser that is recognized but has no
-/// scriptable URL surface (e.g. Firefox).
+/// The Chromium/WebKit families expose the URL via AppleScript, so they carry an
+/// `url_script_app_name` (the "tell application" target) and an
+/// `AppleScript(dialect)` strategy. The Gecko family (Firefox/Zen) has no
+/// scriptable URL surface; it reads the URL via the Accessibility API and so has
+/// `url_script_app_name: None` with the `Accessibility` strategy. `url_strategy`
+/// is `None` only for a browser that is recognized but has no URL surface at all.
+///
+/// Invariant: `url_script_app_name.is_some()` iff `url_strategy` is
+/// `Some(AppleScript(_))`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrowserAppDescriptor {
     pub bundle_id: &'static str,
     pub display_name: &'static str,
     pub url_script_app_name: Option<&'static str>,
-    pub url_dialect: Option<BrowserUrlDialect>,
+    pub url_strategy: Option<BrowserUrlStrategy>,
 }
 
 pub const KNOWN_BROWSER_APPS: &[BrowserAppDescriptor] = &[
@@ -235,128 +251,135 @@ pub const KNOWN_BROWSER_APPS: &[BrowserAppDescriptor] = &[
         bundle_id: "com.apple.Safari",
         display_name: "Safari",
         url_script_app_name: Some("Safari"),
-        url_dialect: Some(BrowserUrlDialect::WebKit),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::WebKit)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.apple.SafariTechnologyPreview",
         display_name: "Safari Technology Preview",
         url_script_app_name: Some("Safari Technology Preview"),
-        url_dialect: Some(BrowserUrlDialect::WebKit),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::WebKit)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.kagi.kagimacOS",
         display_name: "Orion",
         url_script_app_name: Some("Orion"),
-        url_dialect: Some(BrowserUrlDialect::WebKit),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::WebKit)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.google.Chrome",
         display_name: "Google Chrome",
         url_script_app_name: Some("Google Chrome"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.google.Chrome.canary",
         display_name: "Google Chrome Canary",
         url_script_app_name: Some("Google Chrome Canary"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.google.Chrome.beta",
         display_name: "Google Chrome Beta",
         url_script_app_name: Some("Google Chrome Beta"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.google.Chrome.dev",
         display_name: "Google Chrome Dev",
         url_script_app_name: Some("Google Chrome Dev"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "org.chromium.Chromium",
         display_name: "Chromium",
         url_script_app_name: Some("Chromium"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.microsoft.edgemac",
         display_name: "Microsoft Edge",
         url_script_app_name: Some("Microsoft Edge"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.microsoft.edgemac.Beta",
         display_name: "Microsoft Edge Beta",
         url_script_app_name: Some("Microsoft Edge Beta"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.microsoft.edgemac.Dev",
         display_name: "Microsoft Edge Dev",
         url_script_app_name: Some("Microsoft Edge Dev"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.microsoft.edgemac.Canary",
         display_name: "Microsoft Edge Canary",
         url_script_app_name: Some("Microsoft Edge Canary"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
-    // Firefox is recognized but has no scriptable URL surface, so no URL is captured.
+    // Gecko browsers have no scriptable URL surface; the URL is read via the
+    // Accessibility API (permission-gated), so they carry no AppleScript app name.
     BrowserAppDescriptor {
         bundle_id: "org.mozilla.firefox",
         display_name: "Firefox",
         url_script_app_name: None,
-        url_dialect: None,
+        url_strategy: Some(BrowserUrlStrategy::Accessibility),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "app.zen-browser.zen",
+        display_name: "Zen",
+        url_script_app_name: None,
+        url_strategy: Some(BrowserUrlStrategy::Accessibility),
     },
     BrowserAppDescriptor {
         bundle_id: "com.brave.Browser",
         display_name: "Brave Browser",
         url_script_app_name: Some("Brave Browser"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.brave.Browser.beta",
         display_name: "Brave Browser Beta",
         url_script_app_name: Some("Brave Browser Beta"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.brave.Browser.nightly",
         display_name: "Brave Browser Nightly",
         url_script_app_name: Some("Brave Browser Nightly"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "company.thebrowser.Browser",
         display_name: "Arc",
         url_script_app_name: Some("Arc"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "net.imput.helium",
         display_name: "Helium",
         url_script_app_name: Some("Helium"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.vivaldi.Vivaldi",
         display_name: "Vivaldi",
         url_script_app_name: Some("Vivaldi"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.operasoftware.Opera",
         display_name: "Opera",
         url_script_app_name: Some("Opera"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.operasoftware.OperaGX",
         display_name: "Opera GX",
         url_script_app_name: Some("Opera GX"),
-        url_dialect: Some(BrowserUrlDialect::Chromium),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
 ];
 
@@ -374,16 +397,30 @@ pub fn browser_url_script_app_name(bundle_id: &str) -> Option<&'static str> {
     known_browser_app(bundle_id).and_then(|browser| browser.url_script_app_name)
 }
 
-/// Whether Mnema can read this browser's active-tab URL via AppleScript. The
-/// privacy disclosure relies on this.
+/// The resolved strategy for reading this browser's URL, if any.
+pub fn browser_url_strategy(bundle_id: &str) -> Option<BrowserUrlStrategy> {
+    known_browser_app(bundle_id).and_then(|browser| browser.url_strategy)
+}
+
+/// Whether Mnema can read this browser's active-tab URL via AppleScript without
+/// an extra permission. The privacy disclosure relies on this. Gecko browsers
+/// (Firefox/Zen) return `false` here — their Accessibility path is permission-
+/// gated and exposed separately.
 pub fn browser_url_metadata_supported(bundle_id: &str) -> bool {
-    browser_url_script_app_name(bundle_id).is_some()
+    matches!(
+        browser_url_strategy(bundle_id),
+        Some(BrowserUrlStrategy::AppleScript(_))
+    )
 }
 
 pub fn browser_url_applescript(bundle_id: &str) -> Option<String> {
     let descriptor = known_browser_app(bundle_id)?;
     let app = descriptor.url_script_app_name?;
-    let dialect = descriptor.url_dialect?;
+    let dialect = match descriptor.url_strategy? {
+        BrowserUrlStrategy::AppleScript(dialect) => dialect,
+        // Gecko browsers read the URL via the Accessibility API, not AppleScript.
+        BrowserUrlStrategy::Accessibility => return None,
+    };
     let target = match dialect {
         BrowserUrlDialect::Chromium => "URL of active tab of front window",
         // `current tab of front window` tracks the visually-frontmost window's
@@ -637,10 +674,50 @@ mod tests {
     }
 
     #[test]
-    fn firefox_is_recognized_but_has_no_url_support() {
+    fn firefox_is_recognized_with_accessibility_but_no_applescript() {
         assert!(is_known_browser_bundle("org.mozilla.firefox"));
+        // No AppleScript surface, so the no-extra-permission flag is false.
         assert!(!browser_url_metadata_supported("org.mozilla.firefox"));
         assert_eq!(browser_url_script_app_name("org.mozilla.firefox"), None);
+        // Its URL is read via the Accessibility API instead.
+        assert_eq!(
+            browser_url_strategy("org.mozilla.firefox"),
+            Some(BrowserUrlStrategy::Accessibility)
+        );
+    }
+
+    #[test]
+    fn zen_is_registered_with_accessibility_strategy() {
+        assert!(is_known_browser_bundle("app.zen-browser.zen"));
+        assert_eq!(
+            browser_url_strategy("app.zen-browser.zen"),
+            Some(BrowserUrlStrategy::Accessibility)
+        );
+        assert_eq!(browser_url_applescript("app.zen-browser.zen"), None);
+        assert_eq!(
+            known_browser_app("app.zen-browser.zen").map(|browser| browser.display_name),
+            Some("Zen")
+        );
+    }
+
+    #[test]
+    fn gecko_browsers_use_accessibility_and_chromium_webkit_use_applescript() {
+        for bundle_id in ["org.mozilla.firefox", "app.zen-browser.zen"] {
+            assert_eq!(
+                browser_url_strategy(bundle_id),
+                Some(BrowserUrlStrategy::Accessibility),
+                "{bundle_id} should read its URL via the Accessibility API"
+            );
+        }
+        assert_eq!(
+            browser_url_strategy("com.google.Chrome"),
+            Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium))
+        );
+        assert_eq!(
+            browser_url_strategy("com.apple.Safari"),
+            Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::WebKit))
+        );
+        assert_eq!(browser_url_strategy("com.unknown.browser"), None);
     }
 
     #[test]
@@ -710,17 +787,18 @@ mod tests {
 
     #[test]
     fn browser_url_strategy_fields_are_consistent() {
-        // A known browser is either AppleScript-scriptable (url_script_app_name +
-        // url_dialect both set) or recognized-but-unsupported (both none).
         for browser in KNOWN_BROWSER_APPS {
+            let applescript = matches!(
+                browser.url_strategy,
+                Some(BrowserUrlStrategy::AppleScript(_))
+            );
+            // url_script_app_name is set iff the AppleScript strategy applies.
             assert_eq!(
                 browser.url_script_app_name.is_some(),
-                browser.url_dialect.is_some(),
-                "url_script_app_name and url_dialect must agree for {}",
+                applescript,
+                "url_script_app_name must agree with the AppleScript strategy for {}",
                 browser.bundle_id
             );
-
-            let applescript = browser.url_script_app_name.is_some();
             // browser_url_metadata_supported is true iff the AppleScript strategy applies.
             assert_eq!(
                 browser_url_metadata_supported(browser.bundle_id),
