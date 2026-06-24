@@ -33,6 +33,11 @@ source "${repo_root}/scripts/openblas-build-env.sh"
 export OPENBLAS_DYNAMIC_ARCH=1
 print "OpenBLAS: static + DYNAMIC_ARCH (all Apple Silicon generations)"
 
+# Regenerate the third-party attribution file so the freshly-built version is
+# bundled into the .app (tauri.conf.json bundle.resources references it).
+print "Generating third-party license attribution…"
+"${repo_root}/scripts/generate-third-party-licenses.sh"
+
 cd "${repo_root}/apps/desktop"
 CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- build
 

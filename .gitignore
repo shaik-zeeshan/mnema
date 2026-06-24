@@ -16,6 +16,10 @@ vite.config.ts.timestamp-*
 target
 apps/desktop/src-tauri/binaries/
 
+# Generated fresh on every release by scripts/generate-third-party-licenses.sh
+# and bundled into the .app — not a manually-maintained tracked file.
+apps/desktop/THIRD_PARTY_LICENSES.md
+
 # AI coding agents
 .pi
 pi-session-*.html

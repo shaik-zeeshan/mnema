@@ -1,0 +1,35 @@
+# cargo-about configuration for generating THIRD_PARTY_LICENSES.
+#
+# Regenerate the Rust portion with (run from apps/desktop/src-tauri):
+#   cargo about generate about.hbs --frozen > /tmp/rust-licenses.txt
+# The combined apps/desktop/THIRD_PARTY_LICENSES.md is assembled from this
+# output plus the JS dependency licenses (license-checker-rseidelsohn).
+#
+# `accepted` lists the SPDX license identifiers we permit in shipped deps.
+# If `cargo about generate` later errors on an unlisted license, vet it and
+# add it here.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MPL-2.0",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "0BSD",
+    "OpenSSL",
+    "Unlicense",
+    "WTFPL",
+    "CDLA-Permissive-2.0",
+    "NCSA",
+    "bzip2-1.0.6",
+]
+
+# Only attribute deps that are actually linked into the shipped binary; skip
+# dev-only deps (test/bench harnesses).
+ignore-dev-dependencies = true
