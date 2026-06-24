@@ -112,6 +112,14 @@ const ARMED_PREDECESSORS: &[&str] = &[
     "otp",
     "token",
     "auth",
+    // Session-id path parameters (`;jsessionid=<token>`, `;sid=<token>`, …). The
+    // value after `=` is a live session credential; arming it here redacts even a
+    // single-character-class session id the high-entropy backstop would preserve.
+    "jsessionid",
+    "sessionid",
+    "phpsessid",
+    "sid",
+    "session",
     // Generic credential / share / redirect carriers. These do NOT collide with
     // the resource-id carriers in `RESOURCE_ID_PREDECESSORS`.
     "click",
@@ -229,8 +237,11 @@ fn process_segment(
     redacted_count: &mut usize,
     passed_count: &mut usize,
 ) -> String {
-    // Split on `%2F`/`%2f` while remembering each delimiter's exact casing so we
-    // can reproduce it on rejoin.
+    // Split on `%2F`/`%2f` (encoded slash), `;` (matrix / path-parameter
+    // delimiter, e.g. `;jsessionid=<token>`), and `=` (so the VALUE of a
+    // `name=value` path parameter becomes its own sub-part, with `name` as its
+    // arming predecessor), remembering each delimiter's exact text so we can
+    // reproduce it faithfully on rejoin.
     let (sub_parts, delimiters) = split_encoded_slash(segment);
 
     let mut rebuilt = String::new();
@@ -285,24 +296,39 @@ fn process_segment(
     rebuilt
 }
 
-/// Split a path segment on `%2F`/`%2f` (case-insensitive), returning the
-/// sub-parts AND the exact delimiter strings that separated them (so casing is
-/// preserved on rejoin). For a segment with no encoded slash this returns a
-/// single sub-part and no delimiters.
+/// Split a path segment on `%2F`/`%2f` (encoded slash, case-insensitive), `;`
+/// (matrix / path-parameter delimiter), and `=` (path-parameter `name=value`
+/// boundary), returning the sub-parts AND the exact delimiter strings that
+/// separated them (so casing / delimiter is preserved on rejoin). For a segment
+/// with none of these this returns a single sub-part and no delimiters.
+///
+/// Splitting on `;` and `=` matters for credential containment: a Java-EE
+/// session id rides the path as `;jsessionid=<token>`, and generic matrix
+/// parameters carry `;name=<token>`. Without isolating the value after `=`, the
+/// `;`/`=` chars (not opaque-charset members) would take the whole segment out of
+/// the backstop's reach and the session/token value would leak whole. Splitting
+/// here lets the `name` (`jsessionid`, `sid`, …) arm the following value sub-part
+/// and lets the backstop see the value as a standalone opaque run.
 fn split_encoded_slash(segment: &str) -> (Vec<&str>, Vec<&str>) {
     let bytes = segment.as_bytes();
     let mut parts: Vec<&str> = Vec::new();
     let mut delimiters: Vec<&str> = Vec::new();
     let mut start = 0usize;
     let mut i = 0usize;
-    while i + 3 <= segment.len() {
-        if bytes[i] == b'%'
+    while i < segment.len() {
+        if i + 3 <= segment.len()
+            && bytes[i] == b'%'
             && (bytes[i + 1] == b'2')
             && (bytes[i + 2] == b'F' || bytes[i + 2] == b'f')
         {
             parts.push(&segment[start..i]);
             delimiters.push(&segment[i..i + 3]);
             i += 3;
+            start = i;
+        } else if bytes[i] == b';' || bytes[i] == b'=' {
+            parts.push(&segment[start..i]);
+            delimiters.push(&segment[i..i + 1]);
+            i += 1;
             start = i;
         } else {
             i += 1;
@@ -402,6 +428,13 @@ fn is_hyphen_word_slug(segment: &str) -> bool {
 /// residual documented in the module header. The armed pass still covers
 /// credential flows.
 fn is_token_shaped(segment: &str) -> bool {
+    // Standard-base64 (non-url-safe) tokens carry 0-2 trailing `=` padding
+    // chars. `=` is not an opaque charset member, so without this strip a
+    // padded base64 share/session token (`dGhpc2lzYXNlY3JldA==`) would bail the
+    // opaque-char scan below and leak whole. Padding only ever appears at the
+    // very end (max 2), and readable path words never end in `=`, so stripping
+    // it here cannot rescue dictionary content into the token class.
+    let segment = segment.trim_end_matches('=');
     if segment.chars().count() < 12 {
         return false;
     }
@@ -998,6 +1031,37 @@ mod tests {
     }
 
     #[test]
+    fn jsessionid_path_parameter_token_is_redacted() {
+        // A Java-EE session id placed in the path as a matrix/path parameter
+        // (`;jsessionid=<token>`) is a LIVE session credential. The `;` and `=`
+        // are not opaque-charset members, so without splitting on them the whole
+        // `page;jsessionid=ABCdef123456GHIjkl` segment bailed the backstop and the
+        // session token leaked to the cloud model.
+        let out = guard("https://site.com/page;jsessionid=ABCdef123456GHIjkl").unwrap();
+        assert!(
+            !out.contains("ABCdef123456GHIjkl"),
+            "jsessionid path-parameter token must not leak: {out}"
+        );
+        assert!(
+            out.contains("page"),
+            "the resource name before the matrix param stays readable: {out}"
+        );
+    }
+
+    #[test]
+    fn standard_base64_padded_token_is_redacted_by_backstop() {
+        // A standard-base64 (non-url-safe) share/session token carries `=`
+        // padding. `=` is not in the opaque charset, so the old backstop bailed
+        // and the FULL token leaked to the cloud model. `dGhpc2lzYXNlY3JldA==`
+        // decodes to `thisisasecret`. It must be redacted.
+        let out = guard("https://site.com/s/dGhpc2lzYXNlY3JldA==").unwrap();
+        assert!(
+            !out.contains("dGhpc2lzYXNlY3JldA=="),
+            "standard-base64 padded token must not leak: {out}"
+        );
+    }
+
+    #[test]
     fn dictionary_word_after_plain_segment_is_preserved() {
         // Why we don't blanket-redact single-class `len >= 12` tokens: ordinary
         // English path words are all-lowercase and long, and must survive.
@@ -1007,5 +1071,50 @@ mod tests {
             "dictionary path word must survive (this is why the gate is mixed-class): {out}"
         );
         assert_eq!(out, "docs.example.com/page/documentation");
+    }
+
+    // --- INV-P2: the guard is linear in URL length with a bounded constant ---
+
+    #[test]
+    fn pathological_long_url_is_bounded_work_and_terminates() {
+        // INV-P2 (no ReDoS / no super-linear blowup on a crafted long URL): the
+        // guard partitions the path into NON-OVERLAPPING sub-parts on `/`, `%2F`,
+        // `;`, `=` and runs the linear-time `regex`-crate redactor once per
+        // sub-part, so total work is O(detectors x path length) — linear. The
+        // `regex` crate is non-backtracking, so even a pathological 4 KB URL (many
+        // segments + one long armed token) cannot trigger catastrophic
+        // backtracking. This proves termination + bounded output on adversarial
+        // shapes; the test would HANG (not just slow down) under any accidental
+        // quadratic/exponential regression, so a normal test timeout fails it.
+
+        // Shape 1: ~4 KB of many single-char segments (`/a/a/a/...`). Linear in
+        // segment count; each `redact_text` call scans a tiny input.
+        let many_segments = format!("https://site.com{}", "/a".repeat(2000));
+        let out = guard(&many_segments).expect("many-segment url should guard");
+        assert!(out.starts_with("site.com/"), "{}", &out[..40.min(out.len())]);
+
+        // Shape 2: one 4 KB armed opaque token after a credential keyword. Must be
+        // redacted by the armed pass, and the call must terminate quickly.
+        let long_token = "Ab9".repeat(1400); // ~4.2 KB, mixed class, len >= 12
+        let armed = format!("https://site.com/reset-password/{long_token}");
+        let out = guard(&armed).expect("armed long-token url should guard");
+        assert!(
+            !out.contains(&long_token),
+            "4 KB armed token must be redacted (and the guard must terminate)"
+        );
+        assert!(out.contains("reset-password"), "keyword stays visible: {out}");
+
+        // Shape 3: one 4 KB opaque token with no armed predecessor. The PERF
+        // invariant here is termination + bounded output (linear work), NOT
+        // redaction coverage of an oversized token (a separate redaction-policy
+        // concern). The call must return, and the guarded output must stay
+        // O(input) — never blow up.
+        let out = guard(&format!("https://site.com/s/{long_token}"))
+            .expect("long-token url should guard");
+        assert!(
+            out.len() <= many_segments.len() + armed.len() + long_token.len() + 64,
+            "guarded output is bounded by input size (no blowup): {} bytes",
+            out.len()
+        );
     }
 }
