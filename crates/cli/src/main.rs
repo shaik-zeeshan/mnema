@@ -61,9 +61,6 @@ enum CommandKind {
     Open {
         opaque_result_id: String,
     },
-    OpenUrl {
-        opaque_result_id: String,
-    },
     Access {
         #[command(subcommand)]
         command: AccessCommand,
@@ -360,18 +357,6 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             )
             .await
         }
-        CommandKind::OpenUrl { opaque_result_id } => {
-            run_data_command(
-                "open-url",
-                &identity,
-                BrokeredCaptureRequest::OpenCapturedUrl {
-                    opaque_id: opaque_result_id,
-                },
-                cli.format,
-                cli.no_prompt,
-            )
-            .await
-        }
         CommandKind::Access { command } => {
             if cli.format.is_some() {
                 return Err(usage_error("--format is only supported for data commands"));
@@ -449,22 +434,6 @@ async fn run_data_command(
         "open" => {
             let BrokeredCaptureResponse::OpenInMnema(response) = response else {
                 return Err(broker_failure("unexpected open response"));
-            };
-            print_envelope(
-                command,
-                identity,
-                format,
-                &OpenData {
-                    id: response.opaque_id,
-                    opened: response.opened,
-                },
-            )
-        }
-        "open-url" => {
-            // App-mediated open of the result's raw captured URL. The raw URL is
-            // local-only — only whether it opened and the opaque id are printed.
-            let BrokeredCaptureResponse::OpenCapturedUrl(response) = response else {
-                return Err(broker_failure("unexpected open-url response"));
             };
             print_envelope(
                 command,
@@ -1042,13 +1011,15 @@ mod tests {
         .unwrap();
         Cli::try_parse_from(["mnema", "show-text", "f1.deadbeef"]).unwrap();
         Cli::try_parse_from(["mnema", "open", "f1.deadbeef"]).unwrap();
-        Cli::try_parse_from(["mnema", "open-url", "f1.deadbeef"]).unwrap();
     }
 
     #[test]
     fn cli_rejects_removed_aliases() {
         assert!(Cli::try_parse_from(["mnema", "auth", "status"]).is_err());
         assert!(Cli::try_parse_from(["mnema", "open-in-mnema", "f1"]).is_err());
+        // `open-url` was removed: the broker never opens a raw captured URL, so the
+        // CLI no longer exposes the command (see ADR 0038 / brokered_access.rs).
+        assert!(Cli::try_parse_from(["mnema", "open-url", "f1.deadbeef"]).is_err());
     }
 
     #[test]

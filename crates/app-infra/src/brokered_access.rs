@@ -274,9 +274,12 @@ pub struct BrokerOpenInMnemaResponse {
     pub opaque_id: String,
 }
 
-/// Response to `open_captured_url`: an app-mediated handoff that opens the raw
-/// captured `browser_url` of a frame result in the default browser. The raw URL
-/// is local-only and is NEVER carried on this struct (only `opaque_id`).
+/// Response shape for `OpenCapturedUrl`. RETAINED for protocol/match-arm
+/// stability only: the broker NEVER produces a success here — `OpenCapturedUrl`
+/// is rejected for every caller (see `execute_authorized_request`). Opening the
+/// raw captured `browser_url` is exclusively the LOCAL desktop Tauri command
+/// keyed off `frame_id` behind a user click (ADR 0038); the raw URL is local-only
+/// and was never carried on this struct (only `opaque_id`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerOpenCapturedUrlResponse {
@@ -502,8 +505,10 @@ impl BrokeredCaptureAccess {
     /// Unlike [`execute_for_identity`], Ask AI access is gated by the Ask AI Setting at the
     /// Tauri layer (fail-closed) rather than by a persisted broker grant, so this path injects
     /// a synthetic All Retained grant instead of loading disk grants. Only the agent's data
-    /// tools are permitted; `OpenInMnema` and `OpenCapturedUrl` are app-mediated handoffs
-    /// (ADR 0024) and are rejected.
+    /// tools are permitted; `OpenInMnema` is an app-mediated handoff (ADR 0024) and is rejected.
+    /// `OpenCapturedUrl` is rejected here too (defense-in-depth: the shared
+    /// `execute_authorized_request` also rejects it universally — the broker never opens a raw
+    /// captured URL for any caller; that is local-desktop-only, see ADR 0038).
     pub async fn execute_for_ask_ai(
         &self,
         identity: BrokerClientIdentity,
@@ -631,50 +636,26 @@ impl BrokeredCaptureAccess {
                     Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
                 }
             }
-            BrokeredCaptureRequest::OpenCapturedUrl { opaque_id } => {
-                if opaque_capture_reference(&opaque_id).is_none() {
-                    return Ok(BrokeredCaptureResponse::Error(invalid_opaque_id_error()));
-                }
-                let infra = self.initialize_infra().await?;
-                match broker_authorize_opaque_reference(
-                    &self.config_dir,
-                    &infra,
-                    grants,
-                    &opaque_id,
-                )
-                .await?
-                {
-                    Ok(reference) => {
-                        // Only frame results can carry a captured browser URL;
-                        // audio results have none.
-                        let Some(frame_id) = reference.frame_id else {
-                            return Ok(BrokeredCaptureResponse::Error(no_openable_url_error()));
-                        };
-                        // Load the frame's RAW captured `browser_url`. It is
-                        // local-only: it is parsed + scheme-gated here and passed
-                        // straight to the OS opener — it NEVER enters a response
-                        // field, a log line, the audit record, or the auth channel.
-                        let raw_url = infra
-                            .get_frame(frame_id)
-                            .await?
-                            .and_then(|frame| frame.metadata_snapshot)
-                            .and_then(|snapshot| snapshot.browser_url);
-                        let Some(raw_url) = raw_url else {
-                            return Ok(BrokeredCaptureResponse::Error(no_openable_url_error()));
-                        };
-                        if !is_http_url(&raw_url) {
-                            return Ok(BrokeredCaptureResponse::Error(no_openable_url_error()));
-                        }
-                        open_external_url(&raw_url)?;
-                        Ok(BrokeredCaptureResponse::OpenCapturedUrl(
-                            BrokerOpenCapturedUrlResponse {
-                                opened: true,
-                                opaque_id,
-                            },
-                        ))
-                    }
-                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
-                }
+            BrokeredCaptureRequest::OpenCapturedUrl { .. } => {
+                // The broker NEVER opens a raw captured URL for ANY caller. Doing
+                // so would let any grant-holding external/CLI agent navigate the
+                // user's authenticated browser to an in-scope captured URL the
+                // moment a grant passes — a CSRF/replay primitive (ADR 0038: the
+                // raw URL "materializes only on the user's click", it is not an
+                // agent tool). Opening the raw `browser_url` is therefore
+                // EXCLUSIVELY the LOCAL desktop path (the Tauri `open_captured_url`
+                // command keyed off `frame_id`, behind a trusted-frontend user
+                // click) which does NOT route through the broker. The request
+                // variant is kept so the public protocol + all match arms in other
+                // crates keep compiling; here it is always rejected.
+                //
+                // Closing this caller also seals the latent Windows
+                // `cmd /C start` arg-injection sink in `open_external_url`: only
+                // internal `mnema://` deep-link ids reach that opener now, never an
+                // attacker-influenced captured URL.
+                Ok(BrokeredCaptureResponse::Error(
+                    BrokerErrorResponse::authorization_required(),
+                ))
             }
         }
     }
@@ -1569,19 +1550,24 @@ async fn broker_frame_timeline(
     window_title: Option<&str>,
     limit: u32,
 ) -> Result<Vec<BrokerTimelineInterval>> {
+    // `representative_frame_id` must be the frame_id of the SAME `MAX(id)` row that
+    // drives the interval's ordering (its landing frame), DETERMINISTICALLY. A bare
+    // `frame_id` selected alongside the aggregates is NOT safe: SQLite only
+    // guarantees a bare column tracks the min/max row when there is exactly one
+    // min/max in the group; with two-plus aggregates (here MIN + two MAX) the row a
+    // bare column is taken from is documented-arbitrary (sqlite.org "Bare columns in
+    // an aggregate query"). So we compute the grouping + `MAX(id) AS sort_id` in a
+    // CTE, then JOIN back to `search_documents` on the primary key (`s.id = g.sort_id`)
+    // to read THAT exact row's `frame_id`. Kept INTERNAL (never put on the wire
+    // struct); only its guarded url crosses the broker boundary read-time.
     let mut query = QueryBuilder::<Sqlite>::new(
-        // `frame_id` is a bare (non-aggregated) column selected alongside
-        // `MAX(id)`: SQLite resolves bare columns to the row that produced the
-        // bare `min()`/`max()`, so `representative_frame_id` is the frame_id of
-        // the same `MAX(id)` row that drives the interval's ordering — i.e. the
-        // interval's landing frame. Kept INTERNAL (never put on the wire
-        // struct); only its guarded url crosses the broker boundary read-time.
-        "SELECT group_key, app_bundle_id, app_name, window_title, \
-                MIN(absolute_start_at) AS started_at, MAX(absolute_end_at) AS ended_at, MAX(id) AS sort_id, \
-                frame_id AS representative_frame_id \
-         FROM search_documents \
-         WHERE anchor_type = 'frame' \
-           AND julianday(absolute_end_at) >= julianday(",
+        "WITH grouped AS ( \
+           SELECT group_key, app_bundle_id, app_name, window_title, \
+                  MIN(absolute_start_at) AS started_at, MAX(absolute_end_at) AS ended_at, \
+                  MAX(id) AS sort_id \
+           FROM search_documents \
+           WHERE anchor_type = 'frame' \
+             AND julianday(absolute_end_at) >= julianday(",
     );
     query.push_bind(range.start_at.clone());
     query.push(") AND julianday(absolute_start_at) <= julianday(");
@@ -1589,8 +1575,14 @@ async fn broker_frame_timeline(
     query.push(")");
     push_broker_timeline_context_filters(&mut query, app, window_title);
     query.push(
-        " GROUP BY group_key, app_bundle_id, app_name, window_title \
-          ORDER BY started_at DESC, sort_id DESC LIMIT ",
+        "   GROUP BY group_key, app_bundle_id, app_name, window_title \
+         ) \
+         SELECT g.group_key, g.app_bundle_id, g.app_name, g.window_title, \
+                g.started_at, g.ended_at, g.sort_id, \
+                s.frame_id AS representative_frame_id \
+         FROM grouped g \
+         JOIN search_documents s ON s.id = g.sort_id \
+         ORDER BY g.started_at DESC, g.sort_id DESC LIMIT ",
     );
     query.push_bind(limit as i64);
 
@@ -2219,33 +2211,20 @@ fn outside_scope_error() -> BrokerErrorResponse {
     }
 }
 
-/// Error for `open_captured_url` when the authorized result has no broker-openable
-/// URL: no captured `browser_url`, an audio result (no URL), or a non-`http(s)`
-/// scheme. The raw URL is never echoed into the message.
-fn no_openable_url_error() -> BrokerErrorResponse {
-    BrokerErrorResponse {
-        error: BrokerAuthStatusKind::AuthorizationRequired,
-        message: "result has no openable http(s) URL".to_string(),
-    }
-}
-
-/// `true` only for `http`/`https` URLs. Used to gate `open_captured_url` so only
-/// web URLs are ever handed to the OS opener.
-fn is_http_url(raw_url: &str) -> bool {
-    url::Url::parse(raw_url)
-        .map(|url| matches!(url.scheme(), "http" | "https"))
-        .unwrap_or(false)
-}
-
 fn open_mnema_deep_link(opaque_id: &str) -> Result<()> {
     let url = format!("mnema://open/{opaque_id}");
     open_external_url(&url)
 }
 
-/// Open an arbitrary URL in the platform default handler via the OS opener
-/// command. Used both for `mnema://` deep links and for the raw captured
-/// `browser_url` of `open_captured_url` — for the latter, the raw URL must reach
-/// only this function and the OS, never a response, log, audit, or auth channel.
+/// Open a URL in the platform default handler via the OS opener command.
+///
+/// This is now reached ONLY by `open_mnema_deep_link` with an internal
+/// `mnema://open/<opaque_id>` deep link — the broker never opens a raw captured
+/// `browser_url` for any caller (that is local-desktop-only; see the
+/// `OpenCapturedUrl` arm of `execute_authorized_request` and ADR 0038). Because
+/// only internally-constructed `mnema://` ids reach the Windows `cmd /C start`
+/// branch, the latent argument-injection sink it carried is no longer reachable
+/// from any attacker-influenced (captured) input.
 fn open_external_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -3801,6 +3780,139 @@ mod tests {
         });
     }
 
+    /// Insert a real frame carrying `browser_url` in its metadata snapshot, then a
+    /// `search_documents` frame row pointing at it under `group_key`. Returns the
+    /// inserted `(frame_id, search_documents.id)`. Inserting the search row directly
+    /// (rather than via the OCR/equivalent-reuse pipeline) lets a test put MULTIPLE
+    /// distinct frames into ONE timeline group with a controlled `id` ordering, to
+    /// pin down which frame the interval treats as representative.
+    async fn seed_grouped_frame_search_row(
+        infra: &AppInfra,
+        save_dir: &std::path::Path,
+        file_name: &str,
+        captured_at: &str,
+        group_key: &str,
+        browser_url: &str,
+    ) -> (i64, i64) {
+        let frame = infra
+            .insert_frame(
+                &NewFrame::new(
+                    "screen-session",
+                    save_dir.join(file_name).display().to_string(),
+                    captured_at,
+                )
+                .with_metadata_snapshot(capture_metadata::FrameMetadataSnapshot {
+                    app_bundle_id: Some("com.google.Chrome".to_string()),
+                    app_name: Some("Google Chrome".to_string()),
+                    window_title: Some("Pull Request".to_string()),
+                    window_id: None,
+                    browser_url: Some(browser_url.to_string()),
+                    display_id: Some(1),
+                    metadata_redaction_reason: None,
+                    metadata_redaction_source_id: None,
+                }),
+            )
+            .await
+            .expect("frame should insert");
+        let document_id: i64 = sqlx::query_scalar(
+            "INSERT INTO search_documents \
+                (anchor_type, frame_id, absolute_start_at, absolute_end_at, session_id, \
+                 app_bundle_id, app_name, window_title, group_key, text_source_kind, body_text) \
+             VALUES ('frame', ?, ?, ?, 'screen-session', \
+                 'com.google.Chrome', 'Google Chrome', 'Pull Request', ?, 'direct', 'grouped body') \
+             RETURNING id",
+        )
+        .bind(frame.id)
+        .bind(captured_at)
+        .bind(captured_at)
+        .bind(group_key)
+        .fetch_one(infra.pool())
+        .await
+        .expect("search document should insert");
+        (frame.id, document_id)
+    }
+
+    #[test]
+    fn broker_timeline_interval_url_is_deterministically_the_max_id_landing_frame() {
+        // FIX #7 (deterministic representative frame): when a timeline GROUP spans
+        // multiple frames (different frame_ids, different browser_urls), the
+        // interval's guarded url MUST come from the MAX(id) (landing) frame, NOT an
+        // arbitrary group member. The old query selected a bare `frame_id` alongside
+        // MIN+two-MAX aggregates, where SQLite's row choice is documented-arbitrary;
+        // the CTE+PK-join now pins it to the MAX(id) row.
+        run_async_test(async {
+            let config_dir = temp_config_dir("timeline-deterministic-rep");
+            let save_dir = temp_save_dir("timeline-deterministic-rep");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            let group_key = "frame:eq:test-group";
+            // Two frames in the SAME group with DIFFERENT frame_ids + browser_urls.
+            // The SECOND insert gets the larger autoincrement search_documents.id, so
+            // it is the MAX(id) landing frame the interval must adopt.
+            let (_earlier_frame, earlier_doc) = seed_grouped_frame_search_row(
+                &infra,
+                &save_dir,
+                "timeline-earlier.jpg",
+                "2026-05-17T10:00:00Z",
+                group_key,
+                "https://example.com/earlier-page",
+            )
+            .await;
+            let (_landing_frame, landing_doc) = seed_grouped_frame_search_row(
+                &infra,
+                &save_dir,
+                "timeline-landing.jpg",
+                "2026-05-17T10:05:00Z",
+                group_key,
+                "https://example.com/landing-page",
+            )
+            .await;
+            assert!(
+                landing_doc > earlier_doc,
+                "landing frame must hold the MAX(id) so it is the representative"
+            );
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_timeline(
+                &infra,
+                &[grant],
+                BrokerTimelineRequest {
+                    from: "2026-05-17T00:00:00Z".to_string(),
+                    to: "2026-05-18T00:00:00Z".to_string(),
+                    limit: Some(5),
+                    app: None,
+                    window_title: None,
+                },
+            )
+            .await
+            .expect("timeline should run")
+            .expect("timeline should be authorized");
+
+            let screen = response
+                .intervals
+                .iter()
+                .find(|interval| interval.kind == "screen")
+                .expect("screen interval should be present");
+            assert_eq!(
+                screen
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.url.as_deref()),
+                Some("example.com/landing-page"),
+                "interval url is deterministically the MAX(id) landing frame's guarded url"
+            );
+        });
+    }
+
     #[test]
     fn broker_timeline_without_context_filters_includes_screen_and_audio_intervals() {
         run_async_test(async {
@@ -4124,41 +4236,43 @@ mod tests {
     }
 
     #[test]
-    fn is_http_url_gates_to_http_https() {
-        assert!(is_http_url("http://example.com/path"));
-        assert!(is_http_url("https://example.com/path"));
-        assert!(!is_http_url("ftp://example.com/file"));
-        assert!(!is_http_url("file:///etc/passwd"));
-        assert!(!is_http_url("mnema://open/abc"));
-        assert!(!is_http_url("not a url"));
-        assert!(!is_http_url(""));
-    }
-
-    #[test]
-    fn open_captured_url_rejects_audio_result_with_no_url() {
-        // An authorized audio result has no `frame_id`, so there is no captured
-        // browser URL to open — the handler must error before any opener is reached.
+    fn execute_rejects_open_captured_url_universally() {
+        // SECURITY (the core of FIX #1): the external `execute`/`execute_for_identity`
+        // path must NEVER open a raw captured URL — even for an authorized, in-scope
+        // FRAME result whose `browser_url` is a perfectly openable http(s) URL. A
+        // grant-holding CLI/agent navigating the user's authenticated browser to an
+        // in-scope captured URL is a CSRF/replay primitive (ADR 0038). The broker
+        // must reject with `authorization_required`, never reaching any OS opener.
         run_async_test(async {
-            let config_dir = temp_config_dir("open-captured-url-audio");
-            let save_dir = temp_save_dir("open-captured-url-audio");
+            let config_dir = temp_config_dir("execute-rejects-open-url");
+            let save_dir = temp_save_dir("execute-rejects-open-url");
             write_recording_settings(&config_dir, &save_dir);
             let infra = AppInfra::initialize(&save_dir)
                 .await
                 .expect("infra should initialize");
-            let now = now_unix_ms();
-            let started_at = format_unix_ms(now.saturating_sub(60 * 1000));
-            let ended_at = format_unix_ms(now);
-            let segment = infra
-                .upsert_audio_segment(&NewAudioSegment::new(
-                    AudioSegmentSourceKind::Microphone,
-                    "mic-session",
-                    1,
-                    save_dir.join("audio.m4a").display().to_string(),
-                    started_at,
-                    ended_at,
-                ))
+            // Seed a real, in-scope frame WITH a valid https browser_url, so the
+            // only reason for rejection is the universal broker policy (not a
+            // missing/invalid/non-http URL).
+            let frame = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        save_dir.join("open-url-frame.jpg").display().to_string(),
+                        &format_unix_ms(now_unix_ms().saturating_sub(60 * 1000)),
+                    )
+                    .with_metadata_snapshot(capture_metadata::FrameMetadataSnapshot {
+                        app_bundle_id: Some("com.google.Chrome".to_string()),
+                        app_name: Some("Google Chrome".to_string()),
+                        window_title: Some("Example".to_string()),
+                        window_id: None,
+                        browser_url: Some("https://example.com/path".to_string()),
+                        display_id: Some(1),
+                        metadata_redaction_reason: None,
+                        metadata_redaction_source_id: None,
+                    }),
+                )
                 .await
-                .expect("segment should insert");
+                .expect("frame should insert");
             // Grant + identity must share a normalized label so `execute` resolves
             // active grants for the caller before the handler runs.
             let grant = create_grant(
@@ -4169,7 +4283,7 @@ mod tests {
             )
             .expect("grant should create");
             let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
-            let opaque_id = encode_signed_opaque_id("audio", segment.id, Some(&grant.id), &secret);
+            let opaque_id = encode_signed_opaque_id("frame", frame.id, Some(&grant.id), &secret);
 
             let access = BrokeredCaptureAccess::from_config_dir(config_dir.clone());
             let response = access
@@ -4182,7 +4296,8 @@ mod tests {
 
             assert_eq!(
                 response,
-                BrokeredCaptureResponse::Error(no_openable_url_error())
+                BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required()),
+                "the broker must never open a captured URL, even for an authorized http(s) frame"
             );
         });
     }

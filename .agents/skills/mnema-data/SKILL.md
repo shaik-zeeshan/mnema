@@ -14,7 +14,7 @@ Use this skill to answer user questions from Mnema's local personal record throu
 - Require user authorization through Mnema. Before any data command, check `mnema access status`; if there is no active grant for this client, run `mnema access request --scope last-day --duration 24h` and wait for approval before continuing. If the CLI returns `authorization_required`, `authorization_timeout`, `authorization_denied`, or `app_unavailable`, stop and tell the user the exact Mnema approval action needed. Do not create or modify grants outside the Mnema app.
 - Prefer search snippets and concise synthesis. Use `show-text` only for a specific signed opaque result ID returned by `search` when the snippet is insufficient, and avoid pasting long OCR/transcript text unless requested.
 - Use `open` when the user wants to inspect the original record in Mnema. Do not open media files or export frame images yourself unless the user explicitly asks.
-- Do not invoke `open-url`. Opening a result's raw captured browser URL in the user's browser is a user-only action surfaced in the Mnema app, not an agent capability — Mnema's in-app Ask AI rejects it just as it rejects `open`. The raw URL never reaches the agent; you only ever see the guarded `context.url`. If the user wants to revisit the original page, tell them to use the open-in-browser button in Mnema rather than attempting it yourself.
+- You never see a result's raw captured browser URL — only the guarded `context.url` (a sanitized host+path). There is no agent or CLI command that opens a captured URL: the broker never opens one. Revisiting the original page in a browser is a user-only action inside the Mnema app, so if the user wants that, tell them to use the open-in-browser button in Mnema rather than attempting it yourself.
 - Use project terms from `CONTEXT.md`: **Captured Frame**, **Audio Segment**, **Audio Transcription**, **Speaker Turn**, **Capture Session**, **Capture Segment**, and **Managed Storage Layout**.
 - Remember that **Scrub Preview** is not source-of-truth. For exact inspection, open the broker result in Mnema rather than relying on preview cache artifacts.
 
@@ -100,7 +100,6 @@ The bundled sidecar binary is named `mnema-cli`, but the user-facing installed c
 - `mnema show-text <resultId>`: return broker-visible derived text for one result.
 - `mnema timeline --from RFC3339 --to RFC3339 [--limit n] [--app appOrBundleId] [--window-title text]`: return broker-visible activity intervals for a bounded window. Without app/window filters this is audio-oriented; with either filter it returns matching screen intervals.
 - `mnema open <resultId>`: open Mnema to one result.
-- `mnema open-url <opaqueId>`: user-only. Opens the result's raw captured browser URL in the user's default browser, app-mediated by Mnema. This is **not** an agent capability — do not invoke it; Mnema's in-app Ask AI rejects it the same way it rejects `open`. Agents only ever see the guarded `context.url`, never the raw URL this resolves.
 
 Global options:
 
