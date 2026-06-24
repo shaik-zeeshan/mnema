@@ -169,6 +169,7 @@
       <button
         class="btn sm"
         type="button"
+        disabled={ai.aiProviderRemoving}
         title={ai.aiProviderKindDescription(kind)}
         onclick={() => ai.addProvider(kind)}
       >

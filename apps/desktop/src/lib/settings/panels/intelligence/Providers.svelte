@@ -180,6 +180,7 @@
             <button
               class="btn btn--ghost btn--sm"
               type="button"
+              disabled={c.aiProviderRemoving}
               title={aiProviderKindDescription(kind)}
               onclick={() => addAiProvider(kind)}
             >

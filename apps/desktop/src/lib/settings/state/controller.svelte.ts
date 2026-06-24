@@ -168,6 +168,12 @@ export class SettingsController {
   askAiModelOpen = $state(false);
   aiModelOpen = $state(false);
 
+  // True while a provider removal (incl. its awaited keychain clear) is in
+  // flight. The add-provider control reads this and stays disabled so a new
+  // provider can't be added mid-clear and race a same-kind id re-add (ADR 0035)
+  // into a false "key in keychain" probe.
+  aiProviderRemoving = $state(false);
+
   // Semantic-search picked model (page picker draft).
   semanticSearchPickedModelId = $state<string | null>(null);
 
@@ -250,6 +256,9 @@ export class SettingsController {
   }
 
   addAiProvider(kind: AiProviderKind): void {
+    // Guarded by aiProviderRemoving at the call site (control is disabled while a
+    // clear is in flight); this guard is the defensive backstop.
+    if (this.aiProviderRemoving) return;
     this.rec.draftAiProviders = [
       ...this.rec.draftAiProviders,
       { id: this.newAiProviderId(kind), kind, label: "", baseUrl: "" },
@@ -269,8 +278,15 @@ export class SettingsController {
     if (removed && this.isCloudAiProviderKind(removed.kind)) {
       // AWAIT the keychain clear so a same-kind re-add (which reuses the bare
       // kind id, ADR 0035) re-probes only after the clear has resolved — never
-      // racing an in-flight clear into a false "key in keychain".
-      await this.aiRuntime.clearKeyForRemovedProvider(id);
+      // racing an in-flight clear into a false "key in keychain". The
+      // aiProviderRemoving flag disables the add-provider control for the
+      // duration so a new provider can't be added mid-clear.
+      this.aiProviderRemoving = true;
+      try {
+        await this.aiRuntime.clearKeyForRemovedProvider(id);
+      } finally {
+        this.aiProviderRemoving = false;
+      }
     }
   }
 
@@ -654,7 +670,11 @@ export class SettingsController {
         this.rec.recSaved = true;
         setTimeout(() => { this.rec.recSaved = false; }, 2200);
 
-        if (domain === "storage" && previousRetentionPolicy !== updated.retentionPolicy && updated.retentionPolicy !== "never") {
+        // Only run cleanup when retention was TIGHTENED (same predicate that
+        // gates the confirm dialog above). Loosening the policy (longer window or
+        // "Forever") can never make data newly-eligible for deletion, so running
+        // cleanup there would be an unconfirmed, pointless pass.
+        if (domain === "storage" && retentionShortened && previousRetentionPolicy !== updated.retentionPolicy) {
           this.retentionCleanupRunning = true;
           this.retentionCleanupError = null;
           try {

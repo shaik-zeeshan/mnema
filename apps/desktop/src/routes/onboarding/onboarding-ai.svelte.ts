@@ -40,6 +40,11 @@ export function createOnboardingAiStore() {
   let draftAiDefaultModel = $state<AiEngineRef | null>(null);
   // ModelPickerMenu open state (bind:open).
   let aiModelOpen = $state(false);
+  // True while a provider removal (incl. its awaited keychain clear) is in
+  // flight. The add-provider control reads this and stays disabled so a new
+  // provider can't be added mid-clear and race a same-kind id re-add (ADR 0035)
+  // into a false "key in keychain" probe.
+  let aiProviderRemoving = $state(false);
 
   // Shared incremental model-pool loader (one list call per provider).
   const modelLoader = new ModelPoolLoader();
@@ -63,6 +68,9 @@ export function createOnboardingAiStore() {
 
   // ── Provider list mutations (mirror the Settings controller) ──────────────
   function addProvider(kind: AiProviderKind): void {
+    // Guarded by aiProviderRemoving at the call site (control is disabled while a
+    // clear is in flight); this guard is the defensive backstop.
+    if (aiProviderRemoving) return;
     const existingIds = draftAiProviders.map((p) => p.id);
     draftAiProviders = [
       ...draftAiProviders,
@@ -71,14 +79,23 @@ export function createOnboardingAiStore() {
     void aiRuntime.refreshAiProviderKeyPresence();
   }
 
-  function removeProvider(id: string): void {
+  async function removeProvider(id: string): Promise<void> {
     const removed = providerById(id);
     draftAiProviders = draftAiProviders.filter((p) => p.id !== id);
     if (draftAiDefaultModel?.provider === id) {
       draftAiDefaultModel = null;
     }
     if (removed && isCloudAiProviderKind(removed.kind)) {
-      aiRuntime.clearKeyForRemovedProvider(id);
+      // AWAIT the keychain clear (ADR 0035: a same-kind re-add reuses the bare
+      // kind id, so it must re-probe only after the clear resolves) and disable
+      // the add-provider control for the duration so a new provider can't be
+      // added mid-clear.
+      aiProviderRemoving = true;
+      try {
+        await aiRuntime.clearKeyForRemovedProvider(id);
+      } finally {
+        aiProviderRemoving = false;
+      }
     }
   }
 
@@ -177,6 +194,7 @@ export function createOnboardingAiStore() {
     set draftAiDefaultModel(value: AiEngineRef | null) { draftAiDefaultModel = value; },
     get aiModelOpen() { return aiModelOpen; },
     set aiModelOpen(value: boolean) { aiModelOpen = value; },
+    get aiProviderRemoving() { return aiProviderRemoving; },
 
     // Derived view state.
     get anyCloudConnected() { return anyCloudConnected; },
