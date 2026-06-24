@@ -90,6 +90,7 @@
     MicrophoneAutoDisconnectTransitionFailedEvent,
     RetentionPolicy,
     BrowserUrlMode,
+    BrowserUrlAccessibilityStatus,
     ExcludedAppEntry,
     SpeakerAnalysisModelDownloadProgress,
     SpeakerAnalysisModelStatus,
@@ -293,6 +294,18 @@
   let draftMetadataEnabled = $state(true);
   let draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
   let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
+  // Optional Gecko (Firefox/Zen) browser-URL access via the macOS Accessibility
+  // API. Surfaced only when a Gecko browser is installed; null status (probe
+  // failure / not loaded) simply hides the row.
+  let geckoUrlAccess = $state<BrowserUrlAccessibilityStatus | null>(null);
+  let requestingGeckoAccess = $state(false);
+  let recheckingGeckoAccess = $state(false);
+  let geckoAccessError = $state<string | null>(null);
+  const geckoInstalled = $derived((geckoUrlAccess?.geckoBrowsers ?? []).some((b) => b.installed));
+  const geckoTrusted = $derived(geckoUrlAccess?.trusted ?? false);
+  const geckoInstalledNames = $derived(
+    (geckoUrlAccess?.geckoBrowsers ?? []).filter((b) => b.installed).map((b) => b.displayName)
+  );
   let draftAskAiEnabled = $state(false);
   // Tool-call cap. Persisted as a single number where 0 = no cap; the UI splits
   // that into a "limit on/off" toggle plus the numeric value (kept around for
@@ -2759,6 +2772,52 @@
     }
   }
 
+  // Probe whether a Gecko browser (Firefox/Zen) is installed and whether Mnema
+  // is trusted for the macOS Accessibility API used to read its active-tab URL.
+  // Non-fatal: a failure leaves status null so the row simply hides.
+  async function loadGeckoUrlAccess() {
+    try {
+      geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("get_browser_url_accessibility_status");
+    } catch {
+      geckoUrlAccess = null;
+    }
+  }
+
+  async function requestGeckoAccess() {
+    if (requestingGeckoAccess) return;
+    geckoAccessError = null;
+    requestingGeckoAccess = true;
+    try {
+      geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("request_browser_url_accessibility");
+    } catch (err) {
+      geckoAccessError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      requestingGeckoAccess = false;
+    }
+  }
+
+  async function openGeckoAccessSettings() {
+    geckoAccessError = null;
+    try {
+      await invoke("open_browser_url_accessibility_settings");
+    } catch (err) {
+      geckoAccessError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    }
+  }
+
+  async function recheckGeckoAccess() {
+    if (recheckingGeckoAccess) return;
+    geckoAccessError = null;
+    recheckingGeckoAccess = true;
+    try {
+      geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("get_browser_url_accessibility_status");
+    } catch (err) {
+      geckoAccessError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      recheckingGeckoAccess = false;
+    }
+  }
+
   async function startSelectedTranscriptionModelDownload() {
     if (!selectedTranscriptionModel?.modelId) return;
     startingTranscriptionDownload = true;
@@ -3920,6 +3979,7 @@
       void loadThirdPartyNotices();
       void appPrivacyExclusion.loadPrivacyAppCandidates();
       void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
+      void loadGeckoUrlAccess();
       loadBrokerGrants();
       loadMnemaCliStatus();
       void loadAskAiAvailability();
@@ -5414,6 +5474,44 @@
           </div>
           <p class="group-hint">Sanitized URLs keep scheme, host, port, and path while dropping query strings and fragments.</p>
         </div>
+
+        {#if geckoInstalled}
+          <div class="settings-group">
+            <span class="group-label">Browser URL access (Firefox / Zen)</span>
+            <div class="permission-callout" class:permission-callout--ok={geckoTrusted}>
+              <div class="permission-callout__copy">
+                <span class="permission-callout__eyebrow">Accessibility</span>
+                <strong>
+                  {geckoInstalledNames.length > 0 ? geckoInstalledNames.join(" / ") : "Firefox / Zen"}
+                  · {geckoTrusted ? "Granted" : "Not granted"}
+                </strong>
+                <p>Lets Mnema capture the page address for Firefox and Zen (they have no scriptable URL like Chrome/Safari). Requires the macOS Accessibility permission.</p>
+              </div>
+              {#if !geckoTrusted}
+                <button
+                  class="btn btn--ghost"
+                  onclick={requestGeckoAccess}
+                  disabled={requestingGeckoAccess}
+                >
+                  {requestingGeckoAccess ? "Requesting" : "Grant access"}
+                </button>
+              {/if}
+            </div>
+            {#if !geckoTrusted}
+              <div class="row-actions">
+                <button class="btn btn--ghost btn--sm" type="button" onclick={openGeckoAccessSettings}>
+                  Open System Settings
+                </button>
+                <button class="btn btn--ghost btn--sm" type="button" onclick={recheckGeckoAccess} disabled={recheckingGeckoAccess}>
+                  {recheckingGeckoAccess ? "Checking" : "Recheck"}
+                </button>
+              </div>
+            {/if}
+            {#if geckoAccessError}
+              <p class="group-hint group-hint--warn">Browser URL access request failed: {geckoAccessError}</p>
+            {/if}
+          </div>
+        {/if}
 
         <div class="settings-group">
           <span class="group-label">Excluded Apps</span>
