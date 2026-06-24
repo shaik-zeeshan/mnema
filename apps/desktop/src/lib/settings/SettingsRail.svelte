@@ -76,7 +76,19 @@
   function clearSearch() {
     searchQuery = "";
   }
-  function onSearchBlur() {
+  function onSearchBlur(event: FocusEvent) {
+    // Only clear when focus actually leaves the rail. A keyboard user who Tabs
+    // from the search field into the filtered results stays inside the rail —
+    // clearing then would re-render the full list and drop the survivor they
+    // were reaching for. `relatedTarget` is the element gaining focus (null for
+    // a plain click into empty space, which the deferred clear still handles).
+    const next = event.relatedTarget;
+    if (
+      next instanceof HTMLElement &&
+      next.closest("#settings-sidebar")
+    ) {
+      return;
+    }
     setTimeout(clearSearch, 0);
   }
   function onSearchKeydown(event: KeyboardEvent) {

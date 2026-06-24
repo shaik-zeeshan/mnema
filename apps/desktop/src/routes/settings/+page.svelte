@@ -40,6 +40,7 @@
     type SettingsSectionId,
   } from "$lib/settings/groups";
   import {
+    isScrollable,
     isScrolledToBottom,
     lastSectionOfGroup,
   } from "$lib/settings/scroll-spy";
@@ -239,8 +240,15 @@
           if (spySuppressed || intersecting.size === 0) return;
           // At the bottom, the tail section can't reach the top detection band;
           // the scroll handler force-selects it, so don't override it back to a
-          // mid-band section here.
+          // mid-band section here. Only short-circuit when the region is actually
+          // scrollable — a short group that fits the viewport is permanently
+          // "bottomed out", which would freeze the highlight on the entry
+          // section; let it fall through to the top-most-intersecting selection.
           if (
+            isScrollable({
+              scrollHeight: root.scrollHeight,
+              clientHeight: root.clientHeight,
+            }) &&
             isScrolledToBottom({
               scrollHeight: root.scrollHeight,
               scrollTop: root.scrollTop,
@@ -306,6 +314,11 @@
         void c.rec.buildRecDomainSnapshot(domain);
         void c.rec.lastSavedRecSnapshots[domain];
         void c.rec.savingRecDomains[domain];
+        // The video unit is gated by `resolutionSupportPendingForNonOriginal`
+        // (page $state, not in any snapshot). Read it so the effect re-runs and
+        // flushes a stranded edit once capture-support resolves and the gate
+        // clears — mirroring the keyboard/audio per-unit gate reads below.
+        if (domain === "video") void c.resolutionSupportPendingForNonOriginal;
       }
     }
     if (c.keyboard.keyboardBindingsSettings !== null) void c.keyboard.buildKeyboardBindingsSnapshot();

@@ -44,3 +44,15 @@ export function isScrolledToBottom(metrics: {
     metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= 2
   );
 }
+
+// True only when the region's content actually overflows enough to scroll. A
+// short group whose content fits the viewport (scrollHeight ≈ clientHeight) is
+// permanently "bottomed out", which would otherwise freeze the spy's bottom-out
+// short-circuit on the entry section; gate that short-circuit on this so the
+// normal top-most-intersecting selection runs when there's nothing to scroll.
+export function isScrollable(
+  metrics: { scrollHeight: number; clientHeight: number },
+  tolerance = 2,
+): boolean {
+  return metrics.scrollHeight - metrics.clientHeight > tolerance;
+}

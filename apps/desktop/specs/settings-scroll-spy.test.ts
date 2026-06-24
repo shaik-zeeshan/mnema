@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SETTINGS_GROUPS } from "../src/lib/settings/groups";
 import {
+  isScrollable,
   isScrolledToBottom,
   lastSectionOfGroup,
 } from "../src/lib/settings/scroll-spy";
@@ -78,5 +79,27 @@ describe("scroll-spy: isScrolledToBottom", () => {
       clientHeight: 400,
     });
     expect(isScrolledToBottom(elementLike)).toBe(true);
+  });
+});
+
+describe("scroll-spy: isScrollable", () => {
+  test("true when content overflows the viewport (room to scroll)", () => {
+    // 1000 - 400 = 600 of overflow → genuinely scrollable.
+    expect(isScrollable({ scrollHeight: 1000, clientHeight: 400 })).toBe(true);
+  });
+
+  test("false when content fits the viewport (short group)", () => {
+    // A group whose content fits leaves nothing to scroll, so the bottom-out
+    // short-circuit must NOT fire (otherwise the highlight freezes).
+    expect(isScrollable({ scrollHeight: 300, clientHeight: 400 })).toBe(false);
+    // Content the exact viewport height is still not scrollable.
+    expect(isScrollable({ scrollHeight: 400, clientHeight: 400 })).toBe(false);
+  });
+
+  test("false within the 2px sub-pixel tolerance", () => {
+    // 402 - 400 = 2 (≤ tolerance) → still treated as not scrollable.
+    expect(isScrollable({ scrollHeight: 402, clientHeight: 400 })).toBe(false);
+    // 403 - 400 = 3 (> tolerance) → scrollable.
+    expect(isScrollable({ scrollHeight: 403, clientHeight: 400 })).toBe(true);
   });
 });
