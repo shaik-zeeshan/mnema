@@ -62,7 +62,7 @@
 
 <SettingGroup
   id="settings-section-storage"
-  title="Storage & Startup"
+  title="Storage"
   hint="Where capture files live on disk and how long they are kept."
 >
   <SettingRow

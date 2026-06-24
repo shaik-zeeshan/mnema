@@ -1,10 +1,8 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import type { ResolutionPreset, VideoBitratePreset } from "$lib/types";
   import Slider from "$lib/components/Slider.svelte";
-  import Segmented from "$lib/components/Segmented.svelte";
-  import Stepper from "$lib/components/Stepper.svelte";
-  import Input from "$lib/components/Input.svelte";
+  import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
+  import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
 
@@ -83,69 +81,17 @@
         {/if}
 
         <!-- Original, the scaled presets, and Custom collapse into one
-             segmented control. Selecting a preset writes both mode and preset;
-             "Custom" flips mode to custom and reveals the width/height inputs. -->
-        <Segmented
-          value={rec.draftResolutionMode === "custom" ? "custom" : rec.draftResolutionMode === "original" ? "original" : rec.draftResolutionPreset}
-          onValueChange={(v) => {
-            if (v === "custom") {
-              rec.draftResolutionMode = "custom";
-            } else if (v === "original") {
-              rec.draftResolutionMode = "original";
-            } else {
-              rec.draftResolutionMode = "preset";
-              rec.draftResolutionPreset = v as ResolutionPreset;
-            }
-          }}
-          ariaLabel="Screen resolution"
+             segmented control. The shared ScreenResolutionControl owns the
+             segmented + width/height inputs (and their accessible labels);
+             this panel keeps the support notices and the mode description. -->
+        <ScreenResolutionControl
+          bind:mode={rec.draftResolutionMode}
+          bind:preset={rec.draftResolutionPreset}
+          bind:widthRaw={rec.customWidthRaw}
+          bind:heightRaw={rec.customHeightRaw}
           disabledValues={nonOriginalResolutionDisabled ? ["1080p", "720p", "540p", "custom"] : []}
-          options={[
-            { value: "original", label: "Original" },
-            { value: "1080p", label: "1080p" },
-            { value: "720p", label: "720p" },
-            { value: "540p", label: "540p" },
-            { value: "custom", label: "Custom" },
-          ]}
+          customErrors={customResolutionErrors}
         />
-
-        {#if rec.draftResolutionMode === "custom"}
-          <div class="custom-resolution-inputs">
-            <div class="custom-res-field">
-              <label class="custom-res-label" for="res-width">Width (px)</label>
-              <Input
-                id="res-width"
-                bind:value={rec.customWidthRaw}
-                inputmode="numeric"
-                placeholder="e.g. 1920"
-                ariaLabel="width"
-                invalid={!!rec.customWidthRaw && rec.draftCustomWidth === null}
-              />
-            </div>
-            <span class="custom-res-sep" aria-hidden="true">×</span>
-            <div class="custom-res-field">
-              <label class="custom-res-label" for="res-height">Height (px)</label>
-              <Input
-                id="res-height"
-                bind:value={rec.customHeightRaw}
-                inputmode="numeric"
-                placeholder="e.g. 1080"
-                ariaLabel="height"
-                invalid={!!rec.customHeightRaw && rec.draftCustomHeight === null}
-              />
-            </div>
-          </div>
-
-          {#if customResolutionErrors.length > 0}
-            <div class="inline-validation">
-              {#each customResolutionErrors as err}
-                <p class="inline-validation__item">
-                  <span class="inline-validation__icon">⚠</span>
-                  {err}
-                </p>
-              {/each}
-            </div>
-          {/if}
-        {/if}
 
         <p class="group-hint">
           {#if rec.draftResolutionMode === "original"}
@@ -169,25 +115,16 @@
     {#snippet control()}
       <div class="control-stack">
         <!-- Mode selector: presets (low/medium/high) + custom as one segmented
-             control. Selecting a preset writes both mode and preset; "Custom"
-             flips mode to custom and reveals the Mbps stepper below. -->
-        <Segmented
-          value={rec.draftBitrateMode === "custom" ? "custom" : rec.draftBitratePreset}
-          onValueChange={(v) => {
-            if (v === "custom") {
-              rec.draftBitrateMode = "custom";
-            } else {
-              rec.draftBitrateMode = "preset";
-              rec.draftBitratePreset = v as VideoBitratePreset;
-            }
-          }}
-          ariaLabel="Video bitrate mode"
-          options={[
-            { value: "low", label: "Low · ~3 Mbps" },
-            { value: "medium", label: "Medium · ~8 Mbps" },
-            { value: "high", label: "High · ~20 Mbps" },
-            { value: "custom", label: "Custom" },
-          ]}
+             control. The shared VideoBitrateControl owns the segmented + the
+             Mbps stepper (and its accessible label); this panel keeps the
+             richer preset/custom descriptions and the compat notice. customMbps
+             is intentionally omitted so the component's terse custom line stays
+             hidden in favour of the detailed hint below. -->
+        <VideoBitrateControl
+          bind:mode={rec.draftBitrateMode}
+          bind:preset={rec.draftBitratePreset}
+          bind:customMbpsRaw={rec.draftCustomMbpsRaw}
+          customErrors={customBitrateErrors}
         />
 
         {#if rec.draftBitrateMode === "preset"}
@@ -208,51 +145,22 @@
           </p>
         {/if}
 
-        {#if rec.draftBitrateMode === "custom"}
-          <div class="custom-bitrate-row">
-            <div class="custom-res-field">
-              <label class="custom-res-label" for="bitrate-mbps">Bitrate (Mbps, whole number)</label>
-              <div class="custom-bitrate-input-wrap">
-                <Stepper
-                  id="bitrate-mbps"
-                  bind:value={rec.draftCustomMbpsRaw}
-                  min={1}
-                  max={40}
-                  unit="Mbps"
-                  placeholder="e.g. 12"
-                  ariaLabel="bitrate in Mbps"
-                  invalid={!!rec.draftCustomMbpsRaw && rec.draftCustomMbps === null}
-                />
-              </div>
-            </div>
-          </div>
-
-          {#if customBitrateErrors.length > 0}
-            <div class="inline-validation">
-              {#each customBitrateErrors as err}
-                <p class="inline-validation__item">
-                  <span class="inline-validation__icon">⚠</span>
-                  {err}
-                </p>
-              {/each}
-            </div>
-          {:else if rec.draftCustomMbps !== null}
-            <p class="group-hint">
-              Custom bitrate: <strong>{rec.draftCustomMbps} Mbps</strong>.
-              {#if rec.draftCustomMbps < 3}
-                Low quality — may show compression artefacts on fast-moving content.
-              {:else if rec.draftCustomMbps <= 12}
-                Moderate quality — good for most recordings.
-              {:else if rec.draftCustomMbps <= 25}
-                High quality — suitable for detail-sensitive content.
-              {:else}
-                Very high bitrate — expect large output files.
-              {/if}
-              {#if rec.draftFrameRate && rec.draftResolutionMode !== "custom"}
-                At {rec.draftFrameRate} fps{rec.draftResolutionMode === "preset" ? ` / ${rec.draftResolutionPreset}` : rec.draftResolutionMode === "original" ? " / original resolution" : ""}.
-              {/if}
-            </p>
-          {/if}
+        {#if rec.draftBitrateMode === "custom" && customBitrateErrors.length === 0 && rec.draftCustomMbps !== null}
+          <p class="group-hint">
+            Custom bitrate: <strong>{rec.draftCustomMbps} Mbps</strong>.
+            {#if rec.draftCustomMbps < 3}
+              Low quality — may show compression artefacts on fast-moving content.
+            {:else if rec.draftCustomMbps <= 12}
+              Moderate quality — good for most recordings.
+            {:else if rec.draftCustomMbps <= 25}
+              High quality — suitable for detail-sensitive content.
+            {:else}
+              Very high bitrate — expect large output files.
+            {/if}
+            {#if rec.draftFrameRate && rec.draftResolutionMode !== "custom"}
+              At {rec.draftFrameRate} fps{rec.draftResolutionMode === "preset" ? ` / ${rec.draftResolutionPreset}` : rec.draftResolutionMode === "original" ? " / original resolution" : ""}.
+            {/if}
+          </p>
         {/if}
 
         <div class="bitrate-compat-notice">
