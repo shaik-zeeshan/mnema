@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { SETTINGS_GROUPS } from "../src/lib/settings/groups";
 import {
+  isAtScrollTarget,
   isScrollable,
   isScrolledToBottom,
   lastSectionOfGroup,
@@ -101,5 +102,40 @@ describe("scroll-spy: isScrollable", () => {
     expect(isScrollable({ scrollHeight: 402, clientHeight: 400 })).toBe(false);
     // 403 - 400 = 3 (> tolerance) → scrollable.
     expect(isScrollable({ scrollHeight: 403, clientHeight: 400 })).toBe(true);
+  });
+});
+
+describe("scroll-spy: isAtScrollTarget", () => {
+  test("false while no programmatic scroll is in flight (null target)", () => {
+    // With no target the scroll-spy must NOT treat any scroll as settled —
+    // suppression stays raised until a real target arrives or the timer fires.
+    expect(isAtScrollTarget(0, null)).toBe(false);
+    expect(isAtScrollTarget(1234, null)).toBe(false);
+  });
+
+  test("false mid-animation while still far from the target", () => {
+    // A long smooth jump: scrollTop is nowhere near the target yet, so the
+    // observer must stay suppressed (this is the flicker the fix prevents).
+    expect(isAtScrollTarget(120, 980)).toBe(false);
+  });
+
+  test("true once scrollTop reaches the target exactly", () => {
+    expect(isAtScrollTarget(980, 980)).toBe(true);
+  });
+
+  test("true within the default 4px settle tolerance (either direction)", () => {
+    // Smooth scrolls land a hair short or long of the exact offset; absorb it.
+    expect(isAtScrollTarget(976, 980)).toBe(true); // 4px short
+    expect(isAtScrollTarget(984, 980)).toBe(true); // 4px over
+  });
+
+  test("false just past the settle tolerance", () => {
+    expect(isAtScrollTarget(975, 980)).toBe(false); // 5px short
+    expect(isAtScrollTarget(985, 980)).toBe(false); // 5px over
+  });
+
+  test("honors a caller-supplied tolerance", () => {
+    expect(isAtScrollTarget(970, 980, 10)).toBe(true);
+    expect(isAtScrollTarget(969, 980, 10)).toBe(false);
   });
 });

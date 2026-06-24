@@ -40,6 +40,7 @@
     type SettingsSectionId,
   } from "$lib/settings/groups";
   import {
+    isAtScrollTarget,
     isScrollable,
     isScrolledToBottom,
     lastSectionOfGroup,
@@ -117,17 +118,41 @@
   // Scroll-spy suppression: while a programmatic scroll (deeplink / rail click)
   // is in flight, the IntersectionObserver must NOT fight it by re-deriving
   // `activeSection` from intersection ratios mid-animation. The flag is raised
-  // by `focusSettingsSection` and cleared on a short timer.
+  // by `focusSettingsSection` and cleared on a scroll-SETTLE signal — once the
+  // region's `scrollTop` reaches the target anchor (`spySuppressTarget`) — with
+  // the timer only an UPPER bound so suppression can never get stuck (a long
+  // smooth jump can outlast a fixed timeout, so a blind timer would clear
+  // suppression mid-animation and flicker the rail highlight).
   let spySuppressed = $state(false);
   let spySuppressTimer: ReturnType<typeof setTimeout> | null = null;
+  // The scroll region's expected `scrollTop` once the in-flight programmatic
+  // scroll settles, or null when none is in flight / the target is unknown.
+  let spySuppressTarget: number | null = null;
+
+  function clearSpySuppression() {
+    spySuppressed = false;
+    spySuppressTarget = null;
+    if (spySuppressTimer !== null) {
+      clearTimeout(spySuppressTimer);
+      spySuppressTimer = null;
+    }
+  }
 
   function suppressSpy() {
     spySuppressed = true;
+    spySuppressTarget = null;
     if (spySuppressTimer !== null) clearTimeout(spySuppressTimer);
-    spySuppressTimer = setTimeout(() => {
-      spySuppressed = false;
-      spySuppressTimer = null;
-    }, 700);
+    // Safety upper bound only — settle normally clears via the scroll handler.
+    spySuppressTimer = setTimeout(clearSpySuppression, 700);
+  }
+
+  // Record where the in-flight programmatic scroll is heading (the anchor's
+  // offset, clamped to the region's max scrollTop) so the scroll handler can
+  // detect settle. Called after `scrollIntoView` requests the scroll.
+  function setSpyTarget(el: HTMLElement) {
+    if (!scrollRegion) return;
+    const maxTop = scrollRegion.scrollHeight - scrollRegion.clientHeight;
+    spySuppressTarget = Math.max(0, Math.min(el.offsetTop, maxTop));
   }
 
   function handleScrollRegionScroll() {
@@ -137,6 +162,19 @@
       scrollRegionScrolling = false;
       scrollRegionScrollTimer = null;
     }, 800);
+
+    // Clear scroll-spy suppression on a settle signal: once the programmatic
+    // scroll has carried `scrollTop` to its target anchor, the observer is safe
+    // to drive `activeSection` again. This beats a blind timer for long smooth
+    // jumps (which can outlast the upper-bound timeout). Done before the tail
+    // short-circuit below so the freshly-settled section can be force-selected.
+    if (
+      spySuppressed &&
+      scrollRegion &&
+      isAtScrollTarget(scrollRegion.scrollTop, spySuppressTarget)
+    ) {
+      clearSpySuppression();
+    }
 
     // Scroll-spy tail fix: when the region bottoms out, the last section's
     // anchor can't reach the top detection band, so the IntersectionObserver
@@ -156,26 +194,26 @@
     }
   }
 
-  // Scroll a section's anchor into view after the group panel has mounted.
+  // Scroll a section's anchor into view after the group panel has mounted, and
+  // record the settle target so suppression clears on arrival (not a blind timer).
   function scrollToSection(section: SettingsSectionId, smooth: boolean) {
     void tick().then(() => {
       const el = document.getElementById(sectionAnchor(section));
       el?.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
+      if (el) setSpyTarget(el);
     });
   }
 
   // Select a section's group + sub-section and scroll to it. Used by both the
   // rail (onNavigate) and deeplink resolution. Suppresses scroll-spy so it does
-  // not fight the programmatic scroll.
+  // not fight the programmatic scroll. The scroll-to-top on a group change is
+  // owned solely by the dedicated `activeGroup` $effect below (setting
+  // `activeGroup` here triggers it); the deferred `scrollToSection` then wins.
   function focusSettingsSection(section: SettingsSectionId, smooth = true) {
     const group = groupForSection(section);
-    const groupChanged = group !== activeGroup;
     activeGroup = group;
     activeSection = section;
     suppressSpy();
-    // Reset the scroll to the top when the group itself changes, mirroring the
-    // legacy "scroll to top on tab switch" behavior, then scroll to the anchor.
-    if (groupChanged) scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
     scrollToSection(section, smooth);
   }
 
@@ -198,6 +236,7 @@
       void tick().then(() => {
         c.agentAccessSection?.scrollIntoView({ block: "start", behavior: "smooth" });
         c.agentAccessSection?.focus({ preventScroll: true });
+        if (c.agentAccessSection) setSpyTarget(c.agentAccessSection);
       });
     }
   });

@@ -45,6 +45,24 @@ export function isScrolledToBottom(metrics: {
   );
 }
 
+// True once a programmatic scroll has effectively reached its target anchor —
+// the scroll region's `scrollTop` is within a few px of where the anchor will
+// rest at the top of the viewport. The scroll-spy uses this to clear its
+// suppression flag on a scroll-SETTLE signal rather than a blind timer: a long
+// smooth jump across a large distance can outlast a fixed timeout, and clearing
+// suppression mid-animation lets the IntersectionObserver re-derive a mid-band
+// section (a transient rail-highlight flicker). Geometry-only so it's testable
+// without a real DOM element. `target` is null when no programmatic scroll is in
+// flight (returns false — nothing to settle against).
+export function isAtScrollTarget(
+  scrollTop: number,
+  target: number | null,
+  tolerance = 4,
+): boolean {
+  if (target === null) return false;
+  return Math.abs(scrollTop - target) <= tolerance;
+}
+
 // True only when the region's content actually overflows enough to scroll. A
 // short group whose content fits the viewport (scrollHeight ≈ clientHeight) is
 // permanently "bottomed out", which would otherwise freeze the spy's bottom-out
