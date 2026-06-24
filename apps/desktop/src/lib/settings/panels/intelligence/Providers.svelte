@@ -97,6 +97,7 @@
                   <button
                     class="btn btn--ghost btn--sm provider-row__remove"
                     type="button"
+                    disabled={aiProviderKeySavingProvider !== null || c.aiProviderRemoving}
                     onclick={() => removeAiProvider(provider.id)}
                   >
                     Remove

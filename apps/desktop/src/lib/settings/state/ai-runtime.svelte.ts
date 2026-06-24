@@ -116,12 +116,22 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     aiProviderKeySavedByProvider = next;
   }
 
+  // Is this provider instance still in the draft list? A key save that lost the
+  // race to a removal must NOT resurrect a key for an instance that is gone.
+  function providerStillConnected(provider: string): boolean {
+    return deps.getProviders().some((p) => p.id === provider);
+  }
+
   async function saveAiProviderKey(provider: string) {
     const key = (aiProviderKeyInputs[provider] ?? "").trim();
     if (!key) {
       aiProviderKeyErrors = { ...aiProviderKeyErrors, [provider]: "Enter an API key first." };
       return;
     }
+    // The provider may have been removed between rendering the Save button and
+    // this click landing — bail before touching the keychain so a late save can
+    // never write an orphaned key for a removed instance.
+    if (!providerStillConnected(provider)) return;
     aiProviderKeySavingProvider = provider;
     const { [provider]: _saveErr, ...restSaveErrors } = aiProviderKeyErrors;
     aiProviderKeyErrors = restSaveErrors;
