@@ -50,6 +50,36 @@ function Resolve-FirstExisting {
     return $null
 }
 
+# --- 0. Load .env (if present) so its values seed the setup below -------------
+# Honours the repo-root .env: STRAWBERRY_PERL_BIN / STRAWBERRY_C_BIN,
+# CARGO_BUILD_JOBS, TAURI_SIGNING_PRIVATE_KEY[_PASSWORD], etc. Lines already set
+# in the real environment win, so an explicit `$env:FOO=...` before invoking
+# (or a -param) overrides the file.
+function Import-DotEnv {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return }
+    Write-Host "Loading environment from $Path"
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+        if ($trimmed -match '^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+            $name = $matches[1]
+            $value = $matches[2].Trim()
+            # Strip a single layer of matching surrounding quotes.
+            if ($value.Length -ge 2 -and
+                (($value[0] -eq '"' -and $value[-1] -eq '"') -or
+                 ($value[0] -eq "'" -and $value[-1] -eq "'"))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            # Don't clobber values already provided by the environment.
+            if (Test-Path "Env:\$name") { continue }
+            Set-Item -Path "Env:\$name" -Value $value
+        }
+    }
+}
+
+Import-DotEnv (Join-Path $repoRoot '.env')
+
 # --- 1. Locate vcvars64 (prefer vswhere, fall back to well-known paths) -------
 $vcvars = $null
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -107,6 +137,11 @@ Write-Host "Perl: $(Join-Path $perlBin 'perl.exe')"
 Write-Host "NASM: $(Join-Path $nasmBin 'nasm.exe')"
 
 # --- 4. Cap parallelism to avoid commit-memory exhaustion --------------------
+# If -Jobs wasn't passed explicitly, a CARGO_BUILD_JOBS from .env (loaded after
+# the param default was bound) takes precedence over the built-in default.
+if (-not $PSBoundParameters.ContainsKey('Jobs') -and $env:CARGO_BUILD_JOBS) {
+    $Jobs = [int]$env:CARGO_BUILD_JOBS
+}
 if ($Jobs -lt 1) { $Jobs = 1 }
 $env:CARGO_BUILD_JOBS = "$Jobs"
 Write-Host "CARGO_BUILD_JOBS=$($env:CARGO_BUILD_JOBS)"
