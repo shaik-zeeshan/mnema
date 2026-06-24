@@ -277,11 +277,22 @@
       if (destroyed) fn();
       else unlistenRecordingSettingsChanged = fn;
     });
+
+    // Accessibility is granted outside the app (System Settings), so re-poll on
+    // window focus to pick up a grant without making the user click Recheck. Skip
+    // once trusted; the in-flight latch keeps refocus storms from double-firing.
+    const onWindowFocus = () => {
+      if (!geckoTrusted) void recheckGeckoAccess();
+    };
+    const hasWindow = typeof window !== "undefined";
+    if (hasWindow) window.addEventListener("focus", onWindowFocus);
+
     return () => {
       destroyed = true;
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
       unlistenRecordingSettingsChanged?.();
+      if (hasWindow) window.removeEventListener("focus", onWindowFocus);
     };
   });
   $effect(() => {

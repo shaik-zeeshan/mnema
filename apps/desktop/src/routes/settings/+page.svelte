@@ -1203,7 +1203,13 @@
 
   $effect(() => {
     if (typeof window === "undefined") return;
-    const onWindowFocus = () => scheduleInitialSettingsTabFocus();
+    const onWindowFocus = () => {
+      scheduleInitialSettingsTabFocus();
+      // Accessibility is granted outside the app (System Settings), so re-poll on
+      // focus to pick up a grant without making the user click Recheck. Skip once
+      // trusted; the in-flight latch keeps refocus storms from double-firing.
+      if (!geckoTrusted) void recheckGeckoAccess();
+    };
     window.addEventListener("focus", onWindowFocus);
     return () => {
       window.removeEventListener("focus", onWindowFocus);
