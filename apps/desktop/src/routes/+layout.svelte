@@ -52,6 +52,13 @@
 
   let { children }: Props = $props();
 
+  // The listener `$effect` below re-runs on every in-window navigation (it reads
+  // `$page.url.pathname` transitively), but the cold-start handoff drains
+  // (insights peek + settings drain) must fire ONCE on mount, not on every
+  // route change — re-issuing those drain/peek IPC calls would replay stale
+  // handoffs. This non-reactive flag gates them to the first run.
+  let coldDrainsDone = false;
+
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
@@ -184,6 +191,14 @@
       else unlistenInsightsOpenConversation = fn;
     });
 
+    // One-shot cold-start handoff drains. This `$effect` re-runs on every
+    // in-window navigation (it reads `$page.url.pathname` transitively), but the
+    // cold-window peek/drain below must run only once on mount — re-issuing them
+    // on later navigations would replay stale handoffs. Gate them behind a
+    // non-reactive flag set after the first run.
+    if (!coldDrainsDone) {
+      coldDrainsDone = true;
+
     // Cold-window inverse: a freshly-opened main window boots on Timeline (`/`),
     // and the live `insights_open_conversation` event may have already fired
     // before the listener above attached — so without this the handoff would
@@ -221,14 +236,18 @@
     // Records the leaving surface first so "← Back to app" returns there (on cold
     // start that's the `/` fallback, which is correct).
     if (isMainWindow && !isSettings) {
-      const settingsPeekPathname = normalizeAppPathname($page.url.pathname);
       void invoke<{ tab?: string; focus?: string }[]>("drain_pending_open_settings")
         .then((payloads) => {
           const next = payloads?.[payloads.length - 1];
           if (destroyed || !next) return;
-          const routeUnchanged =
-            normalizeAppPathname($page.url.pathname) === settingsPeekPathname;
-          if (!routeUnchanged || isSettings) return;
+          // The drain CONSUMES the Rust queue, so the payload is already gone and
+          // unrecoverable. Unlike the non-consuming insights peek above, we cannot
+          // bail on a mid-drain navigation without losing the deeplink forever —
+          // so we honor it even after a same-tick navigation. The `isSettings`
+          // guard still skips a redundant navigation when we're already on
+          // /settings; the user reached a cold-built window expecting Settings, so
+          // navigating there is the correct default.
+          if (isSettings) return;
           recordMainSurface($page.url.pathname);
           void goto(
             settingsRoutePath(
@@ -240,6 +259,7 @@
         .catch(() => {
           // Best-effort: leave the route as-is if the drain is unavailable.
         });
+    }
     }
 
     return () => {
@@ -291,6 +311,7 @@
     if (notification.action.tab === "about") return "Open update settings";
     if (notification.action.tab === "processing") return "Open processing settings";
     if (notification.action.tab === "transcription") return "Open transcription settings";
+    if (notification.action.tab === "speakers") return "Open speaker settings";
     if (notification.action.tab === "shortcuts") return "Open shortcut settings";
     return "Open settings";
   }

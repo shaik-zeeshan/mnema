@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 export type AppNotificationAction = {
 	type: "open_settings_tab";
-	tab: "about" | "processing" | "transcription" | "shortcuts";
+	tab: "about" | "processing" | "transcription" | "speakers" | "shortcuts";
 };
 
 export interface AppNotification {

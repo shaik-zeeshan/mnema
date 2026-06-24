@@ -124,6 +124,7 @@ const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-una
 const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
+const SPEAKER_SETTINGS_TAB_ID: &str = "speakers";
 #[cfg(target_os = "macos")]
 const APP_ICON_CACHE_DIR: &str = "app-icons";
 // Point size we render cached app icons at. Displayed at 20–24 CSS px, so a
@@ -992,7 +993,7 @@ fn speech_detector_unavailable_notification(created_at_unix_ms: u64) -> AppNotif
         message: "The selected speech detector is unavailable. Choose an available detector before starting this recording.".to_string(),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
+            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }
@@ -1005,7 +1006,7 @@ fn speaker_analysis_unavailable_notification(created_at_unix_ms: u64) -> AppNoti
         message: "The selected speaker analysis model is unavailable. Install or choose an available model before starting this recording.".to_string(),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
+            tab: SPEAKER_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }
