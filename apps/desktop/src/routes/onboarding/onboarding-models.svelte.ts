@@ -104,6 +104,11 @@ export function createOcrModelStore(access: OcrModelStoreAccess) {
   }
 
   async function startSelectedOcrModelDownload(): Promise<void> {
+    // Re-entry guard (matches the Settings store `model-status.svelte.ts`): a
+    // rapid double-invoke — a double click before the disabled attr flushes, or
+    // an event re-fire — must not start two concurrent downloads of the same
+    // model (the second `invoke` would clobber the progress the first tracks).
+    if (startingOcrDownload) return;
     if (!selectedOcrModel?.modelId) return;
     startingOcrDownload = true;
     ocrDownloadError = null;
@@ -244,6 +249,9 @@ export function createTranscriptionModelStore(access: TranscriptionModelStoreAcc
   }
 
   async function startSelectedTranscriptionModelDownload(): Promise<void> {
+    // Re-entry guard (matches the Settings store): a rapid double-invoke must
+    // not start two concurrent downloads of the same model.
+    if (startingTranscriptionDownload) return;
     if (!selectedTranscriptionModel?.modelId) return;
     startingTranscriptionDownload = true;
     transcriptionDownloadError = null;
@@ -400,6 +408,9 @@ export function createSpeakerModelStore(access: SpeakerModelStoreAccess) {
   }
 
   async function startSelectedSpeakerModelDownload(): Promise<void> {
+    // Re-entry guard (matches the Settings store): a rapid double-invoke must
+    // not start two concurrent downloads of the same model.
+    if (startingSpeakerDownload) return;
     if (!selectedSpeakerModel?.modelId) return;
     startingSpeakerDownload = true;
     speakerDownloadError = null;
@@ -621,6 +632,9 @@ export function createSemanticSearchModelStore(access: SemanticSearchModelStoreA
   }
 
   async function startSelectedSemanticSearchModelDownload(): Promise<void> {
+    // Re-entry guard (matches the Settings store): a rapid double-invoke must
+    // not start two concurrent downloads of the same model.
+    if (startingSemanticSearchDownload) return;
     const model = selectedSemanticSearchModel;
     if (!model?.provider) return;
     startingSemanticSearchDownload = true;
