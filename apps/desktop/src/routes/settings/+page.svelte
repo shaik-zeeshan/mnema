@@ -1157,7 +1157,7 @@
     {
       id: "capture",
       label: "Capture",
-      description: isWindows ? "Sources and segments" : "Sources, segments, inactivity",
+      description: "Sources, segments, inactivity",
     },
     { id: "access",     label: "Access",      description: "CLI and local tools" },
     { id: "intelligence", label: "AI", description: "Providers, Ask AI, User Context" },
@@ -5397,7 +5397,7 @@
     </div>
   {/if}
 
-  {#if activeTab === "capture" && !isWindows}
+  {#if activeTab === "capture"}
     <div role="tabpanel" id="settings-panel-capture-inactivity" aria-labelledby="settings-tab-capture" tabindex="0">
     <!-- ── Card: Inactivity ─────────────────────── -->
     <section class="card">
