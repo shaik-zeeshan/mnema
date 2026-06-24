@@ -9,6 +9,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
+  import { OCR_LANGUAGE_OPTIONS } from "$lib/settings/ocr-languages";
   import AdvancedReveal from "./AdvancedReveal.svelte";
   import { formatBytes } from "./onboarding-mapping";
 
@@ -175,20 +176,11 @@
         <div class="desc">Tesseract only.</div>
       </div>
       <div class="ctl-field">
-        <SelectMenu
+        <Combobox
           value={controller.draftOcrLanguage || "eng"}
           onValueChange={(v) => (controller.draftOcrLanguage = v)}
-          options={[
-            { value: "eng", label: "English (eng)" },
-            { value: "fra", label: "French (fra)" },
-            { value: "deu", label: "German (deu)" },
-            { value: "spa", label: "Spanish (spa)" },
-            { value: "ita", label: "Italian (ita)" },
-            { value: "por", label: "Portuguese (por)" },
-            { value: "nld", label: "Dutch (nld)" },
-            { value: "jpn", label: "Japanese (jpn)" },
-            { value: "chi_sim", label: "Chinese, Simplified (chi_sim)" },
-          ]}
+          options={OCR_LANGUAGE_OPTIONS}
+          searchPlaceholder="Search languages…"
         />
       </div>
     </div>

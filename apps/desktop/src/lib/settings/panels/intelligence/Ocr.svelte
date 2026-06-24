@@ -5,6 +5,7 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
+  import { OCR_LANGUAGE_OPTIONS } from "$lib/settings/ocr-languages";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -101,12 +102,12 @@
   {#if rec.draftOcrProvider === "tesseract"}
     <SettingRow label="Language" full>
       {#snippet control()}
-        <input
-          id="ocr-language"
-          class="text-input"
-          bind:value={rec.draftOcrLanguage}
+        <Combobox
+          value={rec.draftOcrLanguage || "eng"}
+          onValueChange={(v) => (rec.draftOcrLanguage = v)}
           disabled={!rec.draftOcrEnabled}
-          placeholder="eng"
+          options={OCR_LANGUAGE_OPTIONS}
+          searchPlaceholder="Search languages…"
         />
       {/snippet}
     </SettingRow>
