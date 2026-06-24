@@ -24,6 +24,8 @@
   const loadingSemanticSearchSupportedModels = $derived(models.loadingSemanticSearchSupportedModels);
   const semanticSearchSupportedModelsError = $derived(models.semanticSearchSupportedModelsError);
   const semanticSearchDownloadError = $derived(models.semanticSearchDownloadError);
+  const startingSemanticSearchDownload = $derived(models.startingSemanticSearchDownload);
+  const cancellingSemanticSearchDownload = $derived(models.cancellingSemanticSearchDownload);
   const semanticSearchReindexing = $derived(models.semanticSearchReindexing);
   const semanticSearchReindexMessage = $derived(models.semanticSearchReindexMessage);
 
@@ -151,7 +153,11 @@
               {#if downloading || !installed || !selected}
                 <div class="row-actions">
                   {#if downloading}
-                    <button class="btn btn--ghost btn--sm" onclick={() => void cancelSemanticSearchModelDownload()}>
+                    <button
+                      class="btn btn--ghost btn--sm"
+                      onclick={() => void cancelSemanticSearchModelDownload()}
+                      disabled={cancellingSemanticSearchDownload}
+                    >
                       Cancel
                     </button>
                   {:else if !installed}
@@ -159,7 +165,7 @@
                     <button
                       class="btn btn--primary btn--sm"
                       onclick={() => void startSemanticSearchPickedDownload(picked)}
-                      disabled={!picked.provider}
+                      disabled={!picked.provider || startingSemanticSearchDownload}
                     >
                       {picked.approxDownloadBytes != null
                         ? `Download (${formatBytes(picked.approxDownloadBytes)})`

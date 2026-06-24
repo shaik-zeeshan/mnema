@@ -81,6 +81,8 @@ export function createModelStatusStore() {
   let loadingSemanticSearchModelStatus = $state(false);
   let semanticSearchModelError = $state<string | null>(null);
   let semanticSearchDownloadProgress = $state<SemanticSearchModelDownloadProgress | null>(null);
+  let startingSemanticSearchDownload = $state(false);
+  let cancellingSemanticSearchDownload = $state(false);
   let semanticSearchDownloadError = $state<string | null>(null);
   let semanticSearchReindexing = $state(false);
   let semanticSearchReindexMessage = $state<string | null>(null);
@@ -389,6 +391,7 @@ export function createModelStatusStore() {
   }
 
   async function startSemanticSearchModelDownload(model: SemanticSearchModelStatus) {
+    startingSemanticSearchDownload = true;
     semanticSearchDownloadError = null;
     try {
       semanticSearchDownloadProgress = await invoke<SemanticSearchModelDownloadProgress>(
@@ -397,15 +400,20 @@ export function createModelStatusStore() {
       );
     } catch (err) {
       semanticSearchDownloadError = errorText(err);
+    } finally {
+      startingSemanticSearchDownload = false;
     }
   }
 
   async function cancelSemanticSearchModelDownload() {
+    cancellingSemanticSearchDownload = true;
     semanticSearchDownloadError = null;
     try {
       await invoke("cancel_semantic_search_model_download");
     } catch (err) {
       semanticSearchDownloadError = errorText(err);
+    } finally {
+      cancellingSemanticSearchDownload = false;
     }
   }
 
@@ -494,6 +502,8 @@ export function createModelStatusStore() {
     get semanticSearchModelError() { return semanticSearchModelError; },
     set semanticSearchModelError(v: string | null) { semanticSearchModelError = v; },
     get semanticSearchDownloadProgress() { return semanticSearchDownloadProgress; },
+    get startingSemanticSearchDownload() { return startingSemanticSearchDownload; },
+    get cancellingSemanticSearchDownload() { return cancellingSemanticSearchDownload; },
     get semanticSearchDownloadError() { return semanticSearchDownloadError; },
     get semanticSearchReindexing() { return semanticSearchReindexing; },
     set semanticSearchReindexing(v: boolean) { semanticSearchReindexing = v; },
