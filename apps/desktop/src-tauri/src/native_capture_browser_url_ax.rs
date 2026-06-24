@@ -27,9 +27,20 @@
 //! The cold-poll loop then bounds total time across attempts to
 //! `COLD_READ_POLL_BUDGET` plus one final attempt. The first read may find the
 //! a11y engine dormant (cold); we poll for up to 500ms (50ms steps) to wake it —
-//! measured cold→live is ~100–150ms. The whole read runs on the metadata refresh
-//! tick's background thread, so the poll/sleep is acceptable and these AX reads
-//! are fine off the main thread.
+//! measured cold→live is ~100–150ms.
+//!
+//! Even bounded, that ~0.9–1.4s is too long to spend while a capture lock is
+//! held, so this live read only ever runs OFF every capture lock: on the
+//! periodic metadata-refresh tick's background thread (the privacy/metadata
+//! collector spawned by `maybe_start_privacy_filter_collection`), which clones
+//! the probe cache and runs collection without holding `NativeCaptureState` or
+//! `CaptureMetadataState`. The synchronous capture-lifecycle paths that DO hold
+//! `NativeCaptureState` — segment rotation, inactivity/user resume, suspension
+//! and post-wake recovery — collect metadata in
+//! [`BrowserUrlReadMode::Cached`](crate::native_capture::metadata::BrowserUrlReadMode)
+//! mode: they serve the last cached URL and never issue this AX read, letting the
+//! next off-lock tick refresh the live Gecko URL. So the poll/sleep here is
+//! always off-lock and these AX reads are fine off the main thread.
 
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;

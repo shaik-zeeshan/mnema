@@ -126,10 +126,15 @@ fn collect_initial_privacy_filter_decision(
     settings: &capture_types::RecordingSettings,
 ) -> capture_metadata::PrivacyFilterDecision {
     if settings.metadata.enabled {
+        // `collect_initial_privacy_filter` is only ever called from synchronous
+        // segment-start / resume / recovery paths that hold the
+        // `NativeCaptureState` mutex, so the active-tab URL must come from the
+        // cache (no live AX/AppleScript read) to avoid stalling under the lock.
         crate::native_capture::metadata::refresh_metadata_state(
             metadata_state,
             &settings.metadata,
             &settings.privacy,
+            crate::native_capture::metadata::BrowserUrlReadMode::Cached,
         )
     } else {
         crate::native_capture::metadata::refresh_static_excluded_app_privacy_state(
@@ -167,7 +172,10 @@ fn collect_static_privacy_filter_update(app_handle: &tauri::AppHandle) -> Privac
 }
 
 #[cfg(target_os = "macos")]
-fn collect_metadata_privacy_filter_update(app_handle: &tauri::AppHandle) -> PrivacyFilterUpdate {
+fn collect_metadata_privacy_filter_update(
+    app_handle: &tauri::AppHandle,
+    browser_url_read_mode: crate::native_capture::metadata::BrowserUrlReadMode,
+) -> PrivacyFilterUpdate {
     let settings = app_handle
         .state::<crate::native_capture::RecordingSettingsState>()
         .lock()
@@ -180,6 +188,7 @@ fn collect_metadata_privacy_filter_update(app_handle: &tauri::AppHandle) -> Priv
             .inner(),
         &settings.metadata,
         &settings.privacy,
+        browser_url_read_mode,
     );
     let latest_applied = crate::native_capture::metadata::latest_applied_privacy_decision(
         app_handle
@@ -212,6 +221,7 @@ fn privacy_refresh_mode(
 pub(super) fn collect_privacy_filter_update(
     app_handle: &tauri::AppHandle,
     reason: PrivacyRefreshReason,
+    browser_url_read_mode: crate::native_capture::metadata::BrowserUrlReadMode,
 ) -> (PrivacyRefreshMode, PrivacyFilterUpdate) {
     let settings = app_handle
         .state::<crate::native_capture::RecordingSettingsState>()
@@ -225,7 +235,7 @@ pub(super) fn collect_privacy_filter_update(
             collect_static_privacy_filter_update(app_handle)
         }
         PrivacyRefreshMode::MetadataAndStaticApps => {
-            collect_metadata_privacy_filter_update(app_handle)
+            collect_metadata_privacy_filter_update(app_handle, browser_url_read_mode)
         }
     };
     (mode, update)
@@ -330,7 +340,14 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
     }
     let app_handle = app_handle.clone();
     std::thread::spawn(move || {
-        let (mode, update) = collect_privacy_filter_update(&app_handle, reason);
+        // This collection runs on its own background thread, off every capture
+        // lock, so a live active-tab URL read here is safe (and is the one path
+        // that keeps the Gecko AX URL fresh).
+        let (mode, update) = collect_privacy_filter_update(
+            &app_handle,
+            reason,
+            crate::native_capture::metadata::BrowserUrlReadMode::Live,
+        );
         if let Some(refresh_state) =
             app_handle.try_state::<crate::native_capture::PrivacyFilterRefreshState>()
         {
