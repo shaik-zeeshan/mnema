@@ -991,12 +991,6 @@ fn builtin_tesseract_artifact() -> Option<ModelArtifact> {
                         byte_size: 10_562_727,
                         sha256: "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff".to_string(),
                     },
-                    ModelArtifactFile {
-                        relative_path: "tessdata/snum.traineddata".to_string(),
-                        url: "https://github.com/USCDataScience/counterfeit-electronics-tesseract/raw/319a6eeacff181dad5c02f3e7a3aff804eaadeca/Training%20Tesseract/snum.traineddata".to_string(),
-                        byte_size: 8_467_391,
-                        sha256: "36f772980ff17c66a767f584a0d80bf2302a1afa585c01a226c1863afcea1392".to_string(),
-                    },
                 ],
             },
         })
@@ -1057,7 +1051,7 @@ pub fn builtin_model_manifest() -> OcrModelManifest {
                 provider: TESSERACT_PROVIDER_ID.to_string(),
                 model_id: Some(DEFAULT_TESSERACT_MODEL_ID.to_string()),
                 display_name: "Tesseract English".to_string(),
-                description: "Embedded Tesseract engine in the app build with Mnema-managed eng/osd/snum tessdata downloads.".to_string(),
+                description: "Embedded Tesseract engine in the app build with Mnema-managed eng/osd tessdata downloads.".to_string(),
                 license_label: Some("Apache-2.0".to_string()),
                 source_url: Some("https://tesseract-ocr.github.io/tessdoc/Installation.html".to_string()),
                 management: ModelManagement::AppManaged {
@@ -1066,7 +1060,6 @@ pub fn builtin_model_manifest() -> OcrModelManifest {
                         required_files: vec![
                             "tessdata/eng.traineddata".to_string(),
                             "tessdata/osd.traineddata".to_string(),
-                            "tessdata/snum.traineddata".to_string(),
                         ],
                     },
                     artifact: builtin_tesseract_artifact(),
