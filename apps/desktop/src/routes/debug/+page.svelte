@@ -2777,6 +2777,15 @@
     outline: none;
   }
 
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+
+  .btn:not(:disabled):active {
+    transform: translateY(0.5px);
+  }
+
   .btn:disabled {
     opacity: 0.35;
     cursor: not-allowed;
@@ -3303,7 +3312,8 @@
   }
 
   .job-input:focus {
-    border-color: var(--app-info-strong);
+    border-color: var(--app-info);
+    box-shadow: 0 0 0 2px var(--app-info-bg);
   }
 
   .job-input::placeholder {

@@ -4396,6 +4396,13 @@
     border-bottom: 1px solid var(--app-border);
   }
 
+  /* WKWebView focus idiom: the field bar (not the borderless input) is the focus
+     surface, so the ring lives on its :focus-within. */
+  .quick-recall__field:focus-within {
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
+  }
+
   .quick-recall__glyph {
     font-size: 16px;
     line-height: 1;
@@ -4542,7 +4549,7 @@
   }
 
   .quick-recall__state--error {
-    color: var(--app-accent);
+    color: var(--app-danger-text);
   }
 
   /* In-search discoverability hint (issue #125): keyword-only search → Settings. */
@@ -4749,6 +4756,10 @@
     color: var(--app-text-strong);
   }
 
+  .quick-recall__ask-button:not(:disabled):not(.quick-recall__ask-button--disabled):active {
+    background: var(--app-surface-active);
+  }
+
   .quick-recall__ask-key {
     font-size: 11px;
     color: var(--app-text-muted);
@@ -4929,15 +4940,15 @@
 
   /* Slice 3: inline parse-error line under the input. Shares the chip band's
      horizontal padding so it lines up with the chips it sits alongside, and uses
-     the accent color (same as .quick-recall__state--error) to read as a live
-     correction prompt rather than chrome. */
+     the danger ramp (same as .quick-recall__state--error) — a malformed filter is
+     a genuine failure, so it reads as a correction prompt, not success chrome. */
   .quick-recall__parse-error {
     margin: 0;
     padding: 8px 15px 0;
     flex-shrink: 0;
     font-size: 11.5px;
     line-height: 1.4;
-    color: var(--app-accent);
+    color: var(--app-danger-text);
   }
 
   /* Slice 5: Filter Picker overlay. Reuses the results-region box (flex column,
@@ -5101,6 +5112,10 @@
     color: var(--app-text-strong);
   }
 
+  .quick-recall__back:not(:disabled):active {
+    background: var(--app-surface-active);
+  }
+
   /* The thread header label once a thread is open (the per-turn question
      headers live in the transcript, so this is just a quiet section marker). */
   .quick-recall__ask-thread-label {
@@ -5172,6 +5187,13 @@
     align-items: center;
     padding: 10px 15px;
     border-top: 1px solid var(--app-border);
+  }
+
+  /* WKWebView focus idiom: the borderless composer input delegates its focus ring
+     to the bar it sits in. */
+  .quick-recall__composer:focus-within {
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
   .quick-recall__composer-input {
@@ -5331,11 +5353,16 @@
     border: 1px solid var(--app-border);
     border-radius: 6px;
     cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
   }
 
   .quick-recall__copy:hover {
     color: var(--app-text-strong);
     border-color: var(--app-accent);
+  }
+
+  .quick-recall__copy:not(:disabled):active {
+    transform: translateY(1px);
   }
 
   .quick-recall__copy--copied {
@@ -5376,6 +5403,10 @@
     background: var(--app-accent-bg);
   }
 
+  .quick-recall__handoff:not(:disabled):active {
+    transform: translateY(1px);
+  }
+
   .quick-recall__handoff-arrow {
     font-size: 12px;
     line-height: 1;
@@ -5401,6 +5432,10 @@
   .quick-recall__retry:hover {
     border-color: var(--app-accent);
     color: var(--app-text-strong);
+  }
+
+  .quick-recall__retry:not(:disabled):active {
+    background: var(--app-surface-active);
   }
 
   /* Collapsed, expandable activity summary chip. */
