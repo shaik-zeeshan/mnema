@@ -17,6 +17,12 @@
     subtitle?: string;
     onCount: number;
     attentionCount: number;
+    // Names WHAT is blocking the CTA (mirrors the finale's `finaleBlockReason`),
+    // so the disabled "Review & finish" isn't a mystery. Null when nothing blocks.
+    blockReason?: string | null;
+    // When present, the "N need attention" tally becomes a button that jumps to
+    // (opens + scrolls to) the first attention row — making the count actionable.
+    onJumpToAttention?: (() => void) | undefined;
     ctaLabel: string;
     ctaDisabled?: boolean;
     onFinish: () => void;
@@ -33,6 +39,8 @@
     subtitle = "Turn on what you want recorded and reasoned over. Required features are locked on — everything else is yours to flip. Open a row to fine-tune it.",
     onCount,
     attentionCount,
+    blockReason = null,
+    onJumpToAttention = undefined,
     ctaLabel,
     ctaDisabled = false,
     onFinish,
@@ -125,7 +133,24 @@
 
   <div class="footer">
     <div class="hint">
-      <b>{onCount}</b> features on · {attentionCount} need attention
+      <span><b>{onCount}</b> features on</span>
+      {#if attentionCount > 0}
+        <span class="hint-sep" aria-hidden="true">·</span>
+        {#if onJumpToAttention}
+          <!-- Actionable tally: jumps to (opens + scrolls to) the first blocking
+               row, so the disabled CTA's blocker is one click away. -->
+          <button type="button" class="hint-jump" onclick={() => onJumpToAttention?.()}>
+            {attentionCount} need attention →
+          </button>
+        {:else}
+          <span class="hint-attn">{attentionCount} need attention</span>
+        {/if}
+      {/if}
+      {#if blockReason}
+        <!-- Names WHAT is blocking the CTA (mirrors the finale's block hint), so
+             the disabled "Review & finish" isn't a terse unexplained count. -->
+        <span class="hint-reason" role="alert">{blockReason}</span>
+      {/if}
     </div>
     <div class="footer-actions">
       {#if secondaryLabel}
@@ -154,5 +179,51 @@
     background: var(--app-danger-bg);
     border: 1px solid var(--app-danger-border);
     border-radius: 8px;
+  }
+
+  /* Footer hint now carries up to three parts (count · attention · block reason),
+     so flex-wrap them with a tight gap instead of the prior single-line text. The
+     base font/color come from the global `.footer .hint` rule. */
+  .hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+  }
+  .hint-sep {
+    color: var(--app-text-subtle);
+  }
+  .hint-attn {
+    color: var(--app-warn);
+  }
+  /* The attention tally as an actionable jump button — warn-toned so it reads as
+     "something to fix", underlined on hover/focus to advertise it's clickable. */
+  .hint-jump {
+    font: inherit;
+    font-size: 11px;
+    color: var(--app-warn);
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 4px;
+    margin: -2px -2px -2px -4px;
+    cursor: pointer;
+    transition: color 0.15s ease;
+  }
+  .hint-jump:hover {
+    color: var(--app-warn);
+    text-decoration: underline;
+  }
+  .hint-jump:focus-visible {
+    outline: none;
+    text-decoration: underline;
+    box-shadow: var(--app-ring);
+  }
+  /* Names the blocker — full-width below the count line so it never squeezes the
+     CTA. Muted (it's guidance, not a failure — the danger banner is separate). */
+  .hint-reason {
+    flex-basis: 100%;
+    color: var(--app-text-muted);
+    line-height: 1.5;
   }
 </style>

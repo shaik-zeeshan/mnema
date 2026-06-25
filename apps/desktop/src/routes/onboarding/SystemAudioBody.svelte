@@ -36,7 +36,7 @@
       disabled={controller.requestingPerm === "systemAudio"}
       onclick={() => controller.requestPermission("systemAudio")}
     >
-      {controller.requestingPerm === "systemAudio" ? "…" : "Grant System audio access"}
+      {controller.requestingPerm === "systemAudio" ? "Requesting…" : "Grant System audio access"}
     </button>
   </div>
 {/snippet}

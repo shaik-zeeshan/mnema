@@ -55,7 +55,7 @@
       </div>
       <button
         type="button"
-        class="welcome__accel"
+        class="ghost welcome__accel"
         onclick={() => c.applyRecommendedSetup()}
         disabled={c.loading || c.applyingRecommended}
       >

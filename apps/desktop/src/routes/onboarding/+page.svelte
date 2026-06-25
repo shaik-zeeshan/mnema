@@ -77,6 +77,8 @@
     <FeatureStack
       onCount={c.onCount}
       attentionCount={c.attentionCount}
+      blockReason={c.configureBlockReason}
+      onJumpToAttention={c.firstAttentionFeatureId ? () => c.jumpToFirstAttention() : undefined}
       ctaLabel="Review &amp; finish →"
       ctaDisabled={!c.canProceedToFinale}
       errorMessage={c.errorMessage}
@@ -86,6 +88,7 @@
     >
     {#each FEATURES as f (f.id)}
       <FeatureRow
+        featureId={f.id}
         icon={f.icon}
         name={f.name}
         eyebrow={f.eyebrow}

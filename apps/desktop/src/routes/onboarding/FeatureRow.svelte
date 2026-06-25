@@ -28,6 +28,7 @@
   import type { IconName } from "$lib/settings/groups";
   import { SECTION_ICONS } from "$lib/settings/section-icons";
   import Switch from "$lib/components/Switch.svelte";
+  import IconChevron from "~icons/lucide/chevron-right";
 
   const IconLock = SECTION_ICONS.lock;
 
@@ -37,6 +38,9 @@
   // `onExpand`. Styling lives in the global `onboarding-ui.css` (imported once by
   // FeatureStack); the only thing scoped here is the header `id` plumbing.
   interface Props {
+    // The feature id, stamped onto the row as `data-feature-id` so the controller
+    // can jump-scroll to a specific row (the footer's "jump to first attention").
+    featureId?: string;
     icon: IconName;
     name: string;
     eyebrow: string;
@@ -59,6 +63,7 @@
   }
 
   let {
+    featureId,
     icon,
     name,
     eyebrow,
@@ -120,6 +125,7 @@
   class:is-on={armed}
   class:disabled-feature={open && !enabled && !required}
   data-feature-row
+  data-feature-id={featureId}
 >
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- A `role="button"` DIV, not a real <button>: the enable Switch is a nested
@@ -194,6 +200,14 @@
         />
       {/if}
     </div>
+
+    <!-- Static expand affordance: a muted chevron that rotates open (mirrors the
+         nested AdvancedReveal disclosure), so a collapsed row signals it expands
+         without relying on hover/cursor hints alone. Decorative — the header's
+         aria-expanded already conveys state to assistive tech. -->
+    <span class="row-chevron" class:row-chevron--open={open} aria-hidden="true">
+      <IconChevron />
+    </span>
   </div>
 
   <!-- `hidden` when collapsed so a closed row exposes no empty labelled region. -->

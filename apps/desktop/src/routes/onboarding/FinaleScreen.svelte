@@ -72,7 +72,7 @@
         </button>
         <button
           type="button"
-          class="finale__link"
+          class="ghost finale__link"
           onclick={() => c.finish(false)}
           disabled={c.ctaDisabled}
         >

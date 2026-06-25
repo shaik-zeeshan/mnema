@@ -114,6 +114,7 @@
             <input
               id="ob-ai-base-{provider.id}"
               class="input prov-input"
+              class:is-error={provider.baseUrl.trim().length === 0}
               autocomplete="off"
               placeholder="https://api.fireworks.ai/inference/v1"
               bind:value={provider.baseUrl}
@@ -140,6 +141,7 @@
             <input
               id="ob-ai-key-{provider.id}"
               class="input prov-input"
+              class:is-error={!!keyErrors[provider.id]}
               type="password"
               autocomplete="off"
               placeholder={keySaved[provider.id]

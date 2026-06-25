@@ -411,6 +411,23 @@
 .onboarding-shell input.input[readonly] {
   cursor: default;
 }
+/* Error state — a failed key-save / empty required base-URL gets a red border so
+   the field itself reads as invalid, not just the hint line beneath it. Applies
+   on rest AND focus (the danger ring replaces the accent one) so the error stays
+   legible while editing. */
+.onboarding-shell input.input.is-error,
+.onboarding-shell select.input.is-error {
+  border-color: var(--app-danger-border);
+}
+.onboarding-shell input.input.is-error:hover,
+.onboarding-shell select.input.is-error:hover {
+  border-color: var(--app-danger);
+}
+.onboarding-shell input.input.is-error:focus,
+.onboarding-shell select.input.is-error:focus {
+  border-color: var(--app-danger);
+  box-shadow: 0 0 0 3px var(--app-danger-bg);
+}
 
 /* ===== button family (download / cancel / grant / browse / configure) =====
    Copied from the mockup's `.btn`/`.btn.accent`/`.btn.danger`/`.btn.sm`, with

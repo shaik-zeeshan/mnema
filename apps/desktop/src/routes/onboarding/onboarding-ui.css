@@ -138,8 +138,12 @@
   outline: none;
 }
 .onboarding-shell .row-head:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--app-accent-glow);
+  /* Canonical app focus ring (a solid accent edge), not the prior 18%-glow inset
+     that was barely visible on the raised surface — this is the most-used
+     keyboard target, so it gets the unambiguous indicator. */
+  outline: none;
   border-radius: 12px;
+  box-shadow: var(--app-ring);
 }
 .onboarding-shell .row.open .row-head {
   align-items: flex-start;
@@ -372,6 +376,43 @@
   margin-top: 2px;
 }
 /* the shared component already styles the 36x20 track/thumb; nothing to add */
+
+/* ===== expand chevron (static affordance) =====
+   Mirrors AdvancedReveal's rotating disclosure caret so a collapsed row visibly
+   advertises that it expands (the role="button" header otherwise gave only
+   hover/cursor hints). Muted/subtle so it never competes with the enable Switch;
+   rotates 90deg open. Decorative — aria-expanded carries the real state. */
+.onboarding-shell .row-chevron {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--app-text-subtle);
+  transition: transform 0.18s ease, color 0.15s ease;
+}
+.onboarding-shell .row.open .row-chevron {
+  margin-top: 4px;
+}
+.onboarding-shell .row:not(.open):hover .row-chevron {
+  color: var(--app-text-muted);
+}
+.onboarding-shell .row-chevron svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: block;
+}
+.onboarding-shell .row-chevron--open {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-shell .row-chevron {
+    transition: none;
+  }
+}
 
 /* The expanded row body, the Slice-4 body-layout primitives, the lock-callout,
    the footer, text input, and the button family live in onboarding-body.css

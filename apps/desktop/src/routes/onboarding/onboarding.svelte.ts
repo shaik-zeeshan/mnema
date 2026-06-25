@@ -710,6 +710,42 @@ export class OnboardingController {
       && this.customBitrateErrors.length === 0,
   );
 
+  // The first FEATURE row currently needing attention (in FEATURES order), or
+  // null. Drives the footer count chip's "jump to the blocker" affordance so the
+  // disabled "Review & finish" CTA points at what to fix instead of leaving the
+  // user to hunt for it. Mirrors `attentionCount`'s single-owner predicate.
+  firstAttentionFeatureId = $derived(
+    FEATURES.find((feature) => this.featureAttention(feature.id))?.id ?? null,
+  );
+
+  // Names the rows blocking the configure→finale step, or null when nothing
+  // blocks. Mirrors the finale's `finaleBlockReason` copy idiom so the footer can
+  // say WHAT is blocking instead of only a terse "N need attention" count. Stays
+  // null while a custom resolution/bitrate is the (separately-surfaced) blocker.
+  configureBlockReason = $derived.by(() => {
+    const names = FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name);
+    if (names.length === 0) return null;
+    return `Needs attention before you can finish: ${names.join(", ")}.`;
+  });
+
+  // Open + scroll to the first attention row so the count chip is an actionable
+  // jump target (not just a tally). Opening is the controller's job; the scroll
+  // is a best-effort DOM nudge (the row mounts its body on open), guarded for the
+  // no-attention case.
+  jumpToFirstAttention(): void {
+    const id = this.firstAttentionFeatureId;
+    if (!id) return;
+    this.openId = id;
+    // Defer the scroll until the row has re-rendered open.
+    requestAnimationFrame(() => {
+      const head = document.querySelector<HTMLElement>(
+        `[data-feature-row][data-feature-id="${id}"] [data-feature-head]`,
+      );
+      head?.scrollIntoView({ behavior: "smooth", block: "center" });
+      head?.focus();
+    });
+  }
+
   // The legacy completion gate (`processingReady`): finishing is blocked only
   // when a selected, enabled model isn't ready. Permissions never block finish.
   canFinish = $derived(

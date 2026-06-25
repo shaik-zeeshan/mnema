@@ -49,7 +49,7 @@
         aria-label="Save directory"
       />
       <button type="button" class="btn" disabled={browsing} onclick={browseSaveDirectory}>
-        {browsing ? "…" : "Browse…"}
+        {browsing ? "Choosing…" : "Browse…"}
       </button>
     </div>
   </div>

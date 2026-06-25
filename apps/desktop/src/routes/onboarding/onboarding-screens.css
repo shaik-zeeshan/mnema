@@ -51,9 +51,10 @@
   cursor: not-allowed;
 }
 
-/* muted link-style buttons (Use recommended / Just open dashboard / Back) */
-.ob-screen .welcome__accel,
-.ob-screen .finale__link,
+/* muted link-style buttons — the plain escape hatch (Back to setup). The
+   recommended fast paths (Use recommended / Just open dashboard) are promoted to
+   the `.ghost` outline tier below so they read as a real secondary action, not
+   an interchangeable link. */
 .ob-screen .finale__back {
   font: inherit;
   background: transparent;
@@ -62,16 +63,12 @@
   cursor: pointer;
   transition: color 0.15s ease;
 }
-.ob-screen .welcome__accel:not(:disabled):hover,
-.ob-screen .finale__link:not(:disabled):hover,
 .ob-screen .finale__back:not(:disabled):hover {
   color: var(--app-accent);
 }
 /* Keyboard affordance — these link-style buttons had no visible focus ring
    (mirrors `.footer .secondary:focus-visible`, plus the shared accent ring so
    the focus target is unambiguous on the dark hero/crest). */
-.ob-screen .welcome__accel:focus-visible,
-.ob-screen .finale__link:focus-visible,
 .ob-screen .finale__back:focus-visible {
   outline: none;
   color: var(--app-accent);
@@ -79,9 +76,40 @@
   border-radius: 6px;
   box-shadow: var(--app-ring);
 }
-.ob-screen .welcome__accel:disabled,
-.ob-screen .finale__link:disabled,
 .ob-screen .finale__back:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ghost / outline secondary tier — for the RECOMMENDED non-primary action (Use
+   recommended setup; Just open the dashboard). A bordered ghost button sits a
+   clear step above a plain muted link, so the recommended path is visually
+   distinguished from the escape-hatch link while staying subordinate to the
+   solid `.cta` primary. */
+.ob-screen .ghost {
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--app-text);
+  background: transparent;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.ob-screen .ghost:not(:disabled):hover {
+  color: var(--app-accent);
+  border-color: var(--app-accent-border);
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.ob-screen .ghost:focus-visible {
+  outline: none;
+  color: var(--app-accent);
+  border-color: var(--app-accent);
+  box-shadow: var(--app-ring);
+}
+.ob-screen .ghost:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -254,8 +282,10 @@
 }
 .ob-screen .welcome__accel {
   align-self: flex-start;
-  margin-top: -4px;
-  padding-left: 0;
+  margin-top: 2px;
+  /* Ghost-tier padding (the base `.ghost` sets the border/box); the uppercase
+     eyebrow treatment is kept so it still reads as the recommended fast path. */
+  padding: 8px 14px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   font-size: var(--text-xs);
@@ -380,9 +410,10 @@
   flex: 0 0 auto;
 }
 .ob-screen .finale__link {
+  /* ghost-tier button (border/box from `.ghost`); compact padding for the finale */
   font-size: 10px;
   letter-spacing: 0.06em;
-  padding: 4px 8px;
+  padding: 7px 12px;
 }
 .ob-screen .finale__back {
   font-size: 10px;
@@ -417,8 +448,7 @@
   }
   .ob-screen .cta,
   .ob-screen .btn__arrow,
-  .ob-screen .welcome__accel,
-  .ob-screen .finale__link,
+  .ob-screen .ghost,
   .ob-screen .finale__back {
     transition: none;
   }
