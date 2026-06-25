@@ -21,6 +21,10 @@
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
+  import IconCalendar from "~icons/lucide/calendar";
+  import IconScanText from "~icons/lucide/scan-text";
+  import IconMoreHorizontal from "~icons/lucide/ellipsis";
+  import IconClapperboard from "~icons/lucide/clapperboard";
   import {
     activeExactPreviewDelayMs,
     scrubPreviewResponseShouldApply,
@@ -6875,7 +6879,7 @@
           aria-controls="timeline-jump-picker"
           title="Jump to date and time (J)"
         >
-          <span class="timeline__jump-icon" aria-hidden="true">▣</span>
+          <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
           <span class="timeline__jump-label">{triggerLabel}</span>
         </button>
         {#if showJumpToLatestButton}
@@ -7011,7 +7015,7 @@
           : "Show OCR data for active frame"}
         aria-pressed={ocrVisible}
       >
-        <span class="timeline__ocr-glyph" aria-hidden="true">⌖</span>
+        <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
         <span>{ocrButtonLabel}</span>
         {#if ocrStatus === "success" && ocrObservations.length > 0}
           <span class="timeline__ocr-count">{ocrObservations.length}</span>
@@ -7043,11 +7047,20 @@
 
   <div class="timeline__stage" bind:this={stageEl}>
     {#if timelineLoading && timelineFrames.length === 0}
-      <div class="timeline__preview-pending">loading frames…</div>
+      <div class="timeline__preview-pending">
+        <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
+        <span>loading frames…</span>
+      </div>
     {:else if timelineFrames.length === 0}
       <div class="timeline__empty">
-        <span>no frames yet</span>
-        <span class="timeline__empty-hint">capture a session to populate the timeline</span>
+        <span class="timeline__empty-glyph" aria-hidden="true"><IconClapperboard /></span>
+        <h2 class="timeline__empty-title">No frames yet</h2>
+        <p class="timeline__empty-hint">
+          Your timeline fills up as Mnema captures your screen.
+        </p>
+        <p class="timeline__empty-cue">
+          Press <span class="timeline__empty-cue-key">Record</span> in the title bar above to start a capture session.
+        </p>
       </div>
     {:else if timelineActive}
       {@const previewDisplay = timelinePreviewDisplay}
@@ -7087,7 +7100,7 @@
             onkeydown={onFrameActionsTriggerKeydown}
             onpointerdown={() => { stageActionsOpenedByKeyboard = false; }}
             onclick={() => toggleFrameActions(stageActionsOpenedByKeyboard)}
-          >⋯</button>
+          ><span class="timeline__stage-action-glyph" aria-hidden="true"><IconMoreHorizontal /></span></button>
           {#if stageActionsMenuOpen}
             <div
               id="timeline-stage-action-menu"
@@ -9082,6 +9095,17 @@
     cursor: not-allowed;
   }
 
+  .btn:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .btn:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
+  }
+
   .btn--ghost {
     background: transparent;
     color: var(--app-text-muted);
@@ -9122,8 +9146,14 @@
   }
 
   .timeline__jump-icon {
-    font-size: 10px;
+    display: inline-flex;
+    align-items: center;
     color: var(--app-text-muted);
+  }
+
+  .timeline__jump-icon :global(svg) {
+    width: 1.1em;
+    height: 1.1em;
   }
 
   .timeline__jump-label {
@@ -9370,17 +9400,62 @@
   .timeline__empty {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 8px;
     align-items: center;
     justify-content: center;
-    color: var(--app-text-subtle);
-    font-size: 11px;
-    letter-spacing: 0.06em;
+    text-align: center;
+    max-width: 360px;
+    padding: 24px;
+  }
+
+  .timeline__empty-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 4px;
+    color: var(--app-text-muted);
+  }
+
+  .timeline__empty-glyph :global(svg) {
+    width: 40px;
+    height: 40px;
+    stroke-width: 1.5;
+  }
+
+  .timeline__empty-title {
+    margin: 0;
+    font-family: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--app-text);
   }
 
   .timeline__empty-hint {
-    font-size: 10px;
-    color: var(--app-text-faint);
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--app-text-muted);
+  }
+
+  .timeline__empty-cue {
+    margin: 4px 0 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--app-text-muted);
+  }
+
+  .timeline__empty-cue-key {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--app-border-strong);
+    background: var(--app-surface-raised);
+    color: var(--app-text);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   /* ── Stage (preview dominates) ─────────────────────────────── */
@@ -9454,6 +9529,17 @@
       color 0.12s,
       box-shadow 0.12s,
       transform 0.12s;
+  }
+
+  .timeline__stage-action-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .timeline__stage-action-glyph :global(svg) {
+    width: 18px;
+    height: 18px;
   }
 
   .timeline__stage-action-trigger:hover {
@@ -9608,11 +9694,23 @@
   }
 
   .timeline__preview-pending {
-    font-size: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-muted);
+  }
+
+  .timeline__preview-pending-spinner {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in srgb, var(--app-text-muted) 30%, transparent);
+    border-top-color: var(--app-text-muted);
+    animation: timeline-ocr-spin 0.9s linear infinite;
   }
 
   /* Compact metadata pinned to the corner of the stage so the preview
@@ -9690,12 +9788,30 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* When OCR is toggled ON the button carries a resting accent tint so its
+     stateful (pressed) nature reads at a glance, distinct from the plain
+     refresh ghost button. The :not() guards keep the run-state modifiers
+     (running/error/success) authoritative over this resting colour. */
+  .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+
+  .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) .timeline__ocr-glyph {
+    color: var(--app-accent);
+  }
+
   .timeline__ocr-glyph {
-    display: inline-block;
-    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
     line-height: 1;
     color: var(--app-text-muted);
-    transform: translateY(-1px);
+  }
+
+  .timeline__ocr-glyph :global(svg) {
+    width: 1.2em;
+    height: 1.2em;
   }
 
   .timeline__ocr-count {
@@ -10664,7 +10780,7 @@
     border-color: var(--app-border);
   }
   :global([data-theme="light"]) .timeline__empty-hint {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   :global([data-theme="light"]) .timeline__stage {
@@ -10705,6 +10821,14 @@
   :global([data-theme="light"]) .timeline__ocr-btn:hover {
     background: var(--app-surface-hover);
     border-color: var(--app-border-hover);
+  }
+  :global([data-theme="light"]) .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+  :global([data-theme="light"]) .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) .timeline__ocr-glyph {
+    color: var(--app-accent);
   }
   :global([data-theme="light"]) .timeline__ocr-glyph {
     color: var(--app-text-muted);
