@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { trapTabKey } from "$lib/keyboard";
 
   type PendingCliAccessRequest = {
     requestId: string;
@@ -23,6 +24,11 @@
   let loading = $state(true);
   let approving = $state(false);
   let cancelling = $state(false);
+
+  // Bound to the dialog container and the Deny button so focus can land on a
+  // SAFE anchor on open, and Tab is contained inside the consent dialog.
+  let dialogEl = $state<HTMLDivElement | null>(null);
+  let denyButton = $state<HTMLButtonElement | null>(null);
 
   const durationSeconds = {
     "1h": 60 * 60,
@@ -67,6 +73,11 @@
 
   onMount(() => {
     void loadPendingRequest();
+    // Land focus on a SAFE anchor — never Allow — so a reflexive keypress can't
+    // grant access. Prefer Deny once it renders; fall back to the dialog itself.
+    void tick().then(() => {
+      (denyButton ?? dialogEl)?.focus();
+    });
   });
 
   async function loadPendingRequest() {
@@ -152,7 +163,10 @@
     if (event.key === "Escape" && !approving && !cancelling) {
       event.preventDefault();
       void closeWindow();
+      return;
     }
+    // Keep Tab focus contained within the consent dialog.
+    trapTabKey(event, dialogEl);
   }
 </script>
 
@@ -165,10 +179,12 @@
 <main class="access-request">
   <div
     class="access-dialog"
+    bind:this={dialogEl}
     role="dialog"
-    aria-modal="false"
+    aria-modal="true"
     aria-labelledby="access-dialog-title"
     aria-describedby="access-dialog-lede"
+    tabindex="-1"
   >
     <header class="access-dialog__header">
       <span class="access-dialog__icon" aria-hidden="true">
@@ -308,9 +324,8 @@
 
     <footer class="access-dialog__actions">
       <button
-        class="btn"
-        class:btn--danger={!!pendingRequest}
-        class:btn--ghost={!pendingRequest}
+        class="btn btn--ghost"
+        bind:this={denyButton}
         type="button"
         disabled={approving || cancelling}
         onclick={closeWindow}
@@ -324,7 +339,7 @@
       </button>
       {#if pendingRequest}
         <button
-          class="btn btn--primary"
+          class="btn btn--allow"
           type="button"
           disabled={loading || approving || cancelling}
           onclick={approveAccess}
@@ -333,7 +348,7 @@
             <span class="btn__spinner" aria-hidden="true"></span>
             Allowing…
           {:else}
-            {`Allow ${selectedScope === "lastDay" ? "last day" : "all retained"} for ${selectedDuration}`}
+            Allow access
           {/if}
         </button>
       {/if}
@@ -549,7 +564,9 @@
 
   .group-label {
     padding: 0;
-    color: var(--app-text-subtle);
+    /* Load-bearing scope/duration legends on a consent screen — must clear the
+       contrast floor, so use the legible muted token, not faint subtle. */
+    color: var(--app-text-muted);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.12em;
@@ -825,40 +842,23 @@
     border-color: var(--app-border-hover);
   }
 
-  /* Deny is destructive: a danger-tinted outline that goes solid-ish on hover,
-     so it reads as the harmful choice without shouting over Allow at rest. */
-  .btn--danger {
-    background: transparent;
-    color: var(--app-danger-text);
-    border-color: var(--app-danger-border);
+  /* Allow GRANTS irreversible access, so it does NOT get a go-green solid fill
+     that reads as "the safe path". It's an accent-tinted OUTLINE: clearly the
+     affirmative action, but with no more visual pull than Deny encourages a
+     deliberate choice rather than a reflexive grant. */
+  .btn--allow {
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
   }
 
-  .btn--danger:not(:disabled):hover {
-    background: var(--app-danger-bg);
-    color: var(--app-danger-text);
-    border-color: var(--app-danger);
-  }
-
-  .btn--danger:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring-danger);
-  }
-
-  /* Allow is the one irreversible affirmative action: a SOLID accent fill that
-     clearly outranks the accent-tinted scope/duration chips above it. */
-  .btn--primary {
-    background: var(--app-accent);
-    color: var(--app-accent-contrast);
+  .btn--allow:not(:disabled):hover {
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
     border-color: var(--app-accent);
   }
 
-  .btn--primary:not(:disabled):hover {
-    background: var(--app-accent-strong);
-    border-color: var(--app-accent-strong);
-    color: var(--app-accent-contrast);
-  }
-
-  .btn--primary:focus-visible {
+  .btn--allow:focus-visible {
     outline: none;
     box-shadow: var(--app-ring);
   }
