@@ -212,6 +212,10 @@
   border: 1px solid var(--app-border-strong);
   border-radius: 999px;
   padding: 4px 10px;
+  /* Status tags ("Not installed", etc.) stay on one line; the model-id text
+     gives way instead of the pill being squeezed in the space-between row. */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .onboarding-shell .pill .d {
   width: 6px;

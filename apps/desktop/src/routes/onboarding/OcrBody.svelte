@@ -5,7 +5,6 @@
     OcrTesseractPreprocessMode,
   } from "$lib/types";
   import Segmented from "$lib/components/Segmented.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
@@ -20,20 +19,38 @@
   // pill reuses the mockup's `.pill` family (granted/pending/denied).
   const model = $derived(controller.selectedOcrModel);
 
-  // Provider picker uses RadioGroup-with-descriptions (matching Settings →
-  // Ocr.svelte): each provider has a meaningful description, so per the control
-  // convention this is a RadioGroup, not a Segmented control. Descriptions come
+  // Provider picker is a Segmented control (matching MicBody's adapter picker):
+  // a small static enum of providers. Options + per-provider availability come
   // from the live model status (mirrors controller-processing's option deriving);
-  // fall back to a static loading description before the status arrives.
+  // fall back to static labels before the status arrives. Segmented can't render
+  // per-option descriptions, so the availability subtitle that RadioGroup showed
+  // inline collapses to one contextual hint line for the active provider.
+  // Providers are NOT disabled when their model is unavailable: selecting a
+  // provider is how you reach the Model section below to download its model, so
+  // disabling an unavailable provider would make its model undownloadable.
   const ocrProviderOptions = $derived(
-    (controller.ocrModelStatus?.providers ?? []).map((provider) => ({
-      value: provider.provider,
-      label: provider.displayName,
-      description: provider.models.some((m) => m.available)
-        ? "At least one model is available"
-        : "No available model detected",
-    })),
+    (controller.ocrModelStatus?.providers ?? []).length > 0
+      ? (controller.ocrModelStatus?.providers ?? []).map((provider) => ({
+          value: provider.provider,
+          label: provider.displayName,
+        }))
+      : [
+          { value: "apple_vision", label: "Apple Vision" },
+          { value: "tesseract", label: "Tesseract" },
+        ],
   );
+
+  // Contextual availability hint for the active provider (replaces RadioGroup's
+  // per-option subtitle).
+  const ocrProviderHint = $derived.by(() => {
+    const providers = controller.ocrModelStatus?.providers ?? [];
+    if (providers.length === 0) return "Model status is loading.";
+    const active = providers.find((p) => p.provider === controller.draftOcrProvider);
+    if (!active) return "No available model detected for the selected provider.";
+    return active.models.some((m) => m.available)
+      ? "At least one model is available."
+      : "No available model detected for this provider.";
+  });
 
   const pillClass = $derived.by(() => {
     if (!model) return "pending";
@@ -53,18 +70,16 @@
         Apple Vision is on-device with no download; Tesseract supports many languages.
       </div>
     </div>
-    <div class="ctl-field" style="width: 100%">
-      <RadioGroup
-        value={controller.draftOcrProvider}
-        onValueChange={(v) => controller.chooseOcrProvider(v)}
-        label="OCR provider"
-        options={ocrProviderOptions.length > 0
-          ? ocrProviderOptions
-          : [
-              { value: "apple_vision", label: "Apple Vision", description: "Model status is loading" },
-              { value: "tesseract", label: "Tesseract", description: "Model status is loading" },
-            ]}
-      />
+    <div class="ctl-field">
+      <div class="slider-block">
+        <Segmented
+          value={controller.draftOcrProvider}
+          onValueChange={(v) => controller.chooseOcrProvider(v)}
+          ariaLabel="OCR provider"
+          options={ocrProviderOptions}
+        />
+        <span class="kbd-hint">{ocrProviderHint}</span>
+      </div>
     </div>
   </div>
 </div>

@@ -2,7 +2,6 @@
   import type { OnboardingController } from "./onboarding.svelte";
   import type { AudioTranscriptionMemoryMode } from "$lib/types";
   import Segmented from "$lib/components/Segmented.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import AdvancedReveal from "./AdvancedReveal.svelte";
@@ -16,20 +15,39 @@
   // download. The status pill reuses the mockup's `.pill` family.
   const model = $derived(controller.selectedTranscriptionModel);
 
-  // Provider picker uses RadioGroup-with-descriptions (matching Settings →
-  // Transcription.svelte): each provider has a meaningful description, so per the
-  // control convention this is a RadioGroup, not a Segmented control. Descriptions
-  // come from the live model status (mirrors controller-processing's option
-  // deriving); fall back to a static loading description before status arrives.
+  // Provider picker is a Segmented control (matching MicBody's adapter picker):
+  // a small static enum of providers. Options + per-provider availability come
+  // from the live model status (mirrors controller-processing's option deriving);
+  // fall back to static labels before status arrives. Segmented can't render
+  // per-option descriptions, so the availability subtitle that RadioGroup showed
+  // inline collapses to one contextual hint line for the active provider.
+  // Providers are NOT disabled when their model is unavailable: selecting a
+  // provider is how you reach the Model section below to download its model, so
+  // disabling an unavailable provider would make its model undownloadable.
   const transcriptionProviderOptions = $derived(
-    (controller.transcriptionModelStatus?.providers ?? []).map((provider) => ({
-      value: provider.provider,
-      label: provider.displayName,
-      description: provider.models.some((m) => m.available)
-        ? "At least one model is available"
-        : "No available model detected",
-    })),
+    (controller.transcriptionModelStatus?.providers ?? []).length > 0
+      ? (controller.transcriptionModelStatus?.providers ?? []).map((provider) => ({
+          value: provider.provider,
+          label: provider.displayName,
+        }))
+      : [
+          { value: "local_whisper", label: "Local Whisper" },
+          { value: "apple_speech_on_device", label: "Apple Speech (on-device)" },
+          { value: "parakeet", label: "Parakeet" },
+        ],
   );
+
+  // Contextual availability hint for the active provider (replaces RadioGroup's
+  // per-option subtitle).
+  const transcriptionProviderHint = $derived.by(() => {
+    const providers = controller.transcriptionModelStatus?.providers ?? [];
+    if (providers.length === 0) return "Model status is loading.";
+    const active = providers.find((p) => p.provider === controller.draftTranscriptionProvider);
+    if (!active) return "No available model detected for the selected provider.";
+    return active.models.some((m) => m.available)
+      ? "At least one model is available."
+      : "No available model detected for this provider.";
+  });
 
   const pillClass = $derived.by(() => {
     if (!model) return "pending";
@@ -58,19 +76,16 @@
         fast NeMo model.
       </div>
     </div>
-    <div class="ctl-field" style="width: 100%">
-      <RadioGroup
-        value={controller.draftTranscriptionProvider}
-        onValueChange={(v) => controller.chooseTranscriptionProvider(v)}
-        label="Transcription provider"
-        options={transcriptionProviderOptions.length > 0
-          ? transcriptionProviderOptions
-          : [
-              { value: "local_whisper", label: "Local Whisper", description: "Model status is loading" },
-              { value: "apple_speech_on_device", label: "Apple Speech (on-device)", description: "Model status is loading" },
-              { value: "parakeet", label: "Parakeet", description: "Model status is loading" },
-            ]}
-      />
+    <div class="ctl-field">
+      <div class="slider-block">
+        <Segmented
+          value={controller.draftTranscriptionProvider}
+          onValueChange={(v) => controller.chooseTranscriptionProvider(v)}
+          ariaLabel="Transcription provider"
+          options={transcriptionProviderOptions}
+        />
+        <span class="kbd-hint">{transcriptionProviderHint}</span>
+      </div>
     </div>
   </div>
 </div>
