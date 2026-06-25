@@ -943,6 +943,7 @@ mod tests {
             is_running: false,
             is_inactivity_paused: false,
             is_user_paused: false,
+            is_low_disk_suspended: false,
             requested_sources: None,
             output_files: None,
             source_sessions: None,

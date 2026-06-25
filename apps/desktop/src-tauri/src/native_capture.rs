@@ -4,6 +4,7 @@ mod activity;
 pub(crate) mod browser_url_ax;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
+pub(crate) mod disk_space;
 #[path = "native_capture_inactivity.rs"]
 pub(crate) mod inactivity;
 mod lifecycle;
@@ -918,6 +919,21 @@ pub(crate) fn push_warning_app_notification(
     );
 }
 
+/// Clear (remove) a single app notification by its stable id and broadcast the
+/// updated list. Mirrors [`push_warning_app_notification`] for the suspend/resume
+/// pair: the low-disk warning is pushed on suspend and cleared here on resume.
+/// Best-effort — silently no-ops if the notifications state is unavailable.
+pub(crate) fn clear_app_notification_by_id(app_handle: &tauri::AppHandle, id: &str) {
+    let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
+        return;
+    };
+    let notifications = {
+        let mut runtime = state.lock().expect("app notifications state poisoned");
+        runtime.clear_one(id)
+    };
+    emit_app_notifications_changed(app_handle, &notifications);
+}
+
 pub(crate) fn push_info_app_notification(
     app_handle: &tauri::AppHandle,
     id: &str,
@@ -935,6 +951,37 @@ pub(crate) fn push_info_app_notification(
         AppNotification {
             id: id.to_string(),
             severity: "info".to_string(),
+            title: title.to_string(),
+            message: message.to_string(),
+            created_at_unix_ms,
+            action,
+        },
+    );
+}
+
+/// Push an `error`-severity app notification. Mirrors
+/// [`push_warning_app_notification`] but with `severity: "error"`; used for the
+/// low-disk graceful-stop notice (ADR 0040), where capture has stopped and the
+/// user must free space before recording can be restarted. The frontend already
+/// types `severity` as `"info" | "warning" | "error"` and styles the `error`
+/// case; an unstyled severity would degrade to the neutral base card.
+pub(crate) fn push_error_app_notification(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    title: &str,
+    message: &str,
+    settings_tab: Option<&str>,
+    created_at_unix_ms: u64,
+) {
+    let action = settings_tab.map(|tab| AppNotificationAction::OpenSettingsTab {
+        tab: tab.to_string(),
+    });
+    push_app_notification(
+        app_handle,
+        app_handle.state::<AppNotificationsState>().inner(),
+        AppNotification {
+            id: id.to_string(),
+            severity: "error".to_string(),
             title: title.to_string(),
             message: message.to_string(),
             created_at_unix_ms,

@@ -51,6 +51,7 @@ export interface CaptureSession {
 	sourceSessions: SourceSessions | null;
 	isInactivityPaused: boolean;
 	isUserPaused: boolean;
+	isLowDiskSuspended: boolean;
 }
 
 export interface GetPermissionsResponse {

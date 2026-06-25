@@ -14,6 +14,14 @@ _Avoid_: scrub-time extraction, exact frame preview generation, thumbnail pipeli
 The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. Screen and system audio share the screen capture backend, while microphone runs as a separate native session.
 _Avoid_: capture runtime, recorder service, session manager
 
+**Capture Suspension**:
+A transient-liveness suspension of capture that the **Recording Lifecycle** keeps trying to recover from on its own, distinct from inactivity pause; its kind (privacy-filter apply failure, display unavailable, or **Low-Disk Suspension**) selects the suspended source scope and the retry policy.
+_Avoid_: privacy suspension (now one kind, not the whole concept), inactivity pause, capture stop
+
+**Low-Disk Suspension**:
+The **Capture Suspension** kind raised when free space on the recordings volume falls below the low-disk threshold; unlike the other kinds it suspends every source including the microphone, never escalates to a manual restart, and auto-resumes once free space climbs back above a higher resume threshold.
+_Avoid_: disk-full stop, storage cap, retention cleanup
+
 **Live Privacy Filter**:
 The native screen-capture filtering mechanism that applies **App Privacy Exclusion** before frames are delivered to Mnema.
 _Avoid_: privacy promise, metadata redaction, post-capture filtering
@@ -97,6 +105,8 @@ _Avoid_: app-infra inference, dossier service, ai-runtime-in-storage
 - A **Recording Lifecycle** applies **App Privacy Exclusion** through the **Live Privacy Filter** when screen capture is requested.
 - Metadata-derived website, title, private-browser, and per-window decisions must not feed the **Live Privacy Filter**.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
+- A **Recording Lifecycle** may raise a **Capture Suspension** when it cannot safely keep writing; the kind selects scope and retry policy, and the segment loop owns one throttled recovery driver shared across kinds ([ADR 0021](../../../docs/adr/0021-recover-from-display-unavailable-as-transient-liveness.md), [ADR 0040](../../../docs/adr/0040-low-disk-safety-is-a-transient-liveness-capture-suspension-kind.md)).
+- A **Low-Disk Suspension** stops screen, system audio, and microphone together because all sources write to the same recordings volume, is entered at segment-open boundaries (never a continuous poll), and auto-resumes once free space rises above the resume threshold; if free space drops below the reserve floor the **Recording Lifecycle** stops the session gracefully instead of waiting ([ADR 0040](../../../docs/adr/0040-low-disk-safety-is-a-transient-liveness-capture-suspension-kind.md)).
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
 - A **Recording Lifecycle** creates one **Capture Session** for a user recording and **Capture Segment** rows only for produced artifacts.
 - **App Update** installation is gated outside the **Recording Lifecycle** and waits for the active **Capture Session** to end rather than stopping or pausing capture itself.

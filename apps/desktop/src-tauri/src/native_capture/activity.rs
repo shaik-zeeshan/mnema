@@ -388,7 +388,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
         // writer is implicit in the session lifetime.
         let screen_writer = screen_session && !runtime.inactivity.is_screen_paused();
         let privacy_suspension_reason = runtime
-            .privacy_capture_suspension
+            .capture_suspension
             .as_ref()
             .map(|suspension| suspension.reason.clone());
 
