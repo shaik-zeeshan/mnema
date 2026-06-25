@@ -1,0 +1,478 @@
+/* Onboarding accordion — expanded-body + body-layout primitives (part 2).
+ *
+ * Split out of onboarding-ui.css for the 800-line cap. Imported alongside
+ * onboarding-ui.css (FeatureStack.svelte + routes/onboarding/+page.svelte) so it
+ * loads globally. Everything stays namespaced under `.onboarding-shell`.
+ *
+ * Contains: the expanded row body, the Slice-4 body-layout primitives that body
+ * components consume (group/ctl/note/model-card/perm/pill/count/slider-block),
+ * the lock-callout + disabled-body dim, the footer, text input, button family,
+ * and the reduced-motion fallback. */
+
+/* ===== expanded body ===== */
+/* NB: no `overflow: hidden` here. Feature bodies (Transcription/OCR/Semantic
+   Search/Ask AI) render NON-portaled popovers (Combobox, ModelPickerMenu)
+   anchored inside `.body-inner`; clipping them cut the dropdown at the body's
+   bottom edge, making lower options unreachable. FeatureRow toggles this body
+   with a plain `hidden` attribute (no collapse animation), so nothing relied
+   on the clip — and the `.row.open` accent hairline lives on the `.row`
+   pseudo-element, inset within the row bounds, not here. (Mirrors the same
+   precedent in lib/settings/ui/SettingGroup.svelte.) */
+.onboarding-shell .row-body {
+  overflow: visible;
+}
+/* body content aligns UNDER the title (icon sits in a left gutter):
+   left = row-head padding(16) + icon(28) + gap(12) = 56px */
+.onboarding-shell .body-inner {
+  padding: 16px 16px 18px 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ===== body-layout primitives (Slice 4 components consume these) ===== */
+
+/* group within body */
+.onboarding-shell .group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.onboarding-shell .group-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+/* control row */
+.onboarding-shell .ctl {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+}
+.onboarding-shell .ctl-label {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.onboarding-shell .ctl-label .name {
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--app-text);
+}
+.onboarding-shell .ctl-label .desc {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  margin-top: 3px;
+  line-height: 1.5;
+}
+.onboarding-shell .ctl-field {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.onboarding-shell .ctl.stack-field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.onboarding-shell .ctl.stack-field .ctl-field {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+/* note / disclosure */
+.onboarding-shell .note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--app-text-muted);
+  background: var(--app-surface-subtle);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.onboarding-shell .note b {
+  color: var(--app-accent);
+  font-weight: 540;
+}
+.onboarding-shell .note.muted {
+  background: var(--app-surface-active);
+  border-color: var(--app-border);
+}
+.onboarding-shell .note.muted b {
+  color: var(--app-text);
+}
+.onboarding-shell .kbd-hint {
+  font-size: 10px;
+  color: var(--app-text-subtle);
+}
+
+/* model picker */
+.onboarding-shell .model-card {
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-subtle);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.onboarding-shell .model-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+.onboarding-shell .model-id {
+  font-size: 12px;
+  color: var(--app-text);
+}
+.onboarding-shell .model-id .meta {
+  font-size: 10px;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+}
+.onboarding-shell .dl {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.onboarding-shell .dl-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border);
+  overflow: hidden;
+}
+.onboarding-shell .dl-fill {
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--app-accent-strong),
+    var(--app-accent)
+  );
+  box-shadow: 0 0 10px var(--app-accent-glow);
+  transition: width 0.3s ease;
+}
+.onboarding-shell .dl-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: var(--app-text-muted);
+}
+.onboarding-shell .dl-meta b {
+  color: var(--app-accent);
+}
+
+/* permission line */
+.onboarding-shell .perm {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-subtle);
+}
+.onboarding-shell .perm .pn {
+  flex: 1 1 auto;
+}
+.onboarding-shell .perm .pn .t {
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--app-text);
+}
+.onboarding-shell .perm .pn .s {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+.onboarding-shell .perm .pr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+/* pills (permission / download status) */
+.onboarding-shell .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--app-text-muted);
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 999px;
+  padding: 4px 10px;
+  /* Status tags ("Not installed", etc.) stay on one line; the model-id text
+     gives way instead of the pill being squeezed in the space-between row. */
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.onboarding-shell .pill .d {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--app-text-faint);
+}
+.onboarding-shell .pill.granted {
+  color: var(--app-accent);
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-bg);
+}
+.onboarding-shell .pill.granted .d {
+  background: var(--app-accent);
+  box-shadow: 0 0 6px var(--app-accent-glow);
+}
+.onboarding-shell .pill.pending {
+  color: var(--app-warn);
+  border-color: var(--app-warn-border);
+  background: var(--app-warn-bg);
+}
+.onboarding-shell .pill.pending .d {
+  background: var(--app-warn);
+}
+.onboarding-shell .pill.denied {
+  color: var(--app-danger);
+  border-color: var(--app-danger-border);
+  background: var(--app-danger-bg);
+}
+.onboarding-shell .pill.denied .d {
+  background: var(--app-danger);
+}
+
+/* excluded-app count (PrivacyBody renders the chip list via the shared
+   AppPrivacyExclusion component, which carries its own scoped styling — only
+   the count line below is rendered with an onboarding primitive). */
+.onboarding-shell .count {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+.onboarding-shell .count b {
+  color: var(--app-accent);
+}
+
+/* slider block — wraps the shared Slider.svelte (which renders its own
+   `.slider-header`/value markup with scoped styling). Onboarding bodies use this
+   only to stack a slider with an optional `.kbd-hint` beneath it. */
+.onboarding-shell .slider-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+/* ===== unmet-prerequisite callout (in-body inline action) =====
+   Rendered at the TOP of a locked feature's body. It is a direct child of
+   `.body-inner` that is NEITHER `.group`/`.ctl`/`.model-card`, so the feature-off
+   dim below leaves it fully visible — accent-toned to read as "action needed".
+   Note: when the feature is OFF the body wrapper carries `inert` (FeatureRow), so
+   this callout's button is non-operable here too; the same prerequisite action is
+   always reachable from a never-inert surface — permission grants from the
+   (required) Permissions row, "enable transcription" from the Transcription row's
+   header toggle. */
+.onboarding-shell .lock-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-accent-border);
+  border-radius: 8px;
+  background: var(--app-accent-bg);
+}
+.onboarding-shell .lock-callout-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--app-text);
+}
+.onboarding-shell .lock-callout .btn {
+  flex: 0 0 auto;
+}
+
+/* ===== disabled body (feature off but expanded) ===== */
+.onboarding-shell .row.disabled-feature .body-inner > .group:not(.always-on),
+.onboarding-shell .row.disabled-feature .body-inner > .ctl,
+.onboarding-shell .row.disabled-feature .body-inner > .model-card {
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+/* ===== footer ===== */
+.onboarding-shell .footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--app-border);
+  background: var(--app-surface-subtle);
+  position: relative;
+  z-index: 3;
+}
+.onboarding-shell .footer .hint {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+.onboarding-shell .footer .hint b {
+  color: var(--app-accent);
+}
+.onboarding-shell .footer .footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.onboarding-shell .footer .secondary {
+  font: inherit;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 2px;
+  transition: color 0.15s ease;
+}
+.onboarding-shell .footer .secondary:hover {
+  color: var(--app-text);
+}
+.onboarding-shell .footer .secondary:focus-visible {
+  outline: none;
+  color: var(--app-text);
+  text-decoration: underline;
+}
+.onboarding-shell .cta {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--app-bg);
+  background: var(--app-accent);
+  border: 1px solid var(--app-accent);
+  border-radius: 8px;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.08s ease;
+}
+.onboarding-shell .cta:hover:not(:disabled) {
+  box-shadow: 0 0 0 4px var(--app-accent-glow);
+}
+.onboarding-shell .cta:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.onboarding-shell .cta:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ===== text input (save-directory path field, custom-value inputs) ===== */
+/* Mirrors the mockup's `input.input`, swapped onto the app's --app-* tokens.
+   Slice 4 bodies (Storage) use `.input` / `.input.path` for the read-only path
+   field next to a Browse `.btn`. */
+.onboarding-shell input.input,
+.onboarding-shell select.input {
+  font: inherit;
+  font-size: 12px;
+  color: var(--app-text);
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: text;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.onboarding-shell input.input:hover,
+.onboarding-shell select.input:hover {
+  border-color: var(--app-border-hover);
+}
+.onboarding-shell input.input:focus,
+.onboarding-shell select.input:focus {
+  outline: none;
+  border-color: var(--app-accent-border);
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.onboarding-shell input.input.path {
+  flex: 1 1 auto;
+  min-width: 200px;
+}
+.onboarding-shell input.input[readonly] {
+  cursor: default;
+}
+
+/* ===== button family (download / cancel / grant / browse / configure) =====
+   Copied from the mockup's `.btn`/`.btn.accent`/`.btn.danger`/`.btn.sm`, with
+   the mockup's literal colors swapped for the app's --app-* tokens. The shared
+   onboarding stylesheet has no other button primitive, so sibling bodies
+   (OcrBody / TranscriptionBody / AskAiBody) consume these classes directly. */
+.onboarding-shell .btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 540;
+  color: var(--app-text);
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.onboarding-shell .btn:hover:not(:disabled) {
+  border-color: var(--app-border-hover);
+  color: var(--app-text-strong);
+}
+.onboarding-shell .btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.onboarding-shell .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.onboarding-shell .btn.accent {
+  color: var(--app-accent);
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-bg);
+}
+.onboarding-shell .btn.accent:hover:not(:disabled) {
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.onboarding-shell .btn.danger {
+  color: var(--app-danger);
+  border-color: var(--app-danger-border);
+}
+.onboarding-shell .btn.danger:hover:not(:disabled) {
+  color: var(--app-danger);
+  border-color: var(--app-danger-border);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--app-danger) 18%, transparent);
+}
+.onboarding-shell .btn.sm {
+  font-size: 11px;
+  padding: 5px 10px;
+}
+
+.onboarding-shell .hidden {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-shell .row,
+  .onboarding-shell .icon-chip,
+  .onboarding-shell .cta,
+  .onboarding-shell .dl-fill,
+  .onboarding-shell .footer .secondary {
+    transition: none;
+  }
+}

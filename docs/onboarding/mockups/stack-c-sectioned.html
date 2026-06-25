@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>mnema · onboarding · sectioned stack</title>
+<style>
+  :root {
+    --app-bg:#0c0c0e; --app-fg:#e2e2e8; --app-fg-muted:#8a8aaa;
+    --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#7a7a9a; --app-text-subtle:#44445a; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15; --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-strong:#ff4455; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  }
+  [data-theme="light"] {
+    --app-bg:#f6f6f4; --app-fg:#14141a; --app-fg-muted:#5a5a6a;
+    --app-surface:#ffffff; --app-surface-subtle:#f6f6f4; --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#eeeeec;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+    --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a; --app-text-subtle:#7a7a86; --app-text-faint:#a4a4a0;
+    --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec; --app-accent-border:#9bd3b4; --app-accent-glow:rgba(31,122,74,0.16);
+    --app-warn:#9a5a12; --app-warn-bg:#fbf0dc; --app-warn-border:#d9b87a;
+    --app-danger:#c43a48; --app-danger-strong:#a82230; --app-danger-bg:#fbe6e8; --app-danger-border:#e0a8ae;
+    --app-info:#2b78c5; --app-info-bg:#e4effb; --app-info-border:#a8c8ec;
+  }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body {
+    height:100%;
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"Cascadia Code","Fira Code",monospace;
+    background:var(--app-bg);
+    color:var(--app-fg);
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  body {
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh;
+    padding:28px;
+    background:
+      radial-gradient(820px 380px at 50% -6%, var(--app-accent-glow), transparent 62%),
+      var(--app-bg);
+  }
+
+  /* ===== window chrome ===== */
+  .window {
+    width:940px; height:820px;
+    max-width:100%; max-height:96vh;
+    display:flex; flex-direction:column;
+    background:var(--app-surface);
+    border:1px solid var(--app-border);
+    border-radius:10px;
+    overflow:hidden;
+    position:relative;
+  }
+  .titlebar {
+    height:38px; flex:0 0 38px;
+    display:flex; align-items:center;
+    padding:0 14px;
+    border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    position:relative;
+    user-select:none;
+    z-index:6;
+  }
+  .traffic { display:flex; gap:8px; }
+  .traffic span { width:11px; height:11px; border-radius:999px; background:var(--app-text-faint); }
+  .wordmark {
+    position:absolute; left:50%; transform:translateX(-50%);
+    font-size:11px; letter-spacing:0.04em; color:var(--app-text-muted);
+  }
+  .theme-toggle {
+    position:absolute; right:12px; top:50%; transform:translateY(-50%);
+    display:flex; align-items:center; gap:6px;
+    font-size:10.5px; color:var(--app-text-muted);
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border);
+    border-radius:6px; padding:4px 8px;
+    cursor:pointer;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  .theme-toggle:hover { border-color:var(--app-border-hover); color:var(--app-text); }
+
+  /* ===== welcome header ===== */
+  .welcome {
+    flex:0 0 auto;
+    padding:18px 26px 14px;
+    border-bottom:1px solid var(--app-border);
+    background:color-mix(in srgb, var(--app-surface) 90%, transparent);
+    position:relative; z-index:5;
+  }
+  .welcome-eyebrow {
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-text-subtle); margin-bottom:6px;
+  }
+  .welcome-title {
+    font-size:18px; font-weight:700; letter-spacing:-0.012em;
+    color:var(--app-text-strong);
+  }
+  .welcome-sub {
+    margin-top:5px;
+    font-size:11px; line-height:1.45; color:var(--app-text-muted);
+  }
+  .welcome-sub b { color:var(--app-accent); font-weight:600; }
+
+  /* ===== scroll body ===== */
+  .body {
+    flex:1 1 auto; min-height:0;
+    overflow-y:auto;
+    padding:20px 26px 4px;
+    position:relative;
+  }
+  /* dotted grid backdrop + accent halo */
+  .body::before {
+    content:""; position:absolute; inset:0;
+    background-image:radial-gradient(var(--app-text-faint) 1px, transparent 1px);
+    background-size:22px 22px;
+    opacity:0.14;
+    pointer-events:none; z-index:0;
+  }
+  .body::after {
+    content:""; position:absolute; top:-60px; left:50%; transform:translateX(-50%);
+    width:520px; height:280px;
+    background:radial-gradient(closest-side, var(--app-accent-glow), transparent 72%);
+    opacity:0.5; pointer-events:none; z-index:0;
+  }
+  .body > * { position:relative; z-index:1; }
+
+  /* scrollbar */
+  .body::-webkit-scrollbar { width:10px; }
+  .body::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:999px; border:3px solid var(--app-surface); }
+  .body::-webkit-scrollbar-track { background:transparent; }
+
+  /* ===== section label ===== */
+  .section-label {
+    display:flex; align-items:center; gap:10px;
+    font-size:10.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    color:var(--app-text-muted);
+    margin:18px 2px 11px;
+  }
+  .section-label:first-child { margin-top:2px; }
+  .section-label .rule { flex:1 1 auto; height:1px; background:var(--app-border); }
+  .section-label .req-tag { color:var(--app-accent); }
+  .section-label .opt-tag { color:var(--app-text-subtle); }
+
+  /* ===== feature row ===== */
+  .row {
+    border:1px solid var(--app-border);
+    border-radius:12px;
+    background:var(--app-surface-raised);
+    margin-bottom:12px;
+    overflow:hidden;
+    transition:border-color .16s ease, background .16s ease;
+  }
+  .row.expanded { border-color:var(--app-border-strong); background:var(--app-surface-raised); }
+  .row.disabled { background:var(--app-surface-subtle); }
+
+  /* row head (the slim line) */
+  .row-head {
+    display:flex; align-items:center; gap:12px;
+    padding:0 16px;
+    min-height:58px;
+    cursor:pointer;
+    user-select:none;
+    transition:background .15s ease;
+  }
+  .row:not(.disabled) .row-head:hover { background:var(--app-surface-hover); }
+  .row.disabled .row-head { cursor:default; }
+  .row.expanded .row-head { min-height:auto; padding-top:18px; padding-bottom:0; align-items:flex-start; cursor:default; }
+
+  .row-icon {
+    flex:0 0 28px; width:28px; height:28px;
+    display:flex; align-items:center; justify-content:center;
+    border:1px solid var(--app-border);
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+    color:var(--app-text-muted);
+    font-size:13px;
+    transition:color .15s ease, border-color .15s ease;
+  }
+  .row.on .row-icon, .row.req .row-icon { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .row.disabled .row-icon { color:var(--app-text-subtle); background:var(--app-surface-subtle); border-color:var(--app-border); }
+
+  .row-titles { flex:1 1 auto; min-width:0; padding-top:1px; }
+  .row-name {
+    font-size:13.5px; font-weight:550; color:var(--app-text);
+    display:flex; align-items:center; gap:8px;
+    transition:color .15s ease;
+  }
+  .row.expanded .row-name { font-size:20px; font-weight:700; letter-spacing:-0.012em; color:var(--app-text-strong); }
+  .row.disabled .row-name { color:var(--app-text-subtle); text-decoration:line-through; text-decoration-color:var(--app-text-faint); }
+  .row-eyebrow {
+    display:none;
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-text-subtle); margin-bottom:7px;
+  }
+  .row.expanded .row-eyebrow { display:block; }
+  .row-sub {
+    display:none;
+    font-size:11px; line-height:1.4; color:var(--app-text-muted); margin-top:6px; max-width:540px;
+  }
+  .row.expanded .row-sub { display:block; }
+
+  /* slim inline status hint on collapsed rows */
+  .row-hint {
+    flex:0 0 auto;
+    font-size:10.5px; color:var(--app-text-subtle);
+    white-space:nowrap;
+  }
+  .row.expanded .row-hint { display:none; }
+  .row.on .row-hint { color:var(--app-accent-strong); }
+  .row.disabled .row-hint { color:var(--app-text-faint); }
+
+  /* badges in name */
+  .badge {
+    font-size:8.5px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase;
+    padding:2px 6px; border-radius:3px;
+    border:1px solid var(--app-border-strong);
+    color:var(--app-text-muted);
+    background:var(--app-surface-subtle);
+  }
+  .badge.default { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .badge.req { color:var(--app-text-muted); }
+  .lock-glyph { font-size:11px; color:var(--app-text-muted); }
+
+  /* ===== switch ===== */
+  .switch {
+    flex:0 0 auto;
+    position:relative;
+    width:36px; height:20px;
+    border-radius:999px;
+    border:1px solid var(--app-border-strong);
+    background:var(--app-surface-active);
+    cursor:pointer;
+    transition:background .18s ease, border-color .18s ease, box-shadow .18s ease;
+  }
+  .switch:focus-visible { outline:none; box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .switch .thumb {
+    position:absolute; top:2px; left:2px;
+    width:14px; height:14px; border-radius:999px;
+    background:var(--app-text-subtle);
+    transition:transform .18s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .switch.on { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+  .switch.on .thumb { transform:translateX(16px); background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+  .switch.locked { cursor:not-allowed; opacity:0.72; }
+  .switch.locked .thumb { background:var(--app-accent); }
+  .switch-wrap { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+  .row.expanded .switch-wrap { padding-top:1px; }
+  .switch-lock { font-size:11px; color:var(--app-text-muted); }
+
+  /* ===== panel body ===== */
+  .panel {
+    max-height:0; opacity:0;
+    overflow:hidden;
+    transition:max-height .18s ease, opacity .18s ease;
+  }
+  .row.expanded .panel { max-height:1400px; opacity:1; }
+  .panel-inner {
+    padding:16px 18px 20px;
+    position:relative;
+  }
+  /* accent hairline at top of expanded panel */
+  .row.expanded .panel-inner::before {
+    content:""; position:absolute; left:14px; right:14px; top:0; height:1px;
+    background:linear-gradient(90deg, transparent, color-mix(in srgb,var(--app-accent) 12%,transparent) 22%, color-mix(in srgb,var(--app-accent) 50%,transparent) 50%, transparent);
+  }
+
+  /* ===== controls ===== */
+  .control { margin-top:16px; }
+  .control:first-child { margin-top:6px; }
+  .control-label {
+    font-size:11.5px; font-weight:550; color:var(--app-text);
+    margin-bottom:4px;
+  }
+  .control-desc { font-size:11px; line-height:1.4; color:var(--app-text-muted); margin-bottom:9px; }
+
+  .row2 { display:flex; gap:18px; flex-wrap:wrap; }
+  .row2 > .control { flex:1 1 240px; min-width:200px; }
+
+  /* segmented */
+  .segmented {
+    display:inline-flex; gap:0;
+    border:1px solid var(--app-border-strong);
+    border-radius:6px; overflow:hidden;
+    background:var(--app-surface-subtle);
+  }
+  .segmented button {
+    font:inherit; font-size:11.5px;
+    padding:6px 12px;
+    background:transparent; color:var(--app-text-muted);
+    border:none; border-right:1px solid var(--app-border);
+    cursor:pointer;
+    transition:background .15s ease, color .15s ease;
+  }
+  .segmented button:last-child { border-right:none; }
+  .segmented button:hover { background:var(--app-surface-hover); color:var(--app-text); }
+  .segmented button.sel { background:var(--app-accent-bg); color:var(--app-accent); }
+
+  /* slider */
+  .slider-wrap { display:flex; align-items:center; gap:14px; }
+  input[type=range] {
+    -webkit-appearance:none; appearance:none;
+    flex:1 1 auto; height:4px; border-radius:999px;
+    background:var(--app-surface-active);
+    border:1px solid var(--app-border);
+    cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; appearance:none;
+    width:15px; height:15px; border-radius:999px;
+    background:var(--app-accent);
+    box-shadow:0 0 8px var(--app-accent-glow);
+    border:1px solid var(--app-accent-strong);
+    cursor:pointer;
+  }
+  .slider-val {
+    flex:0 0 auto; min-width:74px; text-align:right;
+    font-size:12px; color:var(--app-accent); font-variant-numeric:tabular-nums;
+  }
+
+  /* select / input */
+  select, input[type=text], input[type=number] {
+    font:inherit; font-size:12px;
+    width:100%;
+    padding:8px 10px;
+    background:var(--app-surface-subtle);
+    color:var(--app-text);
+    border:1px solid var(--app-border-strong);
+    border-radius:8px;
+    cursor:pointer;
+  }
+  input[type=text], input[type=number] { cursor:text; }
+  select:focus, input:focus { outline:none; border-color:var(--app-accent-border); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .input-row { display:flex; gap:8px; }
+  .input-row input { flex:1 1 auto; }
+
+  /* button */
+  .btn {
+    font:inherit; font-size:12px; font-weight:540;
+    padding:8px 13px; border-radius:8px;
+    background:var(--app-surface-raised);
+    color:var(--app-text);
+    border:1px solid var(--app-border-strong);
+    cursor:pointer; white-space:nowrap;
+    transition:border-color .15s ease, background .15s ease, color .15s ease, box-shadow .15s ease;
+  }
+  .btn:hover { border-color:var(--app-border-hover); background:var(--app-surface-hover); color:var(--app-text-strong); }
+  .btn.accent { background:var(--app-accent-bg); color:var(--app-accent); border-color:var(--app-accent-border); }
+  .btn.accent:hover { box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .btn.small { padding:5px 10px; font-size:11px; }
+  .btn.danger { color:var(--app-danger); border-color:var(--app-danger-border); }
+  .btn.danger:hover { background:var(--app-danger-bg); }
+
+  /* radio group */
+  .radio-group { display:flex; gap:10px; flex-wrap:wrap; }
+  .radio-opt {
+    display:flex; align-items:center; gap:8px;
+    padding:8px 12px;
+    border:1px solid var(--app-border-strong);
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+    cursor:pointer; font-size:12px; color:var(--app-text-muted);
+    transition:border-color .15s ease, color .15s ease, background .15s ease;
+  }
+  .radio-opt:hover { border-color:var(--app-border-hover); color:var(--app-text); }
+  .radio-opt.sel { border-color:var(--app-accent-border); color:var(--app-accent); background:var(--app-accent-bg); }
+  .radio-dot { width:11px; height:11px; border-radius:999px; border:1px solid var(--app-border-hover); flex:0 0 auto; }
+  .radio-opt.sel .radio-dot { border-color:var(--app-accent); box-shadow:inset 0 0 0 3px var(--app-accent); }
+
+  /* inline switch (within panel controls) */
+  .inline-switch {
+    display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:11px 13px;
+    border:1px solid var(--app-border);
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+  }
+  .inline-switch .lab { font-size:12px; font-weight:500; color:var(--app-text); }
+  .inline-switch .desc { font-size:10.5px; color:var(--app-text-muted); margin-top:3px; }
+
+  /* permission pills */
+  .perm-list { display:flex; flex-direction:column; gap:9px; }
+  .perm-item {
+    display:flex; align-items:center; gap:12px;
+    padding:11px 13px;
+    border:1px solid var(--app-border);
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+  }
+  .perm-name { flex:1 1 auto; font-size:12px; color:var(--app-text); }
+  .perm-name .sub { font-size:10.5px; color:var(--app-text-muted); margin-top:2px; }
+  .pill {
+    font-size:9.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase;
+    padding:3px 9px; border-radius:999px;
+    border:1px solid var(--app-border-strong);
+    color:var(--app-text-muted); background:var(--app-surface-raised);
+    white-space:nowrap;
+  }
+  .pill.granted { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .pill.denied { color:var(--app-danger); border-color:var(--app-danger-border); background:var(--app-danger-bg); }
+  .pill.pending { color:var(--app-warn); border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+
+  /* model download */
+  .model-card {
+    border:1px solid var(--app-border);
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+    padding:12px 13px;
+  }
+  .model-top { display:flex; align-items:center; gap:12px; }
+  .model-meta { flex:1 1 auto; }
+  .model-meta .name { font-size:12px; color:var(--app-text); }
+  .model-meta .size { font-size:10.5px; color:var(--app-text-muted); margin-top:2px; }
+  .model-status { display:flex; align-items:center; gap:8px; }
+  .progress-wrap { margin-top:11px; display:none; }
+  .progress-wrap.show { display:block; }
+  .progress-head { display:flex; justify-content:space-between; font-size:10.5px; color:var(--app-text-muted); margin-bottom:6px; }
+  .progress-head b { color:var(--app-accent); }
+  .progress-track {
+    height:6px; border-radius:999px;
+    background:var(--app-surface-active);
+    border:1px solid var(--app-border);
+    overflow:hidden;
+  }
+  .progress-fill {
+    height:100%; width:0%;
+    background:linear-gradient(90deg, var(--app-accent-strong), var(--app-accent));
+    box-shadow:0 0 10px var(--app-accent-glow);
+    transition:width .25s ease;
+  }
+
+  /* chips / typeahead */
+  .chip-box {
+    border:1px solid var(--app-border-strong);
+    border-radius:8px;
+    background:var(--app-surface-subtle);
+    padding:8px;
+    display:flex; flex-wrap:wrap; gap:7px; align-items:center;
+  }
+  .chip {
+    display:inline-flex; align-items:center; gap:7px;
+    font-size:11px; color:var(--app-text);
+    padding:4px 6px 4px 10px;
+    border:1px solid var(--app-border-strong);
+    border-radius:999px;
+    background:var(--app-surface-raised);
+  }
+  .chip .x {
+    cursor:pointer; color:var(--app-text-subtle);
+    width:14px; height:14px; display:flex; align-items:center; justify-content:center;
+    border-radius:999px; font-size:11px;
+  }
+  .chip .x:hover { color:var(--app-danger); background:var(--app-danger-bg); }
+  .chip-box input {
+    flex:1 1 120px; min-width:120px; width:auto;
+    border:none; background:transparent; padding:5px 4px;
+    box-shadow:none;
+  }
+  .chip-box input:focus { box-shadow:none; }
+  .typeahead-wrap { position:relative; }
+  .suggestions {
+    position:absolute; left:0; right:0; top:calc(100% + 4px);
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border-strong);
+    border-radius:8px;
+    overflow:hidden; z-index:20;
+    display:none;
+  }
+  .suggestions.show { display:block; }
+  .suggestion {
+    padding:8px 11px; font-size:12px; color:var(--app-text-muted); cursor:pointer;
+  }
+  .suggestion:hover { background:var(--app-surface-hover); color:var(--app-text); }
+  .chip-meta { display:flex; align-items:center; justify-content:space-between; margin-top:9px; }
+  .chip-count { font-size:10.5px; color:var(--app-text-muted); }
+  .chip-count b { color:var(--app-accent); }
+
+  /* advanced reveal */
+  .reveal-toggle {
+    font:inherit; font-size:11px; color:var(--app-text-muted);
+    background:none; border:none; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px;
+    padding:4px 0;
+  }
+  .reveal-toggle:hover { color:var(--app-text); }
+  .reveal-toggle .caret { transition:transform .15s ease; display:inline-block; }
+  .reveal-toggle.open .caret { transform:rotate(90deg); }
+  .reveal-body { display:none; margin-top:12px; padding-top:14px; border-top:1px dashed var(--app-border); }
+  .reveal-body.open { display:block; }
+
+  /* disclosure note (ask ai) */
+  .note {
+    display:flex; gap:10px;
+    padding:11px 13px;
+    border:1px solid var(--app-info-border);
+    border-radius:8px;
+    background:var(--app-info-bg);
+    font-size:11px; line-height:1.5; color:var(--app-text);
+  }
+  .note .ic { color:var(--app-info); flex:0 0 auto; }
+  .note.warn { border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+  .note.warn .ic { color:var(--app-warn); }
+
+  .gated-note {
+    margin-top:12px; padding:12px 14px;
+    border:1px dashed var(--app-border);
+    border-radius:8px;
+    font-size:11px; color:var(--app-text-muted); line-height:1.5;
+    text-align:center;
+  }
+
+  /* ===== footer CTA ===== */
+  .footer {
+    flex:0 0 auto;
+    display:flex; align-items:center; gap:16px;
+    padding:14px 26px;
+    border-top:1px solid var(--app-border);
+    background:color-mix(in srgb, var(--app-surface) 88%, transparent);
+    backdrop-filter:blur(8px);
+    position:relative; z-index:5;
+  }
+  .footer-left { flex:1 1 auto; min-width:0; }
+  .footer-summary { font-size:11.5px; color:var(--app-text); line-height:1.45; }
+  .footer-summary b { color:var(--app-accent); font-weight:600; }
+  .footer-summary .off { color:var(--app-text-subtle); }
+  .recommend {
+    font:inherit; font-size:11.5px; color:var(--app-text-muted);
+    background:none; border:none; cursor:pointer;
+    text-decoration:underline; text-decoration-color:var(--app-border-strong);
+    text-underline-offset:3px;
+    padding:0; margin-top:5px; display:inline-block;
+  }
+  .recommend:hover { color:var(--app-accent); text-decoration-color:var(--app-accent-border); }
+  .cta {
+    flex:0 0 auto;
+    font:inherit; font-size:13px; font-weight:540;
+    padding:11px 20px; border-radius:8px;
+    background:var(--app-accent-bg);
+    color:var(--app-accent);
+    border:1px solid var(--app-accent-border);
+    cursor:pointer; white-space:nowrap;
+    transition:background .15s ease, box-shadow .15s ease;
+  }
+  .cta:hover { background:color-mix(in srgb, var(--app-accent-bg) 55%, var(--app-accent) 16%); box-shadow:0 0 0 3px var(--app-accent-glow); }
+
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+  <div class="window">
+    <!-- titlebar -->
+    <div class="titlebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="wordmark">mnema</div>
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme">
+        <span id="themeIcon">☾</span><span id="themeLabel">dark</span>
+      </button>
+    </div>
+
+    <!-- welcome -->
+    <div class="welcome">
+      <div class="welcome-eyebrow">Welcome · Setup</div>
+      <div class="welcome-title">Let's set up your recall.</div>
+      <div class="welcome-sub">Foundation pieces are <b>required</b> to record. Everything under Capabilities is optional — turn on what you want, skip the rest. You can change all of this later in Settings.</div>
+    </div>
+
+    <!-- scroll body -->
+    <div class="body" id="rowHost"></div>
+
+    <!-- footer -->
+    <div class="footer">
+      <div class="footer-left">
+        <div class="footer-summary" id="footerSummary"></div>
+        <button class="recommend" id="recommendBtn">↺ Use recommended setup</button>
+      </div>
+      <button class="cta" id="ctaBtn">Finish setup →</button>
+    </div>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- state ----------
+  // each feature: id, name, eyebrow, sub, section, required, on, icon, hintOn, hintOff
+  const features = [
+    // FOUNDATION (required)
+    { id:"permissions", section:"foundation", required:true, on:true,
+      name:"Permissions", eyebrow:"Foundation · Required", icon:"⚷",
+      sub:"Grant the macOS access mnema needs to capture your screen and audio.",
+      hint:"2 of 3 granted" },
+    { id:"capture", section:"foundation", required:true, on:true,
+      name:"Screen capture", eyebrow:"Foundation · Required", icon:"▭",
+      sub:"How your screen is recorded — resolution, quality, frame rate, and segment length.",
+      hint:"1080p · 2 fps" },
+    { id:"storage", section:"foundation", required:true, on:true,
+      name:"Storage & retention", eyebrow:"Foundation · Required", icon:"⛁",
+      sub:"Where recordings live on disk and how long mnema keeps them.",
+      hint:"~/Movies/mnema · 30 days" },
+
+    // CAPABILITIES (optional)
+    { id:"mic", section:"capabilities", required:false, on:false,
+      name:"Microphone capture", eyebrow:"Capability · Optional", icon:"🎙",
+      sub:"Record and transcribe what you say from your input device.",
+      hint:"Transcribe your voice" },
+    { id:"sysaudio", section:"capabilities", required:false, on:false,
+      name:"System audio", eyebrow:"Capability · Optional", icon:"♫",
+      sub:"Capture audio playing on your Mac — calls, videos, meetings. Requires screen capture.",
+      hint:"Requires screen capture" },
+    { id:"ocr", section:"capabilities", required:false, on:false, defaultBadge:true,
+      name:"OCR", eyebrow:"Capability · Optional", icon:"⌗",
+      sub:"Read on-screen text so you can search everything you've seen.",
+      hint:"Make screens searchable" },
+    { id:"transcription", section:"capabilities", required:false, on:false, defaultBadge:true,
+      name:"Audio transcription", eyebrow:"Capability · Optional", icon:"≋",
+      sub:"Turn captured audio into searchable, timestamped text.",
+      hint:"Speech → searchable text" },
+    { id:"privacy", section:"capabilities", required:false, on:false,
+      name:"Privacy · Excluded apps", eyebrow:"Capability · Optional", icon:"⨂",
+      sub:"Apps in this list are never captured — no frames, no text, no audio.",
+      hint:"Pause capture per app" },
+    { id:"askai", section:"capabilities", required:false, on:false,
+      name:"Ask AI", eyebrow:"Capability · Optional", icon:"✦",
+      sub:"Ask questions about your activity. Powered by the Reasoning Engine — cloud or fully local.",
+      hint:"Reasoning Engine" },
+  ];
+
+  // per-feature control state
+  const cfg = {
+    permissions: {
+      screen:"granted", mic:"pending", sysaudio:"denied",
+    },
+    capture: { res:"1080p", bitrate:"Medium", fps:2, segment:60, customW:1920, customH:1080, customBitrate:12 },
+    storage: { dir:"~/Movies/mnema", retention:"30", advOpen:false, cacheTtl:"48", autostart:true },
+    mic: { transcribe:true, device:"MacBook Pro Microphone" },
+    sysaudio: { transcribe:true },
+    ocr: { provider:"vision", model:"Apple Vision (built-in)", modelStatus:"available", lang:"eng", mode:"Accurate", progress:0 },
+    transcription: { provider:"whisper", model:"small", modelStatus:"missing", lang:"auto", progress:0 },
+    privacy: { apps:["1Password","Messages"], inputVal:"" },
+    askai: { configured:false, provider:"", model:"" },
+  };
+
+  const ALL_APPS = ["1Password","Bitwarden","Chase","Bank of America","Zoom","Signal","WhatsApp","Messages","Mail","Slack","Notes","Photos","Keychain Access","Tor Browser"];
+  const REC_PRIVACY = ["1Password","Chase","Zoom"];
+
+  let openId = "capture"; // expand Screen capture by default (reads like the sketch)
+
+  const host = document.getElementById("rowHost");
+
+  // ---------- helpers ----------
+  function el(tag, cls, html){ const e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e; }
+  function getFeature(id){ return features.find(f=>f.id===id); }
+
+  // ---------- render whole stack ----------
+  function render(){
+    host.innerHTML="";
+    const groups = [
+      { key:"foundation", label:"Foundation", tag:"<span class='req-tag'>Required</span>" },
+      { key:"capabilities", label:"Capabilities", tag:"<span class='opt-tag'>Optional</span>" },
+    ];
+    groups.forEach(g=>{
+      const lbl = el("div","section-label");
+      lbl.innerHTML = `<span>${g.label}</span><span style="opacity:.5">·</span>${g.tag}<span class="rule"></span>`;
+      host.appendChild(lbl);
+      features.filter(f=>f.section===g.key).forEach(f=> host.appendChild(renderRow(f)));
+    });
+    updateFooter();
+  }
+
+  function renderRow(f){
+    const expanded = openId===f.id && (f.required || f.on);
+    const row = el("div","row");
+    row.classList.toggle("expanded", expanded);
+    row.classList.toggle("on", f.on || f.required);
+    row.classList.toggle("req", f.required);
+    row.classList.toggle("disabled", !f.required && !f.on);
+    row.dataset.id = f.id;
+
+    // head
+    const head = el("div","row-head");
+    head.appendChild(el("div","row-icon", f.icon));
+
+    const titles = el("div","row-titles");
+    titles.appendChild(el("div","row-eyebrow", f.eyebrow));
+    const nameRow = el("div","row-name");
+    let nameHtml = f.name;
+    if(f.required) nameHtml += ` <span class="badge req">Required</span>`;
+    else if(f.defaultBadge) nameHtml += ` <span class="badge default">Default on</span>`;
+    nameRow.innerHTML = nameHtml;
+    titles.appendChild(nameRow);
+    titles.appendChild(el("div","row-sub", f.sub));
+    head.appendChild(titles);
+
+    // collapsed hint
+    if(!expanded){
+      const hint = el("div","row-hint", f.on||f.required ? f.hint : "Off");
+      head.appendChild(hint);
+    }
+
+    // switch
+    const sw = makeSwitch(f);
+    head.appendChild(sw);
+
+    row.appendChild(head);
+
+    // panel
+    const panel = el("div","panel");
+    const inner = el("div","panel-inner");
+    inner.appendChild(renderPanel(f));
+    panel.appendChild(inner);
+    row.appendChild(panel);
+
+    // head click → expand (only if interactive & not clicking switch)
+    head.addEventListener("click",(e)=>{
+      if(e.target.closest(".switch-wrap")) return;
+      if(!f.required && !f.on) return; // disabled can't expand
+      if(openId===f.id){ /* keep open; clicking expanded head does nothing per accordion */ return; }
+      openId=f.id;
+      render();
+      scrollRowIntoView(f.id);
+    });
+
+    return row;
+  }
+
+  function makeSwitch(f){
+    const wrap = el("div","switch-wrap");
+    const sw = el("div","switch");
+    sw.setAttribute("role","switch");
+    sw.setAttribute("tabindex","0");
+    const on = f.required ? true : f.on;
+    sw.classList.toggle("on", on);
+    sw.classList.toggle("locked", f.required);
+    sw.setAttribute("aria-checked", on?"true":"false");
+    sw.appendChild(el("div","thumb"));
+    wrap.appendChild(sw);
+    if(f.required){
+      const lock = el("span","switch-lock","🔒");
+      lock.title="Required — always on";
+      wrap.appendChild(lock);
+    }
+    const toggle = (e)=>{
+      e.stopPropagation();
+      if(f.required) return;
+      f.on = !f.on;
+      if(!f.on && openId===f.id) openId=null; // turning off collapses
+      if(f.on) openId=f.id; // turning on opens it
+      render();
+    };
+    sw.addEventListener("click", toggle);
+    sw.addEventListener("keydown",(e)=>{ if(e.key===" "||e.key==="Enter"){ e.preventDefault(); toggle(e); } });
+    return wrap;
+  }
+
+  function scrollRowIntoView(id){
+    requestAnimationFrame(()=>{
+      const row = host.querySelector(`.row[data-id="${id}"]`);
+      if(row) row.scrollIntoView({behavior:"smooth", block:"nearest"});
+    });
+  }
+
+  // ---------- panels ----------
+  function renderPanel(f){
+    switch(f.id){
+      case "permissions": return panelPermissions();
+      case "capture": return panelCapture();
+      case "storage": return panelStorage();
+      case "mic": return panelMic();
+      case "sysaudio": return panelSysAudio();
+      case "ocr": return panelOcr();
+      case "transcription": return panelTranscription();
+      case "privacy": return panelPrivacy();
+      case "askai": return panelAskAi();
+    }
+    return el("div");
+  }
+
+  // generic control block
+  function ctl(label, desc){
+    const c = el("div","control");
+    if(label) c.appendChild(el("div","control-label", label));
+    if(desc) c.appendChild(el("div","control-desc", desc));
+    return c;
+  }
+
+  function segmented(opts, current, onPick){
+    const seg = el("div","segmented");
+    opts.forEach(o=>{
+      const b = el("button",null,o);
+      if(o===current) b.classList.add("sel");
+      b.addEventListener("click",()=>onPick(o));
+      seg.appendChild(b);
+    });
+    return seg;
+  }
+
+  function slider(min,max,step,val,fmt,onInput){
+    const wrap = el("div","slider-wrap");
+    const r = el("input"); r.type="range"; r.min=min; r.max=max; r.step=step; r.value=val;
+    const out = el("div","slider-val", fmt(val));
+    r.addEventListener("input",()=>{ out.textContent=fmt(+r.value); onInput(+r.value); });
+    wrap.appendChild(r); wrap.appendChild(out);
+    return wrap;
+  }
+
+  function selectEl(opts, current, onChange){
+    const s = el("select");
+    opts.forEach(o=>{
+      const op = el("option",null, o.label||o);
+      op.value = o.value!=null?o.value:o;
+      if((o.value!=null?o.value:o)===current) op.selected=true;
+      s.appendChild(op);
+    });
+    s.addEventListener("change",()=>onChange(s.value));
+    return s;
+  }
+
+  function radioGroup(opts, current, onPick){
+    const g = el("div","radio-group");
+    opts.forEach(o=>{
+      const opt = el("div","radio-opt");
+      if(o.value===current) opt.classList.add("sel");
+      opt.innerHTML = `<span class="radio-dot"></span><span>${o.label}</span>`;
+      opt.addEventListener("click",()=>onPick(o.value));
+      g.appendChild(opt);
+    });
+    return g;
+  }
+
+  // ---------- PERMISSIONS ----------
+  function panelPermissions(){
+    const c = ctl(null, null);
+    const list = el("div","perm-list");
+    const perms = [
+      { key:"screen", name:"Screen recording", sub:"Record what's on your display." },
+      { key:"mic", name:"Microphone", sub:"Capture your voice input." },
+      { key:"sysaudio", name:"System audio", sub:"Capture audio playing on your Mac." },
+    ];
+    perms.forEach(p=>{
+      const st = cfg.permissions[p.key];
+      const item = el("div","perm-item");
+      const nm = el("div","perm-name", `${p.name}<div class="sub">${p.sub}</div>`);
+      item.appendChild(nm);
+      const pillCls = st==="granted"?"granted":(st==="denied"?"denied":"pending");
+      const pillTxt = st==="granted"?"Granted":(st==="denied"?"Denied":"Not requested");
+      const pill = el("div",`pill ${pillCls}`, pillTxt);
+      item.appendChild(pill);
+      const btn = el("button","btn small", st==="granted"?"Re-check":(st==="denied"?"Open Settings":"Grant access"));
+      btn.addEventListener("click",()=>{
+        cfg.permissions[p.key] = st==="granted" ? "denied" : (st==="denied" ? "pending" : "granted");
+        rerenderPanel("permissions");
+        recomputePermHint();
+      });
+      item.appendChild(btn);
+      list.appendChild(item);
+    });
+    c.appendChild(list);
+    return c;
+  }
+  function recomputePermHint(){
+    const g = Object.values(cfg.permissions).filter(v=>v==="granted").length;
+    getFeature("permissions").hint = `${g} of 3 granted`;
+  }
+
+  // ---------- SCREEN CAPTURE ----------
+  function panelCapture(){
+    const frag = el("div");
+
+    const cRes = ctl("Resolution","Higher resolution captures more detail but uses more disk.");
+    const resSeg = segmented(["Original","1080p","1440p","4K","Custom"], cfg.capture.res, v=>{ cfg.capture.res=v; rerenderPanel("capture"); refreshCaptureHint(); });
+    cRes.appendChild(resSeg);
+    if(cfg.capture.res==="Custom"){
+      const custom = el("div","input-row"); custom.style.marginTop="9px"; custom.style.maxWidth="260px";
+      const w=el("input"); w.type="number"; w.value=cfg.capture.customW; w.placeholder="W";
+      const x=el("span"); x.textContent="×"; x.style.cssText="align-self:center;color:var(--app-text-muted)";
+      const h=el("input"); h.type="number"; h.value=cfg.capture.customH; h.placeholder="H";
+      w.addEventListener("input",()=>cfg.capture.customW=+w.value);
+      h.addEventListener("input",()=>cfg.capture.customH=+h.value);
+      custom.append(w,x,h);
+      cRes.appendChild(custom);
+    }
+    frag.appendChild(cRes);
+
+    const cBit = ctl("Bitrate","Controls video quality vs. file size.");
+    cBit.appendChild(segmented(["Low","Medium","High","Custom"], cfg.capture.bitrate, v=>{ cfg.capture.bitrate=v; rerenderPanel("capture"); }));
+    if(cfg.capture.bitrate==="Custom"){
+      cBit.appendChild(slider(1,40,1,cfg.capture.customBitrate, v=>`${v} Mbps`, v=>cfg.capture.customBitrate=v));
+    }
+    frag.appendChild(cBit);
+
+    const r2 = el("div","row2");
+    const cFps = ctl("Frame rate","Frames captured per second. ~2 fps is ideal for recall.");
+    cFps.appendChild(slider(1,120,1,cfg.capture.fps, v=>`${v} fps`, v=>{ cfg.capture.fps=v; refreshCaptureHint(); }));
+    r2.appendChild(cFps);
+
+    const cSeg = ctl("Segment duration","Length of each recording file. Capped at 5 minutes.");
+    cSeg.appendChild(slider(10,300,5,cfg.capture.segment, v=>`${Math.floor(v/60)}m ${v%60}s`, v=>cfg.capture.segment=v));
+    r2.appendChild(cSeg);
+    frag.appendChild(r2);
+
+    return frag;
+  }
+  function refreshCaptureHint(){
+    getFeature("capture").hint = `${cfg.capture.res} · ${cfg.capture.fps} fps`;
+  }
+
+  // ---------- STORAGE ----------
+  function panelStorage(){
+    const frag = el("div");
+
+    const cDir = ctl("Save directory","Recordings and the searchable index are stored here.");
+    const ir = el("div","input-row");
+    const inp = el("input"); inp.type="text"; inp.value=cfg.storage.dir;
+    inp.addEventListener("input",()=>cfg.storage.dir=inp.value);
+    const br = el("button","btn","Browse…");
+    br.addEventListener("click",()=>{ cfg.storage.dir="~/Library/mnema/captures"; rerenderPanel("storage"); refreshStorageHint(); });
+    ir.append(inp,br);
+    cDir.appendChild(ir);
+    frag.appendChild(cDir);
+
+    const cRet = ctl("Retention","Older recordings are automatically deleted after this period.");
+    cRet.appendChild(selectEl(
+      [{value:"never",label:"Never delete"},{value:"7",label:"7 days"},{value:"14",label:"14 days"},{value:"30",label:"30 days"}],
+      cfg.storage.retention, v=>{ cfg.storage.retention=v; refreshStorageHint(); }
+    ));
+    frag.appendChild(cRet);
+
+    // advanced reveal
+    const rev = el("button","reveal-toggle"+(cfg.storage.advOpen?" open":""));
+    rev.innerHTML = `<span class="caret">▸</span> Advanced`;
+    const revBody = el("div","reveal-body"+(cfg.storage.advOpen?" open":""));
+
+    const cTtl = ctl("Preview cache TTL","How long generated thumbnails stay cached (hours).");
+    cTtl.appendChild(selectEl(
+      [{value:"12",label:"12 hours"},{value:"24",label:"24 hours"},{value:"48",label:"48 hours"},{value:"168",label:"7 days"}],
+      cfg.storage.cacheTtl, v=>cfg.storage.cacheTtl=v
+    ));
+    revBody.appendChild(cTtl);
+
+    const cAuto = ctl("Start at login","");
+    const isw = el("div","inline-switch");
+    isw.innerHTML = `<div><div class="lab">Auto-start recording</div><div class="desc">Begin capturing automatically when you log in.</div></div>`;
+    const aSw = el("div","switch"+(cfg.storage.autostart?" on":"")); aSw.setAttribute("role","switch"); aSw.appendChild(el("div","thumb"));
+    aSw.addEventListener("click",()=>{ cfg.storage.autostart=!cfg.storage.autostart; aSw.classList.toggle("on"); });
+    isw.appendChild(aSw);
+    cAuto.appendChild(isw);
+    revBody.appendChild(cAuto);
+
+    rev.addEventListener("click",()=>{ cfg.storage.advOpen=!cfg.storage.advOpen; rev.classList.toggle("open"); revBody.classList.toggle("open"); });
+
+    const wrap = el("div","control");
+    wrap.appendChild(rev); wrap.appendChild(revBody);
+    frag.appendChild(wrap);
+
+    return frag;
+  }
+  function refreshStorageHint(){
+    const ret = cfg.storage.retention==="never"?"keep forever":`${cfg.storage.retention} days`;
+    getFeature("storage").hint = `${cfg.storage.dir} · ${ret}`;
+  }
+
+  // ---------- MIC ----------
+  function panelMic(){
+    const frag = el("div");
+    const c1 = ctl("Transcribe your microphone","");
+    const isw = el("div","inline-switch");
+    isw.innerHTML = `<div><div class="lab">Transcribe mic audio</div><div class="desc">Turn what you say into searchable text.</div></div>`;
+    const sw = el("div","switch"+(cfg.mic.transcribe?" on":"")); sw.setAttribute("role","switch"); sw.appendChild(el("div","thumb"));
+    sw.addEventListener("click",()=>{ cfg.mic.transcribe=!cfg.mic.transcribe; sw.classList.toggle("on"); });
+    isw.appendChild(sw);
+    c1.appendChild(isw);
+    frag.appendChild(c1);
+
+    const c2 = ctl("Input device","Which microphone to capture from.");
+    c2.appendChild(selectEl(
+      ["MacBook Pro Microphone","External USB Mic","AirPods Pro","Studio Display Microphone"],
+      cfg.mic.device, v=>cfg.mic.device=v
+    ));
+    frag.appendChild(c2);
+    return frag;
+  }
+
+  // ---------- SYSTEM AUDIO ----------
+  function panelSysAudio(){
+    const frag = el("div");
+    frag.appendChild((()=>{ const n=el("div","note"); n.innerHTML=`<span class="ic">ℹ</span><span>System audio capture requires <b>Screen capture</b> (Foundation) to be active. It shares the same recording stream.</span>`; return n; })());
+    const c1 = ctl("Transcribe system audio","");
+    c1.style.marginTop="14px";
+    const isw = el("div","inline-switch");
+    isw.innerHTML = `<div><div class="lab">Transcribe system audio</div><div class="desc">Capture and transcribe calls, videos, and meetings.</div></div>`;
+    const sw = el("div","switch"+(cfg.sysaudio.transcribe?" on":"")); sw.setAttribute("role","switch"); sw.appendChild(el("div","thumb"));
+    sw.addEventListener("click",()=>{ cfg.sysaudio.transcribe=!cfg.sysaudio.transcribe; sw.classList.toggle("on"); });
+    isw.appendChild(sw);
+    c1.appendChild(isw);
+    frag.appendChild(c1);
+    return frag;
+  }
+
+  // ---------- OCR ----------
+  function panelOcr(){
+    const frag = el("div");
+    const cProv = ctl("OCR provider","Apple Vision is built-in and fast. Tesseract supports more languages offline.");
+    cProv.appendChild(radioGroup(
+      [{value:"vision",label:"Apple Vision"},{value:"tesseract",label:"Tesseract"}],
+      cfg.ocr.provider, v=>{
+        cfg.ocr.provider=v;
+        if(v==="vision"){ cfg.ocr.model="Apple Vision (built-in)"; cfg.ocr.modelStatus="available"; }
+        else { cfg.ocr.model="tessdata · eng"; cfg.ocr.modelStatus="missing"; }
+        rerenderPanel("ocr");
+      }
+    ));
+    frag.appendChild(cProv);
+
+    // model card
+    const cModel = ctl("Model","");
+    cModel.appendChild(modelCard("ocr"));
+    frag.appendChild(cModel);
+
+    if(cfg.ocr.provider==="tesseract"){
+      const cLang = ctl("Language","Language data used for recognition.");
+      cLang.appendChild(selectEl(
+        [{value:"eng",label:"English"},{value:"fra",label:"French"},{value:"deu",label:"German"},{value:"jpn",label:"Japanese"}],
+        cfg.ocr.lang, v=>cfg.ocr.lang=v
+      ));
+      frag.appendChild(cLang);
+    }
+
+    const cMode = ctl("Recognition mode","Accurate reads more text; Fast uses less CPU.");
+    cMode.appendChild(segmented(["Fast","Accurate"], cfg.ocr.mode, v=>cfg.ocr.mode=v));
+    frag.appendChild(cMode);
+
+    return frag;
+  }
+
+  // ---------- TRANSCRIPTION ----------
+  function panelTranscription(){
+    const frag = el("div");
+    const cProv = ctl("Transcription provider","Local Whisper runs fully on-device. Apple Speech is built-in. Parakeet is fast on Apple Silicon.");
+    cProv.appendChild(radioGroup(
+      [{value:"whisper",label:"Local Whisper"},{value:"apple",label:"Apple Speech"},{value:"parakeet",label:"Parakeet"}],
+      cfg.transcription.provider, v=>{
+        cfg.transcription.provider=v;
+        cfg.transcription.modelStatus = v==="apple" ? "available" : "missing";
+        rerenderPanel("transcription");
+      }
+    ));
+    frag.appendChild(cProv);
+
+    if(cfg.transcription.provider==="whisper"){
+      const cSize = ctl("Model size","Larger models are more accurate but slower and bigger.");
+      cSize.appendChild(segmented(["base","small","medium","large"], cfg.transcription.model, v=>{
+        cfg.transcription.model=v; cfg.transcription.modelStatus="missing"; cfg.transcription.progress=0; rerenderPanel("transcription");
+      }));
+      frag.appendChild(cSize);
+    }
+
+    const cModel = ctl("Model","");
+    cModel.appendChild(modelCard("transcription"));
+    frag.appendChild(cModel);
+
+    const cLang = ctl("Language","Auto-detect, or pin a single language.");
+    cLang.appendChild(selectEl(
+      [{value:"auto",label:"Auto-detect"},{value:"en",label:"English"},{value:"fr",label:"French"},{value:"de",label:"German"}],
+      cfg.transcription.lang, v=>cfg.transcription.lang=v
+    ));
+    frag.appendChild(cLang);
+
+    return frag;
+  }
+
+  // shared model card with download progress
+  function modelCard(featId){
+    const st = cfg[featId];
+    const card = el("div","model-card");
+    const top = el("div","model-top");
+    const sizes = { ocr:"—", base:"74 MB", small:"244 MB", medium:"769 MB", large:"1.5 GB" };
+    let sizeTxt = "—";
+    if(featId==="transcription") sizeTxt = sizes[st.model] || "244 MB";
+    else if(featId==="ocr") sizeTxt = st.provider==="vision"?"built-in":"~30 MB";
+    const meta = el("div","model-meta", `<div class="name">${st.model}</div><div class="size">${sizeTxt}</div>`);
+    top.appendChild(meta);
+
+    const statusBox = el("div","model-status");
+    if(st.modelStatus==="available"){
+      statusBox.appendChild(el("div","pill granted","Available"));
+    } else if(st.modelStatus==="downloading"){
+      statusBox.appendChild(el("div","pill pending","Downloading"));
+      const cancel = el("button","btn small danger","Cancel");
+      cancel.addEventListener("click",()=>{ stopDownload(featId); st.modelStatus="missing"; st.progress=0; rerenderPanel(featId); });
+      statusBox.appendChild(cancel);
+    } else {
+      statusBox.appendChild(el("div","pill","Missing"));
+      const dl = el("button","btn small accent","Download");
+      dl.addEventListener("click",()=>startDownload(featId));
+      statusBox.appendChild(dl);
+    }
+    top.appendChild(statusBox);
+    card.appendChild(top);
+
+    const pw = el("div","progress-wrap"+(st.modelStatus==="downloading"?" show":""));
+    pw.innerHTML = `<div class="progress-head"><span>Downloading model…</span><b>${st.progress}%</b></div><div class="progress-track"><div class="progress-fill" style="width:${st.progress}%"></div></div>`;
+    card.appendChild(pw);
+
+    return card;
+  }
+
+  const dlTimers = {};
+  function startDownload(featId){
+    const st = cfg[featId];
+    st.modelStatus="downloading"; st.progress=0;
+    rerenderPanel(featId);
+    stopDownload(featId);
+    dlTimers[featId] = setInterval(()=>{
+      st.progress = Math.min(100, st.progress + (4 + Math.random()*9));
+      const fill = host.querySelector(`.row[data-id="${featId}"] .progress-fill`);
+      const lbl = host.querySelector(`.row[data-id="${featId}"] .progress-head b`);
+      if(fill) fill.style.width = st.progress+"%";
+      if(lbl) lbl.textContent = Math.round(st.progress)+"%";
+      if(st.progress>=100){
+        stopDownload(featId);
+        st.progress=100; st.modelStatus="available";
+        rerenderPanel(featId);
+      }
+    }, 260);
+  }
+  function stopDownload(featId){ if(dlTimers[featId]){ clearInterval(dlTimers[featId]); dlTimers[featId]=null; } }
+
+  // ---------- PRIVACY ----------
+  function panelPrivacy(){
+    const frag = el("div");
+    const c = ctl("Excluded apps","Start typing to find an app. These are never captured.");
+
+    const ta = el("div","typeahead-wrap");
+    const box = el("div","chip-box");
+    const st = cfg.privacy;
+    function renderChips(){
+      box.querySelectorAll(".chip").forEach(n=>n.remove());
+      st.apps.forEach(a=>{
+        const chip = el("div","chip", `<span>${a}</span>`);
+        const x = el("span","x","✕");
+        x.addEventListener("click",()=>{ st.apps = st.apps.filter(z=>z!==a); rerenderPanel("privacy"); });
+        chip.appendChild(x);
+        box.insertBefore(chip, inp);
+      });
+    }
+    const inp = el("input"); inp.type="text"; inp.placeholder= st.apps.length?"Add another…":"e.g. 1Password, Chase…";
+    box.appendChild(inp);
+
+    const sug = el("div","suggestions");
+    ta.appendChild(box); ta.appendChild(sug);
+
+    function showSuggestions(q){
+      const matches = ALL_APPS.filter(a=> !st.apps.includes(a) && a.toLowerCase().includes(q.toLowerCase())).slice(0,6);
+      sug.innerHTML="";
+      if(!q || matches.length===0){ sug.classList.remove("show"); return; }
+      matches.forEach(m=>{
+        const s = el("div","suggestion", m);
+        s.addEventListener("mousedown",(e)=>{ e.preventDefault(); st.apps.push(m); rerenderPanel("privacy"); });
+        sug.appendChild(s);
+      });
+      sug.classList.add("show");
+    }
+    inp.addEventListener("input",()=>showSuggestions(inp.value));
+    inp.addEventListener("focus",()=>showSuggestions(inp.value));
+    inp.addEventListener("blur",()=>setTimeout(()=>sug.classList.remove("show"),120));
+    inp.addEventListener("keydown",(e)=>{
+      if(e.key==="Enter" && inp.value.trim()){
+        const v = inp.value.trim();
+        if(!st.apps.includes(v)){ st.apps.push(v); rerenderPanel("privacy"); }
+      }
+    });
+
+    c.appendChild(ta);
+    renderChips();
+
+    const meta = el("div","chip-meta");
+    meta.innerHTML = `<span class="chip-count"><b>${st.apps.length}</b> app${st.apps.length===1?"":"s"} excluded</span>`;
+    const rec = el("button","btn small","Apply recommended");
+    rec.addEventListener("click",()=>{
+      REC_PRIVACY.forEach(a=>{ if(!st.apps.includes(a)) st.apps.push(a); });
+      rerenderPanel("privacy");
+    });
+    meta.appendChild(rec);
+    c.appendChild(meta);
+
+    frag.appendChild(c);
+    return frag;
+  }
+
+  // ---------- ASK AI ----------
+  function panelAskAi(){
+    const frag = el("div");
+    const st = cfg.askai;
+
+    if(!st.configured){
+      const note = el("div","note warn");
+      note.innerHTML = `<span class="ic">⚠</span><span>Ask AI needs the <b>Reasoning Engine</b> configured first — either a cloud provider (Anthropic / OpenAI) or a fully-local one (Ollama / Llamafile). API keys are stored in your OS keychain, never in config files.</span>`;
+      frag.appendChild(note);
+      const c = ctl(null,null);
+      const b = el("button","btn accent","Choose provider + add API key");
+      b.addEventListener("click",()=>{
+        st.configured=true; st.provider="Anthropic"; st.model="claude-haiku-4.5";
+        rerenderPanel("askai");
+      });
+      c.appendChild(b);
+      frag.appendChild(c);
+      return frag;
+    }
+
+    const note = el("div","note");
+    note.innerHTML = `<span class="ic">✓</span><span>Reasoning Engine configured — key stored in the macOS keychain under <b>${st.provider}</b>.</span>`;
+    frag.appendChild(note);
+
+    const cProv = ctl("Provider","Where reasoning runs. Local providers keep everything on-device.");
+    cProv.style.marginTop="14px";
+    cProv.appendChild(selectEl(
+      ["Anthropic","OpenAI","Ollama (local)","Llamafile (local)"],
+      st.provider, v=>{
+        st.provider=v;
+        st.model = v.startsWith("Anthropic")?"claude-haiku-4.5": v.startsWith("OpenAI")?"gpt-4o-mini": "llama3.1:8b";
+        rerenderPanel("askai");
+      }
+    ));
+    frag.appendChild(cProv);
+
+    const models = {
+      "Anthropic":["claude-haiku-4.5","claude-sonnet-4.5","claude-opus-4.1"],
+      "OpenAI":["gpt-4o-mini","gpt-4o","o4-mini"],
+      "Ollama (local)":["llama3.1:8b","qwen2.5:14b","mistral:7b"],
+      "Llamafile (local)":["llava-1.6","mistral-7b","phi-3"],
+    };
+    const cModel = ctl("Model","");
+    cModel.appendChild(selectEl(models[st.provider]||["claude-haiku-4.5"], st.model, v=>st.model=v));
+    frag.appendChild(cModel);
+
+    const reconf = ctl(null,null);
+    const rb = el("button","btn small","Reconfigure key");
+    rb.addEventListener("click",()=>{ st.configured=false; rerenderPanel("askai"); });
+    reconf.appendChild(rb);
+    frag.appendChild(reconf);
+
+    return frag;
+  }
+
+  // ---------- partial re-render of one open panel (preserve focus where possible) ----------
+  function rerenderPanel(featId){
+    const f = getFeature(featId);
+    // update hints affected
+    if(featId==="permissions") recomputePermHint();
+    if(featId==="capture") refreshCaptureHint();
+    if(featId==="storage") refreshStorageHint();
+
+    const row = host.querySelector(`.row[data-id="${featId}"]`);
+    if(!row || !row.classList.contains("expanded")){ render(); return; }
+    const inner = row.querySelector(".panel-inner");
+    inner.innerHTML="";
+    inner.appendChild(renderPanel(f));
+    updateFooter();
+  }
+
+  // ---------- footer summary ----------
+  function updateFooter(){
+    const on = features.filter(f=>!f.required && f.on).map(f=>f.name.replace(" · Excluded apps","").replace(" capture","").replace("Audio ","").replace("Microphone","Mic"));
+    const summary = document.getElementById("footerSummary");
+    const reqTxt = `<b>Foundation</b> ready`;
+    let capTxt;
+    if(on.length===0) capTxt = `<span class="off">no optional capabilities on</span>`;
+    else capTxt = on.map(n=>`<b>${n}</b>`).join(", ");
+    summary.innerHTML = `${reqTxt} · ${capTxt}`;
+
+    const anyOn = features.some(f=>!f.required && f.on);
+    document.getElementById("ctaBtn").textContent = anyOn ? "Start recording" : "Finish setup →";
+  }
+
+  // ---------- recommended preset ----------
+  function applyRecommended(){
+    // Mic + OCR + Transcription + Privacy on; System audio + Ask AI off
+    const presetOn = { mic:true, ocr:true, transcription:true, privacy:true, sysaudio:false, askai:false };
+    features.forEach(f=>{ if(!f.required && presetOn[f.id]!=null) f.on = presetOn[f.id]; });
+    // sensible control defaults for the turned-on ones
+    cfg.privacy.apps = [...new Set([...cfg.privacy.apps, ...REC_PRIVACY])];
+    if(cfg.transcription.modelStatus==="missing") { /* leave as missing so download UI is reachable */ }
+    openId = "ocr"; // surface a configurable optional one
+    render();
+    flashCta();
+  }
+  function flashCta(){
+    const cta = document.getElementById("ctaBtn");
+    cta.style.boxShadow = "0 0 0 3px var(--app-accent-glow)";
+    setTimeout(()=>cta.style.boxShadow="",600);
+  }
+
+  document.getElementById("recommendBtn").addEventListener("click", applyRecommended);
+  document.getElementById("ctaBtn").addEventListener("click",()=>{
+    const cta = document.getElementById("ctaBtn");
+    const orig = cta.textContent;
+    cta.textContent = "✓ "+orig;
+    setTimeout(()=>cta.textContent=orig, 1100);
+  });
+
+  // ---------- theme toggle ----------
+  const themeToggle = document.getElementById("themeToggle");
+  themeToggle.addEventListener("click",()=>{
+    const html = document.documentElement;
+    const light = html.getAttribute("data-theme")==="light";
+    html.setAttribute("data-theme", light?"dark":"light");
+    document.getElementById("themeIcon").textContent = light?"☾":"☀";
+    document.getElementById("themeLabel").textContent = light?"dark":"light";
+  });
+
+  // ---------- init ----------
+  recomputePermHint();
+  refreshCaptureHint();
+  refreshStorageHint();
+  render();
+})();
+</script>
+</body>
+</html>

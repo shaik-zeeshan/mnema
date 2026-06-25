@@ -12,12 +12,14 @@
   // (PER provider when `exactIdPerProvider`) so a pasted id never silently
   // resolves to the wrong provider; `null` (the sentinel row) reports "clear".
   //
-  // Positioning has two modes: inline (the composer pill, an absolute popover
-  // anchored above the trigger) and `portal` (Settings — portaled to <body> and
-  // fixed-positioned from the trigger rect, so no overflow/transform ancestor in
-  // the settings card can clip it). See ADR 0033/0034.
+  // Positioning is always CSS-relative to the trigger (never portaled): the
+  // `block` Settings menu pins directly below the trigger, the inline composer
+  // pill opens upward. Body-portaling was dropped — across Settings' inner
+  // scroll container the trigger rect is measured in a different coordinate
+  // space in the Tauri WKWebView, which floated the menu off-screen; the cards
+  // are built without `overflow:hidden` so an inline menu shows fine. This is
+  // the same approach as Select/Combobox. See ADR 0033/0034.
   import { tick } from "svelte";
-  import { Portal } from "bits-ui";
   import {
     providerLabelById,
     pinnableEnginesFromModelPool,
@@ -48,7 +50,6 @@
     loading = false,
     failures = [],
     onretry,
-    portal = false,
     open = $bindable(false),
     onopen,
     onselect,
@@ -91,8 +92,6 @@
     failures?: { provider: string; label: string; reason: string }[];
     /** Re-list the failed providers. */
     onretry?: () => void;
-    /** Portal the popover to <body> and fixed-position it (Settings). */
-    portal?: boolean;
     /** Open state — bindable so the parent can close it externally. */
     open?: boolean;
     /** Fired when the menu opens, so the parent can (re)load the pool. */
@@ -106,8 +105,28 @@
   let highlight = $state(0);
   let searchEl = $state<HTMLInputElement | null>(null);
   let triggerEl = $state<HTMLButtonElement | null>(null);
-  let panelStyle = $state("");
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  // Per-option element refs, keyed by flat option index, so keyboard navigation
+  // can scroll the highlighted row into the capped (`overflow-y:auto`) list.
+  let optionEls: Record<number, HTMLButtonElement | null> = {};
+
+  // After `highlight` moves via the keyboard, keep the active row in view so
+  // Enter never commits an option that has scrolled out of the viewport. Only
+  // meaningful while the menu is open and an option is highlighted.
+  function scrollHighlightIntoView(): void {
+    if (!open) return;
+    void tick().then(() => {
+      optionEls[highlight]?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  // Block (Settings) flip: the popover is CSS-pinned below the trigger, so inside
+  // Settings' inner `overflow:auto` scroll region it can clip when opened near the
+  // bottom. Mirror the Combobox/Select flip — on open, measure room below vs above
+  // the trigger and anchor upward when there isn't enough room below. Purely
+  // additive: the default stays the existing downward open, and the inline (Chat)
+  // pill is untouched (it already opens upward by design).
+  let openUp = $state(false);
 
   // Connected providers, in config order, with their display labels.
   let connectedProviders = $derived(
@@ -233,27 +252,23 @@
   // The selectable subset, for keyboard navigation bounds.
   let pickerOptions = $derived(pickerRows.filter((row) => row.type === "option"));
 
-  function updatePanelPosition(): void {
-    const el = triggerEl;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    // Anchor the panel above the trigger: pin its bottom just over the trigger's
-    // top so it opens upward, away from a clipped card edge.
-    panelStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; width: ${rect.width}px;`;
+  // Measure room below vs above the trigger and flip the block popover upward
+  // when there isn't enough room below (and there's more above). The inline pill
+  // keeps its fixed upward open — only `--block` consults this. CSS `max-height`
+  // still bounds the panel; this just chooses which edge it anchors to.
+  function recomputeOpenDirection(): void {
+    if (!block || !triggerEl) {
+      openUp = false;
+      return;
+    }
+    const rect = triggerEl.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    // Search row (~37px) + list (max 260px) + chrome — keep in sync with the
+    // .mpm-list max-height below.
+    const needed = 300;
+    openUp = spaceBelow < needed && spaceAbove > spaceBelow;
   }
-
-  // While a portaled menu is open, keep it pinned to the trigger as the page
-  // scrolls or resizes (capture phase catches inner scrolling containers too).
-  $effect(() => {
-    if (!open || !portal) return;
-    const handler = () => updatePanelPosition();
-    window.addEventListener("scroll", handler, true);
-    window.addEventListener("resize", handler);
-    return () => {
-      window.removeEventListener("scroll", handler, true);
-      window.removeEventListener("resize", handler);
-    };
-  });
 
   function openMenu(): void {
     if (closeTimer !== null) {
@@ -263,14 +278,23 @@
     open = true;
     query = "";
     highlight = 0;
+    recomputeOpenDirection();
     onopen?.();
-    if (portal) updatePanelPosition();
     void tick().then(() => searchEl?.focus());
   }
 
   function closeMenu(): void {
     open = false;
     query = "";
+  }
+
+  // Closing tears down the popover (and its focused search input) via `{#if open}`,
+  // so on keyboard-originated closes (Escape, Enter-commit) return focus to the
+  // trigger rather than letting it fall to <body>. Not used on outside-click /
+  // mount, where stealing focus would be surprising.
+  function closeMenuToTrigger(): void {
+    closeMenu();
+    void tick().then(() => triggerEl?.focus());
   }
 
   function toggleMenu(): void {
@@ -299,38 +323,64 @@
     if (event.key === "ArrowDown") {
       event.preventDefault();
       highlight = Math.min(highlight + 1, options.length - 1);
+      scrollHighlightIntoView();
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       highlight = Math.max(highlight - 1, 0);
+      scrollHighlightIntoView();
     } else if (event.key === "Enter") {
       event.preventDefault();
       const choice = options[highlight];
-      if (choice && choice.type === "option") selectOption(choice.option);
+      if (choice && choice.type === "option") {
+        selectOption(choice.option);
+        // Keyboard-commit: return focus to the trigger (the search input is gone).
+        void tick().then(() => triggerEl?.focus());
+      }
     } else if (event.key === "Escape") {
       event.stopPropagation();
-      closeMenu();
+      closeMenuToTrigger();
     }
   }
 </script>
 
 {#snippet popover()}
-  <div class="mpm-pop" class:mpm-pop--inline={!portal} style={portal ? panelStyle : undefined}>
-    <input
-      bind:this={searchEl}
-      bind:value={query}
-      class="mpm-search"
-      type="text"
-      role="combobox"
-      aria-expanded="true"
-      aria-controls="mpm-list"
-      aria-label="Search models"
-      placeholder="Search or paste a model id…"
-      spellcheck="false"
-      autocomplete="off"
-      oninput={() => (highlight = 0)}
-      onkeydown={onSearchKeydown}
-      onblur={closeSoon}
-    />
+  <div
+    class="mpm-pop"
+    class:mpm-pop--block={block}
+    class:mpm-pop--inline={!block}
+    class:mpm-pop--up={openUp}
+  >
+    <div class="mpm-search">
+      <svg
+        class="mpm-search-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7" />
+        <path d="M21 21l-4.3-4.3" />
+      </svg>
+      <input
+        bind:this={searchEl}
+        bind:value={query}
+        class="mpm-search-input"
+        type="text"
+        role="combobox"
+        aria-expanded="true"
+        aria-controls="mpm-list"
+        aria-label="Search models"
+        placeholder="Search or paste a model id…"
+        spellcheck="false"
+        autocomplete="off"
+        oninput={() => (highlight = 0)}
+        onkeydown={onSearchKeydown}
+        onblur={closeSoon}
+      />
+    </div>
     <ul id="mpm-list" class="mpm-list" role="listbox" aria-label="Model">
       {#each pickerRows as row (row.key)}
         {#if row.type === "header"}
@@ -339,6 +389,7 @@
           <li role="presentation">
             <button
               type="button"
+              bind:this={optionEls[row.index]}
               class="mpm-option"
               class:mpm-option--active={row.selected}
               class:mpm-option--cursor={row.index === highlight}
@@ -413,16 +464,12 @@
     onclick={toggleMenu}
   >
     <span class="mpm-current">{label}</span>
-    <span class="mpm-caret" aria-hidden="true">▾</span>
+    <svg class="mpm-chevron" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
   </button>
   {#if open}
-    {#if portal}
-      <Portal>
-        {@render popover()}
-      </Portal>
-    {:else}
-      {@render popover()}
-    {/if}
+    {@render popover()}
   {/if}
 </div>
 
@@ -462,14 +509,25 @@
   .mpm-trigger--block {
     width: 100%;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 12px;
     letter-spacing: normal;
     padding: 7px 10px;
-    border-radius: 4px;
+    border-radius: 8px;
     border-color: var(--app-border-strong);
     background: var(--app-surface);
     color: var(--app-text);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .mpm-trigger--block:hover:not(:disabled) {
+    border-color: var(--app-border-hover);
+  }
+  .mpm-trigger--block:focus-visible {
+    border-color: var(--app-accent);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    outline: none;
   }
   .mpm-trigger--block[aria-expanded="true"] {
     border-color: var(--app-accent);
@@ -477,9 +535,27 @@
   .mpm-trigger--block.mpm-trigger--placeholder .mpm-current {
     color: var(--app-text-faint);
   }
-  .mpm-caret {
-    font-size: 8px;
+  /* Chevron — shared look with the Select/Combobox family. */
+  .mpm-chevron {
+    display: block;
+    width: 14px;
+    height: 14px;
     flex: 0 0 auto;
+    fill: none;
+    stroke: var(--app-text-muted);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 0.15s, stroke 0.15s;
+  }
+  /* The compact composer pill uses a smaller chevron. */
+  .mpm-trigger:not(.mpm-trigger--block) .mpm-chevron {
+    width: 11px;
+    height: 11px;
+  }
+  .mpm-trigger[aria-expanded="true"] .mpm-chevron {
+    transform: rotate(180deg);
+    stroke: var(--app-accent);
   }
   /* Long custom model ids stay on one line inside the trigger. */
   .mpm-current {
@@ -495,38 +571,75 @@
     text-align: left;
   }
   /* The open popover: search box pinned on top of a scrolling, grouped list.
-     Positioning is supplied inline when portaled; the inline (Chat) variant
-     anchors itself above the trigger via CSS. */
+     CSS-positioned relative to the trigger — `--block` (Settings) opens down,
+     `--inline` (Chat pill) opens up. */
   .mpm-pop {
     display: flex;
     flex-direction: column;
     padding: 4px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
     background: var(--app-surface-raised);
-    box-shadow: 0 8px 24px var(--app-shadow, rgba(0, 0, 0, 0.25));
-    z-index: 9999;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    z-index: 100;
   }
+  /* Settings: full-width menu pinned directly below the trigger — same as the
+     Select/Combobox family (CSS-positioned, never portaled, so it can't drift
+     off-screen across the settings scroll container). */
+  .mpm-pop--block {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    width: 100%;
+  }
+  /* Flip upward when there isn't room below the trigger (measured on open) —
+     mirrors the Combobox/Select flip so the Settings menu never clips at the
+     bottom of the inner scroll region. Anchors above instead of below; still
+     CSS-pinned to the trigger, never drifting. Block-only (the inline pill
+     already opens upward). */
+  .mpm-pop--block.mpm-pop--up {
+    top: auto;
+    bottom: calc(100% + 4px);
+  }
+  /* Chat composer pill: opens upward (the pill sits at the bottom of the view). */
   .mpm-pop--inline {
     position: absolute;
     bottom: calc(100% + 4px);
     left: 0;
     width: 280px;
+    z-index: 9999;
   }
+  /* Search row — mirrors the Combobox search (icon + borderless input, pinned
+     to the top of the menu). */
   .mpm-search {
-    width: 100%;
-    font: inherit;
-    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 6px 9px;
-    margin-bottom: 4px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-subtle);
-    color: var(--app-text);
+    margin: -4px -4px 4px;
+    background: var(--app-surface);
+    border-bottom: 1px solid var(--app-border);
+    border-radius: 6px 6px 0 0;
   }
-  .mpm-search:focus {
+  .mpm-search-icon {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 13px;
+    color: var(--app-text-muted);
+  }
+  .mpm-search-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: transparent;
+    border: none;
     outline: none;
-    border-color: var(--app-border-hover);
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    color: var(--app-text);
+    padding: 0;
+  }
+  .mpm-search-input::placeholder {
+    color: var(--app-text-subtle);
   }
   .mpm-list {
     min-width: 0;
@@ -550,16 +663,16 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    font: inherit;
-    font-size: 11px;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 12px;
     text-align: left;
-    padding: 6px 9px;
+    padding: 6px 10px;
     border: none;
-    border-radius: 6px;
+    border-radius: 3px;
     background: transparent;
     color: var(--app-text);
     cursor: pointer;
-    transition: background 0.12s ease;
+    transition: background 0.1s, color 0.1s;
   }
   /* The model id takes the row; provider sub-label and check sit at the end. */
   .mpm-option-main {
@@ -575,18 +688,18 @@
     color: var(--app-text-muted);
   }
   /* Keyboard-cursor row (distinct from the committed-selection accent). */
+  .mpm-option:hover,
   .mpm-option--cursor {
     background: var(--app-surface-hover);
-  }
-  .mpm-option:hover {
-    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
   }
   .mpm-option--active {
-    color: var(--app-accent-strong);
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
   }
   .mpm-check {
     flex: 0 0 auto;
-    color: var(--app-accent-strong);
+    color: var(--app-accent);
     font-size: 10px;
   }
   /* Muted one-liner inside the dropdown (loading / no matches). */
@@ -614,7 +727,7 @@
     white-space: nowrap;
   }
   .mpm-failure-warn {
-    color: var(--app-warn, #c9920a);
+    color: var(--app-warn);
   }
   .mpm-retry {
     width: 100%;

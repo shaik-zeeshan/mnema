@@ -63,6 +63,7 @@ mod tests {
             is_running: true,
             is_inactivity_paused: false,
             is_user_paused: false,
+            is_low_disk_suspended: false,
             requested_sources: None,
             output_files: None,
             source_sessions: Some(SourceSessions {
@@ -81,6 +82,7 @@ mod tests {
         assert_eq!(json["sourceSessions"]["screen"]["sessionId"], "scr-1");
         assert_eq!(json["sourceSessions"]["microphone"]["sessionId"], "mic-1");
         assert!(json["sourceSessions"]["systemAudio"].is_null());
+        assert_eq!(json["isLowDiskSuspended"], false);
         assert!(json.get("sessionId").is_none());
         assert!(json.get("startedAtUnixMs").is_none());
     }
@@ -172,6 +174,7 @@ mod tests {
             access: AccessSettings::default(),
             ai_runtime: AiRuntimeSettings::default(),
             user_context: UserContextSettings::default(),
+            semantic_search: default_semantic_search_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -213,6 +216,68 @@ mod tests {
             settings.transcription,
             default_audio_transcription_settings()
         );
+        // The Semantic Search Model selection is default-on (English nomic tier)
+        // when absent — older settings files have no `semanticSearch` field.
+        assert_eq!(
+            settings.semantic_search,
+            default_semantic_search_settings()
+        );
+        assert!(settings.semantic_search.enabled);
+        assert_eq!(
+            settings.semantic_search.model_id.as_deref(),
+            Some("nomic-embed-text-v1.5")
+        );
+    }
+
+    #[test]
+    fn recording_settings_round_trips_semantic_search_selection() {
+        // A minimal settings JSON fills every optional field from its default;
+        // we then override only the semantic search selection.
+        let mut settings: RecordingSettings = serde_json::from_str(
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": false,
+                "captureSystemAudio": false,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 1,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
+                "activityMode": "system_input_or_screen"
+            }"#,
+        )
+        .expect("settings should deserialize");
+        settings.semantic_search.model_id = Some("bge-m3".to_string());
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["semanticSearch"]["modelId"], "bge-m3");
+        assert_eq!(json["semanticSearch"]["provider"], "local");
+        let back: RecordingSettings =
+            serde_json::from_value(json).expect("round-trips back");
+        assert_eq!(back.semantic_search, settings.semantic_search);
+    }
+
+    #[test]
+    fn update_semantic_search_request_distinguishes_absent_null_and_set_model() {
+        // Absent model_id => None (leave unchanged).
+        let absent: UpdateSemanticSearchSettingsRequest =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("parse");
+        assert_eq!(absent.model_id, None);
+        assert_eq!(absent.enabled, Some(true));
+
+        // Explicit null => Some(None) (clear the selection).
+        let cleared: UpdateSemanticSearchSettingsRequest =
+            serde_json::from_str(r#"{ "modelId": null }"#).expect("parse");
+        assert_eq!(cleared.model_id, Some(None));
+
+        // A model id => Some(Some(id)).
+        let set: UpdateSemanticSearchSettingsRequest =
+            serde_json::from_str(r#"{ "modelId": "bge-m3" }"#).expect("parse");
+        assert_eq!(set.model_id, Some(Some("bge-m3".to_string())));
     }
 
     #[test]
@@ -569,6 +634,7 @@ mod tests {
                 access: AccessSettings::default(),
                 ai_runtime: AiRuntimeSettings::default(),
                 user_context: UserContextSettings::default(),
+                semantic_search: default_semantic_search_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,

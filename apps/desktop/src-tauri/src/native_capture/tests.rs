@@ -41,7 +41,7 @@ use super::runtime::{
 #[cfg(target_os = "macos")]
 use super::runtime::{
     microphone_backend_active_for_runtime, system_audio_writer_active_for_runtime,
-    CaptureSuspensionKind, PrivacyCaptureSuspension,
+    CaptureSuspension, CaptureSuspensionKind,
 };
 #[cfg(target_os = "macos")]
 use super::segments::{
@@ -267,6 +267,7 @@ fn recording_settings_fixture() -> RecordingSettings {
         access: AccessSettings::default(),
         ai_runtime: AiRuntimeSettings::default(),
         user_context: UserContextSettings::default(),
+        semantic_search: capture_types::default_semantic_search_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -303,6 +304,7 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         access: settings.access,
         ai_runtime: settings.ai_runtime,
         user_context: settings.user_context,
+        semantic_search: settings.semantic_search,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -1654,6 +1656,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         access: AccessSettings::default(),
         ai_runtime: AiRuntimeSettings::default(),
         user_context: UserContextSettings::default(),
+        semantic_search: capture_types::default_semantic_search_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1701,6 +1704,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         access: AccessSettings::default(),
         ai_runtime: AiRuntimeSettings::default(),
         user_context: UserContextSettings::default(),
+        semantic_search: capture_types::default_semantic_search_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1744,6 +1748,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         access: AccessSettings::default(),
         ai_runtime: AiRuntimeSettings::default(),
         user_context: UserContextSettings::default(),
+        semantic_search: capture_types::default_semantic_search_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1756,7 +1761,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
 }
 
 // Exercises macOS-only runtime fields (`current_segment_output_files`,
-// `privacy_capture_suspension`), so it only compiles on macOS.
+// `capture_suspension`), so it only compiles on macOS.
 #[cfg(target_os = "macos")]
 #[test]
 fn mark_runtime_session_stopped_preserves_session_metadata() {
@@ -1801,7 +1806,9 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
-        privacy_capture_suspension: None,
+        capture_suspension: None,
+        #[cfg(target_os = "macos")]
+        free_space_probe: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -1879,7 +1886,7 @@ fn stop_capture_runtime_accepts_idle_recording_boundary() {
 }
 
 // Exercises macOS-only runtime fields (`current_segment_output_files`,
-// `privacy_capture_suspension`), so it only compiles on macOS.
+// `capture_suspension`), so it only compiles on macOS.
 #[cfg(target_os = "macos")]
 #[test]
 fn stopped_session_from_runtime_preserves_finalized_metadata() {
@@ -1924,7 +1931,9 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
-        privacy_capture_suspension: None,
+        capture_suspension: None,
+        #[cfg(target_os = "macos")]
+        free_space_probe: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -2101,7 +2110,7 @@ fn session_from_runtime_reports_running_during_privacy_suspension_with_live_micr
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+        capture_suspension: Some(CaptureSuspension::with_kind(
             CaptureSuspensionKind::PrivacyFilter,
             &privacy_error,
         )),
@@ -2626,7 +2635,9 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: None,
+        capture_suspension: None,
+        #[cfg(target_os = "macos")]
+        free_space_probe: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -2696,7 +2707,9 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: None,
+        capture_suspension: None,
+        #[cfg(target_os = "macos")]
+        free_space_probe: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -2964,7 +2977,9 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: None,
+        capture_suspension: None,
+        #[cfg(target_os = "macos")]
+        free_space_probe: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -9802,7 +9817,7 @@ fn current_segment_sources_for_runtime_masks_stale_screen_during_privacy_suspens
             system_audio: true,
         }),
         microphone_recording_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+        capture_suspension: Some(CaptureSuspension::with_kind(
             CaptureSuspensionKind::PrivacyFilter,
             &privacy_error,
         )),
@@ -9862,7 +9877,7 @@ fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+        capture_suspension: Some(CaptureSuspension::with_kind(
             CaptureSuspensionKind::PrivacyFilter,
             &privacy_error,
         )),
@@ -9890,7 +9905,7 @@ fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
         current_segment_sources_for_runtime(&runtime).is_none(),
         "runtime source lookup must not reintroduce suspended screen capture"
     );
-    assert!(runtime.privacy_capture_suspension.is_some());
+    assert!(runtime.capture_suspension.is_some());
 }
 
 // --- Slice 3b8: system_audio requires live screen session ---
@@ -11368,4 +11383,814 @@ fn resume_screen_from_inactivity_keeps_system_audio_stream_when_writer_paused() 
             system_audio: false,
         })
     );
+}
+
+// The Accessibility-status DTO lists exactly the Gecko browsers — those whose
+// URL strategy is the Accessibility API — and no AppleScript browsers. The
+// filter is the load-bearing part; `trusted`/`installed` are environment
+// dependent (a real TCC grant + an installed app), so we don't assert them here
+// — those are a manual `/verify` step.
+#[test]
+fn browser_url_accessibility_status_lists_only_gecko_browsers() {
+    use std::collections::BTreeSet;
+
+    let status = super::browser_url_accessibility_status();
+    let bundle_ids: BTreeSet<&str> = status
+        .gecko_browsers
+        .iter()
+        .map(|browser| browser.bundle_id.as_str())
+        .collect();
+
+    let expected: BTreeSet<&str> = ["org.mozilla.firefox", "app.zen-browser.zen"]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        bundle_ids, expected,
+        "Accessibility status should list exactly the Gecko (AX-strategy) browsers"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Low-disk safety (ADR 0040): preflight refusal + suspend/resume transitions.
+//
+// `disk_space::FreeSpaceProbe` is a bare `fn` pointer, so a scripted free-space
+// sequence is driven through a thread_local queue: each probe call pops the next
+// reading (and repeats the last one once the queue is drained), letting a single
+// test feed a decreasing-then-increasing sequence to drive the enter/stay/resume
+// decisions without a real full disk.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+mod low_disk {
+    use super::*;
+    use crate::native_capture::disk_space;
+
+    thread_local! {
+        static SCRIPTED_FREE_BYTES: std::cell::RefCell<Vec<u64>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Load a scripted free-space sequence (consumed front-to-back). The probe
+    /// repeats the final value after the sequence is drained so callers that probe
+    /// more often than they scripted still get a stable reading.
+    fn script_free_bytes(sequence: &[u64]) {
+        SCRIPTED_FREE_BYTES.with(|cell| {
+            // Reverse so we can cheaply `pop` from the back in call order.
+            *cell.borrow_mut() = sequence.iter().rev().copied().collect();
+        });
+    }
+
+    /// A [`disk_space::FreeSpaceProbe`] that returns the next scripted reading.
+    /// Ignores the probed path (the scripted sequence is what drives the test).
+    fn scripted_probe(_path: &std::path::Path) -> std::io::Result<u64> {
+        SCRIPTED_FREE_BYTES.with(|cell| {
+            let mut queue = cell.borrow_mut();
+            if queue.len() > 1 {
+                Ok(queue.pop().expect("queue is non-empty"))
+            } else {
+                // Repeat the last scripted value indefinitely.
+                queue
+                    .last()
+                    .copied()
+                    .ok_or_else(|| std::io::Error::other("no scripted free-space reading"))
+            }
+        })
+    }
+
+    /// A probe that always errors — exercises the best-effort "unmeasurable never
+    /// blocks / never suspends" path.
+    fn erroring_probe(_path: &std::path::Path) -> std::io::Result<u64> {
+        Err(std::io::Error::other("disk probe unavailable"))
+    }
+
+    const SEGMENT_SECONDS: u64 = 300;
+    const SCREEN_BITRATE_BPS: u32 = 8_000_000;
+
+    /// The next-segment estimate matching the fixtures below: 8 Mbps screen +
+    /// audio over 300s. Used to derive the pause/resume thresholds for assertions.
+    fn fixture_estimate() -> u64 {
+        disk_space::next_segment_estimate_bytes(
+            SCREEN_BITRATE_BPS as u64,
+            disk_space::audio_bytes_per_sec_for_sources(true, true),
+            SEGMENT_SECONDS,
+        )
+    }
+
+    /// A running screen+mic+system-audio runtime whose planner roots at the system
+    /// temp dir (so `measure_free_space`'s nearest-existing-ancestor walk reaches a
+    /// real, statable path) and whose free-space probe is the scripted stub.
+    fn low_disk_runtime_fixture() -> NativeCaptureRuntime {
+        let root = std::env::temp_dir().to_string_lossy().into_owned();
+        NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            }),
+            current_segment_index: 1,
+            screen_frame_rate: 30,
+            screen_resolution: ScreenResolution::default(),
+            effective_screen_bitrate_bps: Some(SCREEN_BITRATE_BPS),
+            segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(
+                SEGMENT_SECONDS,
+            ))),
+            segment_planner: Some(SegmentPlanner::with_date_prefix(
+                root,
+                "native-session-low-disk",
+                "2026/06/25",
+            )),
+            free_space_probe: Some(scripted_probe),
+            ..Default::default()
+        }
+    }
+
+    // --- Preflight (a) ---
+
+    #[test]
+    fn preflight_refuses_below_pause_threshold() {
+        let estimate = disk_space::next_segment_estimate_bytes(
+            SCREEN_BITRATE_BPS as u64,
+            disk_space::audio_bytes_per_sec_for_sources(true, false),
+            SEGMENT_SECONDS,
+        );
+        let pause = disk_space::pause_threshold_bytes(estimate);
+        script_free_bytes(&[pause - 1]);
+
+        let sources = CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        };
+        let result = super::super::segments::preflight_disk_space_check(
+            &std::env::temp_dir(),
+            Some(SCREEN_BITRATE_BPS),
+            &sources,
+            SEGMENT_SECONDS,
+            scripted_probe,
+        );
+        let error = result.expect_err("preflight must refuse below the pause threshold");
+        assert_eq!(error.code, "insufficient_disk_space");
+    }
+
+    #[test]
+    fn preflight_proceeds_at_or_above_pause_threshold() {
+        let estimate = disk_space::next_segment_estimate_bytes(
+            SCREEN_BITRATE_BPS as u64,
+            disk_space::audio_bytes_per_sec_for_sources(true, false),
+            SEGMENT_SECONDS,
+        );
+        let pause = disk_space::pause_threshold_bytes(estimate);
+        let sources = CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        };
+
+        // Exactly at the threshold proceeds (the refusal is strict `<`).
+        script_free_bytes(&[pause]);
+        super::super::segments::preflight_disk_space_check(
+            &std::env::temp_dir(),
+            Some(SCREEN_BITRATE_BPS),
+            &sources,
+            SEGMENT_SECONDS,
+            scripted_probe,
+        )
+        .expect("preflight must proceed at the pause threshold");
+
+        // Comfortably above proceeds too.
+        script_free_bytes(&[pause + 10 * 1024 * 1024 * 1024]);
+        super::super::segments::preflight_disk_space_check(
+            &std::env::temp_dir(),
+            Some(SCREEN_BITRATE_BPS),
+            &sources,
+            SEGMENT_SECONDS,
+            scripted_probe,
+        )
+        .expect("preflight must proceed above the pause threshold");
+    }
+
+    #[test]
+    fn preflight_does_not_block_when_unmeasurable() {
+        let sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        };
+        // An erroring probe -> unmeasurable -> must NOT block the start.
+        super::super::segments::preflight_disk_space_check(
+            &std::env::temp_dir(),
+            Some(SCREEN_BITRATE_BPS),
+            &sources,
+            SEGMENT_SECONDS,
+            erroring_probe,
+        )
+        .expect("an unmeasurable probe must never block the start");
+    }
+
+    // --- Suspend / resume transitions (b) ---
+
+    #[test]
+    fn boundary_decision_enters_low_disk_below_pause() {
+        let estimate = fixture_estimate();
+        let pause = disk_space::pause_threshold_bytes(estimate);
+        let mut runtime = low_disk_runtime_fixture();
+
+        // Below the pause threshold -> the boundary would suspend (Pause/Critical).
+        script_free_bytes(&[pause - 1]);
+        let decision = super::super::segments::low_disk_decision_at_boundary(&runtime)
+            .expect("a measurable reading must classify");
+        assert_ne!(
+            decision,
+            disk_space::LowDiskDecision::Sufficient,
+            "below the pause threshold the boundary must not be Sufficient"
+        );
+
+        // Strictly below the reserve floor classifies Critical (still suspends).
+        script_free_bytes(&[disk_space::RESERVE_FLOOR_BYTES - 1]);
+        assert_eq!(
+            super::super::segments::low_disk_decision_at_boundary(&runtime),
+            Some(disk_space::LowDiskDecision::Critical)
+        );
+
+        // At/above the pause threshold the boundary opens the next segment.
+        script_free_bytes(&[pause]);
+        assert_eq!(
+            super::super::segments::low_disk_decision_at_boundary(&runtime),
+            Some(disk_space::LowDiskDecision::Sufficient)
+        );
+
+        // Unmeasurable -> None (best-effort: the rotation proceeds, no suspend).
+        runtime.free_space_probe = Some(erroring_probe);
+        assert_eq!(
+            super::super::segments::low_disk_decision_at_boundary(&runtime),
+            None
+        );
+    }
+
+    #[test]
+    fn hysteresis_stays_suspended_between_pause_and_resume_then_resumes() {
+        let estimate = fixture_estimate();
+        let pause = disk_space::pause_threshold_bytes(estimate);
+        let resume = disk_space::resume_threshold_bytes(estimate);
+        assert!(resume > pause, "resume must sit above pause for hysteresis");
+        let runtime = low_disk_runtime_fixture();
+
+        // A reading in the hysteresis band (cleared pause, not yet resume): a
+        // suspended session must NOT resume — this prevents flapping.
+        let between = (pause + resume) / 2;
+        script_free_bytes(&[between]);
+        assert_eq!(
+            super::super::segments::low_disk_can_resume(&runtime),
+            Some(false),
+            "must stay suspended in the hysteresis band"
+        );
+
+        // Just below resume still does not resume.
+        script_free_bytes(&[resume - 1]);
+        assert_eq!(
+            super::super::segments::low_disk_can_resume(&runtime),
+            Some(false)
+        );
+
+        // At/above the resume threshold the session resumes.
+        script_free_bytes(&[resume]);
+        assert_eq!(
+            super::super::segments::low_disk_can_resume(&runtime),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn decreasing_then_increasing_sequence_drives_enter_then_resume() {
+        let estimate = fixture_estimate();
+        let pause = disk_space::pause_threshold_bytes(estimate);
+        let resume = disk_space::resume_threshold_bytes(estimate);
+        let runtime = low_disk_runtime_fixture();
+
+        // Decreasing sequence ending below pause -> would enter LowDisk.
+        script_free_bytes(&[resume + 1, pause + 1, pause - 1]);
+        // Drain the first two (still sufficient) then land below pause.
+        let _ = super::super::segments::low_disk_decision_at_boundary(&runtime);
+        let _ = super::super::segments::low_disk_decision_at_boundary(&runtime);
+        assert_ne!(
+            super::super::segments::low_disk_decision_at_boundary(&runtime),
+            Some(disk_space::LowDiskDecision::Sufficient),
+            "the decreasing sequence must end below the pause threshold (enter LowDisk)"
+        );
+
+        // Increasing sequence reaching >= resume -> resumes.
+        script_free_bytes(&[pause + 1, resume - 1, resume + 1]);
+        let _ = super::super::segments::low_disk_can_resume(&runtime);
+        let _ = super::super::segments::low_disk_can_resume(&runtime);
+        assert_eq!(
+            super::super::segments::low_disk_can_resume(&runtime),
+            Some(true),
+            "the increasing sequence must reach the resume threshold"
+        );
+    }
+
+    #[test]
+    fn low_disk_suspend_stops_microphone_but_other_kinds_keep_it() {
+        let low_disk_error = CaptureErrorResponse {
+            code: "capture_low_disk".to_string(),
+            message: "low disk".to_string(),
+        };
+
+        // LowDisk suspends the mic too: with no live session but a live mic
+        // recording file, the suspend entry must clear the mic recording file.
+        let mut low_disk_runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            }),
+            microphone_recording_file: Some("/tmp/low-disk-mic.m4a".to_string()),
+            ..Default::default()
+        };
+        super::super::segments::suspend_screen_system_audio_capture(
+            None,
+            &mut low_disk_runtime,
+            &low_disk_error,
+            CaptureSuspensionKind::LowDisk,
+        )
+        .expect("low-disk suspend should succeed with no live screen session");
+        assert!(
+            low_disk_runtime.microphone_recording_file.is_none(),
+            "LowDisk must stop the microphone (clear its recording file)"
+        );
+        assert_eq!(
+            low_disk_runtime
+                .capture_suspension
+                .as_ref()
+                .map(|suspension| suspension.kind),
+            Some(CaptureSuspensionKind::LowDisk)
+        );
+
+        // PrivacyFilter keeps the mic alive: the mic continuation is preserved.
+        let privacy_error = CaptureErrorResponse {
+            code: "privacy_filter_apply_failed".to_string(),
+            message: "privacy".to_string(),
+        };
+        let mut privacy_runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            }),
+            microphone_recording_file: Some("/tmp/privacy-mic.m4a".to_string()),
+            ..Default::default()
+        };
+        super::super::segments::suspend_screen_system_audio_capture(
+            None,
+            &mut privacy_runtime,
+            &privacy_error,
+            CaptureSuspensionKind::PrivacyFilter,
+        )
+        .expect("privacy suspend should succeed with no live screen session");
+        assert_eq!(
+            privacy_runtime.microphone_recording_file.as_deref(),
+            Some("/tmp/privacy-mic.m4a"),
+            "non-LowDisk kinds must keep the microphone alive"
+        );
+    }
+
+    // --- Mid-segment disk-full: partial discard + graceful stop (c) ---
+
+    #[test]
+    fn discard_partial_on_disk_full_deletes_final_paths_and_commits_no_row() {
+        // Create real partial files at their final paths; the discard routine must
+        // delete each one and report no committed segment row (returns false).
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let screen_path = temp.path().join("segment-0001.mov");
+        let mic_path = temp.path().join("segment-0001-mic.m4a");
+        let sys_path = temp.path().join("segment-0001-sys.m4a");
+        for path in [&screen_path, &mic_path, &sys_path] {
+            std::fs::write(path, b"partial-corrupt-bytes").expect("partial file should be written");
+            assert!(path.exists(), "partial fixture must exist before discard");
+        }
+        let screen = screen_path.to_string_lossy().into_owned();
+        let mic = mic_path.to_string_lossy().into_owned();
+        let sys = sys_path.to_string_lossy().into_owned();
+
+        let output_files = CaptureOutputFiles {
+            screen_file: Some(screen.clone()),
+            screen_files: vec![screen.clone()],
+            microphone_file: Some(mic.clone()),
+            microphone_files: vec![mic.clone()],
+            system_audio_file: Some(sys.clone()),
+            system_audio_files: vec![sys.clone()],
+        };
+
+        let committed = super::super::segments::discard_partial_segment_on_disk_full(
+            Some(&output_files),
+            Some(&screen),
+            Some(&mic),
+            Some(&sys),
+        );
+
+        assert!(
+            !committed,
+            "the disk-full discard must commit NO segment row (returns false)"
+        );
+        assert!(!screen_path.exists(), "screen partial must be deleted");
+        assert!(!mic_path.exists(), "microphone partial must be deleted");
+        assert!(!sys_path.exists(), "system-audio partial must be deleted");
+    }
+
+    #[test]
+    fn discard_partial_on_disk_full_is_best_effort_for_missing_paths() {
+        // A path that does not exist (NotFound) must be tolerated silently and the
+        // routine must still report no committed row.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let missing = temp.path().join("never-written.mov");
+        let missing = missing.to_string_lossy().into_owned();
+        let committed = super::super::segments::discard_partial_segment_on_disk_full(
+            None,
+            Some(&missing),
+            None,
+            None,
+        );
+        assert!(!committed, "a missing partial still commits no row");
+    }
+
+    /// A running screen+mic+system-audio runtime with a live mic recording file and
+    /// a committed-outputs slot, used to drive the graceful-stop transition.
+    fn stoppable_low_disk_runtime() -> NativeCaptureRuntime {
+        let root = std::env::temp_dir().to_string_lossy().into_owned();
+        NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            }),
+            current_segment_index: 2,
+            screen_frame_rate: 30,
+            screen_resolution: ScreenResolution::default(),
+            effective_screen_bitrate_bps: Some(SCREEN_BITRATE_BPS),
+            output_files: Some(super::super::segments::empty_output_files()),
+            segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(
+                SEGMENT_SECONDS,
+            ))),
+            segment_planner: Some(SegmentPlanner::with_date_prefix(
+                root,
+                "native-session-low-disk-stop",
+                "2026/06/25",
+            )),
+            free_space_probe: Some(scripted_probe),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn graceful_stop_below_critical_floor_ends_session() {
+        // The graceful-stop helper (with no app handle, so the notification path is
+        // a no-op) must end the session: runtime no longer running, suspension
+        // cleared, state Failed.
+        let mut runtime = stoppable_low_disk_runtime();
+        runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+            CaptureSuspensionKind::LowDisk,
+            &CaptureErrorResponse {
+                code: "capture_low_disk".to_string(),
+                message: "low disk".to_string(),
+            },
+        ));
+
+        super::super::segments::graceful_stop_for_low_disk(
+            None,
+            &mut runtime,
+            disk_space::RESERVE_FLOOR_BYTES - 1,
+            false,
+        );
+
+        assert!(
+            !runtime.is_running,
+            "a below-critical graceful stop must end the session"
+        );
+        assert!(
+            runtime.capture_suspension.is_none(),
+            "graceful stop must clear the suspension slot"
+        );
+    }
+
+    #[test]
+    fn boundary_below_critical_floor_drives_graceful_stop() {
+        // A scripted probe yielding free < CRITICAL_FLOOR_BYTES must drive the
+        // boundary path to a graceful stop (Stopped outcome + session ended),
+        // rather than a suspension. No app handle is available in a unit test, so
+        // this asserts the runtime-state transition (the notification path is
+        // covered by push_error_app_notification existing; it no-ops here).
+        //
+        // The boundary entry requires a tauri::AppHandle, so exercise the decision
+        // + graceful-stop seam it composes directly: a Critical classification at
+        // the boundary leads to graceful_stop_for_low_disk(commit=true).
+        let mut runtime = stoppable_low_disk_runtime();
+        script_free_bytes(&[disk_space::RESERVE_FLOOR_BYTES - 1]);
+
+        let decision = super::super::segments::low_disk_decision_at_boundary(&runtime)
+            .expect("a measurable below-floor reading must classify");
+        assert_eq!(
+            decision,
+            disk_space::LowDiskDecision::Critical,
+            "free below the reserve floor must classify Critical at the boundary"
+        );
+
+        // The Critical boundary arm performs a graceful stop. Drive that arm's
+        // effect (no app handle -> notification no-op) and assert the session ends.
+        super::super::segments::graceful_stop_for_low_disk(
+            None,
+            &mut runtime,
+            disk_space::RESERVE_FLOOR_BYTES - 1,
+            true,
+        );
+        assert!(
+            !runtime.is_running,
+            "the Critical boundary path must stop the session"
+        );
+    }
+
+    // --- Commit the current segment's mic audio on a low-disk suspend (b) ---
+
+    /// Produces a real, positive-duration AAC/`.m4a` so the AVFoundation duration
+    /// validation inside `finalize_capture_outputs` accepts it as usable captured
+    /// audio (a junk byte file would be legitimately dropped as unusable, which
+    /// would mask the data-loss this test guards against). Mirrors the helper in
+    /// `native_capture_output.rs`'s tests.
+    fn write_valid_m4a_audio_file(path: &std::path::Path) {
+        use cidre::{av, ns};
+
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        let path_str = path.to_string_lossy().to_string();
+        let url = ns::Url::with_fs_path_str(&path_str, false);
+        let sample_rate = 48_000.0_f64;
+        let format_id = ns::Number::with_u32(u32::from_be_bytes(*b"aac "));
+        let sample_rate_value = ns::Number::with_f64(sample_rate);
+        let channel_count_value = ns::Number::with_i64(1);
+        let settings: cidre::arc::R<ns::Dictionary<ns::String, ns::Id>> =
+            ns::Dictionary::with_keys_values(
+                &[
+                    av::audio::all_formats_keys::id(),
+                    av::audio::all_formats_keys::sample_rate(),
+                    av::audio::all_formats_keys::number_of_channels(),
+                ],
+                &[
+                    format_id.as_id_ref(),
+                    sample_rate_value.as_id_ref(),
+                    channel_count_value.as_id_ref(),
+                ],
+            );
+        let mut file = av::AudioFile::open_write_common_format(
+            &url,
+            &settings,
+            av::AudioCommonFormat::PcmF32,
+            false,
+        )
+        .expect("writable test audio file should open");
+        let processing_format = file.processing_format();
+        let frames: u32 = 24_000; // 0.5s @ 48kHz — comfortably positive duration.
+        let mut buffer = av::AudioPcmBuf::with_format(&processing_format, frames)
+            .expect("test audio buffer should allocate");
+        buffer
+            .set_frame_len(frames)
+            .expect("frame length should set");
+        if let Some(samples) = buffer.data_f32_mut_at(0) {
+            for (index, sample) in samples.iter_mut().enumerate() {
+                *sample = ((index as f32) * 0.05).sin() * 0.1;
+            }
+        }
+        file.write(&buffer).expect("test audio should write");
+        file.close();
+    }
+
+    #[test]
+    fn low_disk_boundary_suspend_commits_current_segment_microphone() {
+        // ADR 0040 ("the current segment is still healthy ... so commit it before
+        // ending"): at a healthy rotation boundary a low-disk Pause must NOT
+        // silently drop the current segment's already-finalized microphone audio.
+        // The mic `.m4a` lives in current_segment_output_files (set at segment
+        // start) and is a valid closed file on disk; the suspend entry must commit
+        // it into runtime.output_files just as a normal rotation / inactivity
+        // pause would, else up to ~5 minutes of microphone audio is orphaned (no
+        // audio_segment row) on every low-disk pause.
+        //
+        // Mic-only session so the screen/system-audio commit path is a no-op and
+        // the assertion isolates the microphone commit.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic_path = temp.path().join("segment-0001-mic.m4a");
+        write_valid_m4a_audio_file(&mic_path);
+        let mic = mic_path.to_string_lossy().into_owned();
+
+        let mut current_segment_output_files = super::super::segments::empty_output_files();
+        set_current_microphone_output_file(&mut current_segment_output_files, mic.clone());
+
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: false,
+            }),
+            current_segment_index: 1,
+            microphone_recording_file: Some(mic.clone()),
+            current_segment_output_files: Some(current_segment_output_files),
+            output_files: Some(super::super::segments::empty_output_files()),
+            ..Default::default()
+        };
+
+        super::super::segments::suspend_screen_system_audio_capture(
+            None,
+            &mut runtime,
+            &CaptureErrorResponse {
+                code: "capture_low_disk".to_string(),
+                message: "low disk".to_string(),
+            },
+            CaptureSuspensionKind::LowDisk,
+        )
+        .expect("low-disk suspend should succeed with no live screen/mic session");
+
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("committed output_files slot should exist");
+        let committed_mic = committed
+            .microphone_file
+            .iter()
+            .chain(committed.microphone_files.iter())
+            .any(|file| file == &mic);
+        assert!(
+            committed_mic,
+            "low-disk boundary suspend must commit the current segment's finalized \
+             microphone audio into runtime.output_files (got {committed:?}); otherwise \
+             up to 5 minutes of mic audio is silently lost on every low-disk pause"
+        );
+    }
+
+    // --- Graceful stop commit gating (d) ---
+    //
+    // Closes the proxy-test trap the existing stop tests fall into (they assert
+    // only `!is_running`, so a regression that silently dropped the committed
+    // outputs would still pass). These drive a system-audio-only segment — a real,
+    // AVFoundation-valid `.m4a` — so the commit runs through `finalize_capture_outputs`
+    // without needing a live native session or a valid screen `.mov`.
+    //
+    // NB: the *screen-session-ordering* half of the graceful-stop fix (stop the
+    // ScreenCaptureKit session before reading its `.mov`) cannot be unit-tested:
+    // `capture-screen` exposes no constructor for a live `ActiveCaptureSession`.
+
+    /// A running system-audio-only runtime whose current segment carries a real,
+    /// committable `.m4a` at `sys_path`, used to drive the graceful-stop commit
+    /// gating. No live native session is needed: the system-audio commit path only
+    /// reads/validates the file.
+    fn system_audio_segment_runtime(sys_path: &str, segment_index: u64) -> NativeCaptureRuntime {
+        let mut current = super::super::segments::empty_output_files();
+        super::super::output::set_current_system_audio_output_file(&mut current, sys_path.to_string());
+        NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: true,
+            }),
+            current_segment_index: segment_index,
+            system_audio_recording_file: Some(sys_path.to_string()),
+            current_segment_output_files: Some(current),
+            output_files: Some(super::super::segments::empty_output_files()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn graceful_stop_commit_true_appends_current_segment_outputs() {
+        // A boundary/recovery graceful stop (commit_current_segment = true) must
+        // actually COMMIT the healthy current segment into runtime.output_files,
+        // not merely end the session (ADR 0040 "clean-finalize what is safely
+        // closable"). Asserting only `!is_running` would pass even if the commit
+        // silently dropped every byte.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let sys_path = temp.path().join("segment-0002-sys.m4a");
+        write_valid_m4a_audio_file(&sys_path);
+        let sys = sys_path.to_string_lossy().into_owned();
+
+        let mut runtime = system_audio_segment_runtime(&sys, 2);
+        super::super::segments::graceful_stop_for_low_disk(
+            None,
+            &mut runtime,
+            disk_space::RESERVE_FLOOR_BYTES - 1,
+            true,
+        );
+
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("committed output_files slot should exist");
+        let committed_sys = committed
+            .system_audio_file
+            .iter()
+            .chain(committed.system_audio_files.iter())
+            .any(|file| file == &sys);
+        assert!(
+            committed_sys,
+            "commit_current_segment=true graceful stop must append the healthy \
+             current segment's system-audio output (got {committed:?})"
+        );
+        assert!(
+            !runtime.is_running,
+            "graceful stop must end the session"
+        );
+    }
+
+    #[test]
+    fn graceful_stop_commit_false_drops_current_segment_outputs() {
+        // The mid-segment-fill caller passes commit_current_segment = false because
+        // it already discarded its partial; graceful stop must then commit NOTHING,
+        // so no half-written file is recorded. This pins the `commit` flag actually
+        // gating the commit (not a vacuous parameter).
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let sys_path = temp.path().join("segment-0003-sys.m4a");
+        write_valid_m4a_audio_file(&sys_path);
+        let sys = sys_path.to_string_lossy().into_owned();
+
+        let mut runtime = system_audio_segment_runtime(&sys, 3);
+        super::super::segments::graceful_stop_for_low_disk(
+            None,
+            &mut runtime,
+            disk_space::RESERVE_FLOOR_BYTES - 1,
+            false,
+        );
+
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("committed output_files slot should exist");
+        assert!(
+            committed.system_audio_file.is_none() && committed.system_audio_files.is_empty(),
+            "commit_current_segment=false graceful stop must NOT append outputs \
+             (the partial was already discarded), got {committed:?}"
+        );
+        assert!(!runtime.is_running, "graceful stop must end the session");
+    }
+
+    // --- Mid-segment write-failure classification (c) ---
+    //
+    // `classify_write_failure_disk_full` is the guard that decides whether a writer
+    // append/finalize failure coincides with low disk. It is pure over the injected
+    // probe, so it is testable end to end (unlike `handle_mid_segment_write_failure_*`,
+    // which needs a `&tauri::AppHandle` for the notification path and is harness-blocked).
+
+    #[test]
+    fn classify_write_failure_disk_full_passes_through_on_healthy_disk() {
+        // A writer failure on a HEALTHY disk must return None so the existing fatal-
+        // failure behavior is preserved unchanged. If this inverted, every unrelated
+        // write failure would be silently swallowed into a low-disk suspension.
+        let estimate = fixture_estimate();
+        let resume = disk_space::resume_threshold_bytes(estimate);
+        let runtime = low_disk_runtime_fixture();
+
+        script_free_bytes(&[resume + 1]);
+        assert_eq!(
+            super::super::segments::classify_write_failure_disk_full(&runtime),
+            None,
+            "a write failure on a healthy disk must not be treated as disk-full"
+        );
+
+        // Unmeasurable -> None too (best-effort: never force a disk-full stop on a
+        // volume we cannot stat).
+        let mut unmeasurable = low_disk_runtime_fixture();
+        unmeasurable.free_space_probe = Some(erroring_probe);
+        assert_eq!(
+            super::super::segments::classify_write_failure_disk_full(&unmeasurable),
+            None,
+            "an unmeasurable probe must not force a disk-full classification"
+        );
+    }
+
+    #[test]
+    fn classify_write_failure_disk_full_detects_pause_and_critical() {
+        let estimate = fixture_estimate();
+        let pause = disk_space::pause_threshold_bytes(estimate);
+        let runtime = low_disk_runtime_fixture();
+
+        // Below the pause threshold but at/above the reserve floor -> Pause
+        // (discard the partial and suspend).
+        script_free_bytes(&[pause - 1]);
+        let pause_decision = super::super::segments::classify_write_failure_disk_full(&runtime);
+        assert!(
+            matches!(pause_decision, Some((disk_space::LowDiskDecision::Pause, _))),
+            "free below pause but above the floor must classify the failure as Pause \
+             (got {pause_decision:?})"
+        );
+
+        // Below the reserve floor -> Critical (discard the partial and stop).
+        script_free_bytes(&[disk_space::RESERVE_FLOOR_BYTES - 1]);
+        let critical_decision =
+            super::super::segments::classify_write_failure_disk_full(&runtime);
+        assert!(
+            matches!(critical_decision, Some((disk_space::LowDiskDecision::Critical, _))),
+            "free below the reserve floor must classify the failure as Critical \
+             (got {critical_decision:?})"
+        );
+    }
 }

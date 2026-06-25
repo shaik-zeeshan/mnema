@@ -40,6 +40,9 @@
     "createUpdaterArtifacts": true,
     "targets": "all",
     "externalBin": ["binaries/mnema-cli"],
+    "resources": {
+      "../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md"
+    },
     "macOS": {
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"

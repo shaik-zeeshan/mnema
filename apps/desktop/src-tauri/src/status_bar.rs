@@ -10,6 +10,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 const TRAY_ID: &str = "mnema-status-bar";
 const COMPLETE_SETUP_ID: &str = "tray_complete_setup";
+const STATUS_HEADER_ID: &str = "tray_status_header";
 const RECORDING_TOGGLE_ID: &str = "tray_recording_toggle";
 const PAUSE_TOGGLE_ID: &str = "tray_pause_toggle";
 const DELETE_LAST_1_MINUTE_ID: &str = "tray_delete_recent_60";
@@ -66,6 +67,11 @@ struct StatusBarCaptureSupport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StatusBarMenuModel {
     onboarding_complete: bool,
+    /// A non-actionable status header shown at the top of the menu. Present only
+    /// for the low-disk-suspended state ("Paused — low disk"), which is surfaced
+    /// as a disabled label so the tray never reads as plainly "Recording" while
+    /// capture is held by the low-disk liveness suspension (ADR 0040).
+    status_label: Option<&'static str>,
     recording_label: Option<&'static str>,
     recording_enabled: bool,
     pause_label: Option<&'static str>,
@@ -180,6 +186,7 @@ fn build_menu_model(
     onboarding_complete: bool,
     recording: bool,
     user_paused: bool,
+    low_disk_suspended: bool,
     settings: &RecordingSettings,
     support: &StatusBarCaptureSupport,
     operation: StatusBarOperation,
@@ -187,6 +194,7 @@ fn build_menu_model(
     if !onboarding_complete {
         return StatusBarMenuModel {
             onboarding_complete: false,
+            status_label: None,
             recording_label: None,
             recording_enabled: false,
             pause_label: None,
@@ -204,7 +212,13 @@ fn build_menu_model(
         StatusBarOperation::Starting => "Starting...",
         StatusBarOperation::Stopping => "Stopping...",
     };
+    // The low-disk suspension keeps the session alive (recording == true), so it
+    // must take precedence over the generic recording/paused tooltip — otherwise
+    // the tray would read "Recording" while capture is actually held (ADR 0040).
+    let status_label = (operation == StatusBarOperation::Idle && low_disk_suspended)
+        .then_some("Paused — low disk");
     let tooltip = match operation {
+        StatusBarOperation::Idle if low_disk_suspended => "Mnema — Paused (low disk)",
         StatusBarOperation::Idle if recording => "Mnema - Recording",
         StatusBarOperation::Idle => "Mnema",
         StatusBarOperation::Starting => "Mnema - Starting...",
@@ -241,6 +255,7 @@ fn build_menu_model(
 
     StatusBarMenuModel {
         onboarding_complete: true,
+        status_label,
         recording_label: Some(recording_label),
         recording_enabled: operation == StatusBarOperation::Idle,
         pause_label: (pause_supported && recording).then_some(if user_paused {
@@ -282,6 +297,7 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
         crate::windows::is_onboarding_complete(app),
         recording,
         session.is_user_paused,
+        session.is_low_disk_suspended,
         &settings,
         &support,
         operation(app),
@@ -349,19 +365,40 @@ fn build_menu(
     let separator = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
 
+    // A non-actionable status header surfaced only while capture is held by the
+    // low-disk liveness suspension, so the menu never reads as plainly running.
+    let status_header = model
+        .status_label
+        .map(|label| {
+            MenuItemBuilder::with_id(STATUS_HEADER_ID, label)
+                .enabled(false)
+                .build(app)
+        })
+        .transpose()?;
+    let status_separator = status_header
+        .as_ref()
+        .map(|_| PredefinedMenuItem::separator(app))
+        .transpose()?;
+
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
+    if let (Some(header), Some(sep)) = (status_header.as_ref(), status_separator.as_ref()) {
+        items.push(header);
+        items.push(sep);
+    }
     // The pause item stays visible on every platform, disabled while not
     // recording, matching the existing macOS tray behaviour.
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
-        vec![&recording as &dyn tauri::menu::IsMenuItem<tauri::Wry>];
-    items.push(&pause);
-    items.push(&sources);
-    items.push(&exclude_current);
-    items.push(&delete_recent);
-    items.push(&separator_two);
-    items.push(&open_main);
-    items.push(&settings);
-    items.push(&separator);
-    items.push(&quit);
+    items.extend([
+        &recording as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
+        &pause,
+        &sources,
+        &exclude_current,
+        &delete_recent,
+        &separator_two,
+        &open_main,
+        &settings,
+        &separator,
+        &quit,
+    ]);
 
     Menu::with_items(app, &items)
 }
@@ -633,7 +670,7 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
             let _ = crate::windows::open_main_window(app);
         }
         OPEN_SETTINGS_ID => {
-            let _ = crate::windows::open_settings_window(app.clone());
+            let _ = crate::windows::focus_main_and_open_settings(app.clone(), None, None);
         }
         QUIT_ID => crate::windows::request_graceful_exit(app),
         _ => {}
@@ -681,6 +718,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -694,6 +732,7 @@ mod tests {
     fn post_onboarding_idle_model_shows_start_and_enabled_sources() {
         let model = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(true, true, false),
@@ -733,6 +772,7 @@ mod tests {
             true,
             true,
             false,
+            false,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -743,10 +783,30 @@ mod tests {
     }
 
     #[test]
+    fn low_disk_suspended_model_reads_paused_not_recording() {
+        // The low-disk liveness suspension keeps the session alive, so it still
+        // reports recording == true; the tray must surface the paused-low-disk
+        // state and never read as plainly "Recording" (ADR 0040).
+        let model = build_menu_model(
+            true,
+            true,
+            false,
+            true,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(model.status_label, Some("Paused — low disk"));
+        assert_eq!(model.tooltip, "Mnema — Paused (low disk)");
+        assert_ne!(model.tooltip, "Mnema - Recording");
+    }
+
+    #[test]
     fn busy_models_disable_recording_command_and_sources() {
         for operation in [StatusBarOperation::Starting, StatusBarOperation::Stopping] {
             let model = build_menu_model(
                 true,
+                false,
                 false,
                 false,
                 &settings_with_sources(true, true, true),
@@ -764,6 +824,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -772,6 +833,7 @@ mod tests {
 
         let microphone = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(false, true, false),
@@ -787,6 +849,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             &settings_with_sources(true, false, true),
             &support_all_with_system_audio_requires_screen(true),
             StatusBarOperation::Idle,
@@ -799,6 +862,7 @@ mod tests {
     fn screen_with_only_system_audio_can_be_unchecked_when_system_audio_is_independent() {
         let model = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(true, false, true),
@@ -855,6 +919,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             &settings_with_sources(false, true, false),
             &support_all_with_system_audio_requires_screen(true),
             StatusBarOperation::Idle,
@@ -904,6 +969,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             &settings_with_sources(false, true, false),
             &support_all_with_system_audio_requires_screen(false),
             StatusBarOperation::Idle,
@@ -918,6 +984,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             &settings_with_sources(true, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -929,6 +996,7 @@ mod tests {
             true,
             true,
             true,
+            false,
             &settings_with_sources(true, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -948,6 +1016,7 @@ mod tests {
             true,
             true,
             false,
+            false,
             &settings_with_sources(true, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -959,6 +1028,7 @@ mod tests {
             true,
             true,
             true,
+            false,
             &settings_with_sources(true, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -969,6 +1039,7 @@ mod tests {
         // Not recording: nothing to pause, on Windows as elsewhere.
         let idle = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(true, true, false),
@@ -983,6 +1054,7 @@ mod tests {
     fn unsupported_sources_are_disabled_without_mutating_checked_state() {
         let model = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(true, true, true),

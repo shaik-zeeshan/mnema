@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 export type AppNotificationAction =
-	| { type: "open_settings_tab"; tab: "about" | "processing" | "shortcuts" }
+	| {
+			type: "open_settings_tab";
+			tab: "about" | "processing" | "transcription" | "speakers" | "shortcuts";
+	  }
 	// Only 'microphone' is emitted by the backend and serviceable by the Windows
 	// deep-link. Re-widen to screen/systemAudio when those privacy notifications
 	// are actually emitted and handled.

@@ -1,0 +1,1430 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>mnema · onboarding · console manifest</title>
+<style>
+  :root {
+    --app-bg:#0c0c0e; --app-fg:#e2e2e8; --app-fg-muted:#8a8aaa;
+    --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#7a7a9a; --app-text-subtle:#44445a; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15; --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-strong:#ff4455; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  }
+  [data-theme="light"] {
+    --app-bg:#f6f6f4; --app-fg:#14141a; --app-fg-muted:#5a5a6a;
+    --app-surface:#ffffff; --app-surface-subtle:#f6f6f4; --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#eeeeec;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+    --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a; --app-text-subtle:#7a7a86; --app-text-faint:#a4a4a0;
+    --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec; --app-accent-border:#9bd3b4; --app-accent-glow:rgba(31,122,74,0.16);
+    --app-warn:#9a5a12; --app-warn-bg:#fbf2e2; --app-warn-border:#e3c489;
+    --app-danger:#c43a48; --app-danger-strong:#a52836; --app-danger-bg:#fbe9eb; --app-danger-border:#e9b3ba;
+    --app-info:#2b78c5; --app-info-bg:#e6f0fb; --app-info-border:#a9ccec;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+  }
+  body {
+    font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, "Cascadia Code", "Fira Code", monospace;
+    background: var(--app-bg);
+    color: var(--app-fg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.4;
+    /* faint dotted grid backdrop */
+    background-image: radial-gradient(circle, var(--app-border) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-position: -1px -1px;
+    transition: background-color .18s ease, color .18s ease;
+  }
+  [data-theme="light"] body {
+    background-image: radial-gradient(circle, var(--app-border) 1px, transparent 1px);
+  }
+
+  /* ===== Window frame ===== */
+  .window {
+    position: relative;
+    width: 1200px;
+    height: 770px;
+    max-width: 100%;
+    max-height: calc(100vh - 56px);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  /* scanline overlay */
+  .window::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(to bottom, rgba(127,127,160,0.045) 0px, rgba(127,127,160,0.045) 1px, transparent 1px, transparent 3px);
+    opacity: .55;
+    z-index: 50;
+    mix-blend-mode: screen;
+  }
+  [data-theme="light"] .window::after { opacity: .35; mix-blend-mode: multiply; }
+
+  /* ===== Titlebar ===== */
+  .titlebar {
+    position: relative;
+    height: 34px;
+    flex: 0 0 34px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--app-border);
+    background: var(--app-surface-subtle);
+  }
+  .traffic { display: flex; gap: 7px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--app-text-subtle); opacity: .65; }
+  .wordmark {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: var(--app-text-muted);
+    letter-spacing: .04em;
+  }
+  .titlebar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .theme-toggle {
+    font-family: inherit;
+    font-size: 10px;
+    color: var(--app-text-muted);
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    padding: 3px 9px;
+    cursor: pointer;
+    letter-spacing: .04em;
+    transition: all .15s ease;
+  }
+  .theme-toggle:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
+
+  /* ===== Status line (shell prompt) ===== */
+  .statusline {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    font-size: 11px;
+    color: var(--app-text-muted);
+    border-bottom: 1px solid var(--app-border);
+    background: var(--app-surface);
+    position: relative;
+  }
+  /* top accent hairline */
+  .statusline::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(to right, transparent, var(--app-accent) 18%, var(--app-accent) 82%, transparent);
+    opacity: .55;
+  }
+  .prompt-sigil { color: var(--app-accent); }
+  .statusline .seg { color: var(--app-text-subtle); }
+  .statusline b { color: var(--app-text-strong); font-weight: 700; }
+  .statusline .ok { color: var(--app-accent); }
+  .statusline .warn { color: var(--app-warn); }
+  .blink {
+    display: inline-block;
+    width: 7px; height: 13px;
+    background: var(--app-accent);
+    margin-left: 2px;
+    animation: blink 1.1s steps(2, start) infinite;
+    vertical-align: -2px;
+  }
+  @keyframes blink { 0%,50% { opacity: 1; } 51%,100% { opacity: 0; } }
+
+  /* ===== Body split ===== */
+  .split {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+  }
+
+  /* ===== Manifest (left) ===== */
+  .manifest {
+    flex: 0 0 340px;
+    width: 340px;
+    border-right: 1px solid var(--app-border);
+    background: var(--app-surface-subtle);
+    overflow-y: auto;
+    padding: 12px 0 14px;
+    display: flex;
+    flex-direction: column;
+  }
+  .manifest-head {
+    padding: 4px 16px 12px;
+  }
+  .scene-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.012em;
+    color: var(--app-text-strong);
+    line-height: 1.1;
+  }
+  .scene-sub {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--app-text-muted);
+    margin-top: 6px;
+  }
+
+  .group-title {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+    padding: 14px 16px 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .group-title .line { flex: 1; height: 1px; background: var(--app-border); }
+  .group-title .count { color: var(--app-text-subtle); font-weight: 700; }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px 9px 16px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    position: relative;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  .row:hover { background: var(--app-surface-hover); }
+  .row.selected {
+    background: var(--app-surface-active);
+    border-left-color: var(--app-accent);
+  }
+  .row.disabled .row-label,
+  .row.disabled .row-desc { opacity: .42; }
+  .row-main { flex: 1; min-width: 0; }
+  .row-label {
+    font-size: 13.5px;
+    font-weight: 550;
+    color: var(--app-text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row-desc {
+    font-size: 11px;
+    color: var(--app-text-muted);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row-right { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+
+  /* status chip */
+  .chip {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--app-border-strong);
+    color: var(--app-text-subtle);
+    background: var(--app-surface-raised);
+    white-space: nowrap;
+  }
+  .chip.armed { color: var(--app-accent); background: var(--app-accent-bg); border-color: var(--app-accent-border); }
+  .chip.attn { color: var(--app-warn); background: var(--app-warn-bg); border-color: var(--app-warn-border); }
+  .chip.off { color: var(--app-text-subtle); background: var(--app-surface-raised); border-color: var(--app-border); }
+  .chip.dl { color: var(--app-info); background: var(--app-info-bg); border-color: var(--app-info-border); }
+
+  /* switch */
+  .switch {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 36px; height: 20px;
+    border-radius: 999px;
+    border: 1px solid var(--app-border-strong);
+    background: var(--app-surface-raised);
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: background .18s ease, border-color .18s ease;
+    outline: none;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--app-text-subtle);
+    transition: transform .18s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .switch:checked {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+  .switch:checked::after {
+    transform: translateX(16px);
+    background: var(--app-accent);
+    box-shadow: 0 0 8px var(--app-accent-glow);
+  }
+  .switch:focus-visible { box-shadow: 0 0 0 3px var(--app-accent-glow); }
+  .switch.locked { opacity: .9; cursor: not-allowed; }
+  .switch.locked::after { background: var(--app-accent); box-shadow: 0 0 8px var(--app-accent-glow); }
+
+  .lock-ico { font-size: 9px; color: var(--app-text-subtle); width: 36px; text-align: center; }
+
+  /* ===== Inspector (right) ===== */
+  .inspector {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-y: auto;
+    background: var(--app-surface);
+    position: relative;
+  }
+  .insp-pad { padding: 18px 26px 26px; }
+
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+    margin-bottom: 8px;
+  }
+  .breadcrumb .sep { color: var(--app-text-faint); }
+  .breadcrumb .here { color: var(--app-accent); }
+
+  .insp-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.012em;
+    color: var(--app-text-strong);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .insp-title .chip { font-size: 9.5px; }
+  .insp-sub {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--app-text-muted);
+    margin-top: 7px;
+    max-width: 640px;
+  }
+
+  .insp-divider {
+    height: 1px;
+    background: var(--app-border);
+    margin: 18px 0;
+  }
+
+  /* config card */
+  .card {
+    border: 1px solid var(--app-border);
+    border-radius: 12px;
+    background: var(--app-surface-raised);
+    padding: 0;
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+  .card-head {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+    padding: 11px 15px 9px;
+    border-bottom: 1px solid var(--app-border);
+  }
+  .field {
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--app-border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .field:last-child { border-bottom: none; }
+  .field-text { flex: 1; min-width: 0; }
+  .field-label {
+    font-size: 12.5px;
+    font-weight: 550;
+    color: var(--app-text-strong);
+  }
+  .field-desc {
+    font-size: 10.5px;
+    color: var(--app-text-muted);
+    margin-top: 2px;
+  }
+  .field-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+  .field.stacked { flex-direction: column; align-items: stretch; gap: 9px; }
+  .field.stacked .field-control { justify-content: flex-start; flex-wrap: wrap; }
+
+  /* segmented */
+  .segmented {
+    display: inline-flex;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--app-surface);
+  }
+  .segmented button {
+    font-family: inherit;
+    font-size: 11px;
+    color: var(--app-text-muted);
+    background: transparent;
+    border: none;
+    padding: 5px 11px;
+    cursor: pointer;
+    border-right: 1px solid var(--app-border);
+    transition: all .15s ease;
+  }
+  .segmented button:last-child { border-right: none; }
+  .segmented button:hover { color: var(--app-text-strong); background: var(--app-surface-hover); }
+  .segmented button.on {
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
+  }
+
+  /* select / input */
+  .ipt, .sel {
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--app-text-strong);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    padding: 6px 10px;
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .ipt:focus, .sel:focus { outline: none; border-color: var(--app-border-hover); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+  .ipt.path { flex: 1; min-width: 220px; }
+  .sel { cursor: pointer; }
+
+  /* slider */
+  .slider-wrap { display: flex; align-items: center; gap: 12px; width: 100%; }
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--app-border-strong);
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    box-shadow: 0 0 8px var(--app-accent-glow);
+    cursor: pointer;
+  }
+  .slider-val {
+    font-size: 12px;
+    color: var(--app-accent);
+    min-width: 78px;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  /* button */
+  .btn {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 540;
+    color: var(--app-text-strong);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
+    border-radius: 8px;
+    padding: 6px 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all .15s ease;
+  }
+  .btn:hover { border-color: var(--app-border-hover); background: var(--app-surface-hover); }
+  .btn.accent {
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+  .btn.accent:hover { box-shadow: 0 0 0 3px var(--app-accent-glow); }
+  .btn.danger { color: var(--app-danger); border-color: var(--app-danger-border); background: var(--app-danger-bg); }
+  .btn.tiny { font-size: 10.5px; padding: 3px 9px; border-radius: 6px; }
+
+  /* radio group */
+  .radios { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .radio {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all .15s ease;
+    background: var(--app-surface);
+  }
+  .radio:hover { border-color: var(--app-border-hover); }
+  .radio.on { border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+  .radio .ring {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 1px solid var(--app-border-strong);
+    flex: 0 0 auto;
+    position: relative;
+  }
+  .radio.on .ring { border-color: var(--app-accent); }
+  .radio.on .ring::after {
+    content: ""; position: absolute; inset: 3px;
+    border-radius: 50%; background: var(--app-accent);
+    box-shadow: 0 0 6px var(--app-accent-glow);
+  }
+  .radio .r-text { flex: 1; }
+  .radio .r-label { font-size: 12.5px; color: var(--app-text-strong); }
+  .radio .r-desc { font-size: 10.5px; color: var(--app-text-muted); margin-top: 1px; }
+
+  /* perm pill */
+  .perm-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--app-border);
+  }
+  .perm-row:last-child { border-bottom: none; }
+  .perm-name { flex: 1; font-size: 12.5px; color: var(--app-text-strong); }
+  .perm-pill {
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--app-border-strong);
+    white-space: nowrap;
+  }
+  .perm-pill.granted { color: var(--app-accent); background: var(--app-accent-bg); border-color: var(--app-accent-border); }
+  .perm-pill.pending { color: var(--app-warn); background: var(--app-warn-bg); border-color: var(--app-warn-border); }
+  .perm-pill.denied { color: var(--app-danger); background: var(--app-danger-bg); border-color: var(--app-danger-border); }
+
+  /* progress bar (download) */
+  .dl-box {
+    display: flex; flex-direction: column; gap: 8px; width: 100%;
+  }
+  .dl-meta { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
+  .dl-meta .pct { color: var(--app-info); }
+  .progress {
+    height: 6px; border-radius: 999px; background: var(--app-border-strong); overflow: hidden;
+  }
+  .progress > i {
+    display: block; height: 100%;
+    background: linear-gradient(to right, var(--app-info-border), var(--app-info));
+    border-radius: 999px;
+    transition: width .3s ease;
+  }
+
+  /* chips (excluded apps) */
+  .chipfield {
+    display: flex; flex-wrap: wrap; gap: 7px; align-items: center;
+    padding: 9px; border: 1px solid var(--app-border-strong); border-radius: 8px;
+    background: var(--app-surface); width: 100%;
+  }
+  .applet {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--app-text-strong);
+    background: var(--app-surface-raised); border: 1px solid var(--app-border-strong);
+    border-radius: 999px; padding: 3px 6px 3px 10px;
+  }
+  .applet button {
+    font-family: inherit; border: none; background: transparent; color: var(--app-text-muted);
+    cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px;
+  }
+  .applet button:hover { color: var(--app-danger); }
+  .chip-input {
+    font-family: inherit; font-size: 11px; color: var(--app-text-strong);
+    background: transparent; border: none; outline: none; padding: 4px 6px; flex: 1; min-width: 120px;
+  }
+  .typeahead {
+    position: relative;
+  }
+  .ta-menu {
+    position: absolute; top: 100%; left: 0; right: 0; margin-top: 5px; z-index: 20;
+    background: var(--app-surface-raised); border: 1px solid var(--app-border-strong); border-radius: 8px;
+    overflow: hidden; display: none;
+  }
+  .ta-menu.open { display: block; }
+  .ta-menu div {
+    padding: 7px 12px; font-size: 11.5px; color: var(--app-text); cursor: pointer;
+  }
+  .ta-menu div:hover { background: var(--app-surface-hover); color: var(--app-text-strong); }
+
+  /* disabled inspector state */
+  .disabled-state {
+    text-align: center;
+    padding: 60px 30px;
+    color: var(--app-text-muted);
+  }
+  .disabled-state .big {
+    font-size: 13px; color: var(--app-text-subtle); margin-bottom: 8px; letter-spacing: 0.04em;
+  }
+  .disabled-state .hint { font-size: 11px; color: var(--app-text-muted); margin-top: 14px; }
+
+  /* kbd hint */
+  .kbd {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 5px;
+    font-size: 10px; color: var(--app-text-muted);
+    background: var(--app-surface-raised); border: 1px solid var(--app-border-strong);
+    border-radius: 4px;
+  }
+  .keyhints {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10px; color: var(--app-text-subtle);
+  }
+  .keyhints .grp { display: flex; align-items: center; gap: 4px; }
+
+  /* note callout */
+  .callout {
+    font-size: 11px; line-height: 1.5; color: var(--app-text-muted);
+    border: 1px solid var(--app-info-border); background: var(--app-info-bg);
+    border-radius: 8px; padding: 11px 13px; margin-bottom: 14px;
+  }
+  .callout b { color: var(--app-info); }
+  .callout.accentc { border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+  .callout.accentc b { color: var(--app-accent); }
+
+  /* ===== Command bar ===== */
+  .commandbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 16px;
+    border-top: 1px solid var(--app-border);
+    background: var(--app-surface-subtle);
+  }
+  .cmd-status {
+    font-size: 11px; color: var(--app-text-muted); flex: 1;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .cmd-status .dotind {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--app-warn);
+    box-shadow: 0 0 6px var(--app-warn);
+  }
+  .cmd-status.ready .dotind { background: var(--app-accent); box-shadow: 0 0 6px var(--app-accent); }
+  .btn.boot {
+    font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em;
+    padding: 8px 20px;
+  }
+  .btn.boot:disabled {
+    color: var(--app-text-subtle); background: var(--app-surface); border-color: var(--app-border);
+    cursor: not-allowed; box-shadow: none;
+  }
+  .btn.boot:not(:disabled) {
+    color: var(--app-accent); background: var(--app-accent-bg); border-color: var(--app-accent-border);
+  }
+  .btn.boot:not(:disabled):hover { box-shadow: 0 0 0 3px var(--app-accent-glow); }
+
+  /* scrollbars */
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--app-border-strong); border-radius: 999px; border: 2px solid var(--app-surface); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--app-border-hover); }
+</style>
+</head>
+<body>
+  <div class="window" role="application" aria-label="mnema onboarding">
+    <!-- Titlebar -->
+    <div class="titlebar">
+      <div class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <div class="wordmark">mnema</div>
+      <div class="titlebar-right">
+        <button class="theme-toggle" id="themeToggle">◐ theme</button>
+      </div>
+    </div>
+
+    <!-- Status line / shell prompt -->
+    <div class="statusline" id="statusline">
+      <span class="prompt-sigil">mnema ❯</span>
+      <span>system:</span>
+      <b id="sl-armed">5</b> <span class="ok">armed</span>
+      <span class="seg">·</span>
+      <b id="sl-attn">1</b> <span class="warn">needs attention</span>
+      <span class="seg">·</span>
+      <span id="sl-ready" class="warn">configuring required modules</span>
+      <span class="blink" aria-hidden="true"></span>
+    </div>
+
+    <!-- Split -->
+    <div class="split">
+      <!-- Manifest -->
+      <nav class="manifest" id="manifest" aria-label="capability manifest"></nav>
+
+      <!-- Inspector -->
+      <section class="inspector" id="inspector" aria-live="polite"></section>
+    </div>
+
+    <!-- Command bar -->
+    <div class="commandbar">
+      <div class="cmd-status" id="cmdStatus">
+        <span class="dotind"></span>
+        <span id="cmdStatusText">required modules not yet armed — grant permissions to continue</span>
+      </div>
+      <div class="keyhints" style="margin-right:6px;">
+        <span class="grp"><span class="kbd">↑</span><span class="kbd">↓</span> move</span>
+        <span class="grp"><span class="kbd">space</span> toggle</span>
+      </div>
+      <button class="btn" id="dashBtn">open dashboard</button>
+      <button class="btn boot" id="bootBtn" disabled>▸ boot recording</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ============ State model ============ */
+  // status: armed | attn | off | dl
+  const features = [
+    // ---- REQUIRED ----
+    {
+      id: "permissions", group: "required", label: "Permissions", locked: true, on: true,
+      desc: "Screen · Microphone · System audio",
+      status: "attn",
+    },
+    {
+      id: "screen", group: "required", label: "Screen capture", locked: true, on: true,
+      desc: "Resolution · bitrate · frame rate",
+      status: "armed",
+    },
+    {
+      id: "storage", group: "required", label: "Storage & retention", locked: true, on: true,
+      desc: "Save directory · retention window",
+      status: "armed",
+    },
+    // ---- OPTIONAL ----
+    {
+      id: "mic", group: "optional", label: "Microphone capture", locked: false, on: true,
+      desc: "Record + transcribe your voice",
+      status: "armed",
+    },
+    {
+      id: "sysaudio", group: "optional", label: "System audio", locked: false, on: true,
+      desc: "Capture what plays on screen",
+      status: "armed",
+    },
+    {
+      id: "ocr", group: "optional", label: "OCR", locked: false, on: true,
+      desc: "Read on-screen text from frames",
+      status: "armed",
+    },
+    {
+      id: "transcribe", group: "optional", label: "Audio transcription", locked: false, on: true,
+      desc: "Whisper model · downloading",
+      status: "dl",
+    },
+    {
+      id: "privacy", group: "optional", label: "Privacy / Excluded apps", locked: false, on: true,
+      desc: "3 apps excluded",
+      status: "armed",
+    },
+    {
+      id: "askai", group: "optional", label: "Ask AI · Reasoning Engine", locked: false, on: false,
+      desc: "Chat + Quick Recall over captures",
+      status: "off",
+    },
+    {
+      id: "idle", group: "optional", label: "Idle pause", locked: false, on: true,
+      desc: "Pause when you step away",
+      status: "armed",
+    },
+  ];
+
+  let selectedId = "permissions";
+
+  const chipText = { armed: "ARMED", attn: "NEEDS ATTENTION", off: "OFF", dl: "DOWNLOADING" };
+  const chipClass = { armed: "armed", attn: "attn", off: "off", dl: "dl" };
+
+  /* ============ DOM refs ============ */
+  const manifestEl = document.getElementById("manifest");
+  const inspectorEl = document.getElementById("inspector");
+  const slArmed = document.getElementById("sl-armed");
+  const slAttn = document.getElementById("sl-attn");
+  const slReady = document.getElementById("sl-ready");
+  const bootBtn = document.getElementById("bootBtn");
+  const cmdStatus = document.getElementById("cmdStatus");
+  const cmdStatusText = document.getElementById("cmdStatusText");
+  const dashBtn = document.getElementById("dashBtn");
+
+  function feat(id) { return features.find(f => f.id === id); }
+
+  /* ============ Render manifest ============ */
+  function renderManifest() {
+    const groups = [
+      { key: "required", title: "Required" },
+      { key: "optional", title: "Optional" },
+    ];
+    let html = `
+      <div class="manifest-head">
+        <div class="scene-title">Capability manifest</div>
+        <div class="scene-sub">Arm the modules you want. Required modules must be armed before mnema can boot.</div>
+      </div>`;
+
+    groups.forEach(g => {
+      const rows = features.filter(f => f.group === g.key);
+      const armedCount = rows.filter(f => f.on && f.status === "armed").length;
+      html += `<div class="group-title"><span>${g.title}</span><span class="line"></span><span class="count">${armedCount}/${rows.length}</span></div>`;
+      rows.forEach(f => {
+        const sel = f.id === selectedId ? " selected" : "";
+        const dis = (!f.on && !f.locked) ? " disabled" : "";
+        const chip = `<span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span>`;
+        let control;
+        if (f.locked) {
+          control = `<input type="checkbox" class="switch locked" checked disabled title="required" aria-label="${f.label} (required, always on)">`;
+        } else {
+          control = `<input type="checkbox" class="switch" data-sw="${f.id}" ${f.on ? "checked" : ""} aria-label="toggle ${f.label}">`;
+        }
+        html += `
+          <div class="row${sel}${dis}" data-row="${f.id}" role="button" tabindex="0" aria-pressed="${f.id===selectedId}">
+            <div class="row-main">
+              <div class="row-label">${f.label}</div>
+              <div class="row-desc">${f.desc}</div>
+            </div>
+            <div class="row-right">
+              ${chip}
+              ${control}
+            </div>
+          </div>`;
+      });
+    });
+
+    manifestEl.innerHTML = html;
+
+    // row click → select
+    manifestEl.querySelectorAll(".row").forEach(row => {
+      row.addEventListener("click", e => {
+        if (e.target.classList.contains("switch")) return; // switch handled separately
+        selectRow(row.dataset.row);
+      });
+      row.addEventListener("keydown", e => {
+        if (e.key === "Enter") { selectRow(row.dataset.row); }
+      });
+    });
+    // switch toggle
+    manifestEl.querySelectorAll(".switch[data-sw]").forEach(sw => {
+      sw.addEventListener("click", e => e.stopPropagation());
+      sw.addEventListener("change", e => {
+        toggleFeature(e.target.dataset.sw, e.target.checked);
+      });
+    });
+  }
+
+  function selectRow(id) {
+    selectedId = id;
+    renderManifest();
+    renderInspector();
+  }
+
+  function toggleFeature(id, on) {
+    const f = feat(id);
+    if (!f || f.locked) return;
+    f.on = on;
+    // recompute status
+    if (!on) {
+      f.status = "off";
+    } else {
+      // restore a sensible status when turned back on
+      f.status = (id === "transcribe") ? "dl" : "armed";
+    }
+    // selecting it makes the toggle obvious
+    selectedId = id;
+    renderManifest();
+    renderInspector();
+    updateSystem();
+  }
+
+  /* ============ Inspector renderers ============ */
+  function breadcrumb(f) {
+    const grp = f.group === "required" ? "REQUIRED" : "OPTIONAL";
+    return `<div class="breadcrumb"><span>SYSTEM</span><span class="sep">/</span><span>${grp}</span><span class="sep">/</span><span class="here">${f.label.toUpperCase()}</span></div>`;
+  }
+
+  function disabledInspector(f) {
+    return `
+      ${breadcrumb(f)}
+      <div class="insp-title">${f.label} <span class="chip off">OFF</span></div>
+      <div class="insp-divider"></div>
+      <div class="disabled-state">
+        <div class="big">— module disabled —</div>
+        <div>Configuration is hidden while this module is off.</div>
+        <div class="hint">Flip the switch in the manifest (or press <span class="kbd">space</span>) to arm and configure it.</div>
+      </div>`;
+  }
+
+  const inspectors = {
+    permissions(f) {
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">Permissions <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">mnema needs OS-level access to record. System audio is macOS-only. One pending grant is blocking boot.</div>
+        <div class="insp-divider"></div>
+        <div class="card">
+          <div class="card-head">macOS access</div>
+          <div class="perm-row">
+            <div class="perm-name">Screen recording</div>
+            <span class="perm-pill granted">Granted</span>
+            <button class="btn tiny" disabled>Open Settings</button>
+          </div>
+          <div class="perm-row">
+            <div class="perm-name">Microphone</div>
+            <span class="perm-pill pending">Not requested</span>
+            <button class="btn tiny accent" data-act="grant-mic">Grant access</button>
+          </div>
+          <div class="perm-row">
+            <div class="perm-name">System audio</div>
+            <span class="perm-pill denied">Denied</span>
+            <button class="btn tiny" data-act="open-settings">Open Settings</button>
+          </div>
+        </div>
+        <div class="callout"><b>Tip:</b> if a permission shows Denied, macOS requires you to enable it from System Settings → Privacy &amp; Security, then relaunch.</div>`;
+    },
+
+    screen(f) {
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">Screen capture <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">The foundation of mnema — frames are captured, segmented, and stored locally.</div>
+        <div class="insp-divider"></div>
+        <div class="card">
+          <div class="card-head">Video</div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">Resolution</div><div class="field-desc">Downscale frames before encoding to save disk.</div></div>
+            <div class="field-control" data-seg="res">
+              <div class="segmented">
+                <button>Original</button><button class="on">1080p</button><button>1440p</button><button>4K</button><button>Custom</button>
+              </div>
+            </div>
+          </div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">Video bitrate</div><div class="field-desc">Higher = sharper text, larger files.</div></div>
+            <div class="field-control" data-seg="bitrate">
+              <div class="segmented">
+                <button>Low</button><button class="on">Medium</button><button>High</button><button>Custom</button>
+              </div>
+            </div>
+          </div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">Frame rate</div><div class="field-desc">Frames per second. Low fps is plenty for recall.</div></div>
+            <div class="slider-wrap">
+              <input type="range" min="1" max="120" value="2" data-slider="fps">
+              <span class="slider-val" data-out="fps">2 fps</span>
+            </div>
+          </div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">Segment duration</div><div class="field-desc">Length of each recording chunk. Capped at 5 min.</div></div>
+            <div class="slider-wrap">
+              <input type="range" min="10" max="300" value="120" data-slider="seg">
+              <span class="slider-val" data-out="seg">120 s</span>
+            </div>
+          </div>
+        </div>`;
+    },
+
+    storage(f) {
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">Storage &amp; retention <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">Everything stays on this machine. Choose where captures live and how long they're kept.</div>
+        <div class="insp-divider"></div>
+        <div class="card">
+          <div class="card-head">Location</div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">Save directory</div><div class="field-desc">Encrypted SQLite database + media segments.</div></div>
+            <div class="field-control" style="width:100%;">
+              <input class="ipt path" value="~/Library/Application Support/mnema" spellcheck="false">
+              <button class="btn">Browse…</button>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Retention</div><div class="field-desc">Auto-delete raw captures older than this.</div></div>
+            <div class="field-control">
+              <select class="sel"><option>Never</option><option>7 days</option><option selected>14 days</option><option>30 days</option></select>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">Advanced</div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Preview cache TTL</div><div class="field-desc">How long generated thumbnails are kept warm.</div></div>
+            <div class="field-control">
+              <select class="sel"><option>1 hour</option><option selected>24 hours</option><option>7 days</option></select>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Auto-start at login</div><div class="field-desc">Launch mnema and resume capture on boot.</div></div>
+            <div class="field-control"><input type="checkbox" class="switch" checked></div>
+          </div>
+        </div>`;
+    },
+
+    mic(f) {
+      if (!f.on) return disabledInspector(f);
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">Microphone capture <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">Record your voice alongside the screen. Transcription makes spoken words searchable.</div>
+        <div class="insp-divider"></div>
+        <div class="card">
+          <div class="card-head">Input</div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Transcribe microphone</div><div class="field-desc">Run speech-to-text on the mic track.</div></div>
+            <div class="field-control"><input type="checkbox" class="switch" checked></div>
+          </div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Input device</div><div class="field-desc">Source captured for the mic track.</div></div>
+            <div class="field-control">
+              <select class="sel"><option selected>MacBook Pro Microphone</option><option>External USB Mic</option><option>AirPods Pro</option></select>
+            </div>
+          </div>
+        </div>`;
+    },
+
+    sysaudio(f) {
+      if (!f.on) return disabledInspector(f);
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">System audio <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">Capture audio playing through your speakers — calls, videos, anything on screen.</div>
+        <div class="insp-divider"></div>
+        <div class="callout"><b>Requires:</b> Screen capture (armed) and the System audio permission.</div>
+        <div class="card">
+          <div class="card-head">Output</div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Transcribe system audio</div><div class="field-desc">Speech-to-text on captured output audio.</div></div>
+            <div class="field-control"><input type="checkbox" class="switch" checked></div>
+          </div>
+        </div>`;
+    },
+
+    ocr(f) {
+      if (!f.on) return disabledInspector(f);
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">OCR <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">Extract on-screen text from captured frames so anything you saw becomes searchable.</div>
+        <div class="insp-divider"></div>
+        <div class="card">
+          <div class="card-head">Provider</div>
+          <div class="field stacked">
+            <div class="radios" data-radio="ocr-provider">
+              <label class="radio on"><span class="ring"></span><span class="r-text"><div class="r-label">Apple Vision</div><div class="r-desc">On-device, fast, no model download.</div></span></label>
+              <label class="radio"><span class="ring"></span><span class="r-text"><div class="r-label">Tesseract</div><div class="r-desc">Open-source, multi-language packs.</div></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">Model</div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Recognition model</div><div class="field-desc">Apple Vision built-in.</div></div>
+            <div class="field-control">
+              <span class="chip armed">AVAILABLE</span>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Language</div><div class="field-desc">Used by Tesseract packs.</div></div>
+            <div class="field-control">
+              <select class="sel"><option selected>English</option><option>French</option><option>German</option><option>Japanese</option></select>
+            </div>
+          </div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">Recognition mode</div><div class="field-desc">Trade speed for accuracy.</div></div>
+            <div class="field-control" data-seg="ocrmode">
+              <div class="segmented"><button class="on">Fast</button><button>Accurate</button></div>
+            </div>
+          </div>
+        </div>`;
+    },
+
+    transcribe(f) {
+      if (!f.on) return disabledInspector(f);
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">Audio transcription <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">Speech-to-text for mic and system audio. The selected model is downloading.</div>
+        <div class="insp-divider"></div>
+        <div class="card">
+          <div class="card-head">Provider</div>
+          <div class="field stacked">
+            <div class="radios" data-radio="tr-provider">
+              <label class="radio on"><span class="ring"></span><span class="r-text"><div class="r-label">Local Whisper</div><div class="r-desc">Runs fully on-device. Requires a model.</div></span></label>
+              <label class="radio"><span class="ring"></span><span class="r-text"><div class="r-label">Apple Speech</div><div class="r-desc">Built-in, no download.</div></span></label>
+              <label class="radio"><span class="ring"></span><span class="r-text"><div class="r-label">Parakeet</div><div class="r-desc">NVIDIA NeMo, high accuracy.</div></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">Model</div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Whisper size</div><div class="field-desc">Bigger = more accurate, slower, larger.</div></div>
+            <div class="field-control">
+              <select class="sel"><option>base</option><option selected>small</option><option>medium</option><option>large</option></select>
+            </div>
+          </div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">whisper-small.en</div><div class="field-desc">466 MB · pulling from model registry…</div></div>
+            <div class="dl-box">
+              <div class="dl-meta"><span>downloading</span><span class="pct" data-out="dlpct">62%</span></div>
+              <div class="progress"><i data-bar="dl" style="width:62%"></i></div>
+              <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="btn tiny danger" data-act="cancel-dl">Cancel</button>
+              </div>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Language</div><div class="field-desc">Detect automatically or pin one.</div></div>
+            <div class="field-control">
+              <select class="sel"><option selected>Auto-detect</option><option>English</option><option>French</option><option>German</option></select>
+            </div>
+          </div>
+        </div>`;
+    },
+
+    privacy(f) {
+      if (!f.on) return disabledInspector(f);
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">Privacy / Excluded apps <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">Frames from excluded apps are never captured. Add sensitive apps you want mnema to skip.</div>
+        <div class="insp-divider"></div>
+        <div class="card">
+          <div class="card-head"><span data-count="excluded">3</span> apps excluded</div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">Add an app to exclude</div><div class="field-desc">Type to search installed apps.</div></div>
+            <div class="typeahead" style="width:100%;">
+              <div class="chipfield" id="chipfield">
+                <span class="applet">1Password <button data-del>×</button></span>
+                <span class="applet">Bank of America <button data-del>×</button></span>
+                <span class="applet">Zoom <button data-del>×</button></span>
+                <input class="chip-input" id="chipInput" placeholder="e.g. Messages, Keychain Access…" spellcheck="false">
+              </div>
+              <div class="ta-menu" id="taMenu">
+                <div data-add="Messages">Messages</div>
+                <div data-add="Keychain Access">Keychain Access</div>
+                <div data-add="Photos">Photos</div>
+                <div data-add="Signal">Signal</div>
+                <div data-add="Chase">Chase</div>
+              </div>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Recommended exclusions</div><div class="field-desc">Password managers, banking, video calls.</div></div>
+            <div class="field-control"><button class="btn accent" data-act="recommend">Apply recommended</button></div>
+          </div>
+        </div>`;
+    },
+
+    askai(f) {
+      if (!f.on) return disabledInspector(f);
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">Ask AI · Reasoning Engine <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">Chat and Quick Recall over your captures. You must configure a Reasoning Engine provider.</div>
+        <div class="insp-divider"></div>
+        <div class="callout accentc"><b>Provider required:</b> the Reasoning Engine runs through a cloud provider (Anthropic / OpenAI) or a local one (Ollama / Llamafile). Your API key is stored only in the OS keychain — never in config files.</div>
+        <div class="card">
+          <div class="card-head">Provider</div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Reasoning provider</div><div class="field-desc">Choose where reasoning runs.</div></div>
+            <div class="field-control">
+              <select class="sel" id="aiProvider">
+                <option selected>Anthropic (cloud)</option><option>OpenAI (cloud)</option><option>Ollama (local)</option><option>Llamafile (local)</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">API key</div><div class="field-desc" id="aiKeyDesc">Stored in the macOS keychain.</div></div>
+            <div class="field-control"><button class="btn accent" data-act="addkey">Choose provider + add API key</button></div>
+          </div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Default model</div><div class="field-desc">Used by Chat and Quick Recall.</div></div>
+            <div class="field-control">
+              <select class="sel" id="aiModel">
+                <option selected>claude-opus-4-8</option><option>claude-sonnet-4-5</option><option>claude-haiku-4-5</option>
+              </select>
+            </div>
+          </div>
+        </div>`;
+    },
+
+    idle(f) {
+      if (!f.on) return disabledInspector(f);
+      return `
+        ${breadcrumb(f)}
+        <div class="insp-title">Idle pause <span class="chip ${chipClass[f.status]}">${chipText[f.status]}</span></div>
+        <div class="insp-sub">Stop capturing when you walk away — no input means nothing worth recording.</div>
+        <div class="insp-divider"></div>
+        <div class="card">
+          <div class="card-head">Inactivity</div>
+          <div class="field">
+            <div class="field-text"><div class="field-label">Pause on inactivity</div><div class="field-desc">Suspend capture after the idle timeout.</div></div>
+            <div class="field-control"><input type="checkbox" class="switch" checked></div>
+          </div>
+          <div class="field stacked">
+            <div class="field-text"><div class="field-label">Idle timeout</div><div class="field-desc">No keyboard or mouse for this long.</div></div>
+            <div class="slider-wrap">
+              <input type="range" min="5" max="300" value="90" data-slider="idle">
+              <span class="slider-val" data-out="idle">90 s</span>
+            </div>
+          </div>
+        </div>`;
+    },
+  };
+
+  function renderInspector() {
+    const f = feat(selectedId);
+    inspectorEl.innerHTML = `<div class="insp-pad">${inspectors[f.id](f)}</div>`;
+    inspectorEl.scrollTop = 0;
+    wireInspector();
+  }
+
+  /* ============ Inspector interactions ============ */
+  function wireInspector() {
+    // segmented groups
+    inspectorEl.querySelectorAll(".segmented").forEach(seg => {
+      seg.querySelectorAll("button").forEach(btn => {
+        btn.addEventListener("click", () => {
+          seg.querySelectorAll("button").forEach(b => b.classList.remove("on"));
+          btn.classList.add("on");
+        });
+      });
+    });
+    // radio groups
+    inspectorEl.querySelectorAll("[data-radio]").forEach(grp => {
+      grp.querySelectorAll(".radio").forEach(r => {
+        r.addEventListener("click", () => {
+          grp.querySelectorAll(".radio").forEach(x => x.classList.remove("on"));
+          r.classList.add("on");
+        });
+      });
+    });
+    // sliders
+    inspectorEl.querySelectorAll("input[data-slider]").forEach(sl => {
+      const key = sl.dataset.slider;
+      const out = inspectorEl.querySelector(`[data-out="${key}"]`);
+      const unit = key === "fps" ? " fps" : " s";
+      sl.addEventListener("input", () => { if (out) out.textContent = sl.value + unit; });
+    });
+
+    // permission grant buttons (demo: flip pills)
+    inspectorEl.querySelectorAll('[data-act="grant-mic"]').forEach(b => {
+      b.addEventListener("click", () => {
+        const pill = b.parentElement.querySelector(".perm-pill");
+        pill.className = "perm-pill granted"; pill.textContent = "Granted";
+        b.outerHTML = '<button class="btn tiny" disabled>Open Settings</button>';
+        maybeArmPermissions();
+      });
+    });
+    inspectorEl.querySelectorAll('[data-act="open-settings"]').forEach(b => {
+      b.addEventListener("click", () => {
+        const pill = b.parentElement.querySelector(".perm-pill");
+        pill.className = "perm-pill granted"; pill.textContent = "Granted";
+        maybeArmPermissions();
+      });
+    });
+
+    // cancel download → mark missing
+    inspectorEl.querySelectorAll('[data-act="cancel-dl"]').forEach(b => {
+      b.addEventListener("click", () => {
+        const f = feat("transcribe");
+        f.status = "attn";
+        renderManifest();
+        renderInspector();
+        updateSystem();
+      });
+    });
+
+    // excluded apps
+    wirePrivacy();
+
+    // ask ai key
+    inspectorEl.querySelectorAll('[data-act="addkey"]').forEach(b => {
+      b.addEventListener("click", () => {
+        const desc = inspectorEl.querySelector("#aiKeyDesc");
+        if (desc) { desc.innerHTML = '<span style="color:var(--app-accent)">✓ key saved to keychain</span>'; }
+        const f = feat("askai");
+        f.status = "armed";
+        renderManifest();
+        updateSystem();
+      });
+    });
+  }
+
+  function maybeArmPermissions() {
+    // if all pills granted → arm
+    const pills = inspectorEl.querySelectorAll(".perm-pill");
+    const allGranted = Array.from(pills).every(p => p.classList.contains("granted"));
+    const f = feat("permissions");
+    f.status = allGranted ? "armed" : "attn";
+    // update the title chip
+    const titleChip = inspectorEl.querySelector(".insp-title .chip");
+    if (titleChip) { titleChip.className = `chip ${chipClass[f.status]}`; titleChip.textContent = chipText[f.status]; }
+    renderManifest();
+    updateSystem();
+  }
+
+  function wirePrivacy() {
+    const cf = inspectorEl.querySelector("#chipfield");
+    if (!cf) return;
+    const input = inspectorEl.querySelector("#chipInput");
+    const menu = inspectorEl.querySelector("#taMenu");
+
+    function refreshCount() {
+      const n = cf.querySelectorAll(".applet").length;
+      const c = inspectorEl.querySelector('[data-count="excluded"]');
+      if (c) c.textContent = n;
+      const f = feat("privacy");
+      f.desc = n + " app" + (n === 1 ? "" : "s") + " excluded";
+      renderManifest();
+    }
+    function addApp(name) {
+      if (!name) return;
+      const exists = Array.from(cf.querySelectorAll(".applet")).some(a => a.textContent.replace("×", "").trim() === name);
+      if (exists) return;
+      const span = document.createElement("span");
+      span.className = "applet";
+      span.innerHTML = `${name} <button data-del>×</button>`;
+      cf.insertBefore(span, input);
+      span.querySelector("[data-del]").addEventListener("click", () => { span.remove(); refreshCount(); });
+      refreshCount();
+    }
+    // existing delete buttons
+    cf.querySelectorAll("[data-del]").forEach(btn => {
+      btn.addEventListener("click", e => { e.target.closest(".applet").remove(); refreshCount(); });
+    });
+    input.addEventListener("focus", () => menu.classList.add("open"));
+    input.addEventListener("blur", () => setTimeout(() => menu.classList.remove("open"), 150));
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter" && input.value.trim()) { addApp(input.value.trim()); input.value = ""; }
+    });
+    menu.querySelectorAll("[data-add]").forEach(it => {
+      it.addEventListener("mousedown", e => { e.preventDefault(); addApp(it.dataset.add); input.value = ""; });
+    });
+    inspectorEl.querySelectorAll('[data-act="recommend"]').forEach(b => {
+      b.addEventListener("click", () => { ["1Password", "Bank of America", "Zoom"].forEach(addApp); });
+    });
+  }
+
+  /* ============ System summary / boot gate ============ */
+  function updateSystem() {
+    const armed = features.filter(f => f.on && f.status === "armed").length;
+    const attn = features.filter(f => f.on && (f.status === "attn" || f.status === "dl")).length;
+    slArmed.textContent = armed;
+    slAttn.textContent = attn;
+
+    const required = features.filter(f => f.group === "required");
+    const reqReady = required.every(f => f.status === "armed");
+
+    if (reqReady) {
+      slReady.textContent = "ready to record";
+      slReady.className = "ok";
+      bootBtn.disabled = false;
+      cmdStatus.classList.add("ready");
+      cmdStatusText.textContent = attn > 0
+        ? `required modules armed — ${attn} optional module still finishing`
+        : "all required modules armed — ready to boot";
+    } else {
+      slReady.textContent = "configuring required modules";
+      slReady.className = "warn";
+      bootBtn.disabled = true;
+      cmdStatus.classList.remove("ready");
+      const blocking = required.filter(f => f.status !== "armed").map(f => f.label.toLowerCase());
+      cmdStatusText.textContent = `blocked on: ${blocking.join(", ")} — resolve to enable boot`;
+    }
+  }
+
+  /* ============ Keyboard nav ============ */
+  document.addEventListener("keydown", e => {
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) {
+      // allow space toggle only outside inputs
+      if (e.key === " " && document.activeElement.classList.contains("switch")) return;
+      return;
+    }
+    const idx = features.findIndex(f => f.id === selectedId);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      selectRow(features[Math.min(features.length - 1, idx + 1)].id);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      selectRow(features[Math.max(0, idx - 1)].id);
+    } else if (e.key === " ") {
+      const f = feat(selectedId);
+      if (f && !f.locked) { e.preventDefault(); toggleFeature(f.id, !f.on); }
+    }
+  });
+
+  /* ============ Boot / dashboard demo ============ */
+  bootBtn.addEventListener("click", () => {
+    if (bootBtn.disabled) return;
+    bootBtn.textContent = "▸ booting…";
+    slReady.textContent = "● recording";
+    slReady.className = "ok";
+    setTimeout(() => { bootBtn.textContent = "▸ boot recording"; }, 1400);
+  });
+  dashBtn.addEventListener("click", () => {
+    dashBtn.textContent = "opening…";
+    setTimeout(() => { dashBtn.textContent = "open dashboard"; }, 900);
+  });
+
+  /* ============ Live download tick (demo) ============ */
+  setInterval(() => {
+    const f = feat("transcribe");
+    if (!f.on || f.status !== "dl") return;
+    const bar = inspectorEl.querySelector('[data-bar="dl"]');
+    const pctOut = inspectorEl.querySelector('[data-out="dlpct"]');
+    f._pct = (f._pct == null ? 62 : f._pct) + 2;
+    if (f._pct >= 100) {
+      f._pct = 100;
+      f.status = "armed";
+      renderManifest();
+      if (selectedId === "transcribe") renderInspector();
+      updateSystem();
+      return;
+    }
+    if (bar) bar.style.width = f._pct + "%";
+    if (pctOut) pctOut.textContent = f._pct + "%";
+  }, 1100);
+
+  /* ============ Theme toggle ============ */
+  document.getElementById("themeToggle").addEventListener("click", () => {
+    const html = document.documentElement;
+    html.setAttribute("data-theme", html.getAttribute("data-theme") === "dark" ? "light" : "dark");
+  });
+
+  /* ============ Init ============ */
+  renderManifest();
+  renderInspector();
+  updateSystem();
+})();
+</script>
+</body>
+</html>

@@ -53,11 +53,23 @@ export interface CaptureSession {
 	sourceSessions: SourceSessions | null;
 	isInactivityPaused: boolean;
 	isUserPaused: boolean;
+	isLowDiskSuspended: boolean;
 }
 
 export interface GetPermissionsResponse {
 	permissions: PermissionsMap;
 	session: CaptureSession | null;
+}
+
+export interface GeckoBrowserInfo {
+	bundleId: string;
+	displayName: string;
+	installed: boolean;
+}
+
+export interface BrowserUrlAccessibilityStatus {
+	trusted: boolean;
+	geckoBrowsers: GeckoBrowserInfo[];
 }
 
 export interface StartCaptureResponse {

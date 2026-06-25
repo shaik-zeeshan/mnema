@@ -8,13 +8,20 @@
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
-  import { closeCurrentWindow } from "$lib/surface-windows";
+  import { openCapturedUrl } from "$lib/open-captured-url";
+  import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
+  import type {
+    SemanticSearchModelStatusResponse,
+    SemanticSearchModelDownloadProgress,
+    RecordingSettingsDomainUpdateResponse,
+  } from "$lib/types";
   import { askAiClock } from "$lib/askAiClock";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { message } from "@tauri-apps/plugin-dialog";
   import type {
     Conversation,
     ConversationTurn,
@@ -295,6 +302,36 @@
     await closeCurrentWindow();
   }
 
+  // In-flight latch for the captured-page open: one selected result (and one
+  // answer-source chip) opens at a time, so a single boolean is enough to keep the
+  // ⌃O key or a chip double-click from stacking opens / feedback dialogs. The
+  // latch wraps the actual brokered open, so it covers the keyboard path
+  // (openSelectedResultUrl → here) and the answer-source chips (openSourceUrl →
+  // here) alike. (Search result chips have their own per-instance latch inside
+  // SearchResultCard.)
+  let openingCapturedUrl = $state(false);
+
+  // Open a captured page via the shared brokered helper. The helper owns the
+  // feedback: a no-openable-URL result shows a brief info note and a real opener
+  // failure shows an error dialog (mirroring the timeline's "Couldn't open
+  // URL: …"). The raw URL stays in Rust; the UI never sees it.
+  async function openCapturedFrameUrl(frameId: number): Promise<void> {
+    if (openingCapturedUrl) return;
+    openingCapturedUrl = true;
+    try {
+      await openCapturedUrl(frameId);
+    } finally {
+      openingCapturedUrl = false;
+    }
+  }
+
+  // Open the captured page behind a frame source in the default browser.
+  // Frame sources only (audio has frameId/url null).
+  async function openSourceUrl(source: AskAiSource): Promise<void> {
+    if (source.frameId == null) return;
+    await openCapturedFrameUrl(source.frameId);
+  }
+
   // Load thumbnails for answer-source frames, mirroring loadThumbnails. Best
   // effort: a card without a cached preview falls back to its glyph. No search
   // generation guard applies here (these come from the ask stream, not search).
@@ -335,6 +372,17 @@
   // ---------------------------------------------------------------------------
 
   let resultCount = $derived(frames.length + audio.length);
+  // The currently-selected result is an openable frame: selection is within the
+  // frame section (audio selections sit past frames.length) AND that frame
+  // carries a captured page. Gates the ⌃/⌘+O "open page" footer hint so it
+  // tracks the *selected* result — the hint only shows when the action the
+  // keypress fires (openSelectedResultUrl on the selection) actually has a
+  // target, never advertising a no-op for an audio/url-less selection.
+  let selectedResultIsOpenable = $derived(
+    selectedIndex >= 0 &&
+      selectedIndex < frames.length &&
+      frames[selectedIndex]?.url != null,
+  );
   const OPTION_ID_PREFIX = "qr-opt-";
   let activeOptionId = $derived(
     selectedIndex >= 0 ? `${OPTION_ID_PREFIX}${selectedIndex}` : undefined,
@@ -350,6 +398,27 @@
     } else {
       void selectAudio(audio[index - frames.length]);
     }
+  }
+
+  // Open the captured page behind the currently-selected frame result in the
+  // default browser. The result cards live in an aria-activedescendant listbox
+  // (DOM focus stays on the search input), so the per-card open chip can't sit in
+  // the tab order without breaking the roving model. This is the keyboard path to
+  // that chip's action (⌘/Ctrl+O, wired in handleSearchKeydown): it opens the
+  // selected frame's page through the same brokered helper the chip uses. The
+  // footer hint is gated on `selectedResultIsOpenable`, so the keypress should
+  // only land here on an openable frame — but the ⌃O shortcut still fires while a
+  // non-openable result is selected, so surface a benign note (same opener
+  // feedback path as a real failure) instead of silently doing nothing.
+  function openSelectedResultUrl(): void {
+    if (selectedResultIsOpenable) {
+      void openCapturedFrameUrl(frames[selectedIndex].thumbnailFrameId);
+      return;
+    }
+    void message("No openable page for this result.", {
+      title: "Couldn't open page",
+      kind: "info",
+    });
   }
 
   function moveSelection(delta: number): void {
@@ -508,6 +577,21 @@
         event.preventDefault();
         openResultAt(index);
       }
+      return;
+    }
+
+    // ⌘/Ctrl+O opens the selected frame result's captured page in the browser —
+    // the keyboard path to each card's hover-only "open in browser" chip, which
+    // can't be a tab stop inside this aria-activedescendant listbox. A no-op when
+    // nothing is selected or the selection has no openable URL (audio / no link).
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      (event.key === "o" || event.key === "O")
+    ) {
+      event.preventDefault();
+      openSelectedResultUrl();
       return;
     }
 
@@ -3016,6 +3100,35 @@
       resultsQuery.length > 0,
   );
 
+  // In-search discoverability hint (issue #125): when no Semantic Search Model is
+  // installed, search is keyword-only. Surface a one-time hint pointing the user
+  // to Settings so they can turn on meaning-based search. We load the model
+  // status lazily and treat "no model installed" as "no model available".
+  let semanticSearchModelInstalled = $state<boolean | null>(null);
+  async function loadSemanticSearchModelInstalled(): Promise<void> {
+    try {
+      const status = await invoke<SemanticSearchModelStatusResponse>(
+        "get_semantic_search_model_status",
+      );
+      semanticSearchModelInstalled = status.models.some((model) => model.available);
+    } catch {
+      // Best-effort: a failure just suppresses the hint (never blocks search).
+      semanticSearchModelInstalled = null;
+    }
+  }
+  async function openSemanticSearchSettings(): Promise<void> {
+    await openSettings("semanticSearch");
+  }
+  // Show the hint once results have run and no model is installed — the hint is
+  // most useful exactly when keyword-only search underwhelms.
+  let showSemanticSearchHint = $derived(
+    semanticSearchModelInstalled === false &&
+      !belowMinimum &&
+      !loading &&
+      parseErrorMessage === null &&
+      resultsQuery.length > 0,
+  );
+
   // Slice 3: results are PAUSED (not empty, not errored) when the backend
   // returned a parse error for an at/above-minimum query that isn't mid-flight.
   // The backend suppresses results in this case; this branch renders a calm
@@ -3202,6 +3315,7 @@
   onMount(() => {
     void focusQuickRecall();
     void loadAskAvailability();
+    void loadSemanticSearchModelInstalled();
     // Warm the captured-app catalog up front so the App value list (whether
     // reached by typing `app:` or via the picker) has selectable rows on first
     // open — the source/date lists are static, so only App needs the head start.
@@ -3224,6 +3338,8 @@
     let unlistenUpdate: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
     let unlistenDismiss: (() => void) | undefined;
+    let unlistenSettings: (() => void) | undefined;
+    let unlistenSemanticSearchDownload: (() => void) | undefined;
 
     // The window is hidden/re-shown rather than recreated across summons, so
     // re-grab focus each time it becomes key — onMount alone fires only once.
@@ -3236,6 +3352,11 @@
           // and the user may have enabled Ask AI or fixed PI/auth since the last
           // summon. Without this the stale disabled hint would persist forever.
           void loadAskAvailability();
+          // Same staleness applies to the "turn on meaning search" hint: a model
+          // can be installed/removed in Settings while this (reused) window stays
+          // hidden, so re-probe model status on focus too — otherwise the hint
+          // keeps showing keyword-only long after a model is installed.
+          void loadSemanticSearchModelInstalled();
           // Re-summon hydration: if an ask thread is armed but its in-memory
           // transcript was cleared, reload it from the store so a finished (or
           // still-streaming) answer reappears. Background completion is
@@ -3287,6 +3408,47 @@
       else unlistenDismiss = fn;
     });
 
+    // Settings saved in the Settings window broadcast
+    // `recording_settings_domain_changed` ({ domain, settings }). The Semantic
+    // Search toggle + model selection live in the `semantic_search` domain, so a
+    // model selection/toggle made while this (reused) window stays focused must
+    // re-probe model status — otherwise the "turn on meaning search" hint goes
+    // stale exactly as the onFocusChanged re-probe of Ask AI availability would
+    // (focus never changes in this in-place case). The focus re-probe above
+    // covers the download-then-refocus case; this covers the focus-stays case.
+    listen<RecordingSettingsDomainUpdateResponse>(
+      "recording_settings_domain_changed",
+      (event) => {
+        if (event.payload.domain !== "semantic_search") return;
+        void loadSemanticSearchModelInstalled();
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSettings = fn;
+    });
+
+    // A model download started in Settings emits progress here as it runs. The
+    // settings-domain listener above only fires on a settings save, not when a
+    // background download FINISHES — so if a download completes while this
+    // (reused) window stays focused, the "turn on meaning search" hint would keep
+    // showing "download"/keyword-only until the next focus change. Re-probe model
+    // status when the download reaches a terminal state (completed/failed/
+    // cancelled) so the hint reflects the now-installed model live. Mirrors the
+    // settings page handler (`handleSemanticSearchDownloadProgress`).
+    listen<SemanticSearchModelDownloadProgress>(
+      "semantic_search_model_download_progress",
+      (event) => {
+        if (
+          ["completed", "failed", "cancelled"].includes(event.payload.status)
+        ) {
+          void loadSemanticSearchModelInstalled();
+        }
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSemanticSearchDownload = fn;
+    });
+
     return () => {
       destroyed = true;
       window.removeEventListener("keydown", handleLauncherCaptureKeydown, {
@@ -3296,6 +3458,8 @@
       unlistenUpdate?.();
       unlistenFocus?.();
       unlistenDismiss?.();
+      unlistenSettings?.();
+      unlistenSemanticSearchDownload?.();
     };
   });
 
@@ -3329,6 +3493,21 @@
     </span>
     <span class="quick-recall__tool-app-name">{app}</span>
   </span>
+{/snippet}
+
+<!-- The keyword-only hint, guarded by showSemanticSearchHint, shared by the
+     empty and results branches so there is one source of truth. -->
+{#snippet semanticHint()}
+  {#if showSemanticSearchHint}
+    <button
+      type="button"
+      class="quick-recall__semantic-hint"
+      onclick={() => void openSemanticSearchSettings()}
+    >
+      Searching keywords only. Turn on meaning-based search in Settings →
+      Processing to also find results by meaning.
+    </button>
+  {/if}
 {/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3706,7 +3885,9 @@
             </p>
           {:else if showEmpty}
             <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
+            {@render semanticHint()}
           {:else}
+            {@render semanticHint()}
             {#if frames.length > 0}
               <div class="quick-recall__section" role="presentation">
                 <span class="quick-recall__section-label">Screen</span>
@@ -4031,7 +4212,9 @@
                                     thumbnailUrl={s.frameId != null
                                       ? (thumbnailCache.get(s.frameId) ?? null)
                                       : null}
+                                    url={s.url}
                                     onselect={() => void selectSource(s)}
+                                    onopenurl={() => openSourceUrl(s)}
                                   />
                                 {/each}
                               </div>
@@ -4050,6 +4233,7 @@
                                     startedAt={s.startedAt}
                                     endedAt={s.endedAt}
                                     sourceKind={s.sourceKind}
+                                    url={s.url}
                                     onselect={() => void selectSource(s)}
                                   />
                                 {/each}
@@ -4143,6 +4327,9 @@
       {:else if resultCount > 0}
         <span class="quick-recall__hint-item"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
         <span class="quick-recall__hint-item"><kbd>↵</kbd> open</span>
+        {#if selectedResultIsOpenable}
+          <span class="quick-recall__hint-item"><kbd>⌃O</kbd> open page</span>
+        {/if}
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> Ask AI</span>
         {/if}
@@ -4356,6 +4543,27 @@
 
   .quick-recall__state--error {
     color: var(--app-accent);
+  }
+
+  /* In-search discoverability hint (issue #125): keyword-only search → Settings. */
+  .quick-recall__semantic-hint {
+    display: block;
+    width: 100%;
+    margin: 4px 0 8px;
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--app-text-muted);
+    background: var(--app-surface-raised, rgba(127, 127, 127, 0.08));
+    border: 1px solid var(--app-border, rgba(127, 127, 127, 0.2));
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .quick-recall__semantic-hint:hover {
+    color: var(--app-text);
+    border-color: var(--app-accent);
   }
 
   /* Slice 4: feature-teaching orientation view shown pre-query (belowMinimum).

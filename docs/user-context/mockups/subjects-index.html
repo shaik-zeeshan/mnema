@@ -326,15 +326,33 @@
     </header>
     <div class="app-body">
       <div class="insights">
-        <nav class="subnav">
-          <div class="subnav-tabs">
-            <a class="subnav-tab" href="overview.html">Overview</a>
-            <a class="subnav-tab active" aria-current="page" href="subjects-index.html">Subjects</a>
-            <a class="subnav-tab" href="context.html">Context</a>
-            <a class="subnav-tab" href="chat.html">Chat</a>
+        <aside class="sidebar" aria-label="Insights navigation">
+          <div class="sidebar-scroll">
+            <nav class="rail-nav">
+              <a class="rail-nav-item" href="overview.html">overview</a>
+              <a class="rail-nav-item active" aria-current="page" href="subjects-index.html">subjects<span class="rail-count">12</span></a>
+              <a class="rail-nav-item" href="context.html">context<span class="rail-count">48</span></a>
+            </nav>
+            <a class="rail-newchat" href="chat.html"><span class="plus">＋</span> new chat</a>
+            <div class="rail-search">
+              <span class="glyph">⌕</span>
+              <input type="text" placeholder="search chats…" disabled />
+            </div>
+            <div class="rail-history">
+              <div class="rail-group">today</div>
+              <a class="rail-chat" href="chat.html"><span class="t">Why is my DER stuck at 10.9%?</span><span class="when">2h</span></a>
+              <a class="rail-chat" href="chat.html"><span class="t">Draft release notes for v0.2</span><span class="when">4h</span></a>
+              <div class="rail-group">yesterday</div>
+              <a class="rail-chat" href="chat.html"><span class="t">Recap what I shipped last week</span><span class="when">1d</span></a>
+              <div class="rail-group">this week</div>
+              <a class="rail-chat" href="chat.html"><span class="t">What did I decide about cc?</span><span class="when">3d</span></a>
+              <a class="rail-chat" href="chat.html"><span class="t">Compare cc thresholds</span><span class="when">4d</span></a>
+            </div>
           </div>
-          <div class="subnav-meta"><span class="engine-status"><span class="dot"></span>Engine: Claude</span></div>
-        </nav>
+          <div class="rail-foot">
+            <span class="rail-engine"><span class="dot"></span>engine<span class="sep">·</span><span class="model">Claude</span></span>
+          </div>
+        </aside>
         <main class="insights-main">
           <div class="conv-head">
             <h1>Subjects</h1>

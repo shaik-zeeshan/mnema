@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>mnema · onboarding · stacked composer</title>
+<style>
+  :root {
+    --app-bg:#0c0c0e; --app-fg:#e2e2e8; --app-fg-muted:#8a8aaa;
+    --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#7a7a9a; --app-text-subtle:#44445a; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15; --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-strong:#ff4455; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  }
+  [data-theme="light"] {
+    --app-bg:#f6f6f4; --app-fg:#14141a; --app-fg-muted:#5a5a6a;
+    --app-surface:#ffffff; --app-surface-subtle:#f6f6f4; --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#eeeeec;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+    --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a; --app-text-subtle:#7a7a86; --app-text-faint:#a4a4a0;
+    --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec; --app-accent-border:#9bd3b4; --app-accent-glow:rgba(31,122,74,0.16);
+    --app-warn:#9a5a12; --app-warn-bg:#fbf0dc; --app-warn-border:#d9b87a;
+    --app-danger:#c43a48; --app-danger-strong:#a82230; --app-danger-bg:#fbe6e8; --app-danger-border:#e0a8ae;
+    --app-info:#2b78c5; --app-info-bg:#e4effb; --app-info-border:#a8c8ec;
+  }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body {
+    height:100%;
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"Cascadia Code","Fira Code",monospace;
+    background:var(--app-bg);
+    color:var(--app-fg);
+    -webkit-font-smoothing:antialiased;
+  }
+  body {
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh;
+    padding:28px;
+    background:
+      radial-gradient(900px 420px at 50% -8%, var(--app-accent-glow), transparent 60%),
+      var(--app-bg);
+  }
+
+  /* ===== window chrome ===== */
+  .window {
+    width:1180px; height:780px;
+    max-width:100%; max-height:96vh;
+    display:flex; flex-direction:column;
+    background:var(--app-surface);
+    border:1px solid var(--app-border);
+    border-radius:10px;
+    overflow:hidden;
+    position:relative;
+  }
+  .titlebar {
+    height:38px; flex:0 0 38px;
+    display:flex; align-items:center;
+    padding:0 14px;
+    border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    position:relative;
+    user-select:none;
+  }
+  .traffic { display:flex; gap:8px; }
+  .traffic span { width:11px; height:11px; border-radius:999px; background:var(--app-text-faint); }
+  .wordmark {
+    position:absolute; left:50%; transform:translateX(-50%);
+    font-size:11px; letter-spacing:0.04em; color:var(--app-text-muted);
+  }
+  .theme-toggle {
+    position:absolute; right:12px; top:50%; transform:translateY(-50%);
+    display:flex; align-items:center; gap:6px;
+    font-size:10.5px; color:var(--app-text-muted);
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border);
+    border-radius:6px; padding:4px 8px;
+    cursor:pointer;
+  }
+  .theme-toggle:hover { border-color:var(--app-border-hover); color:var(--app-text); }
+
+  /* ===== sticky summary bar ===== */
+  .summary-bar {
+    flex:0 0 auto;
+    padding:13px 18px 13px;
+    border-bottom:1px solid var(--app-border);
+    background:color-mix(in srgb, var(--app-surface) 86%, transparent);
+    backdrop-filter:blur(8px);
+    display:flex; align-items:center; gap:16px;
+    position:relative; z-index:5;
+  }
+  .summary-left { flex:1 1 auto; min-width:0; }
+  .summary-eyebrow {
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-text-subtle); margin-bottom:5px;
+  }
+  .summary-line {
+    font-size:12.5px; color:var(--app-text); line-height:1.45;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .summary-line b { color:var(--app-accent); font-weight:600; }
+  .summary-line .off { color:var(--app-text-subtle); }
+  .meter-wrap { flex:0 0 168px; }
+  .meter-head {
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-size:10px; color:var(--app-text-muted); margin-bottom:6px;
+  }
+  .meter-head b { color:var(--app-accent); font-size:11px; }
+  .meter-track {
+    height:6px; border-radius:999px; background:var(--app-surface-active);
+    border:1px solid var(--app-border); overflow:hidden;
+  }
+  .meter-fill {
+    height:100%; width:0%;
+    background:linear-gradient(90deg, var(--app-accent-strong), var(--app-accent));
+    box-shadow:0 0 10px var(--app-accent-glow);
+    transition:width .28s ease;
+  }
+  .cta {
+    flex:0 0 auto;
+    font-size:12.5px; font-weight:540;
+    padding:9px 16px; border-radius:8px;
+    background:var(--app-accent-bg);
+    color:var(--app-accent);
+    border:1px solid var(--app-accent-border);
+    cursor:pointer;
+    transition:background .15s ease, box-shadow .15s ease;
+    white-space:nowrap;
+  }
+  .cta:hover { background:color-mix(in srgb, var(--app-accent-bg) 60%, var(--app-accent) 14%); box-shadow:0 0 0 3px var(--app-accent-glow); }
+
+  /* ===== scroll body w/ gutter ===== */
+  .body {
+    flex:1 1 auto; min-height:0;
+    display:flex;
+  }
+  .gutter {
+    flex:0 0 44px;
+    display:flex; flex-direction:column; align-items:center;
+    padding-top:26px; gap:14px;
+    border-right:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+  }
+  .dot {
+    width:9px; height:9px; border-radius:999px;
+    background:var(--app-text-faint);
+    border:1px solid transparent;
+    cursor:pointer; position:relative;
+    transition:background .15s ease, transform .15s ease;
+  }
+  .dot:hover { background:var(--app-text-subtle); }
+  .dot.active { background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); transform:scale(1.15); }
+  .dot.req::after {
+    content:""; position:absolute; inset:-4px; border-radius:999px;
+    border:1px solid var(--app-border-strong);
+  }
+  .dot .tip {
+    position:absolute; left:18px; top:50%; transform:translateY(-50%);
+    background:var(--app-surface-raised); border:1px solid var(--app-border-strong);
+    color:var(--app-text); font-size:10px; padding:3px 7px; border-radius:6px;
+    white-space:nowrap; opacity:0; pointer-events:none; transition:opacity .12s ease; z-index:10;
+  }
+  .dot:hover .tip { opacity:1; }
+
+  .scroll {
+    flex:1 1 auto; min-height:0; overflow-y:auto; scroll-behavior:smooth;
+    padding:0 0 40px;
+    background:
+      radial-gradient(circle at 1px 1px, var(--app-border) 1px, transparent 0);
+    background-size:22px 22px;
+    position:relative;
+  }
+  .scroll::before {
+    content:""; position:absolute; inset:0;
+    background:linear-gradient(var(--app-surface), color-mix(in srgb, var(--app-surface) 92%, transparent));
+    opacity:0.82; pointer-events:none;
+  }
+  .scroll > * { position:relative; }
+  .scroll::-webkit-scrollbar { width:10px; }
+  .scroll::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:999px; border:3px solid var(--app-surface); }
+
+  .page { padding:22px 26px 0; max-width:880px; margin:0 auto; }
+
+  /* ===== welcome banner ===== */
+  .welcome {
+    position:relative; overflow:hidden;
+    border:1px solid var(--app-border);
+    border-radius:12px;
+    background:var(--app-surface-raised);
+    padding:22px 22px 20px;
+    margin-bottom:18px;
+  }
+  .welcome::before {
+    content:""; position:absolute; top:0; left:14px; right:14px; height:1px;
+    background:linear-gradient(90deg,transparent, color-mix(in srgb,var(--app-accent) 12%,transparent) 22%, color-mix(in srgb,var(--app-accent) 50%,transparent) 50%, transparent);
+  }
+  .welcome::after {
+    content:""; position:absolute; right:-80px; top:-120px; width:300px; height:300px; border-radius:999px;
+    background:radial-gradient(circle, var(--app-accent-glow), transparent 65%);
+    pointer-events:none;
+  }
+  .welcome .eyebrow {
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-accent); margin-bottom:9px;
+  }
+  .welcome h1 { font-size:22px; font-weight:700; letter-spacing:-0.012em; color:var(--app-text-strong); margin-bottom:8px; }
+  .welcome p { font-size:11px; line-height:1.5; color:var(--app-text-muted); max-width:560px; margin-bottom:16px; }
+  .welcome-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .btn {
+    font-size:12px; font-weight:540; padding:8px 14px; border-radius:8px;
+    background:var(--app-surface-hover); color:var(--app-text);
+    border:1px solid var(--app-border-strong); cursor:pointer;
+    transition:border-color .15s ease, background .15s ease;
+  }
+  .btn:hover { border-color:var(--app-border-hover); color:var(--app-text-strong); }
+  .btn.primary { background:var(--app-accent-bg); color:var(--app-accent); border-color:var(--app-accent-border); }
+  .btn.primary:hover { box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .btn.sm { font-size:10.5px; padding:5px 9px; border-radius:6px; }
+  .welcome-hint { font-size:10px; color:var(--app-text-subtle); }
+
+  /* ===== section labels ===== */
+  .section-label {
+    font-size:10.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    color:var(--app-text-muted); margin:18px 2px 10px;
+    display:flex; align-items:center; gap:8px;
+  }
+  .section-label .ln { flex:1 1 auto; height:1px; background:var(--app-border); }
+
+  /* ===== block card ===== */
+  .block {
+    position:relative;
+    border:1px solid var(--app-border);
+    border-radius:12px;
+    background:var(--app-surface-raised);
+    margin-bottom:12px;
+    transition:background .18s ease, border-color .18s ease, opacity .18s ease;
+  }
+  .block::before {
+    content:""; position:absolute; top:0; left:14px; right:14px; height:1px;
+    background:linear-gradient(90deg,transparent, color-mix(in srgb,var(--app-accent) 12%,transparent) 22%, color-mix(in srgb,var(--app-accent) 50%,transparent) 50%, transparent);
+    opacity:1; transition:opacity .18s ease;
+  }
+  .block.disabled {
+    background:var(--app-surface-subtle);
+    border-color:var(--app-border);
+    opacity:0.62;
+  }
+  .block.disabled::before { opacity:0.15; }
+
+  .block-head {
+    display:flex; align-items:center; gap:14px;
+    padding:15px 16px;
+    cursor:pointer;
+  }
+  .block.disabled .block-head { padding:11px 16px; cursor:default; }
+  .block-icon {
+    flex:0 0 34px; width:34px; height:34px; border-radius:9px;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--app-surface-active); border:1px solid var(--app-border);
+    color:var(--app-text-muted);
+    transition:opacity .18s ease;
+  }
+  .block.disabled .block-icon { opacity:0.5; }
+  .block-icon svg { width:17px; height:17px; }
+  .block.enabled .block-icon { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+
+  .block-meta { flex:1 1 auto; min-width:0; }
+  .block-title-row { display:flex; align-items:center; gap:8px; }
+  .block-name { font-size:13.5px; font-weight:550; color:var(--app-text-strong); }
+  .block.disabled .block-name { color:var(--app-text-muted); text-decoration:line-through; text-decoration-color:var(--app-text-faint); }
+  .badge {
+    font-size:9px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase;
+    padding:2px 6px; border-radius:3px;
+    background:var(--app-surface-active); color:var(--app-text-muted); border:1px solid var(--app-border);
+  }
+  .badge.req { background:var(--app-info-bg); color:var(--app-info); border-color:var(--app-info-border); }
+  .badge.rec { background:var(--app-accent-bg); color:var(--app-accent); border-color:var(--app-accent-border); }
+  .block-desc { font-size:11px; color:var(--app-text-muted); margin-top:3px; line-height:1.4; }
+  .block-summary {
+    font-size:11px; color:var(--app-text-subtle); margin-top:4px;
+    display:none; line-height:1.4;
+  }
+  .block-summary b { color:var(--app-text); font-weight:500; }
+  .block.enabled.collapsed .block-summary,
+  .block.required.collapsed .block-summary { display:block; }
+
+  .block-controls { flex:0 0 auto; display:flex; align-items:center; gap:12px; }
+
+  /* switch */
+  .switch {
+    flex:0 0 auto; width:36px; height:20px; border-radius:999px;
+    border:1px solid var(--app-border-strong); background:var(--app-surface-active);
+    position:relative; cursor:pointer; transition:background .18s ease, border-color .18s ease;
+  }
+  .switch::after {
+    content:""; position:absolute; top:50%; left:2px; transform:translateY(-50%);
+    width:14px; height:14px; border-radius:999px;
+    background:var(--app-text-subtle);
+    transition:transform .18s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .switch.on { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+  .switch.on::after { transform:translate(16px,-50%); background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+  .switch:focus-visible { outline:none; box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .switch.locked { opacity:0.45; cursor:not-allowed; }
+
+  .chevron {
+    flex:0 0 auto; width:24px; height:24px; border-radius:6px;
+    display:flex; align-items:center; justify-content:center;
+    color:var(--app-text-muted); cursor:pointer;
+    transition:transform .18s ease, color .15s ease;
+  }
+  .chevron:hover { color:var(--app-text); }
+  .block.expanded .chevron { transform:rotate(180deg); }
+  .block.disabled .chevron { display:none; }
+
+  /* expanding body */
+  .block-body {
+    overflow:hidden;
+    max-height:0; opacity:0;
+    transition:max-height .22s ease, opacity .18s ease;
+  }
+  .block.expanded .block-body { max-height:1400px; opacity:1; }
+  .block-inner { padding:4px 16px 18px; border-top:1px solid var(--app-border); margin-top:0; }
+
+  /* ===== settings rows ===== */
+  .row {
+    display:flex; align-items:flex-start; gap:16px;
+    padding:13px 2px;
+    border-bottom:1px solid var(--app-border);
+  }
+  .row:last-child { border-bottom:none; }
+  .row-meta { flex:1 1 auto; min-width:0; }
+  .row-label { font-size:13.5px; font-weight:550; color:var(--app-text); }
+  .row-desc { font-size:11px; color:var(--app-text-muted); margin-top:3px; line-height:1.4; }
+  .row-control { flex:0 0 auto; display:flex; align-items:center; gap:10px; }
+
+  .group-title {
+    font-size:10.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    color:var(--app-text-muted); margin:16px 2px 4px;
+  }
+
+  /* segmented */
+  .seg { display:inline-flex; border:1px solid var(--app-border-strong); border-radius:8px; overflow:hidden; background:var(--app-surface-active); }
+  .seg button {
+    font-family:inherit; font-size:11px; padding:6px 11px; border:none; background:transparent;
+    color:var(--app-text-muted); cursor:pointer; transition:background .12s ease, color .12s ease;
+    border-right:1px solid var(--app-border);
+  }
+  .seg button:last-child { border-right:none; }
+  .seg button.active { background:var(--app-accent-bg); color:var(--app-accent); }
+  .seg button:hover:not(.active) { color:var(--app-text); }
+
+  /* select */
+  select, input[type="text"], input[type="number"] {
+    font-family:inherit; font-size:12px;
+    background:var(--app-surface-active); color:var(--app-text);
+    border:1px solid var(--app-border-strong); border-radius:8px;
+    padding:7px 10px; outline:none;
+  }
+  select:focus, input:focus { border-color:var(--app-border-hover); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .path-input { width:280px; }
+
+  /* slider */
+  .slider-wrap { display:flex; align-items:center; gap:12px; }
+  input[type="range"] {
+    -webkit-appearance:none; appearance:none; width:160px; height:4px; border-radius:999px;
+    background:var(--app-surface-active); border:1px solid var(--app-border); outline:none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance:none; appearance:none; width:14px; height:14px; border-radius:999px;
+    background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); cursor:pointer;
+    border:1px solid var(--app-accent-strong);
+  }
+  .slider-val { font-size:12px; color:var(--app-accent); min-width:62px; text-align:right; }
+
+  /* mini switch in rows */
+  .mini-switch-label { display:flex; align-items:center; gap:9px; }
+  .mini-switch-text { font-size:12px; font-weight:500; color:var(--app-text); }
+  .mini-switch-text small { display:block; font-size:10px; color:var(--app-text-muted); font-weight:400; margin-top:1px; }
+
+  /* radio */
+  .radio-group { display:flex; flex-direction:column; gap:8px; }
+  .radio {
+    display:flex; align-items:center; gap:9px; cursor:pointer;
+    font-size:12px; color:var(--app-text);
+    padding:8px 11px; border:1px solid var(--app-border); border-radius:8px;
+    background:var(--app-surface-active); transition:border-color .12s ease, background .12s ease;
+  }
+  .radio:hover { border-color:var(--app-border-hover); }
+  .radio.active { border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .radio .dot-r { width:13px; height:13px; border-radius:999px; border:1px solid var(--app-border-strong); flex:0 0 auto; position:relative; }
+  .radio.active .dot-r { border-color:var(--app-accent); }
+  .radio.active .dot-r::after { content:""; position:absolute; inset:3px; border-radius:999px; background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .radio small { color:var(--app-text-muted); font-size:10px; margin-left:auto; }
+
+  /* status pill */
+  .pill {
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:11px; padding:5px 10px; border-radius:999px;
+    border:1px solid var(--app-border); background:var(--app-surface-active); color:var(--app-text-muted);
+  }
+  .pill .pd { width:7px; height:7px; border-radius:999px; }
+  .pill.granted { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .pill.granted .pd { background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .pill.pending { color:var(--app-warn); border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+  .pill.pending .pd { background:var(--app-warn); }
+  .pill.denied { color:var(--app-danger); border-color:var(--app-danger-border); background:var(--app-danger-bg); }
+  .pill.denied .pd { background:var(--app-danger); }
+
+  .perm-row { display:flex; align-items:center; gap:14px; padding:12px 2px; border-bottom:1px solid var(--app-border); }
+  .perm-row:last-child { border-bottom:none; }
+  .perm-name { flex:1 1 auto; font-size:13px; color:var(--app-text); }
+  .perm-name small { display:block; font-size:10px; color:var(--app-text-muted); margin-top:2px; }
+
+  /* model picker / download */
+  .model-card { border:1px solid var(--app-border); border-radius:8px; background:var(--app-surface-active); padding:11px 12px; margin-top:6px; }
+  .model-top { display:flex; align-items:center; gap:10px; }
+  .model-name { font-size:12px; color:var(--app-text); flex:1 1 auto; }
+  .model-name small { color:var(--app-text-muted); }
+  .dl-track { height:5px; border-radius:999px; background:var(--app-surface); border:1px solid var(--app-border); overflow:hidden; margin-top:9px; }
+  .dl-fill { height:100%; width:62%; background:linear-gradient(90deg,var(--app-accent-strong),var(--app-accent)); box-shadow:0 0 8px var(--app-accent-glow); transition:width .3s ease; }
+  .dl-meta { display:flex; justify-content:space-between; font-size:10px; color:var(--app-text-muted); margin-top:6px; }
+
+  /* chips / typeahead */
+  .typeahead { position:relative; }
+  .typeahead input { width:100%; }
+  .chips { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
+  .chip {
+    display:inline-flex; align-items:center; gap:7px;
+    font-size:11px; padding:5px 8px 5px 10px; border-radius:999px;
+    background:var(--app-surface-active); border:1px solid var(--app-border-strong); color:var(--app-text);
+  }
+  .chip button { background:none; border:none; color:var(--app-text-muted); cursor:pointer; font-size:13px; line-height:1; font-family:inherit; padding:0; }
+  .chip button:hover { color:var(--app-danger); }
+
+  /* callout */
+  .callout {
+    display:flex; gap:11px; padding:12px 13px; border-radius:8px;
+    background:var(--app-info-bg); border:1px solid var(--app-info-border);
+    font-size:11px; color:var(--app-text); line-height:1.5; margin-bottom:6px;
+  }
+  .callout.key { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+  .callout svg { flex:0 0 16px; width:16px; height:16px; color:var(--app-info); margin-top:1px; }
+  .callout.key svg { color:var(--app-accent); }
+
+  .footnote { font-size:10px; color:var(--app-text-subtle); padding:8px 2px 26px; text-align:center; }
+  .footnote b { color:var(--app-text-muted); }
+
+  .req-lock { font-size:9.5px; color:var(--app-text-subtle); display:flex; align-items:center; gap:5px; }
+</style>
+</head>
+<body>
+<div class="window">
+  <!-- titlebar -->
+  <div class="titlebar">
+    <div class="traffic"><span></span><span></span><span></span></div>
+    <div class="wordmark">mnema</div>
+    <button class="theme-toggle" id="themeToggle">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path id="themeIcon" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <span id="themeLabel">Dark</span>
+    </button>
+  </div>
+
+  <!-- sticky summary bar -->
+  <div class="summary-bar">
+    <div class="summary-left">
+      <div class="summary-eyebrow">Your Mnema</div>
+      <div class="summary-line" id="summaryLine">Recording: <b>screen</b> · OCR <b>on</b> · Transcription <b>on</b> · Ask AI <span class="off">off</span></div>
+    </div>
+    <div class="meter-wrap">
+      <div class="meter-head"><span>Setup</span><b id="meterPct">40%</b></div>
+      <div class="meter-track"><div class="meter-fill" id="meterFill"></div></div>
+    </div>
+    <button class="cta" id="cta">Finish setup →</button>
+  </div>
+
+  <!-- body: gutter + scroll -->
+  <div class="body">
+    <div class="gutter" id="gutter"></div>
+
+    <div class="scroll" id="scroll">
+      <div class="page">
+        <!-- welcome -->
+        <div class="welcome">
+          <div class="eyebrow">Welcome to Mnema</div>
+          <h1>Compose your capture</h1>
+          <p>Mnema is your local, searchable memory of everything you see and hear on this Mac. Switch on only the pieces you want below — the required foundation is pinned at the top, everything else is yours to opt into and tune. Nothing leaves your machine unless you turn on Ask AI.</p>
+          <div class="welcome-actions">
+            <button class="btn primary" id="useRecommended">Use recommended setup</button>
+            <span class="welcome-hint">Pre-toggles a balanced, privacy-first default. You can change anything after.</span>
+          </div>
+        </div>
+
+        <!-- REQUIRED -->
+        <div class="section-label">Foundation <span class="ln"></span> required</div>
+        <div id="blocks-required"></div>
+
+        <!-- OPTIONAL -->
+        <div class="section-label">Capabilities <span class="ln"></span> optional</div>
+        <div id="blocks-optional"></div>
+
+        <div class="footnote">All capture and processing runs <b>on-device</b>. Ask AI is the only feature that can reach a network — and only the provider you choose.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- icons ---------- */
+const ICON = {
+  perm:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  screen:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
+  storage:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
+  mic:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
+  sysaudio:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9a3 3 0 0 1 0 6"/></svg>',
+  ocr:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7V4h4M16 4h4v3M20 17v3h-4M8 20H4v-3"/><path d="M8 9h8M8 13h6"/></svg>',
+  transcribe:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4h9l5 5v11a0 0 0 0 1 0 0H6V4z"/><path d="M14 4v5h5M9 13h6M9 16h4"/></svg>',
+  privacy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l8 3v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>',
+  ai:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="4"/></svg>',
+  idle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  chev:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>',
+  info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l2 2M14 9l2 2"/></svg>',
+};
+
+/* ---------- block settings panels (innerHTML factories) ---------- */
+function permBody(){return `
+  <div class="block-inner">
+    <div class="perm-row">
+      <div class="perm-name">Screen recording<small>Required to capture your display</small></div>
+      <span class="pill granted"><span class="pd"></span>Granted</span>
+    </div>
+    <div class="perm-row">
+      <div class="perm-name">Microphone<small>Needed only if you enable Microphone capture</small></div>
+      <span class="pill pending"><span class="pd"></span>Not requested</span>
+      <button class="btn sm">Grant access</button>
+    </div>
+    <div class="perm-row">
+      <div class="perm-name">System audio<small>macOS · capture sound from apps</small></div>
+      <span class="pill denied"><span class="pd"></span>Denied</span>
+      <button class="btn sm">Open Settings</button>
+    </div>
+  </div>`;}
+
+function screenBody(){return `
+  <div class="block-inner">
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Resolution</div><div class="row-desc">Higher resolutions use more disk per minute.</div></div>
+      <div class="row-control"><div class="seg" data-seg="res"><button>Original</button><button class="active">1080p</button><button>1440p</button><button>4K</button><button>Custom</button></div></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Video bitrate</div><div class="row-desc">Quality vs. file size tradeoff.</div></div>
+      <div class="row-control"><div class="seg" data-seg="bitrate"><button>Low</button><button class="active">Medium</button><button>High</button><button>Custom</button></div></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Frame rate</div><div class="row-desc">2 fps is plenty for memory; higher captures motion.</div></div>
+      <div class="row-control"><div class="slider-wrap"><input type="range" min="1" max="120" value="2" data-slider="fps"><span class="slider-val" data-out="fps">2 fps</span></div></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Segment duration</div><div class="row-desc">Length of each recorded chunk. Capped at 5 minutes.</div></div>
+      <div class="row-control"><div class="slider-wrap"><input type="range" min="10" max="300" value="60" data-slider="seg"><span class="slider-val" data-out="seg">60 s</span></div></div>
+    </div>
+  </div>`;}
+
+function storageBody(){return `
+  <div class="block-inner">
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Save directory</div><div class="row-desc">Where recordings and the index live.</div></div>
+      <div class="row-control"><input type="text" class="path-input" value="~/Library/Application Support/mnema"><button class="btn sm">Browse…</button></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Retention</div><div class="row-desc">Auto-delete raw captures after this period.</div></div>
+      <div class="row-control"><select data-out-select="retention"><option>Never</option><option>7 days</option><option>14 days</option><option selected>30 days</option></select></div>
+    </div>
+    <div class="group-title">Advanced</div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Preview cache TTL</div><div class="row-desc">How long rendered thumbnails are kept.</div></div>
+      <div class="row-control"><select><option>1 hour</option><option selected>24 hours</option><option>7 days</option></select></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Auto-start at login</div><div class="row-desc">Begin recording when you sign in.</div></div>
+      <div class="row-control"><span class="mini-switch" data-mini="autostart"></span></div>
+    </div>
+  </div>`;}
+
+function micBody(){return `
+  <div class="block-inner">
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Transcribe microphone</div><div class="row-desc">Run mic audio through Audio transcription.</div></div>
+      <div class="row-control"><span class="mini-switch on" data-mini="mictranscribe"></span></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Input device</div><div class="row-desc">Pick which mic to record from.</div></div>
+      <div class="row-control"><select><option selected>MacBook Pro Microphone</option><option>Shure MV7</option><option>AirPods Pro</option></select></div>
+    </div>
+  </div>`;}
+
+function sysaudioBody(){return `
+  <div class="block-inner">
+    <div class="callout">${ICON.info}<span>System audio capture requires Screen capture and the macOS system-audio permission.</span></div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Transcribe system audio</div><div class="row-desc">Transcribe sound coming from your apps.</div></div>
+      <div class="row-control"><span class="mini-switch on" data-mini="systranscribe"></span></div>
+    </div>
+  </div>`;}
+
+function ocrBody(){return `
+  <div class="block-inner">
+    <div class="group-title">Provider</div>
+    <div class="radio-group" data-radio="ocrprov">
+      <div class="radio active"><span class="dot-r"></span>Apple Vision<small>On-device · fastest</small></div>
+      <div class="radio"><span class="dot-r"></span>Tesseract<small>Open-source · more languages</small></div>
+    </div>
+    <div class="group-title">Model</div>
+    <div class="model-card">
+      <div class="model-top">
+        <div class="model-name">vision-text-recognizer <small>· built in</small></div>
+        <span class="pill granted"><span class="pd"></span>Available</span>
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <div class="row-meta"><div class="row-label">Recognition mode</div><div class="row-desc">Accurate is slower but reads dense UI better.</div></div>
+      <div class="row-control"><div class="seg" data-seg="ocrmode"><button class="active">Fast</button><button>Accurate</button></div></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Language</div><div class="row-desc">Tesseract only.</div></div>
+      <div class="row-control"><select disabled><option>English (eng)</option></select></div>
+    </div>
+  </div>`;}
+
+function transcribeBody(){return `
+  <div class="block-inner">
+    <div class="group-title">Provider</div>
+    <div class="radio-group" data-radio="trprov">
+      <div class="radio active"><span class="dot-r"></span>Local Whisper<small>On-device · multilingual</small></div>
+      <div class="radio"><span class="dot-r"></span>Apple Speech<small>On-device · fast</small></div>
+      <div class="radio"><span class="dot-r"></span>Parakeet<small>On-device · English</small></div>
+    </div>
+    <div class="group-title">Model</div>
+    <div class="row" style="padding-top:8px;">
+      <div class="row-meta"><div class="row-label">Whisper size</div><div class="row-desc">Larger is more accurate, slower, bigger download.</div></div>
+      <div class="row-control"><select data-trmodel><option>base</option><option selected>small</option><option>medium</option><option>large</option></select></div>
+    </div>
+    <div class="model-card">
+      <div class="model-top">
+        <div class="model-name">whisper-small <small>· 466 MB</small></div>
+        <span class="pill pending"><span class="pd"></span>Downloading</span>
+        <button class="btn sm" data-dl-cancel>Cancel</button>
+      </div>
+      <div class="dl-track"><div class="dl-fill" data-dl-fill style="width:62%"></div></div>
+      <div class="dl-meta"><span data-dl-pct>62%</span><span>289 / 466 MB · 4.2 MB/s</span></div>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <div class="row-meta"><div class="row-label">Language</div><div class="row-desc">Auto-detect or force a language.</div></div>
+      <div class="row-control"><select><option selected>Auto-detect</option><option>English (en)</option><option>French (fr)</option><option>German (de)</option></select></div>
+    </div>
+  </div>`;}
+
+function privacyBody(){return `
+  <div class="block-inner">
+    <div class="row" style="flex-direction:column; align-items:stretch; gap:0;">
+      <div class="row-meta" style="margin-bottom:9px;"><div class="row-label">Excluded apps</div><div class="row-desc">Mnema never captures the screen while these apps are in front.</div></div>
+      <div class="typeahead"><input type="text" placeholder="Type an app name to exclude…  e.g. Messages"></div>
+      <div class="chips" data-chips>
+        <span class="chip">1Password<button title="remove">×</button></span>
+        <span class="chip">Bank of America<button title="remove">×</button></span>
+        <span class="chip">Zoom<button title="remove">×</button></span>
+        <span class="chip">Keychain Access<button title="remove">×</button></span>
+      </div>
+      <div style="display:flex; align-items:center; gap:12px; margin-top:13px;">
+        <button class="btn sm" data-apply-rec>Apply recommended</button>
+        <span class="welcome-hint" data-chipcount>4 apps excluded</span>
+      </div>
+    </div>
+  </div>`;}
+
+function aiBody(){return `
+  <div class="block-inner">
+    <div class="callout key">${ICON.key}<span>Ask AI is powered by the <b>Reasoning Engine</b>. Choose a cloud provider (Anthropic, OpenAI) or run a local model (Ollama, Llamafile). Cloud providers need an API key — stored only in your macOS keychain, never in a config file.</span></div>
+    <div class="group-title">Provider</div>
+    <div class="radio-group" data-radio="aiprov">
+      <div class="radio active"><span class="dot-r"></span>Anthropic<small>Cloud · API key</small></div>
+      <div class="radio"><span class="dot-r"></span>OpenAI<small>Cloud · API key</small></div>
+      <div class="radio"><span class="dot-r"></span>Ollama<small>Local · no key</small></div>
+      <div class="radio"><span class="dot-r"></span>Llamafile<small>Local · no key</small></div>
+    </div>
+    <div class="row" style="margin-top:4px;">
+      <div class="row-meta"><div class="row-label">API key</div><div class="row-desc">Stored in OS keychain.</div></div>
+      <div class="row-control"><input type="text" class="path-input" placeholder="sk-ant-•••••••••••••••••" value="" style="width:240px;"><button class="btn sm">Save key</button></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Model</div><div class="row-desc">Used for Quick Recall and Chat.</div></div>
+      <div class="row-control"><select data-out-select="aimodel"><option selected>claude-opus-4</option><option>claude-sonnet-4</option><option>claude-haiku-4</option></select></div>
+    </div>
+  </div>`;}
+
+function idleBody(){return `
+  <div class="block-inner">
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Pause on inactivity</div><div class="row-desc">Stop recording when you stop using the Mac.</div></div>
+      <div class="row-control"><span class="mini-switch on" data-mini="idlepause"></span></div>
+    </div>
+    <div class="row">
+      <div class="row-meta"><div class="row-label">Idle timeout</div><div class="row-desc">How long with no input before pausing.</div></div>
+      <div class="row-control"><div class="slider-wrap"><input type="range" min="5" max="300" value="120" data-slider="idle"><span class="slider-val" data-out="idle">120 s</span></div></div>
+    </div>
+  </div>`;}
+
+/* ---------- block model ---------- */
+const BLOCKS = [
+  {id:'perm', req:true, icon:'perm', name:'Permissions', desc:'Grant macOS access for screen, mic, and system audio.',
+   summary:'<b>Screen granted</b> · Mic not requested · System audio denied', body:permBody, defOn:true, defExpand:false},
+  {id:'screen', req:true, icon:'screen', name:'Screen capture', desc:'Continuously record your display into short segments.',
+   summary:'<b>1080p</b> · Medium bitrate · <b>2 fps</b> · 60 s segments', body:screenBody, defOn:true, defExpand:false},
+  {id:'storage', req:true, icon:'storage', name:'Storage & retention', desc:'Where captures are saved and how long they are kept.',
+   summary:'~/…/mnema · <b>Retention 30 days</b> · cache 24 h', body:storageBody, defOn:true, defExpand:false},
+
+  {id:'mic', req:false, icon:'mic', name:'Microphone capture', desc:'Record and transcribe your microphone alongside the screen.',
+   summary:'<b>MacBook Pro Microphone</b> · transcribe on', body:micBody, defOn:false, defExpand:false, rec:true},
+  {id:'sysaudio', req:false, icon:'sysaudio', name:'System audio', desc:'Capture sound coming from your apps (requires screen).',
+   summary:'Transcribe system audio <b>on</b>', body:sysaudioBody, defOn:false, defExpand:false},
+  {id:'ocr', req:false, icon:'ocr', name:'OCR — read on-screen text', desc:'Make everything on screen searchable as text.',
+   summary:'<b>Apple Vision</b> · Fast · model available', body:ocrBody, defOn:true, defExpand:false, rec:true},
+  {id:'transcribe', req:false, icon:'transcribe', name:'Audio transcription', desc:'Turn captured audio into searchable text.',
+   summary:'<b>Local Whisper · small</b> · auto language · downloading 62%', body:transcribeBody, defOn:true, defExpand:false, rec:true},
+  {id:'privacy', req:false, icon:'privacy', name:'Privacy — excluded apps', desc:'Apps Mnema will never capture while in front.',
+   summary:'<b>4 apps excluded</b> · 1Password, banking, Zoom…', body:privacyBody, defOn:true, defExpand:false, rec:true},
+  {id:'idle', req:false, icon:'idle', name:'Idle pause', desc:'Pause recording when you step away.',
+   summary:'Pause after <b>120 s</b> idle', body:idleBody, defOn:false, defExpand:false, rec:true},
+  {id:'ai', req:false, icon:'ai', name:'Ask AI — Reasoning Engine', desc:'Chat with and recall from your memory using an LLM.',
+   summary:'<b>Anthropic · claude-opus-4</b> · key in keychain', body:aiBody, defOn:false, defExpand:false},
+];
+
+/* recommended preset: which optional blocks are on */
+const RECOMMENDED = { mic:true, sysaudio:false, ocr:true, transcribe:true, privacy:true, idle:true, ai:false };
+
+const state = {};
+BLOCKS.forEach(b=>{ state[b.id] = { on:b.defOn, expanded:b.defExpand }; });
+
+/* ---------- render ---------- */
+const reqWrap = document.getElementById('blocks-required');
+const optWrap = document.getElementById('blocks-optional');
+const gutter = document.getElementById('gutter');
+
+function makeBlock(b){
+  const el = document.createElement('div');
+  el.className = 'block';
+  el.dataset.id = b.id;
+  el.innerHTML = `
+    <div class="block-head">
+      <div class="block-icon">${ICON[b.icon]}</div>
+      <div class="block-meta">
+        <div class="block-title-row">
+          <span class="block-name">${b.name}</span>
+          ${b.req?'<span class="badge req">Required</span>':''}
+          ${b.rec?'<span class="badge rec" data-recbadge>Recommended</span>':''}
+        </div>
+        <div class="block-desc">${b.desc}</div>
+        <div class="block-summary">${b.summary}</div>
+      </div>
+      <div class="block-controls">
+        ${b.req
+          ? '<span class="req-lock">'+lockIcon()+'locked on</span>'
+          : '<span class="switch" role="switch" tabindex="0" aria-label="toggle '+b.name+'"></span>'}
+        <span class="chevron">${ICON.chev}</span>
+      </div>
+    </div>
+    <div class="block-body"><div class="bodyhost"></div></div>
+  `;
+  el.querySelector('.bodyhost').innerHTML = b.body();
+  return el;
+}
+function lockIcon(){return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:1px"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';}
+
+BLOCKS.forEach(b=>{
+  (b.req?reqWrap:optWrap).appendChild(makeBlock(b));
+  // gutter dot
+  const d = document.createElement('div');
+  d.className = 'dot'+(b.req?' req':'');
+  d.dataset.id = b.id;
+  d.innerHTML = `<span class="tip">${b.name}</span>`;
+  d.addEventListener('click', ()=> {
+    const target = document.querySelector('.block[data-id="'+b.id+'"]');
+    target.scrollIntoView({block:'center'});
+  });
+  gutter.appendChild(d);
+});
+
+/* ---------- apply visual state ---------- */
+function applyBlockState(b){
+  const el = document.querySelector('.block[data-id="'+b.id+'"]');
+  const st = state[b.id];
+  el.classList.toggle('enabled', st.on);
+  el.classList.toggle('required', b.req);
+  el.classList.toggle('disabled', !st.on && !b.req);
+  el.classList.toggle('expanded', st.on && st.expanded);
+  el.classList.toggle('collapsed', !st.expanded);
+  const sw = el.querySelector('.switch');
+  if(sw) sw.classList.toggle('on', st.on);
+}
+
+/* ---------- wire interactions ---------- */
+BLOCKS.forEach(b=>{
+  const el = document.querySelector('.block[data-id="'+b.id+'"]');
+  const head = el.querySelector('.block-head');
+  const sw = el.querySelector('.switch');
+  const chev = el.querySelector('.chevron');
+
+  function toggleExpand(){
+    const st = state[b.id];
+    if(!st.on) return; // can't expand a disabled block
+    st.expanded = !st.expanded;
+    applyBlockState(b);
+    updateGutter();
+  }
+  function toggleOn(){
+    if(b.req) return;
+    const st = state[b.id];
+    st.on = !st.on;
+    if(!st.on) st.expanded = false; // collapse when turned off
+    applyBlockState(b);
+    updateSummary();
+    updateGutter();
+  }
+
+  if(sw){
+    sw.addEventListener('click', e=>{ e.stopPropagation(); toggleOn(); });
+    sw.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleOn(); }});
+  }
+  chev.addEventListener('click', e=>{ e.stopPropagation(); toggleExpand(); });
+  head.addEventListener('click', e=>{
+    if(e.target.closest('.switch')) return;
+    toggleExpand();
+  });
+
+  /* inner controls inside this block */
+  // segmented
+  el.querySelectorAll('.seg').forEach(seg=>{
+    seg.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click', e=>{
+        e.stopPropagation();
+        seg.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+        btn.classList.add('active');
+        updateSummary();
+      });
+    });
+  });
+  // sliders
+  el.querySelectorAll('input[type="range"]').forEach(sl=>{
+    sl.addEventListener('input', e=>{
+      e.stopPropagation();
+      const key = sl.dataset.slider;
+      const out = el.querySelector('[data-out="'+key+'"]');
+      const unit = (key==='fps')?' fps':' s';
+      if(out) out.textContent = sl.value+unit;
+      updateSummary();
+    });
+    sl.addEventListener('click', e=>e.stopPropagation());
+  });
+  // selects
+  el.querySelectorAll('select').forEach(s=>{
+    s.addEventListener('change', e=>{ e.stopPropagation(); updateSummary(); });
+    s.addEventListener('click', e=>e.stopPropagation());
+  });
+  el.querySelectorAll('input[type="text"]').forEach(i=> i.addEventListener('click', e=>e.stopPropagation()));
+  // radios
+  el.querySelectorAll('.radio-group').forEach(grp=>{
+    grp.querySelectorAll('.radio').forEach(r=>{
+      r.addEventListener('click', e=>{
+        e.stopPropagation();
+        grp.querySelectorAll('.radio').forEach(x=>x.classList.remove('active'));
+        r.classList.add('active');
+        updateSummary();
+      });
+    });
+  });
+  // mini switches (inside rows)
+  el.querySelectorAll('.mini-switch').forEach(ms=>{
+    // restyle as a switch
+    ms.classList.add('switch');
+    ms.setAttribute('tabindex','0');
+    ms.addEventListener('click', e=>{ e.stopPropagation(); ms.classList.toggle('on'); });
+    ms.addEventListener('keydown', e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); ms.classList.toggle('on'); }});
+  });
+  // chips remove
+  el.querySelectorAll('[data-chips]').forEach(chwrap=>{
+    chwrap.addEventListener('click', e=>{
+      const btn = e.target.closest('.chip button');
+      if(!btn) return;
+      e.stopPropagation();
+      btn.closest('.chip').remove();
+      const cnt = chwrap.querySelectorAll('.chip').length;
+      const lbl = el.querySelector('[data-chipcount]');
+      if(lbl) lbl.textContent = cnt+' app'+(cnt===1?'':'s')+' excluded';
+    });
+  });
+  const applyRec = el.querySelector('[data-apply-rec]');
+  if(applyRec){
+    applyRec.addEventListener('click', e=>{
+      e.stopPropagation();
+      const chwrap = el.querySelector('[data-chips]');
+      const have = [...chwrap.querySelectorAll('.chip')].map(c=>c.textContent.replace('×','').trim());
+      ['1Password','Bank of America','Zoom'].forEach(name=>{
+        if(!have.includes(name)){
+          const chip = document.createElement('span');
+          chip.className='chip';
+          chip.innerHTML = name+'<button title="remove">×</button>';
+          chwrap.appendChild(chip);
+        }
+      });
+      const cnt = chwrap.querySelectorAll('.chip').length;
+      el.querySelector('[data-chipcount]').textContent = cnt+' apps excluded';
+    });
+  }
+  // download cancel
+  const cancel = el.querySelector('[data-dl-cancel]');
+  if(cancel){
+    cancel.addEventListener('click', e=>{
+      e.stopPropagation();
+      if(window._dlTimer){ clearInterval(window._dlTimer); window._dlTimer=null; }
+      const pill = el.querySelector('.model-card .pill');
+      pill.className='pill denied'; pill.innerHTML='<span class="pd"></span>Missing';
+      cancel.textContent='Download'; cancel.removeAttribute('data-dl-cancel');
+      cancel.dataset.dlStart='1';
+    });
+  }
+});
+
+/* animate the whisper download progress */
+(function(){
+  const fill = document.querySelector('[data-dl-fill]');
+  const pct = document.querySelector('[data-dl-pct]');
+  if(!fill) return;
+  let v = 62;
+  window._dlTimer = setInterval(()=>{
+    if(v>=100){ clearInterval(window._dlTimer); window._dlTimer=null;
+      const pill = document.querySelector('.model-card .pill');
+      if(pill){ pill.className='pill granted'; pill.innerHTML='<span class="pd"></span>Available'; }
+      const cancel = document.querySelector('[data-dl-cancel]');
+      if(cancel) cancel.style.display='none';
+      return;
+    }
+    v = Math.min(100, v + Math.random()*3);
+    fill.style.width = v.toFixed(0)+'%';
+    pct.textContent = v.toFixed(0)+'%';
+  }, 700);
+})();
+
+/* ---------- live summary + meter ---------- */
+function readSeg(blockId, segName){
+  const el = document.querySelector('.block[data-id="'+blockId+'"] .seg[data-seg="'+segName+'"] button.active');
+  return el? el.textContent : '';
+}
+function updateSummary(){
+  BLOCKS.forEach(updateBlockSummaryText);
+
+  // top summary line
+  const parts = [];
+  const recordBits = ['screen'];
+  if(state.mic.on) recordBits.push('mic');
+  if(state.sysaudio.on) recordBits.push('system audio');
+  let line = 'Recording: <b>'+recordBits.join(' + ')+'</b>';
+  line += ' · OCR '+(state.ocr.on?'<b>on</b>':'<span class="off">off</span>');
+  line += ' · Transcription '+(state.transcribe.on?'<b>on</b>':'<span class="off">off</span>');
+  line += ' · Ask AI '+(state.ai.on?'<b>on</b>':'<span class="off">off</span>');
+  document.getElementById('summaryLine').innerHTML = line;
+
+  // completeness meter: required always count; optional configured count toward total
+  const total = BLOCKS.length;
+  let done = 0;
+  BLOCKS.forEach(b=>{
+    if(b.req) { done++; }              // required = considered set up in this mock
+    else if(state[b.id].on) { done++; } // each enabled optional adds completeness
+    else { done += 0.4; }               // deliberately opting out still counts partially
+  });
+  const pct = Math.round((done/total)*100);
+  document.getElementById('meterFill').style.width = pct+'%';
+  document.getElementById('meterPct').textContent = pct+'%';
+
+  // CTA label flips once required foundation is in place + at least one capture target on
+  const cta = document.getElementById('cta');
+  if(pct>=85){ cta.textContent='Start recording ⏺'; }
+  else { cta.textContent='Finish setup →'; }
+}
+
+function updateBlockSummaryText(b){
+  const el = document.querySelector('.block[data-id="'+b.id+'"]');
+  const sumEl = el.querySelector('.block-summary');
+  let s = b.summary;
+  if(b.id==='screen'){
+    const res = readSeg('screen','res'), br = readSeg('screen','bitrate');
+    const fps = el.querySelector('[data-out="fps"]').textContent;
+    const seg = el.querySelector('[data-out="seg"]').textContent;
+    s = '<b>'+res+'</b> · '+br+' bitrate · <b>'+fps+'</b> · '+seg+' segments';
+  }
+  if(b.id==='storage'){
+    const ret = el.querySelector('[data-out-select="retention"]').value;
+    s = '~/…/mnema · <b>Retention '+ret+'</b> · cache 24 h';
+  }
+  if(b.id==='ai'){
+    const m = el.querySelector('[data-out-select="aimodel"]');
+    const prov = el.querySelector('.radio-group[data-radio="aiprov"] .radio.active');
+    const provName = prov? prov.childNodes[1].textContent.trim() : 'Anthropic';
+    s = '<b>'+provName+' · '+(m?m.value:'claude-opus-4')+'</b> · key in keychain';
+  }
+  sumEl.innerHTML = s;
+}
+
+/* ---------- scroll-spy gutter ---------- */
+function updateGutter(){
+  const scroll = document.getElementById('scroll');
+  const mid = scroll.scrollTop + scroll.clientHeight*0.33;
+  let activeId = BLOCKS[0].id;
+  BLOCKS.forEach(b=>{
+    const el = document.querySelector('.block[data-id="'+b.id+'"]');
+    if(el.offsetTop <= mid) activeId = b.id;
+  });
+  document.querySelectorAll('.dot').forEach(d=> d.classList.toggle('active', d.dataset.id===activeId));
+}
+document.getElementById('scroll').addEventListener('scroll', updateGutter);
+
+/* ---------- use recommended ---------- */
+document.getElementById('useRecommended').addEventListener('click', ()=>{
+  Object.keys(RECOMMENDED).forEach(id=>{
+    state[id].on = RECOMMENDED[id];
+    if(!state[id].on) state[id].expanded = false;
+  });
+  BLOCKS.forEach(applyBlockState);
+  updateSummary();
+  updateGutter();
+});
+
+/* ---------- CTA pulse ---------- */
+document.getElementById('cta').addEventListener('click', ()=>{
+  const cta = document.getElementById('cta');
+  const orig = cta.textContent;
+  cta.textContent = '✓ Setup saved';
+  cta.style.boxShadow = '0 0 0 3px var(--app-accent-glow)';
+  setTimeout(()=>{ cta.textContent = orig; cta.style.boxShadow=''; }, 1400);
+});
+
+/* ---------- theme toggle ---------- */
+const themeBtn = document.getElementById('themeToggle');
+themeBtn.addEventListener('click', ()=>{
+  const html = document.documentElement;
+  const isLight = html.getAttribute('data-theme')==='light';
+  html.setAttribute('data-theme', isLight?'dark':'light');
+  document.getElementById('themeLabel').textContent = isLight?'Dark':'Light';
+  const icon = document.getElementById('themeIcon');
+  icon.setAttribute('d', isLight
+    ? 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z'
+    : 'M12 3v2M12 19v2M5 5l1.5 1.5M17.5 17.5L19 19M3 12h2M19 12h2M5 19l1.5-1.5M17.5 6.5L19 5');
+  if(!isLight){ /* switching to light: show sun-ish */ }
+});
+
+/* ---------- init ---------- */
+BLOCKS.forEach(applyBlockState);
+updateSummary();
+updateGutter();
+</script>
+</body>
+</html>

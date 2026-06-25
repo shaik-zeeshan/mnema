@@ -3,3 +3,6 @@ datasets>=2.18
 soundfile>=0.12
 pyannote.metrics>=3.2
 numpy>=1.24
+# NME-SC over-clustering experiment (nme_sc.py / bench_nme_sc.py)
+scipy>=1.10
+scikit-learn>=1.2

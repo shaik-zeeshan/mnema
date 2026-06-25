@@ -4,7 +4,10 @@
 # Generated DER result files (regenerate with run_der.py --json-out)
 *.json
 
-# Kept WAV/RTTM exports (run_der.py --work-dir)
+# Kept WAV/RTTM exports (run_der.py --work-dir) + NME-SC bench exports
 work/
 *.wav
 *.rttm
+
+# NME-SC bench run log (bench_nme_sc.py)
+bench_run.log

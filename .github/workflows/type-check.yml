@@ -44,6 +44,16 @@ jobs:
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
 
+      # speakrs links OpenBLAS via the `openblas-static` feature: openblas-src
+      # builds OpenBLAS (incl. Fortran LAPACK) from source during `cargo check`,
+      # and the desktop build.rs force-links the static gfortran/quadmath runtime.
+      # The shared script installs gcc and makes an unversioned `gfortran`
+      # resolvable on PATH (+ FC/OPENBLAS_FC/LIBRARY_PATH) — the hosted runner's
+      # keg exposes only `gfortran-15`, which otherwise breaks every literal
+      # `gfortran` consumer. See scripts/ci-install-fortran.sh.
+      - name: Install Fortran toolchain (gcc/gfortran)
+        run: ./scripts/ci-install-fortran.sh
+
       - name: Cache Rust dependencies
         uses: actions/cache@v4
         with:
@@ -58,8 +68,20 @@ jobs:
       - name: Prepare Mnema CLI sidecar
         run: bun scripts/prepare-mnema-cli-sidecar.mjs debug --locked
 
+      # tauri.conf.json bundles apps/desktop/THIRD_PARTY_LICENSES.md, a
+      # gitignored build output generated only at release time
+      # (scripts/generate-third-party-licenses.sh). The Tauri build script
+      # validates that every declared bundle resource exists even under
+      # `cargo check`, so stub a placeholder here to keep type-check fast
+      # (no cargo-about install / dep-graph resolve needed for a check).
+      - name: Stub third-party licenses resource
+        run: printf 'Placeholder for type-check only; real file is generated at release.\n' > apps/desktop/THIRD_PARTY_LICENSES.md
+
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
+
+      - name: Run semantic-search descriptor drift guard
+        run: cargo test -p semantic-search --locked
 
   windows-check:
     name: Windows compile check
@@ -114,12 +136,13 @@ jobs:
       - name: Build desktop crate (exercises ML native link)
         # `cargo check` above type-checks the workspace but never *links* the
         # heavy native ML runtimes. The desktop `mnema` crate enables the
-        # `audio-transcription` (local-whisper + parakeet-onnx/ort),
-        # `speaker-analysis` (sherpa-onnx), and Windows `ocr`/`media-decode`
-        # features, so building its lib forces the real Windows link of
-        # onnxruntime (ort), sherpa-onnx, and whisper.cpp. Scoped to `--lib`
-        # (no Tauri bundle / no frontend dist) to keep CI time bounded while
-        # still validating that the native ML link succeeds on Windows.
+        # `audio-transcription` (local-whisper + parakeet-onnx/ort) and Windows
+        # `ocr`/`media-decode` features, so building its lib forces the real
+        # Windows link of onnxruntime (ort) and whisper.cpp. (The speakrs
+        # diarization engine is macOS-only — CoreML — so it is not built or
+        # linked on Windows; on-device diarization is unavailable there.) Scoped
+        # to `--lib` (no Tauri bundle / no frontend dist) to keep CI time bounded
+        # while still validating that the native ML link succeeds on Windows.
         # NOT covered here: producing the packaged NSIS/MSI bundle.
         run: cargo build -p mnema --lib --locked
 

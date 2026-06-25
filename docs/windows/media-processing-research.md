@@ -4,6 +4,8 @@ _Last researched: 2026-05-26_
 
 This note records what Mnema currently uses for OCR, transcription, speaker analysis/diarization, VAD, and media file processing, plus the likely Windows 11 alternatives. It complements `docs/windows/runtime-capture-research.md`, which covers capture APIs, and `docs/windows/media-writers-preview-research.md`, which focuses on writer/preview implementation details.
 
+> **Stale (speaker diarization):** as of mid-2026 the shipping macOS build no longer uses Sherpa ONNX — the sole on-device diarization provider is now `speakrs` (pure-Rust pyannote-community-1 + WeSpeaker on **CoreML**, Apple Silicon only); see [`crates/speaker-analysis/docs/adr/0003`](../../crates/speaker-analysis/docs/adr/0003-remove-sherpa-make-speakrs-sole-diarization-provider.md). The Sherpa-for-Windows recommendation below was written when Sherpa was the macOS provider and chosen partly for its cross-platform support; because `speakrs` is CoreML-bound, a Windows port will need a non-CoreML diarization engine and should re-evaluate Sherpa (or an alternative) as a fresh decision rather than inherit it. The Sherpa material below is kept as the original research record.
+
 ## Short recommendation
 
 For a Windows 11 first port, keep Mnema's local-processing architecture and replace only the macOS media plumbing:
@@ -48,7 +50,7 @@ For a Windows 11 first port, keep Mnema's local-processing architecture and repl
 Current Mnema details:
 
 - Crate: `tesseract-rs = 0.2.0` with default `build-tesseract`.
-- Runtime layout expected by Mnema: `tessdata/eng.traineddata`, `tessdata/osd.traineddata`, `tessdata/snum.traineddata` under `ocr-models/tesseract/tesseract-5.5.2/`.
+- Runtime layout expected by Mnema: `tessdata/eng.traineddata`, `tessdata/osd.traineddata` under `ocr-models/tesseract/tesseract-5.5.2/`.
 - The provider preprocesses frames itself: decode with `image`, grayscale, optional threshold/upscale, then calls `TesseractAPI` on raw pixels.
 
 Windows research:

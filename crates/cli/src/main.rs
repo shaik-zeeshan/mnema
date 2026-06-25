@@ -210,6 +210,8 @@ struct SearchResultContextData {
     app_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     window_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -825,6 +827,7 @@ fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -
                     app_bundle_id: context.app_bundle_id,
                     app_name: context.app_name,
                     window_title: context.window_title,
+                    url: context.url,
                 }),
             })
             .collect(),
@@ -851,6 +854,7 @@ fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineRespons
                     app_bundle_id: context.app_bundle_id,
                     app_name: context.app_name,
                     window_title: context.window_title,
+                    url: context.url,
                 }),
             })
             .collect(),
@@ -1020,6 +1024,9 @@ mod tests {
     fn cli_rejects_removed_aliases() {
         assert!(Cli::try_parse_from(["mnema", "auth", "status"]).is_err());
         assert!(Cli::try_parse_from(["mnema", "open-in-mnema", "f1"]).is_err());
+        // `open-url` was removed: the broker never opens a raw captured URL, so the
+        // CLI no longer exposes the command (see ADR 0038 / brokered_access.rs).
+        assert!(Cli::try_parse_from(["mnema", "open-url", "f1.deadbeef"]).is_err());
     }
 
     #[test]
@@ -1064,6 +1071,7 @@ mod tests {
                     app_bundle_id: Some("com.example.Linear".to_string()),
                     app_name: Some("Linear".to_string()),
                     window_title: Some("Roadmap".to_string()),
+                    url: Some("linear.app/team/roadmap".to_string()),
                 }),
                 span_start_ms: None,
                 span_end_ms: None,
@@ -1079,6 +1087,7 @@ mod tests {
         assert_eq!(context.app_bundle_id.as_deref(), Some("com.example.Linear"));
         assert_eq!(context.app_name.as_deref(), Some("Linear"));
         assert_eq!(context.window_title.as_deref(), Some("Roadmap"));
+        assert_eq!(context.url.as_deref(), Some("linear.app/team/roadmap"));
     }
 
     #[test]
@@ -1093,6 +1102,7 @@ mod tests {
                     app_bundle_id: Some("com.example.Linear".to_string()),
                     app_name: Some("Linear".to_string()),
                     window_title: Some("Roadmap".to_string()),
+                    url: Some("linear.app/team/roadmap".to_string()),
                 }),
             }],
             limit: 1,
@@ -1105,6 +1115,7 @@ mod tests {
         assert_eq!(context.app_bundle_id.as_deref(), Some("com.example.Linear"));
         assert_eq!(context.app_name.as_deref(), Some("Linear"));
         assert_eq!(context.window_title.as_deref(), Some("Roadmap"));
+        assert_eq!(context.url.as_deref(), Some("linear.app/team/roadmap"));
     }
 
     #[test]

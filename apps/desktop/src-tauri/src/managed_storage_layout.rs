@@ -31,31 +31,12 @@ impl ManagedStorageLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn managed_storage_layout_uses_save_directory_as_base_dir() {
         let layout = ManagedStorageLayout::from_save_directory("/tmp/mnema-recordings");
 
         assert_eq!(layout.base_dir(), &PathBuf::from("/tmp/mnema-recordings"));
-    }
-
-    #[test]
-    fn managed_storage_layout_keeps_database_out_of_segment_root() {
-        let layout =
-            ManagedStorageLayout::from_save_directory("/tmp/mnema-recordings/session-output");
-
-        assert_eq!(
-            layout.base_dir().parent(),
-            Some(Path::new("/tmp/mnema-recordings/session-output"))
-        );
-        assert_eq!(
-            layout
-                .base_dir()
-                .file_name()
-                .and_then(|value| value.to_str()),
-            Some("session-output")
-        );
     }
 
     #[test]

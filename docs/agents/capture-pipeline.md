@@ -131,6 +131,17 @@ App startup is split so the window opens fast:
 
 ---
 
+## Browser URL Metadata
+
+Native URL probing only (ADR 0013 — no extensions/add-ons). Strategy lives in `crates/capture-metadata/src/lib.rs` (`KNOWN_BROWSER_APPS`, `BrowserUrlDialect`, `browser_url_applescript`, `BrowserUrlProbeCache`); execution in `apps/desktop/src-tauri/src/native_capture_metadata.rs` (`active_browser_url`, `browser_url_probe_for_active_bundle`).
+
+- **Dialect matters — Safari is NOT `front document`.** Chromium browsers read `URL of active tab of front window`; WebKit (Safari/Orion) reads `URL of current tab of front window`. `front document` is ordered by *focus recency*, not window z-order, so with multiple Safari windows it can return a background window's URL instead of the visually-frontmost tab.
+- **The URL cache is title-gated, not time-gated.** The front-window title is captured fresh every tick; `BrowserUrlProbeCache::cached_url_for` forces a re-probe whenever the title changes for the same browser. This is what prevents the desync where a previous tab's URL is served under a new page's title (e.g. an old GitHub URL stamped on a frame whose title already reads "…Start Page"). `BROWSER_URL_PROBE_BACKSTOP_INTERVAL` (5s) is only a backstop for navigations that change the URL without changing the title (some single-page apps).
+- The probe runs **only when the frontmost app is a known browser bundle** (`is_known_browser_bundle`); the cache exists to throttle the per-probe `osascript` subprocess, not to poll.
+- **Gecko browsers read via the Accessibility API, not AppleScript.** Firefox (`org.mozilla.firefox`) and Zen (`app.zen-browser.zen`) expose no scriptable URL surface (`url_script_app_name` is `None`), so their descriptor sets `url_strategy: Some(BrowserUrlStrategy::Accessibility)`. The read lives in `apps/desktop/src-tauri/src/native_capture_browser_url_ax.rs`: it climbs the focused element's parent chain and returns the `AXURL` of the outermost `AXWebArea` (the active tab). It is opt-in and **permission-gated** — it yields no URL until the macOS Accessibility permission is granted (the reader gates on holding that permission). AppleScript dialects (`BrowserUrlStrategy::AppleScript(BrowserUrlDialect::…)`) still cover Chromium and WebKit.
+
+---
+
 ## Deletion Semantics
 
 - **Delete Recent Capture** ≠ Retention Cleanup. It is a confirmed recovery action that deletes whole overlapping Capture Segments/Audio Segments and derived app data. No secure erase promise.
@@ -142,4 +153,4 @@ App startup is split so the window opens fast:
 
 ## Speaker Analysis Models
 
-`install_from_tar_bz2` (`speaker_analysis_models.rs`) extracts tarball entries by matching whole final path components via `Path::ends_with("model.onnx")` — a quantized sibling like `model.int8.onnx` is correctly skipped. Set each descriptor's `required_files` + `sherpa_params.segmentation_relative_path` to the destination subdir.
+On-device diarization runs through the sole **speakrs** provider (pure-Rust pyannote-community-1 + WeSpeaker on CoreML, model id `pyannote-community-1-wespeaker`). Its preset ships **raw model files** (no `.tar.bz2`): each descriptor `relative_path` lands under the model store, `sherpa_params` is absent, and the helper reads them via `from_dir` / `SPEAKRS_MODELS_DIR`. Set the descriptor's `required_files` to the destination layout so install verification matches.

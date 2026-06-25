@@ -12,114 +12,10 @@
       padding: 0;
       overflow: hidden;
       display: flex;
-      flex-direction: row;
-    }
-
-    /* ---------- A) CHAT-LIST SIDEBAR ---------- */
-    .chat-list {
-      flex: 0 0 230px;
-      width: 230px;
-      display: flex;
       flex-direction: column;
-      border-right: 1px solid var(--app-border);
-      background: var(--app-surface-subtle);
-      min-height: 0;
-    }
-    .chat-list-top {
-      padding: 12px 12px 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      border-bottom: 1px solid var(--app-border);
-    }
-    .chat-newbtn { width: 100%; justify-content: center; }
-    .chat-search {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 5px 9px;
-      border: 1px solid var(--app-border);
-      border-radius: 6px;
-      background: var(--app-surface);
-      color: var(--app-text-muted);
-      font-size: 11.5px;
-    }
-    .chat-search .s-glyph { color: var(--app-text-subtle); }
-    .chat-search input {
-      flex: 1 1 auto;
-      min-width: 0;
-      border: none;
-      background: transparent;
-      font: inherit;
-      font-size: 11.5px;
-      color: var(--app-text);
-      outline: none;
-    }
-    .chat-search input::placeholder { color: var(--app-text-faint); }
-
-    .chat-history {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 8px 8px 0;
-    }
-    .chat-group-label {
-      font-size: 9.5px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--app-text-faint);
-      padding: 10px 8px 5px;
-    }
-    .chat-row {
-      display: block;
-      padding: 6px 9px;
-      border: 1px solid transparent;
-      border-left: 2px solid transparent;
-      border-radius: 6px;
-      cursor: pointer;
-      margin-bottom: 1px;
-      transition: background 0.12s ease, border-color 0.12s ease;
-    }
-    .chat-row:hover { background: var(--app-surface-hover); }
-    .chat-row .ct {
-      font-size: 12px;
-      color: var(--app-text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .chat-row .cs {
-      font-size: 10px;
-      color: var(--app-text-faint);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      margin-top: 1px;
-    }
-    .chat-row.active {
-      background: var(--app-accent-bg);
-      border-color: var(--app-accent-border);
-      border-left-color: var(--app-accent);
-    }
-    .chat-row.active .ct { color: var(--app-accent-strong); }
-
-    .chat-list-foot {
-      border-top: 1px solid var(--app-border);
-      padding: 9px 12px;
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 10px;
-      color: var(--app-text-muted);
-    }
-    .chat-list-foot .doors {
-      flex: 0 0 auto;
-      color: var(--app-accent-strong);
-      font-size: 12px;
-      letter-spacing: -2px;
     }
 
-    /* ---------- B) CONVERSATION COLUMN ---------- */
+    /* ---------- CONVERSATION COLUMN (fills the content area) ---------- */
     .chat-conv {
       flex: 1 1 auto;
       min-width: 0;
@@ -460,22 +356,33 @@
 
     <div class="app-body">
       <div class="insights">
-        <nav class="subnav">
-          <div class="subnav-tabs">
-            <a class="subnav-tab" href="overview.html">Overview</a>
-            <a class="subnav-tab" href="subjects-index.html">Subjects</a>
-            <a class="subnav-tab" href="context.html">Context</a>
-            <a class="subnav-tab active" aria-current="page" href="chat.html">Chat</a>
-          </div>
-          <div class="subnav-meta">
-            <div class="subnav-search">
-              <span class="subnav-search-glyph">⌕</span>
-              <span class="subnav-search-text">Jump to a subject or ask…</span>
-              <span class="kbd">⌘K</span>
+        <aside class="sidebar" aria-label="Insights navigation">
+          <div class="sidebar-scroll">
+            <nav class="rail-nav">
+              <a class="rail-nav-item" href="overview.html">overview</a>
+              <a class="rail-nav-item" href="subjects-index.html">subjects<span class="rail-count">12</span></a>
+              <a class="rail-nav-item" href="context.html">context<span class="rail-count">48</span></a>
+            </nav>
+            <a class="rail-newchat" href="chat.html"><span class="plus">＋</span> new chat</a>
+            <div class="rail-search">
+              <span class="glyph">⌕</span>
+              <input type="text" placeholder="search chats…" disabled />
             </div>
-            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+            <div class="rail-history">
+              <div class="rail-group">today</div>
+              <a class="rail-chat active" href="chat.html"><span class="t">Why is my DER stuck at 10.9%?</span><span class="when">2h</span></a>
+              <a class="rail-chat" href="chat.html"><span class="t">Draft release notes for v0.2</span><span class="when">4h</span></a>
+              <div class="rail-group">yesterday</div>
+              <a class="rail-chat" href="chat.html"><span class="t">Recap what I shipped last week</span><span class="when">1d</span></a>
+              <div class="rail-group">this week</div>
+              <a class="rail-chat" href="chat.html"><span class="t">What did I decide about cc?</span><span class="when">3d</span></a>
+              <a class="rail-chat" href="chat.html"><span class="t">Compare cc thresholds</span><span class="when">4d</span></a>
+            </div>
           </div>
-        </nav>
+          <div class="rail-foot">
+            <span class="rail-engine"><span class="dot"></span>engine<span class="sep">·</span><span class="model">Claude</span></span>
+          </div>
+        </aside>
 
         <main class="insights-main">
           <!-- BUILD NOTES — chat
@@ -496,63 +403,7 @@
                SURFACE CONTENT START
                ============================================================ -->
 
-          <!-- ================= A) CHAT-LIST SIDEBAR ================= -->
-          <aside class="chat-list">
-            <div class="chat-list-top">
-              <button class="btn btn--accent chat-newbtn" type="button">+ New chat</button>
-              <label class="chat-search">
-                <span class="s-glyph">⌕</span>
-                <input type="text" placeholder="search chats…" />
-              </label>
-            </div>
-
-            <div class="chat-history">
-              <div class="chat-group-label">Today</div>
-              <a class="chat-row active">
-                <div class="ct">Time spent this week</div>
-                <div class="cs">Coding led at 14h — here's where…</div>
-              </a>
-              <a class="chat-row">
-                <div class="ct">Apple silicon interest over time</div>
-                <div class="cs">Trending up since late April</div>
-              </a>
-              <a class="chat-row">
-                <div class="ct">Where did Tuesday go?</div>
-                <div class="cs">Mostly Slack + context switches</div>
-              </a>
-
-              <div class="chat-group-label">Yesterday</div>
-              <a class="chat-row">
-                <div class="ct">Rust learning progress</div>
-                <div class="cs">Borrow-checker sessions up 2×</div>
-              </a>
-              <a class="chat-row">
-                <div class="ct">Most distracting apps</div>
-                <div class="cs">X and YouTube top the list</div>
-              </a>
-
-              <div class="chat-group-label">Last 7 days</div>
-              <a class="chat-row">
-                <div class="ct">Meeting load by day</div>
-                <div class="cs">Wed is your heaviest</div>
-              </a>
-              <a class="chat-row">
-                <div class="ct">Design vs build split</div>
-                <div class="cs">Build 3.7× design this sprint</div>
-              </a>
-              <a class="chat-row">
-                <div class="ct">What did I read about WebGPU?</div>
-                <div class="cs">6 articles, 2 specs</div>
-              </a>
-            </div>
-
-            <div class="chat-list-foot">
-              <span class="doors">◫◫</span>
-              <span>Shared with <span class="strong" style="font-weight:600;">Quick Recall</span> — same threads open there.</span>
-            </div>
-          </aside>
-
-          <!-- ================= B) CONVERSATION COLUMN ================= -->
+          <!-- ================= CONVERSATION COLUMN ================= -->
           <section class="chat-conv">
             <!-- thread header -->
             <div class="thread-head">

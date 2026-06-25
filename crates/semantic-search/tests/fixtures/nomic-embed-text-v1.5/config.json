@@ -1,0 +1,20 @@
+{
+  "architectures": ["NomicBertModel"],
+  "model_type": "nomic_bert",
+  "vocab_size": 30528,
+  "n_embd": 768,
+  "n_head": 12,
+  "n_layer": 12,
+  "n_inner": 3072,
+  "n_positions": 8192,
+  "type_vocab_size": 2,
+  "layer_norm_epsilon": 1e-12,
+  "rotary_emb_fraction": 1.0,
+  "rotary_emb_base": 1000,
+  "rotary_emb_interleaved": false,
+  "qkv_proj_bias": false,
+  "mlp_fc1_bias": false,
+  "mlp_fc2_bias": false,
+  "activation_function": "swiglu",
+  "prenorm": false
+}
