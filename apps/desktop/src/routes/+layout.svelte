@@ -258,6 +258,9 @@
   const isNarrow = $derived(isDebug);
   const notificationCount = $derived(appNotifications.count);
   const hasNotifications = $derived(notificationCount > 0);
+  const hasErrorNotification = $derived(
+    appNotifications.items.some((n) => n.severity === "error"),
+  );
 
   $effect(() => {
     if (!hasNotifications) notificationsOpen = false;
@@ -633,6 +636,10 @@
       return;
     }
     trapTabKey(event, shortcutsHelpPanelEl);
+  }
+
+  function onNotificationsPopoverKeydown(event: KeyboardEvent): void {
+    trapTabKey(event, notificationsPopoverEl);
   }
 
   function handleGlobalShortcutKeydown(event: KeyboardEvent): void {
@@ -1028,7 +1035,11 @@
                 <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
                 <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
               </svg>
-              <span class="titlebar__notification-dot" aria-hidden="true">{notificationCount}</span>
+              <span
+                class="titlebar__notification-dot"
+                class:titlebar__notification-dot--error={hasErrorNotification}
+                aria-hidden="true"
+              >{notificationCount}</span>
             </button>
             {#if notificationsOpen}
               <div
@@ -1036,7 +1047,9 @@
                 class="notification-popover"
                 role="dialog"
                 aria-label="Notifications"
+                tabindex="-1"
                 bind:this={notificationsPopoverEl}
+                onkeydown={onNotificationsPopoverKeydown}
               >
                 <div class="notification-popover__head">
                   <span>Notifications</span>
@@ -1258,7 +1271,7 @@
 
     --app-status-bg: #0a0a10;
     --app-status-border: #161624;
-    --app-status-fg: #555574;
+    --app-status-fg: #6f6f90;
     --app-status-dot: #2a2a3a;
 
     --app-status-running-fg: #ff5d6c;
@@ -2020,6 +2033,11 @@
     background: var(--app-surface-hover);
     opacity: 1;
   }
+  .titlebar__source--toggle:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
 
   .titlebar__privacy-warning {
     display: inline-flex;
@@ -2235,6 +2253,9 @@
     line-height: 12px;
     text-align: center;
   }
+  .titlebar__notification-dot--error {
+    background: var(--app-danger);
+  }
   .notification-popover {
     position: absolute;
     top: calc(100% + 8px);
@@ -2276,6 +2297,11 @@
   .notification-popover__clear:hover,
   .notification-item__clear:hover {
     color: var(--app-text-strong);
+  }
+  .notification-popover__clear:focus-visible,
+  .notification-item__clear:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .notification-popover__list {
     overflow-y: auto;
@@ -2344,6 +2370,11 @@
   .notification-item__action:hover {
     border-color: var(--app-border-hover);
     background: var(--app-surface-hover);
+  }
+  .notification-item__action:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
   .notification-item__clear {
     align-self: start;

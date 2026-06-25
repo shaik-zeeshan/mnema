@@ -101,7 +101,10 @@ export const captureControls = {
       }
       return captureControls.paused ? "Paused" : "Recording";
     }
-    return captureSession.value?.isRunning === false ? "Stopped" : "Idle";
+    // "Stopped" and "Idle" are visually identical (both render with the
+    // 'idle' modifier), so the copy is unified to match the single visual
+    // state rather than implying a distinction the chrome never shows.
+    return "Idle";
   },
   get statusModifier(): "idle" | "running" | "paused" {
     if (captureControls.isRunning) {
