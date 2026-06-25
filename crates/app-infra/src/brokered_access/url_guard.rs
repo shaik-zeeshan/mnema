@@ -31,7 +31,12 @@
 //!    `raw`, … see `RESOURCE_ID_PREDECESSORS`) no longer blanket-rescue their
 //!    successor: a token after such a carrier survives ONLY if it is itself a
 //!    public-id shape (UUID / all-hex / all-numeric); a mixed-class opaque token
-//!    after `/id/`, `/raw/`, `/user/` is redacted like any other.
+//!    after `/id/`, `/raw/`, `/user/` is redacted like any other. A sub-part
+//!    that carries `%XX` escapes is percent-DECODED before the opacity test
+//!    (decode-then-rescan), so a token hiding behind encoded `=`/`+` padding
+//!    (`dGhpc2lzYXNlY3JldA%3D%3D`) is judged exactly as its decoded form and
+//!    redacted, while readable encoded content (`Hello%20World` -> a space)
+//!    stays non-opaque and survives. `%` itself is never an opaque char.
 //!
 //! Accepted residual (what still passes — kept deliberately, stated honestly):
 //!   - A UUID or an all-hex string (commit SHA / object id) is preserved as a
@@ -65,6 +70,7 @@
 //! armed credential keyword (hyphens and all) — is now redacted.
 
 use secret_redaction::{redact_searchable_text, RedactionContext};
+use std::borrow::Cow;
 use url::Url;
 
 /// Placeholder emitted for an armed-but-not-known-shape opaque token.
@@ -504,16 +510,67 @@ fn is_opaque_char(c: char) -> bool {
 /// `is_resource_id_predecessor` + `is_public_id_shape`, so a UUID after `/d/`
 /// survives while a mixed-class token after `/id/` does not.)
 fn is_backstop_token(segment: &str) -> bool {
-    if !is_token_shaped(segment) {
+    // A percent-encoded sub-part can hide an opaque token behind `%XX` escapes
+    // (standard-base64 `=` padding as `%3D`, `+` as `%2B`, or even the whole
+    // token hex-escaped). `%` is intentionally NOT an opaque char — so readable
+    // encoded content like `Hello%20World` is not mis-read as one token — which
+    // means the raw `is_token_shaped` scan bails on the `%` and the encoded
+    // token would leak whole. Decode-then-rescan closes that gap: a real token
+    // (`dGhpc2lzYXNlY3JldA%3D%3D` -> `dGhpc2lzYXNlY3JldA==`) reads as a
+    // mixed-class opaque run and redacts, while readable encoded content
+    // (`Hello%20World` -> `Hello World`, carrying a space) stays non-opaque and
+    // survives. The decoded form is used ONLY to DECIDE; the caller redacts the
+    // ORIGINAL (still-encoded) sub-part, so no decoded text is ever emitted.
+    let candidate: Cow<'_, str> = if segment.contains('%') {
+        Cow::Owned(percent_decode_lenient(segment))
+    } else {
+        Cow::Borrowed(segment)
+    };
+    let candidate = candidate.as_ref();
+    if !is_token_shaped(candidate) {
         return false;
     }
-    if is_hyphen_word_slug(segment) {
+    if is_hyphen_word_slug(candidate) {
         return false;
     }
-    if is_public_id_shape(segment) {
+    if is_public_id_shape(candidate) {
         return false;
     }
     true
+}
+
+/// Percent-decode a path sub-part LENIENTLY into a UTF-8 string used ONLY for
+/// the backstop's shape decision — never emitted. Valid `%XX` escapes are
+/// decoded to their byte; a truncated or non-hex escape (`%`, `%Z`, `%ZZ`) is
+/// left as a literal `%`, which (being a non-opaque char) keeps readable
+/// content carrying a stray `%` (`50%off…`) out of the token class instead of
+/// over-redacting it. Decoded bytes that are not valid UTF-8 collapse to the
+/// replacement char (also non-opaque), so a non-ASCII decode can never be
+/// mistaken for a base64 token — genuine base64/url tokens are pure ASCII.
+///
+/// The effect is that an encoded sub-part is judged exactly as its decoded
+/// equivalent would be by the plain backstop path, keeping encoded and
+/// non-encoded inputs consistent.
+fn percent_decode_lenient(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut decoded: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 3 <= bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            let hi = (bytes[i + 1] as char).to_digit(16).unwrap() as u8;
+            let lo = (bytes[i + 2] as char).to_digit(16).unwrap() as u8;
+            decoded.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 /// True when the segment is a recognized PUBLIC-ID shape: a UUID, an all-hex
@@ -1103,6 +1160,67 @@ mod tests {
         assert!(
             !out.contains("dGhpc2lzYXNlY3JldA=="),
             "standard-base64 padded token must not leak: {out}"
+        );
+    }
+
+    #[test]
+    fn percent_encoded_base64_token_is_redacted() {
+        // Same secret as above, but its `=` padding is PERCENT-encoded (`%3D`).
+        // `%` is deliberately not an opaque char (so readable `Hello%20World`
+        // survives), which means the raw backstop scan bails and the encoded
+        // token would leak. The backstop now decodes-then-rescans, so the
+        // decoded `dGhpc2lzYXNlY3JldA==` reads as opaque and redacts.
+        let out = guard("https://app.com/s/dGhpc2lzYXNlY3JldA%3D%3D").unwrap();
+        assert!(
+            !out.contains("dGhpc2lzYXNlY3JldA"),
+            "percent-encoded token must not leak: {out}"
+        );
+        assert_eq!(out, format!("app.com/s/{ARMED_TOKEN_PLACEHOLDER}"));
+    }
+
+    #[test]
+    fn percent_encoded_readable_path_is_preserved() {
+        // Guard against over-redaction: encoded spaces decode to readable text.
+        let out = guard("https://docs.example.com/page/Hello%20World%20Foo").unwrap();
+        assert!(
+            out.contains("Hello%20World%20Foo") || out.contains("Hello World Foo"),
+            "readable encoded path must survive: {out}"
+        );
+    }
+
+    #[test]
+    fn percent_encoded_short_word_is_preserved() {
+        // `%64%6F%63%73` decodes to `docs` — short and single-class, so the
+        // decoded form is not token-shaped and the sub-part survives.
+        let out = guard("https://example.com/%64%6F%63%73/intro").unwrap();
+        assert!(
+            out.contains("%64%6F%63%73") || out.contains("docs"),
+            "short encoded word must survive: {out}"
+        );
+    }
+
+    #[test]
+    fn percent_encoded_plus_base64_token_is_redacted() {
+        // A standard-base64 token whose `+` and `=` are percent-encoded
+        // (`%2B`, `%3D`). Decoding restores `+` (an opaque char) and trims the
+        // `=` padding, so the token reads as a mixed-class opaque run and goes.
+        let out = guard("https://app.com/s/AbC9%2BxK2mP4qR7sT0%3D").unwrap();
+        assert!(
+            !out.contains("AbC9") && !out.contains("xK2mP4qR7sT0"),
+            "percent-encoded `+`/`=` base64 token must not leak: {out}"
+        );
+        assert_eq!(out, format!("app.com/s/{ARMED_TOKEN_PLACEHOLDER}"));
+    }
+
+    #[test]
+    fn literal_percent_in_readable_content_is_preserved() {
+        // A stray, undecodable `%` (here `%of` — `o` is not a hex digit) is left
+        // literal by the lenient decoder, so the segment still carries a `%`
+        // (non-opaque) and survives rather than being mistaken for a token.
+        let out = guard("https://shop.example.com/sale/50%off-everything-today").unwrap();
+        assert!(
+            out.contains("50%off-everything-today"),
+            "readable content with a stray `%` must survive: {out}"
         );
     }
 
