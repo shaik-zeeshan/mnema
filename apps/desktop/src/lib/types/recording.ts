@@ -316,6 +316,7 @@ export interface RecordingSettings {
 	access: AccessSettings;
 	aiRuntime: AiRuntimeSettings;
 	userContext: UserContextSettings;
+	semanticSearch: SemanticSearchSettings;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;
@@ -343,6 +344,7 @@ export type SettingsOwnershipDomain =
 	| "access"
 	| "ai_runtime"
 	| "user_context"
+	| "semantic_search"
 	| "one_time_prompt_state";
 
 export interface RecordingSettingsDomainUpdateResponse {
@@ -460,7 +462,6 @@ export interface AppShortcutBindings {
 
 export interface DashboardShortcutBindings {
 	openJumpPicker: string;
-	search: string;
 	jumpLatest: string;
 	toggleOcr: string;
 	refreshTimeline: string;
@@ -568,7 +569,7 @@ export interface AudioSpeechDetectionSettings {
 export interface SpeakerAnalysisSettings {
 	separateSpeakers: boolean;
 	recognizeSavedPeople: boolean;
-	provider: "sherpa_onnx" | string;
+	provider: "speakrs" | string;
 	modelId: string | null;
 	timeoutSeconds: number;
 }
@@ -769,4 +770,85 @@ export interface DeleteUnusedOcrModelsResponse {
 	skippedActiveDownloads: DeletedOcrModel[];
 	skippedProcessingJobs: DeletedOcrModel[];
 	retargetedProcessingJobs: number;
+}
+
+// --- Semantic Search Model Tier (issue #125) ---
+
+export type SemanticSearchModelTier = "english" | "multilingual" | "custom";
+
+export type SemanticSearchModelStatusKind = "installed" | "missing";
+
+export interface SemanticSearchModelStatusResponse {
+	modelsDirectory: string;
+	models: SemanticSearchModelStatus[];
+}
+
+export interface SemanticSearchModelStatus {
+	provider: string;
+	modelId: string;
+	displayName: string;
+	description: string;
+	tier: SemanticSearchModelTier;
+	dimension: number;
+	maxTokens: number;
+	modelCode: string;
+	approxDownloadBytes: number;
+	licenseLabel: string | null;
+	status: SemanticSearchModelStatusKind;
+	available: boolean;
+	installPath: string;
+	missingFiles: string[];
+}
+
+export type SemanticSearchModelDownloadStatus =
+	| "starting"
+	| "downloading"
+	| "installing"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export interface SemanticSearchModelDownloadProgress {
+	provider: string;
+	modelId: string;
+	status: SemanticSearchModelDownloadStatus;
+	downloadedBytes: number;
+	totalBytes: number | null;
+	message: string | null;
+}
+
+// One entry in the Custom-picker catalog returned by
+// `list_semantic_search_supported_models` — the curated set of candle-supported
+// on-device models (gated models excluded server-side). Hand-mirrored to the Rust
+// serde shape (camelCase). `approxDownloadBytes` may be null when the size is unknown.
+export interface SemanticSearchSupportedModel {
+	modelId: string;
+	displayName: string;
+	modelCode: string;
+	dimension: number;
+	description: string;
+	multilingual: boolean;
+	approxDownloadBytes: number | null;
+}
+
+// Mirrors `capture_types::SemanticSearchSettings` (camelCase serde).
+export interface SemanticSearchSettings {
+	enabled: boolean;
+	provider: string;
+	modelId: string | null;
+}
+
+// Mirrors `third_party_notices::ThirdPartyNoticeEntry` (serde camelCase).
+export interface ThirdPartyNoticeEntry {
+	component: string;
+	kind: string;
+	displayName: string;
+	license: string | null;
+	sourceUrl: string | null;
+}
+
+// Mirrors `third_party_notices::ThirdPartyNotices` (serde camelCase).
+export interface ThirdPartyNotices {
+	entries: ThirdPartyNoticeEntry[];
+	plainText: string;
 }

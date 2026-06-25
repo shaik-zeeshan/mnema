@@ -2,9 +2,9 @@
 const capabilities = [
   {
     label: "screen",
-    type: "ocr",
+    type: "text",
     description:
-      "Every window, tab, and document — continuously captured and OCR'd into searchable text.",
+      "Every window, tab, and document you look at becomes searchable text — so you can find that paragraph even if you never saved it.",
     example: {
       query: "api response format",
       match: '...the <em>API response format</em> uses JSON with pagination...',
@@ -15,7 +15,7 @@ const capabilities = [
     label: "audio",
     type: "transcript",
     description:
-      "Meetings, calls, voice notes — transcribed locally with speaker tags. Search spoken words like text.",
+      "Meetings, calls, and voice notes are transcribed with speaker labels, so you can search what was said as easily as what was written.",
     example: {
       query: "deadline moved",
       match: '"...the <em>deadline moved</em> to next Friday, so we have..."',
@@ -24,9 +24,9 @@ const capabilities = [
   },
   {
     label: "activity",
-    type: "metadata",
+    type: "timeline",
     description:
-      "Which app, which window, how long. A structured log of your workday you can filter and search.",
+      "Which app, which site, how long — a quiet log of your workday you can filter, scrub, and ask questions about.",
     example: {
       query: "figma prototype",
       match: "Figma — <em>Prototype</em> review (43 min)",
@@ -38,11 +38,12 @@ const capabilities = [
 
 <section class="remembers">
   <div class="section-inner">
-    <p class="kicker">// what it remembers</p>
-    <h2 class="section-heading">Screen. Audio. Activity.</h2>
+    <p class="kicker">// what it captures</p>
+    <h2 class="section-heading">Screen, audio, and activity — all searchable.</h2>
     <p class="section-sub">
-      Three input streams, one searchable record. Every result traces back to a
-      moment in time.
+      Three streams of your day, captured continuously and turned into one
+      searchable record. Every result points back to the exact moment it came
+      from.
     </p>
 
     <div class="capabilities">

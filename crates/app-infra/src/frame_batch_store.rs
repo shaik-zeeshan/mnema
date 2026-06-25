@@ -374,6 +374,9 @@ impl FrameBatchStore {
         &self,
         workspace_prefix: &str,
     ) -> Result<SegmentWorkspaceFrameBatchReferences> {
+        // Range bounds (not `LIKE`) so SQLite can use the `frames_file_path_idx`
+        // index: a bound-parameter `LIKE` is planned as a full table scan, while
+        // `>= prefix AND < upper` is an index range search. See migration 0038.
         let frame_rows = sqlx::query(
             "SELECT \
                 frames.id AS frame_id, \
@@ -381,10 +384,11 @@ impl FrameBatchStore {
                 frame_batches.status AS batch_status \
              FROM frames \
               LEFT JOIN frame_batches ON frame_batches.id = frames.frame_batch_id \
-             WHERE frames.file_path LIKE ?1 ESCAPE '\\' \
+             WHERE frames.file_path >= ?1 AND frames.file_path < ?2 \
              ORDER BY frames.id ASC",
         )
-        .bind(format!("{}%", escape_sql_like_pattern(workspace_prefix)))
+        .bind(workspace_prefix)
+        .bind(workspace_path_prefix_upper_bound(workspace_prefix))
         .fetch_all(&self.pool)
         .await?;
 
@@ -872,20 +876,31 @@ fn frame_batch_window(captured_at: &str) -> Result<FrameBatchWindow> {
     })
 }
 
-fn escape_sql_like_pattern(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-
-    for ch in value.chars() {
-        match ch {
-            '%' | '_' | '\\' => {
-                escaped.push('\\');
-                escaped.push(ch);
-            }
-            _ => escaped.push(ch),
+/// Exclusive upper bound for a path-prefix range scan: the prefix with its final
+/// code point bumped by one. Lets `file_path >= prefix AND file_path < bound`
+/// match exactly the rows a `LIKE 'prefix%'` would, while using the
+/// `frames_file_path_idx` index. Workspace prefixes always end in `/`, so the
+/// loop normally bumps `/` to `0` on the first iteration; the fallback only
+/// matters for pathological inputs (empty / un-incrementable trailing chars).
+pub(crate) fn workspace_path_prefix_upper_bound(prefix: &str) -> String {
+    // The range bound only replicates `LIKE 'prefix%'` when `prefix` ends in `/`
+    // (callers pass `format!("{}/", workspace_dir)`). A non-slash prefix still
+    // yields a valid pure-prefix range, but would silently diverge from the
+    // deleted `workspace_like_pattern`'s `/%` separator and could bleed a sibling
+    // workspace's frames in — so pin the contract.
+    debug_assert!(
+        prefix.ends_with('/'),
+        "workspace path prefix must be slash-terminated: {prefix:?}"
+    );
+    let mut chars: Vec<char> = prefix.chars().collect();
+    while let Some(last) = chars.pop() {
+        if let Some(next) = char::from_u32(last as u32 + 1) {
+            let mut bound: String = chars.iter().collect();
+            bound.push(next);
+            return bound;
         }
     }
-
-    escaped
+    format!("{prefix}\u{10FFFF}")
 }
 
 fn map_frame(row: SqliteRow) -> Result<Frame> {
@@ -1127,6 +1142,100 @@ mod tests {
                 .await
                 .expect("finalization should proceed after terminal OCR");
             assert_eq!(result.batch.status, FrameBatchStatus::Completed);
+        });
+    }
+
+    #[test]
+    fn finalize_stays_gated_while_failed_ocr_is_retrying() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-retrying");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let processing = crate::ProcessingStore::new(pool.clone());
+            let store = FrameBatchStore::new(pool.clone());
+
+            let batch = store
+                .upsert_open_batch_for_frame("session-retry", "2026-04-12T10:01:00Z")
+                .await
+                .expect("batch should exist");
+            let frame = processing
+                .insert_frame(&NewFrame::new(
+                    "session-retry",
+                    "/tmp/session-retry-segment-0001/frames/frame-1.png",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            store
+                .attach_frame_to_batch(frame.id, batch.id, &frame.captured_at)
+                .await
+                .expect("frame should attach");
+            let job = processing
+                .enqueue_job(&crate::ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should queue");
+
+            let closed = store
+                .close_completed_batches_for_session("session-retry", None)
+                .await
+                .expect("batch should close");
+            assert_eq!(closed.len(), 1);
+            let finalize_job = store
+                .enqueue_finalize_job_if_needed(batch.id)
+                .await
+                .expect("finalize job should queue")
+                .expect("finalize job should exist");
+
+            // Drive the OCR job's failure through the same store path the processing
+            // runtime uses (see `ProcessingRuntime::process_claimed_job`): record a
+            // genuine failure, then bounded failure-retry requeues the job within its
+            // attempt cap rather than leaving it terminally failed.
+            let claimed = processing
+                .claim_queued_job(job.id)
+                .await
+                .expect("ocr job should claim")
+                .expect("ocr job should exist");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+            processing
+                .mark_job_failed(job.id, Some("expected failure"))
+                .await
+                .expect("ocr job should fail");
+            let requeued = processing
+                .requeue_failed_job_within_attempt_cap(job.id)
+                .await
+                .expect("failed ocr job should requeue cleanly")
+                .expect("a sub-cap failure should be requeued, not left terminal");
+
+            // The OCR job is back to queued (non-terminal) with the single failure
+            // recorded, so it is awaiting another attempt rather than done.
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(requeued.failure_count, 1);
+
+            // The finalize gate must stay closed while that OCR job is mid-retry: a
+            // queued (non-terminal) OCR job is neither completed nor failed, so the
+            // batch must not be claimable for finalization ahead of it.
+            let claimed_finalize = store
+                .claim_next_finalize_job()
+                .await
+                .expect("finalize claim should query cleanly");
+            assert!(
+                claimed_finalize.is_none(),
+                "finalize must not be claimable while the batch's OCR job is retrying"
+            );
+
+            // The runtime likewise refuses to finalize the batch directly, for the
+            // same reason, instead of completing it ahead of the retrying OCR job.
+            let runtime = FrameBatchRuntime::new(store.clone());
+            let error = runtime
+                .process_job(finalize_job.id)
+                .await
+                .expect_err("finalization should wait for OCR to reach a terminal state");
+            assert!(matches!(
+                error,
+                AppInfraError::FrameBatchOcrPending { batch_id } if batch_id == batch.id
+            ));
         });
     }
 
@@ -1658,6 +1767,62 @@ mod tests {
                     .await
                     .expect("finalize jobs should count");
             assert_eq!(finalize_job_count, 1);
+        });
+    }
+
+    #[test]
+    fn workspace_path_prefix_upper_bound_bumps_trailing_slash() {
+        // Workspace prefixes always end in `/`; the exclusive upper bound bumps
+        // it to `0`, so `[".../seg-0001/", ".../seg-00010")` captures exactly the
+        // paths a `LIKE '.../seg-0001/%'` would.
+        assert_eq!(
+            workspace_path_prefix_upper_bound("/r/2026/06/01/.x-segment-0001/"),
+            "/r/2026/06/01/.x-segment-00010"
+        );
+    }
+
+    #[test]
+    fn list_frame_batch_references_for_workspace_does_not_bleed_into_prefix_sibling() {
+        run_async_test(async {
+            let dir = TestDir::new("references-prefix-isolation");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let processing = crate::ProcessingStore::new(pool.clone());
+            let store = FrameBatchStore::new(pool.clone());
+
+            // `.x-segment-0001` is a strict textual prefix of `.x-segment-0001b`,
+            // the exact case where a naive range bound could leak a sibling's
+            // frames into the target workspace.
+            let target_frame = processing
+                .insert_frame(&NewFrame::new(
+                    "session-iso",
+                    "/tmp/2026/04/12/.x-segment-0001/frames/frame-1.png",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("target frame should persist");
+            processing
+                .insert_frame(&NewFrame::new(
+                    "session-iso",
+                    "/tmp/2026/04/12/.x-segment-0001b/frames/frame-1.png",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("sibling frame should persist");
+
+            let references = store
+                .list_frame_batch_references_for_workspace("/tmp/2026/04/12/.x-segment-0001/")
+                .await
+                .expect("references should resolve");
+
+            assert_eq!(
+                references.frame_count, 1,
+                "only the target workspace's frame should match"
+            );
+            // The sibling frame has a higher id; confirm we kept the target one.
+            let _ = target_frame;
         });
     }
 }

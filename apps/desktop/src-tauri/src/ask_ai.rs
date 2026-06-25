@@ -587,7 +587,9 @@ fn broker_response_to_tool_value(
         BrokeredCaptureResponse::RecallContext(response) => serde_json::to_value(response)
             .map_err(|error| format!("failed to serialize Ask AI recall_context result: {error}")),
         BrokeredCaptureResponse::Error(error) => Err(error.message),
-        BrokeredCaptureResponse::AuthStatus(_) | BrokeredCaptureResponse::OpenInMnema(_) => {
+        BrokeredCaptureResponse::AuthStatus(_)
+        | BrokeredCaptureResponse::OpenInMnema(_)
+        | BrokeredCaptureResponse::OpenCapturedUrl(_) => {
             Err("unexpected Ask AI broker response".to_string())
         }
     }
@@ -602,6 +604,9 @@ struct ResolvedAskAiSource {
     audio_segment_id: Option<i64>,
     app_name: Option<String>,
     window_title: Option<String>,
+    /// Guarded host+path of the page behind this source (already sanitized +
+    /// secret-redacted at the broker boundary). Frame sources only; audio → None.
+    url: Option<String>,
     started_at: String,
     ended_at: String,
     // Audio Search Result Anchor: sub-segment match timing + aligned frame for
@@ -661,6 +666,9 @@ where
             "audioSegmentId": source.audio_segment_id,
             "appName": source.app_name,
             "windowTitle": source.window_title,
+            // Guarded host+path of the cited page (frame sources only; audio:
+            // null). Already sanitized + secret-redacted at the broker boundary.
+            "url": source.url,
             "startedAt": source.started_at,
             "endedAt": source.ended_at,
             // Audio Search Result Anchor: sub-segment match span + aligned frame
@@ -733,6 +741,9 @@ async fn handle_reference_captures(
                     .or_else(|| context.app_bundle_id.clone())
             }),
             window_title: context.and_then(|context| context.window_title.clone()),
+            // The broker already guarded this URL when it built the search
+            // result context (frame results only); copy it through verbatim.
+            url: result.context.as_ref().and_then(|c| c.url.clone()),
             started_at: result.started_at.clone(),
             ended_at: result.ended_at.clone(),
             // Audio Search Result Anchor retained from the search result the
@@ -2333,6 +2344,7 @@ mod tests {
                 app_bundle_id: Some("com.apple.dt.Xcode".to_string()),
                 app_name: Some("Xcode".to_string()),
                 window_title: Some("ContentView.swift".to_string()),
+                url: None,
             }),
             span_start_ms: None,
             span_end_ms: None,
@@ -2417,6 +2429,7 @@ mod tests {
             app_bundle_id: Some("com.example.app".to_string()),
             app_name: None,
             window_title: None,
+            url: None,
         });
         let line = format_seed_result_line(0, &result, None);
         assert!(line.contains("· com.example.app ·"));
@@ -2595,6 +2608,13 @@ mod tests {
     }
 
     #[test]
+    fn broker_request_from_tool_rejects_open_captured_url() {
+        let error = broker_request_from_tool("open_captured_url", serde_json::json!({}))
+            .expect_err("open_captured_url is not an Ask AI tool");
+        assert_eq!(error, "unknown Ask AI tool: open_captured_url");
+    }
+
+    #[test]
     fn broker_request_from_tool_rejects_reference_captures() {
         let error =
             broker_request_from_tool("reference_captures", serde_json::json!({ "opaqueIds": [] }))
@@ -2620,6 +2640,7 @@ mod tests {
             audio_segment_id: None,
             app_name: Some("Xcode".to_string()),
             window_title: Some("ContentView.swift".to_string()),
+            url: Some("github.com/owner/repo".to_string()),
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
             span_start_ms: None,
@@ -2634,6 +2655,7 @@ mod tests {
             audio_segment_id: Some(7),
             app_name: Some("Zoom".to_string()),
             window_title: None,
+            url: None,
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
             span_start_ms: Some(3_000),
@@ -2736,12 +2758,15 @@ mod tests {
         assert_eq!(frame["sourceKind"], serde_json::Value::Null);
         assert_eq!(frame["spanStartMs"], serde_json::Value::Null);
         assert_eq!(frame["alignedFrameId"], serde_json::Value::Null);
+        // Frame sources carry the guarded host+path; audio sources null it.
+        assert_eq!(frame["url"], serde_json::json!("github.com/owner/repo"));
 
         let audio = &sources[1];
         assert_eq!(audio["kind"], serde_json::json!("audio"));
         assert_eq!(audio["frameId"], serde_json::Value::Null);
         assert_eq!(audio["audioSegmentId"], serde_json::json!(7));
         assert_eq!(audio["windowTitle"], serde_json::Value::Null);
+        assert_eq!(audio["url"], serde_json::Value::Null);
         assert!(audio.as_object().unwrap().contains_key("sourceKind"));
         assert_eq!(audio["sourceKind"], serde_json::Value::Null);
         assert_eq!(audio["spanStartMs"], serde_json::json!(3_000));

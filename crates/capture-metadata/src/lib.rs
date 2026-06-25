@@ -4,7 +4,24 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use url::Url;
 
-pub const BROWSER_URL_METADATA_POLL_INTERVAL: Duration = Duration::from_secs(15);
+/// Backstop re-probe interval for a browser whose front-window title has *not*
+/// changed. The primary freshness signal is the window title (re-probe on every
+/// change — see [`BrowserUrlProbeCache::cached_url_for`]); this only bounds
+/// staleness for navigations that change the URL without changing the title
+/// (e.g. some single-page apps).
+pub const BROWSER_URL_PROBE_BACKSTOP_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Minimum spacing between re-probes triggered by a *title change* for the same
+/// front window. Title-gating ([`BrowserUrlProbeCache::cached_url_for`]) re-probes
+/// on every title change, but pages with dynamic titles (unread counters like
+/// "(5) Inbox", live timers, "● Recording", per-second clocks) change their title
+/// on nearly every ~1s metadata tick — without a floor that means an `osascript`
+/// spawn (Chromium/WebKit) or a blocking AX read (Gecko) every tick. This floor
+/// caps title-driven re-probes to at most once per interval, trading a brief
+/// (<~1.5s) URL/title desync for not hammering the probe. Kept below
+/// [`BROWSER_URL_PROBE_BACKSTOP_INTERVAL`] so the same-title backstop still wins
+/// past it.
+pub const BROWSER_URL_PROBE_REPROBE_FLOOR: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -109,25 +126,60 @@ pub struct PrivacyFilterDecision {
 #[derive(Debug, Clone, Default)]
 pub struct BrowserUrlProbeCache {
     bundle_id: Option<String>,
+    window_title: Option<String>,
     raw_url: Option<String>,
     probed_at: Option<Instant>,
 }
 
 impl BrowserUrlProbeCache {
-    pub fn cached_url_for(&self, bundle_id: &str, now: Instant) -> Option<Option<String>> {
+    /// Returns the cached URL when it is still trustworthy for `bundle_id`.
+    ///
+    /// The front-window title is captured fresh every tick and almost always
+    /// changes on a tab switch or navigation, so a title mismatch forces an
+    /// immediate re-probe — this is what keeps the cached URL from going stale
+    /// against the title (the desync that surfaced an old tab's URL under a new
+    /// page's title). [`BROWSER_URL_PROBE_BACKSTOP_INTERVAL`] is only a backstop
+    /// for URL changes that leave the title untouched.
+    ///
+    /// A title change forces a re-probe — but no more often than
+    /// [`BROWSER_URL_PROBE_REPROBE_FLOOR`], so a dynamic-title page (live counter,
+    /// timer, clock) that mutates its title every tick can't hammer the probe.
+    /// Within the floor a changed title serves the cached URL (brief desync);
+    /// past the floor it re-probes.
+    pub fn cached_url_for(
+        &self,
+        bundle_id: &str,
+        window_title: Option<&str>,
+        now: Instant,
+    ) -> Option<Option<String>> {
         if self.bundle_id.as_deref() != Some(bundle_id) {
             return None;
         }
         let probed_at = self.probed_at?;
-        if now.saturating_duration_since(probed_at) >= BROWSER_URL_METADATA_POLL_INTERVAL {
+        let elapsed = now.saturating_duration_since(probed_at);
+        if self.window_title.as_deref() != window_title {
+            // Title moved on: re-probe, but not more than once per floor so a
+            // dynamic title (changing every tick) can't trigger a probe storm.
+            if elapsed < BROWSER_URL_PROBE_REPROBE_FLOOR {
+                return Some(self.raw_url.clone());
+            }
+            return None;
+        }
+        if elapsed >= BROWSER_URL_PROBE_BACKSTOP_INTERVAL {
             return None;
         }
         Some(self.raw_url.clone())
     }
 
-    pub fn from_probe(bundle_id: Option<String>, raw_url: Option<String>, now: Instant) -> Self {
+    pub fn from_probe(
+        bundle_id: Option<String>,
+        window_title: Option<String>,
+        raw_url: Option<String>,
+        now: Instant,
+    ) -> Self {
         Self {
             bundle_id,
+            window_title,
             raw_url,
             probed_at: Some(now),
         }
@@ -184,10 +236,38 @@ pub fn metadata_collection_plan(metadata: &MetadataSettings) -> MetadataCollecti
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserUrlDialect {
+    Chromium, // URL of active tab of front window
+    WebKit,   // URL of current tab of front window  (Safari family)
+}
+
+/// How Mnema reads a browser's active-tab URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserUrlStrategy {
+    /// Chromium/WebKit families — read via AppleScript (`osascript`). No extra permission.
+    AppleScript(BrowserUrlDialect),
+    /// Gecko family (Firefox/Zen) — read `AXURL` off the focused web area via the
+    /// macOS Accessibility API. Requires the Accessibility permission, opt-in.
+    Accessibility,
+}
+
+/// A recognized browser and how (if at all) Mnema reads its active-tab URL.
+///
+/// The Chromium/WebKit families expose the URL via AppleScript, so they carry an
+/// `url_script_app_name` (the "tell application" target) and an
+/// `AppleScript(dialect)` strategy. The Gecko family (Firefox/Zen) has no
+/// scriptable URL surface; it reads the URL via the Accessibility API and so has
+/// `url_script_app_name: None` with the `Accessibility` strategy. `url_strategy`
+/// is `None` only for a browser that is recognized but has no URL surface at all.
+///
+/// Invariant: `url_script_app_name.is_some()` iff `url_strategy` is
+/// `Some(AppleScript(_))`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrowserAppDescriptor {
     pub bundle_id: &'static str,
     pub display_name: &'static str,
     pub url_script_app_name: Option<&'static str>,
+    pub url_strategy: Option<BrowserUrlStrategy>,
 }
 
 pub const KNOWN_BROWSER_APPS: &[BrowserAppDescriptor] = &[
@@ -195,41 +275,135 @@ pub const KNOWN_BROWSER_APPS: &[BrowserAppDescriptor] = &[
         bundle_id: "com.apple.Safari",
         display_name: "Safari",
         url_script_app_name: Some("Safari"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::WebKit)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.apple.SafariTechnologyPreview",
+        display_name: "Safari Technology Preview",
+        url_script_app_name: Some("Safari Technology Preview"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::WebKit)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.kagi.kagimacOS",
+        display_name: "Orion",
+        url_script_app_name: Some("Orion"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::WebKit)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.google.Chrome",
         display_name: "Google Chrome",
         url_script_app_name: Some("Google Chrome"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.google.Chrome.canary",
         display_name: "Google Chrome Canary",
         url_script_app_name: Some("Google Chrome Canary"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.google.Chrome.beta",
+        display_name: "Google Chrome Beta",
+        url_script_app_name: Some("Google Chrome Beta"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.google.Chrome.dev",
+        display_name: "Google Chrome Dev",
+        url_script_app_name: Some("Google Chrome Dev"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "org.chromium.Chromium",
+        display_name: "Chromium",
+        url_script_app_name: Some("Chromium"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "com.microsoft.edgemac",
         display_name: "Microsoft Edge",
         url_script_app_name: Some("Microsoft Edge"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
+    BrowserAppDescriptor {
+        bundle_id: "com.microsoft.edgemac.Beta",
+        display_name: "Microsoft Edge Beta",
+        url_script_app_name: Some("Microsoft Edge Beta"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.microsoft.edgemac.Dev",
+        display_name: "Microsoft Edge Dev",
+        url_script_app_name: Some("Microsoft Edge Dev"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.microsoft.edgemac.Canary",
+        display_name: "Microsoft Edge Canary",
+        url_script_app_name: Some("Microsoft Edge Canary"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    // Gecko browsers have no scriptable URL surface; the URL is read via the
+    // Accessibility API (permission-gated), so they carry no AppleScript app name.
     BrowserAppDescriptor {
         bundle_id: "org.mozilla.firefox",
         display_name: "Firefox",
         url_script_app_name: None,
+        url_strategy: Some(BrowserUrlStrategy::Accessibility),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "app.zen-browser.zen",
+        display_name: "Zen",
+        url_script_app_name: None,
+        url_strategy: Some(BrowserUrlStrategy::Accessibility),
     },
     BrowserAppDescriptor {
         bundle_id: "com.brave.Browser",
         display_name: "Brave Browser",
         url_script_app_name: Some("Brave Browser"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.brave.Browser.beta",
+        display_name: "Brave Browser Beta",
+        url_script_app_name: Some("Brave Browser Beta"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.brave.Browser.nightly",
+        display_name: "Brave Browser Nightly",
+        url_script_app_name: Some("Brave Browser Nightly"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "company.thebrowser.Browser",
         display_name: "Arc",
         url_script_app_name: Some("Arc"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
     BrowserAppDescriptor {
         bundle_id: "net.imput.helium",
         display_name: "Helium",
         url_script_app_name: Some("Helium"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.vivaldi.Vivaldi",
+        display_name: "Vivaldi",
+        url_script_app_name: Some("Vivaldi"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.operasoftware.Opera",
+        display_name: "Opera",
+        url_script_app_name: Some("Opera"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.operasoftware.OperaGX",
+        display_name: "Opera GX",
+        url_script_app_name: Some("Opera GX"),
+        url_strategy: Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium)),
     },
 ];
 
@@ -247,8 +421,40 @@ pub fn browser_url_script_app_name(bundle_id: &str) -> Option<&'static str> {
     known_browser_app(bundle_id).and_then(|browser| browser.url_script_app_name)
 }
 
+/// The resolved strategy for reading this browser's URL, if any.
+pub fn browser_url_strategy(bundle_id: &str) -> Option<BrowserUrlStrategy> {
+    known_browser_app(bundle_id).and_then(|browser| browser.url_strategy)
+}
+
+/// Whether Mnema can read this browser's active-tab URL via AppleScript without
+/// an extra permission. The privacy disclosure relies on this. Gecko browsers
+/// (Firefox/Zen) return `false` here — their Accessibility path is permission-
+/// gated and exposed separately.
 pub fn browser_url_metadata_supported(bundle_id: &str) -> bool {
-    browser_url_script_app_name(bundle_id).is_some()
+    matches!(
+        browser_url_strategy(bundle_id),
+        Some(BrowserUrlStrategy::AppleScript(_))
+    )
+}
+
+pub fn browser_url_applescript(bundle_id: &str) -> Option<String> {
+    let descriptor = known_browser_app(bundle_id)?;
+    let app = descriptor.url_script_app_name?;
+    let dialect = match descriptor.url_strategy? {
+        BrowserUrlStrategy::AppleScript(dialect) => dialect,
+        // Gecko browsers read the URL via the Accessibility API, not AppleScript.
+        BrowserUrlStrategy::Accessibility => return None,
+    };
+    let target = match dialect {
+        BrowserUrlDialect::Chromium => "URL of active tab of front window",
+        // `current tab of front window` tracks the visually-frontmost window's
+        // selected tab; `front document` is ordered by focus recency and can
+        // return a background window's URL. See the Safari URL-accuracy fix.
+        BrowserUrlDialect::WebKit => "URL of current tab of front window",
+    };
+    Some(format!(
+        "tell application \"{app}\"\ntry\n  return {target}\non error\n  return \"\"\nend try\nend tell"
+    ))
 }
 
 pub const REDACTION_REASON_EXCLUDED_APP: &str = "excluded_app";
@@ -415,5 +621,360 @@ mod tests {
         assert_eq!(decision.matched_rule_ids, vec!["a"]);
         assert!(decision.privacy_filter_applied);
         assert!(decision.metadata_redaction_reason.is_none());
+    }
+
+    #[test]
+    fn chromium_family_browsers_are_recognized_with_url_support() {
+        let expected = [
+            ("com.vivaldi.Vivaldi", "Vivaldi"),
+            ("com.operasoftware.Opera", "Opera"),
+            ("com.operasoftware.OperaGX", "Opera GX"),
+            ("org.chromium.Chromium", "Chromium"),
+            ("com.google.Chrome.beta", "Google Chrome Beta"),
+            ("com.google.Chrome.dev", "Google Chrome Dev"),
+            ("com.microsoft.edgemac.Beta", "Microsoft Edge Beta"),
+            ("com.microsoft.edgemac.Dev", "Microsoft Edge Dev"),
+            ("com.microsoft.edgemac.Canary", "Microsoft Edge Canary"),
+            ("com.brave.Browser.beta", "Brave Browser Beta"),
+            ("com.brave.Browser.nightly", "Brave Browser Nightly"),
+        ];
+
+        for (bundle_id, app_name) in expected {
+            assert!(
+                is_known_browser_bundle(bundle_id),
+                "{bundle_id} should be a known browser bundle"
+            );
+            assert!(
+                browser_url_metadata_supported(bundle_id),
+                "{bundle_id} should support browser URL metadata"
+            );
+            assert_eq!(
+                browser_url_script_app_name(bundle_id),
+                Some(app_name),
+                "{bundle_id} should map to AppleScript app name {app_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_browser_apps_have_no_duplicate_bundle_ids() {
+        let mut seen = std::collections::HashSet::new();
+        for browser in KNOWN_BROWSER_APPS {
+            assert!(
+                seen.insert(browser.bundle_id),
+                "duplicate bundle id in KNOWN_BROWSER_APPS: {}",
+                browser.bundle_id
+            );
+        }
+    }
+
+    #[test]
+    fn safari_applescript_uses_webkit_dialect() {
+        let script = browser_url_applescript("com.apple.Safari")
+            .expect("Safari should produce a URL AppleScript");
+        assert!(
+            script.contains("URL of current tab of front window"),
+            "Safari script should read the front window's current tab: {script}"
+        );
+        assert!(
+            !script.contains("front document"),
+            "Safari script must not use the focus-ordered front document: {script}"
+        );
+    }
+
+    #[test]
+    fn chrome_applescript_uses_chromium_dialect() {
+        let script = browser_url_applescript("com.google.Chrome")
+            .expect("Chrome should produce a URL AppleScript");
+        assert!(
+            script.contains("active tab of front window"),
+            "Chrome script should target the active tab of the front window: {script}"
+        );
+    }
+
+    #[test]
+    fn firefox_has_no_applescript() {
+        assert_eq!(browser_url_applescript("org.mozilla.firefox"), None);
+    }
+
+    #[test]
+    fn firefox_is_recognized_with_accessibility_but_no_applescript() {
+        assert!(is_known_browser_bundle("org.mozilla.firefox"));
+        // No AppleScript surface, so the no-extra-permission flag is false.
+        assert!(!browser_url_metadata_supported("org.mozilla.firefox"));
+        assert_eq!(browser_url_script_app_name("org.mozilla.firefox"), None);
+        // Its URL is read via the Accessibility API instead.
+        assert_eq!(
+            browser_url_strategy("org.mozilla.firefox"),
+            Some(BrowserUrlStrategy::Accessibility)
+        );
+    }
+
+    #[test]
+    fn zen_is_registered_with_accessibility_strategy() {
+        assert!(is_known_browser_bundle("app.zen-browser.zen"));
+        assert_eq!(
+            browser_url_strategy("app.zen-browser.zen"),
+            Some(BrowserUrlStrategy::Accessibility)
+        );
+        assert_eq!(browser_url_applescript("app.zen-browser.zen"), None);
+        assert_eq!(
+            known_browser_app("app.zen-browser.zen").map(|browser| browser.display_name),
+            Some("Zen")
+        );
+    }
+
+    #[test]
+    fn gecko_browsers_use_accessibility_and_chromium_webkit_use_applescript() {
+        for bundle_id in ["org.mozilla.firefox", "app.zen-browser.zen"] {
+            assert_eq!(
+                browser_url_strategy(bundle_id),
+                Some(BrowserUrlStrategy::Accessibility),
+                "{bundle_id} should read its URL via the Accessibility API"
+            );
+        }
+        assert_eq!(
+            browser_url_strategy("com.google.Chrome"),
+            Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::Chromium))
+        );
+        assert_eq!(
+            browser_url_strategy("com.apple.Safari"),
+            Some(BrowserUrlStrategy::AppleScript(BrowserUrlDialect::WebKit))
+        );
+        assert_eq!(browser_url_strategy("com.unknown.browser"), None);
+    }
+
+    #[test]
+    fn new_webkit_browsers_are_recognized_with_url_support() {
+        for bundle_id in ["com.apple.SafariTechnologyPreview", "com.kagi.kagimacOS"] {
+            assert!(
+                is_known_browser_bundle(bundle_id),
+                "{bundle_id} should be a known browser bundle"
+            );
+            assert!(
+                browser_url_metadata_supported(bundle_id),
+                "{bundle_id} should support browser URL metadata"
+            );
+            let script = browser_url_applescript(bundle_id)
+                .unwrap_or_else(|| panic!("{bundle_id} should produce a URL AppleScript"));
+            assert!(
+                script.contains("URL of current tab of front window"),
+                "{bundle_id} should read the front window's current tab: {script}"
+            );
+            assert!(
+                !script.contains("front document"),
+                "{bundle_id} must not use the focus-ordered front document: {script}"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_url_cache_reprobes_when_window_title_changes() {
+        let base = Instant::now();
+        let cache = BrowserUrlProbeCache::from_probe(
+            Some("com.apple.Safari".to_string()),
+            Some("OxLM — GitHub".to_string()),
+            Some("https://github.com/pauldb89/OxLM".to_string()),
+            base,
+        );
+
+        // Same browser, same title, within the backstop -> reuse the cached URL.
+        assert_eq!(
+            cache.cached_url_for("com.apple.Safari", Some("OxLM — GitHub"), base),
+            Some(Some("https://github.com/pauldb89/OxLM".to_string()))
+        );
+
+        // Title moved on (e.g. switched to the Start Page) but still within the
+        // re-probe floor -> serve the cached URL rather than re-probing. The floor
+        // keeps a dynamic title from triggering a probe on every tick (brief desync).
+        assert_eq!(
+            cache.cached_url_for("com.apple.Safari", Some("Personal — Start Page"), base),
+            Some(Some("https://github.com/pauldb89/OxLM".to_string()))
+        );
+
+        // Title moved on and the floor has elapsed -> force a re-probe so the stale
+        // URL is never served indefinitely under the new title. This is the desync fix.
+        assert_eq!(
+            cache.cached_url_for(
+                "com.apple.Safari",
+                Some("Personal — Start Page"),
+                base + BROWSER_URL_PROBE_REPROBE_FLOOR
+            ),
+            None
+        );
+
+        // A different browser never hits this cache.
+        assert_eq!(
+            cache.cached_url_for("com.google.Chrome", Some("OxLM — GitHub"), base),
+            None
+        );
+
+        // Same title but past the backstop -> re-probe to catch title-stable (SPA)
+        // navigations that change the URL without changing the title.
+        assert_eq!(
+            cache.cached_url_for(
+                "com.apple.Safari",
+                Some("OxLM — GitHub"),
+                base + BROWSER_URL_PROBE_BACKSTOP_INTERVAL
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn browser_url_cache_floor_throttles_dynamic_title_reprobes() {
+        let base = Instant::now();
+        let cache = BrowserUrlProbeCache::from_probe(
+            Some("com.apple.Safari".to_string()),
+            Some("(1) Inbox".to_string()),
+            Some("https://mail.example.com/inbox".to_string()),
+            base,
+        );
+
+        // A dynamic title (unread counter) mutates every ~1s tick. While each tick
+        // lands inside the re-probe floor the cached URL is reused — no probe storm.
+        for (offset_ms, title) in [
+            (0_u64, "(1) Inbox"),
+            (1000, "(2) Inbox"),
+            (1499, "(3) Inbox"),
+        ] {
+            assert_eq!(
+                cache.cached_url_for(
+                    "com.apple.Safari",
+                    Some(title),
+                    base + Duration::from_millis(offset_ms)
+                ),
+                Some(Some("https://mail.example.com/inbox".to_string())),
+                "title change within the floor (t+{offset_ms}ms) should reuse the cached URL"
+            );
+        }
+
+        // Once a changed-title tick lands past the floor, we re-probe.
+        assert_eq!(
+            cache.cached_url_for(
+                "com.apple.Safari",
+                Some("(4) Inbox"),
+                base + BROWSER_URL_PROBE_REPROBE_FLOOR
+            ),
+            None,
+            "title change past the floor should force a re-probe"
+        );
+    }
+
+    #[test]
+    fn browser_url_strategy_fields_are_consistent() {
+        for browser in KNOWN_BROWSER_APPS {
+            let applescript = matches!(
+                browser.url_strategy,
+                Some(BrowserUrlStrategy::AppleScript(_))
+            );
+            // url_script_app_name is set iff the AppleScript strategy applies.
+            assert_eq!(
+                browser.url_script_app_name.is_some(),
+                applescript,
+                "url_script_app_name must agree with the AppleScript strategy for {}",
+                browser.bundle_id
+            );
+            // browser_url_metadata_supported is true iff the AppleScript strategy applies.
+            assert_eq!(
+                browser_url_metadata_supported(browser.bundle_id),
+                applescript,
+                "metadata-supported flag must reflect the resolved strategy for {}",
+                browser.bundle_id
+            );
+            // AppleScript is produced only for the AppleScript strategy.
+            assert_eq!(
+                browser_url_applescript(browser.bundle_id).is_some(),
+                applescript,
+                "AppleScript presence must match the AppleScript strategy for {}",
+                browser.bundle_id
+            );
+        }
+    }
+
+    /// Drives the probe cache exactly the way the Live-mode metadata caller does
+    /// (`browser_url_probe_for_active_bundle`): each ~1s metadata tick calls
+    /// `cached_url_for`; a `None` return is a probe (osascript spawn / AX read)
+    /// and rebuilds the cache via `from_probe`. This counts the real probes over
+    /// a one-hour frontmost session with a per-second-changing title, which is
+    /// the workload INV-P1 (the floor) is meant to bound.
+    fn count_probes_over_session(
+        tick: Duration,
+        session: Duration,
+        mut title_at: impl FnMut(u64) -> String,
+    ) -> u64 {
+        let bundle = "com.apple.Safari";
+        let base = Instant::now();
+        // Seed the cache with the first probe (tick 0).
+        let mut cache = BrowserUrlProbeCache::from_probe(
+            Some(bundle.to_string()),
+            Some(title_at(0)),
+            Some("https://mail.example.com/inbox".to_string()),
+            base,
+        );
+        let mut probes = 1; // the seed probe at tick 0
+        let ticks = (session.as_millis() / tick.as_millis()) as u64;
+        for n in 1..=ticks {
+            let now = base + tick * (n as u32);
+            let title = title_at(n);
+            match cache.cached_url_for(bundle, Some(&title), now) {
+                Some(_cached) => {} // served from cache, no probe
+                None => {
+                    // A real caller re-probes and rebuilds the cache here.
+                    probes += 1;
+                    cache = BrowserUrlProbeCache::from_probe(
+                        Some(bundle.to_string()),
+                        Some(title),
+                        Some("https://mail.example.com/inbox".to_string()),
+                        now,
+                    );
+                }
+            }
+        }
+        probes
+    }
+
+    #[test]
+    fn dynamic_title_probe_rate_is_floor_bounded_not_per_tick() {
+        // Gmail-style per-second unread counter, held frontmost for one hour at a
+        // 1s metadata tick (3600 ticks). The title changes on EVERY tick.
+        let tick = Duration::from_secs(1);
+        let session = Duration::from_secs(3600);
+        let probes =
+            count_probes_over_session(tick, session, |n| format!("({n}) Inbox — Gmail"));
+
+        // INV-P1: a dynamic-title page cannot probe faster than once per
+        // BROWSER_URL_PROBE_REPROBE_FLOOR. Over a 3600s session that is an upper
+        // bound of ceil(3600s / 1.5s) = 2400 probes. We assert the realized count
+        // matches the floor cadence (every other 1s tick, since 1.5s floor lands
+        // a re-probe on every 2nd tick): 1 seed + floor(3599/2) re-probes.
+        let floor_secs = BROWSER_URL_PROBE_REPROBE_FLOOR.as_secs_f64();
+        let max_probes_per_floor = (session.as_secs_f64() / floor_secs).ceil() as u64 + 1;
+        assert!(
+            probes <= max_probes_per_floor,
+            "probe count {probes} must not exceed the floor bound {max_probes_per_floor} \
+             (1 probe / {floor_secs}s over {}s)",
+            session.as_secs()
+        );
+
+        // Quantify the realized cadence: with a 1s tick and a 1.5s floor, a changed
+        // title re-probes on every 2nd tick (the 1.5s floor is only cleared at the
+        // 2s tick boundary), i.e. ~1800 probes/hour = ~30 probes/min.
+        let per_min = (probes as f64) / 60.0;
+        assert!(
+            (29.0..=31.0).contains(&per_min),
+            "expected ~30 probes/min under a 1s tick + 1.5s floor, got {per_min:.1} \
+             ({probes} probes/hour)"
+        );
+
+        // Contrast: the pre-PR flat 15s poll probed once per 15s = 4 probes/min =
+        // 240 probes/hour. The new title-gating is ~7.5x MORE probes for this
+        // dynamic-title workload. Documented here so the tradeoff is explicit.
+        let pre_pr_probes_per_hour = 3600 / 15;
+        assert!(
+            probes > pre_pr_probes_per_hour * 5,
+            "sanity: title-gating should be a large multiple of the old 15s poll \
+             ({probes} vs {pre_pr_probes_per_hour})"
+        );
     }
 }

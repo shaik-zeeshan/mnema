@@ -25,6 +25,19 @@ script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 dmg_dir="${repo_root}/target/release/bundle/dmg"
 
+# speakrs links OpenBLAS via the `openblas-static` feature, built from source:
+# put the gcc lib dir on the linker search path (shared helper), and — because
+# this signed build is handed to others — build all-generation arm64 kernels so
+# it runs on every Apple Silicon, not just this machine's core. See AGENTS.md.
+source "${repo_root}/scripts/openblas-build-env.sh"
+export OPENBLAS_DYNAMIC_ARCH=1
+print "OpenBLAS: static + DYNAMIC_ARCH (all Apple Silicon generations)"
+
+# Regenerate the third-party attribution file so the freshly-built version is
+# bundled into the .app (tauri.conf.json bundle.resources references it).
+print "Generating third-party license attribution…"
+"${repo_root}/scripts/generate-third-party-licenses.sh"
+
 cd "${repo_root}/apps/desktop"
 CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- build
 

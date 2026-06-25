@@ -1,0 +1,378 @@
+/* Onboarding accordion — GLOBAL stylesheet (Slice 2 + 4), part 1: shell,
+ * header, scroll/stack, collapsed/expanded row chrome, icon-chip, title/status,
+ * and the switch wrap. (The expanded body, body-layout primitives, footer, text
+ * input, and button family were split into onboarding-body.css for the 800-line
+ * cap; it is imported alongside this file.)
+ *
+ * Imported ONCE from FeatureStack.svelte (`import "./onboarding-ui.css";`) so it
+ * loads globally, mirroring how the settings shell imports
+ * lib/settings/settings-*.css. These classes are intentionally NOT Svelte-scoped
+ * because Slice 4 body components live in separate files and render markup that
+ * uses the body-layout primitives below.
+ *
+ * Tokens: this file uses ONLY the app-wide `--app-*` custom properties (they
+ * already exist globally and theme automatically in dark + light). It never
+ * redefines them — the mockup's `:root` block was just a copy for previewing.
+ *
+ * Everything is namespaced under `.onboarding-shell` so the global selectors
+ * cannot leak into the rest of the app. FeatureStack renders that root class. */
+
+/* ===== window-fill layout ===== */
+.onboarding-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-family:
+    "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, "Cascadia Code",
+    "Fira Code", monospace;
+  color: var(--app-text);
+}
+
+/* ===== header line ===== */
+.onboarding-shell .head {
+  flex: 0 0 auto;
+  padding: 24px 24px 16px;
+  position: relative;
+  z-index: 2;
+}
+.onboarding-shell .head .eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+  margin-bottom: 8px;
+}
+.onboarding-shell .head .subtitle {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  line-height: 1.5;
+}
+.onboarding-shell .head .subtitle b {
+  color: var(--app-text);
+  font-weight: 540;
+}
+
+/* ===== scrolling stack area =====
+   WKWebView: fill via flex:1 1 auto + min-height:0 on a flex-column parent.
+   Never height:100% against a flex-stretched parent. */
+.onboarding-shell .content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 24px 24px;
+  position: relative;
+  z-index: 1;
+}
+.onboarding-shell .stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  z-index: 1;
+}
+
+/* scrollbar */
+.onboarding-shell .content::-webkit-scrollbar {
+  width: 10px;
+}
+.onboarding-shell .content::-webkit-scrollbar-thumb {
+  background: var(--app-border-strong);
+  border-radius: 999px;
+  border: 3px solid var(--app-surface);
+}
+.onboarding-shell .content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ===== row (collapsed + expanded share base) ===== */
+.onboarding-shell .row {
+  position: relative;
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  background: transparent;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.onboarding-shell .row:not(.open):hover {
+  background: var(--app-surface-subtle);
+  border-color: var(--app-border-strong);
+}
+.onboarding-shell .row.open {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-raised);
+}
+/* accent hairline on expanded panel */
+.onboarding-shell .row.open::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 0;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--app-accent) 12%, transparent) 22%,
+    color-mix(in srgb, var(--app-accent) 50%, transparent) 50%,
+    transparent
+  );
+}
+
+/* row header (click target to expand) */
+.onboarding-shell .row-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 16px;
+  cursor: pointer;
+  user-select: none;
+  /* reset styles for the role="button" header div (the Switch must not be nested inside an interactive <button>) */
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+.onboarding-shell .row-head:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--app-accent-glow);
+  border-radius: 12px;
+}
+.onboarding-shell .row.open .row-head {
+  align-items: flex-start;
+  padding: 16px 16px 12px;
+  cursor: default;
+  border-bottom: 1px solid var(--app-border);
+}
+
+/* ===== icon chip (settings icon) ===== */
+.onboarding-shell .icon-chip {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--app-text-muted);
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.onboarding-shell .icon-chip svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: block;
+}
+/* accent tint when row open OR feature enabled/armed */
+.onboarding-shell .row.open .icon-chip,
+.onboarding-shell .row.is-on .icon-chip {
+  color: var(--app-accent);
+  background: var(--app-accent-bg);
+  border: 0;
+}
+/* nudge so the chip sits optically centered against the eyebrow + title pair */
+.onboarding-shell .row.open .icon-chip {
+  margin-top: 3px;
+}
+
+.onboarding-shell .row-titlewrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.onboarding-shell .row-name {
+  font-size: 13px;
+  font-weight: 540;
+  color: var(--app-text-strong);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.onboarding-shell .row.open .row-name {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: normal;
+}
+.onboarding-shell .row-eyebrow {
+  display: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+  margin-bottom: 6px;
+}
+.onboarding-shell .row.open .row-eyebrow {
+  display: block;
+}
+.onboarding-shell .row-sub {
+  display: none;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  line-height: 1.5;
+  margin-top: 5px;
+}
+.onboarding-shell .row.open .row-sub {
+  display: block;
+}
+
+/* tiny status dot / one-word label (collapsed only) */
+.onboarding-shell .row-status {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--app-text-muted);
+}
+.onboarding-shell .row.open .row-status {
+  display: none;
+}
+/* required rows keep the lock + Required marker by the toggle even when open */
+.onboarding-shell .row.open .row-status--req {
+  display: flex;
+  margin-top: 5px;
+}
+.onboarding-shell .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--app-text-faint);
+  flex: 0 0 auto;
+}
+.onboarding-shell .status-dot.on {
+  background: var(--app-accent);
+  box-shadow: 0 0 6px var(--app-accent-glow);
+}
+/* on-theme "needs setup" marker (warn-toned) — collapsed, non-required rows */
+.onboarding-shell .row-attn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--app-warn);
+  background: var(--app-warn-bg);
+  border: 1px solid var(--app-warn-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.onboarding-shell .row-attn .attn-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--app-warn);
+  flex: 0 0 auto;
+}
+.onboarding-shell .row.open .row-attn {
+  display: none;
+}
+/* live model-download indicator on a (possibly collapsed) feature row. Accent
+   (green) chip so an in-progress fetch reads as active work, not a warning;
+   stays visible even when the row is open to confirm continuity. */
+.onboarding-shell .row-dl {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--app-accent);
+  background: var(--app-accent-bg);
+  border: 1px solid var(--app-accent-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.onboarding-shell .row-dl .dl-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--app-accent);
+  flex: 0 0 auto;
+  animation: onboarding-row-dl-pulse 1.1s ease-in-out infinite;
+}
+@keyframes onboarding-row-dl-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+/* Respect reduced-motion: stop the infinite download-pulse (mirrors the Settings
+   status-pulse/spin guards; the dot stays fully visible). */
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-shell .row-dl .dl-dot {
+    animation: none;
+  }
+}
+/* muted "needs prerequisite" hint — collapsed, non-required, OFF rows whose
+   enable is gated. Same scale as .row-attn but MUTED (not warn): a subtle
+   surface chip with a lock glyph and the reason text. Hidden when open (the
+   body's lock-callout explains it). */
+.onboarding-shell .row-lock {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--app-text-muted);
+  background: var(--app-surface-active);
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.onboarding-shell .row-lock .lock-ico {
+  color: var(--app-text-subtle);
+}
+.onboarding-shell .row-lock .lock-ico svg {
+  width: 11px;
+  height: 11px;
+}
+.onboarding-shell .row.open .row-lock {
+  display: none;
+}
+/* required = locked: on-theme lock glyph in the app's SVG style (no orange) */
+.onboarding-shell .lock-ico {
+  display: flex;
+  align-items: center;
+  color: var(--app-text-subtle);
+}
+.onboarding-shell .lock-ico svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: block;
+}
+
+/* ===== switch (shared Switch.svelte renders .switch-track) ===== */
+.onboarding-shell .switch-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.onboarding-shell .row.open .switch-wrap {
+  margin-top: 2px;
+}
+/* the shared component already styles the 36x20 track/thumb; nothing to add */
+
+/* The expanded row body, the Slice-4 body-layout primitives, the lock-callout,
+   the footer, text input, and the button family live in onboarding-body.css
+   (split for the 800-line cap; imported alongside this file). */

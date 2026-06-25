@@ -14,10 +14,14 @@ mod ocr_budget;
 mod ocr_models;
 mod one_time_prompts;
 mod privacy_redaction_sources;
+mod semantic_search_models;
+mod semantic_search_query;
+mod semantic_search_worker;
 mod sensitive_capture_recommendations;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
+mod third_party_notices;
 mod usage_charts;
 mod user_context;
 mod windows;
@@ -383,11 +387,14 @@ pub fn run() {
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
         .manage(ocr_models::OcrModelDownloadState::default())
+        .manage(semantic_search_models::SemanticSearchModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
+        .manage(windows::PendingOpenSettingsState::default())
         .manage(BrokerOpenCaptureResultState::default())
         .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
+        .manage(semantic_search_query::SemanticQueryEmbedderState::new())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if notify_pending_broker_authorization_request_if_onboarded(app) {
                 return;
@@ -399,7 +406,10 @@ pub fn run() {
                 .level(tauri_plugin_log::log::LevelFilter::Info)
                 .level_for("capture_runtime", tauri_plugin_log::log::LevelFilter::Debug)
                 .level_for("mnema_lib", tauri_plugin_log::log::LevelFilter::Debug)
-                .filter(|metadata| is_app_log_target(metadata.target()))
+                .filter(|metadata| {
+                    is_app_log_target(metadata.target())
+                        && native_capture::debug_log::app_log_record_allowed(metadata.level())
+                })
                 .targets([
                     Target::new(TargetKind::Stderr),
                     Target::new(TargetKind::LogDir {
@@ -443,6 +453,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
+            app_infra::get_storage_location,
             app_updates::get_app_update_status,
             app_updates::check_for_app_update,
             app_updates::set_app_update_channel,
@@ -478,6 +489,12 @@ pub fn run() {
             audio_transcription_models::delete_unused_audio_transcription_models,
             audio_transcription_models::request_apple_speech_recognition_permission,
             audio_transcription_models::open_apple_speech_recognition_privacy_settings,
+            semantic_search_models::get_semantic_search_model_status,
+            semantic_search_models::list_semantic_search_supported_models,
+            semantic_search_models::start_semantic_search_model_download,
+            semantic_search_models::cancel_semantic_search_model_download,
+            semantic_search_models::select_semantic_search_model,
+            native_capture::update_semantic_search_settings,
             speaker_analysis_models::get_speaker_analysis_model_status,
             speaker_analysis_models::start_speaker_analysis_model_download,
             speaker_analysis_models::cancel_speaker_analysis_model_download,
@@ -486,6 +503,7 @@ pub fn run() {
             ocr_models::start_ocr_model_download,
             ocr_models::cancel_ocr_model_download,
             ocr_models::delete_unused_ocr_models,
+            third_party_notices::get_third_party_notices,
             app_infra::submit_debug_cpu_job,
             app_infra::list_app_jobs,
             app_infra::get_app_job,
@@ -503,6 +521,7 @@ pub fn run() {
             app_infra::get_audio_segment,
             app_infra::get_audio_segment_media,
             app_infra::get_frame,
+            app_infra::open_captured_url,
             app_infra::get_earliest_earlier_equivalent_frame,
             app_infra::get_nearest_earlier_equivalent_frame,
             app_infra::get_timeline_window_around_frame,
@@ -538,6 +557,9 @@ pub fn run() {
             native_capture::get_capture_permissions,
             native_capture::request_capture_permission,
             native_capture::open_capture_privacy_settings,
+            native_capture::get_browser_url_accessibility_status,
+            native_capture::request_browser_url_accessibility,
+            native_capture::open_browser_url_accessibility_settings,
             native_capture::get_idle_debug,
             native_capture::get_app_notifications,
             native_capture::clear_app_notification,
@@ -593,6 +615,7 @@ pub fn run() {
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,
             native_capture::get_native_capture_debug_log_status,
+            native_capture::open_native_capture_debug_log,
             native_capture::delete_native_capture_debug_log,
             native_capture::get_microphone_controller_state,
             native_capture::update_microphone_controller,
@@ -600,8 +623,8 @@ pub fn run() {
             native_capture::pause_native_capture,
             native_capture::resume_native_capture,
             native_capture::stop_native_capture,
-            windows::open_settings_window,
-            windows::open_settings_window_to_tab,
+            windows::focus_main_and_open_settings,
+            windows::drain_pending_open_settings,
             windows::open_debug_window,
             windows::close_current_window,
             windows::focus_quick_recall_window,

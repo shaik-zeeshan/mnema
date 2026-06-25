@@ -7,6 +7,9 @@
     disabled?: boolean;
     label?: string;
     description?: string;
+    // Accessible name for the switch when there is no visible `label` to link
+    // via `aria-labelledby` (e.g. icon-only / externally-labelled toggles).
+    ariaLabel?: string;
   }
 
   let {
@@ -15,15 +18,24 @@
     disabled = false,
     label,
     description,
+    ariaLabel,
   }: Props = $props();
+
+  // Stable ids so the visible label/description (plain <span>s, not associated
+  // by BitsSwitch.Root) can be linked to the switch via aria-labelledby /
+  // aria-describedby — otherwise the role="switch" has no accessible name.
+  const labelId = `switch-label-${Math.random().toString(36).slice(2, 9)}`;
+  const descriptionId = `switch-desc-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
 <div class="switch-wrapper" class:switch-wrapper--disabled={disabled}>
-  {#if label}
+  {#if label || description}
     <div class="switch-text">
-      <span class="switch-label">{label}</span>
+      {#if label}
+        <span class="switch-label" id={labelId}>{label}</span>
+      {/if}
       {#if description}
-        <span class="switch-description">{description}</span>
+        <span class="switch-description" id={descriptionId}>{description}</span>
       {/if}
     </div>
   {/if}
@@ -32,6 +44,9 @@
     {disabled}
     {onCheckedChange}
     class="switch-track"
+    aria-labelledby={label ? labelId : undefined}
+    aria-label={!label && ariaLabel ? ariaLabel : undefined}
+    aria-describedby={description ? descriptionId : undefined}
   >
     <BitsSwitch.Thumb class="switch-thumb" />
   </BitsSwitch.Root>
@@ -79,22 +94,30 @@
     height: 20px;
     background: var(--app-surface);
     border: 1px solid var(--app-border-strong);
-    border-radius: 10px;
+    border-radius: 999px;
     cursor: pointer;
-    transition: background 0.18s ease, border-color 0.18s ease;
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     flex-shrink: 0;
     padding: 0;
     outline: none;
   }
 
+  :global(.switch-track:hover:not([data-disabled])) {
+    border-color: var(--app-border-hover);
+  }
+
   :global(.switch-track:focus-visible) {
-    outline: 1px solid var(--app-accent);
-    outline-offset: 2px;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
   :global(.switch-track[data-state="checked"]) {
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
+  }
+
+  :global(.switch-track[data-state="checked"]:hover:not([data-disabled])) {
+    border-color: var(--app-accent);
   }
 
   :global(.switch-track[data-disabled]) {
@@ -108,12 +131,20 @@
     height: 14px;
     border-radius: 50%;
     background: var(--app-text-subtle);
-    transition: transform 0.18s ease, background 0.18s ease;
+    transition: transform 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
     pointer-events: none;
   }
 
   :global(.switch-track[data-state="checked"] .switch-thumb) {
     transform: translateX(16px);
     background: var(--app-accent);
+    box-shadow: 0 0 8px var(--app-accent-glow);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.switch-track),
+    :global(.switch-thumb) {
+      transition: none;
+    }
   }
 </style>

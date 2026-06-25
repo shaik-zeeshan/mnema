@@ -1,6 +1,10 @@
 mod activity;
+#[cfg(target_os = "macos")]
+#[path = "native_capture_browser_url_ax.rs"]
+pub(crate) mod browser_url_ax;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
+pub(crate) mod disk_space;
 #[path = "native_capture_inactivity.rs"]
 pub(crate) mod inactivity;
 mod lifecycle;
@@ -124,6 +128,8 @@ const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-una
 #[cfg(target_os = "macos")]
 const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
+const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
+const SPEAKER_SETTINGS_TAB_ID: &str = "speakers";
 #[cfg(target_os = "macos")]
 const APP_ICON_CACHE_DIR: &str = "app-icons";
 // Point size we render cached app icons at. Displayed at 20–24 CSS px, so a
@@ -919,6 +925,21 @@ pub(crate) fn push_warning_app_notification(
     );
 }
 
+/// Clear (remove) a single app notification by its stable id and broadcast the
+/// updated list. Mirrors [`push_warning_app_notification`] for the suspend/resume
+/// pair: the low-disk warning is pushed on suspend and cleared here on resume.
+/// Best-effort — silently no-ops if the notifications state is unavailable.
+pub(crate) fn clear_app_notification_by_id(app_handle: &tauri::AppHandle, id: &str) {
+    let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
+        return;
+    };
+    let notifications = {
+        let mut runtime = state.lock().expect("app notifications state poisoned");
+        runtime.clear_one(id)
+    };
+    emit_app_notifications_changed(app_handle, &notifications);
+}
+
 pub(crate) fn push_info_app_notification(
     app_handle: &tauri::AppHandle,
     id: &str,
@@ -936,6 +957,37 @@ pub(crate) fn push_info_app_notification(
         AppNotification {
             id: id.to_string(),
             severity: "info".to_string(),
+            title: title.to_string(),
+            message: message.to_string(),
+            created_at_unix_ms,
+            action,
+        },
+    );
+}
+
+/// Push an `error`-severity app notification. Mirrors
+/// [`push_warning_app_notification`] but with `severity: "error"`; used for the
+/// low-disk graceful-stop notice (ADR 0040), where capture has stopped and the
+/// user must free space before recording can be restarted. The frontend already
+/// types `severity` as `"info" | "warning" | "error"` and styles the `error`
+/// case; an unstyled severity would degrade to the neutral base card.
+pub(crate) fn push_error_app_notification(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    title: &str,
+    message: &str,
+    settings_tab: Option<&str>,
+    created_at_unix_ms: u64,
+) {
+    let action = settings_tab.map(|tab| AppNotificationAction::OpenSettingsTab {
+        tab: tab.to_string(),
+    });
+    push_app_notification(
+        app_handle,
+        app_handle.state::<AppNotificationsState>().inner(),
+        AppNotification {
+            id: id.to_string(),
+            severity: "error".to_string(),
             title: title.to_string(),
             message: message.to_string(),
             created_at_unix_ms,
@@ -984,7 +1036,7 @@ fn audio_transcription_unavailable_notification(
         ),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
+            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }
@@ -997,7 +1049,7 @@ fn speech_detector_unavailable_notification(created_at_unix_ms: u64) -> AppNotif
         message: "The selected speech detector is unavailable. Choose an available detector before starting this recording.".to_string(),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
+            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }
@@ -1010,7 +1062,7 @@ fn speaker_analysis_unavailable_notification(created_at_unix_ms: u64) -> AppNoti
         message: "The selected speaker analysis model is unavailable. Install or choose an available model before starting this recording.".to_string(),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
+            tab: SPEAKER_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }
@@ -2492,6 +2544,98 @@ pub fn open_capture_privacy_settings(
     }
 }
 
+/// One Gecko browser Mnema knows about (reads its active-tab URL via the macOS
+/// Accessibility API) and whether it is installed on this machine.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeckoBrowserInstall {
+    pub bundle_id: String,
+    pub display_name: String,
+    pub installed: bool,
+}
+
+/// Whether Mnema holds the macOS Accessibility permission plus the Gecko
+/// browsers whose active-tab URL capture depends on it. Drives the onboarding
+/// and settings surfaces that gate Gecko URL capture behind the permission.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserUrlAccessibilityStatus {
+    /// Whether Mnema currently holds the macOS Accessibility permission.
+    pub trusted: bool,
+    /// The Gecko browsers Mnema knows about and whether each is installed.
+    pub gecko_browsers: Vec<GeckoBrowserInstall>,
+}
+
+/// Builds the current Accessibility-permission + installed-Gecko status. The
+/// Gecko list is exactly the `KNOWN_BROWSER_APPS` whose URL strategy is the
+/// Accessibility API; `trusted`/`installed` are environment-dependent (always
+/// `false` off macOS).
+fn browser_url_accessibility_status() -> BrowserUrlAccessibilityStatus {
+    use capture_metadata::BrowserUrlStrategy;
+
+    #[cfg(target_os = "macos")]
+    let trusted = browser_url_ax::accessibility_trusted();
+    #[cfg(not(target_os = "macos"))]
+    let trusted = false;
+
+    let gecko_browsers = capture_metadata::KNOWN_BROWSER_APPS
+        .iter()
+        .filter(|app| matches!(app.url_strategy, Some(BrowserUrlStrategy::Accessibility)))
+        .map(|app| {
+            #[cfg(target_os = "macos")]
+            let installed = macos_application_bundle_path_for_bundle_id(app.bundle_id).is_some();
+            #[cfg(not(target_os = "macos"))]
+            let installed = false;
+            GeckoBrowserInstall {
+                bundle_id: app.bundle_id.to_string(),
+                display_name: app.display_name.to_string(),
+                installed,
+            }
+        })
+        .collect();
+
+    BrowserUrlAccessibilityStatus {
+        trusted,
+        gecko_browsers,
+    }
+}
+
+/// Current macOS Accessibility-permission state plus the known Gecko browsers
+/// and whether each is installed. Gecko active-tab URL capture is gated on this
+/// permission.
+#[tauri::command]
+pub fn get_browser_url_accessibility_status() -> BrowserUrlAccessibilityStatus {
+    browser_url_accessibility_status()
+}
+
+/// Raise the macOS Accessibility permission prompt (adds Mnema to the
+/// Accessibility list and points the user at System Settings), then return the
+/// refreshed status. The grant itself is asynchronous — the user flips the
+/// toggle in System Settings, so `trusted` may still be `false` right after.
+#[tauri::command]
+pub fn request_browser_url_accessibility() -> BrowserUrlAccessibilityStatus {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = browser_url_ax::request_accessibility_with_prompt();
+    }
+    browser_url_accessibility_status()
+}
+
+/// Open the macOS Privacy & Security → Accessibility pane so the user can grant
+/// (or re-grant) Mnema the Accessibility permission.
+#[tauri::command]
+pub fn open_browser_url_accessibility_settings(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    app_handle
+        .opener()
+        .open_url(
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            None::<String>,
+        )
+        .map_err(|error| format!("failed to open accessibility settings: {error}"))
+}
+
 #[tauri::command]
 pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
     activity::get_idle_debug(state)
@@ -2561,6 +2705,7 @@ pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
     let settings_state = app_handle.state::<RecordingSettingsState>();
     let loaded = initialize_recording_settings_state_from_disk(app_handle, settings_state.inner());
 
+    debug_log::set_app_debug_logging_enabled(loaded.settings.developer_options_enabled);
     debug_log::configure(
         app_handle,
         loaded.settings.native_capture_debug_logging_enabled,
@@ -2618,6 +2763,7 @@ fn finish_recording_settings_update(
         }
     }
 
+    debug_log::set_app_debug_logging_enabled(settings.developer_options_enabled);
     debug_log::configure(app_handle, settings.native_capture_debug_logging_enabled);
 
     if !previous_settings.native_capture_debug_logging_enabled
@@ -2819,6 +2965,16 @@ pub fn get_native_capture_debug_log_status(
 }
 
 #[tauri::command]
+pub fn open_native_capture_debug_log(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<NativeCaptureDebugLogStatus, CaptureErrorResponse> {
+    let enabled = current_native_capture_debug_logging_enabled(state.inner());
+
+    debug_log::open(&app_handle, enabled)
+}
+
+#[tauri::command]
 pub fn delete_native_capture_debug_log(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
@@ -3000,6 +3156,48 @@ pub fn update_user_context_settings(
         &app_handle,
         state.inner(),
         RecordingSettingsDomainPatch::UserContext(request),
+    )
+}
+
+/// Update the **Semantic Search** settings that do NOT change the active vector
+/// dimension: the enabled toggle (issue #125). A model *switch* goes through the
+/// atomic `select_semantic_search_model` command instead — it rebuilds the `vec0`
+/// table at the new model's dimension and persists the selection together, so the
+/// persisted model and the live table dimension can never disagree. The
+/// **Semantic Index Backfill** worker reloads the embedder on its next pass when
+/// the provider/model id changes.
+#[tauri::command]
+pub fn update_semantic_search_settings(
+    request: capture_types::UpdateSemanticSearchSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::SemanticSearch(request),
+    )
+}
+
+/// Persist a **Semantic Search Model Tier** patch from outside the command layer
+/// (the atomic `select_semantic_search_model` switch, which rebuilds the `vec0`
+/// table *before* persisting so the persisted `model_id` and the live table
+/// dimension never disagree). Reuses the same domain-update path as
+/// [`update_semantic_search_settings`].
+pub(crate) fn persist_semantic_search_settings(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    request: capture_types::UpdateSemanticSearchSettingsRequest,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    // Trusted path: the atomic switch has already rebuilt the `vec0` table to the
+    // new model's dimension before this persist, so use the trusted variant that
+    // honors `model_id`/`provider`. The generic IPC command
+    // (`update_semantic_search_settings`) uses `SemanticSearch`, which ignores
+    // those dimension-affecting fields. See review finding low #4 (PR #126).
+    update_recording_settings_domain(
+        app_handle,
+        state,
+        RecordingSettingsDomainPatch::SemanticSearchModelSwitch(request),
     )
 }
 

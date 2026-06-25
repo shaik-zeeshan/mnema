@@ -7,7 +7,3 @@
 /gen/schemas
 
 .mnema
-
-# Staged by build.rs: Windows Sherpa/ONNX Runtime DLLs bundled as resources
-# (see tauri.windows.conf.json). Copied from the cargo profile dir, not source.
-/resources/windows/

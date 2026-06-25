@@ -23,7 +23,7 @@ pub(crate) const MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS: u8 = 3;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PrivacyCaptureSuspensionStatus {
+pub(crate) enum CaptureSuspensionStatus {
     Retryable,
     RestartRequired,
 }
@@ -42,6 +42,11 @@ pub(crate) enum CaptureSuspensionKind {
     /// error, so recovery never gives up: it waits for a display to return and
     /// then resumes capture automatically.
     DisplayUnavailable,
+    /// The recordings volume is too low on free space to safely open the next
+    /// segment file. Like [`CaptureSuspensionKind::DisplayUnavailable`] this is a
+    /// transient liveness condition, not an error: recovery never gives up and
+    /// auto-resumes once free space recovers above the resume threshold.
+    LowDisk,
 }
 
 /// A suspension of screen/system-audio capture that the segment loop keeps
@@ -50,21 +55,22 @@ pub(crate) enum CaptureSuspensionKind {
 /// [`CaptureSuspensionKind`]); `kind` selects the retry policy.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PrivacyCaptureSuspension {
+pub(crate) struct CaptureSuspension {
     pub kind: CaptureSuspensionKind,
     pub reason: String,
     pub last_error_code: String,
     pub last_error_message: String,
     pub recovery_attempts: u8,
-    pub status: PrivacyCaptureSuspensionStatus,
+    pub status: CaptureSuspensionStatus,
 }
 
 #[cfg(target_os = "macos")]
-impl PrivacyCaptureSuspension {
+impl CaptureSuspension {
     pub fn with_kind(kind: CaptureSuspensionKind, error: &CaptureErrorResponse) -> Self {
         let reason = match kind {
             CaptureSuspensionKind::PrivacyFilter => "privacy_filter_apply_failed",
             CaptureSuspensionKind::DisplayUnavailable => "capture_display_unavailable",
+            CaptureSuspensionKind::LowDisk => "capture_low_disk",
         };
         Self {
             kind,
@@ -72,17 +78,19 @@ impl PrivacyCaptureSuspension {
             last_error_code: error.code.clone(),
             last_error_message: error.message.clone(),
             recovery_attempts: 0,
-            status: PrivacyCaptureSuspensionStatus::Retryable,
+            status: CaptureSuspensionStatus::Retryable,
         }
     }
 
     pub fn can_retry(&self) -> bool {
-        if self.status != PrivacyCaptureSuspensionStatus::Retryable {
+        if self.status != CaptureSuspensionStatus::Retryable {
             return false;
         }
         match self.kind {
             // A display coming back is expected, not a failure to give up on.
             CaptureSuspensionKind::DisplayUnavailable => true,
+            // Free space recovering is expected, not a failure to give up on.
+            CaptureSuspensionKind::LowDisk => true,
             CaptureSuspensionKind::PrivacyFilter => {
                 self.recovery_attempts < MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS
             }
@@ -94,12 +102,12 @@ impl PrivacyCaptureSuspension {
         self.last_error_code = error.code.clone();
         self.last_error_message = error.message.clone();
         // Only privacy-filter failures escalate to "needs a manual restart". A
-        // display-unavailable suspension keeps retrying so it can resume on its
-        // own when the display returns.
+        // display-unavailable or low-disk suspension keeps retrying so it can
+        // resume on its own once the display returns / free space recovers.
         if self.kind == CaptureSuspensionKind::PrivacyFilter
             && self.recovery_attempts >= MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS
         {
-            self.status = PrivacyCaptureSuspensionStatus::RestartRequired;
+            self.status = CaptureSuspensionStatus::RestartRequired;
             self.reason = "privacy_recovery_restart_required".to_string();
         }
     }
@@ -164,7 +172,27 @@ pub struct NativeCaptureRuntime {
     #[cfg(target_os = "windows")]
     pub active_system_audio_session: Option<Box<dyn microphone_capture::AudioCaptureSession>>,
     #[cfg(target_os = "macos")]
-    pub privacy_capture_suspension: Option<PrivacyCaptureSuspension>,
+    pub capture_suspension: Option<CaptureSuspension>,
+    /// Injectable free-space probe used by the low-disk preflight, the rotation
+    /// boundary check, and the suspension recovery driver. `None` means "use the
+    /// production default" ([`super::disk_space::default_free_space_probe`], which
+    /// reads `fs2::available_space`); tests set a scripted probe so the
+    /// suspend/resume logic is exercisable without a real full disk. Kept as an
+    /// `Option` so the struct keeps deriving `Default` (a bare `fn` pointer does
+    /// not implement `Default`).
+    #[cfg(target_os = "macos")]
+    pub free_space_probe: Option<super::disk_space::FreeSpaceProbe>,
+}
+
+#[cfg(target_os = "macos")]
+impl NativeCaptureRuntime {
+    /// Resolve the effective free-space probe: the injected one if a test set it,
+    /// otherwise the production default. Kept here so the `None`-means-default
+    /// convention lives in one place.
+    pub(super) fn free_space_probe(&self) -> super::disk_space::FreeSpaceProbe {
+        self.free_space_probe
+            .unwrap_or(super::disk_space::default_free_space_probe)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -266,10 +294,19 @@ pub(super) fn prefixed_capture_id(prefix: &str) -> Result<String, CaptureErrorRe
 }
 
 pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession {
+    #[cfg(target_os = "macos")]
+    let is_low_disk_suspended = runtime
+        .capture_suspension
+        .as_ref()
+        .is_some_and(|s| s.kind == CaptureSuspensionKind::LowDisk);
+    #[cfg(not(target_os = "macos"))]
+    let is_low_disk_suspended = false;
+
     NativeCaptureSession {
         is_running: session_reports_running(runtime),
         is_inactivity_paused: runtime.inactivity.is_paused,
         is_user_paused: runtime.user_capture_paused,
+        is_low_disk_suspended,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
@@ -287,7 +324,7 @@ fn session_reports_running(runtime: &NativeCaptureRuntime) -> bool {
 
     #[cfg(target_os = "macos")]
     {
-        if runtime.privacy_capture_suspension.is_some() {
+        if runtime.capture_suspension.is_some() {
             return true;
         }
 
@@ -313,6 +350,7 @@ pub(super) fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> Na
         is_running: false,
         is_inactivity_paused: false,
         is_user_paused: false,
+        is_low_disk_suspended: false,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
@@ -398,7 +436,7 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
-        runtime.privacy_capture_suspension = None;
+        runtime.capture_suspension = None;
     }
     #[cfg(target_os = "windows")]
     {
@@ -476,7 +514,7 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
-        runtime.privacy_capture_suspension = None;
+        runtime.capture_suspension = None;
     }
     #[cfg(target_os = "windows")]
     {
@@ -543,7 +581,7 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
         runtime.system_audio_recording_file = None;
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
-        runtime.privacy_capture_suspension = None;
+        runtime.capture_suspension = None;
     }
     #[cfg(target_os = "windows")]
     {
@@ -822,7 +860,7 @@ pub(super) fn current_segment_sources_for_runtime(
     runtime: &NativeCaptureRuntime,
 ) -> Option<CaptureSources> {
     #[cfg(target_os = "macos")]
-    if runtime.privacy_capture_suspension.is_some() {
+    if runtime.capture_suspension.is_some() {
         return privacy_suspended_sources_for_runtime_state(
             runtime,
             runtime.inactivity.is_microphone_paused(),
@@ -897,7 +935,7 @@ mod tests {
     use super::source_session_suffix;
     #[cfg(target_os = "macos")]
     use super::{
-        CaptureSuspensionKind, PrivacyCaptureSuspension, PrivacyCaptureSuspensionStatus,
+        CaptureSuspensionKind, CaptureSuspension, CaptureSuspensionStatus,
         MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS,
     };
     #[cfg(target_os = "macos")]
@@ -936,13 +974,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn privacy_capture_suspension_requires_restart_after_bounded_failures() {
+    fn capture_suspension_requires_restart_after_bounded_failures() {
         let error = CaptureErrorResponse {
             code: "privacy_filter_apply_failed".to_string(),
             message: "filter failed".to_string(),
         };
         let mut suspension =
-            PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &error);
+            CaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &error);
 
         for _ in 0..MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS {
             assert!(suspension.can_retry());
@@ -952,7 +990,7 @@ mod tests {
         assert!(!suspension.can_retry());
         assert_eq!(
             suspension.status,
-            PrivacyCaptureSuspensionStatus::RestartRequired
+            CaptureSuspensionStatus::RestartRequired
         );
         assert_eq!(suspension.reason, "privacy_recovery_restart_required");
     }
@@ -965,7 +1003,7 @@ mod tests {
             message: "no display".to_string(),
         };
         let mut suspension =
-            PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::DisplayUnavailable, &error);
+            CaptureSuspension::with_kind(CaptureSuspensionKind::DisplayUnavailable, &error);
 
         // A display returning is expected, not a failure to give up on: even far
         // past the privacy-filter cap, recovery keeps retrying and never escalates
@@ -976,6 +1014,28 @@ mod tests {
         }
 
         assert!(suspension.can_retry());
-        assert_eq!(suspension.status, PrivacyCaptureSuspensionStatus::Retryable);
+        assert_eq!(suspension.status, CaptureSuspensionStatus::Retryable);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn low_disk_suspension_never_stops_retrying() {
+        let error = CaptureErrorResponse {
+            code: "capture_low_disk".to_string(),
+            message: "insufficient disk space".to_string(),
+        };
+        let mut suspension =
+            CaptureSuspension::with_kind(CaptureSuspensionKind::LowDisk, &error);
+
+        // Free space recovering is expected, not a failure to give up on: even far
+        // past the privacy-filter cap, recovery keeps retrying and never escalates
+        // to the manual-restart state.
+        for _ in 0..(MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS as u16 + 5) {
+            assert!(suspension.can_retry());
+            suspension.record_recovery_failure(&error);
+        }
+
+        assert!(suspension.can_retry());
+        assert_eq!(suspension.status, CaptureSuspensionStatus::Retryable);
     }
 }

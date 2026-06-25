@@ -2,6 +2,7 @@
   import type { FrameSearchResultDto, AudioSearchResultDto } from "$lib/types/app-infra";
   import { parseSearchSnippet } from "$lib/search-snippet";
   import { formatTimestampCompact } from "$lib/format-time";
+  import { openCapturedUrl } from "$lib/open-captured-url";
   import AudioWaveform from "$lib/components/AudioWaveform.svelte";
 
   let {
@@ -38,9 +39,41 @@
     const s = total % 60;
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
+
+  // The "open in browser" affordance shows only the host (the substring of the
+  // guarded host+path before the first "/"); the raw URL never reaches the UI.
+  let openHost = $derived(
+    kind === "frame" && frame?.url ? frame.url.split("/")[0] : "",
+  );
+
+  // In-flight latch for this card's open chip: a second activation while the
+  // first open await is still pending is ignored, so a double-click can't open
+  // the page twice or stack two feedback dialogs. Per-instance (a local boolean),
+  // so one card's in-flight state never disables another card's chip.
+  let opening = $state(false);
+
+  // Open the captured http(s) page in the default browser via the shared brokered
+  // helper (the raw URL stays in Rust). Stop propagation so the surrounding
+  // card-select button does not also fire. The helper owns the feedback: a
+  // no-openable-URL result shows a brief info note and a real opener failure
+  // shows an error dialog (mirroring the timeline's "Couldn't open URL: …").
+  async function handleOpen(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    if (kind !== "frame" || !frame || opening) return;
+    opening = true;
+    try {
+      await openCapturedUrl(frame.thumbnailFrameId);
+    } finally {
+      opening = false;
+    }
+  }
 </script>
 
 {#if kind === "frame" && frame}
+  <!-- The card root is itself the <button> select target, so the "open in
+       browser" control cannot nest inside it (invalid HTML). It lives as an
+       absolutely-positioned sibling overlay in this positioned wrapper. -->
+  <div class="search-card-wrap">
   <button
     class="search-card search-card--frame"
     class:search-card--selected={selected}
@@ -75,7 +108,7 @@
         {/if}
       </div>
       <p class="search-card__snippet">
-        {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
+        {#if frame.foundByMeaning}<span class="search-card__meaning-tag">found by meaning</span>{/if}{#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
       </p>
       <div class="search-card__foot">
         <span class="search-card__time">{formatTimestampCompact(frame.groupEndAt)}</span>
@@ -88,6 +121,34 @@
       </div>
     </div>
   </button>
+  {#if openHost}
+    <!-- This card is a non-focusable option in an aria-activedescendant listbox
+         (Quick Recall keeps DOM focus on the search input), so this control stays
+         out of the tab order — a tab stop here would break the listbox's roving
+         model. It is reached by mouse, and by keyboard via the listbox container's
+         "open selected result's page" shortcut (⌘/Ctrl+O on the search input,
+         in quick-recall/+page.svelte), which calls the same brokered helper. That
+         shortcut is surfaced to keyboard users in the Quick Recall footer hints
+         (⌃O open page), so it isn't documented only in source. -->
+    <button
+      type="button"
+      class="search-card__open"
+      class:search-card__open--busy={opening}
+      tabindex="-1"
+      title={`Open ${frame.url} in browser`}
+      aria-label={`Open ${openHost} in browser`}
+      disabled={opening}
+      onclick={handleOpen}
+    >
+      <svg class="search-card__open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5.5 2.5H2.5v9h9v-3" />
+        <path d="M8 2.5h3.5V6" />
+        <path d="M7 7l4.5-4.5" />
+      </svg>
+      <span class="search-card__open-host">{openHost}</span>
+    </button>
+  {/if}
+  </div>
 {/if}
 
 {#if kind === "audio" && audio}
@@ -117,7 +178,7 @@
         <span class="search-card__sub">{formatDuration(Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000))}</span>
       </div>
       <p class="search-card__snippet">
-        {#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
+        {#if audio.foundByMeaning}<span class="search-card__meaning-tag">found by meaning</span>{/if}{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
       </p>
       <div class="search-card__foot">
         <span class="search-card__time">{formatTimestampCompact(audio.absoluteStartAt)}</span>
@@ -307,6 +368,24 @@
     padding: 0 1px;
   }
 
+  /* A meaning-only Semantic Search hit leads its excerpt with this inline tag,
+     so the user sees the result was found by meaning rather than a keyword the
+     snippet would have highlighted. Accent-tinted but quiet, reading as a label
+     in front of the body-text excerpt. */
+  .search-card__meaning-tag {
+    margin-right: 5px;
+    padding: 0 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 16%, transparent);
+    color: var(--app-accent);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    vertical-align: 1px;
+  }
+
   .search-card__foot {
     display: flex;
     align-items: center;
@@ -335,8 +414,92 @@
     color: var(--app-warn);
   }
 
+  /* The card root is the select <button>, so the open control can't nest inside
+     it. This positioned wrapper makes the card-button and the open-button DOM
+     siblings, with the open control overlaid in the top-right corner. */
+  .search-card-wrap {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* A quiet secondary affordance: muted host chip with an external-link glyph,
+     overlaid in the card's top-right corner. It only saturates to the accent on
+     hover/focus so it never competes with the card's own selected highlight. */
+  .search-card__open {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 60%;
+    padding: 1px 6px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 10px;
+    line-height: 1.6;
+    cursor: pointer;
+    opacity: 0;
+    transition:
+      opacity 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+
+  /* Reveal the control on card hover, so it doesn't clutter resting cards. This
+     card is a non-focusable listbox option (DOM focus stays on the search input),
+     so its keyboard path is the listbox container's ⌘/Ctrl+O "open selected
+     result" shortcut (surfaced in the footer), not a focus traversal here. The
+     :focus-within reveal keeps the chip visible if focus ever does land on it
+     (e.g. a mouse click), mirroring AnswerSourceCard's focus-aware reveal. */
+  .search-card-wrap:hover .search-card__open,
+  .search-card-wrap:focus-within .search-card__open {
+    opacity: 1;
+  }
+
+  .search-card__open:hover,
+  .search-card__open:focus-visible {
+    outline: none;
+    opacity: 1;
+    border-color: var(--app-accent-border);
+    background: var(--app-surface-raised);
+    color: var(--app-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 12%, transparent);
+  }
+
+  /* In-flight open: the chip is disabled while the brokered open is pending, so a
+     double-click can't stack opens. Dim it slightly and drop the pointer cursor
+     so the busy state reads without shifting the layout. */
+  .search-card__open--busy,
+  .search-card__open:disabled {
+    cursor: default;
+    opacity: 0.6;
+    box-shadow: none;
+  }
+
+  .search-card__open-glyph {
+    flex: 0 0 auto;
+  }
+
+  .search-card__open-host {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .search-card {
+      transition: none;
+    }
+
+    .search-card__open {
       transition: none;
     }
   }

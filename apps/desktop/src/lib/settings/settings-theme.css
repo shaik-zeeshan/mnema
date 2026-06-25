@@ -1,0 +1,261 @@
+/* Light-theme overrides — [data-theme="light"] re-namespaced under .settings-shell.
+ *
+ * Part of the shared Settings stylesheet (split for the 800-line cap; the
+ * shell imports the parts in source order — see settings-layout.css for the
+ * full map). Every selector is namespaced under `.settings-shell`. */
+
+  /* ── Light theme overrides ────────────────────────────────────
+     The dark palette above is the source of truth; this block flips
+     just the surfaces, borders, and text colors that don't already
+     consume layout-level semantic tokens. Keeping the override flat
+     (one selector per affected rule) makes it easy to audit which
+     tokens still hard-code dark values. */
+  [data-theme="light"] .settings-shell .group-label {
+    color: var(--app-text-subtle);
+  }
+  [data-theme="light"] .settings-shell .settings-stack {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  [data-theme="light"] .settings-shell .group-hint {
+    color: var(--app-text-muted);
+  }
+
+  [data-theme="light"] .settings-shell .text-input {
+    /* Soften the inset recess so the dark 25%-black shadow doesn't muddy the
+       light field surface; the dark default lives in settings-controls-fields.css. */
+    --app-input-recess: inset 0 1px 2px rgba(0, 0, 0, 0.08);
+    background: var(--app-surface);
+    border-color: var(--app-border-strong);
+    color: var(--app-text-strong);
+  }
+  [data-theme="light"] .settings-shell .text-input:focus {
+    border-color: var(--app-accent);
+  }
+  [data-theme="light"] .settings-shell .text-input::placeholder {
+    color: var(--app-text-faint);
+  }
+
+  [data-theme="light"] .settings-shell .btn--ghost {
+    color: var(--app-text-muted);
+    border-color: var(--app-border-strong);
+  }
+  [data-theme="light"] .settings-shell .btn--ghost:not(:disabled):hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    border-color: var(--app-border-hover);
+  }
+  [data-theme="light"] .settings-shell .saved-badge {
+    color: var(--app-accent-strong);
+  }
+
+  [data-theme="light"] .settings-shell .badge--ok {
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    border-color: var(--app-accent-border);
+  }
+  [data-theme="light"] .settings-shell .badge--neutral {
+    background: var(--app-surface-hover);
+    color: var(--app-text-muted);
+    border-color: var(--app-border);
+  }
+
+  [data-theme="light"] .settings-shell .about-id__version {
+    color: var(--app-accent-strong);
+  }
+
+  [data-theme="light"] .settings-shell .effective-device {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+  [data-theme="light"] .settings-shell .effective-device--none {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  [data-theme="light"] .settings-shell .effective-device__dot {
+    background: var(--app-text-faint);
+  }
+  [data-theme="light"] .settings-shell .effective-device__dot--on {
+    background: var(--app-accent);
+  }
+  [data-theme="light"] .settings-shell .effective-device__label {
+    color: var(--app-text);
+  }
+
+  [data-theme="light"] .settings-shell .device-item {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  [data-theme="light"] .settings-shell .device-item--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+  [data-theme="light"] .settings-shell .device-item__dot {
+    background: var(--app-text-faint);
+  }
+  [data-theme="light"] .settings-shell .device-item__dot--active {
+    background: var(--app-accent);
+  }
+  [data-theme="light"] .settings-shell .device-item__name {
+    color: var(--app-text);
+  }
+
+  [data-theme="light"] .settings-shell .resolution-unsupported-notice, [data-theme="light"] .settings-shell .resolution-locked-notice, [data-theme="light"] .settings-shell .resolution-pending-notice, [data-theme="light"] .settings-shell .resolution-warn-notice, [data-theme="light"] .settings-shell .resolution-supported-notice, [data-theme="light"] .settings-shell .bitrate-compat-notice, [data-theme="light"] .settings-shell .audio-activity-notice {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  [data-theme="light"] .settings-shell .resolution-supported-notice {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+  [data-theme="light"] .settings-shell .resolution-supported-notice__icon, [data-theme="light"] .settings-shell .audio-activity-notice__icon {
+    color: var(--app-accent-strong);
+  }
+  [data-theme="light"] .settings-shell .resolution-supported-notice__text, [data-theme="light"] .settings-shell .audio-activity-notice__text {
+    color: var(--app-accent-strong);
+  }
+  [data-theme="light"] .settings-shell .audio-activity-notice__text strong {
+    color: var(--app-accent-strong);
+  }
+  [data-theme="light"] .settings-shell .resolution-locked-notice__text, [data-theme="light"] .settings-shell .bitrate-compat-notice__text {
+    color: var(--app-info-strong);
+  }
+  [data-theme="light"] .settings-shell .resolution-locked-notice__text strong {
+    color: var(--app-info);
+  }
+
+  [data-theme="light"] .settings-shell .group-hint--warn {
+    color: var(--app-warn);
+  }
+
+  [data-theme="light"] .settings-shell .inline-validation {
+    background: var(--app-warn-bg);
+    border-color: var(--app-warn-border);
+  }
+  [data-theme="light"] .settings-shell .inline-validation__item {
+    color: var(--app-warn);
+  }
+  [data-theme="light"] .settings-shell .inline-validation__icon {
+    color: var(--app-warn-strong);
+  }
+
+  [data-theme="light"] .settings-shell .inline-error {
+    background: var(--app-danger-bg-soft);
+    border-color: var(--app-danger-border);
+  }
+  [data-theme="light"] .settings-shell .inline-error__icon {
+    color: var(--app-danger-strong);
+  }
+  [data-theme="light"] .settings-shell .inline-error__msg {
+    color: var(--app-danger);
+  }
+
+  [data-theme="light"] .settings-shell .loading-text, [data-theme="light"] .settings-shell .empty-state {
+    color: var(--app-text-muted);
+  }
+
+  [data-theme="light"] .settings-shell .debug-log-status {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  [data-theme="light"] .settings-shell .debug-log-status__label {
+    color: var(--app-text-muted);
+  }
+  [data-theme="light"] .settings-shell .debug-log-status__value {
+    color: var(--app-text);
+  }
+  [data-theme="light"] .settings-shell .debug-log-status__path {
+    color: var(--app-text-muted);
+  }
+  [data-theme="light"] .settings-shell .debug-log-status__dot {
+    background: var(--app-text-faint);
+  }
+  [data-theme="light"] .settings-shell .debug-log-status__dot--on {
+    background: var(--app-accent);
+  }
+
+  [data-theme="light"] .settings-shell .btn--danger {
+    background: var(--app-danger-bg-soft);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+  [data-theme="light"] .settings-shell .btn--danger:not(:disabled):hover {
+    background: var(--app-danger-bg);
+    border-color: var(--app-danger-strong);
+  }
+
+  .settings-shell .privacy-disclosure {
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface-subtle);
+  }
+
+  .settings-shell .privacy-disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  /* Cloud-egress consent: a warn-tinted callout placed right beside the engine
+     picker, shown only for the cloud engine kind. Uses the shared --app-warn
+     tokens so it reads as a "this sends data off-device" disclosure rather than
+     a neutral surface note. */
+  .settings-shell .cloud-egress-disclosure {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-warn) 8%, transparent);
+  }
+
+  .settings-shell .cloud-egress-disclosure__icon {
+    color: var(--app-warn);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .settings-shell .cloud-egress-disclosure__body {
+    display: grid;
+    gap: 4px;
+  }
+
+  .settings-shell .cloud-egress-disclosure__body strong {
+    color: var(--app-warn);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+
+  .settings-shell .cloud-egress-disclosure__body p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .settings-shell .agent-access-callout {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--app-accent) 35%, var(--app-border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface));
+  }
+
+  .settings-shell .agent-access-callout strong {
+    color: var(--app-text);
+    font-size: 12px;
+  }
+
+  .settings-shell .agent-access-callout p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+

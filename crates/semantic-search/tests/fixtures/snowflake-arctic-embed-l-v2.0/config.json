@@ -1,0 +1,29 @@
+{
+  "_name_or_path": "/data/.model_and_tokenizer_cache/5f7f80c2aaf0a35ee04e2a3981c5beaab3d690223605fcb1001d7ea826acf6d9",
+  "architectures": [
+    "XLMRobertaModel"
+  ],
+  "attention_probs_dropout_prob": 0.1,
+  "bos_token_id": 0,
+  "classifier_dropout": null,
+  "eos_token_id": 2,
+  "hidden_act": "gelu",
+  "hidden_dropout_prob": 0.1,
+  "hidden_size": 1024,
+  "initializer_range": 0.02,
+  "intermediate_size": 4096,
+  "layer_norm_eps": 1e-05,
+  "max_position_embeddings": 8194,
+  "model_type": "xlm-roberta",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 24,
+  "output_past": true,
+  "pad_token_id": 1,
+  "position_embedding_type": "absolute",
+  "torch_dtype": "float32",
+  "transformers_version": "4.39.3",
+  "type_vocab_size": 1,
+  "use_cache": true,
+  "matryoshka_dimensions": [256],
+  "vocab_size": 250002
+}

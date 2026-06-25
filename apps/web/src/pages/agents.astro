@@ -1,0 +1,636 @@
+---
+import Base from "../layouts/Base.astro";
+import TopBar from "../components/TopBar.astro";
+import Footer from "../components/Footer.astro";
+import { GITHUB_OWNER, GITHUB_REPO } from "../config";
+
+const repoSlug = `${GITHUB_OWNER}/${GITHUB_REPO}`;
+const skillsCliUrl = "https://github.com/vercel-labs/skills";
+const skillsCliCommand = `npx skills@latest add ${repoSlug}`;
+
+const claudeCodeLines = [
+  `/plugin marketplace add ${repoSlug}`,
+  "/plugin install mnema-data@mnema",
+  "/reload-plugins",
+];
+
+const usageLines = [
+  "mnema access request --scope last-day --duration 24h",
+  'mnema search --query "launch notes" --format json',
+  "mnema show-text <result-id>",
+  "mnema open <result-id>",
+];
+
+const pageTitle = "mnema — agent access";
+const pageDescription =
+  "Give your local AI agents and CLI tools read-only, brokered access to your redacted Mnema history. Setup, privacy guarantees, and example commands.";
+
+const guarantees = [
+  {
+    label: "Read-only",
+    detail:
+      "Agents can search and read your history. They can't edit, delete, or change anything.",
+  },
+  {
+    label: "You approve each tool",
+    detail:
+      "Every client is approved individually, from inside Mnema. Nothing gets in without your explicit grant.",
+  },
+  {
+    label: "Time-bounded",
+    detail:
+      "Grants expire. A request scoped to the last day for 24 hours stops working when the window closes — re-approve if you still need it.",
+  },
+  {
+    label: "Redacted at the source",
+    detail:
+      "Results come back already redacted by the same rules the app uses — passwords, keys, and tokens are stripped before an agent ever sees them.",
+  },
+  {
+    label: "Revocable any time",
+    detail:
+      "Pull a grant from Settings → Access and the tool loses access immediately.",
+  },
+];
+---
+
+<Base title={pageTitle} description={pageDescription}>
+  <TopBar />
+  <main class="docs">
+    <article class="docs-col">
+      <!-- 7.1 Docs hero -->
+      <header class="docs-hero">
+        <p class="kicker">// agent access · docs</p>
+        <h1 class="docs-title">
+          Give your agents a read-only window into your memory.
+        </h1>
+        <p class="docs-sub">
+          Mnema isn't just a desktop timeline. Approved local tools and AI
+          agents — like Claude Code — can search your redacted history through a
+          brokered command-line bridge. Read-only, time-bounded, and approved by
+          you, per tool, from inside the app.
+        </p>
+        <p class="docs-meta">// reading time ~3 min · macOS · Apple Silicon</p>
+      </header>
+
+      <!-- 7.2 What this is -->
+      <section class="docs-section" aria-labelledby="what-it-is">
+        <p class="kicker">// what it is</p>
+        <h2 class="section-heading" id="what-it-is">A broker, not a back door.</h2>
+        <p class="prose">
+          When an AI agent on your Mac wants to look something up in your
+          history, it can't touch your recordings or database directly. Instead
+          it asks the <code>mnema</code> command-line tool, which checks that
+          you've approved that tool, that the request is within an active
+          time-bounded grant, and that the results are redacted — then hands back
+          only what's allowed. You stay in control of who gets access and for how
+          long.
+        </p>
+        <p class="prose prose-dense">
+          Under the hood, every request is mediated by Mnema's broker: the same
+          privacy policy, redaction, and retention rules that govern the app
+          apply to agent access. Tools never read the database or media files
+          directly — every call goes through the <code>mnema</code> CLI, which
+          talks to the running app over a local, per-user channel. Grants are
+          read-only and revocable from Settings at any time.
+        </p>
+      </section>
+
+      <!-- 7.3 Privacy guarantees -->
+      <section class="docs-section" aria-labelledby="guarantees">
+        <p class="kicker">// guarantees</p>
+        <h2 class="section-heading" id="guarantees">
+          What an agent can and can't do.
+        </h2>
+        <ul class="guarantee-list">
+          {
+            guarantees.map((item) => (
+              <li class="guarantee-item">
+                <span class="guarantee-marker" aria-hidden="true">
+                  ✓
+                </span>
+                <div class="guarantee-text">
+                  <span class="guarantee-label">{item.label}</span>
+                  <span class="guarantee-detail">{item.detail}</span>
+                </div>
+              </li>
+            ))
+          }
+          <li class="guarantee-item">
+            <span class="guarantee-marker" aria-hidden="true">✓</span>
+            <div class="guarantee-text">
+              <span class="guarantee-label">Brokered, never direct</span>
+              <span class="guarantee-detail">
+                The skill always goes through the <code>mnema</code> CLI — never
+                a direct database or media read.
+              </span>
+            </div>
+          </li>
+        </ul>
+      </section>
+
+      <!-- 7.4 Setup -->
+      <section class="docs-section" aria-labelledby="setup">
+        <p class="kicker">// setup</p>
+        <h2 class="section-heading" id="setup">Two steps to wire it up.</h2>
+
+        <ol class="setup-steps">
+          <li class="setup-step">
+            <div class="step-head">
+              <span class="step-num" aria-hidden="true">01</span>
+              <h3>Install the <code>mnema</code> CLI</h3>
+            </div>
+            <p>
+              In Mnema, open <strong>Settings &rarr; Access</strong> and install
+              the CLI. Mnema places the <code>mnema</code> command in its managed
+              CLI directory — usually <code>~/.local/bin</code> on macOS. If that
+              directory isn't on your shell's PATH yet, Settings shows you the
+              one-line follow-up to add it. Grants are read-only, time-bounded,
+              and approved per client from inside the app.
+            </p>
+          </li>
+
+          <li class="setup-step">
+            <div class="step-head">
+              <span class="step-num" aria-hidden="true">02</span>
+              <h3>Add the <code>mnema-data</code> skill to your agent</h3>
+            </div>
+            <p>
+              In <strong>Claude Code</strong>, install it from the Mnema
+              marketplace:
+            </p>
+            <div class="terminal-panel" aria-label="Claude Code skill install">
+              <div class="terminal-top">
+                <span class="terminal-dot" aria-hidden="true"></span>
+                <span>claude code</span>
+              </div>
+              <ol class="command-list">
+                {
+                  claudeCodeLines.map((line) => (
+                    <li>
+                      <span class="prompt" aria-hidden="true">
+                        &gt;
+                      </span>
+                      <code>{line}</code>
+                    </li>
+                  ))
+                }
+              </ol>
+            </div>
+            <p class="step-aside">
+              Using Codex, Cursor, OpenCode, or PI? Install it in one command
+              with the open-source <a
+                href={skillsCliUrl}
+                target="_blank"
+                rel="noopener noreferrer"><code>skills</code></a> CLI:
+            </p>
+            <div class="terminal-panel" aria-label="skills CLI install">
+              <div class="terminal-top">
+                <span class="terminal-dot" aria-hidden="true"></span>
+                <span>terminal</span>
+              </div>
+              <ol class="command-list">
+                <li>
+                  <span class="prompt" aria-hidden="true">$</span>
+                  <code>{skillsCliCommand}</code>
+                </li>
+              </ol>
+            </div>
+            <p class="step-aside step-aside-muted">
+              The skill always goes through the CLI, never a direct database or
+              media read.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <!-- 7.5 Example commands -->
+      <section class="docs-section" aria-labelledby="usage">
+        <p class="kicker">// usage</p>
+        <h2 class="section-heading" id="usage">
+          Then ask your agent for things like…
+        </h2>
+        <p class="prose">
+          You won't usually type these yourself — your agent runs them for you.
+          But here's the shape of what's happening under the hood.
+        </p>
+        <div class="terminal-panel" aria-label="Mnema CLI examples">
+          <div class="terminal-top">
+            <span class="terminal-dot" aria-hidden="true"></span>
+            <span>mnema cli</span>
+          </div>
+          <ol class="command-list">
+            {
+              usageLines.map((line) => (
+                <li>
+                  <span class="prompt" aria-hidden="true">
+                    $
+                  </span>
+                  <code>{line}</code>
+                </li>
+              ))
+            }
+          </ol>
+        </div>
+
+        <dl class="cmd-walkthrough">
+          <div class="cmd-row">
+            <dt><code>access request --scope last-day --duration 24h</code></dt>
+            <dd>
+              Asks you to approve a read-only, 24-hour grant covering the last
+              day of history. You confirm inside Mnema.
+            </dd>
+          </div>
+          <div class="cmd-row">
+            <dt><code>search --query "launch notes" --format json</code></dt>
+            <dd>
+              Searches your redacted history and returns structured results —
+              timestamps, source app, matched text — ready for the agent to
+              reason over.
+            </dd>
+          </div>
+          <div class="cmd-row">
+            <dt><code>show-text &lt;result-id&gt;</code></dt>
+            <dd>
+              Pulls the full redacted text for one result, so the agent can read
+              it in context.
+            </dd>
+          </div>
+          <div class="cmd-row">
+            <dt><code>open &lt;result-id&gt;</code></dt>
+            <dd>
+              Opens that exact moment in the Mnema app — the full-res frame or
+              audio clip — so you can verify it yourself.
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <!-- 7.6 Page footer -->
+      <footer class="docs-foot">
+        <p class="docs-foot-line">
+          // read-only, time-bounded, brokered through the same privacy policy
+          as the app — all retained history requires explicit approval.
+        </p>
+        <a href="/" class="docs-back">
+          <span class="prompt" aria-hidden="true">&gt;</span>
+          <span>Back to mnema</span>
+        </a>
+      </footer>
+    </article>
+  </main>
+  <Footer />
+</Base>
+
+<style>
+  /* ---- Docs layout shell ---- */
+  .docs {
+    /* Clear the fixed TopBar, then a narrower docs column than the landing. */
+    padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
+  }
+
+  .docs-col {
+    max-width: 52rem;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  /* ---- Mono eyebrow (lifted pattern) ---- */
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  /* ---- 7.1 Docs hero ---- */
+  .docs-hero {
+    padding-bottom: var(--space-xl);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-xl);
+  }
+
+  .docs-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-3xl);
+    margin-bottom: var(--space-sm);
+    max-width: 22ch;
+  }
+
+  .docs-sub {
+    font-family: var(--font-sans);
+    color: var(--fg-muted);
+    font-size: var(--text-base);
+    line-height: 1.7;
+    max-width: 60ch;
+    margin-bottom: var(--space-md);
+  }
+
+  .docs-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+  }
+
+  /* ---- Section shell ---- */
+  .docs-section {
+    margin-bottom: var(--space-2xl);
+  }
+
+  .section-heading {
+    font-family: var(--font-sans);
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-sm);
+    max-width: 26ch;
+  }
+
+  .prose {
+    font-family: var(--font-sans);
+    color: var(--fg-muted);
+    font-size: var(--text-base);
+    line-height: 1.75;
+    max-width: 64ch;
+  }
+
+  .prose + .prose {
+    margin-top: var(--space-md);
+  }
+
+  .prose-dense {
+    font-size: var(--text-sm);
+  }
+
+  .prose code,
+  .section-heading code,
+  .docs-title code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    color: var(--fg);
+  }
+
+  /* ---- 7.3 Guarantees (check-marker list pattern) ---- */
+  .guarantee-list {
+    list-style: none;
+    display: grid;
+    gap: var(--space-md);
+    margin-top: var(--space-lg);
+  }
+
+  .guarantee-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--space-sm);
+    align-items: start;
+  }
+
+  .guarantee-marker {
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+  }
+
+  .guarantee-text {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .guarantee-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--fg);
+    letter-spacing: 0.01em;
+  }
+
+  .guarantee-detail {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    line-height: 1.65;
+  }
+
+  .guarantee-detail code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    color: var(--fg);
+  }
+
+  /* ---- 7.4 Setup steps (lifted pattern) ---- */
+  .setup-steps {
+    list-style: none;
+    display: grid;
+    gap: var(--space-md);
+    margin-top: var(--space-lg);
+  }
+
+  .setup-step {
+    display: grid;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    transition: border-color 0.3s var(--ease-out-quart);
+  }
+
+  .setup-step:hover {
+    border-color: var(--border-strong);
+  }
+
+  .step-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+  }
+
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+    font-weight: 600;
+    color: var(--border-strong);
+    line-height: 1;
+  }
+
+  .step-head h3 {
+    font-family: var(--font-sans);
+    font-size: var(--text-lg);
+    font-weight: 500;
+  }
+
+  .setup-step p {
+    font-family: var(--font-sans);
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.65;
+    max-width: 62ch;
+  }
+
+  .setup-step code,
+  .step-head code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    color: var(--fg);
+  }
+
+  .setup-step strong {
+    color: var(--fg);
+    font-weight: 500;
+  }
+
+  .step-aside {
+    font-size: var(--text-sm);
+  }
+
+  .step-aside-muted {
+    color: var(--fg-muted);
+  }
+
+  .step-aside a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+
+  .step-aside a:hover {
+    text-decoration: none;
+    border-bottom-color: var(--accent);
+  }
+
+  .step-aside a code {
+    color: inherit;
+  }
+
+  /* ---- Terminal panel (lifted pattern) ---- */
+  .terminal-panel {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  .terminal-top {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.5rem 0.65rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.02em;
+  }
+
+  .terminal-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 999px;
+    background: var(--accent);
+  }
+
+  .command-list {
+    list-style: none;
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+
+  .command-list li {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.45rem;
+    align-items: start;
+    min-width: 0;
+    color: var(--fg);
+  }
+
+  .prompt {
+    color: var(--accent);
+  }
+
+  .command-list code {
+    min-width: 0;
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- 7.5 Command walkthrough (definition list) ---- */
+  .cmd-walkthrough {
+    display: grid;
+    gap: var(--space-md);
+    margin-top: var(--space-lg);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border);
+  }
+
+  .cmd-row {
+    display: grid;
+    gap: var(--space-xs);
+  }
+
+  .cmd-row dt {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+
+  .cmd-row dt code {
+    font-family: inherit;
+    color: inherit;
+  }
+
+  .cmd-row dd {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    line-height: 1.65;
+    max-width: 60ch;
+  }
+
+  /* ---- 7.6 Page footer ---- */
+  .docs-foot {
+    margin-top: var(--space-2xl);
+    padding-top: var(--space-lg);
+    border-top: 1px solid var(--border);
+    display: grid;
+    gap: var(--space-md);
+  }
+
+  .docs-foot-line {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    line-height: 1.7;
+    letter-spacing: 0.01em;
+    max-width: 70ch;
+  }
+
+  .docs-back {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    width: fit-content;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s var(--ease-out-quart);
+  }
+
+  .docs-back:hover {
+    text-decoration: none;
+    border-bottom-color: var(--accent);
+  }
+
+  @media (max-width: 560px) {
+    .step-head {
+      flex-wrap: wrap;
+    }
+  }
+</style>

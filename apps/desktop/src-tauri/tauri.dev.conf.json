@@ -1,0 +1,11 @@
+{
+  "productName": "mnema-dev",
+  "identifier": "com.shaikzeeshan.mnema.dev",
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mnema-dev"]
+      }
+    }
+  }
+}

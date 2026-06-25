@@ -2,25 +2,28 @@
 <!--
   _shell.html — CANONICAL SHARED SHELL for every Insights surface mockup.
 
-  The chrome is now a TOP TAB BAR (.subnav), not a left rail: a slim horizontal
-  sub-surface nav sits directly under the titlebar and content runs full-width.
-  The sub-surface switcher (.subnav-tabs > .subnav-tab) is a SEGMENTED PILL
-  CONTROL — mirroring the titlebar Timeline/Insights toggle, with a filled accent
-  active segment — styled entirely in app.css (no per-page markup changes).
+  The chrome is a PERSISTENT LEFT RAIL (.sidebar), not a top tab bar: a quiet
+  "minimal" sidebar sits beside the content column inside .insights. The rail
+  carries the sub-surface nav (overview / subjects / context), a "new chat" link,
+  a chat search field, a grouped chat-history list, and a pinned footer engine
+  status. The aesthetic is hairlines + whitespace + a single green accent (active
+  = accent TEXT only, no dot/marker); all styling lives in app.css (no per-page
+  markup changes beyond which item is .active and which engine variant is kept).
 
   HOW TO USE (surface agents):
     1. Copy the REFERENCE MARKUP block below (verbatim) into your surface page
        (e.g. overview.html).
     2. Set the <title>.
-    3. In the .subnav-tabs, mark ONLY your tab .active (and add
-       aria-current="page" to it); leave the others plain.
-    4. Pick the engine-status variant that fits your surface (ON or OFF) — keep
-       only ONE in your page. Both are shown below for reference.
+    3. In the .rail-nav, mark ONLY your surface's .rail-nav-item .active (and add
+       aria-current="page" to it); leave the others plain. (Chat itself is the
+       "new chat" link + history rows — there is no nav item for it.)
+    4. Pick the footer engine variant that fits your surface (ON .rail-engine, or
+       OFF .rail-engine--off) — keep only ONE in your page. Both are shown below.
     5. Replace ONLY the contents between the
          <!== SURFACE CONTENT START ==>  ...  <!== SURFACE CONTENT END ==>
        markers inside <main class="insights-main">.
-    6. Do NOT edit the titlebar, .subnav markup, or the tab links/order. Keep all
-       colors token-driven (no hardcoded hex).
+    6. Do NOT edit the titlebar, the .sidebar markup, or the rail nav links/order.
+       Keep all colors token-driven (no hardcoded hex).
 
   The reference block below (inside an HTML comment) is the exact markup; an
   identical LIVE copy follows so this file itself renders as a navigable shell.
@@ -58,28 +61,39 @@
 
       <div class="app-body">
         <div class="insights">
-          <nav class="subnav">
-            <div class="subnav-tabs">
-              <!-- mark ONLY your tab .active + aria-current="page" -->
-              <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
-              <a class="subnav-tab" href="subjects-index.html">Subjects</a>
-              <a class="subnav-tab" href="context.html">Context</a>
-              <a class="subnav-tab" href="chat.html">Chat</a>
-            </div>
-            <div class="subnav-meta">
-              <div class="subnav-search">
-                <span class="subnav-search-glyph">⌕</span>
-                <span class="subnav-search-text">Jump to a subject or ask…</span>
-                <span class="kbd">⌘K</span>
+          <aside class="sidebar" aria-label="Insights navigation">
+            <div class="sidebar-scroll">
+              <nav class="rail-nav">
+                <!-- mark ONLY your surface's item .active + aria-current="page" -->
+                <a class="rail-nav-item active" aria-current="page" href="overview.html">overview</a>
+                <a class="rail-nav-item" href="subjects-index.html">subjects<span class="rail-count">12</span></a>
+                <a class="rail-nav-item" href="context.html">context<span class="rail-count">48</span></a>
+              </nav>
+              <a class="rail-newchat" href="chat.html"><span class="plus">＋</span> new chat</a>
+              <div class="rail-search">
+                <span class="glyph">⌕</span>
+                <input type="text" placeholder="search chats…" disabled />
               </div>
+              <div class="rail-history">
+                <div class="rail-group">today</div>
+                <a class="rail-chat" href="chat.html"><span class="t">Why is my DER stuck at 10.9%?</span><span class="when">2h</span></a>
+                <a class="rail-chat" href="chat.html"><span class="t">Draft release notes for v0.2</span><span class="when">4h</span></a>
+                <div class="rail-group">yesterday</div>
+                <a class="rail-chat" href="chat.html"><span class="t">Recap what I shipped last week</span><span class="when">1d</span></a>
+                <div class="rail-group">this week</div>
+                <a class="rail-chat" href="chat.html"><span class="t">What did I decide about cc?</span><span class="when">3d</span></a>
+                <a class="rail-chat" href="chat.html"><span class="t">Compare cc thresholds</span><span class="when">4d</span></a>
+              </div>
+            </div>
+            <div class="rail-foot">
               <!-- ENGINE ON variant: -->
-              <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+              <span class="rail-engine"><span class="dot"></span>engine<span class="sep">·</span><span class="model">Claude</span></span>
 
               <!-- ENGINE OFF variant (use one or the other):
-              <span class="engine-status engine-status--off"><span class="dot"></span>Engine off · <a class="engine-status-enable">Enable</a></span>
+              <span class="rail-engine rail-engine--off"><span class="dot"></span>engine off · <a class="rail-enable">Enable</a></span>
               -->
             </div>
-          </nav>
+          </aside>
 
           <main class="insights-main">
             <!== SURFACE CONTENT START ==>
@@ -126,26 +140,37 @@
 
     <div class="app-body">
       <div class="insights">
-        <nav class="subnav">
-          <div class="subnav-tabs">
-            <a class="subnav-tab active" aria-current="page" href="overview.html">Overview</a>
-            <a class="subnav-tab" href="subjects-index.html">Subjects</a>
-            <a class="subnav-tab" href="context.html">Context</a>
-            <a class="subnav-tab" href="chat.html">Chat</a>
-          </div>
-          <div class="subnav-meta">
-            <div class="subnav-search">
-              <span class="subnav-search-glyph">⌕</span>
-              <span class="subnav-search-text">Jump to a subject or ask…</span>
-              <span class="kbd">⌘K</span>
+        <aside class="sidebar" aria-label="Insights navigation">
+          <div class="sidebar-scroll">
+            <nav class="rail-nav">
+              <a class="rail-nav-item active" aria-current="page" href="overview.html">overview</a>
+              <a class="rail-nav-item" href="subjects-index.html">subjects<span class="rail-count">12</span></a>
+              <a class="rail-nav-item" href="context.html">context<span class="rail-count">48</span></a>
+            </nav>
+            <a class="rail-newchat" href="chat.html"><span class="plus">＋</span> new chat</a>
+            <div class="rail-search">
+              <span class="glyph">⌕</span>
+              <input type="text" placeholder="search chats…" disabled />
             </div>
+            <div class="rail-history">
+              <div class="rail-group">today</div>
+              <a class="rail-chat" href="chat.html"><span class="t">Why is my DER stuck at 10.9%?</span><span class="when">2h</span></a>
+              <a class="rail-chat" href="chat.html"><span class="t">Draft release notes for v0.2</span><span class="when">4h</span></a>
+              <div class="rail-group">yesterday</div>
+              <a class="rail-chat" href="chat.html"><span class="t">Recap what I shipped last week</span><span class="when">1d</span></a>
+              <div class="rail-group">this week</div>
+              <a class="rail-chat" href="chat.html"><span class="t">What did I decide about cc?</span><span class="when">3d</span></a>
+              <a class="rail-chat" href="chat.html"><span class="t">Compare cc thresholds</span><span class="when">4d</span></a>
+            </div>
+          </div>
+          <div class="rail-foot">
             <!-- ENGINE ON variant (default) -->
-            <span class="engine-status"><span class="dot"></span>Engine: Claude</span>
+            <span class="rail-engine"><span class="dot"></span>engine<span class="sep">·</span><span class="model">Claude</span></span>
             <!-- ENGINE OFF variant (shown here for reference; in a real surface keep only one):
-            <span class="engine-status engine-status--off"><span class="dot"></span>Engine off · <a class="engine-status-enable">Enable</a></span>
+            <span class="rail-engine rail-engine--off"><span class="dot"></span>engine off · <a class="rail-enable">Enable</a></span>
             -->
           </div>
-        </nav>
+        </aside>
 
         <main class="insights-main">
           <!-- ============================================================
@@ -157,7 +182,7 @@
             <p class="muted" style="margin:8px 0 0;">
               This is the canonical shell. Copy the reference markup at the top of
               <code>_shell.html</code> into your surface page, mark your
-              <code>.subnav-tab</code> active, and fill only this
+              <code>.rail-nav-item</code> active, and fill only this
               <code>.insights-main</code> region.
             </p>
           </div>

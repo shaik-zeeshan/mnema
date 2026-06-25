@@ -21,7 +21,13 @@
       ]
     },
     "tauri": {
-      "cache": false
+      "cache": false,
+      "passThroughEnv": [
+        "MNEMA_SAVE_DIRECTORY",
+        "MNEMA_APP_CONFIG_DIR",
+        "MNEMA_CAPTURE_INDEX_KEY_DIR",
+        "MNEMA_AI_PROVIDER_KEY_DIR"
+      ]
     }
   }
 }

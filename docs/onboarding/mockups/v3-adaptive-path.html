@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<!--
+  v3-adaptive-path.html — Mnema onboarding redesign mockup: "Adaptive Guided Path"
+
+  A familiar guided wizard (fixed-height stage frame) that ADAPTS to the user's
+  feature choices. Required steps (Permissions, Screen capture, Storage) are always
+  present and styled "required". Each optional feature is its own step that LEADS
+  with a single big binary Yes/No; declining collapses that step's settings and
+  auto-advances, dropping the step out of the dynamic progress rail. Accepting
+  expands the feature's full settings inline.
+
+  Self-contained: embedded <style> + vanilla <script>, no external assets.
+  Default DARK theme; theme toggle (top corner) flips data-theme on <html>.
+-->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mnema · Onboarding · Adaptive Guided Path</title>
+<style>
+  /* ============================ DESIGN TOKENS ============================ */
+  :root {
+    --app-bg:#0c0c0e; --app-fg:#e2e2e8; --app-fg-muted:#8a8aaa;
+    --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a;
+    --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#7a7a9a;
+    --app-text-subtle:#44445a; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+    --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-strong:#ff4455; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  }
+  [data-theme="light"] {
+    --app-bg:#f6f6f4; --app-fg:#14141a; --app-fg-muted:#5a5a6a;
+    --app-surface:#ffffff; --app-surface-subtle:#f6f6f4; --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec;
+    --app-surface-active:#eeeeec;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+    --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a; --app-text-subtle:#7a7a86;
+    --app-text-faint:#9a9aa2;
+    --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec; --app-accent-border:#9bd3b4;
+    --app-accent-glow:rgba(31,122,74,0.16);
+    --app-warn:#9a5a12; --app-warn-bg:#f5ecd8; --app-warn-border:#d8b878;
+    --app-danger:#c43a48; --app-danger-strong:#a82a36; --app-danger-bg:#f8e4e6; --app-danger-border:#e0a8b0;
+    --app-info:#2b78c5; --app-info-bg:#e2eefb; --app-info-border:#a8cdf0;
+  }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
+  body {
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"Cascadia Code","Fira Code",monospace;
+    background:var(--app-bg); color:var(--app-fg);
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; padding:28px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ============================ WINDOW CHROME ============================ */
+  .app-window {
+    width:1180px; max-width:100%; height:760px; max-height:calc(100vh - 56px);
+    background:var(--app-surface); border:1px solid var(--app-border);
+    border-radius:10px; overflow:hidden; display:flex; flex-direction:column;
+    position:relative;
+  }
+  .titlebar {
+    height:38px; flex:0 0 38px; display:flex; align-items:center;
+    padding:0 14px; border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle); position:relative;
+  }
+  .traffic-lights { display:flex; gap:8px; }
+  .traffic-lights span { width:11px; height:11px; border-radius:999px; background:var(--app-text-faint); }
+  .wordmark {
+    position:absolute; left:50%; transform:translateX(-50%);
+    font-size:12px; font-weight:600; letter-spacing:0.04em; color:var(--app-text-muted);
+  }
+  .theme-toggle {
+    margin-left:auto; width:26px; height:22px; border:1px solid var(--app-border-strong);
+    background:var(--app-surface-raised); color:var(--app-text-muted); border-radius:6px;
+    font-size:12px; cursor:pointer; line-height:1; transition:.15s ease;
+  }
+  .theme-toggle:hover { color:var(--app-accent); border-color:var(--app-border-hover); }
+
+  /* ============================ APP BODY / BACKDROP ============================ */
+  .app-body {
+    flex:1 1 auto; position:relative; overflow:hidden;
+    display:flex; flex-direction:column; align-items:center;
+    padding:26px 0 22px;
+  }
+  /* dotted-grid backdrop + accent radial halo */
+  .app-body::before {
+    content:""; position:absolute; inset:0; pointer-events:none; opacity:.18;
+    background-image:radial-gradient(var(--app-text-subtle) 1px, transparent 1px);
+    background-size:22px 22px; background-position:center;
+  }
+  .app-body::after {
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(620px 380px at 50% 8%, var(--app-accent-glow), transparent 70%);
+    opacity:.8;
+  }
+
+  /* ============================ DYNAMIC PROGRESS RAIL ============================ */
+  .rail {
+    position:relative; z-index:2; display:flex; align-items:center; gap:6px;
+    margin-bottom:18px; flex-wrap:nowrap; padding:0 24px;
+    max-width:920px; width:100%; justify-content:center; min-height:34px;
+  }
+  .rail-seg {
+    display:flex; align-items:center; gap:8px; transition:.2s ease;
+  }
+  .rail-node {
+    display:flex; align-items:center; gap:7px;
+    padding:5px 9px; border:1px solid var(--app-border); border-radius:999px;
+    background:var(--app-surface-raised); transition:.18s ease; white-space:nowrap;
+  }
+  .rail-node .rn-num {
+    font-size:9px; font-weight:700; color:var(--app-text-subtle); letter-spacing:.04em;
+  }
+  .rail-node .rn-label {
+    font-size:9.5px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--app-text-muted);
+  }
+  .rail-node .rn-req {
+    font-size:7.5px; color:var(--app-accent-strong); letter-spacing:.08em;
+  }
+  .rail-node.done { border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .rail-node.done .rn-num { color:var(--app-accent); }
+  .rail-node.done .rn-label { color:var(--app-accent); }
+  .rail-node.current {
+    border-color:var(--app-accent); box-shadow:0 0 0 3px var(--app-accent-glow);
+    background:var(--app-surface-raised);
+  }
+  .rail-node.current .rn-num { color:var(--app-accent); }
+  .rail-node.current .rn-label { color:var(--app-text-strong); }
+  .rail-link {
+    width:14px; height:1px; background:var(--app-border-strong); flex:0 0 14px;
+  }
+  .rail-link.done { background:var(--app-accent-border); }
+  /* dropped (declined) feature shows as a faint ghost stub */
+  .rail-ghost {
+    width:8px; height:8px; border-radius:999px; border:1px dashed var(--app-text-faint);
+    opacity:.5; flex:0 0 8px;
+  }
+
+  /* ============================ STAGE FRAME ============================ */
+  .stage {
+    position:relative; z-index:2; width:760px; max-width:calc(100% - 48px);
+    height:480px; background:var(--app-surface-raised);
+    border:1px solid var(--app-border); border-radius:10px;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  /* 1px top accent hairline, inset 14px */
+  .stage::before {
+    content:""; position:absolute; top:0; left:14px; right:14px; height:1px;
+    background:linear-gradient(90deg,transparent,
+      color-mix(in srgb,var(--app-accent) 12%,transparent) 22%,
+      color-mix(in srgb,var(--app-accent) 50%,transparent) 50%, transparent);
+  }
+  .stage-head {
+    flex:0 0 auto; padding:22px 26px 16px; border-bottom:1px solid var(--app-border);
+    display:flex; gap:14px; align-items:flex-start;
+  }
+  .step-badge {
+    flex:0 0 auto; min-width:34px; height:34px; padding:0 8px; border-radius:3px;
+    border:1px solid var(--app-border-strong); background:var(--app-surface-subtle);
+    display:flex; align-items:center; justify-content:center;
+    font-size:13px; font-weight:700; color:var(--app-text-muted); letter-spacing:.02em;
+  }
+  .step-badge.req { border-color:var(--app-accent-border); color:var(--app-accent); background:var(--app-accent-bg); }
+  .head-text { flex:1 1 auto; min-width:0; }
+  .eyebrow {
+    font-size:9.5px; font-weight:700; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--app-text-muted); margin-bottom:6px; display:flex; align-items:center; gap:8px;
+  }
+  .eyebrow .req-tag {
+    color:var(--app-accent); border:1px solid var(--app-accent-border); background:var(--app-accent-bg);
+    padding:1px 5px; border-radius:3px; letter-spacing:.1em; font-size:8px;
+  }
+  .eyebrow .opt-tag {
+    color:var(--app-text-subtle); border:1px solid var(--app-border-strong);
+    padding:1px 5px; border-radius:3px; letter-spacing:.1em; font-size:8px;
+  }
+  .scene-title { font-size:22px; font-weight:700; letter-spacing:-0.012em; color:var(--app-text-strong); }
+  .scene-sub { font-size:11px; line-height:1.4; color:var(--app-text-muted); margin-top:6px; max-width:560px; }
+
+  .stage-body {
+    flex:1 1 auto; overflow-y:auto; padding:20px 26px;
+    scrollbar-width:thin; scrollbar-color:var(--app-border-strong) transparent;
+  }
+  .stage-body::-webkit-scrollbar { width:8px; }
+  .stage-body::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:999px; }
+
+  .stage-foot {
+    flex:0 0 auto; padding:14px 22px; border-top:1px solid var(--app-border);
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    background:var(--app-surface-raised);
+  }
+  .foot-hint { font-size:10.5px; color:var(--app-text-subtle); }
+
+  /* ============================ BUTTONS ============================ */
+  .btn {
+    font-family:inherit; font-size:12px; font-weight:540; letter-spacing:.01em;
+    padding:8px 16px; border-radius:8px; border:1px solid var(--app-border-strong);
+    background:var(--app-surface-subtle); color:var(--app-text); cursor:pointer;
+    transition:.15s ease; display:inline-flex; align-items:center; gap:7px;
+  }
+  .btn:hover { border-color:var(--app-border-hover); color:var(--app-text-strong); background:var(--app-surface-hover); }
+  .btn:focus-visible { outline:none; box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .btn.ghost { background:transparent; border-color:transparent; color:var(--app-text-muted); }
+  .btn.ghost:hover { color:var(--app-text-strong); background:var(--app-surface-hover); }
+  .btn.primary {
+    background:var(--app-accent-bg); border-color:var(--app-accent-border); color:var(--app-accent);
+  }
+  .btn.primary:hover { border-color:var(--app-accent); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .btn.sm { padding:5px 10px; font-size:11px; border-radius:6px; }
+  .btn[disabled] { opacity:.4; cursor:not-allowed; }
+
+  /* ============================ SWITCH (small) ============================ */
+  .switch-row {
+    display:flex; align-items:center; gap:12px; padding:11px 0;
+    border-bottom:1px solid var(--app-border);
+  }
+  .switch-row:last-child { border-bottom:none; }
+  .switch-row .sr-text { flex:1 1 auto; min-width:0; }
+  .sr-label { font-size:12px; font-weight:500; color:var(--app-text); }
+  .sr-desc { font-size:10px; color:var(--app-text-muted); margin-top:3px; line-height:1.35; }
+  .switch {
+    flex:0 0 auto; position:relative; width:36px; height:20px; border-radius:999px;
+    border:1px solid var(--app-border-strong); background:var(--app-surface-subtle);
+    cursor:pointer; transition:.18s ease;
+  }
+  .switch .thumb {
+    position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:999px;
+    background:var(--app-text-subtle); transition:.18s ease;
+  }
+  .switch[aria-checked="true"] { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+  .switch[aria-checked="true"] .thumb {
+    transform:translateX(16px); background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow);
+  }
+  .switch:focus-visible { outline:none; box-shadow:0 0 0 3px var(--app-accent-glow); }
+
+  /* ============================ FORM PRIMITIVES ============================ */
+  .group { margin-bottom:20px; }
+  .group:last-child { margin-bottom:0; }
+  .group-title {
+    font-size:10.5px; font-weight:700; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--app-text-muted); margin-bottom:10px;
+  }
+  .field { margin-bottom:16px; }
+  .field:last-child { margin-bottom:0; }
+  .field-label { font-size:11.5px; font-weight:500; color:var(--app-text); margin-bottom:7px; display:block; }
+  .field-help { font-size:10px; color:var(--app-text-muted); margin-top:6px; line-height:1.35; }
+
+  .segmented { display:inline-flex; border:1px solid var(--app-border-strong); border-radius:6px; overflow:hidden; flex-wrap:wrap; }
+  .segmented button {
+    font-family:inherit; font-size:11px; padding:6px 11px; border:none; cursor:pointer;
+    background:var(--app-surface-subtle); color:var(--app-text-muted);
+    border-right:1px solid var(--app-border); transition:.15s ease;
+  }
+  .segmented button:last-child { border-right:none; }
+  .segmented button:hover { color:var(--app-text); background:var(--app-surface-hover); }
+  .segmented button.on { background:var(--app-accent-bg); color:var(--app-accent); }
+
+  select.inp, input.inp {
+    font-family:inherit; font-size:11.5px; padding:7px 10px; border-radius:6px;
+    border:1px solid var(--app-border-strong); background:var(--app-surface-subtle);
+    color:var(--app-text); width:100%; transition:.15s ease;
+  }
+  select.inp:focus, input.inp:focus { outline:none; border-color:var(--app-accent-border); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .inp-row { display:flex; gap:8px; align-items:center; }
+  .inp-row .inp { flex:1 1 auto; }
+
+  input[type=range] {
+    -webkit-appearance:none; width:100%; height:4px; border-radius:999px;
+    background:var(--app-border-strong); outline:none; margin:8px 0 4px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; width:14px; height:14px; border-radius:999px;
+    background:var(--app-accent); cursor:pointer; box-shadow:0 0 8px var(--app-accent-glow);
+  }
+  .range-val { font-size:11px; color:var(--app-accent); font-weight:600; }
+  .range-head { display:flex; justify-content:space-between; align-items:baseline; }
+
+  .radio-grid { display:flex; flex-direction:column; gap:8px; }
+  .radio-opt {
+    display:flex; align-items:center; gap:10px; padding:9px 11px; border-radius:8px;
+    border:1px solid var(--app-border); background:var(--app-surface-subtle); cursor:pointer; transition:.15s ease;
+  }
+  .radio-opt:hover { border-color:var(--app-border-hover); }
+  .radio-opt.on { border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .radio-dot { width:13px; height:13px; border-radius:999px; border:1px solid var(--app-border-strong); flex:0 0 auto; position:relative; }
+  .radio-opt.on .radio-dot { border-color:var(--app-accent); }
+  .radio-opt.on .radio-dot::after { content:""; position:absolute; inset:3px; border-radius:999px; background:var(--app-accent); }
+  .radio-opt .ro-text { flex:1 1 auto; }
+  .radio-opt .ro-label { font-size:12px; color:var(--app-text); }
+  .radio-opt .ro-desc { font-size:10px; color:var(--app-text-muted); margin-top:2px; }
+
+  /* status pills */
+  .pill {
+    display:inline-flex; align-items:center; gap:6px; font-size:10px; font-weight:600;
+    padding:3px 9px; border-radius:999px; border:1px solid var(--app-border-strong);
+    background:var(--app-surface-subtle); color:var(--app-text-muted); white-space:nowrap;
+  }
+  .pill .dot { width:6px; height:6px; border-radius:999px; background:var(--app-text-subtle); }
+  .pill.ok { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .pill.ok .dot { background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .pill.warn { color:var(--app-warn); border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+  .pill.warn .dot { background:var(--app-warn); }
+  .pill.danger { color:var(--app-danger); border-color:var(--app-danger-border); background:var(--app-danger-bg); }
+  .pill.danger .dot { background:var(--app-danger); }
+
+  /* permission rows */
+  .perm-row {
+    display:flex; align-items:center; gap:12px; padding:12px 13px; border-radius:8px;
+    border:1px solid var(--app-border); background:var(--app-surface-subtle); margin-bottom:9px;
+  }
+  .perm-row .pr-text { flex:1 1 auto; min-width:0; }
+  .pr-name { font-size:12.5px; font-weight:500; color:var(--app-text); }
+  .pr-desc { font-size:10px; color:var(--app-text-muted); margin-top:3px; }
+  .perm-row .pr-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+
+  /* model download UI */
+  .model-card {
+    border:1px solid var(--app-border); border-radius:8px; background:var(--app-surface-subtle);
+    padding:12px 13px; margin-top:8px;
+  }
+  .mc-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .mc-name { font-size:12px; color:var(--app-text); font-weight:500; }
+  .mc-meta { font-size:10px; color:var(--app-text-muted); margin-top:3px; }
+  .progress { height:6px; border-radius:999px; background:var(--app-surface-active); border:1px solid var(--app-border); margin-top:11px; overflow:hidden; }
+  .progress > i { display:block; height:100%; background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); border-radius:999px; transition:width .3s ease; }
+  .mc-dl-row { display:flex; align-items:center; justify-content:space-between; margin-top:8px; }
+  .mc-dl-pct { font-size:10px; color:var(--app-accent); font-weight:600; }
+
+  /* chips / typeahead */
+  .chips { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
+  .chip {
+    display:inline-flex; align-items:center; gap:7px; font-size:11px; padding:4px 6px 4px 10px;
+    border-radius:999px; border:1px solid var(--app-border-strong); background:var(--app-surface-subtle); color:var(--app-text);
+  }
+  .chip button { background:none; border:none; color:var(--app-text-subtle); cursor:pointer; font-size:13px; line-height:1; padding:0 2px; }
+  .chip button:hover { color:var(--app-danger); }
+  .combo-wrap { position:relative; }
+  .combo-menu {
+    position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:20;
+    border:1px solid var(--app-border-strong); border-radius:8px; background:var(--app-surface-raised);
+    overflow:hidden; max-height:160px; overflow-y:auto;
+  }
+  .combo-menu button {
+    display:block; width:100%; text-align:left; font-family:inherit; font-size:11.5px;
+    padding:8px 11px; border:none; background:none; color:var(--app-text); cursor:pointer; border-bottom:1px solid var(--app-border);
+  }
+  .combo-menu button:last-child { border-bottom:none; }
+  .combo-menu button:hover { background:var(--app-accent-bg); color:var(--app-accent); }
+
+  /* disclosure callout */
+  .callout {
+    display:flex; gap:10px; padding:12px 13px; border-radius:8px; font-size:11px; line-height:1.45;
+    border:1px solid var(--app-info-border); background:var(--app-info-bg); color:var(--app-text); margin-bottom:16px;
+  }
+  .callout .ic { color:var(--app-info); font-weight:700; flex:0 0 auto; }
+  .callout.accent { border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .callout.accent .ic { color:var(--app-accent); }
+
+  /* ============================ BIG BINARY DECISION ============================ */
+  .decision { text-align:center; padding:8px 0 4px; }
+  .decision-q { font-size:16px; font-weight:600; color:var(--app-text-strong); margin-bottom:8px; }
+  .decision-sub { font-size:11px; color:var(--app-text-muted); margin-bottom:22px; line-height:1.45; max-width:480px; margin-left:auto; margin-right:auto; }
+  .choice2 { display:flex; gap:14px; justify-content:center; }
+  .choice {
+    flex:1 1 0; max-width:230px; min-height:120px; border:1px solid var(--app-border-strong);
+    border-radius:12px; background:var(--app-surface-subtle); cursor:pointer; transition:.16s ease;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; padding:18px;
+    font-family:inherit;
+  }
+  .choice:hover { border-color:var(--app-border-hover); background:var(--app-surface-hover); transform:translateY(-1px); }
+  .choice .ch-ic { font-size:24px; line-height:1; }
+  .choice .ch-title { font-size:14px; font-weight:600; color:var(--app-text-strong); }
+  .choice .ch-desc { font-size:10px; color:var(--app-text-muted); line-height:1.35; }
+  .choice.yes:hover, .choice.yes.on { border-color:var(--app-accent); background:var(--app-accent-bg); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .choice.yes .ch-ic { color:var(--app-accent); }
+  .choice.no:hover, .choice.no.on { border-color:var(--app-border-hover); }
+  .choice.no .ch-ic { color:var(--app-text-muted); }
+  .choice .ch-default { font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:var(--app-accent); border:1px solid var(--app-accent-border); background:var(--app-accent-bg); padding:1px 5px; border-radius:3px; margin-top:2px; }
+
+  /* expand/collapse animation wrapper */
+  .expand {
+    display:grid; grid-template-rows:0fr; opacity:0;
+    transition:grid-template-rows .26s ease, opacity .22s ease, margin .26s ease;
+    margin-top:0;
+  }
+  .expand.open { grid-template-rows:1fr; opacity:1; margin-top:22px; }
+  .expand > .expand-inner { overflow:hidden; }
+  .expand-divider { border-top:1px dashed var(--app-border-strong); padding-top:18px; }
+
+  /* ============================ WELCOME / READY ============================ */
+  .center-stack { display:flex; flex-direction:column; align-items:center; text-align:center; height:100%; justify-content:center; gap:6px; }
+  .hero-mark {
+    width:54px; height:54px; border-radius:12px; border:1px solid var(--app-accent-border);
+    background:var(--app-accent-bg); display:flex; align-items:center; justify-content:center;
+    color:var(--app-accent); font-size:24px; font-weight:700; margin-bottom:14px;
+    box-shadow:0 0 22px var(--app-accent-glow);
+  }
+  .hero-title { font-size:24px; font-weight:700; letter-spacing:-0.012em; color:var(--app-text-strong); }
+  .hero-sub { font-size:11.5px; color:var(--app-text-muted); line-height:1.5; max-width:440px; margin-top:8px; }
+  .start-cards { display:flex; gap:14px; margin-top:26px; }
+  .start-card {
+    width:225px; text-align:left; border:1px solid var(--app-border-strong); border-radius:12px;
+    background:var(--app-surface-subtle); padding:16px; cursor:pointer; transition:.16s ease; font-family:inherit;
+  }
+  .start-card:hover { border-color:var(--app-border-hover); background:var(--app-surface-hover); transform:translateY(-1px); }
+  .start-card.rec:hover { border-color:var(--app-accent); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .sc-eyebrow { font-size:9px; letter-spacing:.16em; text-transform:uppercase; color:var(--app-text-muted); display:flex; gap:7px; align-items:center; }
+  .sc-eyebrow .rec-badge { color:var(--app-accent); border:1px solid var(--app-accent-border); background:var(--app-accent-bg); padding:1px 5px; border-radius:3px; font-size:8px; }
+  .sc-title { font-size:15px; font-weight:600; color:var(--app-text-strong); margin:9px 0 6px; }
+  .sc-desc { font-size:10.5px; color:var(--app-text-muted); line-height:1.45; }
+
+  /* ready summary */
+  .summary-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .sum-card {
+    border:1px solid var(--app-border); border-radius:8px; background:var(--app-surface-subtle);
+    padding:11px 12px; display:flex; align-items:flex-start; gap:10px;
+  }
+  .sum-card.off { opacity:.55; }
+  .sum-ic { flex:0 0 auto; width:22px; height:22px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:11px;
+            border:1px solid var(--app-accent-border); background:var(--app-accent-bg); color:var(--app-accent); }
+  .sum-card.off .sum-ic { border-color:var(--app-border-strong); background:var(--app-surface-subtle); color:var(--app-text-subtle); }
+  .sum-name { font-size:11.5px; font-weight:500; color:var(--app-text); }
+  .sum-detail { font-size:9.5px; color:var(--app-text-muted); margin-top:3px; line-height:1.35; }
+  .sum-state { font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--app-accent); margin-top:5px; }
+  .sum-card.off .sum-state { color:var(--app-text-subtle); }
+
+  .two-col { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:820px){ .two-col, .summary-grid { grid-template-columns:1fr; } }
+
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="traffic-lights"><span></span><span></span><span></span></div>
+      <span class="wordmark">mnema</span>
+      <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">☀</button>
+    </header>
+
+    <div class="app-body">
+      <!-- DYNAMIC PROGRESS RAIL -->
+      <div class="rail" id="rail" aria-label="Setup progress"></div>
+
+      <!-- STAGE FRAME -->
+      <section class="stage" aria-live="polite">
+        <header class="stage-head" id="stageHead">
+          <div class="step-badge" id="stepBadge">00</div>
+          <div class="head-text">
+            <div class="eyebrow" id="eyebrow">SETUP</div>
+            <div class="scene-title" id="sceneTitle">…</div>
+            <div class="scene-sub" id="sceneSub">…</div>
+          </div>
+        </header>
+        <div class="stage-body" id="stageBody"></div>
+        <footer class="stage-foot">
+          <button class="btn ghost" id="backBtn">‹ Back</button>
+          <span class="foot-hint" id="footHint"></span>
+          <button class="btn primary" id="contBtn">Continue ›</button>
+        </footer>
+      </section>
+    </div>
+  </div>
+
+<script>
+/* =====================================================================
+   ADAPTIVE GUIDED PATH — state + renderer
+   Steps array drives BOTH the dynamic rail and the stage body.
+   Optional steps lead with a big Yes/No; declining auto-advances and
+   drops the step from the rail; accepting expands settings inline.
+===================================================================== */
+
+const state = {
+  index: -1,            // -1 = welcome screen; steps.length = ready screen
+  enabled: {            // optional feature toggles (null = not yet decided)
+    mic: null, sysaudio: null, ocr: null, transcribe: null, privacy: null, askai: null
+  },
+  // a small bag of per-feature settings just for the summary text
+  cfg: {
+    resolution:'1080p', bitrate:'Medium', fps:2, segment:120, idle:false,
+    retention:'14 days', autostart:true,
+    micTranscribe:true, micDevice:'MacBook Pro Microphone',
+    sysTranscribe:true,
+    ocrProvider:'Apple Vision', ocrMode:'Fast', ocrLang:'English',
+    asrProvider:'Local Whisper', asrModel:'small', asrLang:'auto',
+    excluded:['1Password','Banking'],
+    aiProvider:'Anthropic', aiModel:'claude-opus-4'
+  }
+};
+
+// Step registry. `req:true` = required (always present). Optional steps carry a key.
+const STEPS = [
+  { id:'permissions', req:true,  eyebrow:'Foundation', title:'Grant permissions',
+    sub:'Mnema needs macOS permission to capture your screen and audio. Nothing records until you finish setup.' },
+  { id:'screen', req:true, eyebrow:'Foundation', title:'Screen capture',
+    sub:'How the screen is recorded. These defaults sip resources — tune them only if you need to.' },
+  { id:'storage', req:true, eyebrow:'Foundation', title:'Storage & retention',
+    sub:'Where recordings live on disk and how long Mnema keeps them. Everything stays local.' },
+  { id:'mic', key:'mic', title:'Microphone capture',
+    sub:'Record your voice alongside the screen — useful for narrating, meetings and calls.',
+    q:'Capture your microphone too?', qsub:'Adds your spoken audio to recordings. You can change this any time in Settings.', def:false },
+  { id:'sysaudio', key:'sysaudio', title:'System audio',
+    sub:'Record the sound coming out of your speakers (video, music, the other side of a call).',
+    q:'Capture system audio?', qsub:'Records what other apps play. Requires screen capture, which is already on.', def:false },
+  { id:'ocr', key:'ocr', title:'Read on-screen text (OCR)',
+    sub:'Mnema can read the text visible on your screen so you can search recordings by what you saw.',
+    q:'Read on-screen text?', qsub:'Makes everything you saw searchable. Runs on-device. Recommended.', def:true },
+  { id:'transcribe', key:'transcribe', title:'Audio transcription',
+    sub:'Turn captured speech into searchable, timestamped text — on-device.',
+    q:'Transcribe captured audio?', qsub:'Makes spoken words searchable. Runs on-device with a downloadable model.', def:true },
+  { id:'privacy', key:'privacy', title:'Privacy — excluded apps',
+    sub:'Name apps that should never be recorded. Mnema pauses capture whenever they are in front.',
+    q:'Exclude any sensitive apps?', qsub:'Recording skips these apps entirely — password managers, banking, video calls.', def:false },
+  { id:'askai', key:'askai', title:'Ask AI (Reasoning Engine)',
+    sub:'Ask questions about everything you have captured and get answers, recaps and timelines.',
+    q:'Enable Ask AI?', qsub:'Connects a Reasoning Engine — cloud or fully local. You can set this up later instead.', def:false }
+];
+
+// Which steps are "in the path" right now (required + accepted optionals + the current undecided optional)
+function activeSteps() {
+  return STEPS.filter((s, i) => {
+    if (s.req) return true;
+    const v = state.enabled[s.key];
+    if (v === true) return true;            // accepted -> stays
+    if (v === false) return false;          // declined -> drops out
+    return true;                             // undecided -> still shown (it's a pending decision)
+  });
+}
+
+/* ---------------------------------- RAIL ---------------------------------- */
+function renderRail() {
+  const rail = document.getElementById('rail');
+  rail.innerHTML = '';
+  // Welcome + Ready bookends in the rail as small caps nodes
+  const path = activeSteps();
+  // Find current step's position within `path`
+  let parts = [];
+
+  // welcome node
+  parts.push(railNode('—','Welcome', state.index>=0, state.index===-1));
+
+  path.forEach((s, i) => {
+    parts.push(railLink(state.index> STEPS.indexOf(s)));
+    const num = String(i+1).padStart(2,'0');
+    const stIdx = STEPS.indexOf(s);
+    const done = state.index > stIdx;
+    const cur  = state.index === stIdx;
+    parts.push(railNode(num, shortLabel(s), done, cur, s.req));
+  });
+
+  // show ghost stubs for declined optionals (dropped out)
+  const declined = STEPS.filter(s=>!s.req && state.enabled[s.key]===false).length;
+  for (let i=0;i<declined;i++){ parts.push(railLink(false)); parts.push(railGhost()); }
+
+  parts.push(railLink(state.index>=STEPS.length));
+  parts.push(railNode('✓','Ready', state.index>STEPS.length, state.index===STEPS.length));
+
+  parts.forEach(p=>rail.appendChild(p));
+}
+function shortLabel(s){
+  return ({permissions:'Perms',screen:'Screen',storage:'Storage',mic:'Mic',
+    sysaudio:'Audio',ocr:'OCR',transcribe:'Transcribe',privacy:'Privacy',askai:'Ask AI'})[s.id]||s.id;
+}
+function railNode(num,label,done,cur,req){
+  const el = document.createElement('div');
+  el.className = 'rail-node' + (done?' done':'') + (cur?' current':'');
+  el.innerHTML = `<span class="rn-num">${num}</span><span class="rn-label">${label}</span>`
+    + (req?`<span class="rn-req">req</span>`:'');
+  return el;
+}
+function railLink(done){ const el=document.createElement('div'); el.className='rail-link'+(done?' done':''); return el; }
+function railGhost(){ const el=document.createElement('div'); el.className='rail-ghost'; el.title='Skipped'; return el; }
+
+/* ---------------------------------- RENDER ---------------------------------- */
+function render() {
+  renderRail();
+  const head = document.getElementById('stageHead');
+  const badge = document.getElementById('stepBadge');
+  const eyebrow = document.getElementById('eyebrow');
+  const title = document.getElementById('sceneTitle');
+  const sub = document.getElementById('sceneSub');
+  const body = document.getElementById('stageBody');
+  const backBtn = document.getElementById('backBtn');
+  const contBtn = document.getElementById('contBtn');
+  const footHint = document.getElementById('footHint');
+
+  backBtn.style.visibility = (state.index <= -1) ? 'hidden' : 'visible';
+  contBtn.classList.remove('hidden');
+  footHint.textContent = '';
+
+  // WELCOME
+  if (state.index === -1) {
+    head.classList.add('hidden');
+    contBtn.classList.add('hidden');
+    body.innerHTML = welcomeView();
+    wireWelcome();
+    return;
+  }
+  // READY
+  if (state.index >= STEPS.length) {
+    head.classList.add('hidden');
+    contBtn.classList.add('hidden');
+    backBtn.style.visibility = 'visible';
+    body.innerHTML = readyView();
+    wireReady();
+    return;
+  }
+
+  head.classList.remove('hidden');
+  const step = STEPS[state.index];
+  // header
+  badge.textContent = String(stepNumber(step)).padStart(2,'0');
+  badge.className = 'step-badge' + (step.req?' req':'');
+  eyebrow.innerHTML = `${step.eyebrow||'Optional feature'} ${step.req?'<span class="req-tag">Required</span>':'<span class="opt-tag">Optional</span>'}`;
+  title.textContent = step.title;
+  sub.textContent = step.sub;
+
+  if (step.req) {
+    body.innerHTML = requiredBody(step.id);
+    contBtn.textContent = 'Continue ›';
+    wireRequired(step.id);
+  } else {
+    body.innerHTML = optionalBody(step);
+    wireOptional(step);
+    // Continue is hidden until a Yes/No choice is made; choice drives flow
+    const decided = state.enabled[step.key] !== null;
+    if (decided && state.enabled[step.key] === true) {
+      contBtn.classList.remove('hidden');
+      contBtn.textContent = 'Continue ›';
+      footHint.textContent = 'Configure below, then continue.';
+    } else {
+      contBtn.classList.add('hidden');
+      footHint.textContent = 'Choose Yes or No to continue.';
+    }
+  }
+}
+
+// step number = position among currently-active steps
+function stepNumber(step){
+  const path = activeSteps();
+  return path.indexOf(step)+1;
+}
+
+/* ---------------------------------- WELCOME ---------------------------------- */
+function welcomeView(){
+  return `
+  <div class="center-stack">
+    <div class="hero-mark">m</div>
+    <div class="hero-title">Welcome to Mnema</div>
+    <div class="hero-sub">Mnema quietly records your screen so you can search and ask questions about anything you have done. Let's set up what to capture — everything stays on your Mac.</div>
+    <div class="start-cards">
+      <button class="start-card rec" id="recBtn">
+        <div class="sc-eyebrow">Fast <span class="rec-badge">Recommended</span></div>
+        <div class="sc-title">Recommended setup</div>
+        <div class="sc-desc">Turn on sensible defaults — screen, on-screen text and transcription — and breeze through. You can change anything later.</div>
+      </button>
+      <button class="start-card" id="customBtn">
+        <div class="sc-eyebrow">Full control</div>
+        <div class="sc-title">Customize</div>
+        <div class="sc-desc">Decide each feature yourself. Required pieces stay; every optional one leads with a simple Yes / No.</div>
+      </button>
+    </div>
+  </div>`;
+}
+function wireWelcome(){
+  document.getElementById('recBtn').onclick = ()=>{
+    // preselect sensible defaults
+    state.enabled.mic=false; state.enabled.sysaudio=false;
+    state.enabled.ocr=true; state.enabled.transcribe=true;
+    state.enabled.privacy=true; state.enabled.askai=false;
+    goNextFrom(-1);
+  };
+  document.getElementById('customBtn').onclick = ()=>{
+    // reset all undecided so each optional asks
+    Object.keys(state.enabled).forEach(k=>state.enabled[k]=null);
+    goNextFrom(-1);
+  };
+}
+
+/* ---------------------------------- REQUIRED BODIES ---------------------------------- */
+function requiredBody(id){
+  if (id==='permissions') return permissionsBody();
+  if (id==='screen') return screenBody();
+  if (id==='storage') return storageBody();
+  return '';
+}
+
+function permissionsBody(){
+  return `
+  <div class="callout"><span class="ic">i</span><span>Mnema only requests what later steps actually use. You can revisit any of these from <strong>System Settings › Privacy & Security</strong>.</span></div>
+  <div class="group">
+    <div class="group-title">macOS permissions</div>
+    <div class="perm-row">
+      <div class="pr-text"><div class="pr-name">Screen Recording</div><div class="pr-desc">Required — capture window and screen contents.</div></div>
+      <div class="pr-actions"><span class="pill ok"><span class="dot"></span>Granted</span></div>
+    </div>
+    <div class="perm-row">
+      <div class="pr-text"><div class="pr-name">Microphone</div><div class="pr-desc">Needed only if you enable microphone capture.</div></div>
+      <div class="pr-actions"><span class="pill warn"><span class="dot"></span>Not requested</span><button class="btn sm" data-perm="mic">Grant access</button></div>
+    </div>
+    <div class="perm-row">
+      <div class="pr-text"><div class="pr-name">System Audio</div><div class="pr-desc">Needed only if you capture system audio.</div></div>
+      <div class="pr-actions"><span class="pill danger"><span class="dot"></span>Denied</span><button class="btn sm" data-perm="sys">Open Settings</button></div>
+    </div>
+  </div>`;
+}
+
+function screenBody(){
+  return `
+  <div class="two-col">
+    <div>
+      <div class="group">
+        <div class="group-title">Quality</div>
+        <div class="field">
+          <label class="field-label">Resolution</label>
+          <div class="segmented" data-seg="resolution">
+            <button>Original</button><button class="on">1080p</button><button>1440p</button><button>4K</button><button>Custom…</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">Video bitrate</label>
+          <div class="segmented" data-seg="bitrate">
+            <button>Low</button><button class="on">Medium</button><button>High</button><button>Custom…</button>
+          </div>
+          <div class="field-help">Custom range 1–40 Mbps. Higher bitrate = sharper text, larger files.</div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="group">
+        <div class="group-title">Capture rate</div>
+        <div class="field">
+          <div class="range-head"><label class="field-label">Frame rate</label><span class="range-val" id="fpsVal">2 fps</span></div>
+          <input type="range" min="1" max="120" value="2" id="fps">
+          <div class="field-help">2 fps is plenty for searching — it keeps files tiny.</div>
+        </div>
+        <div class="field">
+          <div class="range-head"><label class="field-label">Segment duration</label><span class="range-val" id="segVal">120 s</span></div>
+          <input type="range" min="10" max="300" value="120" id="seg">
+          <div class="field-help">Recordings are split into segments. Capped at 5 min (300 s).</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="group" style="margin-top:6px;">
+    <div class="group-title">Power</div>
+    <div class="switch-row">
+      <div class="sr-text"><div class="sr-label">Pause when idle</div><div class="sr-desc">Stop capturing when there's no activity, to save space.</div></div>
+      <div class="switch" role="switch" aria-checked="false" tabindex="0" id="idleSwitch"><span class="thumb"></span></div>
+    </div>
+    <div class="expand" id="idleExpand"><div class="expand-inner"><div class="field" style="padding-top:14px;">
+      <div class="range-head"><label class="field-label">Idle timeout</label><span class="range-val" id="idleVal">60 s</span></div>
+      <input type="range" min="5" max="300" value="60" id="idleTimeout">
+    </div></div></div>
+  </div>`;
+}
+
+function storageBody(){
+  return `
+  <div class="group">
+    <div class="group-title">Location</div>
+    <div class="field">
+      <label class="field-label">Save directory</label>
+      <div class="inp-row">
+        <input class="inp" type="text" value="~/Library/Application Support/mnema/recordings" readonly>
+        <button class="btn sm">Browse…</button>
+      </div>
+      <div class="field-help">Stays on this Mac. Pick an external drive for long retention.</div>
+    </div>
+    <div class="field">
+      <label class="field-label">Retention</label>
+      <div class="inp-row">
+        <select class="inp" data-set="retention">
+          <option>Never delete</option><option>7 days</option><option selected>14 days</option><option>30 days</option>
+        </select>
+      </div>
+      <div class="field-help">Older recordings are cleaned automatically. Insights you've built are kept regardless.</div>
+    </div>
+  </div>
+  <div class="group">
+    <div class="group-title">Advanced</div>
+    <div class="field">
+      <label class="field-label">Preview cache TTL</label>
+      <select class="inp"><option>1 hour</option><option selected>24 hours</option><option>3 days</option></select>
+    </div>
+    <div class="switch-row" style="border-top:1px solid var(--app-border); margin-top:8px;">
+      <div class="sr-text"><div class="sr-label">Start recording when Mnema launches</div><div class="sr-desc">Auto-start capture on login so you never forget.</div></div>
+      <div class="switch" role="switch" aria-checked="true" tabindex="0" data-set="autostart"><span class="thumb"></span></div>
+    </div>
+  </div>`;
+}
+
+/* ---------------------------------- OPTIONAL BODIES (Yes/No + expand) ---------------------------------- */
+function optionalBody(step){
+  const v = state.enabled[step.key];
+  const yesOn = v===true ? 'on' : '';
+  const noOn  = v===false ? 'on' : '';
+  return `
+  <div class="decision">
+    <div class="decision-q">${step.q}</div>
+    <div class="decision-sub">${step.qsub}</div>
+    <div class="choice2">
+      <button class="choice yes ${yesOn}" data-choice="yes">
+        <div class="ch-ic">✓</div>
+        <div class="ch-title">Yes, enable</div>
+        <div class="ch-desc">Set it up now</div>
+        ${step.def===true?'<div class="ch-default">Default</div>':''}
+      </button>
+      <button class="choice no ${noOn}" data-choice="no">
+        <div class="ch-ic">✕</div>
+        <div class="ch-title">No, skip</div>
+        <div class="ch-desc">Maybe later in Settings</div>
+        ${step.def===false?'<div class="ch-default">Default</div>':''}
+      </button>
+    </div>
+  </div>
+  <div class="expand ${v===true?'open':''}" id="featExpand"><div class="expand-inner">
+    <div class="expand-divider">${featureSettings(step.key)}</div>
+  </div></div>`;
+}
+
+function featureSettings(key){
+  switch(key){
+    case 'mic': return `
+      <div class="group">
+        <div class="group-title">Microphone settings</div>
+        <div class="field">
+          <label class="field-label">Input device</label>
+          <select class="inp"><option selected>MacBook Pro Microphone</option><option>External USB Mic</option><option>AirPods Pro</option></select>
+        </div>
+        <div class="switch-row" style="border-top:1px solid var(--app-border);">
+          <div class="sr-text"><div class="sr-label">Transcribe microphone</div><div class="sr-desc">Turn your spoken words into searchable text (uses the transcription model).</div></div>
+          <div class="switch" role="switch" aria-checked="true" tabindex="0"><span class="thumb"></span></div>
+        </div>
+      </div>`;
+    case 'sysaudio': return `
+      <div class="callout accent"><span class="ic">✓</span><span>Screen capture is already on, so system audio can be recorded.</span></div>
+      <div class="group">
+        <div class="group-title">System audio settings</div>
+        <div class="switch-row">
+          <div class="sr-text"><div class="sr-label">Transcribe system audio</div><div class="sr-desc">Transcribe what other apps play — videos, calls, music with vocals.</div></div>
+          <div class="switch" role="switch" aria-checked="true" tabindex="0"><span class="thumb"></span></div>
+        </div>
+      </div>`;
+    case 'ocr': return `
+      <div class="group">
+        <div class="group-title">Provider</div>
+        <div class="radio-grid" data-radio="ocr">
+          <div class="radio-opt on"><span class="radio-dot"></span><div class="ro-text"><div class="ro-label">Apple Vision</div><div class="ro-desc">Built in, fast, no download. Recommended on macOS.</div></div></div>
+          <div class="radio-opt"><span class="radio-dot"></span><div class="ro-text"><div class="ro-label">Tesseract</div><div class="ro-desc">Open-source, more languages, needs a language model.</div></div></div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-title">Model</div>
+        <div class="model-card">
+          <div class="mc-head">
+            <div><div class="mc-name">Apple Vision (system)</div><div class="mc-meta">Bundled with macOS · no download</div></div>
+            <span class="pill ok"><span class="dot"></span>Available</span>
+          </div>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="field">
+          <label class="field-label">Language (Tesseract)</label>
+          <select class="inp"><option selected>English</option><option>French</option><option>German</option><option>Japanese</option></select>
+        </div>
+        <div class="field">
+          <label class="field-label">Recognition mode</label>
+          <div class="segmented" data-seg="ocrMode"><button class="on">Fast</button><button>Accurate</button></div>
+        </div>
+      </div>`;
+    case 'transcribe': return `
+      <div class="group">
+        <div class="group-title">Provider</div>
+        <div class="radio-grid" data-radio="asr">
+          <div class="radio-opt on"><span class="radio-dot"></span><div class="ro-text"><div class="ro-label">Local Whisper</div><div class="ro-desc">On-device, accurate, multilingual. Downloads a model.</div></div></div>
+          <div class="radio-opt"><span class="radio-dot"></span><div class="ro-text"><div class="ro-label">Apple Speech</div><div class="ro-desc">Built in, fast, English-focused.</div></div></div>
+          <div class="radio-opt"><span class="radio-dot"></span><div class="ro-text"><div class="ro-label">Parakeet</div><div class="ro-desc">High-accuracy English, larger download.</div></div></div>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-title">Whisper model</div>
+        <div class="field">
+          <div class="segmented" data-seg="asrModel"><button>base</button><button class="on">small</button><button>medium</button><button>large</button></div>
+        </div>
+        <div class="model-card">
+          <div class="mc-head">
+            <div><div class="mc-name">whisper-small.en</div><div class="mc-meta">466 MB · int8 · on-device</div></div>
+            <span class="pill warn"><span class="dot"></span>Downloading</span>
+          </div>
+          <div class="progress"><i style="width:62%"></i></div>
+          <div class="mc-dl-row"><span class="mc-dl-pct">62% · 289 / 466 MB · 1.2 MB/s</span><button class="btn sm">Cancel</button></div>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">Language</label>
+        <select class="inp"><option selected>Auto-detect</option><option>English</option><option>French</option><option>German</option></select>
+      </div>`;
+    case 'privacy': return `
+      <div class="group">
+        <div class="group-title">Excluded apps</div>
+        <div class="field">
+          <label class="field-label">Add an app</label>
+          <div class="combo-wrap">
+            <input class="inp" type="text" id="excludeInput" placeholder="Type an app name… e.g. Zoom" autocomplete="off">
+            <div class="combo-menu hidden" id="excludeMenu"></div>
+          </div>
+          <div class="chips" id="excludeChips"></div>
+          <div class="field-help"><span id="excludeCount">2</span> apps excluded · <a href="#" id="applyRec" style="color:var(--app-accent);text-decoration:none;">Apply recommended</a> (1Password, Banking, Zoom)</div>
+        </div>
+      </div>`;
+    case 'askai': return `
+      <div class="callout"><span class="ic">i</span><span>Ask AI runs on the <strong>Reasoning Engine</strong>. Choose a cloud provider (Anthropic / OpenAI) or run fully local (Ollama / Llamafile). Cloud keys are stored only in your macOS Keychain.</span></div>
+      <div class="group">
+        <div class="group-title">Reasoning Engine</div>
+        <div class="field">
+          <label class="field-label">Provider</label>
+          <select class="inp"><option selected>Anthropic (cloud)</option><option>OpenAI (cloud)</option><option>Ollama (local)</option><option>Llamafile (local)</option></select>
+        </div>
+        <div class="field">
+          <label class="field-label">Model</label>
+          <select class="inp"><option selected>claude-opus-4</option><option>claude-sonnet-4</option><option>claude-haiku-4</option></select>
+        </div>
+        <div class="field">
+          <label class="field-label">API key</label>
+          <div class="inp-row">
+            <input class="inp" type="password" value="sk-ant-xxxxxxxxxxxxxxxxxxxx" placeholder="Paste API key">
+            <button class="btn sm primary">Save to Keychain</button>
+          </div>
+          <div class="field-help">Stored only in the macOS Keychain — never written to config files.</div>
+        </div>
+      </div>`;
+  }
+  return '';
+}
+
+/* ---------------------------------- WIRING ---------------------------------- */
+function wireRequired(id){
+  // segmented
+  document.querySelectorAll('#stageBody .segmented').forEach(seg=>{
+    seg.querySelectorAll('button').forEach(b=>{
+      b.onclick = ()=>{ seg.querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
+        const k = seg.getAttribute('data-seg'); if(k in state.cfg) state.cfg[k]=b.textContent; };
+    });
+  });
+  // switches (generic toggle)
+  document.querySelectorAll('#stageBody .switch').forEach(sw=>{
+    const toggle = ()=>{ const on = sw.getAttribute('aria-checked')==='true'; sw.setAttribute('aria-checked', String(!on));
+      if (sw.id==='idleSwitch'){ document.getElementById('idleExpand').classList.toggle('open', !on); state.cfg.idle=!on; }
+      const setk = sw.getAttribute('data-set'); if (setk) state.cfg[setk]=!on; };
+    sw.onclick = toggle; sw.onkeydown = e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggle(); } };
+  });
+  // selects
+  document.querySelectorAll('#stageBody select[data-set]').forEach(sel=>{
+    sel.onchange = ()=>{ state.cfg[sel.getAttribute('data-set')] = sel.value; };
+  });
+  // ranges
+  hookRange('fps','fpsVal', v=>{ state.cfg.fps=+v; return v+' fps'; });
+  hookRange('seg','segVal', v=>{ state.cfg.segment=+v; return v+' s'; });
+  hookRange('idleTimeout','idleVal', v=> v+' s');
+  // perm buttons (demo: flip pill state)
+  document.querySelectorAll('#stageBody [data-perm]').forEach(b=>{
+    b.onclick = ()=>{
+      const pill = b.parentElement.querySelector('.pill');
+      pill.className='pill ok'; pill.innerHTML='<span class="dot"></span>Granted'; b.remove();
+    };
+  });
+}
+function hookRange(id,valId,fmt){
+  const r=document.getElementById(id); if(!r) return; const o=document.getElementById(valId);
+  r.oninput = ()=>{ o.textContent = fmt(r.value); };
+}
+
+function wireOptional(step){
+  document.querySelectorAll('#stageBody .choice').forEach(c=>{
+    c.onclick = ()=>{
+      const choice = c.getAttribute('data-choice');
+      if (choice==='yes'){
+        state.enabled[step.key]=true;
+        // expand inline, reveal Continue
+        render();                              // re-render same step in accepted state
+        const ex = document.getElementById('featExpand'); if (ex){ requestAnimationFrame(()=>ex.classList.add('open')); }
+        if (step.key==='privacy') initPrivacy();
+        if (step.key==='ocr'||step.key==='transcribe') wireRadios();
+        wireFeatureControls();
+      } else {
+        state.enabled[step.key]=false;
+        // auto-advance (skip configuration) after a brief collapse beat
+        const ex = document.getElementById('featExpand'); if (ex) ex.classList.remove('open');
+        c.classList.add('on');
+        setTimeout(()=> goNextFrom(state.index), 230);
+      }
+    };
+  });
+  // if reopened in accepted state, wire its controls
+  if (state.enabled[step.key]===true){
+    if (step.key==='privacy') initPrivacy();
+    if (step.key==='ocr'||step.key==='transcribe') wireRadios();
+    wireFeatureControls();
+  }
+}
+
+function wireFeatureControls(){
+  document.querySelectorAll('#featExpand .segmented').forEach(seg=>{
+    seg.querySelectorAll('button').forEach(b=>{ b.onclick=()=>{ seg.querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
+      const k=seg.getAttribute('data-seg'); if (k==='asrModel') state.cfg.asrModel=b.textContent; if(k==='ocrMode') state.cfg.ocrMode=b.textContent; }; });
+  });
+  document.querySelectorAll('#featExpand .switch').forEach(sw=>{
+    const t=()=>{ const on=sw.getAttribute('aria-checked')==='true'; sw.setAttribute('aria-checked',String(!on)); };
+    sw.onclick=t; sw.onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); t(); } };
+  });
+}
+function wireRadios(){
+  document.querySelectorAll('#featExpand [data-radio]').forEach(grp=>{
+    grp.querySelectorAll('.radio-opt').forEach(opt=>{
+      opt.onclick=()=>{ grp.querySelectorAll('.radio-opt').forEach(o=>o.classList.remove('on')); opt.classList.add('on');
+        const which=grp.getAttribute('data-radio'); const label=opt.querySelector('.ro-label').textContent;
+        if(which==='ocr') state.cfg.ocrProvider=label; if(which==='asr') state.cfg.asrProvider=label; };
+    });
+  });
+}
+
+/* ---------------- privacy typeahead ---------------- */
+const APP_POOL = ['1Password','Banking','Zoom','Messages','Mail','Slack','Signal','WhatsApp','Bitwarden','Photos','FaceTime','Tor Browser','Keychain Access'];
+function initPrivacy(){
+  renderChips();
+  const input = document.getElementById('excludeInput');
+  const menu = document.getElementById('excludeMenu');
+  if (!input) return;
+  const showMenu = ()=>{
+    const q = input.value.trim().toLowerCase();
+    const opts = APP_POOL.filter(a=>!state.cfg.excluded.includes(a) && a.toLowerCase().includes(q)).slice(0,6);
+    if (!opts.length){ menu.classList.add('hidden'); return; }
+    menu.innerHTML = opts.map(a=>`<button data-app="${a}">${a}</button>`).join('');
+    menu.classList.remove('hidden');
+    menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{ addApp(b.getAttribute('data-app')); input.value=''; menu.classList.add('hidden'); input.focus(); });
+  };
+  input.oninput = showMenu;
+  input.onfocus = showMenu;
+  input.onkeydown = e=>{ if(e.key==='Enter'){ const v=input.value.trim(); if(v){ addApp(v); input.value=''; menu.classList.add('hidden'); } } };
+  document.getElementById('applyRec').onclick = e=>{ e.preventDefault(); ['1Password','Banking','Zoom'].forEach(addApp); };
+}
+function addApp(a){ if(!state.cfg.excluded.includes(a)){ state.cfg.excluded.push(a); renderChips(); } }
+function removeApp(a){ state.cfg.excluded = state.cfg.excluded.filter(x=>x!==a); renderChips(); }
+function renderChips(){
+  const wrap = document.getElementById('excludeChips'); if(!wrap) return;
+  wrap.innerHTML = state.cfg.excluded.map(a=>`<span class="chip">${a}<button data-x="${a}">×</button></span>`).join('');
+  wrap.querySelectorAll('button').forEach(b=>b.onclick=()=>removeApp(b.getAttribute('data-x')));
+  const c=document.getElementById('excludeCount'); if(c) c.textContent=state.cfg.excluded.length;
+}
+
+/* ---------------------------------- READY ---------------------------------- */
+function readyView(){
+  const armed = [];
+  armed.push(card(true,'▭','Screen capture',`${state.cfg.resolution} · ${state.cfg.fps} fps · ${state.cfg.bitrate} bitrate`,'On'));
+  armed.push(card(true,'⬚','Storage & retention',`${state.cfg.retention} · auto-start ${state.cfg.autostart?'on':'off'}`,'On'));
+  function feat(key,ic,name,onDetail){ const on=state.enabled[key]===true; armed.push(card(on,ic,name, on?onDetail:'Not enabled', on?'On':'Off')); }
+  feat('mic','◌','Microphone capture', `${state.cfg.micDevice}`);
+  feat('sysaudio','♪','System audio', 'Recording system sound');
+  feat('ocr','⌕','On-screen text (OCR)', `${state.cfg.ocrProvider} · ${state.cfg.ocrMode}`);
+  feat('transcribe','✎','Audio transcription', `${state.cfg.asrProvider} · ${state.cfg.asrModel}`);
+  feat('privacy','⊘','Excluded apps', `${state.cfg.excluded.length} apps protected`);
+  feat('askai','✦','Ask AI', `${state.cfg.aiProvider} · ${state.cfg.aiModel}`);
+
+  return `
+  <div style="text-align:center; margin-bottom:18px;">
+    <div class="hero-mark" style="margin:0 auto 12px;">✓</div>
+    <div class="hero-title" style="font-size:21px;">You're all set</div>
+    <div class="hero-sub" style="margin:6px auto 0;">Here's what's armed. Start recording now, or open the dashboard — you can change any of this in Settings.</div>
+  </div>
+  <div class="summary-grid">${armed.join('')}</div>
+  <div style="display:flex; gap:12px; justify-content:center; margin-top:22px;">
+    <button class="btn primary" id="startRec">● Start recording</button>
+    <button class="btn" id="openDash">Open dashboard</button>
+  </div>`;
+}
+function card(on,ic,name,detail,stateTxt){
+  return `<div class="sum-card ${on?'':'off'}"><div class="sum-ic">${ic}</div>
+    <div><div class="sum-name">${name}</div><div class="sum-detail">${detail}</div><div class="sum-state">${stateTxt}</div></div></div>`;
+}
+function wireReady(){
+  const sr=document.getElementById('startRec'); const od=document.getElementById('openDash');
+  if(sr) sr.onclick=()=>{ sr.textContent='● Recording…'; sr.disabled=true; };
+  if(od) od.onclick=()=>{ od.textContent='Opening…'; };
+}
+
+/* ---------------------------------- NAV ---------------------------------- */
+function goNextFrom(fromIndex){
+  // advance from `fromIndex` to next step that is still in the path
+  let i = fromIndex + 1;
+  while (i < STEPS.length){
+    const s = STEPS[i];
+    if (s.req) break;
+    if (state.enabled[s.key] === false){ i++; continue; } // skip declined
+    break; // undecided or accepted -> stop here (so it can ask / show)
+  }
+  state.index = Math.min(i, STEPS.length);
+  render();
+}
+function goPrev(){
+  if (state.index <= 0){ state.index = -1; render(); return; }
+  let i = state.index - 1;
+  while (i >= 0){
+    const s = STEPS[i];
+    if (s.req) break;
+    if (state.enabled[s.key] === false){ i--; continue; }
+    break;
+  }
+  state.index = Math.max(i, -1);
+  render();
+}
+
+document.getElementById('backBtn').onclick = ()=>{
+  if (state.index >= STEPS.length){ // from Ready, go back into last active step
+    let i = STEPS.length-1;
+    while(i>=0){ const s=STEPS[i]; if(s.req) break; if(state.enabled[s.key]===false){i--;continue;} break; }
+    state.index=i; render(); return;
+  }
+  goPrev();
+};
+document.getElementById('contBtn').onclick = ()=>{
+  if (state.index < 0){ goNextFrom(-1); return; }
+  goNextFrom(state.index);
+};
+
+/* ---------------------------------- THEME ---------------------------------- */
+const tt = document.getElementById('themeToggle');
+tt.onclick = ()=>{
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur==='light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  tt.textContent = next==='light' ? '☾' : '☀';
+};
+
+/* ---------------------------------- BOOT ---------------------------------- */
+render();
+</script>
+</body>
+</html>

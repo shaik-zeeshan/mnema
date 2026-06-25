@@ -21,6 +21,7 @@ System-wide decisions stay in [docs/adr](docs/adr/), while owner-local context l
 | Desktop app | [apps/desktop/CONTEXT.md](apps/desktop/CONTEXT.md) | Svelte UI, settings surfaces, prompts, status-bar-facing actions, dashboard UX, privacy recovery flows. |
 | Desktop native runtime | [apps/desktop/src-tauri/CONTEXT.md](apps/desktop/src-tauri/CONTEXT.md) | Tauri wiring, Recording Lifecycle, live privacy application, native runtime services, generated preview cache, broker authorization server. |
 | App infra | [crates/app-infra/CONTEXT.md](crates/app-infra/CONTEXT.md) | SQLite state, migrations, frame/OCR pipeline, retention, search projections, storage layout, broker policy. |
+| Semantic search | [crates/semantic-search/CONTEXT.md](crates/semantic-search/CONTEXT.md) | On-device embedding models, candle backend, model tiers/catalog, pooling + prompts, vector dimension authority. |
 | Mnema CLI | [crates/cli/CONTEXT.md](crates/cli/CONTEXT.md) | `mnema` command UX, brokered access grants, client identity, output formats, command errors, exit codes. |
 | Audio transcription | [crates/audio-transcription/CONTEXT.md](crates/audio-transcription/CONTEXT.md) | Audio transcription jobs, local providers, model selection, transcript spans, audio search units. |
 | Speaker analysis | [crates/speaker-analysis/CONTEXT.md](crates/speaker-analysis/CONTEXT.md) | Speaker analysis jobs, diarization policy, speaker turn alignment, speaker continuity. |

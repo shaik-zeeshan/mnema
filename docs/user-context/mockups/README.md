@@ -30,11 +30,16 @@ A synthesis settled during design review:
   tier swaps the AI hero for a deterministic factual read plus an enable-the-engine invite.
 - **Chat is its own dedicated surface**, a Claude/ChatGPT-style conversation workspace — not
   a popover. It shares one engine and one persistent conversation store with Quick Recall.
-- **Top segmented surface-switcher nav, no left rail.** Inside **Main**, a titlebar segmented
-  control switches **Timeline ⇄ Insights**; inside Insights, a slim horizontal sub-surface
-  tab bar (`.subnav`) switches Overview / Subjects / Context / Chat. Content runs full-width.
-- **One unified segmented-control pattern** for every toggle on the surface (Timeline/Insights,
-  the surface/sub-surface switcher, Day/Week/Month, Subjects sort). Keep that visual consistency.
+- **Persistent left rail.** Inside **Main**, a titlebar segmented control still switches
+  **Timeline ⇄ Insights**; inside Insights, a persistent left **rail** (`.sidebar`) holds the
+  sub-surface nav (Overview / Subjects / Context), a new-chat action, a chat search, time-grouped
+  chat history, and an engine/model footer. Chat is reached via new-chat / the history list rather
+  than a top-level tab. Selection is signalled by accent **text only** — minimal styling built from
+  hairline dividers and whitespace, no boxes or pills. Content runs in the column to the right of the
+  rail. *(This reverses the earlier "top tab bar, no left rail" direction.)*
+- **One unified segmented-control pattern** for the remaining toggles on the surface (Timeline/Insights,
+  Day/Week/Month, Subjects sort). Keep that visual consistency. The Insights sub-surface switcher is
+  **no longer** a segmented control — it lives in the left rail.
 
 ## 2. Files in this folder
 
@@ -47,7 +52,7 @@ A synthesis settled during design review:
 | `subject.html` | **#106** — single Subject detail: per-Conclusion confidence trajectories + evidence inspector. |
 | `context.html` | **#107** — user-authored Context composer + authored-statement list. |
 | `chat.html` | Insights **Chat** sub-surface: persistent threads, graphical inline answers. |
-| `_shell.html` | **Shared shell template** — canonical titlebar + subnav chrome to copy into each surface. |
+| `_shell.html` | **Shared shell template** — canonical titlebar + left-rail (`.sidebar`) chrome to copy into each surface. |
 | `tokens.css` | **Shared** — design tokens, **mirroring** the app's real tokens (see §6); do not fork these into the build. |
 | `app.css` | **Shared** — all mockup component styles (cards, charts, segmented controls, chat, etc.). |
 | `app.js` | **Shared** — cosmetic-only behavior (theme toggle persistence). |
@@ -79,7 +84,8 @@ A synthesis settled during design review:
 - **Reuse.** Mount the **existing dashboard Timeline view verbatim** for the Timeline panel
   (do not rebuild it). Theme toggle → `ThemeModeControl.svelte`; any on/off toggles → `Switch.svelte`.
 - **Interactions / handoffs.** Titlebar segmented control swaps Timeline ⇄ Insights panels; the
-  Insights subnav routes to Overview / Subjects / Context / Chat.
+  Insights left rail routes to Overview / Subjects / Context, with Chat reached via new-chat / the
+  chat-history list.
 - **Domain / ADRs.** Main, Surface, Timeline, Insights. Engine is Rust-side rig-core
   ([`../adr/0028-ai-features-call-models-rust-side-via-rig-core.md`](../adr/0028-ai-features-call-models-rust-side-via-rig-core.md)).
   This rename spans existing desktop docs/code and must be reconciled with `apps/desktop/CONTEXT.md` when built.
@@ -204,8 +210,9 @@ Pin/Dismiss and the Derivation Budget tier are the only user controls over confi
   chart palette, which is token-driven). Both light and dark must look right — verify every surface in both.
 - **Typography.** Monospace font stack throughout (terminal aesthetic).
 - **Unified segmented control.** Every toggle uses the same segmented-control pattern: the
-  Timeline/Insights surface toggle, the Insights subnav, Day/Week/Month, Subjects sort. Keep them
-  visually identical; do not introduce a second toggle style.
+  Timeline/Insights surface toggle, Day/Week/Month, Subjects sort. Keep them visually identical; do
+  not introduce a second toggle style. (The Insights sub-surface switcher is the left **rail**, not a
+  segmented control.)
 - **Reusable components to build against:** `SearchResultCard.svelte` (evidence/result cards),
   `AnswerSourceCard.svelte` (Chat Answer Sources), `Switch.svelte` (on/off), `ThemeModeControl.svelte`
   (theme), all under `apps/desktop/src/lib/components/`. The Chat surface should share the Quick Recall

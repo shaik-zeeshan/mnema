@@ -1,81 +1,83 @@
 use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-/// Sherpa speaker analysis uses `sherpa-onnx`'s `shared` feature on Windows
-/// (`crates/speaker-analysis/Cargo.toml`), so `mnema.exe` links
-/// `sherpa-onnx-c-api.dll` at load time and the ONNX Runtime DLLs it pulls in.
-/// `sherpa-onnx-sys` drops these next to the built binary in the profile dir,
-/// which is enough for `cargo run`/`tauri dev`, but a packaged NSIS install only
-/// ships what Tauri bundles. Without them beside the installed `mnema.exe`,
-/// Windows fails the load-time import and the whole app refuses to start.
-///
-/// Stage the DLLs into a tracked-but-gitignored dir under `src-tauri` so the
-/// Windows-only `tauri.windows.conf.json` can declare them as bundle resources
-/// (installed next to the exe). They are copied from the profile dir, where the
-/// `sherpa-onnx-sys` build script — run before this dependent crate's build
-/// script — has already placed them.
-const SHERPA_RUNTIME_DLLS: [&str; 4] = [
-    "sherpa-onnx-c-api.dll",
-    "sherpa-onnx-cxx-api.dll",
-    "onnxruntime.dll",
-    "onnxruntime_providers_shared.dll",
-];
 
 fn main() {
     link_windows_common_controls_v6_manifest_dependency();
-    stage_windows_sherpa_runtime_dlls();
-    tauri_build::build()
+
+    // Tauri codegen + asset/permission embedding.
+    tauri_build::build();
+
+    // The speakrs on-device diarization engine pulls in OpenBLAS, built from
+    // source and linked statically via speakrs' `openblas-static` feature.
+    // OpenBLAS's LAPACK is Fortran, so `openblas-src` re-emits the gfortran /
+    // quadmath runtime as *dynamic* `-l` flags that resolve to Homebrew's
+    // `/opt/homebrew/.../libgfortran.5.dylib` (and friends). A shipped,
+    // hardened-runtime app can't load those — they're missing on clean Macs, and
+    // where present they fail library validation on a Team-ID mismatch. That was
+    // the v0.1.9 launch crash (`Library not loaded: .../libopenblas.0.dylib`).
+    //
+    // Fix: force-load the *static* Fortran runtime archives into this binary, so
+    // the gfortran/quadmath symbols become regular static definitions, then
+    // `-dead_strip_dylibs` so the now-unused dynamic libgfortran/libquadmath load
+    // commands are dropped. Result: zero Homebrew dylib dependencies. Archive
+    // paths are discovered at build time from the Fortran compiler — never baked
+    // in, since they are toolchain/version specific (see CLAUDE.md).
+    //
+    // speakrs is macOS-only (CoreML), so this never runs on Windows; the
+    // `target_macos` guard keeps the Windows build free of any Fortran toolchain
+    // requirement.
+    let target_macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+    if target_macos && std::env::var_os("CARGO_FEATURE_SPEAKER_ANALYSIS_SPEAKRS").is_some() {
+        link_static_fortran_runtime();
+    }
 }
 
-fn stage_windows_sherpa_runtime_dlls() {
-    if env::var("CARGO_CFG_WINDOWS").is_err() {
-        return;
-    }
+/// Force the gfortran/quadmath runtime (dragged in by OpenBLAS LAPACK) to link
+/// statically so the binary has no Homebrew dylib dependency. macOS-only.
+fn link_static_fortran_runtime() {
+    println!("cargo:rerun-if-env-changed=OPENBLAS_FC");
+    println!("cargo:rerun-if-env-changed=FC");
 
-    let Some(profile_dir) = profile_dir_from_out_dir() else {
-        println!(
-            "cargo:warning=could not locate the cargo profile dir to stage Sherpa runtime DLLs; \
-             speaker analysis may be missing from the bundle"
-        );
-        return;
+    let fc = std::env::var("OPENBLAS_FC")
+        .or_else(|_| std::env::var("FC"))
+        .unwrap_or_else(|_| "gfortran".to_string());
+
+    let locate = |label: &str, query: &str| -> std::path::PathBuf {
+        let output = std::process::Command::new(&fc)
+            .arg(query)
+            .output()
+            .unwrap_or_else(|err| {
+                panic!(
+                    "speakrs static link: could not run `{fc} {query}` to locate {label}: {err}. \
+                     Install a Fortran toolchain (`brew install gcc`) or set OPENBLAS_FC."
+                )
+            });
+        let path = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        // `-print-file-name` echoes the query back verbatim when it cannot find
+        // the archive, so require a real file before trusting it.
+        if !path.is_file() {
+            panic!(
+                "speakrs static link: `{fc} {query}` did not resolve {label} to an existing \
+                 archive (got {path:?}). Install a Fortran toolchain (`brew install gcc`)."
+            );
+        }
+        path
     };
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let staging_dir = manifest_dir.join("resources").join("windows");
-    if let Err(error) = fs::create_dir_all(&staging_dir) {
-        println!("cargo:warning=failed to create Sherpa DLL staging dir {staging_dir:?}: {error}");
-        return;
-    }
+    let libgfortran = locate("libgfortran.a", "-print-file-name=libgfortran.a");
+    let libquadmath = locate("libquadmath.a", "-print-file-name=libquadmath.a");
+    let libgcc = locate("libgcc.a", "-print-libgcc-file-name");
 
-    for dll in SHERPA_RUNTIME_DLLS {
-        let source = profile_dir.join(dll);
-        // Re-stage whenever the upstream DLL changes (e.g. a sherpa-onnx bump).
-        println!("cargo:rerun-if-changed={}", source.display());
-        if !source.exists() {
-            println!(
-                "cargo:warning=expected Sherpa runtime DLL not found at {source:?}; \
-                 the packaged Windows app may fail to start (sherpa-onnx-sys should emit it)"
-            );
-            continue;
-        }
-        let dest = staging_dir.join(dll);
-        if let Err(error) = fs::copy(&source, &dest) {
-            println!("cargo:warning=failed to stage Sherpa runtime DLL {source:?} -> {dest:?}: {error}");
-        }
-    }
-}
-
-/// The profile dir (e.g. `target/release` or `target/<triple>/release`) is three
-/// levels above `OUT_DIR` (`<profile>/build/<pkg>-<hash>/out`). Deriving it from
-/// `OUT_DIR` keeps this correct under custom `CARGO_TARGET_DIR` and `--target`.
-fn profile_dir_from_out_dir() -> Option<PathBuf> {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").ok()?);
-    out_dir
-        .ancestors()
-        .nth(3)
-        .map(Path::to_path_buf)
-        .filter(|p| p.is_dir())
+    // Order matters: force-load the Fortran runtime first so its symbols become
+    // static definitions, then list libgcc *lazily* (plain input, not
+    // force-load) so only the members gfortran needs are pulled — chiefly
+    // emulated-TLS (`___emutls_get_address`) — without duplicating symbols
+    // already provided by Rust's own compiler-builtins.
+    println!("cargo:rustc-link-arg=-Wl,-force_load,{}", libgfortran.display());
+    println!("cargo:rustc-link-arg=-Wl,-force_load,{}", libquadmath.display());
+    println!("cargo:rustc-link-arg={}", libgcc.display());
+    // Drop the dynamic libgfortran/libquadmath load commands openblas-src still
+    // emits: their symbols are now satisfied statically, so the dylibs are unused.
+    println!("cargo:rustc-link-arg=-Wl,-dead_strip_dylibs");
 }
 
 fn link_windows_common_controls_v6_manifest_dependency() {

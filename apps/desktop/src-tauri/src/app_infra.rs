@@ -474,6 +474,12 @@ pub struct FrameDto {
     pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
     pub window_title: Option<String>,
+    /// Guarded host+path of the page captured in this frame (read-time
+    /// sanitized + secret-redacted via the broker URL guard). The raw captured
+    /// `browser_url` is local-only and is NEVER placed here — only the guarded
+    /// form crosses to the frontend. `None` when the frame had no URL or it was
+    /// not http(s).
+    pub url: Option<String>,
     pub equivalence_hint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -517,10 +523,18 @@ pub struct FrameSearchResultDto {
     pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
     pub window_title: Option<String>,
+    /// Guarded host+path of the page behind this result (read-time sanitized +
+    /// secret-redacted via the broker URL guard). The raw captured `browser_url`
+    /// is local-only and is NEVER placed here — only the guarded form crosses to
+    /// the frontend. `None` when the frame had no URL or it was not http(s).
+    pub url: Option<String>,
     pub thumbnail_frame_id: i64,
     pub text_source_kind: String,
     pub secret_redaction_count: u32,
     pub has_secret_redactions: bool,
+    /// A meaning-only **Semantic Search** hit: the snippet is a leading
+    /// `body_text` excerpt the frontend tags "found by meaning".
+    pub found_by_meaning: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -538,6 +552,8 @@ pub struct AudioSearchResultDto {
     pub aligned_frame: Option<FrameDto>,
     pub secret_redaction_count: u32,
     pub has_secret_redactions: bool,
+    /// A meaning-only **Semantic Search** hit (see [`FrameSearchResultDto`]).
+    pub found_by_meaning: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -754,6 +770,15 @@ impl From<::app_infra::BackgroundJob> for AppJobDto {
 
 impl From<::app_infra::Frame> for FrameDto {
     fn from(frame: ::app_infra::Frame) -> Self {
+        // Read the GUARDED host+path from the raw captured `browser_url` BEFORE
+        // the snapshot is moved below. The raw URL never lands on the DTO — only
+        // the guard's sanitized, secret-redacted host+path (or `None`).
+        let url = frame
+            .metadata_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.browser_url.as_deref())
+            .and_then(::app_infra::guard_browser_url);
+
         let (app_bundle_id, app_name, window_title) = frame
             .metadata_snapshot
             .map(|metadata| {
@@ -775,6 +800,7 @@ impl From<::app_infra::Frame> for FrameDto {
             app_bundle_id,
             app_name,
             window_title,
+            url,
             equivalence_hint: frame.equivalence.hint,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
@@ -814,10 +840,17 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
             app_bundle_id: result.app_bundle_id,
             app_name: result.app_name,
             window_title: result.window_title,
+            // Guard the raw captured `browser_url` at the boundary: only the
+            // sanitized host+path crosses to the frontend; the raw URL never does.
+            url: result
+                .browser_url
+                .as_deref()
+                .and_then(::app_infra::guard_browser_url),
             thumbnail_frame_id: result.thumbnail_frame_id,
             text_source_kind: result.text_source_kind,
             secret_redaction_count: result.secret_redaction_count,
             has_secret_redactions: result.has_secret_redactions,
+            found_by_meaning: result.found_by_meaning,
         }
     }
 }
@@ -837,6 +870,7 @@ impl From<::app_infra::AudioSearchResult> for AudioSearchResultDto {
             aligned_frame: result.aligned_frame.map(FrameDto::from),
             secret_redaction_count: result.secret_redaction_count,
             has_secret_redactions: result.has_secret_redactions,
+            found_by_meaning: result.found_by_meaning,
         }
     }
 }
@@ -1546,11 +1580,17 @@ fn desktop_processing_registry(
                 ),
             ]),
         )
-        .register(::app_infra::SpeakerAnalysisProcessorBackend::new(
-            crate::speaker_analysis_runtime::SubprocessSherpaOnnxSpeakerAnalysisProvider::with_models_dir(
-                speaker_models_dir,
-            ),
-        ))
+        .register(::app_infra::SpeakerAnalysisProcessorBackend::from_provider_arcs([
+            // speakrs is the sole on-device diarization provider; sherpa-onnx is
+            // removed. Legacy `sherpa_onnx` job payloads are remapped to speakrs
+            // at the normalize/dispatch seam, so only this provider is registered.
+            Arc::new(
+                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider(
+                    speaker_analysis::SPEAKRS_PROVIDER_ID,
+                    speaker_models_dir,
+                ),
+            ) as Arc<dyn speaker_analysis::SpeakerAnalysisProvider>,
+        ]))
         .register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
 }
 
@@ -1781,6 +1821,36 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     );
 
     crate::user_context::worker::spawn_user_context_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
+    // Semantic Search startup reconciliation (self-heal): if a past model switch
+    // left the vec0 table at a dimension that disagrees with the selected model
+    // (e.g. a rebuild that failed under DB contention), every search degrades to
+    // keyword-only and the worker idles forever — recovery cannot come from
+    // re-selecting the same model (the UI early-returns on an unchanged pick). Run
+    // once here on the deferred-startup seam, BEFORE the backfill worker spawns, to
+    // rebuild a stuck table back to the selected model's dimension. Idempotent: a
+    // matching table is left untouched (the common case). Best-effort — a failure
+    // is logged and the worker still spawns (it will idle on the mismatch rather
+    // than error-loop).
+    {
+        let settings = crate::semantic_search_worker::effective_semantic_search_settings(app_handle);
+        tauri::async_runtime::block_on(
+            crate::semantic_search_models::reconcile_semantic_search_index_on_startup(
+                &infra, &settings,
+            ),
+        );
+    }
+
+    // Semantic Index Backfill sweep-loop (issue #123): derives a Semantic Search
+    // Vector for direct anchors lacking one — live capture + historical backfill
+    // in one self-healing newest-first query, resumable across restarts, inert
+    // until a Semantic Search Model is installed. Spawned here on the
+    // deferred-startup seam (after the window opens), never on the capture hot path.
+    crate::semantic_search_worker::spawn_semantic_index_backfill_worker(
         Arc::clone(&infra),
         app_handle.clone(),
         background_workers.clone(),
@@ -2480,13 +2550,25 @@ fn spawn_hidden_segment_workspace_repair_worker(
             let active_workspace_dirs =
                 active_workspace_dirs_for_hidden_workspace_repair(&app_handle);
 
-            match repair_hidden_segment_workspaces_once(
+            // Abandon an in-flight repair pass the instant shutdown is requested
+            // so quit never blocks on a full scan. The pass only reads from the DB
+            // and removes whole workspace dirs between awaits, so dropping the
+            // future mid-pass leaves no partial state. `select` polls the shutdown
+            // future first, so it also resolves immediately if shutdown was already
+            // requested while computing `active_workspace_dirs`.
+            let shutdown_changed = shutdown_rx.changed();
+            let repair = repair_hidden_segment_workspaces_once(
                 &infra,
                 &recordings_root,
                 &active_workspace_dirs,
-            )
-            .await
-            {
+            );
+            pin_mut!(shutdown_changed, repair);
+            let repair_result = match select(shutdown_changed, repair).await {
+                Either::Left((_, _)) => break,
+                Either::Right((result, _)) => result,
+            };
+
+            match repair_result {
                 Ok(result) => {
                     crate::native_capture::debug_log::log_info(format!(
                         "hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
@@ -2958,6 +3040,18 @@ fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBas
         base_dir,
     })
 }
+
+/// The resolved on-disk storage root where captures, the database, and model
+/// caches live. This is the authoritative, env-honoring resolution: when no
+/// `save_directory` is persisted it falls back to `default_save_directory()`
+/// (`MNEMA_SAVE_DIRECTORY`, else `~/.mnema`). Settings › Storage shows this
+/// read-only; the folder is changed by writing `save_directory` through the
+/// recording-settings update (Browse), not by editing this string directly.
+#[tauri::command]
+pub fn get_storage_location(app_handle: tauri::AppHandle) -> Result<String, String> {
+    Ok(resolve_base_dir(&app_handle)?.base_dir.display().to_string())
+}
+
 fn processing_subject(subject_type: String, subject_id: i64) -> ::app_infra::ProcessingSubject {
     ::app_infra::ProcessingSubject::new(subject_type, subject_id)
 }
@@ -4624,6 +4718,55 @@ pub async fn get_frame(
         .map_err(|error| format!("failed to get frame {}: {error}", request.frame_id))
 }
 
+/// Whether a captured `browser_url` may be handed to the OS opener: it must parse
+/// and carry an `http`/`https` scheme. This is the security gate — a captured URL
+/// of `javascript:`, `file:`, `data:`, `mnema:`, etc. must NEVER reach the opener.
+/// Extracted as a pure helper so the gate is unit-testable without a live opener.
+fn captured_url_is_openable(raw_url: &str) -> bool {
+    url::Url::parse(raw_url)
+        .map(|url| matches!(url.scheme(), "http" | "https"))
+        .unwrap_or(false)
+}
+
+/// App-mediated open of a frame's RAW captured `browser_url` in the default
+/// browser. The trusted local frontend opens captures by frame id (it never uses
+/// opaque broker ids). Loads the frame's raw URL, gates it to `http`/`https`, and
+/// hands it to the tauri opener plugin (NOT a bare `Command::new` — the packaged
+/// app has no Homebrew PATH). The raw URL is local-only: it is never returned,
+/// logged, or echoed in an error.
+///
+/// Returns `true` if a frame was found, its captured URL was http(s), and the
+/// opener accepted it; `false` if the frame has no http(s) `browser_url` to open.
+#[tauri::command]
+pub async fn open_captured_url(
+    frame_id: i64,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<bool, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let infra = Arc::clone(&*state);
+    let raw_url = infra
+        .get_frame(frame_id)
+        .await
+        .map_err(|error| format!("failed to get frame {frame_id}: {error}"))?
+        .and_then(|frame| frame.metadata_snapshot)
+        .and_then(|snapshot| snapshot.browser_url);
+    let Some(raw_url) = raw_url else {
+        return Ok(false);
+    };
+    // Scheme gate: only ever hand http(s) to the OS opener. The raw URL never
+    // crosses into the error path or a log line.
+    if !captured_url_is_openable(&raw_url) {
+        return Ok(false);
+    }
+    app_handle
+        .opener()
+        .open_url(raw_url, None::<String>)
+        .map_err(|error| format!("failed to open captured url for frame {frame_id}: {error}"))?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub async fn get_nearest_earlier_equivalent_frame(
     request: GetNearestEarlierEquivalentFrameRequest,
@@ -4685,9 +4828,28 @@ pub async fn get_timeline_window_around_frame(
 #[tauri::command]
 pub async fn search_capture(
     request: SearchCaptureRequest,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppInfraState>,
+    query_embedder: tauri::State<'_, crate::semantic_search_query::SemanticQueryEmbedderState>,
 ) -> Result<SearchCaptureResponseDto, String> {
     let infra = Arc::clone(&*state);
+
+    // **Hybrid Search**: embed the query string into a **Semantic Search Vector**
+    // so app-infra can fuse the `vec0` KNN with FTS5 by RRF. `None` when no
+    // **Semantic Search Model** is installed (default/Anthropic-only) — search
+    // then degrades to keyword-only with no regression. Never errors: a failed or
+    // absent embed just leaves `query_embedding = None`.
+    //
+    // The embed runs over the operator-stripped residual — exactly what FTS ranks
+    // on — so `app:`/`before:`/`source:` operators and quoted phrases never pollute
+    // the meaning vector. The full `request.query` still drives FTS below; only the
+    // EMBED input is the residual. An all-operators query yields an empty residual,
+    // which `embed_search_query` empty-guards to `None` (keyword-only).
+    let residual_query = ::app_infra::semantic_search_residual_query(&request.query);
+    let query_embedding =
+        crate::semantic_search_query::embed_search_query(&app_handle, &query_embedder, &residual_query)
+            .await;
+
     infra
         .search_capture(::app_infra::SearchCaptureRequest {
             query: request.query,
@@ -4697,6 +4859,7 @@ pub async fn search_capture(
             audio_offset: request.audio_offset,
             snapshot_document_id: request.snapshot_document_id,
             refinements: request.refinements,
+            query_embedding,
         })
         .await
         .map(SearchCaptureResponseDto::from)
@@ -4999,6 +5162,31 @@ mod tests {
     use super::frame_preview::*;
     use super::*;
 
+    // The `open_captured_url` scheme gate is the security boundary between a
+    // captured `browser_url` and the OS opener. Only `http`/`https` may pass; a
+    // captured `javascript:`/`file:`/`data:`/`mnema:` URL (or an unparseable
+    // string) must be rejected so it can never reach the opener. Pinning the pure
+    // gate guards that boundary without a live Tauri opener.
+    #[test]
+    fn captured_url_open_gate_admits_only_http_and_https() {
+        assert!(captured_url_is_openable("https://example.com/x"));
+        assert!(captured_url_is_openable("http://example.com/x"));
+        for rejected in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,<script>alert(1)</script>",
+            "mnema://open/abc",
+            "ftp://example.com/x",
+            "not a url",
+            "",
+        ] {
+            assert!(
+                !captured_url_is_openable(rejected),
+                "non-http(s) captured url must be rejected by the open gate: {rejected:?}"
+            );
+        }
+    }
+
     struct TestDir {
         path: PathBuf,
     }
@@ -5151,6 +5339,7 @@ mod tests {
             is_running: true,
             is_inactivity_paused: true,
             is_user_paused: false,
+            is_low_disk_suspended: false,
             requested_sources: None,
             output_files: None,
             source_sessions: None,
@@ -5165,6 +5354,7 @@ mod tests {
             is_running: true,
             is_inactivity_paused: false,
             is_user_paused: true,
+            is_low_disk_suspended: false,
             requested_sources: None,
             output_files: None,
             source_sessions: None,
@@ -5714,7 +5904,13 @@ mod tests {
             value.get("appName").and_then(|value| value.as_str()),
             Some("Browser")
         );
-        assert!(!value.to_string().contains("Sensitive Project"));
+        // The window title is a curated, flattened field on the DTO (not the raw
+        // metadata snapshot), so it is exposed for bulk timeline payloads.
+        assert_eq!(
+            value.get("windowTitle").and_then(|value| value.as_str()),
+            Some("Sensitive Project")
+        );
+        // The browser URL is never flattened onto the DTO, so it must not leak.
         assert!(!value.to_string().contains("https://example.com/private"));
     }
 
@@ -5748,10 +5944,12 @@ mod tests {
             app_bundle_id: Some("com.example.Search".to_string()),
             app_name: Some("Search App".to_string()),
             window_title: Some("Search Window".to_string()),
+            browser_url: None,
             thumbnail_frame_id: 9,
             text_source_kind: "ocr".to_string(),
             secret_redaction_count: 0,
             has_secret_redactions: false,
+            found_by_meaning: false,
         };
 
         let value =
@@ -5902,23 +6100,6 @@ mod tests {
         );
 
         assert_eq!(layout.base_dir(), &PathBuf::from("/tmp/mnema-recordings"));
-    }
-
-    #[test]
-    fn resolve_base_dir_from_save_directory_keeps_database_out_of_segment_root() {
-        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
-            "/tmp/mnema-recordings/session-output",
-        );
-        let base_dir = layout.base_dir();
-
-        assert_eq!(
-            base_dir.parent(),
-            Some(Path::new("/tmp/mnema-recordings/session-output"))
-        );
-        assert_eq!(
-            base_dir.file_name().and_then(|value| value.to_str()),
-            Some("session-output")
-        );
     }
 
     #[test]
@@ -6231,7 +6412,9 @@ mod tests {
         let dir = TestDir::new("frame-preview-exact-miss-log");
         let log_path = dir.path().join("native-capture-debug.log");
         let requested = cidre::cm::Time::with_secs(1.5, 600);
-        let actual = cidre::cm::Time::with_secs(1.0 / 600.0 + 1.5, 600);
+        // Six video ticks past the requested time (timescale 600 => 10ms) so the
+        // delta clears FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS and is logged.
+        let actual = cidre::cm::Time::with_secs(6.0 / 600.0 + 1.5, 600);
         let frame = ::app_infra::Frame {
             id: 2,
             session_id: "session-preview".to_string(),
@@ -6276,8 +6459,8 @@ mod tests {
         assert!(contents.contains("require_exact_time=true"));
         assert!(contents.contains("offset_seconds=1.5"));
         assert!(contents.contains("requested_time=1.5"));
-        assert!(contents.contains("actual_time=1.5016666666666667"));
-        assert!(contents.contains("delta_ms=1.667"));
+        assert!(contents.contains("actual_time=1.51"));
+        assert!(contents.contains("delta_ms=10.000"));
     }
 
     #[test]
@@ -7254,17 +7437,20 @@ mod tests {
                 .await
                 .expect("transcription worker should succeed");
             assert_eq!(processed, ProcessingWorkerPass::DidWork);
-            let failed = infra
+            // The transcription backend ran and failed (audio segment 123 does not
+            // exist), but bounded failure-retry requeues the job within its attempt
+            // cap rather than leaving it terminally failed, so a transient miss can
+            // still recover.  The requeue clears `last_error` and returns the job to
+            // `queued`; the single failure is recorded in `failure_count`.
+            let requeued = infra
                 .get_processing_job(job.id)
                 .await
                 .expect("job should be readable")
                 .expect("job should exist");
-            assert_eq!(failed.status, ::app_infra::ProcessingJobStatus::Failed);
-            assert_eq!(failed.attempt_count, 1);
-            assert_eq!(
-                failed.last_error.as_deref(),
-                Some("audio segment 123 was not found")
-            );
+            assert_eq!(requeued.status, ::app_infra::ProcessingJobStatus::Queued);
+            assert_eq!(requeued.attempt_count, 1);
+            assert_eq!(requeued.failure_count, 1);
+            assert!(requeued.last_error.is_none());
         });
     }
 
@@ -7298,7 +7484,11 @@ mod tests {
                 .await
                 .expect("first job should be readable")
                 .expect("first job should exist");
-            assert_eq!(first_job.status, ::app_infra::ProcessingJobStatus::Failed);
+            // The OCR job fails (the frame file does not exist) but bounded
+            // failure-retry requeues it within its attempt cap, so it returns to
+            // `queued` with the failure recorded rather than terminally `failed`.
+            assert_eq!(first_job.status, ::app_infra::ProcessingJobStatus::Queued);
+            assert_eq!(first_job.failure_count, 1);
 
             let second_dir = TestDir::new("ocr-pacing-second");
             let second_infra = ::app_infra::AppInfra::initialize(second_dir.path())
@@ -7327,7 +7517,8 @@ mod tests {
                 .await
                 .expect("second job should be readable")
                 .expect("second job should exist");
-            assert_eq!(second_job.status, ::app_infra::ProcessingJobStatus::Failed);
+            assert_eq!(second_job.status, ::app_infra::ProcessingJobStatus::Queued);
+            assert_eq!(second_job.failure_count, 1);
         });
     }
 
@@ -7372,14 +7563,21 @@ mod tests {
                 .await
                 .expect("frame batches should list");
 
-            // The first batch's OCR job is processed (fails: no backend) in the
-            // same iteration, making the finalize job claimable.  Finalization
-            // completes successfully (frame cleanup skips missing files), so the
-            // batch ends up Completed — proving the worker now services finalize
-            // jobs alongside processing jobs instead of starving them.
-            assert!(batches
+            // The first batch's OCR job is processed in the same iteration but
+            // *fails* (no OCR backend can read the missing frame file).  Bounded
+            // failure-retry requeues that job within its attempt cap rather than
+            // leaving it terminally failed, and a batch only finalizes once all its
+            // OCR jobs reach a terminal state, so the finalize job stays gated.  The
+            // batch therefore rolls to Closed with a pending finalize job but does
+            // not reach Completed until the OCR retries are exhausted — proving the
+            // worker services finalize jobs (it claims the finalize job and respects
+            // its gate) instead of starving them or finalizing ahead of OCR.
+            assert!(!batches
                 .iter()
                 .any(|batch| batch.status == ::app_infra::FrameBatchStatus::Completed));
+            assert!(batches.iter().any(|batch| batch.status
+                == ::app_infra::FrameBatchStatus::Closed
+                && batch.finalize_job_id.is_some()));
         });
     }
 

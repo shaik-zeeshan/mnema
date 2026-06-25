@@ -35,6 +35,7 @@ export interface FrameDto {
 	appBundleId: string | null;
 	appName: string | null;
 	windowTitle: string | null;
+	url: string | null;
 	ocrText: string | null;
 	processorVersion: string | null;
 	equivalenceHint: string | null;
@@ -238,10 +239,24 @@ export interface FrameSearchResultDto {
 	appBundleId: string | null;
 	appName: string | null;
 	windowTitle: string | null;
+	/**
+	 * The read-time-guarded host+path of the captured page (e.g.
+	 * "github.com/owner/repo/commit/9fceb…"), or null when there is no openable
+	 * http(s) URL. The raw URL stays in Rust; only this guarded form is ever
+	 * shown, and the page is opened via `open_captured_url` with
+	 * `thumbnailFrameId`.
+	 */
+	url: string | null;
 	thumbnailFrameId: number;
 	textSourceKind: "direct" | "equivalent_reuse";
 	hasSecretRedactions: boolean;
 	secretRedactionCount: number;
+	/**
+	 * A meaning-only Semantic Search hit: the snippet is a leading body-text
+	 * excerpt that should render with a "found by meaning" tag rather than a
+	 * highlighted keyword snippet.
+	 */
+	foundByMeaning: boolean;
 }
 
 export interface AudioSearchResultDto {
@@ -257,6 +272,8 @@ export interface AudioSearchResultDto {
 	alignedFrame: FrameDto | null;
 	hasSecretRedactions: boolean;
 	secretRedactionCount: number;
+	/** A meaning-only Semantic Search hit (see {@link FrameSearchResultDto}). */
+	foundByMeaning: boolean;
 }
 
 export interface ListAudioSegmentsRequest {
@@ -379,6 +396,8 @@ export type SegmentWorkspaceCleanupDisposition =
 	| "referenced_by_incomplete_batch"
 	| "referenced_by_nonterminal_ocr"
 	| "missing_visible_segment_sibling"
+	| "dead_segment_without_artifacts"
+	| "pending_frame_artifacts"
 	| "completed_only"
 	| "no_references";
 

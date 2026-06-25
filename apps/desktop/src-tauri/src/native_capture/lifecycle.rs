@@ -890,7 +890,7 @@ impl RecordingLifecycle {
         }
 
         #[cfg(target_os = "macos")]
-        let privacy_suspended = self.runtime.privacy_capture_suspension.is_some();
+        let privacy_suspended = self.runtime.capture_suspension.is_some();
         #[cfg(target_os = "windows")]
         let privacy_suspended = false;
 
@@ -1306,7 +1306,7 @@ impl RecordingLifecycle {
             return TickOutcome::StopLoop;
         };
         #[cfg(target_os = "macos")]
-        let active_sources = if self.runtime.privacy_capture_suspension.is_some() {
+        let active_sources = if self.runtime.capture_suspension.is_some() {
             current_segment_sources_for_runtime(&self.runtime)
         } else {
             active_sources_for_inactivity_paused_state(
@@ -1354,6 +1354,26 @@ impl RecordingLifecycle {
         ) else {
             return TickOutcome::SkipRotation;
         };
+
+        // Low-disk boundary check (ADR 0040): a rotation is due, so a new segment
+        // file is about to be opened. If the recordings volume is too low on free
+        // space, do not open the next segment — either enter a Low-Disk Suspension
+        // across all sources (incl. mic) and let the recovery driver resume once
+        // free space returns, or (below the critical reserve floor) stop the
+        // session gracefully. Best-effort: an unmeasurable reading proceeds. The
+        // graceful stop already marked the runtime failed and surfaced the error.
+        match super::segments::maybe_suspend_for_low_disk_at_boundary(
+            app_handle,
+            &mut self.runtime,
+        ) {
+            super::segments::LowDiskBoundaryOutcome::Proceed => {}
+            super::segments::LowDiskBoundaryOutcome::Suspended => {
+                return TickOutcome::SkipRotation;
+            }
+            super::segments::LowDiskBoundaryOutcome::Stopped => {
+                return TickOutcome::StopLoop;
+            }
+        }
 
         if apply_runtime_signal(&mut self.runtime, RuntimeSignal::RotateRequested).is_err() {
             mark_runtime_session_failed(&mut self.runtime);
@@ -1414,6 +1434,37 @@ impl RecordingLifecycle {
                     legacy_rotated = true;
                 }
                 Err(_) => {
+                    // Mid-segment disk-full backstop (ADR 0040): a rotate failure
+                    // re-probes free space; if it coincides with low disk, discard
+                    // the partial (no corrupt segment) and suspend or stop instead
+                    // of the generic fatal failure. Healthy/unmeasurable disk keeps
+                    // the existing behavior.
+                    match super::segments::handle_mid_segment_write_failure_for_low_disk(
+                        app_handle,
+                        &mut self.runtime,
+                        previous_segment_output_files.as_ref(),
+                        recording_file.as_deref(),
+                        microphone_recording_file.as_deref(),
+                        system_audio_recording_file.as_deref(),
+                    ) {
+                        super::segments::WriteFailureDiskFullOutcome::Suspended => {
+                            cleanup_failed_segment_dirs(
+                                &segment_dir,
+                                microphone_audio_dir,
+                                system_audio_dir,
+                            );
+                            return TickOutcome::SkipRotation;
+                        }
+                        super::segments::WriteFailureDiskFullOutcome::Stopped => {
+                            cleanup_failed_segment_dirs(
+                                &segment_dir,
+                                microphone_audio_dir,
+                                system_audio_dir,
+                            );
+                            return TickOutcome::StopLoop;
+                        }
+                        super::segments::WriteFailureDiskFullOutcome::NotDiskFull => {}
+                    }
                     cleanup_failed_segment_dirs(
                         &segment_dir,
                         microphone_audio_dir,
@@ -1609,6 +1660,46 @@ impl RecordingLifecycle {
                 false
             }
             Err(error) => {
+                // Mid-segment disk-full backstop (ADR 0040): a non-recoverable
+                // finalize failure re-probes free space; if it coincides with low
+                // disk, discard the partial (no corrupt segment is committed) and
+                // suspend or stop rather than failing the session generically.
+                // Healthy/unmeasurable disk keeps the existing fatal behavior.
+                let disk_full_outcome =
+                    super::segments::handle_mid_segment_write_failure_for_low_disk(
+                        app_handle,
+                        &mut self.runtime,
+                        previous_segment_output_files.as_ref(),
+                        recording_file.as_deref(),
+                        microphone_recording_file.as_deref(),
+                        system_audio_recording_file.as_deref(),
+                    );
+                if disk_full_outcome != super::segments::WriteFailureDiskFullOutcome::NotDiskFull {
+                    // Disk-full: also discard the just-opened next segment's
+                    // partial so nothing corrupt survives, then suspend or stop.
+                    cleanup_failed_segment_dirs(
+                        &segment_dir,
+                        microphone_audio_dir,
+                        system_audio_dir,
+                    );
+                    cleanup_unusable_segment_artifacts(
+                        Some(&next_segment_outputs),
+                        next_recording_file.as_deref(),
+                        next_microphone_recording_file.as_deref(),
+                        next_system_audio_recording_file.as_deref(),
+                    );
+                    super::debug_log::log(format!(
+                        "mid-segment disk-full during segment finalization; discarded partials: [{}] {}",
+                        error.code, error.message
+                    ));
+                    return match disk_full_outcome {
+                        super::segments::WriteFailureDiskFullOutcome::Suspended => {
+                            TickOutcome::SkipRotation
+                        }
+                        // Stopped (or the unreachable NotDiskFull) stops the loop.
+                        _ => TickOutcome::StopLoop,
+                    };
+                }
                 cleanup_failed_segment_dirs(&segment_dir, microphone_audio_dir, system_audio_dir);
                 cleanup_unusable_segment_artifacts(
                     previous_segment_output_files.as_ref(),

@@ -76,7 +76,8 @@ export const captureControls = {
   get paused(): boolean {
     return (
       captureSession.value?.isInactivityPaused === true ||
-      captureSession.value?.isUserPaused === true
+      captureSession.value?.isUserPaused === true ||
+      captureSession.value?.isLowDiskSuspended === true
     );
   },
   get isRunning(): boolean {
@@ -88,8 +89,16 @@ export const captureControls = {
   get isUserPaused(): boolean {
     return captureSession.value?.isUserPaused === true;
   },
+  get isLowDiskSuspended(): boolean {
+    return captureSession.value?.isLowDiskSuspended === true;
+  },
   get statusLabel(): string {
     if (captureControls.isRunning) {
+      // The low-disk liveness suspension keeps the session running, so this
+      // specific label takes precedence over the generic "Paused" (ADR 0040).
+      if (captureControls.isLowDiskSuspended) {
+        return "Paused — low disk";
+      }
       return captureControls.paused ? "Paused" : "Recording";
     }
     return captureSession.value?.isRunning === false ? "Stopped" : "Idle";

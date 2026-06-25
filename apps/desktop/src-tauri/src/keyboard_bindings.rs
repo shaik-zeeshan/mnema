@@ -76,8 +76,6 @@ pub struct AppShortcutBindings {
 pub struct DashboardShortcutBindings {
     #[serde(default = "default_dashboard_open_jump_picker")]
     open_jump_picker: String,
-    #[serde(default = "default_dashboard_search")]
-    search: String,
     #[serde(default = "default_dashboard_jump_latest")]
     jump_latest: String,
     #[serde(default = "default_dashboard_toggle_ocr")]
@@ -270,12 +268,6 @@ const EDITABLE_ACTIONS: &[EditableAction] = &[
         policy: BindingPolicy::Foreground,
     },
     EditableAction {
-        id: "dashboard.search",
-        label: "Search captured content",
-        scope: ShortcutScope::Dashboard,
-        policy: BindingPolicy::Foreground,
-    },
-    EditableAction {
         id: "dashboard.jumpLatest",
         label: "Jump to latest",
         scope: ShortcutScope::Dashboard,
@@ -376,9 +368,6 @@ fn default_toggle_shortcuts_help() -> String {
 fn default_dashboard_open_jump_picker() -> String {
     "J".to_string()
 }
-fn default_dashboard_search() -> String {
-    "CommandOrControl+K".to_string()
-}
 fn default_dashboard_jump_latest() -> String {
     "L".to_string()
 }
@@ -447,7 +436,6 @@ impl DashboardShortcutBindings {
     fn defaults() -> Self {
         Self {
             open_jump_picker: default_dashboard_open_jump_picker(),
-            search: default_dashboard_search(),
             jump_latest: default_dashboard_jump_latest(),
             toggle_ocr: default_dashboard_toggle_ocr(),
             refresh_timeline: default_dashboard_refresh_timeline(),
@@ -542,7 +530,6 @@ fn get_binding<'a>(settings: &'a KeyboardBindingsSettings, id: &str) -> &'a str 
         "toggleSourceSystemAudio" => &settings.app_shortcuts.toggle_source_system_audio,
         "toggleShortcutsHelp" => &settings.app_shortcuts.toggle_shortcuts_help,
         "dashboard.openJumpPicker" => &settings.dashboard_shortcuts.open_jump_picker,
-        "dashboard.search" => &settings.dashboard_shortcuts.search,
         "dashboard.jumpLatest" => &settings.dashboard_shortcuts.jump_latest,
         "dashboard.toggleOcr" => &settings.dashboard_shortcuts.toggle_ocr,
         "dashboard.refreshTimeline" => &settings.dashboard_shortcuts.refresh_timeline,
@@ -570,7 +557,6 @@ fn set_binding(settings: &mut KeyboardBindingsSettings, id: &str, value: String)
         "toggleSourceSystemAudio" => settings.app_shortcuts.toggle_source_system_audio = value,
         "toggleShortcutsHelp" => settings.app_shortcuts.toggle_shortcuts_help = value,
         "dashboard.openJumpPicker" => settings.dashboard_shortcuts.open_jump_picker = value,
-        "dashboard.search" => settings.dashboard_shortcuts.search = value,
         "dashboard.jumpLatest" => settings.dashboard_shortcuts.jump_latest = value,
         "dashboard.toggleOcr" => settings.dashboard_shortcuts.toggle_ocr = value,
         "dashboard.refreshTimeline" => settings.dashboard_shortcuts.refresh_timeline = value,
@@ -878,7 +864,6 @@ fn binding_json_pointer(id: &str) -> Option<&'static str> {
         "toggleSourceSystemAudio" => Some("/appShortcuts/toggleSourceSystemAudio"),
         "toggleShortcutsHelp" => Some("/appShortcuts/toggleShortcutsHelp"),
         "dashboard.openJumpPicker" => Some("/dashboardShortcuts/openJumpPicker"),
-        "dashboard.search" => Some("/dashboardShortcuts/search"),
         "dashboard.jumpLatest" => Some("/dashboardShortcuts/jumpLatest"),
         "dashboard.toggleOcr" => Some("/dashboardShortcuts/toggleOcr"),
         "dashboard.refreshTimeline" => Some("/dashboardShortcuts/refreshTimeline"),

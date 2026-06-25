@@ -1008,6 +1008,7 @@ mod tests {
             access: capture_types::AccessSettings::default(),
             ai_runtime: capture_types::AiRuntimeSettings::default(),
             user_context: capture_types::UserContextSettings::default(),
+            semantic_search: capture_types::default_semantic_search_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

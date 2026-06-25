@@ -5,14 +5,19 @@ edition = "2021"
 
 [features]
 default = []
-sherpa-onnx = ["dep:sherpa-onnx-runtime", "dep:tokio", "dep:cidre"]
+# speakrs is the sole on-device diarization provider (pure-Rust + native
+# CoreML): tokio drives `spawn_blocking`, and cidre powers the macOS audio
+# decode path.
+speakrs = ["dep:speakrs", "dep:tokio", "dep:cidre"]
 
-# DER benchmark harness binary (see scripts/diarization_bench/). Only built with
-# the sherpa-onnx feature, so default `cargo check`/`cargo test` stay clean.
+# speakrs DER benchmark harness binary (see
+# scripts/diarization_bench/). Only built with the speakrs feature, so the heavy
+# speakrs/OpenBLAS/CoreML build stays opt-in and default `cargo check`/`cargo test`
+# (no features) stay clean. Drive it via `run_der.py --binary <path>`.
 [[bin]]
-name = "diarize_to_rttm"
-path = "src/bin/diarize_to_rttm.rs"
-required-features = ["sherpa-onnx"]
+name = "diarize_to_rttm_speakrs"
+path = "src/bin/diarize_to_rttm_speakrs.rs"
+required-features = ["speakrs"]
 
 [dependencies]
 async-trait = "0.1"
@@ -24,12 +29,21 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt"], optional = true }
 tempfile = "3"
 
-[target.'cfg(windows)'.dependencies]
-sherpa-onnx-runtime = { package = "sherpa-onnx", version = "1.13.1", optional = true, default-features = false, features = ["shared"] }
-media-decode = { path = "../media-decode" }
-
-[target.'cfg(not(windows))'.dependencies]
-sherpa-onnx-runtime = { package = "sherpa-onnx", version = "1.13.1", optional = true }
-
+# speakrs is the CoreML on-device diarization engine: Apple Silicon only (it
+# links `objc2-core-ml`), so it is declared under the macOS target and the
+# `speakrs` feature is only ever enabled on macOS (the desktop crate selects it
+# via a macOS-only target dependency). On Windows on-device diarization is
+# unavailable — the subprocess dispatcher reports `ProviderUnavailable`.
+#
+# speakrs needs a BLAS backend; its `default-linalg` is Intel-MKL (x86 only), so
+# on Apple Silicon we select an OpenBLAS feature. `openblas-static` builds
+# OpenBLAS from source and links it statically, so the shipped binary carries no
+# `/opt/homebrew/.../libopenblas.dylib` runtime dependency (the v0.1.9 launch
+# crash). Building it needs a C/Fortran toolchain at build time (`brew install
+# gcc`); the dynamic gfortran/quadmath runtime that openblas-src still emits is
+# force-statically-linked in `apps/desktop/src-tauri/build.rs`. The `online`
+# HuggingFace download path is dropped because we load via `from_dir` against the
+# app model store.
 [target.'cfg(target_os = "macos")'.dependencies]
+speakrs = { version = "0.4", default-features = false, features = ["coreml", "openblas-static"], optional = true }
 cidre = { version = "0.15", default-features = false, features = ["async", "av", "blocks", "cat", "cf", "cm", "dispatch", "ns", "ut", "macos_15_0"], optional = true }

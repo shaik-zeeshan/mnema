@@ -22,6 +22,14 @@ _Avoid_: recording pipeline (that includes processing), media processing, captur
 The platform primitives that consume finalized capture artifacts after commit: audio decode to mono PCM, video decode/frame extraction, and artifact validation. Distinct from **Runtime Capture** — a gap here blocks downstream pipelines (transcription, speaker analysis, previews) but does not change what capture produces.
 _Avoid_: runtime capture, capture writers (the crate also holds writer-side capture code)
 
+**Capture Suspension**:
+A transient-liveness suspension of capture that the **Recording Lifecycle** keeps trying to recover from on its own, distinct from inactivity pause; its kind (privacy-filter apply failure, display unavailable, or **Low-Disk Suspension**) selects the suspended source scope and the retry policy.
+_Avoid_: privacy suspension (now one kind, not the whole concept), inactivity pause, capture stop
+
+**Low-Disk Suspension**:
+The **Capture Suspension** kind raised when free space on the recordings volume falls below the low-disk threshold; unlike the other kinds it suspends every source including the microphone, never escalates to a manual restart, and auto-resumes once free space climbs back above a higher resume threshold.
+_Avoid_: disk-full stop, storage cap, retention cleanup
+
 **Live Privacy Filter**:
 The native screen-capture filtering mechanism that applies **App Privacy Exclusion** before frames are delivered to Mnema.
 _Avoid_: privacy promise, metadata redaction, post-capture filtering
@@ -29,6 +37,10 @@ _Avoid_: privacy promise, metadata redaction, post-capture filtering
 **Browser Metadata Collection**:
 Native browser URL metadata, governed by metadata settings, for timeline and search context without making live capture privacy decisions.
 _Avoid_: metacollection, browser privacy signal, website privacy rule
+
+**Browser URL Strategy**:
+How Mnema reads a browser's active-tab URL. Two mechanisms coexist: **AppleScript** (Chromium and WebKit families — no extra permission, no side effects) and **Accessibility** (Gecko/Firefox/Zen — reads `AXURL` off the focused web area, requires the macOS Accessibility permission and wakes the browser's own accessibility engine). A browser with neither strategy is recognized but yields no URL.
+_Avoid_: browser dialect (AppleScript-only term), URL adapter, a11y scrape
 
 **Audio Activity Sample**:
 A raw audio probe reading such as latest normalized level or last-sample timestamp, exposed for debug visibility but not itself used as the inactivity decision.
@@ -57,7 +69,10 @@ _Avoid_: app-infra inference, dossier service, ai-runtime-in-storage
 ## Relationships
 
 - **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.
-- **Browser Metadata Collection** uses native browser URL probing only in this branch; another metadata adapter requires a future ADR-backed design.
+- **Browser Metadata Collection** reads the active-tab URL through a per-browser **Browser URL Strategy**: AppleScript for Chromium/WebKit, Accessibility for Gecko. The two are never unified — moving Chromium/WebKit onto Accessibility would impose the Accessibility permission and a11y-engine wake on users who pay neither today.
+- The **Accessibility** **Browser URL Strategy** is opt-in and Gecko-only: offered as an optional, non-blocking onboarding item shown only when a Gecko browser is installed, with a first-sighting prompt as fallback; if never granted, Gecko browsers yield no URL (the prior behavior).
+- The **Accessibility** read identifies the active tab via the focused web area only (`AXFocusedUIElement` climbed to the outermost `AXWebArea`), which is correct even in Zen split view; it never scans windows or the address bar for a URL, preferring no URL over a guessed one.
+- The native **Accessibility** reader lives in `native_capture_browser_url_ax.rs` (macOS-only, hand-rolled `ApplicationServices` FFI, no new crate dep): it bounds a hung browser with `AXUIElementSetMessagingTimeout` (0.5s) and polls the first read (≤500ms, 50ms steps) to wake a dormant a11y engine, gates on a bare `AXIsProcessTrusted`, and fires the one-time-per-process first-sighting prompt (`maybe_prompt_on_gecko_frontmost`, via `AXIsProcessTrustedWithOptions`). The Tauri command surface (`get_browser_url_accessibility_status`, `request_browser_url_accessibility`, `open_browser_url_accessibility_settings`) is registered in `lib.rs`; status reports `{ trusted, geckoBrowsers: [{ bundleId, displayName, installed }] }`.
 - A generated **Scrub Preview** interval is one second and is represented by the first indexed screen position inside that one-second video-offset bucket.
 - The v1 generated **Scrub Preview** rendition is JPEG quality 72 with a 360 px maximum dimension at one preview per second.
 - A generated **Scrub Preview** is an app-owned cache artifact under the app cache directory, not a durable artifact under the **Managed Storage Layout** recordings tree.
@@ -101,6 +116,8 @@ _Avoid_: app-infra inference, dossier service, ai-runtime-in-storage
 - On Windows, screen loss from system suspend, session lock, or monitor/display change is a transient liveness condition the **Recording Lifecycle** recovers from by reusing the inactivity pause/resume mechanism with a pause-reason discriminator, not by ending the session. See [ADR 0023](../../../docs/adr/0023-windows-transient-capture-recovery-reuses-inactivity-pause.md).
 - Metadata-derived website, title, private-browser, and per-window decisions must not feed the **Live Privacy Filter**.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
+- A **Recording Lifecycle** may raise a **Capture Suspension** when it cannot safely keep writing; the kind selects scope and retry policy, and the segment loop owns one throttled recovery driver shared across kinds ([ADR 0021](../../../docs/adr/0021-recover-from-display-unavailable-as-transient-liveness.md), [ADR 0040](../../../docs/adr/0040-low-disk-safety-is-a-transient-liveness-capture-suspension-kind.md)).
+- A **Low-Disk Suspension** stops screen, system audio, and microphone together because all sources write to the same recordings volume, is entered at segment-open boundaries (never a continuous poll), and auto-resumes once free space rises above the resume threshold; if free space drops below the reserve floor the **Recording Lifecycle** stops the session gracefully instead of waiting ([ADR 0040](../../../docs/adr/0040-low-disk-safety-is-a-transient-liveness-capture-suspension-kind.md)).
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
 - A **Media Processing Seam** implementation lives in a dedicated processing crate; processing crates depend on the seam crate and never on capture crates, and capture crates do not grow processing-seam decoders.
 - A committed **Audio Segment** never contains the inactivity idle tail: the tail is withheld at the audio writer and discarded on an inactivity stop (boundary refined by peak-level or VAD speech activity), on every platform — trimming is not a post-finalization file operation.
