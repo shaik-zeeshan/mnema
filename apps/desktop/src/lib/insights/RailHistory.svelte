@@ -14,6 +14,8 @@
   // on click, so the input focuses/selects itself once mounted; keydown is
   // attached on the input for the same reason.
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import { slide } from "svelte/transition";
+  import { cubicOut } from "svelte/easing";
   import {
     conversationStore,
     relativeTime,
@@ -85,11 +87,15 @@
     {#each conversationStore.historyGroups as group (group.label)}
       <div class="rail-group" role="presentation">{group.label}</div>
       {#each group.items as c (c.conversationId)}
+        <!-- Deleting a row just makes it vanish; a short local slide+fade makes
+             the removal (and post-rename re-sort) perceptible. `|local` keeps it
+             from firing on the initial list mount. -->
         <div
           class="rail-chat-row"
           class:active={c.conversationId ===
             conversationStore.activeConversationId}
           role="listitem"
+          transition:slide|local={{ duration: 150, easing: cubicOut }}
         >
           {#if conversationStore.renamingId === c.conversationId}
             <!-- Inline rename: Enter commits, Escape cancels, blur
@@ -271,7 +277,9 @@
     position: relative;
     display: flex;
     align-items: center;
-    min-height: 24px;
+    /* The inner `.rail-chat` is a fixed 24px tall, so the row height matches it
+       without an explicit `min-height` — and dropping the min-height lets the
+       removal slide collapse smoothly to 0 instead of snapping at 24px. */
   }
   .rail-chat {
     flex: 1 1 auto;

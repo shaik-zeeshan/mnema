@@ -1742,6 +1742,10 @@
   .date-range button:hover {
     color: var(--app-text-strong);
   }
+  .date-range button:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .date-range button.active {
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
@@ -1776,6 +1780,10 @@
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
+  }
+  .date-stepper .nav:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .date-stepper .nav:disabled {
     opacity: 0.4;
@@ -2584,11 +2592,20 @@
     transition:
       background 0.12s ease,
       border-color 0.12s ease,
-      color 0.12s ease;
+      color 0.12s ease,
+      box-shadow 0.12s ease,
+      transform 0.06s ease;
   }
   .btn:hover {
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
   }
   .btn--accent {
     border-color: var(--app-accent-border);

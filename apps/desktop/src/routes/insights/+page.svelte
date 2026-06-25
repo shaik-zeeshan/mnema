@@ -459,6 +459,12 @@
   .breadcrumb-link:hover {
     color: var(--app-text-strong);
   }
+  .breadcrumb-link:focus-visible {
+    outline: none;
+    color: var(--app-text-strong);
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
+  }
   .breadcrumb .sep {
     color: var(--app-text-faint);
   }
@@ -478,10 +484,18 @@
     font: inherit;
     font-size: 11.5px;
     cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .breadcrumb-back:hover {
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
+  }
+  .breadcrumb-back:focus-visible {
+    outline: none;
+    color: var(--app-text-strong);
+    box-shadow: var(--app-ring);
   }
 </style>

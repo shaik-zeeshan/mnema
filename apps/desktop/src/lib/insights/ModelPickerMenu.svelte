@@ -494,11 +494,18 @@
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
     cursor: pointer;
-    transition: border-color 0.12s ease, color 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .mpm-trigger:hover:not(:disabled) {
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
+  }
+  .mpm-trigger:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .mpm-trigger:disabled {
     cursor: default;
@@ -518,7 +525,6 @@
     border-color: var(--app-border-strong);
     background: var(--app-surface);
     color: var(--app-text);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
     transition: border-color 0.15s, box-shadow 0.15s;
   }
   .mpm-trigger--block:hover:not(:disabled) {
@@ -526,7 +532,7 @@
   }
   .mpm-trigger--block:focus-visible {
     border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
     outline: none;
   }
   .mpm-trigger--block[aria-expanded="true"] {

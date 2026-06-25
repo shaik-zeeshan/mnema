@@ -1407,6 +1407,10 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .example-q:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
 
   /* One transcript turn: a user bubble (right) then the AI answer (left). */
   .turn {
@@ -1566,6 +1570,10 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .activity-chip:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .activity-caret {
     font-size: 8px;
     transition: transform 0.12s ease;
@@ -1716,10 +1724,13 @@
     border: 1px solid var(--app-border);
     border-radius: 9px;
     background: var(--app-surface);
-    transition: border-color 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .composer:focus-within {
     border-color: var(--app-accent-border);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
   .composer-input {
     flex: 0 0 auto;
@@ -1765,18 +1776,38 @@
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
     cursor: pointer;
-    transition: border-color 0.12s ease, opacity 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease,
+      color 0.12s ease,
+      box-shadow 0.12s ease,
+      opacity 0.12s ease;
   }
   .composer-send:hover:not(:disabled) {
     border-color: var(--app-accent);
+  }
+  .composer-send:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .composer-send:disabled {
     opacity: 0.45;
     cursor: not-allowed;
   }
-  /* The send glyph morphs into a stop square while a turn streams. */
+  /* The send glyph morphs into a stop square while a turn streams. The Stop
+     action must not read as the affirmative green Send — give it a neutral
+     danger palette so interrupting is visually distinct. */
   .composer-send--stop {
     font-size: 10px;
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg);
+    color: var(--app-danger-text);
+  }
+  .composer-send--stop:hover:not(:disabled) {
+    border-color: var(--app-danger);
+  }
+  .composer-send--stop:focus-visible {
+    box-shadow: var(--app-ring-danger);
   }
 
   /* Engine-off quiet card (replaces the composer block, same centered width). */
@@ -1810,10 +1841,19 @@
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
     cursor: pointer;
-    transition: border-color 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .engine-off-enable:hover {
     border-color: var(--app-accent);
+  }
+  .engine-off-enable:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .engine-off-enable:not(:disabled):active {
+    transform: translateY(1px);
   }
 
   /* Shared accent button (mirrors Overview's .btn--accent). */
@@ -1824,7 +1864,19 @@
     border-radius: 7px;
     cursor: pointer;
     border: 1px solid transparent;
-    transition: border-color 0.12s ease, background 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease,
+      box-shadow 0.12s ease,
+      filter 0.12s ease,
+      transform 0.06s ease;
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
   }
   .btn--accent {
     background: var(--app-accent-bg);
@@ -1833,5 +1885,8 @@
   }
   .btn--accent:hover {
     border-color: var(--app-accent);
+  }
+  .btn--accent:not(:disabled):active {
+    filter: brightness(0.95);
   }
 </style>
