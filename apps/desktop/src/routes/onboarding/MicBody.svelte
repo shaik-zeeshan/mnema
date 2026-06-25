@@ -4,6 +4,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
+  import { useLockCalloutSlot } from "./FeatureRow.svelte";
 
   let { controller }: { controller: OnboardingController } = $props();
 
@@ -30,9 +31,19 @@
         return "Off — legacy microphone peak-level activity, tuned by the sensitivity slider below.";
     }
   };
+
+  // Hoist the unmet-prerequisite callout OUT of FeatureRow's inert `.body-inner`
+  // (registered every render so it tracks the lock state) — otherwise its "Grant
+  // Microphone access" button renders but is itself inert and does nothing.
+  const setLockCallout = useLockCalloutSlot();
+  const lockReason = $derived(controller.featureLockReason("mic"));
+  $effect(() => {
+    setLockCallout(lockReason ? lockCallout : null);
+    return () => setLockCallout(null);
+  });
 </script>
 
-{#if controller.featureLockReason("mic")}
+{#snippet lockCallout()}
   <div class="lock-callout">
     <div class="lock-callout-text">
       Microphone access is required before you can record your mic.
@@ -46,7 +57,7 @@
       {controller.requestingPerm === "microphone" ? "…" : "Grant Microphone access"}
     </button>
   </div>
-{/if}
+{/snippet}
 
 <div class="group">
   <div class="ctl">

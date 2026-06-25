@@ -4,6 +4,7 @@
   import Slider from "$lib/components/Slider.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import { formatBytes } from "./onboarding-mapping";
+  import { useLockCalloutSlot } from "./FeatureRow.svelte";
 
   let { controller }: { controller: OnboardingController } = $props();
 
@@ -19,9 +20,18 @@
     if (controller.selectedSpeakerDownloadRunning) return "pending";
     return "denied";
   });
+
+  // Hoist the unmet-prerequisite callout OUT of FeatureRow's inert `.body-inner`
+  // — otherwise its "Turn on Audio transcription" button renders but is inert.
+  const setLockCallout = useLockCalloutSlot();
+  const lockReason = $derived(controller.featureLockReason("speakers"));
+  $effect(() => {
+    setLockCallout(lockReason ? lockCallout : null);
+    return () => setLockCallout(null);
+  });
 </script>
 
-{#if controller.featureLockReason("speakers")}
+{#snippet lockCallout()}
   <div class="lock-callout">
     <div class="lock-callout-text">
       Audio transcription must be on to separate speakers.
@@ -34,7 +44,7 @@
       Turn on Audio transcription
     </button>
   </div>
-{/if}
+{/snippet}
 
 <div class="group">
   <div class="note muted">

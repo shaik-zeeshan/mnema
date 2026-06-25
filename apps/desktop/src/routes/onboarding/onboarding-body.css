@@ -271,14 +271,15 @@
 }
 
 /* ===== unmet-prerequisite callout (in-body inline action) =====
-   Rendered at the TOP of a locked feature's body. It is a direct child of
-   `.body-inner` that is NEITHER `.group`/`.ctl`/`.model-card`, so the feature-off
-   dim below leaves it fully visible — accent-toned to read as "action needed".
-   Note: when the feature is OFF the body wrapper carries `inert` (FeatureRow), so
-   this callout's button is non-operable here too; the same prerequisite action is
-   always reachable from a never-inert surface — permission grants from the
-   (required) Permissions row, "enable transcription" from the Transcription row's
-   header toggle. */
+   The callout is HOISTED out of `.body-inner` by FeatureRow (registered via the
+   body's `useLockCalloutSlot`) and rendered into `.body-callout`, a SIBLING of
+   `.body-inner` that is OUTSIDE its `inert` subtree — so the "Grant access" /
+   "Turn on…" UNLOCK button is actually clickable (previously it sat inside the
+   inert body and silently did nothing). The wrapper mirrors `.body-inner`'s
+   left gutter so the callout still aligns under the row title. */
+.onboarding-shell .body-callout {
+  padding: 16px 16px 0 56px;
+}
 .onboarding-shell .lock-callout {
   display: flex;
   align-items: center;
@@ -360,7 +361,9 @@
   background: var(--app-accent);
   border: 1px solid var(--app-accent);
   border-radius: 8px;
-  padding: 10px 20px;
+  /* Unified CTA padding shared with the bookend-screen `.cta`
+     (onboarding-screens.css) so the primary button is consistent across phases. */
+  padding: 12px 24px;
   cursor: pointer;
   transition: box-shadow 0.15s ease, transform 0.08s ease;
 }

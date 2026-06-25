@@ -16,9 +16,7 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  font-family:
-    "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, "Cascadia Code",
-    "Fira Code", monospace;
+  font-family: var(--app-font-mono);
   color: var(--app-text);
 }
 
@@ -33,7 +31,9 @@
   background: var(--app-accent);
   border: 1px solid var(--app-accent);
   border-radius: 8px;
-  padding: 12px 26px;
+  /* Unified CTA padding shared with the accordion-footer `.cta`
+     (onboarding-body.css) so the primary button is consistent across phases. */
+  padding: 12px 24px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -66,6 +66,18 @@
 .ob-screen .finale__link:not(:disabled):hover,
 .ob-screen .finale__back:not(:disabled):hover {
   color: var(--app-accent);
+}
+/* Keyboard affordance — these link-style buttons had no visible focus ring
+   (mirrors `.footer .secondary:focus-visible`, plus the shared accent ring so
+   the focus target is unambiguous on the dark hero/crest). */
+.ob-screen .welcome__accel:focus-visible,
+.ob-screen .finale__link:focus-visible,
+.ob-screen .finale__back:focus-visible {
+  outline: none;
+  color: var(--app-accent);
+  text-decoration: underline;
+  border-radius: 6px;
+  box-shadow: var(--app-ring);
 }
 .ob-screen .welcome__accel:disabled,
 .ob-screen .finale__link:disabled,
@@ -185,7 +197,7 @@
 .ob-screen .welcome__tag {
   margin: 0;
   color: var(--app-text);
-  font-size: 12.5px;
+  font-size: var(--text-base);
   line-height: 1.55;
   max-width: 44ch;
 }
@@ -235,7 +247,7 @@
 }
 .ob-screen .welcome__meta {
   color: var(--app-text-muted);
-  font-size: 9.5px;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -246,7 +258,7 @@
   padding-left: 0;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  font-size: 9.5px;
+  font-size: var(--text-xs);
   font-weight: 700;
 }
 

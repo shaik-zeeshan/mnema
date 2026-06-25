@@ -23,9 +23,7 @@
   flex-direction: column;
   min-height: 0;
   height: 100%;
-  font-family:
-    "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, "Cascadia Code",
-    "Fira Code", monospace;
+  font-family: var(--app-font-mono);
   color: var(--app-text);
 }
 
@@ -202,7 +200,9 @@
 .onboarding-shell .row.open .row-name {
   font-size: 17px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  /* Tighter tracking on the larger open-row heading (17px) so the title doesn't
+     read loose against the body copy below. */
+  letter-spacing: -0.02em;
   white-space: normal;
 }
 .onboarding-shell .row-eyebrow {

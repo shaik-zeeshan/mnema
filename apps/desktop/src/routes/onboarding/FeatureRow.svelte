@@ -1,5 +1,30 @@
-<script lang="ts">
+<script lang="ts" module>
+  import { getContext, setContext } from "svelte";
   import type { Snippet } from "svelte";
+
+  // Lets a body component (rendered INSIDE the inert `.body-inner` via the `body`
+  // snippet) hoist its unmet-prerequisite callout OUT of the inert subtree, so the
+  // "Grant access" / "Turn on…" UNLOCK button is actually clickable. Without this
+  // the one control that promises to unlock the feature is itself inert. The body
+  // registers its callout snippet here; FeatureRow renders it as a SIBLING of
+  // `.body-inner` (never inert). Keyed by a Symbol so it can't collide.
+  const LOCK_CALLOUT_KEY = Symbol("feature-row-lock-callout");
+
+  interface LockCalloutSlot {
+    set: (snippet: Snippet | null) => void;
+  }
+
+  // Body components call this ONCE at init (it reads context, which Svelte only
+  // allows during component initialization) and get back a setter to register or
+  // clear their lock-callout snippet from an `$effect`. A no-op fallback keeps
+  // bodies usable if ever rendered outside a FeatureRow.
+  export function useLockCalloutSlot(): (snippet: Snippet | null) => void {
+    const slot = getContext<LockCalloutSlot | undefined>(LOCK_CALLOUT_KEY);
+    return (snippet) => slot?.set(snippet);
+  }
+</script>
+
+<script lang="ts">
   import Icon, { type IconName } from "$lib/settings/Icon.svelte";
   import Switch from "$lib/components/Switch.svelte";
 
@@ -74,6 +99,13 @@
     if (toggleDisabled) return; // prerequisite unmet — enabling is gated
     onToggle();
   }
+
+  // The body's hoisted lock-callout (registered via `useLockCalloutSlot`),
+  // rendered OUTSIDE the inert `.body-inner` so its unlock button is clickable.
+  let lockCallout = $state<Snippet | null>(null);
+  setContext<LockCalloutSlot>(LOCK_CALLOUT_KEY, {
+    set: (snippet) => (lockCallout = snippet),
+  });
 </script>
 
 <section
@@ -125,11 +157,18 @@
             ? "On"
             : "Off"}
           {#if attention}
-            <span class="row-attn"
+            <!-- Warn chip (active blocker): the feature is ON but something it
+                 needs is unresolved. Distinct from the muted lock chip below via
+                 warn color + an explicit title (the two "not ready" states read
+                 alike at a glance otherwise). -->
+            <span class="row-attn" title="This feature is on but needs setup before it can run."
               ><span class="attn-dot"></span>Needs setup</span
             >
           {:else if !enabled && lockReason}
-            <span class="row-lock"
+            <!-- Muted lock chip (gated/optional): the feature is OFF and can't be
+                 turned on until a prerequisite is met — quieter than the warn
+                 chip because nothing is actively broken yet. -->
+            <span class="row-lock" title="Locked: {lockReason}"
               ><span class="lock-ico"><Icon name="lock" /></span>{lockReason}</span
             >
           {/if}
@@ -154,13 +193,23 @@
   <!-- `hidden` when collapsed so a closed row exposes no empty labelled region. -->
   <div class="row-body" id={bodyId} role="region" aria-labelledby={titleId} hidden={!open}>
     {#if open}
+      <!-- The unmet-prerequisite callout (registered by the body via
+           `useLockCalloutSlot`) is rendered HERE, as a sibling of `.body-inner`
+           and OUTSIDE its `inert` subtree, so its "Grant access" / "Turn on…"
+           UNLOCK button is actually clickable. Rendering it inside the inert body
+           (where the body component physically runs) made the one control that
+           unlocks the feature itself inert. -->
+      {#if lockCallout}
+        <div class="body-callout">{@render lockCallout()}</div>
+      {/if}
       <!-- When the feature is OFF but expanded, its body is visually dimmed
            (`.disabled-feature` in onboarding-body.css). `pointer-events: none`
            blocks the mouse but NOT the keyboard, so without `inert` the dimmed
            draft controls / model-download buttons stay tab-reachable and
            keyboard-activatable. `inert` removes the whole subtree from the tab
            order and blocks activation, matching the visual dim. Same condition
-           that drives `disabled-feature` on the row above. -->
+           that drives `disabled-feature` on the row above. The hoisted callout
+           above is deliberately NOT a descendant of this inert wrapper. -->
       <div class="body-inner" inert={open && !enabled && !required}>
         {#if body}{@render body()}{/if}
       </div>

@@ -43,8 +43,13 @@
           onclick={() => c.beginSetup()}
           disabled={c.loading}
         >
-          Begin setup
-          <span class="btn__arrow" aria-hidden="true">→</span>
+          {#if c.loading}
+            <span class="cta__spin" aria-hidden="true"></span>
+            Setting up…
+          {:else}
+            Begin setup
+            <span class="btn__arrow" aria-hidden="true">→</span>
+          {/if}
         </button>
         <span class="welcome__meta">≈ 60 seconds</span>
       </div>
@@ -68,6 +73,30 @@
 </div>
 
 <style>
+  /* Loading affordance for the "Begin setup" CTA — without it the button only
+     dimmed (no label/spinner change) while `c.loading`, reading as dead. A small
+     accent-on-bg spinner + "Setting up…" label confirms work is in flight,
+     matching the accel button's "Applying…" idiom. */
+  .cta__spin {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--app-bg) 35%, transparent);
+    border-top-color: var(--app-bg);
+    animation: welcome-cta-spin 0.7s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes welcome-cta-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cta__spin {
+      animation: none;
+    }
+  }
+
   /* Surfaces a failed "Use recommended setup" — without it, a failed privacy-app
      exclusion silently leaves the recommended apps un-excluded (a privacy
      regression). Terminal/green danger tokens. */
