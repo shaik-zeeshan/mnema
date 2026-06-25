@@ -49,6 +49,13 @@
   ) => c.chooseSemanticSearchPickedModel(model);
 </script>
 
+{#snippet spinner()}
+  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+  </svg>
+{/snippet}
+
 <SettingGroup
   id="settings-section-semanticSearch"
   title="Semantic Search Model"
@@ -121,7 +128,7 @@
                 progress.status === "starting" ||
                 progress.status === "installing")}
             <div class="settings-group ss-picked" role="group" aria-label={picked.displayName}>
-              <div class="row-actions" style="justify-content: space-between; align-items: flex-start;">
+              <div class="row-actions row-actions--between">
                 <div>
                   <strong>{picked.displayName}</strong>
                   <p class="group-hint">{picked.description}</p>
@@ -155,31 +162,41 @@
                 <div class="row-actions">
                   {#if downloading}
                     <button
+                      type="button"
                       class="btn btn--ghost btn--sm"
                       onclick={() => void cancelSemanticSearchModelDownload()}
                       disabled={cancellingSemanticSearchDownload}
+                      aria-busy={cancellingSemanticSearchDownload}
                     >
-                      Cancel
+                      {#if cancellingSemanticSearchDownload}{@render spinner()}Cancelling{:else}Cancel{/if}
                     </button>
                   {:else if !installed}
                     <!-- Step 1: download. Mnema never auto-downloads (ADR 0036). -->
                     <button
+                      type="button"
                       class="btn btn--primary btn--sm"
                       onclick={() => void startSemanticSearchPickedDownload(picked)}
                       disabled={!picked.provider || startingSemanticSearchDownload}
+                      aria-busy={startingSemanticSearchDownload}
                     >
-                      {picked.approxDownloadBytes != null
-                        ? `Download (${formatBytes(picked.approxDownloadBytes)})`
-                        : "Download"}
+                      {#if startingSemanticSearchDownload}
+                        {@render spinner()}Starting
+                      {:else}
+                        {picked.approxDownloadBytes != null
+                          ? `Download (${formatBytes(picked.approxDownloadBytes)})`
+                          : "Download"}
+                      {/if}
                     </button>
                   {:else if !selected}
                     <!-- Step 2: use (installed, not yet active). -->
                     <button
+                      type="button"
                       class="btn btn--primary btn--sm"
                       onclick={() => void chooseSemanticSearchPickedModel(picked)}
                       disabled={semanticSearchReindexing}
+                      aria-busy={semanticSearchReindexing}
                     >
-                      Use this model
+                      {#if semanticSearchReindexing}{@render spinner()}Re-indexing{:else}Use this model{/if}
                     </button>
                   {/if}
                   {#if !installed && !downloading}
@@ -217,5 +234,33 @@
     flex-direction: column;
     gap: 10px;
     width: 100%;
+  }
+
+  /* Picked-model header lays its label/description column opposite the status
+     badge; override the shared .row-actions (which packs to the end). */
+  .row-actions.row-actions--between {
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+
+  /* Inline busy spinner shown beside a button label while an action is in
+     flight; reuses the shared settings-icon-spin keyframe. */
+  .btn-spinner {
+    width: 13px;
+    height: 13px;
+    margin-right: 6px;
+    vertical-align: -2px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    animation: settings-icon-spin 0.7s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn-spinner {
+      animation: none;
+    }
   }
 </style>

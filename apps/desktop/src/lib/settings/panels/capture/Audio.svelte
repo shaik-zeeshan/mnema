@@ -132,7 +132,7 @@
           <div class="inline-error">
             <span class="inline-error__icon">⚠</span>
             <span class="inline-error__msg">{audio.micError}</span>
-            <button class="btn btn--ghost btn--sm" onclick={() => audio.micError = null}>×</button>
+            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => audio.micError = null}>×</button>
           </div>
         {/snippet}
       </SettingRow>
@@ -142,7 +142,7 @@
       {#snippet control()}
         <div class="control-stack">
           <p class="empty-state">Failed to load microphone state.</p>
-          <button class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
+          <button type="button" class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
         </div>
       {/snippet}
     </SettingRow>

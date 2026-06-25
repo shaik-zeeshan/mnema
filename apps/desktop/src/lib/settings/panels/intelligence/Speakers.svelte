@@ -40,6 +40,13 @@
   const deleteSelectedSpeakerModel = () => c.deleteSelectedSpeakerModel();
 </script>
 
+{#snippet spinner()}
+  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+  </svg>
+{/snippet}
+
 <SettingGroup
   id="settings-section-speakers"
   title="Speaker analysis"
@@ -127,7 +134,7 @@
           </div>
           <p class="group-hint">{selectedSpeakerModel.description}</p>
           {#if selectedSpeakerModel.installPath}
-            <p class="group-hint"><strong>Install path:</strong> {selectedSpeakerModel.installPath}</p>
+            <p class="group-hint"><strong>Install path:</strong> <span class="model-path">{selectedSpeakerModel.installPath}</span></p>
           {/if}
           <ModelMissingFiles files={selectedSpeakerModel.missingFiles} />
           {#if selectedSpeakerModel.failureMessage}
@@ -150,17 +157,17 @@
                   {#if selectedSpeakerDownloadPercent !== null} · {selectedSpeakerDownloadPercent}%{/if}
                   {#if selectedSpeakerDownloadProgress?.message} · {selectedSpeakerDownloadProgress.message}{/if}
                 </p>
-                <button class="btn btn--ghost" onclick={cancelSelectedSpeakerModelDownload} disabled={cancellingSpeakerDownload}>
-                  {cancellingSpeakerDownload ? "Cancelling" : "Cancel download"}
+                <button type="button" class="btn btn--ghost" onclick={cancelSelectedSpeakerModelDownload} disabled={cancellingSpeakerDownload} aria-busy={cancellingSpeakerDownload}>
+                  {#if cancellingSpeakerDownload}{@render spinner()}Cancelling{:else}Cancel download{/if}
                 </button>
               </div>
             {:else}
               <div class="debug-log-actions">
-                <button class="btn btn--ghost" onclick={startSelectedSpeakerModelDownload} disabled={startingSpeakerDownload || selectedSpeakerModel.available}>
-                  {startingSpeakerDownload ? "Starting" : `Download (${formatBytes(selectedSpeakerModel.download.byteSize)})`}
+                <button type="button" class="btn btn--ghost" onclick={startSelectedSpeakerModelDownload} disabled={startingSpeakerDownload || selectedSpeakerModel.available} aria-busy={startingSpeakerDownload}>
+                  {#if startingSpeakerDownload}{@render spinner()}Starting{:else}Download ({formatBytes(selectedSpeakerModel.download.byteSize)}){/if}
                 </button>
-                <button class="btn btn--danger" onclick={deleteSelectedSpeakerModel} disabled={deletingSpeakerModel || selectedSpeakerDownloadRunning || !selectedSpeakerModel.available}>
-                  {deletingSpeakerModel ? "Deleting" : "Delete speaker model"}
+                <button type="button" class="btn btn--danger" onclick={deleteSelectedSpeakerModel} disabled={deletingSpeakerModel || selectedSpeakerDownloadRunning || !selectedSpeakerModel.available} aria-busy={deletingSpeakerModel}>
+                  {#if deletingSpeakerModel}{@render spinner()}Deleting{:else}Delete speaker model{/if}
                 </button>
               </div>
             {/if}
@@ -190,5 +197,33 @@
     flex-direction: column;
     gap: 10px;
     width: 100%;
+  }
+
+  /* Render filesystem paths in mono so they read as machine values, matching
+     the Developer log path treatment. */
+  .model-path {
+    font-family: var(--app-font-mono);
+    word-break: break-all;
+  }
+
+  /* Inline busy spinner shown beside a button label while an action is in
+     flight; reuses the shared settings-icon-spin keyframe. */
+  .btn-spinner {
+    width: 13px;
+    height: 13px;
+    margin-right: 6px;
+    vertical-align: -2px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    animation: settings-icon-spin 0.7s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn-spinner {
+      animation: none;
+    }
   }
 </style>

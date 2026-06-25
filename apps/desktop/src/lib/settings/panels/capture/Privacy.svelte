@@ -62,7 +62,7 @@
               <p>Lets Mnema capture the page address for Firefox and Zen. Enable Mnema under Privacy &amp; Security → Accessibility.</p>
             </div>
             {#if !gecko.trusted}
-              <button class="btn btn--ghost" onclick={() => gecko.request()} disabled={gecko.requesting}>
+              <button type="button" class="btn btn--ghost" onclick={() => gecko.request()} disabled={gecko.requesting}>
                 {gecko.requesting ? "Requesting" : "Grant access"}
               </button>
             {/if}

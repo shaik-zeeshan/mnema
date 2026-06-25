@@ -48,6 +48,13 @@
   const requestDeleteUnusedOcrModels = () => c.requestDeleteUnusedOcrModels();
 </script>
 
+{#snippet spinner()}
+  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+  </svg>
+{/snippet}
+
 <SettingGroup
   id="settings-section-ocr"
   title="OCR &amp; Previews"
@@ -240,7 +247,7 @@
             <p class="group-hint group-hint--warn"><strong>Runtime:</strong> {selectedOcrModel.runtimeMessage}</p>
           {/if}
           {#if selectedOcrModel.installPath}
-            <p class="group-hint"><strong>Install path:</strong> {selectedOcrModel.installPath}</p>
+            <p class="group-hint"><strong>Install path:</strong> <span class="model-path">{selectedOcrModel.installPath}</span></p>
           {/if}
           <ModelMissingFiles files={selectedOcrModel.missingFiles} />
           {#if selectedOcrModel.failureMessage}
@@ -264,13 +271,13 @@
                     {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
                     {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
                   </p>
-                  <button class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload}>
-                    {cancellingOcrDownload ? "Cancelling" : "Cancel download"}
+                  <button type="button" class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload} aria-busy={cancellingOcrDownload}>
+                    {#if cancellingOcrDownload}{@render spinner()}Cancelling{:else}Cancel download{/if}
                   </button>
                 </div>
               {:else}
-                <button class="btn btn--ghost" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available}>
-                  {startingOcrDownload ? "Starting" : `Download (${formatBytes(selectedOcrModel.download.byteSize)})`}
+                <button type="button" class="btn btn--ghost" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available} aria-busy={startingOcrDownload}>
+                  {#if startingOcrDownload}{@render spinner()}Starting{:else}Download ({formatBytes(selectedOcrModel.download.byteSize)}){/if}
                 </button>
               {/if}
             {:else if !selectedOcrModel.available}
@@ -289,8 +296,8 @@
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
           {/if}
           <div class="debug-log-actions">
-            <button class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning}>
-              Delete unused OCR models
+            <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning} aria-busy={deletingUnusedOcrModels}>
+              {#if deletingUnusedOcrModels}{@render spinner()}Deleting…{:else}Delete unused OCR models{/if}
             </button>
           </div>
           <p class="group-hint">Removes app-managed OCR model files except the model selected above.</p>
@@ -373,5 +380,33 @@
     flex-direction: column;
     gap: 10px;
     width: 100%;
+  }
+
+  /* Render filesystem paths in mono so they read as machine values, matching
+     the Developer log path treatment. */
+  .model-path {
+    font-family: var(--app-font-mono);
+    word-break: break-all;
+  }
+
+  /* Inline busy spinner shown beside a button label while an action is in
+     flight; reuses the shared settings-icon-spin keyframe. */
+  .btn-spinner {
+    width: 13px;
+    height: 13px;
+    margin-right: 6px;
+    vertical-align: -2px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    animation: settings-icon-spin 0.7s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn-spinner {
+      animation: none;
+    }
   }
 </style>

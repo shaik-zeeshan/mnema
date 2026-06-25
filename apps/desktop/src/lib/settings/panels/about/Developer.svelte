@@ -31,6 +31,13 @@
   const deleteGeneralLog = () => logs.deleteGeneralLog();
 </script>
 
+{#snippet spinner()}
+  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+  </svg>
+{/snippet}
+
 <SettingGroup id="settings-section-developer" title="Developer &amp; Logs">
   <SettingRow
     label="Enable developer options"
@@ -78,12 +85,14 @@
 
             <div class="debug-log-actions">
               <button
+                type="button"
                 class="btn btn--ghost btn--sm"
                 onclick={openDebugLog}
                 disabled={openingDebugLog}
+                aria-busy={openingDebugLog}
               >
                 {#if openingDebugLog}
-                  Opening…
+                  {@render spinner()}Opening…
                 {:else if debugLogStatus.exists}
                   Open Log File
                 {:else}
@@ -92,11 +101,13 @@
               </button>
               {#if debugLogStatus.exists}
                 <button
+                  type="button"
                   class="btn btn--danger btn--sm"
                   onclick={deleteDebugLog}
                   disabled={deletingDebugLog}
+                  aria-busy={deletingDebugLog}
                 >
-                  {deletingDebugLog ? "Deleting…" : "Delete Log File"}
+                  {#if deletingDebugLog}{@render spinner()}Deleting…{:else}Delete Log File{/if}
                 </button>
               {/if}
               {#if debugLogDeleted}
@@ -111,7 +122,7 @@
             <div class="inline-error">
               <span class="inline-error__icon">⚠</span>
               <span class="inline-error__msg">{logs.debugLogError}</span>
-              <button class="btn btn--ghost btn--sm" onclick={() => logs.debugLogError = null}>×</button>
+              <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.debugLogError = null}>×</button>
             </div>
           {/if}
         </div>
@@ -141,12 +152,14 @@
 
           <div class="debug-log-actions">
             <button
+              type="button"
               class="btn btn--ghost btn--sm"
               onclick={openGeneralLog}
               disabled={openingGeneralLog}
+              aria-busy={openingGeneralLog}
             >
               {#if openingGeneralLog}
-                Opening…
+                {@render spinner()}Opening…
               {:else if generalLogStatus.exists}
                 Open Log File
               {:else}
@@ -155,11 +168,13 @@
             </button>
             {#if generalLogStatus.exists}
               <button
+                type="button"
                 class="btn btn--danger btn--sm"
                 onclick={deleteGeneralLog}
                 disabled={deletingGeneralLog}
+                aria-busy={deletingGeneralLog}
               >
-                {deletingGeneralLog ? "Deleting…" : "Delete Log File"}
+                {#if deletingGeneralLog}{@render spinner()}Deleting…{:else}Delete Log File{/if}
               </button>
             {/if}
             {#if generalLogDeleted}
@@ -174,7 +189,7 @@
           <div class="inline-error">
             <span class="inline-error__icon">⚠</span>
             <span class="inline-error__msg">{logs.generalLogError}</span>
-            <button class="btn btn--ghost btn--sm" onclick={() => logs.generalLogError = null}>×</button>
+            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.generalLogError = null}>×</button>
           </div>
         {/if}
       </div>
@@ -189,5 +204,26 @@
     flex-direction: column;
     gap: 10px;
     width: 100%;
+  }
+
+  /* Inline busy spinner shown beside a button label while an action is in
+     flight; reuses the shared settings-icon-spin keyframe. */
+  .btn-spinner {
+    width: 13px;
+    height: 13px;
+    margin-right: 6px;
+    vertical-align: -2px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    animation: settings-icon-spin 0.7s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn-spinner {
+      animation: none;
+    }
   }
 </style>
