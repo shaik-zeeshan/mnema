@@ -83,6 +83,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Open macOS Privacy & Security panes for denied permissions.
 - [x] Active app/window metadata from NSWorkspace/CoreGraphics.
 - [x] Browser URL metadata for supported Chromium/WebKit browsers via AppleScript. Firefox-family (Gecko) browsers — Firefox and Zen — are supported through the macOS Accessibility API (reading `AXURL` off the focused web area); this path is opt-in and requires the macOS Accessibility permission, and Gecko browsers yield no URL until it is granted. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md).
+- [x] Gecko (Firefox/Zen) Accessibility-permission UX: a Settings → Privacy row (gated on a Gecko browser being installed and browser-URL capture being on) and an optional onboarding item (shown only when a Gecko browser is installed; never gates progression). Both probe trust via `get_browser_url_accessibility_status`, raise the macOS Accessibility prompt via `request_browser_url_accessibility`, deep-link to Privacy & Security → Accessibility via `open_browser_url_accessibility_settings`, and re-poll trust on demand and on window focus. A failed probe leaves the status null so the row simply hides — it never gates capture. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md).
 - [x] Live App Privacy Exclusion through ScreenCaptureKit app filters.
 - [x] Exclude Current App tray action.
 - [x] Recommended sensitive app exclusion catalog using macOS bundle IDs.
@@ -179,7 +180,7 @@ Research notes:
 - [ ] Implement “Exclude Current App” using Windows active-window identity, or hide/disable it.
 - [ ] Add Windows sensitive app recommendation catalog.
 - [ ] Add Windows known-browser catalog and browser capture disclosure.
-- [ ] Decide whether browser URL metadata is supported on Windows; do not add browser extension plumbing without an ADR.
+- [ ] Decide whether browser URL metadata is supported on Windows; do not add browser extension plumbing without an ADR. If the chosen source needs an OS-level permission (the way Gecko URLs need macOS Accessibility), add an equivalent permission-grant/recheck UX in Settings and onboarding mirroring the macOS Gecko Accessibility flow.
 
 ### Storage, access, and release
 
@@ -245,7 +246,7 @@ Linux support is not the immediate target, but these are the likely seams if/whe
   - Candidate identifiers: desktop file ID, app ID, executable path, process name.
 - [ ] Implement app candidate discovery and icons from desktop entries.
 - [ ] Design live app privacy exclusion semantics for PipeWire/portal capabilities.
-- [ ] Add Linux sensitive app and known-browser catalogs if metadata/disclosure is supported.
+- [ ] Add Linux sensitive app and known-browser catalogs if metadata/disclosure is supported. If a browser-URL source is added and needs an OS-level permission (the way Gecko URLs need macOS Accessibility), add an equivalent permission-grant/recheck UX in Settings and onboarding mirroring the macOS Gecko Accessibility flow.
 
 ### Storage, access, and release
 
