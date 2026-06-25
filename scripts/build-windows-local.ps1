@@ -50,6 +50,34 @@ function Resolve-FirstExisting {
     return $null
 }
 
+# Run a native command (bun/cargo) with $ErrorActionPreference relaxed, then gate
+# on its real exit code. The global 'Stop' preference makes Windows PowerShell 5.1
+# wrap EVERY line a native tool writes to stderr as a terminating NativeCommandError
+# WHEN this script's output is captured/redirected (e.g. `build-windows-local.ps1
+# *> build.log`, `| Tee-Object`, or a CI log step). bun echoes "$ tauri build" to
+# stderr as its first action, so under any such capture the build aborts on that
+# echo with exit 1 before compiling anything. cargo likewise streams progress to
+# stderr. Relaxing the preference here lets that benign stderr through; a genuine
+# failure still surfaces via $LASTEXITCODE below.
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Command,
+        [string]$What = 'command'
+    )
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command
+    }
+    finally {
+        $ErrorActionPreference = $prev
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "$What failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
+}
+
 # --- 0. Load .env (if present) so its values seed the setup below -------------
 # Honours the repo-root .env: STRAWBERRY_PERL_BIN / STRAWBERRY_C_BIN,
 # CARGO_BUILD_JOBS, TAURI_SIGNING_PRIVATE_KEY[_PASSWORD], etc. Lines already set
@@ -149,11 +177,7 @@ Write-Host "CARGO_BUILD_JOBS=$($env:CARGO_BUILD_JOBS)"
 # --- 5. Optional clean -------------------------------------------------------
 if ($Clean) {
     Write-Host 'Cleaning release artifacts (cargo clean --release)...'
-    cargo clean --release --manifest-path (Join-Path $repoRoot 'Cargo.toml')
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "cargo clean failed with exit code $LASTEXITCODE"
-        exit $LASTEXITCODE
-    }
+    Invoke-Native { cargo clean --release --manifest-path (Join-Path $repoRoot 'Cargo.toml') } 'cargo clean'
 }
 
 # --- 6. Build ----------------------------------------------------------------
@@ -174,11 +198,7 @@ if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
 Push-Location (Join-Path $repoRoot 'apps\desktop')
 try {
     $env:CI = 'true'
-    bun @tauriArgs
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "tauri build failed with exit code $LASTEXITCODE"
-        exit $LASTEXITCODE
-    }
+    Invoke-Native { bun @tauriArgs } 'tauri build'
 }
 finally {
     Pop-Location
