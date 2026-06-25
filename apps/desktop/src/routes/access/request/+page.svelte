@@ -248,12 +248,22 @@
               </button>
             {/each}
           </div>
-          <p class="choice-hint" class:choice-hint--warn={isBroadScope}>
-            {#if isBroadScope}
-              <span class="choice-hint__icon" aria-hidden="true">!</span>
-            {/if}
-            <span>{scopeMeta.hint}</span>
-          </p>
+          {#if isBroadScope}
+            <p class="choice-hint choice-hint--warn">
+              <span class="choice-hint__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
+                  <path d="M12 9v4" />
+                  <path d="M12 17h.01" />
+                </svg>
+              </span>
+              <span><strong>Reads your entire history.</strong> {scopeMeta.hint}</span>
+            </p>
+          {:else}
+            <p class="choice-hint">
+              <span>{scopeMeta.hint}</span>
+            </p>
+          {/if}
         </fieldset>
 
         <fieldset class="request-section">
@@ -284,16 +294,30 @@
 
       {#if error}
         <div class="inline-error" role="alert">
-          <span class="inline-error__icon" aria-hidden="true">!</span>
+          <span class="inline-error__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
+          </span>
           <span class="inline-error__msg">{error}</span>
         </div>
       {/if}
     </div>
 
     <footer class="access-dialog__actions">
-      <button class="btn btn--ghost" type="button" disabled={approving || cancelling} onclick={closeWindow}>
+      <button
+        class="btn"
+        class:btn--danger={!!pendingRequest}
+        class:btn--ghost={!pendingRequest}
+        type="button"
+        disabled={approving || cancelling}
+        onclick={closeWindow}
+      >
         {#if cancelling}
-          {pendingRequest ? "Denying" : "Closing"}
+          <span class="btn__spinner" aria-hidden="true"></span>
+          {pendingRequest ? "Denying…" : "Closing…"}
         {:else}
           {pendingRequest ? "Deny" : "Close"}
         {/if}
@@ -305,9 +329,12 @@
           disabled={loading || approving || cancelling}
           onclick={approveAccess}
         >
-          {approving
-            ? "Allowing"
-            : `Allow ${selectedScope === "lastDay" ? "last day" : "all retained"} for ${selectedDuration}`}
+          {#if approving}
+            <span class="btn__spinner" aria-hidden="true"></span>
+            Allowing…
+          {:else}
+            {`Allow ${selectedScope === "lastDay" ? "last day" : "all retained"} for ${selectedDuration}`}
+          {/if}
         </button>
       {/if}
     </footer>
@@ -569,6 +596,11 @@
     outline-offset: 2px;
   }
 
+  .choice:active:not(:disabled) {
+    transform: translateY(0.5px);
+    background: var(--app-surface-active);
+  }
+
   .choice:disabled {
     opacity: 0.35;
     cursor: not-allowed;
@@ -601,13 +633,39 @@
     line-height: 1.4;
   }
 
+  /* The broad-scope warning must visibly outrank the benign expiry note:
+     warn-tinted container + a bold lead-in, not the same faint hint text. */
   .choice-hint--warn {
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 6px;
+    background: var(--app-warn-bg);
     color: var(--app-warn);
+    font-size: 11px;
+  }
+
+  .choice-hint--warn strong {
+    color: var(--app-warn);
+    font-weight: 800;
   }
 
   .choice-hint__icon {
+    display: grid;
+    place-items: center;
     flex-shrink: 0;
-    font-weight: 700;
+    color: var(--app-warn);
+  }
+
+  .choice-hint__icon svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .skeleton {
@@ -697,10 +755,21 @@
   }
 
   .inline-error__icon {
+    display: grid;
+    place-items: center;
     color: var(--app-danger);
-    font-size: 11px;
     flex-shrink: 0;
     margin-top: 1px;
+  }
+
+  .inline-error__icon svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .inline-error__msg {
@@ -715,6 +784,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 7px;
     min-height: 30px;
     padding: 7px 12px;
     border-radius: 4px;
@@ -725,7 +795,7 @@
     text-transform: uppercase;
     cursor: pointer;
     border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s, transform 0.12s;
     outline: none;
   }
 
@@ -737,6 +807,10 @@
   .btn:focus-visible {
     outline: 1px solid var(--app-accent);
     outline-offset: 2px;
+  }
+
+  .btn:active:not(:disabled) {
+    transform: translateY(0.5px);
   }
 
   .btn--ghost {
@@ -751,15 +825,60 @@
     border-color: var(--app-border-hover);
   }
 
+  /* Deny is destructive: a danger-tinted outline that goes solid-ish on hover,
+     so it reads as the harmful choice without shouting over Allow at rest. */
+  .btn--danger {
+    background: transparent;
+    color: var(--app-danger-text);
+    border-color: var(--app-danger-border);
+  }
+
+  .btn--danger:not(:disabled):hover {
+    background: var(--app-danger-bg);
+    color: var(--app-danger-text);
+    border-color: var(--app-danger);
+  }
+
+  .btn--danger:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring-danger);
+  }
+
+  /* Allow is the one irreversible affirmative action: a SOLID accent fill that
+     clearly outranks the accent-tinted scope/duration chips above it. */
   .btn--primary {
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    border-color: var(--app-accent);
   }
 
   .btn--primary:not(:disabled):hover {
-    border-color: var(--app-accent);
-    color: var(--app-text-strong);
+    background: var(--app-accent-strong);
+    border-color: var(--app-accent-strong);
+    color: var(--app-accent-contrast);
+  }
+
+  .btn--primary:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+
+  /* In-flight spinner reuses the file's keyframes vocabulary (see @keyframes spin). */
+  .btn__spinner {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    opacity: 0.85;
+    animation: spin 0.7s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   @media (max-width: 480px) {
