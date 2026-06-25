@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
@@ -57,13 +58,6 @@
   const cancelSelectedTranscriptionModelDownload = () => c.cancelSelectedTranscriptionModelDownload();
   const requestDeleteUnusedTranscriptionModels = () => c.requestDeleteUnusedTranscriptionModels();
 </script>
-
-{#snippet spinner()}
-  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-    <path d="M21 3v5h-5" />
-  </svg>
-{/snippet}
 
 <SettingGroup
   id="settings-section-transcription"
@@ -243,7 +237,7 @@
                     disabled={requestingAppleSpeechPermission}
                     aria-busy={requestingAppleSpeechPermission}
                   >
-                    {#if requestingAppleSpeechPermission}{@render spinner()}Requesting{:else}Get permission{/if}
+                    {#if requestingAppleSpeechPermission}<ButtonSpinner />Requesting{:else}Get permission{/if}
                   </button>
                 {:else}
                   <button type="button" class="btn btn--ghost" onclick={openAppleSpeechPrivacySettings}>
@@ -282,12 +276,12 @@
                     {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
                   </p>
                   <button type="button" class="btn btn--ghost" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload} aria-busy={cancellingTranscriptionDownload}>
-                    {#if cancellingTranscriptionDownload}{@render spinner()}Cancelling{:else}Cancel download{/if}
+                    {#if cancellingTranscriptionDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
                   </button>
                 </div>
               {:else}
                 <button type="button" class="btn btn--ghost" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available} aria-busy={startingTranscriptionDownload}>
-                  {#if startingTranscriptionDownload}{@render spinner()}Starting{:else}Download ({formatBytes(selectedTranscriptionModel.download.byteSize)}){/if}
+                  {#if startingTranscriptionDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedTranscriptionModel.download.byteSize)}){/if}
                 </button>
               {/if}
               <p class="group-hint">Download support validates sha256 before marking this model installed.</p>
@@ -304,7 +298,7 @@
           {/if}
           <div class="debug-log-actions">
             <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning} aria-busy={deletingUnusedTranscriptionModels}>
-              {#if deletingUnusedTranscriptionModels}{@render spinner()}Deleting…{:else}Delete unused transcription models{/if}
+              {#if deletingUnusedTranscriptionModels}<ButtonSpinner />Deleting…{:else}Delete unused transcription models{/if}
             </button>
           </div>
           <p class="group-hint">Removes app-managed transcription model files except the model selected above.</p>
@@ -367,24 +361,4 @@
     word-break: break-all;
   }
 
-  /* Inline busy spinner shown beside a button label while an action is in
-     flight; reuses the shared settings-icon-spin keyframe. */
-  .btn-spinner {
-    width: 13px;
-    height: 13px;
-    margin-right: 6px;
-    vertical-align: -2px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    animation: settings-icon-spin 0.7s linear infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .btn-spinner {
-      animation: none;
-    }
-  }
 </style>

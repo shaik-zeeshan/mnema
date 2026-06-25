@@ -16,7 +16,9 @@
   // footer shows the live auto-save status, styled per the mockup.
 
   import { goto } from "$app/navigation";
-  import Icon from "./Icon.svelte";
+  import IconBack from "~icons/lucide/chevron-left";
+  import IconSearch from "~icons/lucide/search";
+  import { SECTION_ICONS } from "./section-icons";
   import {
     SETTINGS_GROUPS,
     type SettingsGroupId,
@@ -158,15 +160,12 @@
   <!-- Fixed top zone: back link + search -->
   <div class="rail-top">
     <button class="rail-back" type="button" onclick={backToApp}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+      <IconBack aria-hidden="true" />
       Back to app
     </button>
 
     <div class="rail-search">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="11" cy="11" r="7" />
-        <path d="M21 21l-4.3-4.3" />
-      </svg>
+      <IconSearch aria-hidden="true" />
       <input
         bind:this={searchInput}
         type="text"
@@ -193,6 +192,7 @@
         <div class="nav-group" role="group" aria-labelledby="settings-cat-{group.id}">
           <p class="nav-cat" id="settings-cat-{group.id}">{group.label}</p>
           {#each group.sections as section (section.id)}
+            {@const SectionIcon = SECTION_ICONS[section.id]}
             <button
               class="nav-item"
               class:nav-item--active={activeSection === section.id}
@@ -204,7 +204,7 @@
               onclick={() => onNavigate(section.id)}
               onkeydown={handleNavKeydown}
             >
-              <Icon name={section.id} />
+              <SectionIcon aria-hidden="true" />
               <span>{section.label}</span>
             </button>
           {/each}

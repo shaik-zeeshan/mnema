@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack, type Snippet } from "svelte";
+  import IconChevron from "~icons/lucide/chevron-right";
 
   // A disclosure toggle wrapping the existing `.reveal` animation. Holds only
   // local `open` state; the controls inside keep binding to the parent's drafts
@@ -29,9 +30,7 @@
     onclick={() => (expanded = !expanded)}
   >
     <span class="adv__chevron" class:adv__chevron--open={expanded} aria-hidden="true">
-      <svg width="9" height="9" viewBox="0 0 9 9">
-        <path d="M2.5 1.5 6 4.5 2.5 7.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      <IconChevron />
     </span>
     {label}
   </button>
@@ -79,6 +78,12 @@
     display: inline-flex;
     color: var(--app-accent);
     transition: transform 0.18s ease;
+  }
+  /* Match the original bespoke 9px / thin-stroke disclosure caret. */
+  .adv__chevron :global(svg) {
+    width: 9px;
+    height: 9px;
+    stroke-width: 1.4;
   }
   .adv__chevron--open {
     transform: rotate(90deg);

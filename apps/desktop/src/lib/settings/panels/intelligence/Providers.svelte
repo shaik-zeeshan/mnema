@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
@@ -59,13 +60,6 @@
   const clearAiProviderKey = (p: string) => aiRuntime.clearAiProviderKey(p);
   const runAiRuntimeTestConnection = () => aiRuntime.runAiRuntimeTestConnection();
 </script>
-
-{#snippet spinner()}
-  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-    <path d="M21 3v5h-5" />
-  </svg>
-{/snippet}
 
 <SettingGroup
   id="settings-section-intelligence"
@@ -180,7 +174,7 @@
                       aria-busy={aiProviderKeySavingProvider === provider.id}
                       onclick={() => saveAiProviderKey(provider.id)}
                     >
-                      {#if aiProviderKeySavingProvider === provider.id}{@render spinner()}Saving{:else}Save key{/if}
+                      {#if aiProviderKeySavingProvider === provider.id}<ButtonSpinner />Saving{:else}Save key{/if}
                     </button>
                     <button
                       class="btn btn--ghost btn--sm"
@@ -314,7 +308,7 @@
             aria-busy={aiRuntimeTestRunning}
             onclick={runAiRuntimeTestConnection}
           >
-            {#if aiRuntimeTestRunning}{@render spinner()}Testing{:else}Test connection{/if}
+            {#if aiRuntimeTestRunning}<ButtonSpinner />Testing{:else}Test connection{/if}
           </button>
           <ReloadButton
             onclick={loadAiRuntimeStatus}
@@ -356,24 +350,4 @@
     width: 100%;
   }
 
-  /* Inline busy spinner shown beside a button label while an action is in
-     flight; reuses the shared settings-icon-spin keyframe. */
-  .btn-spinner {
-    width: 13px;
-    height: 13px;
-    margin-right: 6px;
-    vertical-align: -2px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    animation: settings-icon-spin 0.7s linear infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .btn-spinner {
-      animation: none;
-    }
-  }
 </style>

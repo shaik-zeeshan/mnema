@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
@@ -48,13 +49,6 @@
     model: Parameters<typeof c.chooseSemanticSearchPickedModel>[0],
   ) => c.chooseSemanticSearchPickedModel(model);
 </script>
-
-{#snippet spinner()}
-  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-    <path d="M21 3v5h-5" />
-  </svg>
-{/snippet}
 
 <SettingGroup
   id="settings-section-semanticSearch"
@@ -168,7 +162,7 @@
                       disabled={cancellingSemanticSearchDownload}
                       aria-busy={cancellingSemanticSearchDownload}
                     >
-                      {#if cancellingSemanticSearchDownload}{@render spinner()}Cancelling{:else}Cancel{/if}
+                      {#if cancellingSemanticSearchDownload}<ButtonSpinner />Cancelling{:else}Cancel{/if}
                     </button>
                   {:else if !installed}
                     <!-- Step 1: download. Mnema never auto-downloads (ADR 0036). -->
@@ -180,7 +174,7 @@
                       aria-busy={startingSemanticSearchDownload}
                     >
                       {#if startingSemanticSearchDownload}
-                        {@render spinner()}Starting
+                        <ButtonSpinner />Starting
                       {:else}
                         {picked.approxDownloadBytes != null
                           ? `Download (${formatBytes(picked.approxDownloadBytes)})`
@@ -196,7 +190,7 @@
                       disabled={semanticSearchReindexing}
                       aria-busy={semanticSearchReindexing}
                     >
-                      {#if semanticSearchReindexing}{@render spinner()}Re-indexing{:else}Use this model{/if}
+                      {#if semanticSearchReindexing}<ButtonSpinner />Re-indexing{:else}Use this model{/if}
                     </button>
                   {/if}
                   {#if !installed && !downloading}
@@ -243,24 +237,4 @@
     align-items: flex-start;
   }
 
-  /* Inline busy spinner shown beside a button label while an action is in
-     flight; reuses the shared settings-icon-spin keyframe. */
-  .btn-spinner {
-    width: 13px;
-    height: 13px;
-    margin-right: 6px;
-    vertical-align: -2px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    animation: settings-icon-spin 0.7s linear infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .btn-spinner {
-      animation: none;
-    }
-  }
 </style>

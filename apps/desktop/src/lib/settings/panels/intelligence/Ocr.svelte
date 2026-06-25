@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
@@ -47,13 +48,6 @@
   const cancelSelectedOcrModelDownload = () => c.cancelSelectedOcrModelDownload();
   const requestDeleteUnusedOcrModels = () => c.requestDeleteUnusedOcrModels();
 </script>
-
-{#snippet spinner()}
-  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-    <path d="M21 3v5h-5" />
-  </svg>
-{/snippet}
 
 <SettingGroup
   id="settings-section-ocr"
@@ -272,12 +266,12 @@
                     {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
                   </p>
                   <button type="button" class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload} aria-busy={cancellingOcrDownload}>
-                    {#if cancellingOcrDownload}{@render spinner()}Cancelling{:else}Cancel download{/if}
+                    {#if cancellingOcrDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
                   </button>
                 </div>
               {:else}
                 <button type="button" class="btn btn--ghost" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available} aria-busy={startingOcrDownload}>
-                  {#if startingOcrDownload}{@render spinner()}Starting{:else}Download ({formatBytes(selectedOcrModel.download.byteSize)}){/if}
+                  {#if startingOcrDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedOcrModel.download.byteSize)}){/if}
                 </button>
               {/if}
             {:else if !selectedOcrModel.available}
@@ -297,7 +291,7 @@
           {/if}
           <div class="debug-log-actions">
             <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning} aria-busy={deletingUnusedOcrModels}>
-              {#if deletingUnusedOcrModels}{@render spinner()}Deleting…{:else}Delete unused OCR models{/if}
+              {#if deletingUnusedOcrModels}<ButtonSpinner />Deleting…{:else}Delete unused OCR models{/if}
             </button>
           </div>
           <p class="group-hint">Removes app-managed OCR model files except the model selected above.</p>
@@ -389,24 +383,4 @@
     word-break: break-all;
   }
 
-  /* Inline busy spinner shown beside a button label while an action is in
-     flight; reuses the shared settings-icon-spin keyframe. */
-  .btn-spinner {
-    width: 13px;
-    height: 13px;
-    margin-right: 6px;
-    vertical-align: -2px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    animation: settings-icon-spin 0.7s linear infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .btn-spinner {
-      animation: none;
-    }
-  }
 </style>

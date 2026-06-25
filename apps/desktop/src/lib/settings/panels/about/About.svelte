@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import {
     ABOUT_REPO_URL,
@@ -64,13 +65,6 @@
       appUpdateStatus?.state === "restartRequired",
   );
 </script>
-
-{#snippet spinner()}
-  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-    <path d="M21 3v5h-5" />
-  </svg>
-{/snippet}
 
 <SettingGroup id="settings-section-about" title="About" hint="Version, build details, and the projects Mnema is built on.">
   <SettingRow label="Mnema" description="Your memory, on rewind. Mnema records your screen so you can scrub back to anything you've seen: searchable, local, and yours." full>
@@ -174,7 +168,7 @@
         <div class="about-update__head">
           <span class="badge badge--neutral badge--sm">{appUpdateStateLabel(appUpdateStatus)}</span>
           <button type="button" class="btn btn--primary btn--sm" onclick={checkForAppUpdate} disabled={checkDisabled} aria-busy={checkingAppUpdate || appUpdateStatus?.state === "checking"}>
-            {#if checkingAppUpdate || appUpdateStatus?.state === "checking"}{@render spinner()}Checking{:else}Check for Updates{/if}
+            {#if checkingAppUpdate || appUpdateStatus?.state === "checking"}<ButtonSpinner />Checking{:else}Check for Updates{/if}
           </button>
         </div>
 
@@ -215,11 +209,11 @@
         <div class="row-actions">
           {#if appUpdateStatus?.state === "restartRequired"}
             <button class="btn btn--primary" type="button" onclick={restartAfterAppUpdate} disabled={!canRestartAfterUpdate(appUpdateStatus)} aria-busy={restartingAfterUpdate}>
-              {#if restartingAfterUpdate}{@render spinner()}Restarting{:else}Restart to Update{/if}
+              {#if restartingAfterUpdate}<ButtonSpinner />Restarting{:else}Restart to Update{/if}
             </button>
           {:else}
             <button class="btn btn--primary" type="button" onclick={installAppUpdate} disabled={!canInstallAppUpdate(appUpdateStatus)} aria-busy={installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}>
-              {#if installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}{@render spinner()}Installing{:else}Install Update{/if}
+              {#if installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}<ButtonSpinner />Installing{:else}Install Update{/if}
             </button>
           {/if}
           {#if appUpdateStatus?.recordingActive && appUpdateStatus?.update}
@@ -326,24 +320,4 @@
     gap: 8px;
   }
 
-  /* Inline busy spinner shown beside a button label while an action is in
-     flight; reuses the shared settings-icon-spin keyframe. */
-  .btn-spinner {
-    width: 13px;
-    height: 13px;
-    margin-right: 6px;
-    vertical-align: -2px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    animation: settings-icon-spin 0.7s linear infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .btn-spinner {
-      animation: none;
-    }
-  }
 </style>

@@ -43,6 +43,13 @@ export type SettingsSectionId =
   | "about"
   | "developer";
 
+// The glyph identities the settings/onboarding surfaces draw. Every section has
+// one; `lock` is the standalone "required/locked" glyph onboarding adds. The
+// concrete Lucide components are mapped in `section-icons.ts`; this type stays
+// here (framework-free) so `feature-model.ts` can type its `icon` field without
+// importing Svelte.
+export type IconName = SettingsSectionId | "lock";
+
 // The 5 navigation groups the rail renders.
 export type SettingsGroupId =
   | "general"

@@ -25,8 +25,11 @@
 </script>
 
 <script lang="ts">
-  import Icon, { type IconName } from "$lib/settings/Icon.svelte";
+  import type { IconName } from "$lib/settings/groups";
+  import { SECTION_ICONS } from "$lib/settings/section-icons";
   import Switch from "$lib/components/Switch.svelte";
+
+  const IconLock = SECTION_ICONS.lock;
 
   // One capability row of the onboarding accordion. PRESENTATIONAL only — it
   // owns no `open`/`enabled` state. The PARENT controls `open` (so one-open-at-
@@ -71,6 +74,9 @@
     onExpand,
     body,
   }: Props = $props();
+
+  // The feature's chip glyph, resolved from the shared Lucide map.
+  const RowIcon = $derived(SECTION_ICONS[icon]);
 
   // Stable ids so the header button can `aria-controls` the body region and the
   // body region can be `aria-labelledby` the row title (a11y). Slug from `name`
@@ -131,7 +137,7 @@
     aria-controls={bodyId}
     onclick={onHeadClick}
   >
-    <div class="icon-chip"><Icon name={icon} /></div>
+    <div class="icon-chip"><RowIcon aria-hidden="true" /></div>
     <div class="row-titlewrap">
       <div class="row-eyebrow">{eyebrow}</div>
       <div class="row-name" id={titleId}>{name}</div>
@@ -140,7 +146,7 @@
 
     {#if required}
       <span class="row-status row-status--req" title="Required — always on">
-        <span class="lock-ico"><Icon name="lock" /></span>Required
+        <span class="lock-ico"><IconLock aria-hidden="true" /></span>Required
       </span>
     {:else}
       <span class="row-status">
@@ -169,7 +175,7 @@
                  turned on until a prerequisite is met — quieter than the warn
                  chip because nothing is actively broken yet. -->
             <span class="row-lock" title="Locked: {lockReason}"
-              ><span class="lock-ico"><Icon name="lock" /></span>{lockReason}</span
+              ><span class="lock-ico"><IconLock aria-hidden="true" /></span>{lockReason}</span
             >
           {/if}
         {/if}

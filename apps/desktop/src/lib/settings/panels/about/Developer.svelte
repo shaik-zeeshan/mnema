@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
@@ -30,13 +31,6 @@
   const openGeneralLog = () => logs.openGeneralLog();
   const deleteGeneralLog = () => logs.deleteGeneralLog();
 </script>
-
-{#snippet spinner()}
-  <svg class="btn-spinner" viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-    <path d="M21 3v5h-5" />
-  </svg>
-{/snippet}
 
 <SettingGroup id="settings-section-developer" title="Developer &amp; Logs">
   <SettingRow
@@ -92,7 +86,7 @@
                 aria-busy={openingDebugLog}
               >
                 {#if openingDebugLog}
-                  {@render spinner()}Opening…
+                  <ButtonSpinner />Opening…
                 {:else if debugLogStatus.exists}
                   Open Log File
                 {:else}
@@ -107,7 +101,7 @@
                   disabled={deletingDebugLog}
                   aria-busy={deletingDebugLog}
                 >
-                  {#if deletingDebugLog}{@render spinner()}Deleting…{:else}Delete Log File{/if}
+                  {#if deletingDebugLog}<ButtonSpinner />Deleting…{:else}Delete Log File{/if}
                 </button>
               {/if}
               {#if debugLogDeleted}
@@ -159,7 +153,7 @@
               aria-busy={openingGeneralLog}
             >
               {#if openingGeneralLog}
-                {@render spinner()}Opening…
+                <ButtonSpinner />Opening…
               {:else if generalLogStatus.exists}
                 Open Log File
               {:else}
@@ -174,7 +168,7 @@
                 disabled={deletingGeneralLog}
                 aria-busy={deletingGeneralLog}
               >
-                {#if deletingGeneralLog}{@render spinner()}Deleting…{:else}Delete Log File{/if}
+                {#if deletingGeneralLog}<ButtonSpinner />Deleting…{:else}Delete Log File{/if}
               </button>
             {/if}
             {#if generalLogDeleted}
@@ -206,24 +200,4 @@
     width: 100%;
   }
 
-  /* Inline busy spinner shown beside a button label while an action is in
-     flight; reuses the shared settings-icon-spin keyframe. */
-  .btn-spinner {
-    width: 13px;
-    height: 13px;
-    margin-right: 6px;
-    vertical-align: -2px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    animation: settings-icon-spin 0.7s linear infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .btn-spinner {
-      animation: none;
-    }
-  }
 </style>

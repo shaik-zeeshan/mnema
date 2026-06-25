@@ -4,6 +4,8 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import IconRestore from "~icons/lucide/rotate-ccw";
+  import IconClear from "~icons/lucide/x";
 
   const c = getSettingsController();
   const keyboard = c.keyboard;
@@ -70,10 +72,7 @@
       onclick={restoreDefaultShortcuts}
       disabled={savingKeyboardBindings}
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4 4v5h5" />
-        <path d="M4 9a8 8 0 1 1-1.5 5" />
-      </svg>
+      <IconRestore aria-hidden="true" />
     </button>
   {/snippet}
 
@@ -147,10 +146,7 @@
                 aria-label={`Reset ${action.label} to default`}
                 onclick={() => resetShortcut(action.id)}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M4 4v5h5" />
-                  <path d="M4 9a8 8 0 1 1-1.5 5" />
-                </svg>
+                <IconRestore aria-hidden="true" />
               </button>
               <button
                 class="settings-icon-btn"
@@ -160,10 +156,7 @@
                 disabled={!binding}
                 onclick={() => clearShortcut(action.id)}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m6 6 12 12" />
-                  <path d="m18 6-12 12" />
-                </svg>
+                <IconClear aria-hidden="true" />
               </button>
             </div>
           </div>

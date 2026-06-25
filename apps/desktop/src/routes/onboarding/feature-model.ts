@@ -1,7 +1,7 @@
 // The onboarding accordion's feature catalog. One entry per capability row,
 // in display order. Slice 3's controller keys all per-feature state off the
 // `FeatureId` union; the row chrome (FeatureRow) renders the static metadata.
-import type { IconName } from "$lib/settings/Icon.svelte";
+import type { IconName } from "$lib/settings/groups";
 
 export type FeatureId =
   | "permissions"
