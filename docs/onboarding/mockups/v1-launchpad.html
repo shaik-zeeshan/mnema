@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mnema · onboarding — Capability Launchpad</title>
+<style>
+  /* ============================ TOKENS ============================ */
+  :root {
+    --app-bg:#0c0c0e; --app-fg:#e2e2e8; --app-fg-muted:#8a8aaa;
+    --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#7a7a9a; --app-text-subtle:#44445a; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15; --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-strong:#ff4455; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  }
+  [data-theme="light"] {
+    --app-bg:#f6f6f4; --app-fg:#14141a; --app-fg-muted:#5a5a6a;
+    --app-surface:#ffffff; --app-surface-subtle:#f6f6f4; --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#eeeeec;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+    --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a; --app-text-subtle:#7a7a86; --app-text-faint:#9a9a96;
+    --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec; --app-accent-border:#9bd3b4; --app-accent-glow:rgba(31,122,74,0.16);
+    --app-warn:#9a5a12; --app-warn-bg:#f5ecdc; --app-warn-border:#d8b87a;
+    --app-danger:#c43a48; --app-danger-strong:#a82a36; --app-danger-bg:#f7e4e6; --app-danger-border:#e0a8ae;
+    --app-info:#2b78c5; --app-info-bg:#e2eefb; --app-info-border:#a8cbef;
+  }
+
+  /* ============================ BASE ============================ */
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    margin:0;
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"Cascadia Code","Fira Code",monospace;
+    background:var(--app-bg);
+    color:var(--app-fg);
+    display:flex; align-items:center; justify-content:center;
+    padding:28px;
+    -webkit-font-smoothing:antialiased;
+    background-image:
+      radial-gradient(1100px 520px at 78% -8%, var(--app-accent-glow), transparent 60%),
+      radial-gradient(900px 600px at 8% 110%, color-mix(in srgb, var(--app-info) 8%, transparent), transparent 60%);
+  }
+  ::selection { background:color-mix(in srgb, var(--app-accent) 30%, transparent); color:var(--app-text-strong); }
+
+  button { font-family:inherit; cursor:pointer; }
+  input, select { font-family:inherit; }
+
+  /* ============================ WINDOW CHROME ============================ */
+  .window {
+    width:1180px; height:760px;
+    background:var(--app-surface);
+    border:1px solid var(--app-border);
+    border-radius:10px;
+    overflow:hidden;
+    display:flex; flex-direction:column;
+    position:relative;
+  }
+  .titlebar {
+    height:38px; flex:0 0 38px;
+    display:flex; align-items:center;
+    padding:0 14px;
+    border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    position:relative;
+    user-select:none;
+  }
+  .traffic { display:flex; gap:8px; }
+  .traffic i { width:11px; height:11px; border-radius:999px; display:block; }
+  .traffic .r { background:#5a3a3e; } .traffic .y { background:#5a523a; } .traffic .g { background:#3a5a44; }
+  [data-theme="light"] .traffic .r { background:#e0a8ae; } [data-theme="light"] .traffic .y { background:#d8c47a; } [data-theme="light"] .traffic .g { background:#9bd3b4; }
+  .wordmark {
+    position:absolute; left:0; right:0; text-align:center;
+    font-size:12px; letter-spacing:0.04em; color:var(--app-text-muted); pointer-events:none;
+  }
+  .titlebar-right { margin-left:auto; display:flex; align-items:center; gap:8px; z-index:2; }
+  .theme-toggle {
+    display:flex; align-items:center; gap:6px;
+    background:var(--app-surface-raised); border:1px solid var(--app-border-strong);
+    color:var(--app-text-muted); border-radius:999px;
+    font-size:10px; padding:4px 9px; letter-spacing:0.04em;
+    transition:all .15s ease;
+  }
+  .theme-toggle:hover { border-color:var(--app-border-hover); color:var(--app-text); }
+  .theme-toggle .dot { width:8px; height:8px; border-radius:999px; background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+
+  /* ============================ STAGE ============================ */
+  .stage {
+    flex:1 1 auto; min-height:0;
+    position:relative;
+    background:var(--app-bg);
+    background-image:radial-gradient(circle, var(--app-text-faint) 0.8px, transparent 0.9px);
+    background-size:22px 22px;
+    display:flex; flex-direction:column;
+  }
+  [data-theme="dark"] .stage { background-image:radial-gradient(circle, rgba(255,255,255,0.045) 0.8px, transparent 0.9px); }
+  .stage::before {
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(620px 320px at 80% -5%, var(--app-accent-glow), transparent 62%);
+    opacity:.7;
+  }
+  .scroll {
+    flex:1 1 auto; min-height:0; overflow-y:auto;
+    padding:26px 30px 18px;
+    position:relative; z-index:1;
+  }
+  .scroll::-webkit-scrollbar { width:9px; }
+  .scroll::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:999px; border:2px solid transparent; background-clip:padding-box; }
+  .scroll::-webkit-scrollbar-thumb:hover { background:var(--app-border-hover); background-clip:padding-box; }
+
+  /* ============================ WELCOME HEADER ============================ */
+  .welcome { margin-bottom:22px; max-width:760px; }
+  .eyebrow {
+    font-size:9.5px; font-weight:700; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--app-accent); margin-bottom:9px; display:flex; align-items:center; gap:9px;
+  }
+  .eyebrow::after { content:""; height:1px; flex:1 1 auto; background:linear-gradient(90deg, var(--app-accent-border), transparent); }
+  .scene-title { font-size:22px; font-weight:700; letter-spacing:-0.012em; margin:0 0 8px; color:var(--app-text-strong); }
+  .scene-title b { color:var(--app-accent); font-weight:700; }
+  .subtitle { font-size:11px; line-height:1.5; color:var(--app-text-muted); margin:0; max-width:620px; }
+
+  .legend { display:flex; gap:16px; margin-top:14px; flex-wrap:wrap; }
+  .legend span { display:flex; align-items:center; gap:7px; font-size:10px; color:var(--app-text-muted); letter-spacing:0.02em; }
+  .legend .swatch { width:10px; height:10px; border-radius:3px; }
+  .legend .swatch.req { background:var(--app-warn); }
+  .legend .swatch.on { background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+  .legend .swatch.off { background:var(--app-border-strong); }
+
+  /* ============================ GROUP LABEL ============================ */
+  .group-label {
+    font-size:10.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    color:var(--app-text-muted); margin:6px 0 13px; display:flex; align-items:center; gap:10px;
+  }
+  .group-label .count { color:var(--app-text-subtle); font-weight:550; letter-spacing:0.06em; }
+  .group-label::after { content:""; height:1px; flex:1 1 auto; background:var(--app-border); }
+
+  /* ============================ CARD GRID ============================ */
+  .grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; margin-bottom:26px; }
+
+  .card {
+    position:relative;
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border);
+    border-radius:12px;
+    padding:15px 15px 14px;
+    overflow:hidden;
+    transition:transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease, opacity .18s ease;
+    display:flex; flex-direction:column;
+  }
+  .card::before {
+    content:""; position:absolute; top:0; left:14px; right:14px; height:1px;
+    background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--app-accent) 12%, transparent) 22%, color-mix(in srgb, var(--app-accent) 50%, transparent) 50%, transparent);
+    opacity:0; transition:opacity .18s ease;
+  }
+  .card:hover { border-color:var(--app-border-hover); transform:translateY(-2px); background:var(--app-surface-hover); }
+
+  .card.on { border-color:var(--app-accent-border); background:var(--app-surface-raised); box-shadow:0 0 0 1px var(--app-accent-border), 0 0 34px -14px var(--app-accent-glow); }
+  .card.on::before { opacity:1; }
+  .card.on:hover { transform:translateY(-3px); box-shadow:0 0 0 1px var(--app-accent-border), 0 0 44px -10px var(--app-accent-glow); }
+
+  .card.off-collapsed { opacity:.62; }
+  .card.off-collapsed:hover { opacity:.85; }
+
+  .card.required { border-color:var(--app-border-strong); }
+  .card.required::before {
+    background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--app-warn) 14%, transparent) 22%, color-mix(in srgb, var(--app-warn) 46%, transparent) 50%, transparent);
+    opacity:1;
+  }
+
+  .card-head { display:flex; align-items:flex-start; gap:11px; }
+  .card-icon {
+    width:32px; height:32px; flex:0 0 32px; border-radius:9px;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--app-surface-subtle); border:1px solid var(--app-border);
+    color:var(--app-text-muted);
+    transition:all .18s ease;
+  }
+  .card.on .card-icon { background:var(--app-accent-bg); border-color:var(--app-accent-border); color:var(--app-accent); }
+  .card.required .card-icon { background:var(--app-warn-bg); border-color:var(--app-warn-border); color:var(--app-warn); }
+  .card-icon svg { width:17px; height:17px; }
+
+  .card-titles { flex:1 1 auto; min-width:0; padding-top:1px; }
+  .card-title { font-size:13.5px; font-weight:550; color:var(--app-text-strong); margin:0; line-height:1.25; }
+  .card-tagline { font-size:11px; color:var(--app-text-muted); margin:3px 0 0; line-height:1.35; }
+
+  .card-head-right { flex:0 0 auto; display:flex; align-items:center; }
+
+  .req-badge {
+    font-size:9px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
+    color:var(--app-warn); background:var(--app-warn-bg); border:1px solid var(--app-warn-border);
+    border-radius:3px; padding:3px 7px;
+  }
+
+  /* ============================ SWITCH ============================ */
+  .switch {
+    position:relative; width:36px; height:20px; border-radius:999px;
+    background:transparent; border:1px solid var(--app-border-strong);
+    padding:0; transition:background .18s ease, border-color .18s ease;
+    flex:0 0 auto;
+  }
+  .switch .thumb {
+    position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:999px;
+    background:var(--app-text-subtle);
+    transition:transform .18s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .switch[aria-checked="true"] { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+  .switch[aria-checked="true"] .thumb { transform:translateX(16px); background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+  .switch:focus-visible { outline:none; box-shadow:0 0 0 3px var(--app-accent-glow); }
+
+  /* small switch label rows (used inside sheets) */
+  .switch-row {
+    display:flex; align-items:center; gap:12px; padding:11px 0;
+    border-bottom:1px solid var(--app-border);
+  }
+  .switch-row:last-child { border-bottom:none; }
+  .switch-row .sw-text { flex:1 1 auto; min-width:0; }
+  .switch-row .sw-label { font-size:12px; font-weight:500; color:var(--app-text); }
+  .switch-row .sw-desc { font-size:10px; color:var(--app-text-muted); margin-top:2px; line-height:1.4; }
+
+  /* ============================ CARD BODY (revealed when ON) ============================ */
+  .card-body {
+    margin-top:13px; padding-top:12px;
+    border-top:1px dashed var(--app-border);
+    display:none;
+  }
+  .card.on .card-body, .card.required .card-body { display:block; }
+
+  .summary { font-size:11px; color:var(--app-text-muted); line-height:1.55; }
+  .summary b { color:var(--app-text); font-weight:550; }
+  .summary .dot-sep { color:var(--app-text-faint); margin:0 5px; }
+
+  .card-foot { margin-top:11px; display:flex; align-items:center; gap:10px; }
+  .configure-btn {
+    display:inline-flex; align-items:center; gap:7px;
+    font-size:12px; font-weight:540;
+    background:var(--app-surface-subtle); border:1px solid var(--app-border-strong);
+    color:var(--app-text); border-radius:8px; padding:7px 11px;
+    transition:all .15s ease;
+  }
+  .configure-btn:hover { border-color:var(--app-accent-border); color:var(--app-accent); background:var(--app-accent-bg); }
+  .configure-btn .chev { transition:transform .15s ease; }
+  .configure-btn:hover .chev { transform:translateX(2px); }
+
+  .status-chip {
+    margin-left:auto; font-size:10px; letter-spacing:0.04em;
+    display:inline-flex; align-items:center; gap:6px; color:var(--app-text-muted);
+  }
+  .status-chip .led { width:7px; height:7px; border-radius:999px; }
+  .led.ok { background:var(--app-accent); box-shadow:0 0 7px var(--app-accent-glow); }
+  .led.warn { background:var(--app-warn); }
+  .led.bad { background:var(--app-danger); }
+
+  /* ============================ BOTTOM ACTION BAR ============================ */
+  .actionbar {
+    flex:0 0 auto;
+    display:flex; align-items:center; gap:16px;
+    padding:13px 30px;
+    border-top:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    position:relative; z-index:2;
+  }
+  .ab-count { display:flex; flex-direction:column; gap:2px; }
+  .ab-count .big { font-size:13.5px; font-weight:550; color:var(--app-text-strong); }
+  .ab-count .big b { color:var(--app-accent); font-weight:700; }
+  .ab-count .sub { font-size:10px; color:var(--app-text-muted); letter-spacing:0.02em; }
+  .ab-meter { display:flex; gap:4px; margin-top:5px; }
+  .ab-meter i { width:18px; height:4px; border-radius:999px; background:var(--app-border-strong); transition:background .18s ease, box-shadow .18s ease; }
+  .ab-meter i.lit { background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+
+  .ab-actions { margin-left:auto; display:flex; align-items:center; gap:10px; }
+  .btn {
+    font-size:12px; font-weight:540; border-radius:8px; padding:9px 15px;
+    border:1px solid var(--app-border-strong); background:var(--app-surface-raised); color:var(--app-text);
+    transition:all .15s ease; display:inline-flex; align-items:center; gap:8px;
+  }
+  .btn:hover { border-color:var(--app-border-hover); color:var(--app-text-strong); background:var(--app-surface-hover); }
+  .btn.ghost { background:transparent; }
+  .btn.rec { color:var(--app-danger); border-color:var(--app-danger-border); background:var(--app-danger-bg); }
+  .btn.rec:hover { color:var(--app-danger-strong); border-color:var(--app-danger); }
+  .btn.rec .recdot { width:8px; height:8px; border-radius:999px; background:var(--app-danger); animation:pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1; transform:scale(1);} 50%{opacity:.4; transform:scale(.82);} }
+  .btn.primary {
+    background:var(--app-accent-bg); border-color:var(--app-accent-border); color:var(--app-accent); font-weight:700;
+  }
+  .btn.primary:hover { box-shadow:0 0 0 3px var(--app-accent-glow); border-color:var(--app-accent); }
+
+  /* ============================ CONFIG SHEET (modal) ============================ */
+  .scrim {
+    position:absolute; inset:0; z-index:50;
+    background:color-mix(in srgb, var(--app-bg) 78%, transparent);
+    backdrop-filter:blur(3px);
+    display:none; align-items:stretch; justify-content:flex-end;
+  }
+  .scrim.open { display:flex; }
+  .sheet {
+    width:520px; max-width:88%;
+    background:var(--app-surface);
+    border-left:1px solid var(--app-border-strong);
+    display:flex; flex-direction:column;
+    transform:translateX(24px); opacity:0;
+    transition:transform .2s ease, opacity .2s ease;
+    box-shadow:-30px 0 60px -30px rgba(0,0,0,0.5);
+  }
+  .scrim.open .sheet { transform:translateX(0); opacity:1; }
+
+  .sheet-head {
+    flex:0 0 auto; display:flex; align-items:center; gap:12px;
+    padding:18px 20px; border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+  }
+  .sheet-head .card-icon { width:34px; height:34px; flex:0 0 34px; background:var(--app-accent-bg); border-color:var(--app-accent-border); color:var(--app-accent); }
+  .sheet-head.req .card-icon { background:var(--app-warn-bg); border-color:var(--app-warn-border); color:var(--app-warn); }
+  .sheet-head-titles { flex:1 1 auto; }
+  .sheet-head-titles h3 { margin:0; font-size:15px; font-weight:550; color:var(--app-text-strong); letter-spacing:-0.005em; }
+  .sheet-head-titles p { margin:3px 0 0; font-size:10.5px; color:var(--app-text-muted); }
+  .sheet-close {
+    width:30px; height:30px; border-radius:8px; background:transparent; border:1px solid var(--app-border);
+    color:var(--app-text-muted); display:flex; align-items:center; justify-content:center; transition:all .15s ease;
+  }
+  .sheet-close:hover { border-color:var(--app-border-hover); color:var(--app-text); background:var(--app-surface-hover); }
+
+  .sheet-body { flex:1 1 auto; overflow-y:auto; padding:18px 20px 22px; }
+  .sheet-body::-webkit-scrollbar { width:9px; }
+  .sheet-body::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:999px; border:2px solid transparent; background-clip:padding-box; }
+
+  .sheet-foot {
+    flex:0 0 auto; padding:13px 20px; border-top:1px solid var(--app-border);
+    background:var(--app-surface-subtle); display:flex; align-items:center; gap:10px;
+  }
+  .sheet-foot .note { font-size:10px; color:var(--app-text-muted); }
+  .sheet-foot .spacer { flex:1 1 auto; }
+
+  /* ---- form primitives inside sheet ---- */
+  .field { margin-bottom:18px; }
+  .field:last-child { margin-bottom:4px; }
+  .field-label { font-size:10.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase; color:var(--app-text-muted); margin-bottom:9px; display:flex; align-items:center; gap:8px; }
+  .field-hint { font-size:10px; color:var(--app-text-muted); margin-top:7px; line-height:1.45; }
+
+  .segmented { display:inline-flex; background:var(--app-surface-subtle); border:1px solid var(--app-border); border-radius:8px; padding:3px; gap:3px; flex-wrap:wrap; }
+  .segmented button {
+    font-size:11.5px; font-weight:500; color:var(--app-text-muted);
+    background:transparent; border:none; border-radius:6px; padding:6px 11px; transition:all .15s ease;
+  }
+  .segmented button:hover { color:var(--app-text); background:var(--app-surface-hover); }
+  .segmented button.active { color:var(--app-accent); background:var(--app-accent-bg); box-shadow:inset 0 0 0 1px var(--app-accent-border); }
+
+  .text-input, .select-input {
+    width:100%; background:var(--app-surface-subtle); border:1px solid var(--app-border-strong);
+    color:var(--app-text); border-radius:8px; padding:9px 11px; font-size:12px; transition:all .15s ease;
+  }
+  .text-input:focus, .select-input:focus { outline:none; border-color:var(--app-accent-border); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .select-input { appearance:none; background-image:linear-gradient(45deg, transparent 50%, var(--app-text-muted) 50%), linear-gradient(135deg, var(--app-text-muted) 50%, transparent 50%); background-position:calc(100% - 16px) center, calc(100% - 11px) center; background-size:5px 5px, 5px 5px; background-repeat:no-repeat; padding-right:30px; }
+  .input-row { display:flex; gap:8px; }
+  .input-row .text-input { flex:1 1 auto; }
+
+  .slider-wrap { display:flex; align-items:center; gap:12px; }
+  input[type=range] { -webkit-appearance:none; appearance:none; flex:1 1 auto; height:4px; border-radius:999px; background:var(--app-border-strong); outline:none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:15px; height:15px; border-radius:999px; background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); cursor:pointer; border:2px solid var(--app-surface); }
+  .slider-val { font-size:12px; color:var(--app-accent); font-weight:550; min-width:62px; text-align:right; }
+
+  .radio-list { display:flex; flex-direction:column; gap:8px; }
+  .radio {
+    display:flex; align-items:center; gap:10px; padding:10px 12px;
+    background:var(--app-surface-subtle); border:1px solid var(--app-border); border-radius:8px; transition:all .15s ease; cursor:pointer;
+  }
+  .radio:hover { border-color:var(--app-border-hover); }
+  .radio.sel { border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .radio .ring { width:15px; height:15px; border-radius:999px; border:1.5px solid var(--app-border-strong); flex:0 0 auto; display:flex; align-items:center; justify-content:center; transition:all .15s ease; }
+  .radio.sel .ring { border-color:var(--app-accent); }
+  .radio.sel .ring::after { content:""; width:7px; height:7px; border-radius:999px; background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .radio .rl { font-size:12px; color:var(--app-text); font-weight:500; }
+  .radio .rd { font-size:10px; color:var(--app-text-muted); margin-top:2px; }
+
+  /* permission status pills */
+  .perm-row { display:flex; align-items:center; gap:12px; padding:12px 13px; background:var(--app-surface-subtle); border:1px solid var(--app-border); border-radius:8px; margin-bottom:9px; }
+  .perm-row .pi { width:30px; height:30px; flex:0 0 30px; border-radius:8px; background:var(--app-surface-raised); border:1px solid var(--app-border); display:flex; align-items:center; justify-content:center; color:var(--app-text-muted); }
+  .perm-row .pt { flex:1 1 auto; }
+  .perm-row .pt .l { font-size:12px; color:var(--app-text); font-weight:500; }
+  .perm-row .pt .d { font-size:10px; color:var(--app-text-muted); margin-top:2px; }
+  .pill { font-size:9.5px; font-weight:600; letter-spacing:0.04em; border-radius:999px; padding:4px 9px; display:inline-flex; align-items:center; gap:6px; border:1px solid; }
+  .pill .led { width:6px; height:6px; border-radius:999px; }
+  .pill.granted { color:var(--app-accent); background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+  .pill.granted .led { background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .pill.pending { color:var(--app-warn); background:var(--app-warn-bg); border-color:var(--app-warn-border); }
+  .pill.pending .led { background:var(--app-warn); }
+  .pill.denied { color:var(--app-danger); background:var(--app-danger-bg); border-color:var(--app-danger-border); }
+  .pill.denied .led { background:var(--app-danger); }
+  .mini-btn { font-size:10.5px; font-weight:540; padding:6px 10px; border-radius:7px; border:1px solid var(--app-border-strong); background:var(--app-surface-raised); color:var(--app-text); transition:all .15s ease; }
+  .mini-btn:hover { border-color:var(--app-accent-border); color:var(--app-accent); }
+
+  /* model picker w/ download states */
+  .model-card { background:var(--app-surface-subtle); border:1px solid var(--app-border); border-radius:8px; padding:11px 12px; margin-bottom:9px; }
+  .model-card .mc-head { display:flex; align-items:center; gap:10px; }
+  .model-card .mc-name { font-size:12px; color:var(--app-text); font-weight:500; flex:1 1 auto; }
+  .model-card .mc-size { font-size:10px; color:var(--app-text-muted); }
+  .progress { height:5px; border-radius:999px; background:var(--app-border-strong); overflow:hidden; margin-top:10px; }
+  .progress > i { display:block; height:100%; background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); border-radius:999px; transition:width .3s ease; }
+  .mc-prog-row { display:flex; align-items:center; justify-content:space-between; margin-top:7px; }
+  .mc-prog-row .pct { font-size:10px; color:var(--app-accent); }
+
+  /* chips / typeahead */
+  .combo-wrap { position:relative; }
+  .chips { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
+  .chip { display:inline-flex; align-items:center; gap:7px; font-size:11px; color:var(--app-text); background:var(--app-surface-subtle); border:1px solid var(--app-border-strong); border-radius:999px; padding:5px 6px 5px 11px; }
+  .chip .x { width:16px; height:16px; border-radius:999px; border:none; background:transparent; color:var(--app-text-muted); display:flex; align-items:center; justify-content:center; font-size:13px; line-height:1; cursor:pointer; transition:all .15s ease; }
+  .chip .x:hover { color:var(--app-danger); background:var(--app-danger-bg); }
+  .combo-pop { position:absolute; top:calc(100% + 6px); left:0; right:0; background:var(--app-surface-raised); border:1px solid var(--app-border-strong); border-radius:8px; overflow:hidden; z-index:5; display:none; }
+  .combo-pop.open { display:block; }
+  .combo-pop button { display:flex; width:100%; text-align:left; align-items:center; gap:9px; padding:9px 12px; background:transparent; border:none; color:var(--app-text); font-size:12px; transition:background .15s ease; }
+  .combo-pop button:hover { background:var(--app-surface-hover); color:var(--app-accent); }
+  .combo-pop button .av { width:16px; height:16px; border-radius:4px; background:var(--app-surface-subtle); border:1px solid var(--app-border); flex:0 0 16px; }
+
+  .callout { display:flex; gap:10px; padding:11px 12px; border-radius:8px; font-size:10.5px; line-height:1.5; margin-bottom:16px; }
+  .callout.info { background:var(--app-info-bg); border:1px solid var(--app-info-border); color:var(--app-text); }
+  .callout.info .ci { color:var(--app-info); flex:0 0 auto; }
+  .callout b { color:var(--app-text-strong); }
+
+  .advanced-toggle { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--app-text-muted); background:transparent; border:none; padding:8px 0; transition:color .15s ease; }
+  .advanced-toggle:hover { color:var(--app-accent); }
+  .advanced-toggle .chev { transition:transform .18s ease; }
+  .advanced-toggle.open .chev { transform:rotate(90deg); }
+  .advanced-body { display:none; padding-top:6px; border-top:1px dashed var(--app-border); margin-top:4px; }
+  .advanced-body.open { display:block; }
+
+  .divider { height:1px; background:var(--app-border); margin:18px 0; }
+
+  /* toast */
+  .toast { position:absolute; bottom:74px; left:50%; transform:translateX(-50%) translateY(10px); z-index:60; background:var(--app-surface-raised); border:1px solid var(--app-accent-border); color:var(--app-text); font-size:11px; padding:9px 14px; border-radius:8px; display:flex; align-items:center; gap:9px; opacity:0; pointer-events:none; transition:all .25s ease; box-shadow:0 0 24px -10px var(--app-accent-glow); }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  .toast .led { width:7px; height:7px; border-radius:999px; background:var(--app-accent); box-shadow:0 0 7px var(--app-accent-glow); }
+</style>
+</head>
+<body>
+<div class="window">
+  <!-- ===================== TITLEBAR ===================== -->
+  <div class="titlebar">
+    <div class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <div class="wordmark">mnema</div>
+    <div class="titlebar-right">
+      <button class="theme-toggle" id="themeToggle">
+        <span class="dot"></span><span id="themeLabel">dark</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ===================== STAGE ===================== -->
+  <div class="stage">
+    <div class="scroll">
+      <!-- welcome -->
+      <div class="welcome">
+        <div class="eyebrow">Set up mnema</div>
+        <h1 class="scene-title">Assemble your <b>capture rig</b>.</h1>
+        <p class="subtitle">mnema is yours to shape. Foundations are always on. Flip the optional capabilities you want, then drill into each to dial in its settings. Everything stays on this Mac — nothing leaves until you wire up Ask AI.</p>
+        <div class="legend">
+          <span><i class="swatch req"></i>Required foundation</span>
+          <span><i class="swatch on"></i>Capability on</span>
+          <span><i class="swatch off"></i>Capability off</span>
+        </div>
+      </div>
+
+      <!-- foundation group -->
+      <div class="group-label">Foundation <span class="count">always on</span></div>
+      <div class="grid" id="grid-required"></div>
+
+      <!-- optional group -->
+      <div class="group-label">Capabilities <span class="count" id="optCount">2 of 6 on</span></div>
+      <div class="grid" id="grid-optional"></div>
+    </div>
+
+    <!-- ===================== ACTION BAR ===================== -->
+    <div class="actionbar">
+      <div class="ab-count">
+        <span class="big"><b id="onCount">5</b> capabilities on</span>
+        <span class="sub" id="abSub">3 required · 2 optional enabled</span>
+        <div class="ab-meter" id="abMeter"></div>
+      </div>
+      <div class="ab-actions">
+        <button class="btn ghost" id="skipBtn">Skip for now</button>
+        <button class="btn rec" id="recBtn"><span class="recdot"></span>Start recording</button>
+        <button class="btn primary" id="finishBtn">Finish setup →</button>
+      </div>
+    </div>
+
+    <!-- ===================== CONFIG SHEET ===================== -->
+    <div class="scrim" id="scrim">
+      <div class="sheet" id="sheet" role="dialog" aria-modal="true">
+        <div class="sheet-head" id="sheetHead">
+          <div class="card-icon" id="sheetIcon"></div>
+          <div class="sheet-head-titles">
+            <h3 id="sheetTitle">Configure</h3>
+            <p id="sheetSub"></p>
+          </div>
+          <button class="sheet-close" id="sheetClose" aria-label="Close">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8"/></svg>
+          </button>
+        </div>
+        <div class="sheet-body" id="sheetBody"></div>
+        <div class="sheet-foot">
+          <span class="note" id="sheetNote">Changes save automatically.</span>
+          <span class="spacer"></span>
+          <button class="btn" id="sheetCancel">Close</button>
+          <button class="btn primary" id="sheetSave">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- toast -->
+    <div class="toast" id="toast"><span class="led"></span><span id="toastMsg">Saved</span></div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   ICONS (inline SVG strings)
+   ============================================================ */
+const ICONS = {
+  permissions: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/><path d="M9 12l2 2 4-4"/></svg>',
+  screen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+  storage: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
+  mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4M8 21h8"/></svg>',
+  sysaudio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9a3 3 0 0 1 0 6M18.5 7a6 6 0 0 1 0 10"/></svg>',
+  ocr: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5a1 1 0 0 1 1-1h2M20 7V5a1 1 0 0 0-1-1h-2M4 17v2a1 1 0 0 0 1 1h2M20 17v2a1 1 0 0 1-1 1h-2"/><path d="M8 12h8M8 9h5M8 15h6"/></svg>',
+  transcribe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 10h10M4 14h16M4 18h7"/></svg>',
+  privacy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.3"/></svg>',
+  askai: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z"/><path d="M18 14l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9.9-2.1z"/></svg>',
+};
+
+/* ============================================================
+   STATE
+   ============================================================ */
+const state = {
+  // foundation (always on)
+  screen: { resolution:'1080p', bitrate:'Medium', fps:2, segment:120, idlePause:true, idleTimeout:60 },
+  storage: { dir:'~/Library/Application Support/mnema', retention:'14 days', cacheTTL:'7 days', autostart:true },
+  permissions: { screen:'granted', mic:'pending', sysaudio:'denied' },
+  // optional
+  mic: { on:false, transcribe:true, device:'MacBook Pro Microphone' },
+  sysaudio: { on:true, transcribe:true },
+  ocr: { on:true, provider:'Apple Vision', model:'apple-vision-builtin', modelStatus:'available', dlPct:0, lang:'eng', mode:'Accurate' },
+  transcribe: { on:true, provider:'Local Whisper', model:'small', modelStatus:'downloading', dlPct:62, lang:'auto' },
+  privacy: { on:false, apps:['1Password','Bitwarden'] },
+  askai: { on:false, provider:'Anthropic (cloud)', model:'claude-opus-4-8', keySet:false },
+};
+
+const EXCLUDABLE = ['1Password','Bitwarden','Chase','Bank of America','Zoom','Slack','Signal','Messages','Keychain Access','Tax Software'];
+
+/* ============================================================
+   CARD DEFINITIONS
+   ============================================================ */
+const REQUIRED = [
+  { id:'permissions', icon:'permissions', title:'Permissions & access', tagline:'Grant macOS the access mnema needs to record.' },
+  { id:'screen', icon:'screen', title:'Screen capture', tagline:'The core. Continuous recording of your displays.' },
+  { id:'storage', icon:'storage', title:'Storage & retention', tagline:'Where recordings live and how long they last.' },
+];
+const OPTIONAL = [
+  { id:'mic', icon:'mic', title:'Microphone capture', tagline:'Record your voice alongside the screen.' },
+  { id:'sysaudio', icon:'sysaudio', title:'System audio', tagline:'Capture what your apps play back.' },
+  { id:'ocr', icon:'ocr', title:'OCR — text from screen', tagline:'Make everything on screen searchable.' },
+  { id:'transcribe', icon:'transcribe', title:'Audio transcription', tagline:'Turn captured audio into searchable text.' },
+  { id:'privacy', icon:'privacy', title:'Privacy — excluded apps', tagline:'Apps mnema must never record.' },
+  { id:'askai', icon:'askai', title:'Ask AI — Reasoning Engine', tagline:'Chat with your history. Local or cloud.' },
+];
+
+/* ============================================================
+   SUMMARY GENERATORS  (one-line live summary per feature)
+   ============================================================ */
+function sep(){ return '<span class="dot-sep">·</span>'; }
+function summaryFor(id){
+  const s = state;
+  switch(id){
+    case 'permissions': {
+      const map = {granted:'Granted', pending:'Not requested', denied:'Denied'};
+      return `Screen <b>${map[s.permissions.screen]}</b>${sep()}Mic <b>${map[s.permissions.mic]}</b>${sep()}System audio <b>${map[s.permissions.sysaudio]}</b>`;
+    }
+    case 'screen':
+      return `<b>${s.screen.resolution}</b>${sep()}<b>${s.screen.bitrate}</b> bitrate${sep()}<b>${s.screen.fps} fps</b>${sep()}<b>${s.screen.segment}s</b> segments`;
+    case 'storage':
+      return `Keep <b>${s.storage.retention}</b>${sep()}Auto-start <b>${s.storage.autostart?'on':'off'}</b>${sep()}<span style="color:var(--app-text-subtle)">${s.storage.dir.replace(/^.*\//,'…/')}</span>`;
+    case 'mic':
+      return `Device <b>${s.mic.device}</b>${sep()}Transcribe <b>${s.mic.transcribe?'on':'off'}</b>`;
+    case 'sysaudio':
+      return `Requires screen <b>(on)</b>${sep()}Transcribe <b>${s.sysaudio.transcribe?'on':'off'}</b>`;
+    case 'ocr':
+      return `<b>${s.ocr.provider}</b>${sep()}<b>${s.ocr.mode}</b>${sep()}${modelStatusLabel(s.ocr.modelStatus, s.ocr.dlPct)}`;
+    case 'transcribe':
+      return `<b>${s.transcribe.provider}</b>${sep()}Model <b>${s.transcribe.model}</b>${sep()}${modelStatusLabel(s.transcribe.modelStatus, s.transcribe.dlPct)}`;
+    case 'privacy':
+      return `<b>${s.privacy.apps.length}</b> app${s.privacy.apps.length===1?'':'s'} excluded${s.privacy.apps.length?sep()+s.privacy.apps.slice(0,2).join(', ')+(s.privacy.apps.length>2?'…':''):''}`;
+    case 'askai':
+      return s.askai.keySet
+        ? `<b>${s.askai.provider}</b>${sep()}<b>${s.askai.model}</b>${sep()}<span style="color:var(--app-accent)">key in keychain</span>`
+        : `<span style="color:var(--app-warn)">Needs a provider + API key</span>`;
+  }
+  return '';
+}
+function modelStatusLabel(st, pct){
+  if(st==='available') return '<span style="color:var(--app-accent)">model ready</span>';
+  if(st==='downloading') return `<span style="color:var(--app-warn)">downloading ${pct}%</span>`;
+  return '<span style="color:var(--app-danger)">model missing</span>';
+}
+
+/* ============================================================
+   RENDER CARDS
+   ============================================================ */
+function statusChipFor(id){
+  if(id==='permissions'){
+    const denied = Object.values(state.permissions).includes('denied');
+    const pending = Object.values(state.permissions).includes('pending');
+    if(denied) return `<span class="status-chip"><span class="led bad"></span>action needed</span>`;
+    if(pending) return `<span class="status-chip"><span class="led warn"></span>1 to grant</span>`;
+    return `<span class="status-chip"><span class="led ok"></span>all granted</span>`;
+  }
+  if((id==='ocr'&&state.ocr.modelStatus==='downloading')||(id==='transcribe'&&state.transcribe.modelStatus==='downloading')){
+    return `<span class="status-chip"><span class="led warn"></span>downloading</span>`;
+  }
+  if(id==='askai' && state.askai.on && !state.askai.keySet){
+    return `<span class="status-chip"><span class="led warn"></span>needs key</span>`;
+  }
+  return '';
+}
+
+function cardHTML(def, required){
+  const on = required ? true : state[def.id].on;
+  const cls = ['card'];
+  if(required) cls.push('required');
+  else if(on) cls.push('on');
+  else cls.push('off-collapsed');
+
+  const headRight = required
+    ? `<span class="req-badge">Required</span>`
+    : `<button class="switch" role="switch" aria-checked="${on}" data-toggle="${def.id}" tabindex="0"><span class="thumb"></span></button>`;
+
+  return `
+  <div class="${cls.join(' ')}" data-card="${def.id}">
+    <div class="card-head">
+      <div class="card-icon">${ICONS[def.icon]}</div>
+      <div class="card-titles">
+        <p class="card-title">${def.title}</p>
+        <p class="card-tagline">${def.tagline}</p>
+      </div>
+      <div class="card-head-right">${headRight}</div>
+    </div>
+    <div class="card-body">
+      <div class="summary">${summaryFor(def.id)}</div>
+      <div class="card-foot">
+        <button class="configure-btn" data-config="${def.id}">Configure <span class="chev">›</span></button>
+        ${statusChipFor(def.id)}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderGrid(){
+  document.getElementById('grid-required').innerHTML = REQUIRED.map(d=>cardHTML(d,true)).join('');
+  document.getElementById('grid-optional').innerHTML = OPTIONAL.map(d=>cardHTML(d,false)).join('');
+  wireCards();
+  updateActionBar();
+}
+
+function refreshCard(id){
+  const def = [...REQUIRED, ...OPTIONAL].find(d=>d.id===id);
+  const required = REQUIRED.some(d=>d.id===id);
+  const el = document.querySelector(`[data-card="${id}"]`);
+  if(!el) return;
+  el.outerHTML = cardHTML(def, required);
+  wireCards();
+}
+
+/* ============================================================
+   ACTION BAR
+   ============================================================ */
+function updateActionBar(){
+  const reqOn = 3;
+  const optOn = OPTIONAL.filter(d=>state[d.id].on).length;
+  const total = reqOn + optOn;
+  document.getElementById('onCount').textContent = total;
+  document.getElementById('abSub').textContent = `${reqOn} required · ${optOn} optional enabled`;
+  document.getElementById('optCount').textContent = `${optOn} of ${OPTIONAL.length} on`;
+  // meter: 9 segments total (3 req + 6 opt)
+  const meter = document.getElementById('abMeter');
+  let html='';
+  for(let i=0;i<9;i++) html += `<i class="${i<total?'lit':''}"></i>`;
+  meter.innerHTML = html;
+}
+
+/* ============================================================
+   WIRE CARD INTERACTIONS
+   ============================================================ */
+function wireCards(){
+  document.querySelectorAll('[data-toggle]').forEach(sw=>{
+    sw.onclick = ()=> toggleFeature(sw.dataset.toggle);
+    sw.onkeydown = (e)=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggleFeature(sw.dataset.toggle); } };
+  });
+  document.querySelectorAll('[data-config]').forEach(b=>{
+    b.onclick = ()=> openSheet(b.dataset.config);
+  });
+}
+
+function toggleFeature(id){
+  const wasOn = state[id].on;
+  state[id].on = !wasOn;
+  // sysaudio requires screen — always available here (screen is required-on), just informative
+  refreshCard(id);
+  updateActionBar();
+  if(state[id].on && id==='askai' && !state.askai.keySet){
+    // nudge straight into configure when turning on Ask AI w/o key
+    setTimeout(()=>openSheet('askai'), 180);
+  }
+  toast(state[id].on ? `${titleFor(id)} enabled` : `${titleFor(id)} disabled`);
+}
+function titleFor(id){ return [...REQUIRED,...OPTIONAL].find(d=>d.id===id).title; }
+
+/* ============================================================
+   CONFIG SHEET
+   ============================================================ */
+const scrim = document.getElementById('scrim');
+let activeSheet = null;
+
+function openSheet(id){
+  activeSheet = id;
+  const def = [...REQUIRED,...OPTIONAL].find(d=>d.id===id);
+  const required = REQUIRED.some(d=>d.id===id);
+  document.getElementById('sheetIcon').innerHTML = ICONS[def.icon];
+  document.getElementById('sheetHead').classList.toggle('req', required);
+  document.getElementById('sheetTitle').textContent = def.title;
+  document.getElementById('sheetSub').textContent = def.tagline;
+  document.getElementById('sheetBody').innerHTML = sheetBodyFor(id);
+  document.getElementById('sheetNote').textContent = id==='askai'
+    ? 'API key is stored only in the macOS Keychain.'
+    : 'Changes save automatically.';
+  scrim.classList.add('open');
+  wireSheet(id);
+}
+function closeSheet(){
+  scrim.classList.remove('open');
+  if(activeSheet) refreshCard(activeSheet);
+  updateActionBar();
+  activeSheet = null;
+}
+document.getElementById('sheetClose').onclick = closeSheet;
+document.getElementById('sheetCancel').onclick = closeSheet;
+document.getElementById('sheetSave').onclick = ()=>{ const id=activeSheet; closeSheet(); toast(`${titleFor(id)} saved`); };
+scrim.onclick = (e)=>{ if(e.target===scrim) closeSheet(); };
+document.addEventListener('keydown', e=>{ if(e.key==='Escape' && scrim.classList.contains('open')) closeSheet(); });
+
+/* ---------- sheet body builders ---------- */
+function segmented(name, options, current){
+  return `<div class="segmented" data-seg="${name}">` +
+    options.map(o=>`<button data-val="${o}" class="${o===current?'active':''}">${o}</button>`).join('') +
+    `</div>`;
+}
+function sliderField(name, min, max, val, fmt){
+  return `<div class="slider-wrap"><input type="range" data-slider="${name}" min="${min}" max="${max}" value="${val}"><span class="slider-val" data-sliderval="${name}">${fmt(val)}</span></div>`;
+}
+
+function sheetBodyFor(id){
+  const s = state;
+  if(id==='permissions'){
+    const pillFor = (st)=> st==='granted'
+      ? `<span class="pill granted"><span class="led"></span>Granted</span>`
+      : st==='pending'
+        ? `<span class="pill pending"><span class="led"></span>Not requested</span>`
+        : `<span class="pill denied"><span class="led"></span>Denied</span>`;
+    const btnFor = (key, st)=> st==='granted'
+      ? ''
+      : st==='pending'
+        ? `<button class="mini-btn" data-grant="${key}">Grant access</button>`
+        : `<button class="mini-btn" data-grant="${key}">Open Settings</button>`;
+    return `
+      <div class="callout info"><span class="ci">●</span><span>macOS asks once per permission. You can change these any time in <b>System Settings → Privacy & Security</b>.</span></div>
+      <div class="perm-row"><div class="pi">${ICONS.screen}</div><div class="pt"><div class="l">Screen recording</div><div class="d">Required — captures your displays.</div></div>${pillFor(s.permissions.screen)} ${btnFor('screen',s.permissions.screen)}</div>
+      <div class="perm-row"><div class="pi">${ICONS.mic}</div><div class="pt"><div class="l">Microphone</div><div class="d">Needed only if Microphone capture is on.</div></div>${pillFor(s.permissions.mic)} ${btnFor('mic',s.permissions.mic)}</div>
+      <div class="perm-row"><div class="pi">${ICONS.sysaudio}</div><div class="pt"><div class="l">System audio</div><div class="d">Needed only if System audio is on.</div></div>${pillFor(s.permissions.sysaudio)} ${btnFor('sysaudio',s.permissions.sysaudio)}</div>
+    `;
+  }
+
+  if(id==='screen'){
+    return `
+      <div class="field">
+        <div class="field-label">Resolution</div>
+        ${segmented('resolution',['Original','1080p','1440p','4K','Custom'], s.screen.resolution)}
+        <div class="field-hint">Higher resolution captures more detail but uses more disk.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Video bitrate</div>
+        ${segmented('bitrate',['Low','Medium','High','Custom'], s.screen.bitrate)}
+      </div>
+      <div class="field">
+        <div class="field-label">Frame rate</div>
+        ${sliderField('fps',1,120,s.screen.fps,v=>v+' fps')}
+        <div class="field-hint">2 fps is plenty for recall. Higher rates suit motion-heavy work.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Segment duration</div>
+        ${sliderField('segment',10,300,s.screen.segment,v=>v+' s')}
+        <div class="field-hint">Recordings split into segments. Capped at 5 minutes (300s).</div>
+      </div>
+      <div class="divider"></div>
+      <button class="advanced-toggle" data-adv><span class="chev">›</span> Advanced — idle behaviour</button>
+      <div class="advanced-body">
+        <div class="switch-row">
+          <div class="sw-text"><div class="sw-label">Pause on inactivity</div><div class="sw-desc">Stop recording when you step away.</div></div>
+          <button class="switch" role="switch" aria-checked="${s.screen.idlePause}" data-fieldsw="screen.idlePause"><span class="thumb"></span></button>
+        </div>
+        <div class="field" style="margin-top:14px;">
+          <div class="field-label">Idle timeout</div>
+          ${sliderField('idleTimeout',5,300,s.screen.idleTimeout,v=>v+' s')}
+        </div>
+      </div>
+    `;
+  }
+
+  if(id==='storage'){
+    return `
+      <div class="field">
+        <div class="field-label">Save directory</div>
+        <div class="input-row">
+          <input class="text-input" data-text="storage.dir" value="${s.storage.dir}">
+          <button class="btn" data-browse>Browse…</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Retention</div>
+        <select class="select-input" data-select="storage.retention">
+          ${['Never','7 days','14 days','30 days'].map(o=>`<option ${o===s.storage.retention?'selected':''}>${o}</option>`).join('')}
+        </select>
+        <div class="field-hint">Recordings older than this are cleaned up automatically. User context survives retention.</div>
+      </div>
+      <div class="divider"></div>
+      <button class="advanced-toggle" data-adv><span class="chev">›</span> Advanced</button>
+      <div class="advanced-body">
+        <div class="field" style="margin-top:8px;">
+          <div class="field-label">Preview cache TTL</div>
+          <select class="select-input" data-select="storage.cacheTTL">
+            ${['1 day','3 days','7 days','14 days'].map(o=>`<option ${o===s.storage.cacheTTL?'selected':''}>${o}</option>`).join('')}
+          </select>
+        </div>
+        <div class="switch-row">
+          <div class="sw-text"><div class="sw-label">Auto-start on launch</div><div class="sw-desc">Begin recording when mnema opens.</div></div>
+          <button class="switch" role="switch" aria-checked="${s.storage.autostart}" data-fieldsw="storage.autostart"><span class="thumb"></span></button>
+        </div>
+      </div>
+    `;
+  }
+
+  if(id==='mic'){
+    return `
+      <div class="switch-row">
+        <div class="sw-text"><div class="sw-label">Transcribe microphone</div><div class="sw-desc">Convert your voice to searchable text.</div></div>
+        <button class="switch" role="switch" aria-checked="${s.mic.transcribe}" data-fieldsw="mic.transcribe"><span class="thumb"></span></button>
+      </div>
+      <div class="field" style="margin-top:16px;">
+        <div class="field-label">Input device</div>
+        <select class="select-input" data-select="mic.device">
+          ${['MacBook Pro Microphone','External USB Mic','AirPods Pro','Aggregate Device'].map(o=>`<option ${o===s.mic.device?'selected':''}>${o}</option>`).join('')}
+        </select>
+      </div>
+    `;
+  }
+
+  if(id==='sysaudio'){
+    return `
+      <div class="callout info"><span class="ci">●</span><span>System audio rides along with the screen capture stream — <b>Screen capture must stay on</b> (it is, it's required).</span></div>
+      <div class="switch-row">
+        <div class="sw-text"><div class="sw-label">Transcribe system audio</div><div class="sw-desc">Turn playback (calls, videos) into text.</div></div>
+        <button class="switch" role="switch" aria-checked="${s.sysaudio.transcribe}" data-fieldsw="sysaudio.transcribe"><span class="thumb"></span></button>
+      </div>
+    `;
+  }
+
+  if(id==='ocr'){
+    return `
+      <div class="field">
+        <div class="field-label">Provider</div>
+        <div class="radio-list" data-radio="ocr.provider">
+          <div class="radio ${s.ocr.provider==='Apple Vision'?'sel':''}" data-val="Apple Vision"><span class="ring"></span><div><div class="rl">Apple Vision</div><div class="rd">Built into macOS · no download · fast.</div></div></div>
+          <div class="radio ${s.ocr.provider==='Tesseract'?'sel':''}" data-val="Tesseract"><span class="ring"></span><div><div class="rl">Tesseract</div><div class="rd">Open source · 100+ languages.</div></div></div>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Model</div>
+        ${modelCardFor('ocr')}
+      </div>
+      ${s.ocr.provider==='Tesseract' ? `
+      <div class="field">
+        <div class="field-label">Language</div>
+        <select class="select-input" data-select="ocr.lang">
+          ${[['eng','English'],['fra','French'],['deu','German'],['spa','Spanish'],['jpn','Japanese']].map(([v,l])=>`<option value="${v}" ${v===s.ocr.lang?'selected':''}>${l}</option>`).join('')}
+        </select>
+      </div>` : ''}
+      <div class="field">
+        <div class="field-label">Recognition mode</div>
+        ${segmented('mode',['Fast','Accurate'], s.ocr.mode)}
+        <div class="field-hint">Accurate catches small/stylised text; Fast is lighter on CPU.</div>
+      </div>
+    `;
+  }
+
+  if(id==='transcribe'){
+    return `
+      <div class="field">
+        <div class="field-label">Provider</div>
+        <div class="radio-list" data-radio="transcribe.provider">
+          <div class="radio ${s.transcribe.provider==='Local Whisper'?'sel':''}" data-val="Local Whisper"><span class="ring"></span><div><div class="rl">Local Whisper</div><div class="rd">On-device · private · model download.</div></div></div>
+          <div class="radio ${s.transcribe.provider==='Apple Speech'?'sel':''}" data-val="Apple Speech"><span class="ring"></span><div><div class="rl">Apple Speech</div><div class="rd">Built into macOS · no download.</div></div></div>
+          <div class="radio ${s.transcribe.provider==='Parakeet'?'sel':''}" data-val="Parakeet"><span class="ring"></span><div><div class="rl">Parakeet</div><div class="rd">NVIDIA · fast streaming · download.</div></div></div>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Model</div>
+        <select class="select-input" data-select="transcribe.model" style="margin-bottom:9px;">
+          ${['base','small','medium','large'].map(o=>`<option ${o===s.transcribe.model?'selected':''}>${o}</option>`).join('')}
+        </select>
+        ${modelCardFor('transcribe')}
+      </div>
+      <div class="field">
+        <div class="field-label">Language</div>
+        <select class="select-input" data-select="transcribe.lang">
+          ${[['auto','Auto-detect'],['en','English'],['fr','French'],['de','German'],['es','Spanish']].map(([v,l])=>`<option value="${v}" ${v===s.transcribe.lang?'selected':''}>${l}</option>`).join('')}
+        </select>
+      </div>
+    `;
+  }
+
+  if(id==='privacy'){
+    return `
+      <div class="callout info"><span class="ci">●</span><span>When an excluded app is frontmost, mnema pauses capture entirely. Nothing about it is recorded.</span></div>
+      <div class="field">
+        <div class="field-label">Add app to never record <button class="mini-btn" data-recommend style="margin-left:auto;">Apply recommended</button></div>
+        <div class="combo-wrap">
+          <input class="text-input" data-combo placeholder="Search apps… (e.g. 1Password, Zoom)">
+          <div class="combo-pop" data-combopop></div>
+        </div>
+        <div class="chips" data-chips>${chipsHTML()}</div>
+      </div>
+    `;
+  }
+
+  if(id==='askai'){
+    return `
+      <div class="callout info"><span class="ci">●</span><span>The Reasoning Engine answers questions about your captured history. It can run a <b>local</b> model (Ollama / Llamafile) or a <b>cloud</b> provider (Anthropic / OpenAI). Keys are stored only in the macOS Keychain.</span></div>
+      <div class="field">
+        <div class="field-label">Provider</div>
+        <select class="select-input" data-select="askai.provider">
+          ${['Anthropic (cloud)','OpenAI (cloud)','Ollama (local)','Llamafile (local)'].map(o=>`<option ${o===s.askai.provider?'selected':''}>${o}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <div class="field-label">Model</div>
+        <select class="select-input" data-select="askai.model">
+          ${['claude-opus-4-8','claude-sonnet-4-5','gpt-5.1','llama3.1:70b','qwen2.5:32b'].map(o=>`<option ${o===s.askai.model?'selected':''}>${o}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field" data-keyfield>
+        <div class="field-label">API key</div>
+        ${ s.askai.keySet
+          ? `<div class="perm-row" style="margin-bottom:0;"><div class="pi">${ICONS.privacy}</div><div class="pt"><div class="l">Key stored in Keychain</div><div class="d">••••••••••••••••sk-9f2</div></div><button class="mini-btn" data-clearkey>Replace</button></div>`
+          : `<div class="input-row"><input class="text-input" data-keyinput type="password" placeholder="sk-ant-… or skip for local"><button class="btn primary" data-savekey>Add key</button></div><div class="field-hint">Local providers (Ollama / Llamafile) don't need a key.</div>`
+        }
+      </div>
+    `;
+  }
+  return '';
+}
+
+function modelCardFor(feat){
+  const m = state[feat];
+  const name = feat==='ocr' ? (m.provider==='Apple Vision'?'Apple Vision (built-in)':'Tesseract eng') : `whisper-${m.model}`;
+  const size = feat==='ocr' ? (m.provider==='Apple Vision'?'—':'~22 MB') : ({base:'74 MB',small:'244 MB',medium:'769 MB',large:'1.5 GB'}[m.model]||'244 MB');
+  if(m.modelStatus==='available' || (feat==='ocr' && m.provider==='Apple Vision')){
+    return `<div class="model-card"><div class="mc-head"><span class="mc-name">${name}</span><span class="mc-size">${size}</span><span class="pill granted" style="margin-left:10px;"><span class="led"></span>Available</span></div></div>`;
+  }
+  if(m.modelStatus==='downloading'){
+    return `<div class="model-card" data-modelcard="${feat}"><div class="mc-head"><span class="mc-name">${name}</span><span class="mc-size">${size}</span><button class="mini-btn" data-cancel-dl="${feat}" style="margin-left:10px;">Cancel</button></div><div class="progress"><i style="width:${m.dlPct}%"></i></div><div class="mc-prog-row"><span class="pct" data-dlpct="${feat}">Downloading… ${m.dlPct}%</span></div></div>`;
+  }
+  return `<div class="model-card" data-modelcard="${feat}"><div class="mc-head"><span class="mc-name">${name}</span><span class="mc-size">${size}</span><span class="pill denied" style="margin-left:10px;"><span class="led"></span>Missing</span><button class="mini-btn" data-start-dl="${feat}" style="margin-left:8px;">Download</button></div></div>`;
+}
+
+function chipsHTML(){
+  return state.privacy.apps.map(a=>`<span class="chip">${a}<button class="x" data-removeapp="${a}">×</button></span>`).join('') || '<span style="font-size:11px;color:var(--app-text-subtle);">No apps excluded yet.</span>';
+}
+
+/* ============================================================
+   WIRE SHEET CONTROLS
+   ============================================================ */
+function setPath(path, val){
+  const [obj,key]=path.split('.');
+  state[obj][key]=val;
+}
+
+function wireSheet(id){
+  const body = document.getElementById('sheetBody');
+
+  // segmented
+  body.querySelectorAll('[data-seg]').forEach(seg=>{
+    seg.querySelectorAll('button').forEach(b=>{
+      b.onclick = ()=>{
+        seg.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+        b.classList.add('active');
+        const name=seg.dataset.seg, val=b.dataset.val;
+        if(name==='mode') state.ocr.mode=val; else state.screen[name]=val;
+      };
+    });
+  });
+
+  // sliders
+  body.querySelectorAll('[data-slider]').forEach(sl=>{
+    const name=sl.dataset.slider;
+    sl.oninput = ()=>{
+      const v=+sl.value;
+      const fmtMap = { fps:x=>x+' fps', segment:x=>x+' s', idleTimeout:x=>x+' s' };
+      body.querySelector(`[data-sliderval="${name}"]`).textContent = (fmtMap[name]||(x=>x))(v);
+      state.screen[name]=v;
+    };
+  });
+
+  // text inputs
+  body.querySelectorAll('[data-text]').forEach(inp=>{ inp.oninput=()=>setPath(inp.dataset.text, inp.value); });
+
+  // selects
+  body.querySelectorAll('[data-select]').forEach(sel=>{
+    sel.onchange=()=>{
+      setPath(sel.dataset.select, sel.value);
+      if(sel.dataset.select==='ocr.provider' || sel.dataset.select==='transcribe.model'){ /* re-render handled below */ }
+      // re-render the sheet for selects that change other controls
+      if(['transcribe.model','askai.provider'].includes(sel.dataset.select)){
+        // keep simple; model card depends on transcribe.model
+        body.querySelectorAll('[data-modelcard="transcribe"]').forEach(()=>{});
+        document.getElementById('sheetBody').innerHTML = sheetBodyFor(id); wireSheet(id);
+      }
+    };
+  });
+
+  // field switches (sub-toggles)
+  body.querySelectorAll('[data-fieldsw]').forEach(sw=>{
+    sw.onclick=()=>{
+      const cur=sw.getAttribute('aria-checked')==='true';
+      sw.setAttribute('aria-checked', String(!cur));
+      setPath(sw.dataset.fieldsw, !cur);
+    };
+  });
+
+  // radios
+  body.querySelectorAll('[data-radio]').forEach(group=>{
+    group.querySelectorAll('.radio').forEach(r=>{
+      r.onclick=()=>{
+        group.querySelectorAll('.radio').forEach(x=>x.classList.remove('sel'));
+        r.classList.add('sel');
+        setPath(group.dataset.radio, r.dataset.val);
+        // OCR/transcribe provider change affects model card & language field → re-render
+        document.getElementById('sheetBody').innerHTML = sheetBodyFor(id); wireSheet(id);
+      };
+    });
+  });
+
+  // advanced reveal
+  body.querySelectorAll('[data-adv]').forEach(t=>{
+    t.onclick=()=>{
+      t.classList.toggle('open');
+      const ab=t.nextElementSibling;
+      ab.classList.toggle('open');
+    };
+  });
+
+  // browse (mock)
+  const browse = body.querySelector('[data-browse]');
+  if(browse) browse.onclick=()=>toast('File picker would open here');
+
+  // permission grant (mock state advance)
+  body.querySelectorAll('[data-grant]').forEach(b=>{
+    b.onclick=()=>{
+      state.permissions[b.dataset.grant]='granted';
+      document.getElementById('sheetBody').innerHTML = sheetBodyFor('permissions'); wireSheet('permissions');
+      toast(`${b.dataset.grant} access granted`);
+    };
+  });
+
+  // model download controls
+  body.querySelectorAll('[data-start-dl]').forEach(b=>{ b.onclick=()=>startDownload(b.dataset.startDl, id); });
+  body.querySelectorAll('[data-cancel-dl]').forEach(b=>{ b.onclick=()=>cancelDownload(b.dataset.cancelDl, id); });
+
+  // privacy combobox
+  const combo = body.querySelector('[data-combo]');
+  if(combo){
+    const pop = body.querySelector('[data-combopop]');
+    const renderPop = ()=>{
+      const q=combo.value.trim().toLowerCase();
+      const avail = EXCLUDABLE.filter(a=>!state.privacy.apps.includes(a) && a.toLowerCase().includes(q));
+      pop.innerHTML = avail.map(a=>`<button data-addapp="${a}"><span class="av"></span>${a}</button>`).join('') || `<button disabled style="color:var(--app-text-subtle);cursor:default;">No matches</button>`;
+      pop.classList.toggle('open', avail.length>0 && document.activeElement===combo);
+      pop.querySelectorAll('[data-addapp]').forEach(btn=>{
+        btn.onclick=()=>{ state.privacy.apps.push(btn.dataset.addapp); combo.value=''; refreshPrivacy(id); };
+      });
+    };
+    combo.oninput=renderPop;
+    combo.onfocus=renderPop;
+    combo.onblur=()=>setTimeout(()=>pop.classList.remove('open'),150);
+    wireRemoveChips(id);
+    const rec = body.querySelector('[data-recommend]');
+    if(rec) rec.onclick=()=>{
+      ['1Password','Chase','Zoom'].forEach(a=>{ if(!state.privacy.apps.includes(a)) state.privacy.apps.push(a); });
+      refreshPrivacy(id);
+      toast('Recommended apps added');
+    };
+  }
+
+  // Ask AI key
+  const saveKey = body.querySelector('[data-savekey]');
+  if(saveKey) saveKey.onclick=()=>{
+    const inp=body.querySelector('[data-keyinput]');
+    if(inp && inp.value.trim().length<3){ toast('Enter a valid key'); return; }
+    state.askai.keySet=true;
+    document.getElementById('sheetBody').innerHTML = sheetBodyFor('askai'); wireSheet('askai');
+    toast('Key saved to Keychain');
+  };
+  const clearKey = body.querySelector('[data-clearkey]');
+  if(clearKey) clearKey.onclick=()=>{
+    state.askai.keySet=false;
+    document.getElementById('sheetBody').innerHTML = sheetBodyFor('askai'); wireSheet('askai');
+  };
+}
+
+function refreshPrivacy(id){
+  const chips = document.querySelector('[data-chips]');
+  if(chips){ chips.innerHTML = chipsHTML(); wireRemoveChips(id); }
+}
+function wireRemoveChips(id){
+  document.querySelectorAll('[data-removeapp]').forEach(x=>{
+    x.onclick=()=>{ state.privacy.apps = state.privacy.apps.filter(a=>a!==x.dataset.removeapp); refreshPrivacy(id); };
+  });
+}
+
+/* ---------- model download simulation ---------- */
+const dlTimers = {};
+function startDownload(feat, sheetId){
+  state[feat].modelStatus='downloading';
+  state[feat].dlPct=0;
+  document.getElementById('sheetBody').innerHTML = sheetBodyFor(sheetId); wireSheet(sheetId);
+  tickDownload(feat, sheetId);
+}
+function tickDownload(feat, sheetId){
+  clearInterval(dlTimers[feat]);
+  dlTimers[feat]=setInterval(()=>{
+    state[feat].dlPct = Math.min(100, state[feat].dlPct + Math.random()*9 + 3);
+    const p = Math.round(state[feat].dlPct);
+    const pctEl = document.querySelector(`[data-dlpct="${feat}"]`);
+    const bar = document.querySelector(`[data-modelcard="${feat}"] .progress > i`);
+    if(pctEl) pctEl.textContent = `Downloading… ${p}%`;
+    if(bar) bar.style.width = p+'%';
+    if(state[feat].dlPct>=100){
+      clearInterval(dlTimers[feat]);
+      state[feat].modelStatus='available';
+      state[feat].dlPct=100;
+      if(activeSheet===sheetId){ document.getElementById('sheetBody').innerHTML = sheetBodyFor(sheetId); wireSheet(sheetId); }
+      toast(`${feat==='ocr'?'OCR':'Transcription'} model ready`);
+    }
+  }, 320);
+}
+function cancelDownload(feat, sheetId){
+  clearInterval(dlTimers[feat]);
+  state[feat].modelStatus='missing';
+  state[feat].dlPct=0;
+  document.getElementById('sheetBody').innerHTML = sheetBodyFor(sheetId); wireSheet(sheetId);
+  toast('Download cancelled');
+}
+// keep the pre-set "downloading" transcribe model advancing for reviewers to see
+setTimeout(()=>{ if(state.transcribe.modelStatus==='downloading'){ tickDownload('transcribe', activeSheet==='transcribe'?'transcribe':null); } }, 1200);
+
+/* ============================================================
+   THEME TOGGLE
+   ============================================================ */
+const html = document.documentElement;
+document.getElementById('themeToggle').onclick = ()=>{
+  const next = html.getAttribute('data-theme')==='dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  document.getElementById('themeLabel').textContent = next;
+};
+
+/* ============================================================
+   BOTTOM ACTIONS
+   ============================================================ */
+document.getElementById('finishBtn').onclick = ()=> toast('Setup complete — opening mnema');
+document.getElementById('recBtn').onclick = ()=> toast('Recording would start now');
+document.getElementById('skipBtn').onclick = ()=> toast('Defaults applied — you can revisit in Settings');
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+let toastTimer;
+function toast(msg){
+  const t=document.getElementById('toast');
+  document.getElementById('toastMsg').textContent=msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>t.classList.remove('show'), 1900);
+}
+
+/* ============================================================
+   INIT
+   ============================================================ */
+renderGrid();
+</script>
+</body>
+</html>

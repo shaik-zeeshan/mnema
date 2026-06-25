@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 
 const NATIVE_CAPTURE_DEBUG_LOG_FILE_NAME: &str = "native-capture-debug.log";
 
@@ -145,8 +146,51 @@ fn delete_log_file_at_path(path: &Path) -> Result<(), CaptureErrorResponse> {
     }
 }
 
+/// Resolve what to hand the OS opener: the base log file when it is present on
+/// disk, otherwise its containing folder. The decision keys off the base file
+/// existing (`base_exists`), not the rotation-aware status flag — when only a
+/// rotated backup remains, revealing the folder still surfaces it.
+fn open_target_path(path: &Path, base_exists: bool) -> Result<PathBuf, CaptureErrorResponse> {
+    if base_exists {
+        return Ok(path.to_path_buf());
+    }
+
+    path.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| CaptureErrorResponse {
+            code: "io_error".to_string(),
+            message: format!(
+                "Failed to resolve containing directory for native capture debug log path '{}'",
+                path.display()
+            ),
+        })
+}
+
 pub(crate) fn status(app_handle: &tauri::AppHandle, enabled: bool) -> NativeCaptureDebugLogStatus {
     status_for_path(enabled, &native_capture_debug_log_path(app_handle))
+}
+
+pub(crate) fn open(
+    app_handle: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<NativeCaptureDebugLogStatus, CaptureErrorResponse> {
+    let path = native_capture_debug_log_path(app_handle);
+    let base_exists = path.is_file();
+    let target = open_target_path(&path, base_exists)?;
+    let target_kind = if base_exists { "file" } else { "folder" };
+
+    app_handle
+        .opener()
+        .open_path(target.to_string_lossy().to_string(), None::<String>)
+        .map_err(|error| CaptureErrorResponse {
+            code: "io_error".to_string(),
+            message: format!(
+                "Failed to open native capture debug log {target_kind} '{}': {error}",
+                target.display()
+            ),
+        })?;
+
+    Ok(status_for_path(enabled, &path))
 }
 
 pub(crate) fn delete(
@@ -254,6 +298,20 @@ mod tests {
         let present = status_for_path(false, &log_path);
         assert!(!present.enabled);
         assert!(present.exists);
+    }
+
+    #[test]
+    fn open_target_path_picks_the_file_when_present_and_the_folder_otherwise() {
+        let dir = TestDir::new("open");
+        let log_path = dir.path().join("native-capture-debug.log");
+
+        // Base file missing → reveal the containing folder.
+        let folder = open_target_path(&log_path, false).expect("parent directory should resolve");
+        assert_eq!(folder, dir.path());
+
+        // Base file present → open the file itself.
+        let file = open_target_path(&log_path, true).expect("file target should resolve");
+        assert_eq!(file, log_path);
     }
 
     #[test]

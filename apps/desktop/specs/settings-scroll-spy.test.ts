@@ -1,0 +1,141 @@
+import { describe, expect, test } from "bun:test";
+import { SETTINGS_GROUPS } from "../src/lib/settings/groups";
+import {
+  isAtScrollTarget,
+  isScrollable,
+  isScrolledToBottom,
+  lastSectionOfGroup,
+} from "../src/lib/settings/scroll-spy";
+
+// The scroll-spy tail-selection + bottom-out predicate had two dedicated fix
+// commits but no test. These pin the pure decisions both fixes hinge on.
+
+describe("scroll-spy: lastSectionOfGroup", () => {
+  test("returns the FINAL section of each group (the spy-unreachable tail)", () => {
+    // The whole point of the helper: the tail is the last section in render
+    // order, which the IntersectionObserver can't mark active on bottom-out.
+    for (const group of SETTINGS_GROUPS) {
+      const expected = group.sections[group.sections.length - 1].id;
+      expect(lastSectionOfGroup(group.id)).toBe(expected);
+    }
+  });
+
+  test("Capture's tail is Privacy (last of capture/video/audio/privacy)", () => {
+    expect(lastSectionOfGroup("capture")).toBe("privacy");
+  });
+
+  test("Intelligence's tail is Semantic Search (the deepest scroll target)", () => {
+    expect(lastSectionOfGroup("intelligence")).toBe("semanticSearch");
+  });
+
+  test("returns null for an unknown group id", () => {
+    // @ts-expect-error — deliberately passing a non-group id.
+    expect(lastSectionOfGroup("not-a-group")).toBeNull();
+  });
+});
+
+describe("scroll-spy: isScrolledToBottom", () => {
+  test("true when scrollTop reaches the exact bottom", () => {
+    expect(
+      isScrolledToBottom({ scrollHeight: 1000, scrollTop: 600, clientHeight: 400 }),
+    ).toBe(true);
+  });
+
+  test("true within the 2px sub-pixel tolerance", () => {
+    // 1000 - 599 - 400 = 1 (≤ 2) → still counts as bottomed out.
+    expect(
+      isScrolledToBottom({ scrollHeight: 1000, scrollTop: 599, clientHeight: 400 }),
+    ).toBe(true);
+    // Exactly 2px of remaining slack is still "bottom".
+    expect(
+      isScrolledToBottom({ scrollHeight: 1000, scrollTop: 598, clientHeight: 400 }),
+    ).toBe(true);
+  });
+
+  test("false when more than 2px remain below the fold", () => {
+    // 1000 - 500 - 400 = 100 remaining → not bottomed out.
+    expect(
+      isScrolledToBottom({ scrollHeight: 1000, scrollTop: 500, clientHeight: 400 }),
+    ).toBe(false);
+    // Just past the tolerance edge (3px remaining) → not bottom.
+    expect(
+      isScrolledToBottom({ scrollHeight: 1000, scrollTop: 597, clientHeight: 400 }),
+    ).toBe(false);
+  });
+
+  test("true at the top when content fits without scrolling", () => {
+    // Content shorter than the viewport: there's nothing to scroll, so the
+    // region is already at its (only) bottom.
+    expect(
+      isScrolledToBottom({ scrollHeight: 300, scrollTop: 0, clientHeight: 400 }),
+    ).toBe(true);
+  });
+
+  test("accepts a real-element-shaped object (structural compatibility)", () => {
+    // The shell passes its scroll-region HTMLElement directly; an element is
+    // structurally a {scrollHeight, scrollTop, clientHeight} carrier.
+    const elementLike = Object.assign(Object.create(null), {
+      scrollHeight: 800,
+      scrollTop: 400,
+      clientHeight: 400,
+    });
+    expect(isScrolledToBottom(elementLike)).toBe(true);
+  });
+});
+
+describe("scroll-spy: isScrollable", () => {
+  test("true when content overflows the viewport (room to scroll)", () => {
+    // 1000 - 400 = 600 of overflow → genuinely scrollable.
+    expect(isScrollable({ scrollHeight: 1000, clientHeight: 400 })).toBe(true);
+  });
+
+  test("false when content fits the viewport (short group)", () => {
+    // A group whose content fits leaves nothing to scroll, so the bottom-out
+    // short-circuit must NOT fire (otherwise the highlight freezes).
+    expect(isScrollable({ scrollHeight: 300, clientHeight: 400 })).toBe(false);
+    // Content the exact viewport height is still not scrollable.
+    expect(isScrollable({ scrollHeight: 400, clientHeight: 400 })).toBe(false);
+  });
+
+  test("false within the 2px sub-pixel tolerance", () => {
+    // 402 - 400 = 2 (≤ tolerance) → still treated as not scrollable.
+    expect(isScrollable({ scrollHeight: 402, clientHeight: 400 })).toBe(false);
+    // 403 - 400 = 3 (> tolerance) → scrollable.
+    expect(isScrollable({ scrollHeight: 403, clientHeight: 400 })).toBe(true);
+  });
+});
+
+describe("scroll-spy: isAtScrollTarget", () => {
+  test("false while no programmatic scroll is in flight (null target)", () => {
+    // With no target the scroll-spy must NOT treat any scroll as settled —
+    // suppression stays raised until a real target arrives or the timer fires.
+    expect(isAtScrollTarget(0, null)).toBe(false);
+    expect(isAtScrollTarget(1234, null)).toBe(false);
+  });
+
+  test("false mid-animation while still far from the target", () => {
+    // A long smooth jump: scrollTop is nowhere near the target yet, so the
+    // observer must stay suppressed (this is the flicker the fix prevents).
+    expect(isAtScrollTarget(120, 980)).toBe(false);
+  });
+
+  test("true once scrollTop reaches the target exactly", () => {
+    expect(isAtScrollTarget(980, 980)).toBe(true);
+  });
+
+  test("true within the default 4px settle tolerance (either direction)", () => {
+    // Smooth scrolls land a hair short or long of the exact offset; absorb it.
+    expect(isAtScrollTarget(976, 980)).toBe(true); // 4px short
+    expect(isAtScrollTarget(984, 980)).toBe(true); // 4px over
+  });
+
+  test("false just past the settle tolerance", () => {
+    expect(isAtScrollTarget(975, 980)).toBe(false); // 5px short
+    expect(isAtScrollTarget(985, 980)).toBe(false); // 5px over
+  });
+
+  test("honors a caller-supplied tolerance", () => {
+    expect(isAtScrollTarget(970, 980, 10)).toBe(true);
+    expect(isAtScrollTarget(969, 980, 10)).toBe(false);
+  });
+});

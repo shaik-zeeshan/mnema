@@ -390,6 +390,7 @@ pub fn run() {
         .manage(semantic_search_models::SemanticSearchModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
+        .manage(windows::PendingOpenSettingsState::default())
         .manage(BrokerOpenCaptureResultState::default())
         .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
@@ -451,6 +452,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
+            app_infra::get_storage_location,
             app_updates::get_app_update_status,
             app_updates::check_for_app_update,
             app_updates::set_app_update_channel,
@@ -608,6 +610,7 @@ pub fn run() {
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,
             native_capture::get_native_capture_debug_log_status,
+            native_capture::open_native_capture_debug_log,
             native_capture::delete_native_capture_debug_log,
             native_capture::get_microphone_controller_state,
             native_capture::update_microphone_controller,
@@ -615,8 +618,8 @@ pub fn run() {
             native_capture::pause_native_capture,
             native_capture::resume_native_capture,
             native_capture::stop_native_capture,
-            windows::open_settings_window,
-            windows::open_settings_window_to_tab,
+            windows::focus_main_and_open_settings,
+            windows::drain_pending_open_settings,
             windows::open_debug_window,
             windows::close_current_window,
             windows::focus_quick_recall_window,

@@ -6,7 +6,8 @@
   import { listen } from "@tauri-apps/api/event";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
-  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
+  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
+  import { createSettingsDeeplink } from "$lib/settings/deeplink.svelte";
   import {
     bootstrapCaptureControls,
     captureControls,
@@ -52,18 +53,30 @@
 
   let { children }: Props = $props();
 
+  // The listener `$effect` below re-runs on every in-window navigation (it reads
+  // `$page.url.pathname` transitively), but the cold-start handoff drains
+  // (insights peek + settings drain) must fire ONCE on mount, not on every
+  // route change — re-issuing those drain/peek IPC calls would replay stale
+  // handoffs. This non-reactive flag gates them to the first run.
+  let coldDrainsDone = false;
+
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
-  const isOnboarding = $derived(normalizedPathname.startsWith("/onboarding"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
+  // Settings renders inside the Main window as the `/settings` route. The Main
+  // titlebar (record controls, source pills, surface toggle, gear) stays visible
+  // on Settings too — it is the Main window's persistent top nav — and Settings
+  // renders its own sidebar shell in the content area below it. Native traffic
+  // lights stay (overlay titlebar), reserved for by the titlebar's left inset.
+  const isSettingsRoute = $derived(normalizedPathname === "/settings");
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const isPanelSurface = isQuickRecallWindow();
   // The Main window now hosts two top-level Surfaces — Timeline (`/`) and
   // Insights (`/insights`). The shared main titlebar (record controls, source
   // pills, settings, the Timeline⇄Insights surface toggle) renders on both.
   const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute);
-  const showMainTitlebar = $derived(isMainSurfaceRoute && !isPanelSurface);
+  const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
   const isMainWindow = $derived(!showDedicatedTitlebar && !isPanelSurface);
@@ -127,10 +140,27 @@
     void bootstrapCaptureControls();
   });
 
+  // Settings deeplink transport, owned by `$lib/settings/deeplink.svelte`. The
+  // Main window turns an `open_settings_tab` deeplink (live event + a cold-window
+  // drain) into a `/settings` navigation; the module holds the listener + drain
+  // and reads the live shell state through these getters so reactivity and the
+  // exact navigation semantics are preserved. The cold drain stays sequenced with
+  // the insights peek below via the single `coldDrainsDone` one-shot gate.
+  const settingsDeeplink = createSettingsDeeplink({
+    currentPathname: () => $page.url.pathname,
+    goto,
+    isMainWindow: () => isMainWindow,
+    isSettings: () => isSettings,
+  });
+
   $effect(() => {
     let destroyed = false;
     let unlistenBrokerOpenCaptureResult: (() => void) | undefined;
     let unlistenInsightsOpenConversation: (() => void) | undefined;
+
+    // Settings deeplink transport (the `open_settings_tab` listener). Cleanup is
+    // the module's returned unlisten, torn down alongside the others below.
+    const unlistenOpenSettingsTab = settingsDeeplink.listen();
 
     listen("broker_open_capture_result", () => {
       if (isMainWindow && !isMainRoute) {
@@ -154,6 +184,14 @@
       if (destroyed) fn();
       else unlistenInsightsOpenConversation = fn;
     });
+
+    // One-shot cold-start handoff drains. This `$effect` re-runs on every
+    // in-window navigation (it reads `$page.url.pathname` transitively), but the
+    // cold-window peek/drain below must run only once on mount — re-issuing them
+    // on later navigations would replay stale handoffs. Gate them behind a
+    // non-reactive flag set after the first run.
+    if (!coldDrainsDone) {
+      coldDrainsDone = true;
 
     // Cold-window inverse: a freshly-opened main window boots on Timeline (`/`),
     // and the live `insights_open_conversation` event may have already fired
@@ -182,10 +220,18 @@
         });
     }
 
+    // Cold-window Settings deeplink drain — owned by the settings-deeplink
+    // module, kept sequenced after the insights peek under this same one-shot
+    // gate. `() => !destroyed` mirrors the inline `destroyed` bail the drain made
+    // inside its resolved `.then` (this run's cleanup flips `destroyed`).
+    settingsDeeplink.drainColdWindow(() => !destroyed);
+    }
+
     return () => {
       destroyed = true;
       unlistenBrokerOpenCaptureResult?.();
       unlistenInsightsOpenConversation?.();
+      unlistenOpenSettingsTab();
     };
   });
 
@@ -204,8 +250,12 @@
   // Non-gated routes always render immediately.
   const showChildren = $derived(!isDebug || (devLoaded && devEnabled));
 
-  // Routes that want a centered, padded reading column.
-  const isNarrow = $derived(isOnboarding || isSettings || isDebug);
+  // Routes that want a centered, padded reading column. Settings is excluded:
+  // it renders full-bleed inside the Main window with its own sidebar shell.
+  // Onboarding is excluded too (Slice 3): the accordion shell fills the window
+  // and owns its own scroll region — the narrow column's max-width/padding would
+  // shrink it and break the shell's `height:100%` fill.
+  const isNarrow = $derived(isDebug);
   const notificationCount = $derived(appNotifications.count);
   const hasNotifications = $derived(notificationCount > 0);
 
@@ -215,7 +265,7 @@
 
   async function runNotificationAction(notification: AppNotification): Promise<void> {
     if (notification.action?.type === "open_settings_tab") {
-      await openSettingsWindow(notification.action.tab);
+      await openSettings(notification.action.tab);
       await clearAppNotification(notification.id);
       notificationsOpen = false;
     }
@@ -224,7 +274,9 @@
   function notificationActionLabel(notification: AppNotification): string {
     if (notification.action?.type !== "open_settings_tab") return "Open";
     if (notification.action.tab === "about") return "Open update settings";
-    if (notification.action.tab === "processing") return "Open processing settings";
+    if (notification.action.tab === "processing") return "Open OCR settings";
+    if (notification.action.tab === "transcription") return "Open transcription settings";
+    if (notification.action.tab === "speakers") return "Open speaker settings";
     if (notification.action.tab === "shortcuts") return "Open shortcut settings";
     return "Open settings";
   }
@@ -632,7 +684,7 @@
     }
 
     if (action.type === "openSettings") {
-      void openSettingsWindow();
+      void openSettings();
       return;
     }
 
@@ -703,7 +755,7 @@
 
 <div
   class="app-shell"
-  class:app-shell--bounded={isMainSurfaceRoute}
+  class:app-shell--bounded={isMainSurfaceRoute || isSettingsRoute}
   class:app-shell--dedicated={showDedicatedTitlebar}
   class:app-shell--macos={showDedicatedTitlebar && windowPlatform === "macos"}
   class:app-shell--windows={showDedicatedTitlebar && windowPlatform === "windows"}
@@ -1026,9 +1078,11 @@
         <button
           type="button"
           class="titlebar__settings"
+          class:active={isSettings}
           aria-label="Open settings"
+          aria-current={isSettings ? "page" : undefined}
           title={`Settings (${shortcutDisplay("openSettings")})`}
-          onclick={() => void openSettingsWindow()}
+          onclick={() => void openSettings()}
         >
           <svg
             class="titlebar__settings-icon"
@@ -1116,7 +1170,7 @@
   </header>
   {/if}
 
-  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface}>
+  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface} class:app-content--settings={isSettingsRoute && !showDedicatedTitlebar}>
     {#if showChildren}
       {@render children()}
     {/if}
@@ -1540,6 +1594,16 @@
   :global([contenteditable]) {
     user-select: text;
     -webkit-user-select: text;
+  }
+
+  /* Themed text selection. Without this WebKit falls back to its default
+     highlight, which clashes with the terminal chrome — faint text (e.g. an
+     install path) selected against it read as an unreadable wash. A translucent
+     accent highlight with forced-strong text stays on-brand and legible in both
+     themes. */
+  :global(::selection) {
+    background: color-mix(in srgb, var(--app-accent) 28%, transparent);
+    color: var(--app-text-strong);
   }
 
   :global(body.dedicated-surface-window) {
@@ -2083,6 +2147,11 @@
     color: var(--app-icon-fg-hover);
     border-color: var(--app-icon-border-hover);
   }
+  .titlebar__settings.active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
   .titlebar__settings-icon {
     display: block;
     flex: 0 0 auto;
@@ -2242,6 +2311,16 @@
     min-height: 100vh;
     min-height: 100dvh;
     background: transparent;
+  }
+
+  /* Settings rendered inside the Main window, below the persistent top nav (the
+     Main titlebar). The titlebar already reserves space for the native overlay
+     traffic lights, so no top inset is needed here — just a small gap under the
+     bar. Full-bleed otherwise (the settings shell owns its own scroll region). */
+  .app-content--settings {
+    background: var(--app-bg);
+    overflow: hidden;
+    padding: 8px 20px 0;
   }
 
   .app-shell--dedicated {

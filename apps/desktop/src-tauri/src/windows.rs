@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -44,19 +45,32 @@ static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static MACOS_TERMINATE_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct OpenSettingsTabPayload {
-    tab: String,
+pub(crate) struct OpenSettingsTabPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tab: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus: Option<String>,
+}
+
+/// Pending Settings deeplink(s) for a cold main window. Mirrors
+/// `InsightsOpenConversationState` in `lib.rs`: the live `open_settings_tab`
+/// event drives a warm window, but a freshly-built (cold) main window hasn't
+/// attached its `listen("open_settings_tab")` yet (that registers in a
+/// `+layout.svelte` mount effect) and Tauri doesn't buffer events with no
+/// listener — so the cold-start tray "Open Settings" would be dropped and strand
+/// the user on Timeline. We queue the normalized payload here when Main had to be
+/// BUILT and the layout drains it on mount via `drain_pending_open_settings`.
+#[derive(Default)]
+pub struct PendingOpenSettingsState {
+    pending: Mutex<VecDeque<OpenSettingsTabPayload>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppWindow {
     Onboarding,
     Main,
-    Settings,
     CliAccessRequest,
     Debug,
     QuickRecall,
@@ -93,6 +107,30 @@ impl OnboardingState {
 
     pub(crate) fn is_complete(&self) -> bool {
         self.completed_at_unix_ms.is_some()
+    }
+}
+
+/// Command-only return shape for `get_onboarding_state`. Mirrors the persisted
+/// `OnboardingState` fields and adds `recording_settings_ever_saved` — a
+/// LIVE-COMPUTED, NON-PERSISTED signal (the existence of `recording-settings.json`
+/// on disk). It lives on a SEPARATE type so the persisted file shape
+/// (`OnboardingState`) stays unchanged: the computed flag is never written into
+/// `onboarding-state.json` and never required when deserializing existing files.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardingStateView {
+    schema_version: u32,
+    completed_at_unix_ms: Option<u64>,
+    recording_settings_ever_saved: bool,
+}
+
+impl OnboardingStateView {
+    fn from_state_and_disk(state: OnboardingState, recording_settings_ever_saved: bool) -> Self {
+        Self {
+            schema_version: state.schema_version,
+            completed_at_unix_ms: state.completed_at_unix_ms,
+            recording_settings_ever_saved,
+        }
     }
 }
 
@@ -159,8 +197,8 @@ impl AppWindow {
                 label: "onboarding",
                 path: "onboarding",
                 title: "mnema · Onboarding",
-                inner_size: (960.0, 800.0),
-                min_inner_size: (820.0, 620.0),
+                inner_size: (1120.0, 800.0),
+                min_inner_size: (920.0, 620.0),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
@@ -180,19 +218,6 @@ impl AppWindow {
                 transparent: false,
                 shadow: false,
                 macos_corner_radius: None,
-            },
-            Self::Settings => AppWindowConfig {
-                label: "settings",
-                path: "settings",
-                title: "mnema · Settings",
-                inner_size: (1040.0, 820.0),
-                min_inner_size: (820.0, 620.0),
-                gated_by_dev_options: false,
-                decorations: false,
-                overlay_title_bar: false,
-                transparent: true,
-                shadow: true,
-                macos_corner_radius: Some(12.0),
             },
             Self::CliAccessRequest => AppWindowConfig {
                 label: "cli-access-request",
@@ -240,7 +265,6 @@ impl AppWindow {
         match label {
             "onboarding" => Some(Self::Onboarding),
             "main" => Some(Self::Main),
-            "settings" => Some(Self::Settings),
             "cli-access-request" => Some(Self::CliAccessRequest),
             "debug" => Some(Self::Debug),
             "quick-recall" => Some(Self::QuickRecall),
@@ -406,11 +430,25 @@ fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
         "shortcuts" | "keyboard" | "keyboard-shortcuts" | "keyboard_bindings" => Some("shortcuts"),
         "video" => Some("video"),
         "audio" | "microphone" => Some("audio"),
-        "processing" | "ocr" | "transcription" | "speakers" => Some("processing"),
+        // Granular processing sub-tabs pass through so a notification targeting
+        // (e.g.) transcription lands on the transcription section instead of
+        // being collapsed to "processing" (which the page resolves to OCR).
+        "ocr" => Some("ocr"),
+        "transcription" => Some("transcription"),
+        "speakers" => Some("speakers"),
+        "semanticSearch" | "semantic-search" => Some("semanticSearch"),
+        // Legacy "processing" alias kept for back-compat (page maps it to OCR).
+        "processing" => Some("processing"),
         "storage" => Some("storage"),
         "appearance" => Some("appearance"),
         "developer" => Some("developer"),
-        "intelligence" | "reasoning" | "ai" | "user-context" => Some("intelligence"),
+        "intelligence" | "reasoning" | "reasoning-engine" | "ai" | "ai-runtime" => {
+            Some("intelligence")
+        }
+        // User Context has its own Intelligence-group section, so it deep-links
+        // 1:1 (the page resolves "userContext" to that section) rather than
+        // collapsing onto Providers.
+        "user-context" | "userContext" => Some("userContext"),
         _ => None,
     }
 }
@@ -427,6 +465,11 @@ fn normalize_settings_focus(focus: &str) -> Option<&'static str> {
     }
 }
 
+// Retained as the deeplink-contract guard (covered by tests below): proves the
+// alias→canonical normalization composes into a `/settings` route URL. The
+// runtime path now lives in the frontend (`settingsRoutePath` in
+// `surface-windows.ts`), so this is test-only.
+#[cfg(test)]
 fn settings_tab_focus_path(tab: &str, focus: Option<&str>) -> Result<String, String> {
     let normalized =
         normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
@@ -438,54 +481,82 @@ fn settings_tab_focus_path(tab: &str, focus: Option<&str>) -> Result<String, Str
     Ok(format!("/settings?tab={normalized}&focus={focus}"))
 }
 
-fn open_or_focus_settings_window_to_tab(
+// Settings now lives as the `/settings` route inside the Main window. Focus,
+// show, and unminimize the Main window (the same semantics `open_main_window`
+// would apply), then emit the `open_settings_tab` deeplink to it. The Main
+// layout listens for this and navigates to `/settings?tab=…&focus=…`; the
+// settings page reacts to the resulting URL query. Aliases are normalized here
+// so the emitted payload always carries canonical values. An unknown tab/focus
+// is dropped (the route falls back to its default tab) rather than erroring,
+// so a stale deeplink still lands on Settings.
+//
+// Cold-window handoff (mirrors `open_conversation_in_chat` in `lib.rs`): when the
+// Main window has to be BUILT (cold start from the tray / another window), its
+// freshly-loaded webview hasn't attached its `listen("open_settings_tab")` yet
+// (that registers in a `+layout.svelte` mount effect) and Tauri doesn't buffer
+// events with no listener — so a synchronous emit would be dropped and strand the
+// user on Timeline. We therefore queue the normalized payload into
+// `PendingOpenSettingsState` when (and only when) Main was cold; the layout
+// drains it on mount via `drain_pending_open_settings`. The WARM path (Main
+// already open) keeps emitting directly. We still emit on the cold path too, so a
+// webview that happens to attach before the drain is served by whichever fires
+// first; the drain is idempotent because it consumes the queue.
+fn focus_main_and_emit_open_settings(
     app: &tauri::AppHandle,
-    tab: &str,
+    pending: &PendingOpenSettingsState,
+    tab: Option<&str>,
     focus: Option<&str>,
 ) -> Result<(), String> {
-    let path = settings_tab_focus_path(tab, focus)?;
-    let config = AppWindow::Settings.config();
-    let tab = normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
-    let focus = match focus {
-        Some(value) => Some(
-            normalize_settings_focus(value)
-                .ok_or_else(|| format!("unknown settings focus: {value}"))?
-                .to_string(),
-        ),
-        None => None,
+    // Snapshot whether Main exists BEFORE opening, so we can tell a cold build
+    // apart from a warm focus. Only a cold build needs the pending queue; queuing
+    // on a warm window would leave the entry stranded (the page doesn't remount,
+    // so the drain never runs) and replay a stale deeplink on the next genuine
+    // mount.
+    let main_window_was_open = app
+        .get_webview_window(AppWindow::Main.config().label)
+        .is_some();
+
+    open_or_focus_window(app, AppWindow::Main, None)?;
+
+    let Some(main) = app.get_webview_window(AppWindow::Main.config().label) else {
+        return Err("main window unavailable".into());
     };
-    let payload = OpenSettingsTabPayload {
-        tab: tab.to_string(),
-        focus,
-    };
 
-    if let Some(existing) = app.get_webview_window(config.label) {
-        show_and_focus_window(&existing);
-        existing
-            .emit(OPEN_SETTINGS_TAB_EVENT, payload)
-            .map_err(|err| err.to_string())?;
-        return Ok(());
+    let payload = normalized_open_settings_payload(tab, focus);
+    enqueue_cold_open_settings(pending, &payload, main_window_was_open);
+
+    main.emit(OPEN_SETTINGS_TAB_EVENT, payload)
+        .map_err(|err| err.to_string())
+}
+
+/// Normalize tab/focus aliases into the canonical `open_settings_tab` payload.
+/// Unknown values are dropped (the settings route falls back to its default tab)
+/// rather than erroring, so a stale deeplink still lands on Settings.
+fn normalized_open_settings_payload(
+    tab: Option<&str>,
+    focus: Option<&str>,
+) -> OpenSettingsTabPayload {
+    OpenSettingsTabPayload {
+        tab: tab.and_then(normalize_settings_tab).map(str::to_string),
+        focus: focus.and_then(normalize_settings_focus).map(str::to_string),
     }
+}
 
-    let mut builder = WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(path.into()));
-    builder = builder
-        .title(config.title)
-        .inner_size(config.inner_size.0, config.inner_size.1)
-        .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
-        .decorations(config.decorations)
-        .transparent(config.transparent)
-        .shadow(config.shadow);
-
-    let built = builder.build().map_err(|err| err.to_string())?;
-
-    #[cfg(target_os = "macos")]
-    if let Some(radius) = config.macos_corner_radius {
-        apply_macos_rounded_content_view(&built, radius);
+/// Queue a normalized Settings deeplink for the cold-window mount drain — but
+/// ONLY when Main had to be built (`main_window_was_open == false`). Queuing on a
+/// warm window would strand the entry (the page doesn't remount, so the drain
+/// never runs) and replay a stale deeplink on the next genuine mount.
+fn enqueue_cold_open_settings(
+    pending: &PendingOpenSettingsState,
+    payload: &OpenSettingsTabPayload,
+    main_window_was_open: bool,
+) {
+    if main_window_was_open {
+        return;
     }
-
-    show_and_focus_window(&built);
-
-    Ok(())
+    if let Ok(mut queue) = pending.pending.lock() {
+        queue.push_back(payload.clone());
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1050,7 +1121,7 @@ pub(crate) fn is_final_graceful_exit_ready(app: &tauri::AppHandle) -> bool {
 fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
-        Some(AppWindow::Settings | AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
+        Some(AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
         Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall) => DestroyedWindowAction::None,
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
@@ -1069,10 +1140,7 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
             Ok(())
         }
         Some(
-            AppWindow::Onboarding
-            | AppWindow::Settings
-            | AppWindow::CliAccessRequest
-            | AppWindow::Debug,
+            AppWindow::Onboarding | AppWindow::CliAccessRequest | AppWindow::Debug,
         ) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
         None => window.close().map_err(|err| err.to_string()),
@@ -1080,10 +1148,7 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 fn close_window_focuses_main_before_close(label: &str) -> bool {
-    matches!(
-        AppWindow::from_label(label),
-        Some(AppWindow::Settings | AppWindow::Debug)
-    )
+    matches!(AppWindow::from_label(label), Some(AppWindow::Debug))
 }
 
 pub fn handle_window_event(
@@ -1156,22 +1221,50 @@ pub(crate) fn is_onboarding_complete(app: &tauri::AppHandle) -> bool {
     current_onboarding_state(app, store.inner()).is_complete()
 }
 
+/// Focus the Main window and ask it to open the `/settings` route. Settings is
+/// no longer a dedicated window; callers outside the Main window (the tray,
+/// Quick Recall, …) invoke this so Rust focuses Main and emits the
+/// `open_settings_tab` deeplink that the Main layout turns into a `/settings`
+/// navigation. `tab`/`focus` are optional aliases, normalized before emit. A cold
+/// start that has to BUILD Main also queues the normalized payload into
+/// `PendingOpenSettingsState` so the layout's on-mount drain still lands the
+/// deeplink even though the live event fires before the listener attaches.
+///
+/// The managed pending state is resolved from `app` rather than taken as a
+/// `tauri::State` parameter so this stays directly callable from Rust — the tray's
+/// "Open Settings" handler (`status_bar.rs`) invokes it with an `AppHandle`, not
+/// over IPC. (That tray path is the very cold-start case the pending queue
+/// fixes.)
 #[tauri::command]
-pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    open_or_focus_window(&app, AppWindow::Settings, None)
+pub fn focus_main_and_open_settings(
+    app: tauri::AppHandle,
+    tab: Option<String>,
+    focus: Option<String>,
+) -> Result<(), String> {
+    let pending = app.state::<PendingOpenSettingsState>();
+    focus_main_and_emit_open_settings(&app, pending.inner(), tab.as_deref(), focus.as_deref())
+}
+
+/// Drain any queued Settings deeplink(s) for a cold main window. The Main layout
+/// calls this once on mount: a freshly-built main window boots on Timeline and
+/// the live `open_settings_tab` event may have already fired before the layout's
+/// listener attached, so the queued payload is the only way the cold-start tray
+/// "Open Settings" reaches `/settings`. Mirrors
+/// `drain_pending_insights_open_conversations` in `lib.rs`. Returns the queued
+/// payloads (normally at most one) in arrival order; an empty vec means nothing
+/// was pending (warm window, or the lock was poisoned).
+#[tauri::command]
+pub fn drain_pending_open_settings(
+    pending: tauri::State<'_, PendingOpenSettingsState>,
+) -> Vec<OpenSettingsTabPayload> {
+    let Ok(mut queue) = pending.pending.lock() else {
+        return Vec::new();
+    };
+    queue.drain(..).collect()
 }
 
 pub(crate) fn open_cli_access_request_window(app: &tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(app, AppWindow::CliAccessRequest, None)
-}
-
-#[tauri::command]
-pub fn open_settings_window_to_tab(
-    app: tauri::AppHandle,
-    tab: String,
-    focus: Option<String>,
-) -> Result<(), String> {
-    open_or_focus_settings_window_to_tab(&app, &tab, focus.as_deref())
 }
 
 #[tauri::command]
@@ -1225,8 +1318,17 @@ pub fn toggle_main_window_visibility_command(app: tauri::AppHandle) {
 pub fn get_onboarding_state(
     app: tauri::AppHandle,
     state: tauri::State<'_, OnboardingStateStore>,
-) -> OnboardingState {
-    current_onboarding_state(&app, state.inner())
+) -> OnboardingStateView {
+    // `recording-settings.json` is written ONLY by explicit user saves (never at
+    // install/startup), so its existence == "the user has saved settings at least
+    // once" == returning user. It must be read LIVE per call (NOT cached in
+    // OnboardingStateStore) so a save performed between two onboarding entries in
+    // one process lifetime is visible. Use the same path resolver saves land in.
+    let ever_saved = crate::native_capture::settings::recording_settings_file_path(&app).exists();
+    OnboardingStateView::from_state_and_disk(
+        current_onboarding_state(&app, state.inner()),
+        ever_saved,
+    )
 }
 
 #[tauri::command]
@@ -1248,21 +1350,31 @@ pub fn complete_onboarding(
 #[cfg(test)]
 mod tests {
     use super::{
-        close_window_focuses_main_before_close, destroyed_window_action, is_known_settings_tab,
-        load_onboarding_state_from_path, normalize_settings_focus, normalize_settings_tab,
-        settings_tab_focus_path, AppExitCoordinatorState, DestroyedWindowAction,
+        close_window_focuses_main_before_close, destroyed_window_action, enqueue_cold_open_settings,
+        is_known_settings_tab, load_onboarding_state_from_path, normalize_settings_focus,
+        normalize_settings_tab, normalized_open_settings_payload, settings_tab_focus_path,
+        AppExitCoordinatorState, DestroyedWindowAction, OnboardingState, OnboardingStateView,
+        OpenSettingsTabPayload, PendingOpenSettingsState,
     };
 
     #[test]
     fn secondary_window_destruction_refocuses_main_window() {
         assert_eq!(
-            destroyed_window_action("settings"),
-            DestroyedWindowAction::FocusMainWindow
-        );
-        assert_eq!(
             destroyed_window_action("debug"),
             DestroyedWindowAction::FocusMainWindow
         );
+    }
+
+    #[test]
+    fn settings_is_no_longer_a_known_window_label() {
+        // Settings folded into the `/settings` route inside the Main window, so
+        // the dedicated `settings` window label no longer maps to any AppWindow
+        // and its destruction has no window-level side effect.
+        assert_eq!(
+            destroyed_window_action("settings"),
+            DestroyedWindowAction::None
+        );
+        assert!(!close_window_focuses_main_before_close("settings"));
     }
 
     #[test]
@@ -1275,7 +1387,6 @@ mod tests {
 
     #[test]
     fn cli_access_request_close_command_does_not_refocus_main_window() {
-        assert!(close_window_focuses_main_before_close("settings"));
         assert!(close_window_focuses_main_before_close("debug"));
         assert!(!close_window_focuses_main_before_close(
             "cli-access-request"
@@ -1369,9 +1480,13 @@ mod tests {
 
     #[test]
     fn settings_tab_aliases_normalize_to_canonical_tabs() {
-        assert_eq!(normalize_settings_tab("ocr"), Some("processing"));
-        assert_eq!(normalize_settings_tab("transcription"), Some("processing"));
-        assert_eq!(normalize_settings_tab("speakers"), Some("processing"));
+        // Granular processing sub-tabs pass through (no longer collapsed to
+        // "processing") so notifications can target a specific section.
+        assert_eq!(normalize_settings_tab("ocr"), Some("ocr"));
+        assert_eq!(normalize_settings_tab("transcription"), Some("transcription"));
+        assert_eq!(normalize_settings_tab("speakers"), Some("speakers"));
+        // Legacy "processing" alias is still accepted for back-compat.
+        assert_eq!(normalize_settings_tab("processing"), Some("processing"));
         assert_eq!(normalize_settings_tab("microphone"), Some("audio"));
         assert_eq!(normalize_settings_tab("behavior"), Some("capture"));
         assert_eq!(normalize_settings_tab("metadata"), Some("privacy"));
@@ -1388,8 +1503,24 @@ mod tests {
         assert_eq!(normalize_settings_tab("about"), Some("about"));
         assert_eq!(normalize_settings_tab("intelligence"), Some("intelligence"));
         assert_eq!(normalize_settings_tab("reasoning"), Some("intelligence"));
+        assert_eq!(
+            normalize_settings_tab("reasoning-engine"),
+            Some("intelligence")
+        );
         assert_eq!(normalize_settings_tab("ai"), Some("intelligence"));
-        assert_eq!(normalize_settings_tab("user-context"), Some("intelligence"));
+        assert_eq!(normalize_settings_tab("ai-runtime"), Some("intelligence"));
+        // User Context and Semantic Search deep-link 1:1 to their own sections
+        // rather than collapsing onto Providers / OCR.
+        assert_eq!(normalize_settings_tab("user-context"), Some("userContext"));
+        assert_eq!(normalize_settings_tab("userContext"), Some("userContext"));
+        assert_eq!(
+            normalize_settings_tab("semanticSearch"),
+            Some("semanticSearch")
+        );
+        assert_eq!(
+            normalize_settings_tab("semantic-search"),
+            Some("semanticSearch")
+        );
     }
 
     #[test]
@@ -1405,7 +1536,7 @@ mod tests {
     fn settings_tab_deeplink_path_targets_canonical_tab() {
         assert_eq!(
             settings_tab_focus_path("transcription", None).as_deref(),
-            Ok("/settings?tab=processing")
+            Ok("/settings?tab=transcription")
         );
         assert_eq!(
             settings_tab_focus_path("audio", None).as_deref(),
@@ -1436,6 +1567,45 @@ mod tests {
     }
 
     #[test]
+    fn open_settings_payload_normalizes_aliases() {
+        let payload = normalized_open_settings_payload(Some("ocr"), Some("agent-access"));
+        assert_eq!(payload.tab.as_deref(), Some("ocr"));
+        assert_eq!(payload.focus.as_deref(), Some("cliAccess"));
+
+        // Unknown values are dropped, not errored, so a stale deeplink still lands
+        // on Settings (the route falls back to its default tab).
+        let dropped = normalized_open_settings_payload(Some("transcripts"), Some("nope"));
+        assert_eq!(dropped, OpenSettingsTabPayload::default());
+    }
+
+    #[test]
+    fn cold_open_settings_is_queued_for_the_mount_drain() {
+        // A cold-start tray "Open Settings" has to BUILD the main window, whose
+        // fresh webview hasn't attached its `open_settings_tab` listener yet — so
+        // the payload must be queued for the on-mount drain.
+        let pending = PendingOpenSettingsState::default();
+        let payload = normalized_open_settings_payload(Some("privacy"), None);
+
+        enqueue_cold_open_settings(&pending, &payload, /* main_window_was_open */ false);
+
+        let queued: Vec<_> = pending.pending.lock().unwrap().drain(..).collect();
+        assert_eq!(queued, vec![payload]);
+    }
+
+    #[test]
+    fn warm_open_settings_is_not_queued() {
+        // A warm window is served by the live event alone; queuing here would
+        // strand the entry (the page doesn't remount) and replay a stale deeplink
+        // on the next genuine mount.
+        let pending = PendingOpenSettingsState::default();
+        let payload = normalized_open_settings_payload(Some("privacy"), None);
+
+        enqueue_cold_open_settings(&pending, &payload, /* main_window_was_open */ true);
+
+        assert!(pending.pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn missing_onboarding_state_is_incomplete() {
         let path = std::env::temp_dir().join(format!(
             "mnema-missing-onboarding-state-{}.json",
@@ -1443,6 +1613,34 @@ mod tests {
         ));
 
         assert!(!load_onboarding_state_from_path(path).is_complete());
+    }
+
+    #[test]
+    fn onboarding_state_view_serializes_recording_settings_ever_saved_in_camel_case() {
+        let view = OnboardingStateView::from_state_and_disk(
+            OnboardingState {
+                schema_version: 1,
+                completed_at_unix_ms: Some(42),
+            },
+            true,
+        );
+        let json = serde_json::to_value(&view).expect("view serializes");
+        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["completedAtUnixMs"], 42);
+        assert_eq!(json["recordingSettingsEverSaved"], true);
+    }
+
+    #[test]
+    fn onboarding_state_view_carries_ever_saved_signal_independently() {
+        // The signal is independent of completion: a not-yet-completed onboarding
+        // can still report a returning user (settings saved), and vice versa.
+        let returning = OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), true);
+        assert!(returning.recording_settings_ever_saved);
+        assert_eq!(returning.completed_at_unix_ms, None);
+
+        let first_run =
+            OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), false);
+        assert!(!first_run.recording_settings_ever_saved);
     }
 
     #[test]

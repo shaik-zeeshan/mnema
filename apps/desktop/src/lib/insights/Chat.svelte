@@ -30,7 +30,7 @@
   import { onMount, onDestroy, tick, untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { openSettingsWindow } from "$lib/surface-windows";
+  import { openSettings } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { askAiClock } from "$lib/askAiClock";
   import { appIconFallback } from "$lib/app-privacy-exclusion";
@@ -86,7 +86,7 @@
   }
 
   function enableEngine(): void {
-    void openSettingsWindow("intelligence");
+    void openSettings("intelligence");
   }
 
   // ── History list (left rail) ─────────────────────────────────────────────
