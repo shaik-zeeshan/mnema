@@ -1,7 +1,20 @@
 <script lang="ts">
+  import type { Component } from "svelte";
   import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import IconMonitor from "~icons/lucide/monitor";
+  import IconMic from "~icons/lucide/mic";
+  import IconVolume2 from "~icons/lucide/volume-2";
+
+  // Monochrome Lucide glyphs per capture-source family (inherit currentColor,
+  // sized via the host span's font-size). Replaces full-colour emoji that
+  // clashed with the theme.
+  const SOURCE_ICONS: Record<"screen" | "microphone" | "systemAudio", Component> = {
+    screen: IconMonitor,
+    microphone: IconMic,
+    systemAudio: IconVolume2,
+  };
   import type {
     CaptureSupport,
     CaptureSession,
@@ -175,6 +188,51 @@
     }
   }
 
+  // Per-button loading flags for the manual ↻ refresh controls. The underlying
+  // fetch fns are also driven by polling/effects, so each button owns its own
+  // flag (set in try/finally) rather than reading a shared one — polling won't
+  // flicker the button, and the button disables only itself while in flight.
+  let loadingRuntimeSources = $state(false);
+  let loadingPrivacyFilter = $state(false);
+  let loadingInactivity = $state(false);
+  let loadingOcrBudget = $state(false);
+
+  async function refreshRuntimeSources() {
+    loadingRuntimeSources = true;
+    try {
+      await Promise.all([fetchIdleDebug(), fetchCapturePrivacyDebug()]);
+    } finally {
+      loadingRuntimeSources = false;
+    }
+  }
+
+  async function refreshPrivacyFilter() {
+    loadingPrivacyFilter = true;
+    try {
+      await fetchCapturePrivacyDebug();
+    } finally {
+      loadingPrivacyFilter = false;
+    }
+  }
+
+  async function refreshInactivity() {
+    loadingInactivity = true;
+    try {
+      await fetchIdleDebug();
+    } finally {
+      loadingInactivity = false;
+    }
+  }
+
+  async function refreshOcrBudget() {
+    loadingOcrBudget = true;
+    try {
+      await fetchOcrBudgetDebug();
+    } finally {
+      loadingOcrBudget = false;
+    }
+  }
+
   function formatDebugList(values: Array<string | number> | null | undefined): string {
     if (!values || values.length === 0) return "none";
     return values.join(", ");
@@ -249,7 +307,6 @@
   type RuntimeSourceLane = {
     key: "screen" | "microphone" | "systemAudio";
     label: string;
-    glyph: string;
     sample: { lastUnixMs: number | null; idleMs: number | null; level: number | null } | null;
     qualifiedIdleMs: number | null;
     qualifiedThreshold: number | null;
@@ -261,7 +318,6 @@
           {
             key: "screen",
             label: "Screen",
-            glyph: "◉",
             sample: idleDebug.screenActivityLastUnixMs != null
               ? { lastUnixMs: idleDebug.screenActivityLastUnixMs, idleMs: idleDebug.screenActivityIdleMs, level: null }
               : null,
@@ -271,7 +327,6 @@
           {
             key: "microphone",
             label: "Microphone",
-            glyph: "🎙",
             sample: { lastUnixMs: idleDebug.microphoneActivitySample.lastUnixMs, idleMs: null, level: idleDebug.microphoneActivitySample.level },
             qualifiedIdleMs: idleDebug.microphoneActivityDecision.idleMs,
             qualifiedThreshold: idleDebug.microphoneActivityDecision.activityThreshold,
@@ -279,7 +334,6 @@
           {
             key: "systemAudio",
             label: "System Audio",
-            glyph: "🔊",
             sample: { lastUnixMs: idleDebug.systemAudioActivitySample.lastUnixMs, idleMs: null, level: idleDebug.systemAudioActivitySample.level },
             qualifiedIdleMs: idleDebug.systemAudioActivityDecision.idleMs,
             qualifiedThreshold: idleDebug.systemAudioActivityDecision.activityThreshold,
@@ -1106,27 +1160,26 @@
     return out.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "err" ? -1 : 1));
   });
 
-  type OverviewSource = { key: CaptureSource; label: string; glyph: string; word: string; cls: string };
+  type OverviewSource = { key: CaptureSource; label: string; word: string; cls: string };
 
   // While recording, each source reflects its live runtime state (running /
   // paused / idle / off); while stopped, it reflects whether it is selected for
   // the next session. Mirrors the title bar's per-source pills.
   const overviewSources = $derived.by<OverviewSource[]>(() => {
     const defs = [
-      { key: "screen", label: "Screen", glyph: "◉", selected: recordingSettings?.captureScreen ?? false },
-      { key: "microphone", label: "Microphone", glyph: "🎙", selected: recordingSettings?.captureMicrophone ?? false },
-      { key: "systemAudio", label: "System audio", glyph: "🔊", selected: recordingSettings?.captureSystemAudio ?? false },
+      { key: "screen", label: "Screen", selected: recordingSettings?.captureScreen ?? false },
+      { key: "microphone", label: "Microphone", selected: recordingSettings?.captureMicrophone ?? false },
+      { key: "systemAudio", label: "System audio", selected: recordingSettings?.captureSystemAudio ?? false },
     ] as const;
     const rs = idleDebug?.runtimeSources;
     return defs.map((d) => {
       if (isCapturing && rs) {
         const state = runtimeStateWord(rs[d.key]);
-        return { key: d.key, label: d.label, glyph: d.glyph, word: state.word, cls: state.cls };
+        return { key: d.key, label: d.label, word: state.word, cls: state.cls };
       }
       return {
         key: d.key,
         label: d.label,
-        glyph: d.glyph,
         word: d.selected ? "selected" : "off",
         cls: d.selected ? "rs-state rs-state--partial" : "rs-state rs-state--off",
       };
@@ -1257,8 +1310,9 @@
       <div class="ov-tile__label">Sources <span class="idle-note">{isCapturing ? "live" : "selected"}</span></div>
       <ul class="ov-rows">
         {#each overviewSources as src (src.key)}
+          {@const SourceIcon = SOURCE_ICONS[src.key]}
           <li class="ov-row">
-            <span class="ov-row__glyph" aria-hidden="true">{src.glyph}</span>
+            <span class="ov-row__glyph" aria-hidden="true"><SourceIcon /></span>
             <span class="ov-row__name">{src.label}</span>
             <span class={src.cls}>{src.word}</span>
           </li>
@@ -1435,7 +1489,14 @@
     <span class="debug-tag">dbg</span>
     Runtime Sources
     <span class="idle-note">capture session · writer · activity</span>
-    <button class="btn btn--ghost btn--sm" onclick={() => { fetchIdleDebug(); fetchCapturePrivacyDebug(); }}>↻</button>
+    <button
+      class="btn btn--ghost btn--sm"
+      onclick={refreshRuntimeSources}
+      disabled={loadingRuntimeSources}
+      aria-label="Refresh runtime sources"
+    >
+      {loadingRuntimeSources ? "…" : "↻"}
+    </button>
   </h2>
 
   {#if idleDebug && idleDebug.runtimeSources}
@@ -1443,6 +1504,7 @@
       {#each runtimeLanes as lane (lane.key)}
         {@const src = idleDebug.runtimeSources[lane.key]}
         {@const state = runtimeStateWord(src)}
+        {@const LaneIcon = SOURCE_ICONS[lane.key]}
         <article
           class="rs-lane rs-lane--{lane.key}"
           class:rs-lane--off={!src.requested}
@@ -1450,7 +1512,7 @@
           class:rs-lane--running={src.requested && !src.paused && src.writerActive === true}
         >
           <header class="rs-lane__head">
-            <span class="rs-lane__glyph">{lane.glyph}</span>
+            <span class="rs-lane__glyph" aria-hidden="true"><LaneIcon /></span>
             <span class="rs-lane__name">{lane.label}</span>
             <span class={state.cls}>{state.word}</span>
           </header>
@@ -1556,7 +1618,14 @@
     <span class="debug-tag">dbg</span>
     Privacy Filter
     <span class="idle-note">last successfully applied ScreenCaptureKit exclusions</span>
-    <button class="btn btn--ghost btn--sm" onclick={fetchCapturePrivacyDebug}>↻</button>
+    <button
+      class="btn btn--ghost btn--sm"
+      onclick={refreshPrivacyFilter}
+      disabled={loadingPrivacyFilter}
+      aria-label="Refresh privacy filter"
+    >
+      {loadingPrivacyFilter ? "…" : "↻"}
+    </button>
   </h2>
 
   {#if privacyDebugError}
@@ -1748,7 +1817,14 @@
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Inactivity Policy
-    <button class="btn btn--ghost btn--sm" onclick={fetchIdleDebug}>↻</button>
+    <button
+      class="btn btn--ghost btn--sm"
+      onclick={refreshInactivity}
+      disabled={loadingInactivity}
+      aria-label="Refresh inactivity policy"
+    >
+      {loadingInactivity ? "…" : "↻"}
+    </button>
   </h2>
 
   {#if idleDebugError}
@@ -1827,7 +1903,7 @@
       <!-- Screen detector -->
       <div class="detector-card detector-card--screen" class:detector-card--paused={idleDebug.screenPaused}>
         <div class="detector-card__header">
-          <span class="detector-card__icon">◉</span>
+          <span class="detector-card__icon" aria-hidden="true"><IconMonitor /></span>
           <span class="detector-card__name">Screen</span>
           {#if idleDebug.screenPaused}
             <span class="badge badge--warn badge--sm">paused</span>
@@ -1850,7 +1926,7 @@
       <!-- Microphone detector -->
       <div class="detector-card detector-card--mic" class:detector-card--paused={idleDebug.microphonePaused && idleDebug.microphoneActivityDecision.enabled} class:detector-card--off={!idleDebug.microphoneActivityDecision.enabled}>
         <div class="detector-card__header">
-          <span class="detector-card__icon">🎙</span>
+          <span class="detector-card__icon" aria-hidden="true"><IconMic /></span>
           <span class="detector-card__name">Microphone</span>
           {#if !idleDebug.microphoneActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
@@ -1887,7 +1963,7 @@
       <!-- System audio detector -->
       <div class="detector-card detector-card--sysaudio" class:detector-card--paused={idleDebug.systemAudioPaused && idleDebug.systemAudioActivityDecision.enabled} class:detector-card--off={!idleDebug.systemAudioActivityDecision.enabled}>
         <div class="detector-card__header">
-          <span class="detector-card__icon">🔊</span>
+          <span class="detector-card__icon" aria-hidden="true"><IconVolume2 /></span>
           <span class="detector-card__name">System Audio</span>
           {#if !idleDebug.systemAudioActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
@@ -2030,8 +2106,13 @@
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     OCR Budget
-    <button class="btn btn--ghost btn--sm card__title-action" onclick={fetchOcrBudgetDebug}>
-      ↻
+    <button
+      class="btn btn--ghost btn--sm card__title-action"
+      onclick={refreshOcrBudget}
+      disabled={loadingOcrBudget}
+      aria-label="Refresh OCR budget"
+    >
+      {loadingOcrBudget ? "…" : "↻"}
     </button>
   </h2>
 
@@ -2367,6 +2448,7 @@
         class="btn btn--ghost btn--sm"
         onclick={refreshSelectedJob}
         disabled={loadingSelectedJob}
+        aria-label="Refresh selected job"
         style="margin-left: 6px;"
       >
         {loadingSelectedJob ? "…" : "↻"}
@@ -2662,6 +2744,12 @@
     color: var(--app-text);
   }
 
+  .advanced__summary:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 3px;
+  }
+
   /* ── Session status ─────────────────────────────────────────── */
   .session-status {
     display: flex;
@@ -2952,7 +3040,7 @@
 
   /* ── Misc ───────────────────────────────────────────────────── */
   .empty {
-    color: var(--app-text-faint);
+    color: var(--app-text-muted);
     font-size: 11px;
     font-style: italic;
   }
@@ -3072,6 +3160,13 @@
   .detector-card__icon {
     font-size: 11px;
     flex-shrink: 0;
+    display: inline-flex;
+    color: var(--app-text-muted);
+  }
+
+  .detector-card__icon :global(svg) {
+    width: 1em;
+    height: 1em;
   }
 
   .detector-card__name {
@@ -3360,6 +3455,12 @@
     border-color: var(--app-info-border);
   }
 
+  .job-row:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-color: var(--app-accent);
+  }
+
   .job-row__id {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 9px;
@@ -3460,6 +3561,12 @@
     font-size: 12px;
     line-height: 1;
     flex-shrink: 0;
+    display: inline-flex;
+  }
+
+  .rs-lane__glyph :global(svg) {
+    width: 1em;
+    height: 1em;
   }
 
   .rs-lane__name {
@@ -3838,6 +3945,14 @@
     font-size: 11px;
     line-height: 1;
     text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .ov-row__glyph :global(svg) {
+    width: 1em;
+    height: 1em;
   }
 
   .ov-row__name {
