@@ -470,7 +470,19 @@ fn is_token_shaped(segment: &str) -> bool {
 /// `+`. A single such separator no longer splits the token (the old
 /// `is_single_run` bug, where `ABCdef-123_GHIjkl` read as a non-token).
 fn is_opaque_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '+')
+    // The base64url / token separators PLUS the remaining RFC-3986 path
+    // sub-delimiters and `:`/`@` pchars that the `url` crate keeps verbatim in
+    // `path()`. Counting these as part of one opaque run is what stops a single
+    // such char from bailing the backstop scan and leaking a mixed-class token
+    // whole (e.g. `AbC9xK2m@P4qR7sT0`). `;` `=` `%2F` are deliberately EXCLUDED
+    // (split into sub-parts by `split_encoded_slash`); `%` is excluded so
+    // percent-encoded readable content (`Hello%20World`) is not mis-read as one
+    // opaque token and over-redacted.
+    c.is_ascii_alphanumeric()
+        || matches!(
+            c,
+            '-' | '_' | '.' | '~' | '+' | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | ',' | '@' | ':'
+        )
 }
 
 /// High-entropy backstop candidate test. Redact a segment when it is an opaque
@@ -819,6 +831,39 @@ mod tests {
     fn other_schemes_return_none() {
         assert_eq!(guard("ftp://example.com/file"), None);
         assert_eq!(guard("mailto:someone@example.com"), None);
+    }
+
+    // REGRESSION (deep-review finding): a mixed-class opaque token carrying ONE
+    // RFC-3986 path sub-delimiter / pchar (`@ : , ! $ & ' ( ) *`) — chars the
+    // `url` crate keeps verbatim in `path()` — bailed the backstop's opaque-char
+    // scan and leaked the WHOLE token to the cloud model. No armed predecessor
+    // (bare `/s/` carrier), so only the backstop could catch it. The module
+    // header CLAIMS mixed-class opaque tokens are redacted and "a single such
+    // separator must NOT take the token out of scope" — these chars were the
+    // gap. Each must now redact.
+    #[test]
+    fn subdelim_broken_opaque_token_is_redacted_by_backstop() {
+        for raw in [
+            "https://app.com/s/AbC9xK2mP4qR@7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR:7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR,7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR!7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR$7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR&7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR'7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR(7sT0xyz)",
+            "https://app.com/s/AbC9xK2mP4qR*7sT0xyz",
+        ] {
+            let out = guard(raw).unwrap();
+            assert!(
+                out.contains(ARMED_TOKEN_PLACEHOLDER),
+                "sub-delim-broken mixed-class opaque token must redact: raw={raw} out={out}"
+            );
+            assert!(
+                !out.contains("AbC9xK2mP4qR"),
+                "the token must not leak: raw={raw} out={out}"
+            );
+        }
     }
 
     #[test]

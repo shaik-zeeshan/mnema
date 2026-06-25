@@ -3664,6 +3664,90 @@ mod tests {
         frame.id
     }
 
+    // REGRESSION (deep-review finding): one corrupt/legacy `snapshot_json` row
+    // must NOT make the batched `get_frame_metadata_snapshots` fail the WHOLE
+    // load. The broker timeline batch-loads every interval's representative-frame
+    // snapshot through this loader; with `serde_json::from_str(&json)?` a single
+    // present-but-malformed snapshot `?`-propagated and errored the entire
+    // interactive timeline page (up to MAX_SEARCH_LIMIT intervals), dropping
+    // every other interval's URL too. The loader's own doc says only frames with
+    // NO snapshot are absent from the map — a corrupt snapshot must degrade the
+    // SAME way (frame absent, URL None), not poison the page.
+    #[test]
+    fn get_frame_metadata_snapshots_skips_corrupt_row_instead_of_failing_page() {
+        run_async_test(async {
+            let save_dir = temp_save_dir("snapshot-corrupt-skip");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            let snapshot = |title: &str, url: &str| {
+                capture_metadata::FrameMetadataSnapshot {
+                    app_bundle_id: Some("com.google.Chrome".to_string()),
+                    app_name: Some("Google Chrome".to_string()),
+                    window_title: Some(title.to_string()),
+                    window_id: None,
+                    browser_url: Some(url.to_string()),
+                    display_id: Some(1),
+                    metadata_redaction_reason: None,
+                    metadata_redaction_source_id: None,
+                }
+            };
+            let good = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        save_dir.join("good.jpg").display().to_string(),
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(snapshot("Good", "https://example.com/good")),
+                )
+                .await
+                .expect("good frame should insert");
+            let corrupt = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        save_dir.join("corrupt.jpg").display().to_string(),
+                        "2026-05-17T10:01:00Z",
+                    )
+                    .with_metadata_snapshot(snapshot("Corrupt", "https://example.com/corrupt")),
+                )
+                .await
+                .expect("corrupt frame should insert");
+
+            // Corrupt the second frame's snapshot_json to non-JSON. It stays
+            // non-empty so it still passes the table's
+            // `LENGTH(TRIM(snapshot_json)) > 0` CHECK, but cannot deserialize.
+            sqlx::query(
+                "UPDATE frame_metadata_snapshots \
+                 SET snapshot_json = 'not valid json at all' \
+                 WHERE id = (SELECT metadata_snapshot_id FROM frames WHERE id = ?1)",
+            )
+            .bind(corrupt.id)
+            .execute(infra.pool())
+            .await
+            .expect("snapshot json should corrupt");
+
+            let snapshots = infra
+                .get_frame_metadata_snapshots(&[good.id, corrupt.id])
+                .await
+                .expect("one corrupt snapshot row must not fail the whole batch load");
+
+            assert_eq!(
+                snapshots
+                    .get(&good.id)
+                    .and_then(|snapshot| snapshot.browser_url.as_deref()),
+                Some("https://example.com/good"),
+                "the good frame's snapshot must still resolve"
+            );
+            assert!(
+                !snapshots.contains_key(&corrupt.id),
+                "the corrupt frame must degrade to absent, not poison the page"
+            );
+        });
+    }
+
     #[test]
     fn broker_timeline_interval_carries_guarded_url_of_representative_frame() {
         // Page-granular accuracy + read-time URL guard: the interval's url is the

@@ -427,9 +427,19 @@ impl ProcessingStore {
             let frame_id: i64 = row.get("frame_id");
             let json: Option<String> = row.try_get("metadata_snapshot_json").ok().flatten();
             if let Some(json) = json {
-                let snapshot: capture_metadata::FrameMetadataSnapshot =
-                    serde_json::from_str(&json)?;
-                snapshots.insert(frame_id, snapshot);
+                // Degrade, don't poison the page: a single corrupt/legacy
+                // `snapshot_json` row must leave that one frame absent from the
+                // map (URL → None) rather than `?`-propagating and failing the
+                // WHOLE batch — which, on the broker timeline path, would error
+                // the entire interactive page (up to MAX_SEARCH_LIMIT intervals)
+                // and drop every other interval's URL too. This matches the
+                // documented contract that frames without a usable snapshot are
+                // simply absent from the map.
+                if let Ok(snapshot) =
+                    serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(&json)
+                {
+                    snapshots.insert(frame_id, snapshot);
+                }
             }
         }
         Ok(snapshots)
