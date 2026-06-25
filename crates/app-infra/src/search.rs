@@ -164,6 +164,14 @@ pub struct FrameSearchResult {
     pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
     pub window_title: Option<String>,
+    /// The representative frame's captured `browser_url` (raw, as recorded in the
+    /// metadata snapshot). Read-time from the SAME representative frame whose
+    /// `id` mints the opaque result id, so a consumer's guarded URL matches the
+    /// result's landing frame. `None` when the frame had no browser URL. The
+    /// broker boundary (not search) applies the read-time URL guard before
+    /// exposing this to a consumer.
+    #[serde(default)]
+    pub browser_url: Option<String>,
     pub thumbnail_frame_id: i64,
     pub text_source_kind: String,
     pub secret_redaction_count: u32,
@@ -3167,6 +3175,16 @@ fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
                     app_bundle_id: representative.app_bundle_id.clone(),
                     app_name: representative.app_name.clone(),
                     window_title: representative.window_title.clone(),
+                    // Read-time: the representative frame's snapshot already
+                    // carries `browser_url` (parsed by `map_frame_for_search`
+                    // from the existing `frame_metadata_snapshots` join), so any
+                    // historical frame is covered without an index column or
+                    // backfill. The broker guards this URL before exposure.
+                    browser_url: representative
+                        .frame
+                        .metadata_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.browser_url.clone()),
                     thumbnail_frame_id: representative.frame.id,
                     text_source_kind: representative.text_source_kind.clone(),
                     secret_redaction_count,
@@ -4524,6 +4542,79 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].representative_frame.id, 1);
         assert_eq!(groups[1].representative_frame.id, 2);
+    }
+
+    #[test]
+    fn frame_group_carries_representative_browser_url_read_time() {
+        // Read-time proof: `group_frame_hits` lifts `browser_url` from the
+        // SAME representative frame's metadata snapshot whose id becomes the
+        // result (and opaque) id — no index column, so any historical frame
+        // with a snapshot browser_url is covered for free.
+        let frame_with_url = |id: i64, captured_at: &str, browser_url: Option<&str>| Frame {
+            id,
+            session_id: "screen-session".to_string(),
+            file_path: format!("/tmp/url-{id}.jpg"),
+            captured_at: captured_at.to_string(),
+            width: None,
+            height: None,
+            equivalence: crate::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            metadata_snapshot: browser_url.map(|url| capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.google.Chrome".to_string()),
+                app_name: Some("Google Chrome".to_string()),
+                window_title: Some("Tab".to_string()),
+                window_id: None,
+                browser_url: Some(url.to_string()),
+                display_id: Some(1),
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            }),
+            created_at: captured_at.to_string(),
+            updated_at: captured_at.to_string(),
+        };
+        let hit = |id, captured_at, browser_url| FrameHit {
+            anchor_id: id,
+            group_key: format!("frame:{id}"),
+            frame: frame_with_url(id, captured_at, browser_url),
+            snippet: format!("hit {id}"),
+            rank: -1.0,
+            app_bundle_id: None,
+            app_name: None,
+            window_title: None,
+            text_source_kind: "direct".to_string(),
+            secret_redaction_count: 0,
+            found_by_meaning: false,
+        };
+
+        // With no equivalence proof, each distinct frame is its own group; the
+        // representative IS the single hit, so its snapshot browser_url surfaces
+        // raw on the result (the broker boundary guards it, not search).
+        let groups = group_frame_hits(&[
+            hit(
+                1,
+                "2026-05-17T10:10:00Z",
+                Some("https://github.com/owner/repo/commit/9fceb02d8f1c"),
+            ),
+            // A frame with no snapshot browser_url -> result browser_url is None.
+            hit(2, "2026-05-17T10:00:00Z", None),
+        ]);
+        let by_id = |id: i64| {
+            groups
+                .iter()
+                .find(|group| group.representative_frame.id == id)
+                .expect("group should exist")
+        };
+        assert_eq!(
+            by_id(1).browser_url.as_deref(),
+            Some("https://github.com/owner/repo/commit/9fceb02d8f1c"),
+            "browser_url comes from the representative frame's snapshot, raw"
+        );
+        assert_eq!(by_id(2).browser_url, None);
     }
 
     #[test]

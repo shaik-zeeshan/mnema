@@ -8,6 +8,7 @@
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { openCapturedUrl } from "$lib/open-captured-url";
   import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
   import type {
     SemanticSearchModelStatusResponse,
@@ -20,6 +21,7 @@
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { message } from "@tauri-apps/plugin-dialog";
   import type {
     Conversation,
     ConversationTurn,
@@ -300,6 +302,36 @@
     await closeCurrentWindow();
   }
 
+  // In-flight latch for the captured-page open: one selected result (and one
+  // answer-source chip) opens at a time, so a single boolean is enough to keep the
+  // ⌃O key or a chip double-click from stacking opens / feedback dialogs. The
+  // latch wraps the actual brokered open, so it covers the keyboard path
+  // (openSelectedResultUrl → here) and the answer-source chips (openSourceUrl →
+  // here) alike. (Search result chips have their own per-instance latch inside
+  // SearchResultCard.)
+  let openingCapturedUrl = $state(false);
+
+  // Open a captured page via the shared brokered helper. The helper owns the
+  // feedback: a no-openable-URL result shows a brief info note and a real opener
+  // failure shows an error dialog (mirroring the timeline's "Couldn't open
+  // URL: …"). The raw URL stays in Rust; the UI never sees it.
+  async function openCapturedFrameUrl(frameId: number): Promise<void> {
+    if (openingCapturedUrl) return;
+    openingCapturedUrl = true;
+    try {
+      await openCapturedUrl(frameId);
+    } finally {
+      openingCapturedUrl = false;
+    }
+  }
+
+  // Open the captured page behind a frame source in the default browser.
+  // Frame sources only (audio has frameId/url null).
+  async function openSourceUrl(source: AskAiSource): Promise<void> {
+    if (source.frameId == null) return;
+    await openCapturedFrameUrl(source.frameId);
+  }
+
   // Load thumbnails for answer-source frames, mirroring loadThumbnails. Best
   // effort: a card without a cached preview falls back to its glyph. No search
   // generation guard applies here (these come from the ask stream, not search).
@@ -340,6 +372,17 @@
   // ---------------------------------------------------------------------------
 
   let resultCount = $derived(frames.length + audio.length);
+  // The currently-selected result is an openable frame: selection is within the
+  // frame section (audio selections sit past frames.length) AND that frame
+  // carries a captured page. Gates the ⌃/⌘+O "open page" footer hint so it
+  // tracks the *selected* result — the hint only shows when the action the
+  // keypress fires (openSelectedResultUrl on the selection) actually has a
+  // target, never advertising a no-op for an audio/url-less selection.
+  let selectedResultIsOpenable = $derived(
+    selectedIndex >= 0 &&
+      selectedIndex < frames.length &&
+      frames[selectedIndex]?.url != null,
+  );
   const OPTION_ID_PREFIX = "qr-opt-";
   let activeOptionId = $derived(
     selectedIndex >= 0 ? `${OPTION_ID_PREFIX}${selectedIndex}` : undefined,
@@ -355,6 +398,27 @@
     } else {
       void selectAudio(audio[index - frames.length]);
     }
+  }
+
+  // Open the captured page behind the currently-selected frame result in the
+  // default browser. The result cards live in an aria-activedescendant listbox
+  // (DOM focus stays on the search input), so the per-card open chip can't sit in
+  // the tab order without breaking the roving model. This is the keyboard path to
+  // that chip's action (⌘/Ctrl+O, wired in handleSearchKeydown): it opens the
+  // selected frame's page through the same brokered helper the chip uses. The
+  // footer hint is gated on `selectedResultIsOpenable`, so the keypress should
+  // only land here on an openable frame — but the ⌃O shortcut still fires while a
+  // non-openable result is selected, so surface a benign note (same opener
+  // feedback path as a real failure) instead of silently doing nothing.
+  function openSelectedResultUrl(): void {
+    if (selectedResultIsOpenable) {
+      void openCapturedFrameUrl(frames[selectedIndex].thumbnailFrameId);
+      return;
+    }
+    void message("No openable page for this result.", {
+      title: "Couldn't open page",
+      kind: "info",
+    });
   }
 
   function moveSelection(delta: number): void {
@@ -513,6 +577,21 @@
         event.preventDefault();
         openResultAt(index);
       }
+      return;
+    }
+
+    // ⌘/Ctrl+O opens the selected frame result's captured page in the browser —
+    // the keyboard path to each card's hover-only "open in browser" chip, which
+    // can't be a tab stop inside this aria-activedescendant listbox. A no-op when
+    // nothing is selected or the selection has no openable URL (audio / no link).
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      (event.key === "o" || event.key === "O")
+    ) {
+      event.preventDefault();
+      openSelectedResultUrl();
       return;
     }
 
@@ -4133,7 +4212,9 @@
                                     thumbnailUrl={s.frameId != null
                                       ? (thumbnailCache.get(s.frameId) ?? null)
                                       : null}
+                                    url={s.url}
                                     onselect={() => void selectSource(s)}
+                                    onopenurl={() => openSourceUrl(s)}
                                   />
                                 {/each}
                               </div>
@@ -4152,6 +4233,7 @@
                                     startedAt={s.startedAt}
                                     endedAt={s.endedAt}
                                     sourceKind={s.sourceKind}
+                                    url={s.url}
                                     onselect={() => void selectSource(s)}
                                   />
                                 {/each}
@@ -4245,6 +4327,9 @@
       {:else if resultCount > 0}
         <span class="quick-recall__hint-item"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
         <span class="quick-recall__hint-item"><kbd>↵</kbd> open</span>
+        {#if selectedResultIsOpenable}
+          <span class="quick-recall__hint-item"><kbd>⌃O</kbd> open page</span>
+        {/if}
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> Ask AI</span>
         {/if}

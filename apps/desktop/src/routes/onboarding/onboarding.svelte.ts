@@ -18,6 +18,7 @@ import type {
   AudioTranscriptionMemoryMode,
   AudioTranscriptionModelDownloadProgress,
   AudioTranscriptionProvider,
+  BrowserUrlAccessibilityStatus,
   ExcludedAppEntry,
   GetPermissionsResponse,
   MicrophoneVadAdapter,
@@ -165,6 +166,19 @@ export class OnboardingController {
   permissions = $state<Record<PermissionKey, PermissionValue> | null>(null);
   requestingPerm = $state<PermissionKey | null>(null);
   refreshingPerms = $state(false);
+
+  // ── Optional Gecko (Firefox/Zen) browser-URL access ───────────────────────
+  // Surfaced via the macOS Accessibility API. Shown only when a Gecko browser is
+  // installed; the status is non-fatal (a null probe simply hides the row) and
+  // never gates onboarding progression.
+  geckoUrlAccess = $state<BrowserUrlAccessibilityStatus | null>(null);
+  requestingGeckoAccess = $state(false);
+  recheckingGeckoAccess = $state(false);
+  geckoInstalled = $derived((this.geckoUrlAccess?.geckoBrowsers ?? []).some((b) => b.installed));
+  geckoTrusted = $derived(this.geckoUrlAccess?.trusted ?? false);
+  geckoInstalledNames = $derived(
+    (this.geckoUrlAccess?.geckoBrowsers ?? []).filter((b) => b.installed).map((b) => b.displayName),
+  );
 
   // ── Lifecycle flags ──────────────────────────────────────────────────────
   loading = $state(true);
@@ -340,6 +354,55 @@ export class OnboardingController {
 
   permissionTone(value: PermissionValue | undefined): "ok" | "pending" | "blocked" {
     return permissionToneFor(value);
+  }
+
+  // Probe whether a Gecko browser (Firefox/Zen) is installed and whether Mnema is
+  // trusted for the macOS Accessibility API used to read its active-tab URL.
+  // Non-fatal: a failure leaves the status null so the optional row simply hides.
+  async loadGeckoUrlAccess(): Promise<void> {
+    try {
+      this.geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("get_browser_url_accessibility_status");
+    } catch {
+      this.geckoUrlAccess = null;
+    }
+  }
+
+  // Raises the macOS Accessibility prompt (and adds Mnema to the list). The grant
+  // is completed by the user in System Settings, so `trusted` usually stays false
+  // here until they enable Mnema and we re-poll via recheck.
+  async requestGeckoAccess(): Promise<void> {
+    if (this.requestingGeckoAccess) return;
+    this.errorMessage = null;
+    this.requestingGeckoAccess = true;
+    try {
+      this.geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("request_browser_url_accessibility");
+    } catch (err) {
+      this.errorMessage = serializeError(err);
+    } finally {
+      this.requestingGeckoAccess = false;
+    }
+  }
+
+  async openGeckoAccessSettings(): Promise<void> {
+    this.errorMessage = null;
+    try {
+      await invoke("open_browser_url_accessibility_settings");
+    } catch (err) {
+      this.errorMessage = serializeError(err);
+    }
+  }
+
+  async recheckGeckoAccess(): Promise<void> {
+    if (this.recheckingGeckoAccess) return;
+    this.errorMessage = null;
+    this.recheckingGeckoAccess = true;
+    try {
+      this.geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("get_browser_url_accessibility_status");
+    } catch (err) {
+      this.errorMessage = serializeError(err);
+    } finally {
+      this.recheckingGeckoAccess = false;
+    }
   }
 
   // ── OCR model subsystem (flat delegation) ────────────────────────────────

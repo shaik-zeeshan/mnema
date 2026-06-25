@@ -395,6 +395,56 @@ impl ProcessingStore {
         get_frame_optional(&self.pool, frame_id).await
     }
 
+    /// Load the metadata snapshots for many frame ids in ONE query, keyed by
+    /// frame id. Avoids the per-id `get_frame` N+1 when a caller (e.g. the broker
+    /// timeline) needs the representative-frame snapshot for every interval in a
+    /// page. Frames with no snapshot (or that vanished between two reads) are
+    /// simply absent from the map. Order/cardinality of the input is irrelevant —
+    /// the caller looks up by id.
+    pub async fn get_frame_metadata_snapshots(
+        &self,
+        frame_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, capture_metadata::FrameMetadataSnapshot>> {
+        let mut snapshots = std::collections::HashMap::new();
+        if frame_ids.is_empty() {
+            return Ok(snapshots);
+        }
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT frames.id AS frame_id, \
+                    frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json \
+             FROM frames \
+             JOIN frame_metadata_snapshots \
+               ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+             WHERE frames.id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for frame_id in frame_ids {
+            separated.push_bind(*frame_id);
+        }
+        query.push(")");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        for row in rows {
+            let frame_id: i64 = row.get("frame_id");
+            let json: Option<String> = row.try_get("metadata_snapshot_json").ok().flatten();
+            if let Some(json) = json {
+                // Degrade, don't poison the page: a single corrupt/legacy
+                // `snapshot_json` row must leave that one frame absent from the
+                // map (URL → None) rather than `?`-propagating and failing the
+                // WHOLE batch — which, on the broker timeline path, would error
+                // the entire interactive page (up to MAX_SEARCH_LIMIT intervals)
+                // and drop every other interval's URL too. This matches the
+                // documented contract that frames without a usable snapshot are
+                // simply absent from the map.
+                if let Ok(snapshot) =
+                    serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(&json)
+                {
+                    snapshots.insert(frame_id, snapshot);
+                }
+            }
+        }
+        Ok(snapshots)
+    }
+
     pub async fn list_earlier_frames_with_equivalence_hint_in_scope(
         &self,
         session_id: &str,

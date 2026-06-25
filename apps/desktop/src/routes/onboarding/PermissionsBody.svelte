@@ -70,4 +70,76 @@
       </button>
     </div>
   </div>
+
+  <!-- Optional Gecko (Firefox/Zen) browser-URL access. Shown only when a Gecko
+       browser is installed; never gates progression. -->
+  {#if controller.geckoInstalled}
+    {@const trusted = controller.geckoTrusted}
+    <div class="gecko-optional">
+      <div class="group-title">Browser URLs · optional</div>
+      <div class="perm">
+        <div class="pn">
+          <div class="t">
+            {controller.geckoInstalledNames.length > 0
+              ? `${controller.geckoInstalledNames.join(" / ")} page URLs`
+              : "Firefox / Zen page URLs"}
+          </div>
+          <div class="s">
+            Optional. Lets Mnema capture the page address for Firefox and Zen (they
+            have no scriptable URL like Chrome/Safari). Requires the macOS
+            Accessibility permission; enable Mnema under Privacy &amp; Security →
+            Accessibility.
+          </div>
+        </div>
+        <div class="pr">
+          <span class="pill {trusted ? 'granted' : 'pending'}">
+            <span class="d"></span>{trusted ? "Granted" : "Not granted"}
+          </span>
+          {#if !trusted}
+            <button
+              type="button"
+              class="btn sm"
+              disabled={controller.requestingGeckoAccess}
+              onclick={() => controller.requestGeckoAccess()}
+            >
+              {controller.requestingGeckoAccess ? "Requesting…" : "Grant access"}
+            </button>
+          {/if}
+        </div>
+      </div>
+      {#if !trusted}
+        <div class="ctl">
+          <div class="ctl-label">
+            <div class="desc">Re-check after enabling Mnema in System Settings.</div>
+          </div>
+          <div class="ctl-field">
+            <button type="button" class="btn sm" onclick={() => controller.openGeckoAccessSettings()}>
+              Open Settings
+            </button>
+            <button
+              type="button"
+              class="btn sm"
+              disabled={controller.recheckingGeckoAccess}
+              onclick={() => controller.recheckGeckoAccess()}
+            >
+              {controller.recheckingGeckoAccess ? "Checking…" : "Recheck"}
+            </button>
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
 </div>
+
+<style>
+  /* Optional browser-URL (Gecko) sub-section — visually separated from the
+     required capture permissions above with a dashed divider. */
+  .gecko-optional {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 14px;
+    margin-top: 2px;
+    border-top: 1px dashed var(--app-border);
+  }
+</style>

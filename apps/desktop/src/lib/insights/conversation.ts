@@ -186,6 +186,10 @@ export interface AskAiSource {
   audioSegmentId: number | null;
   appName: string | null;
   windowTitle: string | null;
+  /** The read-time-guarded host+path of the captured page (e.g.
+   *  "github.com/owner/repo/commit/9fceb…"), or null for audio / no URL. The
+   *  raw URL stays in Rust; only this guarded form is ever shown. */
+  url: string | null;
   startedAt: string;
   endedAt: string;
   sourceKind: "microphone" | "system" | null;

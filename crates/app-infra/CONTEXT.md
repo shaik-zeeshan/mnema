@@ -251,6 +251,18 @@ _Avoid_: saved preview text, stored excerpt, result summary
 A collapsed search result that represents multiple equivalent **Search Result Anchor** values.
 _Avoid_: duplicate result, grouped row, result cluster
 
+**Broker URL Context**:
+The brokered form of a **Captured Frame**'s browser URL: a sanitized host+path with the query string and fragment always stripped at the boundary and token-shaped path segments redacted, returned as part of **Search Context** on screen **Search Result Anchor** results and timeline intervals. Computed at broker-return from the result's representative **Captured Frame**, gated on that frame actually carrying a URL — never on the capture-time browser URL setting.
+_Avoid_: full URL passthrough, raw browser_url, redacted-URL column
+
+**URL Path Token Guard**:
+The read-time guard that turns a stored browser URL into a **Broker URL Context**: strip query/fragment, run the deterministic secret detector for known key/token shapes, then redact a high-entropy path segment only when it follows a credential-bearing predecessor segment (`reset`, `reset-password`, `verify`, `confirm`, `activate`, `invite`, `magic`/`magic-link`, `otp`, `token`, `auth`). Auth/login *page* keywords stay visible; only token-shaped material is redacted. It deliberately accepts a residual — a bare, context-free path token with no predecessor — rather than blunt-entropy redaction that would also destroy high-entropy resource ids (document ids, commit SHAs, UUIDs).
+_Avoid_: entropy scrubber, URL allowlist, login-page suppressor
+
+**Open Captured URL**:
+The LOCAL desktop action that opens a **Captured Frame**'s original browser URL in the user's default browser. It is the Tauri command `open_captured_url(frame_id)` (desktop crate) keyed off the trusted frontend's frame id — NOT the broker, NOT an opaque result id — runs only behind a user click in a first-party view or AI answer card, and the raw URL is never returned as broker text and never reaches a cloud model. The broker itself never opens a captured URL: it rejects the `OpenCapturedUrl` request universally, and there is no `mnema open-url` CLI command (see ADR 0038). Labeled by the host from its **Broker URL Context**.
+_Avoid_: open-in-browser tool, agent URL navigation, raw URL field, broker open, CLI open-url
+
 ## Relationships
 
 - A **Screen Frame Artifact** becomes a **Captured Frame** only after app-infra persists it.
@@ -258,6 +270,11 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Captured Frame Pipeline** attaches each **Captured Frame** to exactly one **Frame Batch**.
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
 - Mnema sanitizes browser URL metadata before persistence; full URL metadata remains an explicit user choice because query strings and fragments may contain secrets.
+- A **Broker URL Context** is part of **Search Context** for a screen **Search Result Anchor** and timeline interval; it is never returned for audio results, which carry no URL.
+- A **Broker URL Context** strips the query string and fragment at the broker boundary regardless of the capture-time browser URL setting, so even a `Full`-mode stored URL yields only a guarded host+path to the broker. It is `http`/`https` only: the read-time guard (`guard_url`) returns NO url for any non-`http(s)` scheme (`file://`, `ftp://`, `mnema://`, …), so those guard to nothing and no placeholder crosses the boundary. (The `file://[local-file]` collapse is a separate, capture-time concern in capture-metadata's `sanitize_url`, not the broker read-time guard.)
+- A **Broker URL Context** is computed at broker-return (read-time) from the result's representative **Captured Frame** and gated on that frame carrying a URL — it is not a persisted redacted column and is not gated on the current browser URL setting; turning URL capture off stops new capture but does not retroactively hide historical **Broker URL Context** (Delete Recent Capture and **Retention Cleanup** do that).
+- The **URL Path Token Guard** reuses the deterministic secret detector for known key/token shapes and runs at read-time over the host+path, diverging from secret redaction's prospective persist-time gate so it covers all historical URLs without a migration; it accepts a bare context-free path token as a residual rather than blunt-entropy redaction that would destroy resource ids.
+- **Open Captured URL** is a LOCAL desktop, user-triggered action, never an agent tool and never a broker round-trip: the desktop `open_captured_url(frame_id)` command resolves the raw URL locally from the trusted frontend's frame id, so it never crosses the broker text boundary and the cloud model only ever sees the guarded **Broker URL Context** host. The broker rejects the `OpenCapturedUrl` request for every caller (CLI, external agent, and Ask AI) — opening a raw captured URL would otherwise be a CSRF/replay primitive for any grant-holder — so there is no broker- or CLI-driven captured-URL open (see ADR 0038).
 - Search ranking may use redaction categories conservatively, but should not strongly boost results merely because a secret was redacted.
 - A **Semantic Search Vector** is derived from the same body text that **Text Search** indexes (not a separately-redacted copy) and is stored inside the **Encrypted Capture Index**; because both tiers live inside that boundary, the vector's at-rest exposure equals **Text Search**'s, and redaction for **Semantic Search** is enforced at any boundary that takes a vector or its text out of the index (export, external index, cloud reranker), not by redacting the at-rest vector.
 - **Encrypted Capture Index** protects SQLite-backed searchable and contextual capture data, not original frame, video, or audio media.

@@ -35,6 +35,7 @@ export interface FrameDto {
 	appBundleId: string | null;
 	appName: string | null;
 	windowTitle: string | null;
+	url: string | null;
 	ocrText: string | null;
 	processorVersion: string | null;
 	equivalenceHint: string | null;
@@ -238,6 +239,14 @@ export interface FrameSearchResultDto {
 	appBundleId: string | null;
 	appName: string | null;
 	windowTitle: string | null;
+	/**
+	 * The read-time-guarded host+path of the captured page (e.g.
+	 * "github.com/owner/repo/commit/9fceb…"), or null when there is no openable
+	 * http(s) URL. The raw URL stays in Rust; only this guarded form is ever
+	 * shown, and the page is opened via `open_captured_url` with
+	 * `thumbnailFrameId`.
+	 */
+	url: string | null;
 	thumbnailFrameId: number;
 	textSourceKind: "direct" | "equivalent_reuse";
 	hasSecretRedactions: boolean;

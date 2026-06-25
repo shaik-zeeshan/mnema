@@ -29,6 +29,10 @@ export interface OnboardingListenerTarget {
   handleSpeakerDownloadProgress(payload: SpeakerAnalysisModelDownloadProgress): void;
   handleSemanticSearchDownloadProgress(payload: SemanticSearchModelDownloadProgress): void;
   settings: RecordingSettings | null;
+  // Optional Gecko browser-URL access: re-polled on window focus (the grant is
+  // completed outside the app in System Settings).
+  readonly geckoTrusted: boolean;
+  recheckGeckoAccess(): Promise<void>;
 }
 
 export async function startOnboardingListeners(
@@ -41,6 +45,16 @@ export async function startOnboardingListeners(
   let unlistenRecordingSettingsChanged: (() => void) | undefined;
   let destroyed = false;
 
+  // Accessibility is granted outside the app (System Settings), so re-poll on
+  // window focus to pick up a grant without making the user click Recheck. Skip
+  // once trusted; the controller's in-flight latch keeps refocus storms from
+  // double-firing.
+  const onWindowFocus = () => {
+    if (!target.geckoTrusted) void target.recheckGeckoAccess();
+  };
+  const hasWindow = typeof window !== "undefined";
+  if (hasWindow) window.addEventListener("focus", onWindowFocus);
+
   const unlisten = () => {
     destroyed = true;
     unlistenOcrDownloadProgress?.();
@@ -48,6 +62,7 @@ export async function startOnboardingListeners(
     unlistenSpeakerDownloadProgress?.();
     unlistenSemanticSearchDownloadProgress?.();
     unlistenRecordingSettingsChanged?.();
+    if (hasWindow) window.removeEventListener("focus", onWindowFocus);
   };
 
   await Promise.all([

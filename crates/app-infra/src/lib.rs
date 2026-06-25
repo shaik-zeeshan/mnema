@@ -45,6 +45,11 @@ pub use captured_frame_pipeline::{
     CapturedFramePipeline, CapturedFramePipelineResult, CapturedFrameReprocessingOutcome,
     CapturedFrameReprocessingResult, ClosedFrameBatchSummary,
 };
+/// Read-time browser-URL guard: raw captured URL -> sanitized, secret-redacted
+/// `host[:port]/path`, or `None` when there is no broker-safe text to emit. The
+/// public name external crates call to keep the raw URL off the cloud-facing
+/// data model (the raw URL is local-only, used only by `open_captured_url`).
+pub use brokered_access::guard_url as guard_browser_url;
 pub use error::{AppInfraError, Result};
 pub use frame_batch_runtime::FrameBatchRuntime;
 pub use frame_batch_store::{
@@ -664,6 +669,15 @@ impl AppInfra {
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
         self.processing.get_frame(frame_id).await
+    }
+
+    pub async fn get_frame_metadata_snapshots(
+        &self,
+        frame_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, capture_metadata::FrameMetadataSnapshot>> {
+        self.processing
+            .get_frame_metadata_snapshots(frame_ids)
+            .await
     }
 
     pub async fn get_nearest_earlier_equivalent_frame(

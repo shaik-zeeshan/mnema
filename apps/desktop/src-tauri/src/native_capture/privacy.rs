@@ -3,9 +3,19 @@ use super::runtime::NativeCaptureRuntime;
 #[cfg(target_os = "macos")]
 use capture_types::CaptureErrorResponse;
 #[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "macos")]
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
+
+/// Never-reset source of process-globally-unique collector tokens. Unlike the
+/// per-runtime generation counter (which restarts at 0 on every capture-session
+/// reset), this only ever increments, so a token minted for one collector can
+/// never equal a token minted for another — even across a reset that re-uses the
+/// same generation number.
+#[cfg(target_os = "macos")]
+static COLLECTION_TOKEN_SOURCE: AtomicU64 = AtomicU64::new(0);
 
 /// Error code reported when a privacy-filter apply fails specifically because no
 /// capture display is available (display sleep, screen lock, lid close, monitor
@@ -78,9 +88,65 @@ pub struct PrivacyFilterRefreshRuntime {
     requested_generation: u64,
     latest_reason: Option<PrivacyRefreshReason>,
     collecting_generation: Option<u64>,
+    /// Process-globally-unique id of the in-flight collector. The per-runtime
+    /// `generation` counter restarts from 0 on every `reset_privacy_filter_refresh_state`
+    /// (the runtime is replaced with `default()`), so a stale collector from a
+    /// previous session can hold the SAME generation number a new session later
+    /// re-claims — making `generation` alone unsafe to match a completion on.
+    /// This token is minted from a never-reset global, so it can never collide
+    /// across a reset.
+    collecting_token: Option<u64>,
     last_completed_generation: u64,
     completed_update: Option<CollectedPrivacyFilterUpdate>,
     static_fallback_suppressed: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl PrivacyFilterRefreshRuntime {
+    /// Claims the next collection generation, or `None` when a collector is
+    /// already in flight or there is nothing newer to collect. The returned
+    /// generation marks this runtime as collecting; the collector must hand it
+    /// back to [`Self::complete_collection`].
+    fn begin_collection(&mut self) -> Option<(u64, u64, PrivacyRefreshReason)> {
+        if self.collecting_generation.is_some()
+            || self.requested_generation <= self.last_completed_generation
+        {
+            return None;
+        }
+        let generation = self.requested_generation;
+        let reason = self.latest_reason.unwrap_or(PrivacyRefreshReason::FallbackPoll);
+        let token = COLLECTION_TOKEN_SOURCE.fetch_add(1, Ordering::Relaxed);
+        self.collecting_generation = Some(generation);
+        self.collecting_token = Some(token);
+        Some((generation, token, reason))
+    }
+
+    /// Records the result of a finished collection — but only if `token` is still
+    /// the in-flight one. A collector spawned for a *previous* session can land
+    /// its write-back after [`reset_privacy_filter_refresh_state`] (or a later
+    /// collection) has replaced the runtime; matching on the per-runtime
+    /// `generation` is NOT enough, because the reset restarts that counter at 0
+    /// and the new session can re-claim the SAME generation the stale collector
+    /// still holds (the equal-generation collision). Applying that stale write
+    /// would clobber the live session's snapshot with the previous session's data
+    /// and poison `last_completed_generation`. The process-global `token` cannot
+    /// collide across a reset, so it is the safe match key. Returns whether the
+    /// result was applied.
+    fn complete_collection(
+        &mut self,
+        token: u64,
+        generation: u64,
+        completed: CollectedPrivacyFilterUpdate,
+    ) -> bool {
+        if self.collecting_token != Some(token) {
+            return false;
+        }
+        self.collecting_generation = None;
+        self.collecting_token = None;
+        self.last_completed_generation = generation;
+        self.completed_update = Some(completed);
+        true
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -126,10 +192,15 @@ fn collect_initial_privacy_filter_decision(
     settings: &capture_types::RecordingSettings,
 ) -> capture_metadata::PrivacyFilterDecision {
     if settings.metadata.enabled {
+        // `collect_initial_privacy_filter` is only ever called from synchronous
+        // segment-start / resume / recovery paths that hold the
+        // `NativeCaptureState` mutex, so the active-tab URL must come from the
+        // cache (no live AX/AppleScript read) to avoid stalling under the lock.
         crate::native_capture::metadata::refresh_metadata_state(
             metadata_state,
             &settings.metadata,
             &settings.privacy,
+            crate::native_capture::metadata::BrowserUrlReadMode::Cached,
         )
     } else {
         crate::native_capture::metadata::refresh_static_excluded_app_privacy_state(
@@ -167,7 +238,10 @@ fn collect_static_privacy_filter_update(app_handle: &tauri::AppHandle) -> Privac
 }
 
 #[cfg(target_os = "macos")]
-fn collect_metadata_privacy_filter_update(app_handle: &tauri::AppHandle) -> PrivacyFilterUpdate {
+fn collect_metadata_privacy_filter_update(
+    app_handle: &tauri::AppHandle,
+    browser_url_read_mode: crate::native_capture::metadata::BrowserUrlReadMode,
+) -> PrivacyFilterUpdate {
     let settings = app_handle
         .state::<crate::native_capture::RecordingSettingsState>()
         .lock()
@@ -180,6 +254,7 @@ fn collect_metadata_privacy_filter_update(app_handle: &tauri::AppHandle) -> Priv
             .inner(),
         &settings.metadata,
         &settings.privacy,
+        browser_url_read_mode,
     );
     let latest_applied = crate::native_capture::metadata::latest_applied_privacy_decision(
         app_handle
@@ -212,6 +287,7 @@ fn privacy_refresh_mode(
 pub(super) fn collect_privacy_filter_update(
     app_handle: &tauri::AppHandle,
     reason: PrivacyRefreshReason,
+    browser_url_read_mode: crate::native_capture::metadata::BrowserUrlReadMode,
 ) -> (PrivacyRefreshMode, PrivacyFilterUpdate) {
     let settings = app_handle
         .state::<crate::native_capture::RecordingSettingsState>()
@@ -225,7 +301,7 @@ pub(super) fn collect_privacy_filter_update(
             collect_static_privacy_filter_update(app_handle)
         }
         PrivacyRefreshMode::MetadataAndStaticApps => {
-            collect_metadata_privacy_filter_update(app_handle)
+            collect_metadata_privacy_filter_update(app_handle, browser_url_read_mode)
         }
     };
     (mode, update)
@@ -307,21 +383,13 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
     else {
         return;
     };
-    let (generation, reason) = {
+    let Some((generation, token, reason)) = ({
         let mut state = refresh_state
             .lock()
             .expect("privacy filter refresh state poisoned");
-        if state.collecting_generation.is_some()
-            || state.requested_generation <= state.last_completed_generation
-        {
-            return;
-        }
-        let generation = state.requested_generation;
-        let reason = state
-            .latest_reason
-            .unwrap_or(PrivacyRefreshReason::FallbackPoll);
-        state.collecting_generation = Some(generation);
-        (generation, reason)
+        state.begin_collection()
+    }) else {
+        return;
     };
     if privacy_refresh_debug_log_enabled(reason) {
         super::debug_log::log(format!(
@@ -330,7 +398,14 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
     }
     let app_handle = app_handle.clone();
     std::thread::spawn(move || {
-        let (mode, update) = collect_privacy_filter_update(&app_handle, reason);
+        // This collection runs on its own background thread, off every capture
+        // lock, so a live active-tab URL read here is safe (and is the one path
+        // that keeps the Gecko AX URL fresh).
+        let (mode, update) = collect_privacy_filter_update(
+            &app_handle,
+            reason,
+            crate::native_capture::metadata::BrowserUrlReadMode::Live,
+        );
         if let Some(refresh_state) =
             app_handle.try_state::<crate::native_capture::PrivacyFilterRefreshState>()
         {
@@ -338,14 +413,22 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
                 let mut state = refresh_state
                     .lock()
                     .expect("privacy filter refresh state poisoned");
-                state.collecting_generation = None;
-                state.last_completed_generation = generation;
-                state.completed_update = Some(CollectedPrivacyFilterUpdate {
+                // Only apply the result if this collector is still the in-flight
+                // one. A collector spawned for a previous capture session can
+                // finish (the Gecko AX live read can take ~1.4s) after the new
+                // session has reset the refresh state; applying its stale
+                // generation would poison `last_completed_generation` and stall
+                // the new session's privacy/metadata refresh for many ticks.
+                state.complete_collection(
+                    token,
                     generation,
-                    reason,
-                    mode,
-                    update,
-                });
+                    CollectedPrivacyFilterUpdate {
+                        generation,
+                        reason,
+                        mode,
+                        update,
+                    },
+                );
             }
         }
         if let Some(control) = app_handle
@@ -530,6 +613,135 @@ mod tests {
         assert_eq!(
             privacy_refresh_mode(&settings, PrivacyRefreshReason::WorkspaceFocusChanged),
             PrivacyRefreshMode::StaticExcludedAppsOnly
+        );
+    }
+
+    // A collector spawned for one capture session can still be running its slow
+    // Gecko AX live read (~1.4s) when the user stops and restarts capture. The
+    // restart resets the refresh runtime; if the stale collector's write-back
+    // is then applied, it poisons `last_completed_generation` with the old
+    // session's (larger) generation, and the new session can no longer start a
+    // collection until its `requested_generation` climbs back past it — many
+    // ticks of stale privacy filter / metadata. The completing collector must
+    // no-op once it is no longer the in-flight generation.
+    #[test]
+    fn stale_collector_completion_does_not_suppress_new_session_collections() {
+        let mut runtime = PrivacyFilterRefreshRuntime::default();
+
+        // Session 1 runs for a while and starts a collection at generation 50.
+        runtime.requested_generation = 50;
+        let (gen1, token1, _reason) = runtime
+            .begin_collection()
+            .expect("session 1 should start a collection");
+        assert_eq!(gen1, 50);
+
+        // Stop + restart: the new session resets the refresh runtime while the
+        // session-1 collector is still in flight (its slow AX read hasn't
+        // returned yet).
+        runtime = PrivacyFilterRefreshRuntime::default();
+
+        // The new session requests a refresh (generation climbs from 0 to 1).
+        runtime.requested_generation = runtime.requested_generation.saturating_add(1);
+
+        // Now the stale session-1 collector finally finishes and writes back.
+        let applied = runtime.complete_collection(
+            token1,
+            gen1,
+            CollectedPrivacyFilterUpdate {
+                generation: gen1,
+                reason: PrivacyRefreshReason::FallbackPoll,
+                mode: PrivacyRefreshMode::MetadataAndStaticApps,
+                update: PrivacyFilterUpdate {
+                    decision: capture_metadata::PrivacyFilterDecision::default(),
+                    filter: None,
+                },
+            },
+        );
+        assert!(
+            !applied,
+            "a collector from a previous session must not apply after a reset"
+        );
+
+        // The new session must still be able to start its collection.
+        assert!(
+            runtime.begin_collection().is_some(),
+            "new session collection suppressed by a stale collector's write-back"
+        );
+    }
+
+    // REGRESSION (deep-review finding): the EQUAL-generation collision the
+    // generation-only guard could not catch. After a reset the runtime is
+    // replaced with `default()` (generation counter back to 0), so the new
+    // session's FIRST collection re-claims the SAME generation a still-in-flight
+    // stale collector holds. Matching the completion on `generation` alone would
+    // then apply the previous session's data over the live session's in-flight
+    // collection. The process-global token must reject the stale write while the
+    // live session's own collector still applies.
+    #[test]
+    fn equal_generation_stale_collector_does_not_clobber_fresh_collector_after_reset() {
+        let mut runtime = PrivacyFilterRefreshRuntime::default();
+
+        // Session 1's first collection claims generation 1.
+        runtime.requested_generation = runtime.requested_generation.saturating_add(1);
+        let (stale_gen, stale_token, _reason) = runtime
+            .begin_collection()
+            .expect("session 1 should start a collection");
+        assert_eq!(stale_gen, 1);
+
+        // Stop + restart resets the runtime while the session-1 collector is
+        // still running its slow AX read.
+        runtime = PrivacyFilterRefreshRuntime::default();
+
+        // Session 2's first collection ALSO claims generation 1 (the runtime
+        // started over at 0). Its fresh collector is now in flight too — and it
+        // holds a DIFFERENT token from the never-reset global source.
+        runtime.requested_generation = runtime.requested_generation.saturating_add(1);
+        let (fresh_gen, fresh_token, _reason) = runtime
+            .begin_collection()
+            .expect("session 2 should start its collection");
+        assert_eq!(fresh_gen, 1);
+        assert_ne!(
+            stale_token, fresh_token,
+            "tokens must be unique across a reset even at the same generation"
+        );
+
+        // The STALE session-1 collector lands first with generation 1.
+        let stale_applied = runtime.complete_collection(
+            stale_token,
+            stale_gen,
+            CollectedPrivacyFilterUpdate {
+                generation: stale_gen,
+                reason: PrivacyRefreshReason::FallbackPoll,
+                mode: PrivacyRefreshMode::MetadataAndStaticApps,
+                update: PrivacyFilterUpdate {
+                    decision: capture_metadata::PrivacyFilterDecision::default(),
+                    filter: None,
+                },
+            },
+        );
+        assert!(
+            !stale_applied,
+            "a stale collector must not apply after a reset, even when its \
+             generation number collides with the new session's"
+        );
+
+        // The fresh session-2 collector must still be able to apply its result.
+        let fresh_applied = runtime.complete_collection(
+            fresh_token,
+            fresh_gen,
+            CollectedPrivacyFilterUpdate {
+                generation: fresh_gen,
+                reason: PrivacyRefreshReason::FallbackPoll,
+                mode: PrivacyRefreshMode::MetadataAndStaticApps,
+                update: PrivacyFilterUpdate {
+                    decision: capture_metadata::PrivacyFilterDecision::default(),
+                    filter: None,
+                },
+            },
+        );
+        assert!(
+            fresh_applied,
+            "the live session's own collector must still apply its result"
         );
     }
 

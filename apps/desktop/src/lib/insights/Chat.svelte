@@ -32,6 +32,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { openSettings } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { openCapturedUrl } from "$lib/open-captured-url";
   import { askAiClock } from "$lib/askAiClock";
   import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerProse from "$lib/AnswerProse.svelte";
@@ -694,6 +695,28 @@
     }
   }
 
+  // Per-source in-flight latch: `openSourceUrl` is a SINGLE function shared across
+  // every frame source chip rendered in the loop, so a plain boolean would wrongly
+  // disable ALL chips while one opens. Track the frameId of the in-flight open
+  // instead, ignore a re-click on that same source, and disable only its chip.
+  let openingFrameId = $state<number | null>(null);
+
+  // Open the captured page behind a frame source in the default browser via the
+  // shared brokered helper. Frame sources only (audio has frameId/url null). The
+  // raw URL stays in Rust; the UI never sees it. The helper owns the feedback: a
+  // no-openable-URL result shows a brief info note and a real opener failure
+  // shows an error dialog (mirroring the timeline's "Couldn't open URL: …").
+  async function openSourceUrl(source: AskAiSource): Promise<void> {
+    const frameId = source.frameId;
+    if (frameId == null || openingFrameId === frameId) return;
+    openingFrameId = frameId;
+    try {
+      await openCapturedUrl(frameId);
+    } finally {
+      if (openingFrameId === frameId) openingFrameId = null;
+    }
+  }
+
   // ── Versioned update transport (the SOLE Ask AI stream listener) ─────────
   // The backend owns the render model and streams versioned `TurnUpdate` ops via
   // `ask_ai_update`. The frontend applies each op in order; a version gap (we
@@ -1142,7 +1165,9 @@
                                     thumbnailUrl={s.frameId != null
                                       ? (thumbnailCache.get(s.frameId) ?? null)
                                       : null}
+                                    url={s.url}
                                     onselect={() => void selectSource(s)}
+                                    onopenurl={() => openSourceUrl(s)}
                                   />
                                 {/each}
                               </div>
@@ -1160,6 +1185,7 @@
                                     startedAt={s.startedAt}
                                     endedAt={s.endedAt}
                                     sourceKind={s.sourceKind}
+                                    url={s.url}
                                     onselect={() => void selectSource(s)}
                                   />
                                 {/each}

@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-06-18_
+_Last reviewed: 2026-06-24_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -33,7 +33,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Sleep/wake recovery | [x] | [ ] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. |
 | Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
 | Active app/window metadata | [x] | [ ] | [ ] | macOS uses NSWorkspace/CoreGraphics. |
-| Browser URL metadata | [x] | [ ] | [ ] | macOS uses AppleScript for supported browsers. |
+| Browser URL metadata | [x] | [ ] | [ ] | macOS reads the active-tab URL through a per-browser **Browser URL Strategy**: AppleScript for supported Chromium and WebKit browsers (no extra permission), and the macOS Accessibility API for Firefox-family (Gecko) browsers — Firefox and Zen — reading `AXURL` off the focused web area. The Accessibility path is opt-in and Gecko-only: it requires the macOS Accessibility permission; if the permission is not granted, Gecko browsers yield no URL. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md). |
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
 | Quick Recall launcher panel | [x] | [~] | [~] | macOS summons a non-activating NSPanel (key without activating Mnema, like Spotlight/Raycast); non-macOS falls back to a plain shown/focused always-on-top window without non-activating semantics. |
 | Ask AI (in-process Reasoning Engine) | [x] | [~] | [~] | Quick Recall + Insights Chat run in-process on the shared Reasoning Engine (`crates/ai-runtime` via `rig-core`) — no installed PI/Node runtime, no shim, no `node`/`pi`-on-PATH resolution. Brokered `search`/`timeline`/`show_text`/`recall_context` tools (plus presentation-only `reference_captures`) are injected from the Tauri layer under the All-Retained Ask AI broker scope. Cross-platform Rust like the engine itself; a cloud engine needs the bring-your-own-key in the Encrypted Capture Index key store (macOS Keychain only today, see that row), a local Ollama/Llamafile engine needs no key and is platform-agnostic. Windows/Linux are blocked only on the platform key store for cloud keys. |
@@ -82,7 +82,8 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Screen and microphone permission checks/prompts.
 - [x] Open macOS Privacy & Security panes for denied permissions.
 - [x] Active app/window metadata from NSWorkspace/CoreGraphics.
-- [x] Browser URL metadata for supported browsers via AppleScript.
+- [x] Browser URL metadata for supported Chromium/WebKit browsers via AppleScript. Firefox-family (Gecko) browsers — Firefox and Zen — are supported through the macOS Accessibility API (reading `AXURL` off the focused web area); this path is opt-in and requires the macOS Accessibility permission, and Gecko browsers yield no URL until it is granted. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md).
+- [x] Gecko (Firefox/Zen) Accessibility-permission UX: a Settings → Privacy row (gated on a Gecko browser being installed and browser-URL capture being on) and an optional onboarding item (shown only when a Gecko browser is installed; never gates progression). Both probe trust via `get_browser_url_accessibility_status`, raise the macOS Accessibility prompt via `request_browser_url_accessibility`, deep-link to Privacy & Security → Accessibility via `open_browser_url_accessibility_settings`, and re-poll trust on demand and on window focus. A failed probe leaves the status null so the row simply hides — it never gates capture. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md).
 - [x] Live App Privacy Exclusion through ScreenCaptureKit app filters.
 - [x] Exclude Current App tray action.
 - [x] Recommended sensitive app exclusion catalog using macOS bundle IDs.
@@ -100,6 +101,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Ask AI background completion and live reattach (stateless-per-turn over the persistent conversation store): each turn loads the thread's persisted history, runs one agent loop, and persists the new turn — the resident-session/30-minute-unseen-expiry/resurrect-from-transcript machinery is deleted. A dismissed-but-streaming question finishes its task and writes the turn to the shared conversation store in the Encrypted Capture Index (origin `quick_recall`, governed by Retention Policy, cleared by Wipe User Context), and re-opening reads it back; a thread still generating supports live reattach (the in-flight task persists incremental partial progress, the reopened surface loads that partial then subscribes to ongoing `delta` events). A thread can be continued in the Insights Chat workspace ("Continue in Chat") under the same conversationId, and a Chat thread may pin a per-conversation engine identity. See [ADR 0033](docs/adr/0033-ask-ai-migrates-onto-shared-reasoning-engine.md) and [ADR 0031](docs/adr/0031-quick-recall-and-chat-share-one-persistent-conversation-store.md).
 - [x] User Context derivation via the Reasoning Engine (`rig-core`): cloud (Anthropic/OpenAI bring-your-own-key, key in Keychain) or local (Ollama/Llamafile endpoint, no key); only redacted OCR/transcript text crosses the wire for a cloud engine, the dossier stays on-device, and the deterministic Confidence Policy / Sensitive Category Guardrail run with no model.
 - [x] Deep-link app reopen fallback.
+- [x] Open Captured URL in the default browser: **exclusively** the local desktop `open_captured_url(frame_id)` Tauri command (`apps/desktop/src-tauri/src/app_infra.rs`). It resolves a result's raw captured `browser_url` locally, scheme-gates it to `http`/`https`, and hands it to the `@tauri-apps/plugin-opener` plugin. There is **no broker or CLI path**: the broker's `OpenCapturedUrl` arm is rejected for every caller with `authorization_required` (it was a CSRF/replay sink, deliberately removed), and there is no `mnema open-url` subcommand (a CLI test asserts it fails to parse). The raw URL is local-only — it never enters a broker response, log, audit, or auth channel. Only the guarded host+path **Broker URL Context** crosses the broker boundary (see [ADR 0038](docs/adr/0038-brokered-browser-urls-are-read-time-guarded-host-path-raw-url-opens-app-mediated.md)).
 - [x] Mnema CLI sidecar for Apple targets.
 - [x] macOS release workflow for Apple Silicon.
 - [ ] Developer ID signing and notarization.
@@ -178,7 +180,7 @@ Research notes:
 - [ ] Implement “Exclude Current App” using Windows active-window identity, or hide/disable it.
 - [ ] Add Windows sensitive app recommendation catalog.
 - [ ] Add Windows known-browser catalog and browser capture disclosure.
-- [ ] Decide whether browser URL metadata is supported on Windows; do not add browser extension plumbing without an ADR.
+- [ ] Decide whether browser URL metadata is supported on Windows; do not add browser extension plumbing without an ADR. If the chosen source needs an OS-level permission (the way Gecko URLs need macOS Accessibility), add an equivalent permission-grant/recheck UX in Settings and onboarding mirroring the macOS Gecko Accessibility flow.
 
 ### Storage, access, and release
 
@@ -187,6 +189,7 @@ Research notes:
   - Candidate transports: named pipes, localhost loopback, or another app-mediated IPC.
 - [ ] Update `crates/cli` authorization request path for Windows.
 - [ ] Verify deep links and app launch fallback on Windows.
+- [ ] Verify Open Captured URL on Windows. This is exclusively the local desktop `open_captured_url(frame_id)` command via the `@tauri-apps/plugin-opener` plugin (the broker rejects `OpenCapturedUrl` and there is no CLI `open-url`); verify the captured http(s) URL opens in the default browser and that the raw URL never leaks into a broker response, log, or audit record. Note: the `open_external_url` `cmd /C start "" <url>` branch now receives only internal `mnema://` deep links (via `open_mnema_deep_link`), never captured URLs — verify that deep-link path resolves to the app, not a browser.
 - [~] Verify Ask AI (in-process Reasoning Engine) on Windows. There is no PI/Node runtime or shim to spawn — the agent loop runs in-process via `rig-core`. Verify brokered `search`/`timeline`/`show_text`/`recall_context` tool calls round-trip, the All-Retained broker scope/redaction holds, streaming/cancellation/background-completion work, and engine status reports correctly. Cloud-engine use is gated on the Windows Capture Index Key Store (above); a local Ollama/Llamafile engine needs no key.
 - [~] Verify Quick Recall launcher behavior on Windows. The non-macOS fallback shows/focuses a plain always-on-top window (no non-activating panel), so verify summon-without-stealing-foreground, focus-into-search-field, and click-away/blur dismissal, or implement a Windows-native equivalent.
 - [ ] Verify tray/menu behavior on Windows.
@@ -243,13 +246,14 @@ Linux support is not the immediate target, but these are the likely seams if/whe
   - Candidate identifiers: desktop file ID, app ID, executable path, process name.
 - [ ] Implement app candidate discovery and icons from desktop entries.
 - [ ] Design live app privacy exclusion semantics for PipeWire/portal capabilities.
-- [ ] Add Linux sensitive app and known-browser catalogs if metadata/disclosure is supported.
+- [ ] Add Linux sensitive app and known-browser catalogs if metadata/disclosure is supported. If a browser-URL source is added and needs an OS-level permission (the way Gecko URLs need macOS Accessibility), add an equivalent permission-grant/recheck UX in Settings and onboarding mirroring the macOS Gecko Accessibility flow.
 
 ### Storage, access, and release
 
 - [ ] Implement Linux Capture Index Key Store using Secret Service/libsecret/KWallet or a clear unsupported flow.
 - [~] Broker Authorization Channel can likely reuse Unix socket shape, but needs Linux config-dir/runtime-dir review.
 - [ ] Verify CLI sidecar packaging and app-mediated authorization flow on Linux.
+- [ ] Verify Open Captured URL across desktop environments. This is exclusively the local desktop `open_captured_url(frame_id)` command via the `@tauri-apps/plugin-opener` plugin (the broker rejects `OpenCapturedUrl` and there is no CLI `open-url`); verify the captured http(s) URL opens in the default browser under Wayland/X11 portals and that the raw URL never leaks into a broker response, log, or audit record. Note: the `open_external_url` `xdg-open <url>` branch now receives only internal `mnema://` deep links (via `open_mnema_deep_link`), never captured URLs — verify that deep-link path resolves to the app, not a browser.
 - [~] Verify Ask AI (in-process Reasoning Engine) on Linux. There is no PI/Node runtime or shim to spawn — the agent loop runs in-process via `rig-core`. Verify brokered `search`/`timeline`/`show_text`/`recall_context` tool calls round-trip under the All-Retained broker scope, streaming/cancellation/background-completion work, and engine status reports correctly across desktop environments. Cloud-engine use is gated on the Linux Capture Index Key Store; a local Ollama/Llamafile engine needs no key.
 - [~] Verify Quick Recall launcher behavior across desktop environments/compositors. The non-macOS fallback shows/focuses a plain always-on-top window (no non-activating panel); verify summon focus, always-on-top/all-workspaces behavior, and click-away/blur dismissal under Wayland/X11, or implement a compositor-appropriate equivalent.
 - [ ] Verify tray/menu behavior across desktop environments.
@@ -266,7 +270,8 @@ Use this map when turning checklist items into implementation slices.
 | `crates/capture-microphone/src/lib.rs` | AVFoundation microphone capture, device list/change notifications, permission prompt, VAD PCM feed | WASAPI/CPAL/PipeWire/etc. microphone adapter, device policy, permission UX |
 | `crates/capture-writers/src/lib.rs` | AVAssetWriter/AVAudioFile, `afconvert`, AVFoundation duration/decode helpers | Cross-platform writer, duration validation, decode/trim/convert |
 | `apps/desktop/src-tauri/src/native_capture/*` | Runtime active sessions and lifecycle operations are mostly macOS-gated | Promote runtime fields/adapters to platform-neutral traits or add Windows/Linux gated implementations |
-| `apps/desktop/src-tauri/src/native_capture_metadata.rs` | NSWorkspace, CoreGraphics window list, AppleScript browser URL probe | Foreground-window/app metadata and optional browser metadata per OS |
+| `apps/desktop/src-tauri/src/native_capture_metadata.rs` | NSWorkspace, CoreGraphics window list, AppleScript browser URL probe (Chromium/WebKit) | Foreground-window/app metadata and optional browser metadata per OS |
+| `apps/desktop/src-tauri/src/native_capture_browser_url_ax.rs` | macOS Accessibility (`AXUIElement`) reader for Gecko (Firefox/Zen) active-tab URL — `AXURL` off the focused→outermost web area, gated by `AXIsProcessTrusted`, with the first-sighting trust prompt | OS-specific Gecko URL source if a non-AppleScript browser must be supported, or explicit unsupported behavior |
 | `apps/desktop/src-tauri/src/native_capture/privacy.rs` | ScreenCaptureKit app exclusion filters | OS-specific live exclusion or explicit unsupported/degraded behavior |
 | `apps/desktop/src-tauri/src/native_capture_system_idle.rs` | CoreGraphics idle time | `GetLastInputInfo` on Windows; portal/X11/compositor path on Linux |
 | `apps/desktop/src-tauri/src/app_infra/frame_preview.rs` | AVAssetImageGenerator exact/scrub previews | FFmpeg/GStreamer/Media Foundation extractor |

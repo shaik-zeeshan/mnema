@@ -1,9 +1,11 @@
 use capture_metadata::MetadataSettings;
+#[cfg(target_os = "macos")]
+use capture_metadata::{browser_url_applescript, browser_url_strategy, BrowserUrlStrategy};
 use capture_metadata::{
-    browser_url_script_app_name, evaluate_privacy, is_known_browser_bundle,
-    metadata_collection_plan, sanitize_url, select_frontmost_pid_window, BrowserUrlProbeCache,
-    FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot,
-    PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
+    evaluate_privacy, is_known_browser_bundle, metadata_collection_plan, sanitize_url,
+    select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
+    MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot, PrivacyFilterDecision,
+    PrivacySettings, RawWindowInfo,
 };
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -27,6 +29,33 @@ impl CaptureMetadataRuntime {
 }
 
 pub type CaptureMetadataState = Mutex<CaptureMetadataRuntime>;
+
+/// Whether a metadata refresh may issue a *live* active-tab browser-URL read.
+///
+/// The Gecko (Firefox/Zen) URL is read via the Accessibility API
+/// ([`crate::native_capture::browser_url_ax::read_active_tab_url`]), which is
+/// wall-clock bounded but can still cost up to ~1.4s on a cold/slow read. That
+/// read is fine on the periodic metadata-refresh tick (its own background
+/// thread, off every capture lock), but several synchronous capture-lifecycle
+/// paths — segment rotation, inactivity/user resume, suspension and post-wake
+/// recovery — call into metadata collection *while holding the
+/// `NativeCaptureState` mutex*. Letting the live read run there would stall
+/// stop/refresh/pause/resume for as long as the read takes.
+///
+/// On those synchronous, lock-holding paths we pass [`Live::Cached`] so the
+/// probe serves the last cached URL (or `None`) and never issues an AX/AppleScript
+/// read. The privacy decision itself is app-bundle-only ([`evaluate_privacy`]
+/// ignores the URL), so the cached value is sufficient for the filter; the live
+/// Gecko URL is picked up by the next off-lock metadata tick (~1s cadence).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserUrlReadMode {
+    /// Issue a live browser-URL read on a cache miss. Only safe off every
+    /// capture lock — used by the periodic metadata-refresh tick.
+    Live,
+    /// Never issue a live read; serve the cached URL (or `None`). Used on
+    /// synchronous paths that hold the `NativeCaptureState` mutex.
+    Cached,
+}
 
 pub(super) type FrameMetadataSnapshotProvider =
     Arc<dyn Fn() -> Option<FrameMetadataSnapshot> + Send + Sync + 'static>;
@@ -104,13 +133,19 @@ pub fn refresh_metadata_state(
     state: &CaptureMetadataState,
     metadata: &MetadataSettings,
     privacy: &PrivacySettings,
+    browser_url_read_mode: BrowserUrlReadMode,
 ) -> PrivacyFilterDecision {
     let browser_url_probe_cache = state
         .lock()
         .expect("capture metadata state poisoned")
         .browser_url_probe_cache
         .clone();
-    let active = collect_active_window_metadata(metadata, privacy, &browser_url_probe_cache);
+    let active = collect_active_window_metadata(
+        metadata,
+        privacy,
+        &browser_url_probe_cache,
+        browser_url_read_mode,
+    );
     let snapshot = metadata.enabled.then(|| active.snapshot.clone()).flatten();
     let context = active.context;
     let decision = evaluate_privacy(privacy, &context);
@@ -209,19 +244,39 @@ struct ActiveWindowMetadata {
 #[cfg(target_os = "macos")]
 fn browser_url_probe_for_active_bundle(
     bundle_id: Option<&str>,
+    window_title: Option<&str>,
+    pid: Option<i32>,
     plan: MetadataCollectionPlan,
     cache: &BrowserUrlProbeCache,
+    read_mode: BrowserUrlReadMode,
     now: Instant,
 ) -> (Option<String>, Option<BrowserUrlProbeCache>) {
     let Some(bundle_id) = bundle_id.filter(|bundle_id| is_known_browser_bundle(bundle_id)) else {
         return (None, None);
     };
+    // On synchronous, lock-holding paths (`BrowserUrlReadMode::Cached`) a live
+    // active-tab read could stall capture stop/refresh/resume for as long as the
+    // read takes (Gecko AX reads cost up to ~1.4s). Serve the cached URL and let
+    // the next off-lock metadata tick refresh it. The cached value is sufficient:
+    // the privacy decision is app-bundle-only and ignores the URL.
+    if read_mode == BrowserUrlReadMode::Cached {
+        if !plan.collect_browser_url_for_metadata && !plan.collect_browser_url_for_privacy {
+            return (None, None);
+        }
+        // Don't refresh the probe cache from a cached hit/miss — leave the
+        // existing entry untouched so the next live tick re-probes normally.
+        let cached_url = cache
+            .cached_url_for(bundle_id, window_title, now)
+            .unwrap_or(None);
+        return (cached_url, None);
+    }
     if plan.collect_browser_url_for_privacy {
-        let raw_url = active_browser_url(bundle_id);
+        let raw_url = active_browser_url(bundle_id, pid);
         return (
             raw_url.clone(),
             Some(BrowserUrlProbeCache::from_probe(
                 Some(bundle_id.to_string()),
+                window_title.map(str::to_string),
                 raw_url,
                 now,
             )),
@@ -230,14 +285,15 @@ fn browser_url_probe_for_active_bundle(
     if !plan.collect_browser_url_for_metadata {
         return (None, None);
     }
-    if let Some(cached_url) = cache.cached_url_for(bundle_id, now) {
+    if let Some(cached_url) = cache.cached_url_for(bundle_id, window_title, now) {
         return (cached_url, None);
     }
-    let raw_url = active_browser_url(bundle_id);
+    let raw_url = active_browser_url(bundle_id, pid);
     (
         raw_url.clone(),
         Some(BrowserUrlProbeCache::from_probe(
             Some(bundle_id.to_string()),
+            window_title.map(str::to_string),
             raw_url,
             now,
         )),
@@ -248,6 +304,7 @@ fn collect_active_window_metadata(
     metadata: &MetadataSettings,
     _privacy: &PrivacySettings,
     browser_url_probe_cache: &BrowserUrlProbeCache,
+    browser_url_read_mode: BrowserUrlReadMode,
 ) -> ActiveWindowMetadata {
     let plan = metadata_collection_plan(metadata);
     if !plan.collect_active_window && !plan.collect_visible_windows {
@@ -270,8 +327,11 @@ fn collect_active_window_metadata(
         let window_title = active_window.window_title.clone();
         let (raw_browser_url, browser_url_probe_cache) = browser_url_probe_for_active_bundle(
             bundle_id.as_deref(),
+            window_title.as_deref(),
+            active_window.pid,
             plan,
             browser_url_probe_cache,
+            browser_url_read_mode,
             Instant::now(),
         );
         let snapshot_browser_url = raw_browser_url
@@ -310,6 +370,7 @@ fn collect_active_window_metadata(
         let _ = metadata;
         let _ = _privacy;
         let _ = plan;
+        let _ = browser_url_read_mode;
         ActiveWindowMetadata {
             snapshot: None,
             context: MetadataContext::default(),
@@ -466,17 +527,22 @@ fn cf_f64(
 }
 
 #[cfg(target_os = "macos")]
-fn active_browser_url(bundle_id: &str) -> Option<String> {
-    let app = browser_url_script_app_name(bundle_id)?;
-    let script = format!(
-        r#"tell application "{app}"
-try
-  return URL of active tab of front window
-on error
-  return ""
-end try
-end tell"#
-    );
+fn active_browser_url(bundle_id: &str, pid: Option<i32>) -> Option<String> {
+    match browser_url_strategy(bundle_id) {
+        Some(BrowserUrlStrategy::AppleScript(_)) => active_browser_url_applescript(bundle_id),
+        Some(BrowserUrlStrategy::Accessibility) => {
+            // First-sighting prompt: the first time a Gecko browser is frontmost
+            // while browser-URL capture is enabled and trust is missing, ask once.
+            crate::native_capture::browser_url_ax::maybe_prompt_on_gecko_frontmost();
+            pid.and_then(crate::native_capture::browser_url_ax::read_active_tab_url)
+        }
+        None => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn active_browser_url_applescript(bundle_id: &str) -> Option<String> {
+    let script = browser_url_applescript(bundle_id)?;
     run_osascript(&script)
         .trim()
         .split('\n')
@@ -540,7 +606,8 @@ mod tests {
         };
 
         let state = CaptureMetadataState::default();
-        let decision = refresh_metadata_state(&state, &metadata, &privacy);
+        let decision =
+            refresh_metadata_state(&state, &metadata, &privacy, BrowserUrlReadMode::Live);
         let runtime = state.lock().expect("capture metadata state should lock");
 
         assert_eq!(decision.excluded_bundle_ids, vec!["com.secret"]);
@@ -565,7 +632,8 @@ mod tests {
             }],
         };
 
-        let decision = refresh_metadata_state(&state, &metadata, &privacy);
+        let decision =
+            refresh_metadata_state(&state, &metadata, &privacy, BrowserUrlReadMode::Live);
         let runtime = state.lock().expect("capture metadata state should lock");
 
         assert_eq!(decision.excluded_bundle_ids, vec!["com.example.Secret"]);
@@ -616,6 +684,7 @@ mod tests {
             let mut runtime = state.lock().expect("capture metadata state should lock");
             runtime.browser_url_probe_cache = BrowserUrlProbeCache::from_probe(
                 Some("com.google.Chrome".to_string()),
+                Some("Old Tab — Example".to_string()),
                 Some("https://example.com/old-tab".to_string()),
                 Instant::now(),
             );
@@ -625,10 +694,37 @@ mod tests {
 
         let runtime = state.lock().expect("capture metadata state should lock");
         assert_eq!(
-            runtime
-                .browser_url_probe_cache
-                .cached_url_for("com.google.Chrome", Instant::now()),
+            runtime.browser_url_probe_cache.cached_url_for(
+                "com.google.Chrome",
+                Some("Old Tab — Example"),
+                Instant::now()
+            ),
             None
         );
+    }
+
+    // The strategy dispatch in `active_browser_url` routes a Chromium bundle to
+    // the AppleScript path and a Gecko bundle to the Accessibility path. We do
+    // not run osascript or a live Accessibility read here (those need a running
+    // browser + permission — that is a manual verify step); we assert the
+    // routing inputs the dispatch keys off. `browser_url_applescript` backs the
+    // AppleScript branch, `browser_url_strategy` selects the branch.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn active_browser_url_routes_chromium_to_applescript_and_gecko_away() {
+        // Chromium routes to AppleScript, which has a script to run.
+        assert!(matches!(
+            browser_url_strategy("com.google.Chrome"),
+            Some(BrowserUrlStrategy::AppleScript(_))
+        ));
+        assert!(browser_url_applescript("com.google.Chrome")
+            .is_some_and(|script| script.contains("active tab of front window")));
+        // Gecko routes to Accessibility and has no AppleScript surface at all, so
+        // dispatch never reaches the osascript path for it.
+        assert_eq!(
+            browser_url_strategy("org.mozilla.firefox"),
+            Some(BrowserUrlStrategy::Accessibility),
+        );
+        assert_eq!(browser_url_applescript("org.mozilla.firefox"), None);
     }
 }

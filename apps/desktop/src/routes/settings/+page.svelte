@@ -449,6 +449,7 @@
       void loadThirdPartyNotices();
       void c.appPrivacyExclusion.loadPrivacyAppCandidates();
       void c.appPrivacyExclusion.loadSensitiveCaptureRecommendations();
+      void c.geckoUrlAccess.load();
       loadBrokerGrants();
       loadMnemaCliStatus();
       void loadAskAiAvailability();
@@ -469,6 +470,16 @@
 
     // The microphone controller's two listeners live on the audio store.
     const stopMicListeners = c.audio.startListeners();
+
+    // Accessibility is granted outside the app (System Settings), so re-poll the
+    // optional Gecko browser-URL access on window focus to pick up a grant without
+    // making the user click Recheck. Skip once trusted; the store's in-flight latch
+    // keeps refocus storms from double-firing.
+    const onWindowFocus = () => {
+      if (!c.geckoUrlAccess.trusted) void c.geckoUrlAccess.recheck();
+    };
+    const hasWindow = typeof window !== "undefined";
+    if (hasWindow) window.addEventListener("focus", onWindowFocus);
 
     listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
       c.rec.onRecordingSettingsChanged(event.payload);
@@ -557,6 +568,7 @@
       unlistenSpeakerDownloadProgress?.();
       unlistenSemanticSearchDownloadProgress?.();
       unlistenUserContextChanged?.();
+      if (hasWindow) window.removeEventListener("focus", onWindowFocus);
     };
   });
 </script>

@@ -39,6 +39,7 @@ import {
 } from "./recording-validation";
 import { errorText, formatBytes } from "./format";
 import { createCliAccessStore } from "./cli-access.svelte";
+import { createGeckoUrlAccessStore } from "./gecko-url-access.svelte";
 import { createLogsStore } from "./logs.svelte";
 import { createAskAiStore, askAiReasonLabel as askAiReasonLabelCore } from "./ask-ai.svelte";
 import { createAboutStore } from "./about.svelte";
@@ -118,6 +119,9 @@ export class SettingsController {
     onRecordingSettingsLoaded: () => this.reseedSemanticSearchPickedModel(),
   });
   cliAccess = createCliAccessStore();
+  // Optional Gecko (Firefox/Zen) browser-URL access — surfaced in the capture
+  // Privacy panel, loaded on mount and re-polled on window focus.
+  geckoUrlAccess = createGeckoUrlAccessStore();
   logs = createLogsStore();
   askAi = createAskAiStore();
   about = createAboutStore();

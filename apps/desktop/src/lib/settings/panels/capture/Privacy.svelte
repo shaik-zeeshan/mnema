@@ -43,6 +43,48 @@
     {/snippet}
   </SettingRow>
 
+  {#if c.geckoUrlAccess.installed && rec.draftMetadataEnabled && rec.draftBrowserUrlMode !== "off"}
+    {@const gecko = c.geckoUrlAccess}
+    <SettingRow
+      label="Browser URL access (Firefox / Zen)"
+      description="Firefox and Zen have no scriptable URL like Chrome/Safari; reading their page address needs the macOS Accessibility permission."
+      full
+    >
+      {#snippet control()}
+        <div class="gecko-access">
+          <div class="permission-callout" class:permission-callout--ok={gecko.trusted}>
+            <div class="permission-callout__copy">
+              <span class="permission-callout__eyebrow">Accessibility</span>
+              <strong>
+                {gecko.installedNames.length > 0 ? gecko.installedNames.join(" / ") : "Firefox / Zen"}
+                · {gecko.trusted ? "Granted" : "Not granted"}
+              </strong>
+              <p>Lets Mnema capture the page address for Firefox and Zen. Enable Mnema under Privacy &amp; Security → Accessibility.</p>
+            </div>
+            {#if !gecko.trusted}
+              <button class="btn btn--ghost" onclick={() => gecko.request()} disabled={gecko.requesting}>
+                {gecko.requesting ? "Requesting" : "Grant access"}
+              </button>
+            {/if}
+          </div>
+          {#if !gecko.trusted}
+            <div class="row-actions">
+              <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.openSettings()}>
+                Open System Settings
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.recheck()} disabled={gecko.rechecking}>
+                {gecko.rechecking ? "Checking" : "Recheck"}
+              </button>
+            </div>
+          {/if}
+          {#if gecko.error}
+            <p class="group-hint group-hint--warn">Browser URL access request failed: {gecko.error}</p>
+          {/if}
+        </div>
+      {/snippet}
+    </SettingRow>
+  {/if}
+
   <SettingRow
     label="Excluded Apps"
     description="Apps whose visible content is never recorded."
@@ -68,5 +110,15 @@
   .exclusion-cell--open {
     position: relative;
     z-index: 10;
+  }
+
+  /* Optional Gecko browser-URL access — stack the callout, action buttons, and
+     any error vertically within the full-width control cell. */
+  .gecko-access {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
   }
 </style>

@@ -222,6 +222,7 @@ dependencies = [
  "fs2",
  "image",
  "libsqlite3-sys",
+ "log",
  "ocr",
  "rand 0.8.5",
  "rayon",
@@ -236,6 +237,7 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
+ "url",
 ]
 
 [[package]]

@@ -2492,9 +2492,15 @@ where
 
     if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
         if let Some(app_handle) = app_handle {
+            // This is the synchronous inactivity-resume path: it runs while the
+            // `NativeCaptureState` mutex is held (segment loop -> tick_inactivity).
+            // Use the cached browser URL so the bounded-but-slow Gecko AX read
+            // cannot stall the held lock; the next off-lock metadata tick will
+            // refresh the live URL.
             let (_, privacy_filter_update) = privacy::collect_privacy_filter_update(
                 app_handle,
                 privacy::PrivacyRefreshReason::FallbackPoll,
+                crate::native_capture::metadata::BrowserUrlReadMode::Cached,
             );
             let _ =
                 privacy::apply_privacy_filter_update(app_handle, runtime, privacy_filter_update)?;

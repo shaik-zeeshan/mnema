@@ -8873,3 +8873,28 @@ fn resume_screen_from_inactivity_keeps_system_audio_stream_when_writer_paused() 
         })
     );
 }
+
+// The Accessibility-status DTO lists exactly the Gecko browsers — those whose
+// URL strategy is the Accessibility API — and no AppleScript browsers. The
+// filter is the load-bearing part; `trusted`/`installed` are environment
+// dependent (a real TCC grant + an installed app), so we don't assert them here
+// — those are a manual `/verify` step.
+#[test]
+fn browser_url_accessibility_status_lists_only_gecko_browsers() {
+    use std::collections::BTreeSet;
+
+    let status = super::browser_url_accessibility_status();
+    let bundle_ids: BTreeSet<&str> = status
+        .gecko_browsers
+        .iter()
+        .map(|browser| browser.bundle_id.as_str())
+        .collect();
+
+    let expected: BTreeSet<&str> = ["org.mozilla.firefox", "app.zen-browser.zen"]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        bundle_ids, expected,
+        "Accessibility status should list exactly the Gecko (AX-strategy) browsers"
+    );
+}

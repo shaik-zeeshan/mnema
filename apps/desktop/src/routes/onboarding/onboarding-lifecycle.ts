@@ -52,6 +52,7 @@ export interface OnboardingLifecycleTarget {
   syncDrafts(next: RecordingSettings): void;
   buildSettingsRequest(): RecordingSettings;
   resetOptionalFeaturesOff(): void;
+  loadGeckoUrlAccess(): Promise<void>;
 }
 
 export async function loadOnboarding(target: OnboardingLifecycleTarget): Promise<void> {
@@ -85,6 +86,10 @@ export async function loadOnboarding(target: OnboardingLifecycleTarget): Promise
     target.ai.init();
     void target.appPrivacyExclusion.loadPrivacyAppCandidates();
     void target.appPrivacyExclusion.loadSensitiveCaptureRecommendations();
+    // Optional browser-URL access probe: non-fatal and self-contained (it swallows
+    // its own errors), so fire-and-forget like the privacy loaders above — a
+    // failure just leaves the optional Gecko row hidden.
+    void target.loadGeckoUrlAccess();
   } catch (err) {
     target.errorMessage = serializeError(err);
   } finally {
