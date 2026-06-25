@@ -39,11 +39,18 @@
   // description as supplementary text (mirrors Switch.svelte).
   const labelId = `checkbox-label-${Math.random().toString(36).slice(2, 9)}`;
   const descriptionId = `checkbox-desc-${Math.random().toString(36).slice(2, 9)}`;
+  // Forwarded to the bits-ui button (a labelable <button role="checkbox">) so
+  // the visible <label for> is part of the box's hit target: clicking the text
+  // natively activates the button (which clears any mixed state and fires
+  // onIndeterminateChange via the binding). No JS handler, so keyboard/AT stay
+  // on the button — no duplicate tab stop, no double-toggle.
+  const boxId = `checkbox-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
 <div class="checkbox-wrapper" class:checkbox-wrapper--disabled={disabled}>
   <BitsCheckbox.Root
     bind:checked
+    id={boxId}
     {disabled}
     bind:indeterminate
     {onCheckedChange}
@@ -72,14 +79,14 @@
     {/snippet}
   </BitsCheckbox.Root>
   {#if label || description}
-    <span class="checkbox-text">
+    <label class="checkbox-text" for={boxId}>
       {#if label}
         <span class="checkbox-label" id={labelId}>{label}</span>
       {/if}
       {#if description}
         <span class="checkbox-description" id={descriptionId}>{description}</span>
       {/if}
-    </span>
+    </label>
   {/if}
 </div>
 
@@ -156,6 +163,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    cursor: pointer;
   }
 
   .checkbox-label {

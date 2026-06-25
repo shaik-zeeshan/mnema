@@ -26,21 +26,27 @@
   // aria-describedby — otherwise the role="switch" has no accessible name.
   const labelId = `switch-label-${Math.random().toString(36).slice(2, 9)}`;
   const descriptionId = `switch-desc-${Math.random().toString(36).slice(2, 9)}`;
+  // Forwarded to the bits-ui button (a labelable <button role="switch">) so the
+  // visible <label for> is part of the toggle's hit target: clicking the text
+  // natively activates the button. No JS click handler (keyboard/AT stay on the
+  // button), so no duplicate tab stop and no double-toggle.
+  const switchId = `switch-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
 <div class="switch-wrapper" class:switch-wrapper--disabled={disabled}>
   {#if label || description}
-    <div class="switch-text">
+    <label class="switch-text" for={switchId}>
       {#if label}
         <span class="switch-label" id={labelId}>{label}</span>
       {/if}
       {#if description}
         <span class="switch-description" id={descriptionId}>{description}</span>
       {/if}
-    </div>
+    </label>
   {/if}
   <BitsSwitch.Root
     bind:checked
+    id={switchId}
     {disabled}
     {onCheckedChange}
     class="switch-track"
@@ -71,6 +77,7 @@
     flex-direction: column;
     gap: 2px;
     flex: 1;
+    cursor: pointer;
   }
 
   .switch-label {
@@ -104,6 +111,7 @@
 
   :global(.switch-track:hover:not([data-disabled])) {
     border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
   }
 
   :global(.switch-track:focus-visible) {

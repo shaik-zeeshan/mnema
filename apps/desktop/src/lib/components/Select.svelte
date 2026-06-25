@@ -201,6 +201,10 @@
     border-color: var(--app-border-hover);
   }
 
+  :global(.select-trigger:active) {
+    background: var(--app-surface-active);
+  }
+
   :global(.select-trigger:focus-visible) {
     border-color: var(--app-accent);
     box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);

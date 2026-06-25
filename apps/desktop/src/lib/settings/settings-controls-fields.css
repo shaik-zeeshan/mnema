@@ -77,7 +77,7 @@
     padding: 9px 18px;
     border-radius: 8px;
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: var(--text-sm);
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -98,6 +98,11 @@
     cursor: not-allowed;
   }
 
+  /* Pressed — shared nudge; each variant darkens its own resting fill below. */
+  .settings-shell .btn:not(:disabled):active {
+    transform: translateY(0.5px);
+  }
+
   .settings-shell .btn--ghost {
     background: transparent;
     color: var(--app-text);
@@ -108,6 +113,10 @@
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
+  }
+
+  .settings-shell .btn--ghost:not(:disabled):active {
+    background: var(--app-surface-active);
   }
 
   .settings-shell .btn--sm {
@@ -122,6 +131,10 @@
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
+  }
+
+  .settings-shell .btn--sm:not(:disabled):active {
+    background: var(--app-surface-active);
   }
 
   /* The About tab's update actions are the only primary buttons in this
@@ -142,6 +155,11 @@
     box-shadow: 0 0 14px var(--app-accent-glow);
   }
 
+  .settings-shell .btn--primary:not(:disabled):active {
+    background: color-mix(in srgb, var(--app-accent) 18%, transparent);
+    box-shadow: none;
+  }
+
   .settings-shell .btn--danger {
     background: var(--app-danger-bg);
     color: var(--app-danger);
@@ -153,6 +171,11 @@
     border-color: var(--app-danger);
     color: var(--app-danger);
     box-shadow: 0 0 14px color-mix(in srgb, var(--app-danger) 18%, transparent);
+  }
+
+  .settings-shell .btn--danger:not(:disabled):active {
+    background: color-mix(in srgb, var(--app-danger) 22%, transparent);
+    box-shadow: none;
   }
 
   .settings-shell .btn--danger:focus-visible {

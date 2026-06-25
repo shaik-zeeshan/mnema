@@ -179,6 +179,10 @@
     background: var(--app-surface-hover);
   }
 
+  .seg:not(.seg--active):not(:disabled):active {
+    background: var(--app-surface-active);
+  }
+
   .seg:focus-visible {
     box-shadow: 0 0 0 2px var(--app-accent-glow);
   }

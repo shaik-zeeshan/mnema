@@ -57,7 +57,7 @@
   }
 
   .field-warning:focus-visible {
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-warn) 22%, transparent);
     border-radius: 50%;
   }
 

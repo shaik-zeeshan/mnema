@@ -60,7 +60,7 @@
     background: var(--app-accent-bg);
     color: var(--app-accent);
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.02em;
   }

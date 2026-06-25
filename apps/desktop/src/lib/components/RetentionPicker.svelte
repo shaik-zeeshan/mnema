@@ -138,6 +138,10 @@
     background: var(--app-surface-hover);
   }
 
+  .preset:not(.preset--active):not(:disabled):active {
+    background: var(--app-surface-active);
+  }
+
   .preset:focus-visible {
     box-shadow: 0 0 0 2px var(--app-accent-glow);
   }

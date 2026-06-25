@@ -152,6 +152,11 @@
     color: var(--app-text-strong);
   }
 
+  .step-btn:not(:disabled):active {
+    background: var(--app-surface-active);
+    transform: translateY(0.5px);
+  }
+
   .step-btn:focus-visible {
     outline: none;
     border-color: var(--app-accent);

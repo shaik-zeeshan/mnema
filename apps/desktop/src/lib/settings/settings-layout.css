@@ -95,7 +95,7 @@
     border-radius: 6px;
     color: var(--app-text-muted);
     font-family: inherit;
-    font-size: 12.5px;
+    font-size: var(--text-base);
     cursor: pointer;
     user-select: none;
     transition: color 0.15s, background 0.15s;
@@ -145,7 +145,7 @@
     padding: 8px 10px 8px 32px;
     color: var(--app-text);
     font-family: inherit;
-    font-size: 12.5px;
+    font-size: var(--text-base);
     outline: none;
     transition: border-color 0.15s, box-shadow 0.15s;
   }
@@ -240,7 +240,7 @@
      left edge bar, accent-tinted icon, strong label. */
   .settings-shell .nav-item--active,
   .settings-shell .nav-item--active:hover {
-    background: var(--app-surface-hover);
+    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
     color: var(--app-text-strong);
   }
   .settings-shell .nav-item--active::before {
