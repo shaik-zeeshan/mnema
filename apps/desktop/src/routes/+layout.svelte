@@ -2240,6 +2240,10 @@
     border-color: var(--app-warn-border);
     background: var(--app-warn-bg);
   }
+  .notification-item--error {
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg);
+  }
   .notification-item__body {
     min-width: 0;
     display: flex;

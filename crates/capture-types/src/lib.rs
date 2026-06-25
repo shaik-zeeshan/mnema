@@ -63,6 +63,7 @@ mod tests {
             is_running: true,
             is_inactivity_paused: false,
             is_user_paused: false,
+            is_low_disk_suspended: false,
             requested_sources: None,
             output_files: None,
             source_sessions: Some(SourceSessions {
@@ -81,6 +82,7 @@ mod tests {
         assert_eq!(json["sourceSessions"]["screen"]["sessionId"], "scr-1");
         assert_eq!(json["sourceSessions"]["microphone"]["sessionId"], "mic-1");
         assert!(json["sourceSessions"]["systemAudio"].is_null());
+        assert_eq!(json["isLowDiskSuspended"], false);
         assert!(json.get("sessionId").is_none());
         assert!(json.get("startedAtUnixMs").is_none());
     }
