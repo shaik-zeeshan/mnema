@@ -812,7 +812,7 @@
             title={`Start recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Start recording"
           >
-            <span class="titlebar__record-glyph" aria-hidden="true">●</span>
+            <span class="titlebar__record-glyph" aria-hidden="true"></span>
             <span>{captureLoadingStart ? "Starting…" : "Record"}</span>
           </button>
         {/if}
@@ -1317,6 +1317,29 @@
     --app-accent-bg: #0d1f15;
     --app-accent-border: #1a4a30;
     --app-accent-glow: rgba(61, 255, 160, 0.18);
+    /* Dark ink for text placed ON the bright-green accent fill — stays dark
+       in both modes because the accent fill it sits on is bright in both. */
+    --app-accent-contrast: #07120c;
+
+    /* Brand monospace face. Referenced by 20+ rules across the app via
+       `var(--app-font-mono, ...)`; defining it here makes the brand face
+       resolve everywhere instead of silently falling back. Mode-independent. */
+    --app-font-mono: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+      monospace;
+
+    /* Shared focus-visible rings (mode-independent; the accent-glow they key
+       off is per-mode, so the ring adapts to the active theme automatically). */
+    --app-ring: 0 0 0 3px var(--app-accent-glow);
+    --app-ring-danger: 0 0 0 3px
+      color-mix(in srgb, var(--app-danger) 30%, transparent);
+
+    /* Type scale (mode-independent). 6 integer steps consumed app-wide. */
+    --text-xs: 10px;
+    --text-sm: 11px;
+    --text-base: 12px;
+    --text-md: 13px;
+    --text-lg: 16px;
+    --text-xl: 20px;
 
     --app-warn: #d6a14a;
     --app-warn-strong: #c47a30;
@@ -1467,6 +1490,8 @@
     --app-accent-bg: #e6f4ec;
     --app-accent-border: #9bd3b4;
     --app-accent-glow: rgba(31, 122, 74, 0.16);
+    /* Dark ink on the bright accent fill — same as dark mode by design. */
+    --app-accent-contrast: #07120c;
 
     --app-warn: #9a5a12;
     --app-warn-strong: #7f4300;
@@ -1555,8 +1580,7 @@
     min-height: 100%;
     background-color: var(--app-bg);
     color: var(--app-fg);
-    font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
-      "Cascadia Code", "Fira Code", monospace;
+    font-family: var(--app-font-mono);
     font-size: 13px;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
@@ -1814,7 +1838,7 @@
   }
   .surface-toggle button {
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-base);
     line-height: 1;
     letter-spacing: 0.02em;
     display: inline-flex;
@@ -1831,6 +1855,18 @@
   }
   .surface-toggle button:hover {
     color: var(--app-text-strong);
+  }
+  .surface-toggle button:not(.active):hover {
+    background: var(--app-surface-hover);
+  }
+  .surface-toggle button:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .surface-toggle button:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
   }
   .surface-toggle button.active {
     background: var(--app-accent-bg);
@@ -1884,6 +1920,13 @@
   @keyframes titlebar-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.55; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .titlebar__status--running .titlebar__status-dot,
+    .titlebar__source-dot {
+      animation: none;
+    }
   }
 
   /* ── Per-source recording pills ───────────────────────────────
@@ -2063,6 +2106,15 @@
     opacity: 0.4;
     cursor: not-allowed;
   }
+  .titlebar__record:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .titlebar__record:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
+  }
   .titlebar__record--pause {
     background: var(--app-surface-raised);
     color: var(--app-text);
@@ -2104,21 +2156,17 @@
   }
   .titlebar__record-glyph {
     display: inline-block;
-    width: 8px;
-    height: 8px;
-    line-height: 1;
-    text-align: center;
+    width: 7px;
+    height: 7px;
+    background: currentColor;
+    border-radius: 50%;
     color: var(--app-record-glyph-start);
-    font-size: 12px;
   }
   .titlebar__record--stop .titlebar__record-glyph {
     color: var(--app-record-glyph-stop);
   }
   .titlebar__record-glyph--square {
-    background: currentColor;
     border-radius: 1px;
-    width: 7px;
-    height: 7px;
   }
 
   /* ── Surface actions ──────────────────────────────────────── */
@@ -2151,6 +2199,15 @@
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
     color: var(--app-accent-strong);
+  }
+  .titlebar__settings:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .titlebar__settings:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
   }
   .titlebar__settings-icon {
     display: block;
@@ -2191,7 +2248,7 @@
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border);
     border-radius: 8px;
-    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
   }
   .notification-popover__head {
     display: flex;
@@ -2239,6 +2296,20 @@
   .notification-item--warning {
     border-color: var(--app-warn-border);
     background: var(--app-warn-bg);
+  }
+  .notification-item--error {
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg-soft);
+  }
+  .notification-item--error .notification-item__title {
+    color: var(--app-danger-text);
+  }
+  .notification-item--info {
+    border-color: var(--app-info-border);
+    background: var(--app-info-bg);
+  }
+  .notification-item--info .notification-item__title {
+    color: var(--app-info);
   }
   .notification-item__body {
     min-width: 0;
@@ -2374,9 +2445,9 @@
     overflow-y: auto;
     border: 1px solid var(--app-border-strong);
     border-radius: 18px;
-    background: var(--app-surface);
+    background: var(--app-surface-raised);
     color: var(--app-text);
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
     padding: 18px;
   }
 
@@ -2402,6 +2473,7 @@
     color: var(--app-text-strong);
     font-size: 18px;
     line-height: 1.15;
+    letter-spacing: -0.02em;
   }
 
   .shortcut-help__close {
