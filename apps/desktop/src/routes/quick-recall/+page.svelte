@@ -758,6 +758,10 @@
   // it to distinguish an in-help click (keep open) from an outside click (close).
   let syntaxHelpEl = $state<HTMLDivElement | null>(null);
   const SYNTAX_HELP_POPOVER_ID = "quick-recall-syntax-help";
+  // Stable id for the disabled-Ask-AI reason line, referenced by the disabled
+  // button's aria-describedby so keyboard/AT users reach the reason (the native
+  // `title` tooltip is mouse-only).
+  const ASK_UNAVAILABLE_HINT_ID = "quick-recall-ask-unavailable-hint";
 
   function toggleSyntaxHelp(): void {
     syntaxHelpOpen = !syntaxHelpOpen;
@@ -3551,6 +3555,7 @@
               aria-label="Search your captures"
               role="combobox"
               aria-expanded={pickerOpen || resultCount > 0}
+              aria-keyshortcuts="ArrowUp ArrowDown Enter Escape Control+Enter Control+O"
               aria-controls={pickerOpen
                 ? "quick-recall-picker"
                 : "quick-recall-results-list"}
@@ -3640,6 +3645,7 @@
               class="quick-recall__ask-button"
               onclick={() => void activateAskAi()}
               aria-label="Ask AI"
+              aria-keyshortcuts="Control+Enter"
             >
               Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⌃↵</span>
             </button>
@@ -3649,6 +3655,7 @@
               class="quick-recall__ask-button quick-recall__ask-button--disabled"
               disabled
               aria-label={askUnavailableHint ?? "Ask AI unavailable"}
+              aria-describedby={ASK_UNAVAILABLE_HINT_ID}
               title={askUnavailableHint ?? "Ask AI unavailable"}
             >
               Ask AI
@@ -3692,8 +3699,15 @@
           <p class="quick-recall__parse-error" role="alert">{parseErrorMessage}</p>
         {/if}
 
-        {#if askUnavailableHint}
-          <p class="quick-recall__ask-hint">{askUnavailableHint}</p>
+        <!-- Always-present describedby target for the disabled Ask AI button, so
+             keyboard/AT users get the reason the native `title` tooltip can't
+             surface. Rendered whenever Ask AI is unavailable (mirroring the
+             disabled button's condition) with a fallback so the reference never
+             dangles before the availability probe resolves. -->
+        {#if !askAvailable}
+          <p id={ASK_UNAVAILABLE_HINT_ID} class="quick-recall__ask-hint">
+            {askUnavailableHint ?? "Ask AI unavailable"}
+          </p>
         {/if}
 
         {#if pickerOpen}
@@ -3938,6 +3952,7 @@
             class="quick-recall__back"
             onclick={() => void backToSearch()}
             aria-label="Back to search"
+            aria-keyshortcuts="Escape"
           >
             ← Back
           </button>
@@ -3956,6 +3971,7 @@
               spellcheck="false"
               placeholder="Ask anything about your captures…"
               aria-label="Ask AI a question"
+              aria-keyshortcuts="Enter Escape"
               onkeydown={handleAskInputKeydown}
             ></textarea>
           {/if}
@@ -4439,7 +4455,7 @@
   }
 
   .quick-recall__input::placeholder {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   /* Slice 4: ghost-text mirror. Overlays the input exactly, rendering the typed
@@ -4468,7 +4484,7 @@
   }
 
   .quick-recall__ghost-suffix {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__footer {
@@ -4573,6 +4589,12 @@
     border-color: var(--app-accent);
   }
 
+  .quick-recall__semantic-hint:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
   /* Slice 4: feature-teaching orientation view shown pre-query (belowMinimum).
      Centered in the results area so the empty frame reads as deliberate. */
   .quick-recall__orient {
@@ -4661,21 +4683,24 @@
     gap: 8px;
   }
 
+  /* Match the resting SearchResultCard chrome (transparent border + fill, 9px
+     radius) so a skeleton doesn't visually flip into a frameless card when the
+     real results arrive — the shimmer blocks inside carry the loading signal. */
   .quick-recall__skeleton-row {
     display: flex;
     gap: 11px;
     align-items: stretch;
     padding: 6px 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-subtle);
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
   }
 
   .quick-recall__skeleton-thumb {
     flex-shrink: 0;
     width: 96px;
     aspect-ratio: 16 / 10;
-    border-radius: 6px;
+    border-radius: 7px;
     background: var(--app-bg);
     border: 1px solid var(--app-border);
   }
@@ -4756,6 +4781,12 @@
     color: var(--app-text-strong);
   }
 
+  .quick-recall__ask-button:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
   .quick-recall__ask-button:not(:disabled):not(.quick-recall__ask-button--disabled):active {
     background: var(--app-surface-active);
   }
@@ -4806,6 +4837,12 @@
   .quick-recall__syntax-trigger:hover {
     border-color: var(--app-accent);
     color: var(--app-text-strong);
+  }
+
+  .quick-recall__syntax-trigger:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   /* The popover floats below-right of the trigger, anchored to the wrapper. It's
@@ -4938,6 +4975,11 @@
     background: color-mix(in srgb, var(--app-accent) 18%, transparent);
   }
 
+  .quick-recall__chip-remove:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+
   /* Slice 3: inline parse-error line under the input. Shares the chip band's
      horizontal padding so it lines up with the chips it sits alongside, and uses
      the danger ramp (same as .quick-recall__state--error) — a malformed filter is
@@ -4997,6 +5039,17 @@
     cursor: pointer;
   }
 
+  /* Mouse-hover feedback for the clickable rows: a quiet neutral surface that
+     stays clearly below the accent-tinted keyboard --selected highlight, so a
+     pointer user gets feedback without it reading as the roving selection.
+     Excludes disabled rows (they never highlight) and the already-selected row. */
+  .quick-recall__picker-item:not(.quick-recall__picker-item--disabled):not(
+      .quick-recall__picker-item--selected
+    ):hover {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+
   .quick-recall__picker-item--selected {
     background: color-mix(in srgb, var(--app-accent) 12%, transparent);
     border-color: var(--app-accent-border);
@@ -5029,7 +5082,7 @@
     flex-shrink: 0;
     font-size: 11.5px;
     line-height: 1.4;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__picker-hint code {
@@ -5051,7 +5104,7 @@
     min-width: 0;
     font-size: 11.5px;
     line-height: 1.3;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -5112,6 +5165,12 @@
     color: var(--app-text-strong);
   }
 
+  .quick-recall__back:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
   .quick-recall__back:not(:disabled):active {
     background: var(--app-surface-active);
   }
@@ -5144,7 +5203,7 @@
   }
 
   .quick-recall__ask-input::placeholder {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__answer-area {
@@ -5212,7 +5271,7 @@
   }
 
   .quick-recall__composer-input::placeholder {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__composer-input:disabled {
@@ -5361,6 +5420,12 @@
     border-color: var(--app-accent);
   }
 
+  .quick-recall__copy:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
   .quick-recall__copy:not(:disabled):active {
     transform: translateY(1px);
   }
@@ -5403,6 +5468,12 @@
     background: var(--app-accent-bg);
   }
 
+  .quick-recall__handoff:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
   .quick-recall__handoff:not(:disabled):active {
     transform: translateY(1px);
   }
@@ -5432,6 +5503,12 @@
   .quick-recall__retry:hover {
     border-color: var(--app-accent);
     color: var(--app-text-strong);
+  }
+
+  .quick-recall__retry:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .quick-recall__retry:not(:disabled):active {
@@ -5490,6 +5567,12 @@
   .quick-recall__activity-chip:hover {
     border-color: var(--app-border-hover);
     color: var(--app-text);
+  }
+
+  .quick-recall__activity-chip:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .quick-recall__activity-caret {
