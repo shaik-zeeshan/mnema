@@ -192,7 +192,9 @@
           {/if}
         </section>
 
-        <!-- 2. The full heatmap at modal width. -->
+        <!-- 2. The full heatmap at modal width. In focus mode the Heatmap renders
+             the 3-hue legend as colored swatches (deep / mixed / scattered), so
+             each band's colour is shown, not just named. -->
         <section class="section">
           <h3 class="section__title">By time of day</h3>
           <Heatmap
@@ -253,8 +255,9 @@
     flex-direction: column;
     border: 1px solid var(--app-border-strong);
     border-radius: 18px;
-    background: var(--app-surface);
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+    /* Depth comes from the lighter raised surface, not a heavy drop shadow. */
+    background: var(--app-surface-raised);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
   }
   .focus-modal__header {
     display: flex;
@@ -302,6 +305,12 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
     outline: none;
+  }
+  .focus-modal__close:focus-visible {
+    box-shadow: var(--app-ring);
+  }
+  .focus-modal__close:not(:disabled):active {
+    transform: translateY(1px);
   }
   .focus-modal__body {
     overflow-y: auto;

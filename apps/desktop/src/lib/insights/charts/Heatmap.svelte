@@ -30,6 +30,29 @@
     "--chart-grey-5",
   ];
 
+  // The focus mode's three intensity bands, in cellStyle's bucket order
+  // (deep ≥ 0.66, mid ≥ 0.33, distracted < 0.33). When a focus-mode legend is
+  // supplied we render its `·`-separated labels next to these swatches so the
+  // colour key is shown, not just named. Extra label segments fall back to a
+  // plain dot; missing ones simply aren't rendered.
+  const focusLegendVars = ["--focus-deep", "--focus-mid", "--focus-distracted"];
+
+  // Parsed legend items for focus mode: each `·`-separated label paired with its
+  // band colour token. Empty for grey mode or when no legend is given.
+  const focusLegendItems = $derived.by<{ label: string; colorVar: string }[]>(
+    () => {
+      if (colorMode !== "focus" || !legend) return [];
+      return legend
+        .split("·")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((label, i) => ({
+          label,
+          colorVar: focusLegendVars[i] ?? focusLegendVars[focusLegendVars.length - 1],
+        }));
+    },
+  );
+
   function cellStyle(value: number): string {
     const v = Math.max(0, Math.min(1, value));
     if (v <= 0) {
@@ -61,7 +84,21 @@
       </div>
     {/each}
   </div>
-  {#if legend}
+  {#if focusLegendItems.length > 0}
+    <!-- Focus mode: colored swatches so each band's hue is shown, not just named. -->
+    <div class="legend legend--swatched">
+      {#each focusLegendItems as item (item.label)}
+        <span class="legend__item">
+          <span
+            class="legend__swatch"
+            style="background:var({item.colorVar});"
+            aria-hidden="true"
+          ></span>
+          {item.label}
+        </span>
+      {/each}
+    </div>
+  {:else if legend}
     <div class="legend">{legend}</div>
   {/if}
 </div>
@@ -100,5 +137,22 @@
     margin-top: 9px;
     font-size: 9.5px;
     color: var(--app-text-subtle);
+  }
+  /* Focus-mode key: colored swatch + label per intensity band. */
+  .legend--swatched {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .legend__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .legend__swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
   }
 </style>

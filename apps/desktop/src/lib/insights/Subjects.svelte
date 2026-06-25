@@ -145,7 +145,10 @@
 
   // Guards a single in-flight Pin/Dismiss action by conclusion id, so the
   // expanded detail's per-conclusion buttons disable while one is running.
+  // `actionKind` records WHICH action is running so only that button shows its
+  // busy affordance (the sibling stays disabled but unlabelled).
   let actionId = $state<number | null>(null);
+  let actionKind = $state<"pin" | "dismiss" | null>(null);
 
   // ---- Slice 4: realtime staging buffer + refresh pill --------------------
   // Engine `user_context_changed` events never reflow the page while the user
@@ -325,6 +328,7 @@
   async function togglePinned(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
+    actionKind = "pin";
     try {
       await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
       applyConclusions(await fetchConclusions());
@@ -332,12 +336,14 @@
       loadError = error instanceof Error ? error.message : String(error);
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
   async function dismiss(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
+    actionKind = "dismiss";
     try {
       await invoke("user_context_dismiss_conclusion", { id: c.id });
       applyConclusions(await fetchConclusions());
@@ -345,6 +351,7 @@
       loadError = error instanceof Error ? error.message : String(error);
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
@@ -767,24 +774,37 @@
                       type="button"
                       class="btn"
                       class:btn--accent={c.pinned}
+                      class:btn--busy={actionId === c.id && actionKind === "pin"}
                       disabled={actionId !== null}
                       onclick={(e) => {
                         e.stopPropagation();
                         void togglePinned(c);
                       }}
                     >
-                      {c.pinned ? "★ Pinned" : "Pin"}
+                      {#if actionId === c.id && actionKind === "pin"}
+                        <span class="btn-spinner" aria-hidden="true"></span>
+                        {c.pinned ? "Unpinning…" : "Pinning…"}
+                      {:else}
+                        {c.pinned ? "★ Pinned" : "Pin"}
+                      {/if}
                     </button>
                     <button
                       type="button"
                       class="btn"
+                      class:btn--busy={actionId === c.id &&
+                        actionKind === "dismiss"}
                       disabled={actionId !== null}
                       onclick={(e) => {
                         e.stopPropagation();
                         void dismiss(c);
                       }}
                     >
-                      Dismiss
+                      {#if actionId === c.id && actionKind === "dismiss"}
+                        <span class="btn-spinner" aria-hidden="true"></span>
+                        Dismissing…
+                      {:else}
+                        Dismiss
+                      {/if}
                     </button>
                   </span>
                 </div>
@@ -1144,6 +1164,13 @@
   .sort-seg button:hover {
     color: var(--app-text-strong);
   }
+  .sort-seg button:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .sort-seg button:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .sort-seg button.active {
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
@@ -1188,6 +1215,9 @@
     border-color: var(--app-accent);
     color: var(--app-accent-contrast, var(--app-text-strong));
     transform: translateY(-1px);
+  }
+  .conv-refresh-pill:not(:disabled):active {
+    transform: translateY(0);
   }
   .conv-refresh-pill:focus-visible {
     outline: 2px solid var(--app-accent-border);
@@ -1253,6 +1283,13 @@
   .conv-tier-more:hover {
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
+  }
+  .conv-tier-more:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .conv-tier-more:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .conv-tier--faded .conv-tier-head .section-title {
     color: var(--app-text-subtle);
@@ -1418,9 +1455,20 @@
   .conv-row:hover .conv-caret {
     color: var(--app-text-muted);
   }
+  .conv-caret:not(:disabled):active {
+    transform: translateY(1px);
+  }
   .conv-caret.is-open {
     transform: rotate(90deg);
     color: var(--app-accent-strong);
+  }
+  .conv-caret.is-open:not(:disabled):active {
+    transform: rotate(90deg) translateY(1px);
+  }
+  .conv-caret:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 4px;
   }
 
   /* ---- Expanded detail (interaction skeleton; Slice 3 fills content) ---- */
@@ -1581,9 +1629,36 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* Busy: the acting button stays legible (no dim) while its sibling dims via
+     :disabled, so the spinner + "Pinning…/Dismissing…" label reads clearly. */
+  .btn--busy:disabled {
+    opacity: 1;
+    cursor: progress;
+  }
+  .btn-spinner {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid var(--app-border-hover);
+    border-top-color: var(--app-text-strong);
+    animation: btn-spin 0.6s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes btn-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .btn--accent {
     border-color: var(--app-accent-border);
@@ -1647,6 +1722,16 @@
     }
     .conv-refresh-pill:hover {
       transform: none;
+    }
+    .btn:not(:disabled):active,
+    .conv-caret:not(:disabled):active,
+    .conv-caret.is-open:not(:disabled):active,
+    .sort-seg button:not(:disabled):active,
+    .conv-tier-more:not(:disabled):active {
+      transform: none;
+    }
+    .btn-spinner {
+      animation: none;
     }
   }
 </style>

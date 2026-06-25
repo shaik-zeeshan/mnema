@@ -50,24 +50,16 @@
   const _interface = () => onBack;
   void _interface;
 
-  const CAT_PALETTE = [
-    "--cat-creating",
-    "--cat-communication",
-    "--cat-meetings",
-    "--cat-research",
-    "--cat-learning",
-    "--cat-organizing",
-    "--cat-personal",
-    "--cat-entertainment",
-  ] as const;
-
   type Trend = "up" | "steady" | "down" | "faded";
 
   let view = $state<SubjectView | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
   let selectedId = $state<number | null>(null);
+  // In-flight Pin/Dismiss guard. `actionKind` records WHICH action is running so
+  // only that button shows its busy affordance (the sibling stays disabled).
   let actionId = $state<number | null>(null);
+  let actionKind = $state<"pin" | "dismiss" | null>(null);
 
   // Activities resolved lazily for richer evidence rows + Timeline handoff. Maps
   // activityId → Activity (title/time/category + raw evidence refs).
@@ -77,22 +69,22 @@
   // Best-effort; rows without a resolved preview keep the colored placeholder.
   let thumbnailCache = $state<Map<number, string>>(new Map());
 
-  function colorVarFor(index: number): string {
-    return CAT_PALETTE[index % CAT_PALETTE.length];
+  // Single-hue magnitude ramp (mirrors MiniBars): confidence is encoded by
+  // INTENSITY of one accent hue, not by a category colour. A high-confidence
+  // conclusion reads as pure accent; lower confidence blends further toward the
+  // track surface. Using the --cat-* palette here previously implied a category
+  // encoding the data doesn't carry — this ramp removes that false signal.
+  function magnitudeFill(confidence: number): string {
+    const v = Math.max(0, Math.min(1, confidence));
+    // Blend up to 62% into the track surface at zero confidence; pure accent at 1.
+    const fade = Math.round((1 - v) * 62);
+    return `color-mix(in oklab, var(--app-accent) ${100 - fade}%, var(--app-surface-hover))`;
   }
 
-  // Stable display order: conclusions sorted by confidence desc. Index in this
-  // ordering drives the colour assignment (so the chart line, legend swatch,
-  // and inspector dot all agree).
+  // Stable display order: conclusions sorted by confidence desc.
   const orderedConclusions = $derived.by<Conclusion[]>(() => {
     if (!view) return [];
     return [...view.conclusions].sort((a, b) => b.confidence - a.confidence);
-  });
-
-  const colorById = $derived.by<Map<number, string>>(() => {
-    const m = new Map<number, string>();
-    orderedConclusions.forEach((c, i) => m.set(c.id, colorVarFor(i)));
-    return m;
   });
 
   const trajectoryById = $derived.by<Map<number, SubjectTrajectory>>(() => {
@@ -328,6 +320,7 @@
   async function togglePinned(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
+    actionKind = "pin";
     try {
       await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
       await loadSubject();
@@ -335,12 +328,14 @@
       loadError = error instanceof Error ? error.message : String(error);
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
   async function dismiss(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
+    actionKind = "dismiss";
     try {
       await invoke("user_context_dismiss_conclusion", { id: c.id });
       await loadSubject();
@@ -348,6 +343,7 @@
       loadError = error instanceof Error ? error.message : String(error);
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
@@ -526,7 +522,7 @@
                       <span
                         class="rank-fill"
                         class:rank-fill--faded={c.status === "faded"}
-                        style="width:{pct(c.confidence)}%; background:var({colorById.get(c.id)});"
+                        style="width:{pct(c.confidence)}%; background:{magnitudeFill(c.confidence)};"
                       ></span>
                     </span>
                     <span class="rank-pct">{pct(c.confidence)}%</span>
@@ -558,7 +554,7 @@
           <div class="insp-conclusion">
             <span
               class="ic-dot"
-              style="background: var({colorById.get(selectedConclusion.id)});"
+              style="background: {magnitudeFill(selectedConclusion.confidence)};"
             ></span>
             {selectedConclusion.statement}
             <span class="insp-conf">
@@ -579,18 +575,32 @@
                 type="button"
                 class="btn"
                 class:btn--accent={selectedConclusion.pinned}
+                class:btn--busy={actionId === selectedConclusion.id &&
+                  actionKind === "pin"}
                 disabled={actionId !== null}
                 onclick={() => void togglePinned(selectedConclusion)}
               >
-                {selectedConclusion.pinned ? "★ Pinned" : "Pin"}
+                {#if actionId === selectedConclusion.id && actionKind === "pin"}
+                  <span class="btn-spinner" aria-hidden="true"></span>
+                  {selectedConclusion.pinned ? "Unpinning…" : "Pinning…"}
+                {:else}
+                  {selectedConclusion.pinned ? "★ Pinned" : "Pin"}
+                {/if}
               </button>
               <button
                 type="button"
                 class="btn"
+                class:btn--busy={actionId === selectedConclusion.id &&
+                  actionKind === "dismiss"}
                 disabled={actionId !== null}
                 onclick={() => void dismiss(selectedConclusion)}
               >
-                Dismiss
+                {#if actionId === selectedConclusion.id && actionKind === "dismiss"}
+                  <span class="btn-spinner" aria-hidden="true"></span>
+                  Dismissing…
+                {:else}
+                  Dismiss
+                {/if}
               </button>
             </div>
           </div>
@@ -772,6 +782,14 @@
   .rank-row:hover {
     background: var(--app-surface-hover);
   }
+  .rank-row:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .rank-row:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
   .rank-row.is-selected {
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
@@ -873,6 +891,9 @@
   }
 
   .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font: inherit;
     font-size: 11.5px;
     padding: 3px 10px;
@@ -890,9 +911,36 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* Busy: the acting button stays legible (no dim) while its sibling dims via
+     :disabled, so the spinner + "Pinning…/Dismissing…" label reads clearly. */
+  .btn--busy:disabled {
+    opacity: 1;
+    cursor: progress;
+  }
+  .btn-spinner {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid var(--app-border-hover);
+    border-top-color: var(--app-text-strong);
+    animation: btn-spin 0.6s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes btn-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .btn--accent {
     border-color: var(--app-accent-border);
@@ -1063,6 +1111,15 @@
   .ev-link:hover {
     color: var(--app-accent);
   }
+  .ev-link:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .ev-link:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+    box-shadow: var(--app-ring);
+    border-radius: 3px;
+  }
 
   .insp-subhead {
     padding: 9px 13px 5px;
@@ -1168,6 +1225,23 @@
     font-size: 11.5px;
     color: var(--app-text-muted);
     line-height: 1.6;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rank-row,
+    .btn,
+    .ev-item,
+    .ev-link {
+      transition: none;
+    }
+    .btn:not(:disabled):active,
+    .rank-row:not(:disabled):active,
+    .ev-link:not(:disabled):active {
+      transform: none;
+    }
+    .btn-spinner {
+      animation: none;
+    }
   }
 
   @media (max-width: 900px) {

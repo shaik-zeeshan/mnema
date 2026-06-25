@@ -151,8 +151,9 @@
     flex-direction: column;
     border: 1px solid var(--app-border-strong);
     border-radius: 18px;
-    background: var(--app-surface);
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+    /* Depth comes from the lighter raised surface, not a heavy drop shadow. */
+    background: var(--app-surface-raised);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
   }
   .app-modal__header {
     display: flex;
@@ -200,6 +201,12 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
     outline: none;
+  }
+  .app-modal__close:focus-visible {
+    box-shadow: var(--app-ring);
+  }
+  .app-modal__close:not(:disabled):active {
+    transform: translateY(1px);
   }
   .app-modal__body {
     overflow-y: auto;
@@ -313,6 +320,9 @@
     .app-modal__close,
     .app-bar__fill {
       transition: none;
+    }
+    .app-modal__close:not(:disabled):active {
+      transform: none;
     }
   }
 </style>
