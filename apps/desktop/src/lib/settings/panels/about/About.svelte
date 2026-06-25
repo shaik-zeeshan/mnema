@@ -119,7 +119,7 @@
         onclick={copyAboutDetails}
         aria-label="Copy version and build details to the clipboard"
       >
-        {aboutDetailsCopied ? "Copied" : "Copy details"}
+        <span class="copy-status" aria-live="polite">{aboutDetailsCopied ? "Copied" : "Copy details"}</span>
       </button>
     {/snippet}
   </SettingRow>
@@ -245,7 +245,7 @@
             disabled={!thirdPartyNotices || loadingThirdPartyNotices}
             aria-label="Copy the full third-party notices to the clipboard"
           >
-            {thirdPartyNoticesCopied ? "Copied" : "Copy notices"}
+            <span class="copy-status" aria-live="polite">{thirdPartyNoticesCopied ? "Copied" : "Copy notices"}</span>
           </button>
         </div>
 
@@ -318,6 +318,14 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+  }
+
+  /* The copy buttons swap their label to "Copied" on success; reserve the
+     widest label's width so the button doesn't reflow narrower mid-action. */
+  .copy-status {
+    display: inline-block;
+    min-width: 6.5em;
+    text-align: center;
   }
 
 </style>

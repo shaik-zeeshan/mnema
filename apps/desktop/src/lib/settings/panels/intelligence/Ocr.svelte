@@ -204,6 +204,7 @@
         <input
           id="ocr-tesseract-whitelist"
           class="text-input"
+          aria-label="Tesseract character whitelist"
           bind:value={rec.draftOcrTesseractCharWhitelist}
           disabled={!rec.draftOcrEnabled}
           placeholder="Optional, e.g. ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"

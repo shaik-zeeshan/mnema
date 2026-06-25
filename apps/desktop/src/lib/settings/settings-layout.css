@@ -185,7 +185,7 @@
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .settings-shell .nav-item {
@@ -329,7 +329,7 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
     font-family: var(--app-font-mono, ui-monospace, monospace);
     white-space: nowrap;
   }

@@ -8,6 +8,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
 
   const c = getSettingsController();
   const cliAccess = c.cliAccess;
@@ -65,8 +66,8 @@
             {/if}
           </div>
           <div class="row-actions">
-            <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
-              {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
+            <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} aria-busy={mnemaCliInstalling} onclick={installMnemaCli}>
+              {#if mnemaCliInstalling}<ButtonSpinner />Installing…{:else}{mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}{/if}
             </button>
             <ReloadButton
               onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}

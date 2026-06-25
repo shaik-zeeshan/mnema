@@ -232,8 +232,8 @@
   }
 
   .settings-shell .group-hint {
-    font-size: 10px;
-    color: var(--app-text-faint);
+    font-size: 11px;
+    color: var(--app-text-muted);
     letter-spacing: 0.03em;
     line-height: 1.5;
   }
