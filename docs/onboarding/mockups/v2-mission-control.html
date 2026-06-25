@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>mnema · onboarding · mission control</title>
+<style>
+  /* ============================ TOKENS ============================ */
+  :root {
+    --app-bg:#0c0c0e; --app-fg:#e2e2e8; --app-fg-muted:#8a8aaa;
+    --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#7a7a9a; --app-text-subtle:#44445a; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15; --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-strong:#ff4455; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  }
+  [data-theme="light"] {
+    --app-bg:#f6f6f4; --app-fg:#14141a; --app-fg-muted:#5a5a6a;
+    --app-surface:#ffffff; --app-surface-subtle:#f6f6f4; --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#eeeeec;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+    --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a; --app-text-subtle:#7a7a86; --app-text-faint:#a4a4a0;
+    --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec; --app-accent-border:#9bd3b4; --app-accent-glow:rgba(31,122,74,0.16);
+    --app-warn:#9a5a12; --app-warn-bg:#f5ecdd; --app-warn-border:#d8b878;
+    --app-danger:#c43a48; --app-danger-strong:#a82835; --app-danger-bg:#f7e3e5; --app-danger-border:#e0a8ad;
+    --app-info:#2b78c5; --app-info-bg:#e3eef9; --app-info-border:#a8c8e8;
+  }
+
+  /* ============================ RESET ============================ */
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; }
+  body {
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"Cascadia Code","Fira Code",monospace;
+    background:var(--app-bg); color:var(--app-fg);
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; padding:24px;
+    -webkit-font-smoothing:antialiased;
+    transition:background .18s ease, color .18s ease;
+  }
+  button { font-family:inherit; cursor:pointer; color:inherit; }
+  input, select { font-family:inherit; }
+
+  /* ============================ WINDOW CHROME ============================ */
+  .window {
+    width:1180px; height:760px; max-width:100%; max-height:96vh;
+    background:var(--app-surface);
+    border:1px solid var(--app-border);
+    border-radius:10px;
+    display:flex; flex-direction:column;
+    overflow:hidden; position:relative;
+  }
+  .titlebar {
+    height:34px; flex:0 0 auto;
+    display:flex; align-items:center;
+    padding:0 12px;
+    border-bottom:1px solid var(--app-border);
+    background:var(--app-surface-subtle);
+    position:relative;
+  }
+  .traffic { display:flex; gap:8px; }
+  .traffic span { width:11px; height:11px; border-radius:999px; background:var(--app-text-faint); }
+  .wordmark {
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    font-size:11px; letter-spacing:.06em; color:var(--app-text-muted); user-select:none;
+  }
+  .theme-toggle {
+    margin-left:auto; z-index:2;
+    display:flex; align-items:center; gap:6px;
+    font-size:10px; color:var(--app-text-muted);
+    border:1px solid var(--app-border-strong); background:var(--app-surface-raised);
+    border-radius:999px; padding:3px 9px;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  .theme-toggle:hover { border-color:var(--app-border-hover); color:var(--app-text); }
+
+  /* ============================ STAGE ============================ */
+  .stage {
+    flex:1 1 auto; position:relative; overflow:hidden;
+    background:
+      radial-gradient(120% 80% at 50% -10%, var(--app-accent-glow), transparent 55%),
+      var(--app-surface);
+  }
+  /* dotted grid backdrop */
+  .stage::before {
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background-image:radial-gradient(var(--app-text-faint) 1px, transparent 1px);
+    background-size:22px 22px; opacity:.18;
+  }
+
+  /* views stack & slide */
+  .view {
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    transition:transform .26s cubic-bezier(.4,0,.2,1), opacity .2s ease;
+    overflow:hidden;
+  }
+  .view[hidden] { display:none; }
+  .view.is-home { transform:translateX(0); }
+  .view.detail-enter { transform:translateX(40px); opacity:0; }
+  .view.detail-active { transform:translateX(0); opacity:1; }
+
+  /* ============================ HOME / MISSION CONTROL ============================ */
+  .mc {
+    flex:1 1 auto; display:flex; flex-direction:column; min-height:0;
+    padding:18px 24px 16px; position:relative; z-index:1;
+  }
+  .mc-head { display:flex; align-items:flex-start; gap:18px; margin-bottom:14px; }
+  .eyebrow {
+    font-size:9.5px; font-weight:700; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--app-accent); margin-bottom:6px;
+  }
+  .scene-title { font-size:22px; font-weight:700; letter-spacing:-.012em; color:var(--app-text-strong); }
+  .subtitle { font-size:11px; line-height:1.4; color:var(--app-text-muted); margin-top:5px; max-width:520px; }
+
+  /* central gauge */
+  .core {
+    margin-left:auto; flex:0 0 auto; display:flex; align-items:center; gap:16px;
+    padding:10px 14px 10px 10px;
+    border:1px solid var(--app-border); border-radius:12px;
+    background:var(--app-surface-raised); position:relative; overflow:hidden;
+  }
+  .core::after {
+    content:""; position:absolute; left:14px; right:14px; top:0; height:1px;
+    background:linear-gradient(90deg,transparent, color-mix(in srgb,var(--app-accent) 12%,transparent) 22%, color-mix(in srgb,var(--app-accent) 50%,transparent) 50%, transparent);
+  }
+  .gauge-wrap { position:relative; width:88px; height:88px; flex:0 0 auto; }
+  .gauge-wrap svg { transform:rotate(-90deg); }
+  .gauge-track { stroke:var(--app-border-strong); }
+  .gauge-arc { stroke:var(--app-accent); stroke-linecap:round; transition:stroke-dashoffset .6s cubic-bezier(.4,0,.2,1); filter:drop-shadow(0 0 4px var(--app-accent-glow)); }
+  .gauge-readout {
+    position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  }
+  .gauge-pct { font-size:21px; font-weight:700; color:var(--app-text-strong); letter-spacing:-.02em; line-height:1; }
+  .gauge-lbl { font-size:8px; letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-muted); margin-top:3px; }
+  .core-meta { display:flex; flex-direction:column; gap:7px; padding-right:4px; }
+  .core-stat { display:flex; align-items:center; gap:7px; font-size:11px; color:var(--app-text); }
+  .core-stat b { color:var(--app-text-strong); font-weight:700; }
+  .core-stat .dot { width:7px; height:7px; border-radius:999px; flex:0 0 auto; }
+
+  /* section labels */
+  .grid-section { margin-bottom:8px; margin-top:4px; }
+  .group-title {
+    font-size:10.5px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--app-text-muted);
+    display:flex; align-items:center; gap:10px; margin-bottom:9px;
+  }
+  .group-title::after { content:""; flex:1 1 auto; height:1px; background:var(--app-border); }
+  .group-title .tag {
+    font-size:8.5px; letter-spacing:.08em; padding:2px 7px; border-radius:3px;
+    border:1px solid var(--app-border-strong); color:var(--app-text-muted); font-weight:600;
+  }
+  .group-title .tag.req { color:var(--app-warn); border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+
+  .tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:11px; }
+  .tiles.req-grid { grid-template-columns:repeat(3,1fr); }
+
+  /* ============================ TILE ============================ */
+  .tile {
+    position:relative; text-align:left;
+    border:1px solid var(--app-border); border-radius:12px;
+    background:var(--app-surface-raised);
+    padding:13px 13px 11px;
+    display:flex; flex-direction:column; gap:8px;
+    transition:border-color .15s ease, background .15s ease, transform .15s ease;
+    overflow:hidden; min-height:104px;
+  }
+  .tile::after {
+    content:""; position:absolute; left:14px; right:14px; top:0; height:1px;
+    background:linear-gradient(90deg,transparent, color-mix(in srgb,var(--app-accent) 12%,transparent) 22%, color-mix(in srgb,var(--app-accent) 50%,transparent) 50%, transparent);
+  }
+  .tile:hover { border-color:var(--app-border-hover); background:var(--app-surface-hover); }
+  .tile.armed { border-color:var(--app-accent-border); }
+  .tile.attention { border-color:var(--app-warn-border); }
+  .tile.is-off { opacity:.62; }
+  .tile.is-off:hover { opacity:.82; }
+
+  .tile-top { display:flex; align-items:flex-start; gap:9px; }
+  .tile-icon {
+    width:30px; height:30px; flex:0 0 auto; border-radius:8px;
+    border:1px solid var(--app-border-strong); background:var(--app-surface-subtle);
+    display:flex; align-items:center; justify-content:center; color:var(--app-text-muted);
+    transition:color .15s ease, border-color .15s ease;
+  }
+  .tile.armed .tile-icon { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .tile-icon svg { width:16px; height:16px; }
+  .tile-titles { flex:1 1 auto; min-width:0; }
+  .tile-name { font-size:13.5px; font-weight:550; color:var(--app-text-strong); display:flex; align-items:center; gap:6px; }
+  .tile-name .lock { color:var(--app-text-subtle); display:inline-flex; }
+  .tile-name .lock svg { width:11px; height:11px; }
+  .tile-desc { font-size:11px; color:var(--app-text-muted); line-height:1.35; margin-top:3px; }
+
+  .status-dot {
+    width:9px; height:9px; border-radius:999px; flex:0 0 auto; margin-top:3px;
+    position:relative;
+  }
+  .status-dot.on { background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+  .status-dot.off { background:var(--app-text-faint); }
+  .status-dot.warn { background:var(--app-warn); box-shadow:0 0 7px color-mix(in srgb,var(--app-warn) 40%,transparent); }
+  .status-dot.danger { background:var(--app-danger); box-shadow:0 0 7px color-mix(in srgb,var(--app-danger) 45%,transparent); }
+  .status-dot.on::after, .status-dot.warn::after {
+    content:""; position:absolute; inset:-3px; border-radius:999px; opacity:.4;
+    animation:pulse 2.2s ease-out infinite;
+  }
+  .status-dot.on::after { border:1px solid var(--app-accent); }
+  .status-dot.warn::after { border:1px solid var(--app-warn); }
+  @keyframes pulse { 0%{transform:scale(.7);opacity:.5;} 100%{transform:scale(1.6);opacity:0;} }
+
+  .tile-foot { display:flex; align-items:center; justify-content:space-between; margin-top:auto; gap:8px; }
+  .tile-state {
+    font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:700;
+  }
+  .tile-state.on { color:var(--app-accent); }
+  .tile-state.off { color:var(--app-text-subtle); }
+  .tile-state.warn { color:var(--app-warn); }
+  .tile-state.danger { color:var(--app-danger); }
+  .tile-config {
+    font-size:10px; color:var(--app-text-muted); display:inline-flex; align-items:center; gap:3px;
+    opacity:0; transition:opacity .15s ease;
+  }
+  .tile:hover .tile-config { opacity:1; }
+
+  /* ============================ SWITCH ============================ */
+  .switch {
+    position:relative; width:36px; height:20px; flex:0 0 auto;
+    border-radius:999px; border:1px solid var(--app-border-strong);
+    background:transparent; padding:0; transition:background .18s ease, border-color .18s ease;
+  }
+  .switch::after {
+    content:""; position:absolute; top:2px; left:2px;
+    width:14px; height:14px; border-radius:999px; background:var(--app-text-subtle);
+    transition:transform .18s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .switch[aria-checked="true"] { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+  .switch[aria-checked="true"]::after { transform:translateX(16px); background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+  .switch:focus-visible { outline:none; box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .switch.disabled { opacity:.5; cursor:not-allowed; }
+
+  /* switch + label row */
+  .switch-row { display:flex; align-items:center; gap:12px; }
+  .switch-row .meta { flex:1 1 auto; }
+  .switch-row .lbl { font-size:12px; font-weight:500; color:var(--app-text-strong); }
+  .switch-row .dsc { font-size:10px; color:var(--app-text-muted); margin-top:2px; line-height:1.4; }
+
+  /* ============================ DETAIL VIEW ============================ */
+  .detail { flex:1 1 auto; display:flex; flex-direction:column; min-height:0; position:relative; z-index:1; }
+  .detail-bar {
+    flex:0 0 auto; display:flex; align-items:center; gap:12px;
+    padding:14px 24px 12px; border-bottom:1px solid var(--app-border);
+  }
+  .back-btn {
+    display:inline-flex; align-items:center; gap:5px;
+    font-size:11px; color:var(--app-text-muted);
+    border:1px solid var(--app-border-strong); background:var(--app-surface-raised);
+    border-radius:8px; padding:6px 11px; transition:border-color .15s ease, color .15s ease;
+  }
+  .back-btn:hover { border-color:var(--app-border-hover); color:var(--app-text-strong); }
+  .detail-titlewrap { display:flex; flex-direction:column; }
+  .detail-title { font-size:15px; font-weight:700; color:var(--app-text-strong); letter-spacing:-.01em; display:flex; align-items:center; gap:9px; }
+  .detail-sub { font-size:10.5px; color:var(--app-text-muted); margin-top:2px; }
+  .detail-headswitch { margin-left:auto; display:flex; align-items:center; gap:9px; }
+  .detail-headswitch .pillstate { font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:var(--app-text-subtle); }
+  .detail-headswitch .pillstate.on { color:var(--app-accent); }
+
+  .detail-body { flex:1 1 auto; overflow-y:auto; padding:18px 24px 24px; }
+  .detail-body::-webkit-scrollbar { width:9px; }
+  .detail-body::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:999px; border:2px solid var(--app-surface); }
+
+  /* card / setting group */
+  .card {
+    position:relative; border:1px solid var(--app-border); border-radius:12px;
+    background:var(--app-surface-raised); padding:4px 16px; margin-bottom:14px; overflow:hidden;
+  }
+  .card::after {
+    content:""; position:absolute; left:14px; right:14px; top:0; height:1px;
+    background:linear-gradient(90deg,transparent, color-mix(in srgb,var(--app-accent) 12%,transparent) 22%, color-mix(in srgb,var(--app-accent) 50%,transparent) 50%, transparent);
+  }
+  .card-title {
+    font-size:10.5px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--app-text-muted);
+    padding:14px 0 4px;
+  }
+  .row {
+    display:flex; align-items:center; gap:16px; padding:13px 0;
+    border-bottom:1px solid var(--app-border);
+  }
+  .row:last-child { border-bottom:none; }
+  .row .meta { flex:1 1 auto; min-width:0; }
+  .row .label { font-size:13.5px; font-weight:550; color:var(--app-text-strong); }
+  .row .desc { font-size:11px; color:var(--app-text-muted); margin-top:3px; line-height:1.4; }
+  .row .control { flex:0 0 auto; display:flex; align-items:center; gap:8px; }
+  .row.col { flex-direction:column; align-items:stretch; gap:11px; }
+  .row.disabled-soft { opacity:.45; pointer-events:none; }
+
+  /* ============================ CONTROLS ============================ */
+  .segmented {
+    display:inline-flex; border:1px solid var(--app-border-strong); border-radius:8px; overflow:hidden; background:var(--app-surface-subtle);
+  }
+  .segmented button {
+    font-size:11px; color:var(--app-text-muted); background:transparent; border:none;
+    padding:6px 11px; border-right:1px solid var(--app-border); transition:background .15s ease, color .15s ease;
+  }
+  .segmented button:last-child { border-right:none; }
+  .segmented button:hover { color:var(--app-text); background:var(--app-surface-hover); }
+  .segmented button.active { background:var(--app-accent-bg); color:var(--app-accent); }
+
+  select.input, input.input {
+    background:var(--app-surface-subtle); border:1px solid var(--app-border-strong);
+    border-radius:8px; color:var(--app-text-strong); font-size:12px; padding:7px 10px;
+    transition:border-color .15s ease, box-shadow .15s ease; outline:none;
+  }
+  select.input:focus, input.input:focus { border-color:var(--app-accent-border); box-shadow:0 0 0 3px var(--app-accent-glow); }
+  input.input::placeholder { color:var(--app-text-subtle); }
+  .input.path { flex:1 1 auto; min-width:0; }
+
+  .btn {
+    font-size:12px; font-weight:540; color:var(--app-text); padding:7px 13px;
+    border:1px solid var(--app-border-strong); border-radius:8px; background:var(--app-surface-raised);
+    transition:border-color .15s ease, color .15s ease, background .15s ease; white-space:nowrap;
+  }
+  .btn:hover { border-color:var(--app-border-hover); color:var(--app-text-strong); }
+  .btn.accent { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .btn.accent:hover { box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .btn.tiny { font-size:10.5px; padding:5px 9px; border-radius:6px; }
+  .btn.danger { color:var(--app-danger); border-color:var(--app-danger-border); background:var(--app-danger-bg); }
+
+  /* radio list */
+  .radio-list { display:flex; flex-direction:column; gap:9px; width:100%; }
+  .radio {
+    display:flex; align-items:center; gap:11px; padding:11px 13px;
+    border:1px solid var(--app-border-strong); border-radius:10px; background:var(--app-surface-subtle);
+    transition:border-color .15s ease, background .15s ease; text-align:left; width:100%;
+  }
+  .radio:hover { border-color:var(--app-border-hover); }
+  .radio.active { border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .radio .dot {
+    width:14px; height:14px; border-radius:999px; border:1px solid var(--app-border-strong); flex:0 0 auto; position:relative;
+  }
+  .radio.active .dot { border-color:var(--app-accent); }
+  .radio.active .dot::after { content:""; position:absolute; inset:3px; border-radius:999px; background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .radio .rmeta { flex:1 1 auto; }
+  .radio .rlbl { font-size:12.5px; font-weight:550; color:var(--app-text-strong); }
+  .radio .rdsc { font-size:10.5px; color:var(--app-text-muted); margin-top:2px; }
+
+  /* slider */
+  .slider-wrap { display:flex; align-items:center; gap:13px; width:230px; }
+  input[type=range] {
+    -webkit-appearance:none; appearance:none; height:4px; flex:1 1 auto;
+    background:var(--app-border-strong); border-radius:999px; outline:none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; width:15px; height:15px; border-radius:999px; background:var(--app-accent);
+    box-shadow:0 0 8px var(--app-accent-glow); cursor:pointer; border:2px solid var(--app-surface);
+  }
+  .slider-val { font-size:12px; color:var(--app-text-strong); font-weight:600; min-width:62px; text-align:right; }
+
+  /* permission status pill */
+  .perm-pill {
+    display:inline-flex; align-items:center; gap:6px; font-size:10.5px; font-weight:600;
+    padding:4px 10px; border-radius:999px; border:1px solid var(--app-border-strong); background:var(--app-surface-subtle);
+    color:var(--app-text-muted);
+  }
+  .perm-pill .pdot { width:7px; height:7px; border-radius:999px; background:var(--app-text-faint); }
+  .perm-pill.granted { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .perm-pill.granted .pdot { background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+  .perm-pill.pending { color:var(--app-warn); border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+  .perm-pill.pending .pdot { background:var(--app-warn); }
+  .perm-pill.denied { color:var(--app-danger); border-color:var(--app-danger-border); background:var(--app-danger-bg); }
+  .perm-pill.denied .pdot { background:var(--app-danger); }
+
+  /* model picker / download */
+  .modelbox {
+    border:1px solid var(--app-border-strong); border-radius:10px; background:var(--app-surface-subtle); padding:12px 13px; width:100%;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .modelbox-head { display:flex; align-items:center; gap:10px; }
+  .modelbox-head .mname { font-size:12.5px; font-weight:550; color:var(--app-text-strong); }
+  .modelbox-head .mbadge {
+    font-size:9px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; padding:2px 7px; border-radius:3px; margin-left:auto;
+    border:1px solid var(--app-border-strong); color:var(--app-text-muted);
+  }
+  .modelbox-head .mbadge.avail { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+  .modelbox-head .mbadge.dl { color:var(--app-info); border-color:var(--app-info-border); background:var(--app-info-bg); }
+  .modelbox-head .mbadge.miss { color:var(--app-warn); border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+  .progress { height:6px; border-radius:999px; background:var(--app-border-strong); overflow:hidden; position:relative; }
+  .progress > span { position:absolute; inset:0 auto 0 0; background:var(--app-info); border-radius:999px; transition:width .3s ease; box-shadow:0 0 8px color-mix(in srgb,var(--app-info) 30%,transparent); }
+  .dl-line { display:flex; align-items:center; justify-content:space-between; font-size:10.5px; color:var(--app-text-muted); }
+
+  /* chips / excluded apps */
+  .chips { display:flex; flex-wrap:wrap; gap:7px; }
+  .chip {
+    display:inline-flex; align-items:center; gap:7px; font-size:11px; color:var(--app-text);
+    border:1px solid var(--app-border-strong); background:var(--app-surface-subtle); border-radius:999px; padding:4px 6px 4px 11px;
+  }
+  .chip .x { width:15px; height:15px; border-radius:999px; display:flex; align-items:center; justify-content:center; color:var(--app-text-muted); background:transparent; border:none; font-size:13px; line-height:1; }
+  .chip .x:hover { color:var(--app-danger); }
+  .combo-wrap { position:relative; width:100%; }
+  .combo-pop {
+    position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:5;
+    border:1px solid var(--app-border-strong); border-radius:10px; background:var(--app-surface-raised); overflow:hidden;
+  }
+  .combo-pop[hidden] { display:none; }
+  .combo-opt { padding:9px 12px; font-size:12px; color:var(--app-text); cursor:pointer; display:flex; align-items:center; gap:9px; }
+  .combo-opt:hover { background:var(--app-surface-hover); color:var(--app-text-strong); }
+  .combo-opt .app-ic { width:18px; height:18px; border-radius:5px; background:var(--app-surface-subtle); border:1px solid var(--app-border); display:flex; align-items:center; justify-content:center; font-size:10px; color:var(--app-text-muted); }
+
+  /* callout / disclosure */
+  .callout {
+    display:flex; gap:11px; padding:12px 14px; border-radius:10px; font-size:11.5px; line-height:1.5;
+    border:1px solid var(--app-info-border); background:var(--app-info-bg); color:var(--app-text); margin:4px 0 14px;
+  }
+  .callout.warn { border-color:var(--app-warn-border); background:var(--app-warn-bg); }
+  .callout .ic { flex:0 0 auto; color:var(--app-info); margin-top:1px; }
+  .callout.warn .ic { color:var(--app-warn); }
+  .callout b { color:var(--app-text-strong); font-weight:700; }
+
+  /* ============================ FOOTER ============================ */
+  .footer {
+    flex:0 0 auto; display:flex; align-items:center; gap:16px;
+    padding:13px 24px; border-top:1px solid var(--app-border); background:var(--app-surface-subtle);
+  }
+  .footer .status { display:flex; align-items:center; gap:10px; font-size:11px; color:var(--app-text-muted); }
+  .footer .status .dot { width:8px; height:8px; border-radius:999px; background:var(--app-warn); box-shadow:0 0 7px color-mix(in srgb,var(--app-warn) 40%,transparent); }
+  .footer .status.ready .dot { background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+  .footer .spacer { flex:1 1 auto; }
+  .footer .skip { font-size:11px; color:var(--app-text-muted); background:none; border:none; }
+  .footer .skip:hover { color:var(--app-text); }
+  .cta {
+    display:inline-flex; align-items:center; gap:9px; font-size:13px; font-weight:600;
+    padding:10px 20px; border-radius:8px; border:1px solid var(--app-accent-border);
+    background:var(--app-accent-bg); color:var(--app-accent);
+    transition:box-shadow .15s ease, opacity .15s ease;
+  }
+  .cta:not(:disabled):hover { box-shadow:0 0 0 3px var(--app-accent-glow); }
+  .cta:disabled { opacity:.4; cursor:not-allowed; color:var(--app-text-muted); border-color:var(--app-border-strong); background:var(--app-surface-raised); }
+  .cta .arm-ring { width:8px; height:8px; border-radius:999px; background:currentColor; }
+  .cta:not(:disabled) .arm-ring { animation:armpulse 1.6s ease-in-out infinite; }
+  @keyframes armpulse { 0%,100%{opacity:1;} 50%{opacity:.35;} }
+
+  /* toast */
+  .toast {
+    position:absolute; bottom:78px; left:50%; translate:-50% 12px;
+    background:var(--app-surface-raised); border:1px solid var(--app-accent-border);
+    color:var(--app-text-strong); font-size:11.5px; padding:9px 15px; border-radius:8px;
+    display:flex; align-items:center; gap:8px; opacity:0; pointer-events:none;
+    transition:opacity .2s ease, translate .2s ease; z-index:20; box-shadow:0 0 0 3px var(--app-accent-glow);
+  }
+  .toast.show { opacity:1; translate:-50% 0; }
+  .toast .ic { color:var(--app-accent); display:inline-flex; }
+
+  .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<div class="window" role="application" aria-label="Mnema onboarding">
+  <!-- ===================== TITLEBAR ===================== -->
+  <div class="titlebar">
+    <div class="traffic"><span></span><span></span><span></span></div>
+    <div class="wordmark">mnema</div>
+    <button class="theme-toggle" id="themeToggle" type="button">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <span id="themeLabel">dark</span>
+    </button>
+  </div>
+
+  <!-- ===================== STAGE ===================== -->
+  <div class="stage" id="stage">
+    <!-- ============ HOME VIEW ============ -->
+    <section class="view is-home" id="view-home">
+      <div class="mc">
+        <div class="mc-head">
+          <div>
+            <div class="eyebrow">System setup · mission control</div>
+            <h1 class="scene-title">Arm your recording system</h1>
+            <p class="subtitle">Toggle the features you want, then open each module to tune it. Foundational systems must read green before Mnema can start capturing.</p>
+          </div>
+
+          <!-- central gauge -->
+          <div class="core">
+            <div class="gauge-wrap">
+              <svg width="88" height="88" viewBox="0 0 88 88">
+                <circle class="gauge-track" cx="44" cy="44" r="38" fill="none" stroke-width="7"/>
+                <circle class="gauge-arc" id="gaugeArc" cx="44" cy="44" r="38" fill="none" stroke-width="7"
+                        stroke-dasharray="238.76" stroke-dashoffset="238.76"/>
+              </svg>
+              <div class="gauge-readout">
+                <span class="gauge-pct" id="gaugePct">0%</span>
+                <span class="gauge-lbl">ready</span>
+              </div>
+            </div>
+            <div class="core-meta">
+              <div class="core-stat"><span class="dot" style="background:var(--app-accent)"></span><b id="statArmed">0</b>&nbsp;armed</div>
+              <div class="core-stat"><span class="dot" style="background:var(--app-warn)"></span><b id="statAttn">3</b>&nbsp;need attention</div>
+              <div class="core-stat"><span class="dot" style="background:var(--app-text-faint)"></span><b id="statOff">3</b>&nbsp;standby</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- REQUIRED -->
+        <div class="grid-section">
+          <div class="group-title">Foundational systems <span class="tag req">Required</span></div>
+          <div class="tiles req-grid" id="reqTiles"></div>
+        </div>
+
+        <!-- OPTIONAL -->
+        <div class="grid-section" style="margin-top:14px;">
+          <div class="group-title">Optional modules <span class="tag">Toggle on</span></div>
+          <div class="tiles" id="optTiles"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ DETAIL VIEW (one reused shell) ============ -->
+    <section class="view" id="view-detail" hidden>
+      <div class="detail">
+        <div class="detail-bar">
+          <button class="back-btn" id="backBtn" type="button">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+            Mission control
+          </button>
+          <div class="detail-titlewrap">
+            <div class="detail-title" id="detailTitle"></div>
+            <div class="detail-sub" id="detailSub"></div>
+          </div>
+          <div class="detail-headswitch" id="detailHeadSwitch"></div>
+        </div>
+        <div class="detail-body" id="detailBody"></div>
+      </div>
+    </section>
+
+    <div class="toast" id="toast"><span class="ic"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></span><span id="toastMsg"></span></div>
+  </div>
+
+  <!-- ===================== FOOTER ===================== -->
+  <div class="footer">
+    <div class="status" id="footStatus">
+      <span class="dot"></span>
+      <span id="footMsg">Foundational systems not yet armed</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="skip" type="button" id="skipBtn">Use defaults &amp; skip</button>
+    <button class="cta" id="armBtn" disabled>
+      <span class="arm-ring"></span>
+      Arm &amp; start recording
+    </button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================ ICONS ============================ */
+const ICON = {
+  permissions:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>',
+  screen:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+  storage:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>',
+  mic:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="18" x2="12" y2="22"/></svg>',
+  sysaudio:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>',
+  ocr:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="10" x2="17" y2="10"/><line x1="7" y1="14" x2="13" y2="14"/></svg>',
+  transcribe:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>',
+  privacy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>',
+  askai:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 0-4 12.74V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.26A7 7 0 0 0 12 2z"/><line x1="9" y1="22" x2="15" y2="22"/></svg>',
+  lock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+  cog:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'
+};
+
+/* ============================ STATE ============================ */
+// status: 'on' | 'off' | 'warn' | 'danger'
+const features = {
+  permissions: { id:'permissions', name:'Systems check', required:true, icon:'permissions',
+    desc:'Grant OS permissions', status:'warn', enabled:true,
+    data:{ screen:'pending', mic:'pending', sysaudio:'pending' } },
+  screen: { id:'screen', name:'Screen capture', required:true, icon:'screen',
+    desc:'Resolution, bitrate, frame rate', status:'on', enabled:true,
+    data:{ res:'Original', bitrate:'Medium', fps:2, segment:120, idle:true, idleTimeout:60 } },
+  storage: { id:'storage', name:'Storage & retention', required:true, icon:'storage',
+    desc:'Save location & cleanup', status:'on', enabled:true,
+    data:{ dir:'~/Library/Application Support/mnema/captures', retention:'30', cacheTtl:'7', autostart:true } },
+
+  mic: { id:'mic', name:'Microphone', required:false, icon:'mic',
+    desc:'Record your voice', status:'off', enabled:false,
+    data:{ transcribe:true, device:'MacBook Pro Microphone' } },
+  sysaudio: { id:'sysaudio', name:'System audio', required:false, icon:'sysaudio',
+    desc:'Capture computer output', status:'off', enabled:false,
+    data:{ transcribe:true } },
+  ocr: { id:'ocr', name:'OCR', required:false, icon:'ocr',
+    desc:'Read on-screen text', status:'on', enabled:true,
+    data:{ provider:'apple', model:'avail', lang:'eng', mode:'Accurate' } },
+  transcription: { id:'transcription', name:'Audio transcription', required:false, icon:'transcribe',
+    desc:'Speech to searchable text', status:'on', enabled:true,
+    data:{ provider:'whisper', model:'small', modelStatus:'avail', lang:'auto' } },
+  privacy: { id:'privacy', name:'Privacy exclusions', required:false, icon:'privacy',
+    desc:'Apps to never record', status:'off', enabled:false,
+    data:{ apps:[] } },
+  askai: { id:'askai', name:'Ask AI', required:false, icon:'askai',
+    desc:'Reasoning Engine · off', status:'off', enabled:false,
+    data:{ provider:'', key:false, model:'claude-opus-4' } }
+};
+
+const C = 2 * Math.PI * 38; // gauge circumference
+
+/* ============================ DOM ============================ */
+const $ = (id) => document.getElementById(id);
+const reqTiles = $('reqTiles'), optTiles = $('optTiles');
+const viewHome = $('view-home'), viewDetail = $('view-detail');
+let toastTimer = null;
+
+/* ============================ RENDER TILES ============================ */
+function statusLabel(s){ return {on:'Armed', off:'Standby', warn:'Attention', danger:'Blocked'}[s]; }
+
+function tileHTML(f){
+  const cls = f.status==='on' ? 'armed' : (f.status==='warn'||f.status==='danger' ? 'attention' : '');
+  const offCls = (!f.required && !f.enabled) ? ' is-off' : '';
+  const lock = f.required ? `<span class="lock" title="Required">${ICON.lock}</span>` : '';
+  // toggle only on optional tiles
+  const toggle = f.required
+    ? `<span class="status-dot ${f.status}"></span>`
+    : `<button class="switch" role="switch" aria-checked="${f.enabled}" data-toggle="${f.id}" aria-label="Toggle ${f.name}"></button>`;
+  const footState = f.required
+    ? `<span class="tile-state ${f.status}">${statusLabel(f.status)}</span>`
+    : `<span class="tile-state ${f.status}">${statusLabel(f.status)}</span>`;
+  return `
+    <button class="tile ${cls}${offCls}" data-open="${f.id}" type="button">
+      <div class="tile-top">
+        <div class="tile-icon">${ICON[f.icon]}</div>
+        <div class="tile-titles">
+          <div class="tile-name">${f.name} ${lock}</div>
+          <div class="tile-desc">${f.desc}</div>
+        </div>
+        ${toggle}
+      </div>
+      <div class="tile-foot">
+        ${footState}
+        <span class="tile-config">configure ${ICON.cog.replace('viewBox','width="11" height="11" viewBox')}</span>
+      </div>
+    </button>`;
+}
+
+function renderTiles(){
+  reqTiles.innerHTML = ['permissions','screen','storage'].map(k => tileHTML(features[k])).join('');
+  optTiles.innerHTML = ['mic','sysaudio','ocr','transcription','privacy','askai'].map(k => tileHTML(features[k])).join('');
+  bindTiles();
+  updateGauge();
+}
+
+function bindTiles(){
+  document.querySelectorAll('[data-toggle]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.toggle;
+      toggleFeature(id);
+    });
+  });
+  document.querySelectorAll('[data-open]').forEach(btn => {
+    btn.addEventListener('click', () => openDetail(btn.dataset.open));
+  });
+}
+
+/* ============================ TOGGLE ============================ */
+function toggleFeature(id){
+  const f = features[id];
+  f.enabled = !f.enabled;
+  if (f.enabled){
+    // turning on: recompute status from its own config
+    f.status = computeStatus(id);
+    if (id==='sysaudio' && features.screen.status!=='on'){ /* still ok, screen on by default */ }
+  } else {
+    f.status = 'off';
+  }
+  renderTiles();
+  flashRow(id);
+}
+
+// derive an optional feature's status from internal completeness
+function computeStatus(id){
+  const f = features[id];
+  if (!f.enabled) return 'off';
+  switch(id){
+    case 'askai':
+      return (f.data.provider && f.data.key) ? 'on' : 'warn';
+    case 'ocr':
+      return f.data.model==='miss' ? 'warn' : 'on';
+    case 'transcription':
+      return f.data.modelStatus==='miss' ? 'warn' : 'on';
+    case 'privacy':
+      return f.data.apps.length ? 'on' : 'warn';
+    default:
+      return 'on';
+  }
+}
+
+function flashRow(id){
+  const tile = document.querySelector(`[data-open="${id}"]`);
+  if (!tile) return;
+  tile.style.transform='scale(1.015)';
+  setTimeout(()=>{ tile.style.transform=''; }, 150);
+}
+
+/* ============================ GAUGE / READINESS ============================ */
+function updateGauge(){
+  const all = Object.values(features);
+  const armed = all.filter(f => f.status==='on').length;
+  const attn  = all.filter(f => (f.required && f.status!=='on')).length
+              + all.filter(f => (!f.required && f.enabled && f.status==='warn')).length;
+  const off   = all.filter(f => (!f.required && !f.enabled)).length;
+
+  // completeness: weight required heavily, optional-enabled lightly
+  const req = all.filter(f=>f.required);
+  const reqDone = req.filter(f=>f.status==='on').length;
+  const optEnabled = all.filter(f=>!f.required && f.enabled);
+  const optDone = optEnabled.filter(f=>f.status==='on').length;
+  const reqShare = req.length ? (reqDone/req.length) : 0;
+  const optShare = optEnabled.length ? (optDone/optEnabled.length) : 1;
+  const pct = Math.round((reqShare*0.7 + optShare*0.3) * 100);
+
+  $('gaugePct').textContent = pct + '%';
+  $('gaugeArc').style.strokeDashoffset = String(C * (1 - pct/100));
+  $('statArmed').textContent = armed;
+  $('statAttn').textContent = attn;
+  $('statOff').textContent = off;
+
+  // foundational gate
+  const reqAllGreen = reqDone === req.length;
+  const armBtn = $('armBtn');
+  armBtn.disabled = !reqAllGreen;
+  const fs = $('footStatus');
+  if (reqAllGreen){
+    fs.classList.add('ready');
+    $('footMsg').textContent = `All foundational systems armed · ${armed} module${armed!==1?'s':''} ready`;
+  } else {
+    fs.classList.remove('ready');
+    const missing = req.filter(f=>f.status!=='on').map(f=>f.name).join(', ');
+    $('footMsg').textContent = `Foundational systems pending: ${missing}`;
+  }
+}
+
+/* ============================ NAVIGATION ============================ */
+let currentDetail = null;
+
+function openDetail(id){
+  currentDetail = id;
+  const f = features[id];
+  $('detailTitle').innerHTML = `<span style="display:inline-flex;width:18px;height:18px;color:var(--app-accent)">${ICON[f.icon]}</span>${f.name}`;
+  $('detailSub').textContent = detailSub(id);
+
+  // head switch for optional features
+  const hs = $('detailHeadSwitch');
+  if (f.required){
+    hs.innerHTML = '';
+  } else {
+    hs.innerHTML = `<span class="pillstate ${f.enabled?'on':''}">${f.enabled?'Enabled':'Disabled'}</span>
+      <button class="switch" role="switch" aria-checked="${f.enabled}" id="headSwitch" aria-label="Enable ${f.name}"></button>`;
+    $('headSwitch').addEventListener('click', () => {
+      toggleFeature(id);
+      openDetail(id); // re-render detail (enable/disable state)
+    });
+  }
+
+  $('detailBody').innerHTML = DETAILS[id]();
+  bindDetail(id);
+
+  // transition
+  viewDetail.hidden = false;
+  viewDetail.classList.add('detail-enter');
+  viewHome.style.transform = 'translateX(-30px)';
+  viewHome.style.opacity = '0';
+  requestAnimationFrame(()=>{
+    viewDetail.classList.remove('detail-enter');
+    viewDetail.classList.add('detail-active');
+  });
+  setTimeout(()=>{ viewHome.hidden = true; $('detailBody').scrollTop = 0; }, 260);
+}
+
+function closeDetail(){
+  viewHome.hidden = false;
+  requestAnimationFrame(()=>{
+    viewHome.style.transform = 'translateX(0)';
+    viewHome.style.opacity = '1';
+    viewDetail.classList.remove('detail-active');
+    viewDetail.classList.add('detail-enter');
+  });
+  setTimeout(()=>{
+    viewDetail.hidden = true;
+    viewDetail.classList.remove('detail-enter');
+    // recompute status from latest config & re-render tiles
+    if (currentDetail && !features[currentDetail].required){
+      features[currentDetail].status = computeStatus(currentDetail);
+    }
+    renderTiles();
+    currentDetail = null;
+  }, 260);
+}
+
+function detailSub(id){
+  const subs = {
+    permissions:'Grant macOS access before recording can begin',
+    screen:'Tune capture quality and segmentation',
+    storage:'Where recordings live and how long they stay',
+    mic:'Capture and transcribe your voice input',
+    sysaudio:'Capture the audio your computer plays',
+    ocr:'Make on-screen text searchable',
+    transcription:'Turn captured speech into searchable text',
+    privacy:'Apps Mnema will never record',
+    askai:'Local recall powered by a reasoning model'
+  };
+  return subs[id] || '';
+}
+
+/* ============================ DETAIL VIEWS ============================ */
+function permPill(state){
+  const map = { granted:['granted','Granted'], pending:['pending','Not requested'], denied:['denied','Denied'] };
+  const [cls,lbl] = map[state];
+  return `<span class="perm-pill ${cls}"><span class="pdot"></span>${lbl}</span>`;
+}
+function permAction(state){
+  if (state==='granted') return `<button class="btn tiny" disabled style="opacity:.5">Granted</button>`;
+  if (state==='denied') return `<button class="btn tiny" data-perm-open>Open Settings</button>`;
+  return `<button class="btn tiny accent" data-perm-grant>Grant access</button>`;
+}
+
+const DETAILS = {
+  permissions(){
+    const d = features.permissions.data;
+    const perm = (key,label,desc) => `
+      <div class="row">
+        <div class="meta"><div class="label">${label}</div><div class="desc">${desc}</div></div>
+        <div class="control" data-perm-row="${key}">${permPill(d[key])}${permAction(d[key])}</div>
+      </div>`;
+    return `
+      <div class="callout"><span class="ic">${ICON.info}</span><div>Mnema needs these macOS permissions to capture your screen and audio. All three must read <b>Granted</b> before recording can start.</div></div>
+      <div class="card">
+        <div class="card-title">macOS permissions</div>
+        ${perm('screen','Screen recording','Capture the contents of your displays')}
+        ${perm('mic','Microphone','Required only if microphone capture is enabled')}
+        ${perm('sysaudio','System audio','Capture audio your computer plays (macOS audio capture)')}
+      </div>`;
+  },
+
+  screen(){
+    const d = features.screen.data;
+    const seg = (opts, val, attr) => `<div class="segmented" data-seg="${attr}">${opts.map(o=>`<button class="${o===val?'active':''}" data-val="${o}">${o}</button>`).join('')}</div>`;
+    return `
+      <div class="card">
+        <div class="card-title">Video</div>
+        <div class="row">
+          <div class="meta"><div class="label">Resolution</div><div class="desc">Downscale captures to save disk</div></div>
+          <div class="control">${seg(['Original','1080p','1440p','4K','Custom'], d.res, 'res')}</div>
+        </div>
+        <div class="row">
+          <div class="meta"><div class="label">Video bitrate</div><div class="desc">Higher is sharper but larger</div></div>
+          <div class="control">${seg(['Low','Medium','High','Custom'], d.bitrate, 'bitrate')}</div>
+        </div>
+        <div class="row">
+          <div class="meta"><div class="label">Frame rate</div><div class="desc">Frames captured per second (2 fps recommended for recall)</div></div>
+          <div class="control"><div class="slider-wrap"><input type="range" min="1" max="120" value="${d.fps}" data-range="fps"><span class="slider-val" data-rangeval="fps">${d.fps} fps</span></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Segmentation</div>
+        <div class="row">
+          <div class="meta"><div class="label">Segment duration</div><div class="desc">How often a recording file is rolled (max 5 min)</div></div>
+          <div class="control"><div class="slider-wrap"><input type="range" min="10" max="300" value="${d.segment}" data-range="segment"><span class="slider-val" data-rangeval="segment">${fmtSecs(d.segment)}</span></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Idle behavior</div>
+        <div class="row">
+          <div class="meta"><div class="label">Pause on inactivity</div><div class="desc">Stop capturing when you stop interacting</div></div>
+          <div class="control"><button class="switch" role="switch" aria-checked="${d.idle}" data-bool="idle"></button></div>
+        </div>
+        <div class="row ${d.idle?'':'disabled-soft'}" id="idleTimeoutRow">
+          <div class="meta"><div class="label">Idle timeout</div><div class="desc">Inactivity before capture pauses</div></div>
+          <div class="control"><div class="slider-wrap"><input type="range" min="5" max="300" value="${d.idleTimeout}" data-range="idleTimeout"><span class="slider-val" data-rangeval="idleTimeout">${d.idleTimeout}s</span></div></div>
+        </div>
+      </div>`;
+  },
+
+  storage(){
+    const d = features.storage.data;
+    return `
+      <div class="card">
+        <div class="card-title">Location</div>
+        <div class="row">
+          <div class="meta"><div class="label">Save directory</div><div class="desc">Where captures, frames and audio are written</div></div>
+          <div class="control" style="flex:1 1 auto; max-width:430px;">
+            <input class="input path" type="text" value="${d.dir}" data-text="dir">
+            <button class="btn tiny" data-browse>Browse…</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Retention</div>
+        <div class="row">
+          <div class="meta"><div class="label">Keep recordings for</div><div class="desc">Older captures are automatically cleaned up</div></div>
+          <div class="control">
+            <select class="input" data-select="retention">
+              ${['Never','7','14','30'].map(o=>`<option ${o===d.retention?'selected':''} value="${o}">${o==='Never'?'Never delete':o+' days'}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="meta"><div class="label">Preview cache TTL</div><div class="desc">How long thumbnail previews are cached</div></div>
+          <div class="control">
+            <select class="input" data-select="cacheTtl">
+              ${['1','7','14','30'].map(o=>`<option ${o===d.cacheTtl?'selected':''} value="${o}">${o} days</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Startup</div>
+        <div class="row">
+          <div class="meta"><div class="label">Auto-start recording on launch</div><div class="desc">Begin capturing as soon as Mnema opens</div></div>
+          <div class="control"><button class="switch" role="switch" aria-checked="${d.autostart}" data-bool="autostart"></button></div>
+        </div>
+      </div>`;
+  },
+
+  mic(){
+    const f = features.mic, d = f.data;
+    if (!f.enabled) return disabledBody('Microphone capture is off','Enable it above to record and transcribe your voice.');
+    return `
+      <div class="card">
+        <div class="card-title">Input</div>
+        <div class="row">
+          <div class="meta"><div class="label">Input device</div><div class="desc">Which microphone to record from</div></div>
+          <div class="control">
+            <select class="input" data-select-feat="device">
+              ${['MacBook Pro Microphone','AirPods Pro','External USB Mic','System Default'].map(o=>`<option ${o===d.device?'selected':''}>${o}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="meta"><div class="label">Transcribe microphone</div><div class="desc">Convert your voice to searchable text</div></div>
+          <div class="control"><button class="switch" role="switch" aria-checked="${d.transcribe}" data-bool-feat="transcribe"></button></div>
+        </div>
+      </div>
+      <div class="callout"><span class="ic">${ICON.info}</span><div>Microphone capture requires the <b>Microphone</b> permission. Grant it from the Systems check tile.</div></div>`;
+  },
+
+  sysaudio(){
+    const f = features.sysaudio, d = f.data;
+    if (!f.enabled) return disabledBody('System audio is off','Enable it above to capture the audio your computer plays.');
+    const screenOk = features.screen.status==='on';
+    return `
+      ${screenOk?'':`<div class="callout warn"><span class="ic">${ICON.info}</span><div>System audio capture requires <b>Screen capture</b> to be armed.</div></div>`}
+      <div class="card">
+        <div class="card-title">Capture</div>
+        <div class="row">
+          <div class="meta"><div class="label">Transcribe system audio</div><div class="desc">Turn played audio (calls, videos) into searchable text</div></div>
+          <div class="control"><button class="switch" role="switch" aria-checked="${d.transcribe}" data-bool-feat="transcribe"></button></div>
+        </div>
+      </div>
+      <div class="callout"><span class="ic">${ICON.info}</span><div>System audio is captured via macOS audio capture and needs the <b>System audio</b> permission from the Systems check tile.</div></div>`;
+  },
+
+  ocr(){
+    const f = features.ocr, d = f.data;
+    if (!f.enabled) return disabledBody('OCR is off','Enable it above to make on-screen text searchable.');
+    const provider = (key,lbl,dsc) => `
+      <button class="radio ${d.provider===key?'active':''}" data-radio="provider" data-rval="${key}">
+        <span class="dot"></span><div class="rmeta"><div class="rlbl">${lbl}</div><div class="rdsc">${dsc}</div></div>
+      </button>`;
+    const tesseractOnly = d.provider==='tesseract';
+    return `
+      <div class="card">
+        <div class="card-title">Provider</div>
+        <div class="row col">
+          <div class="radio-list">
+            ${provider('apple','Apple Vision','Built-in, fast, no download — recommended')}
+            ${provider('tesseract','Tesseract','Open-source, multi-language model download')}
+          </div>
+        </div>
+      </div>
+      <div class="card" id="ocrModelCard">
+        <div class="card-title">Recognition model</div>
+        <div class="row col">${modelBox('ocr')}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Recognition</div>
+        ${tesseractOnly ? `
+        <div class="row">
+          <div class="meta"><div class="label">Language</div><div class="desc">Tesseract language pack</div></div>
+          <div class="control">
+            <select class="input" data-select-feat="lang">
+              ${[['eng','English'],['fra','French'],['deu','German'],['spa','Spanish']].map(([v,l])=>`<option value="${v}" ${v===d.lang?'selected':''}>${l}</option>`).join('')}
+            </select>
+          </div>
+        </div>`:''}
+        <div class="row">
+          <div class="meta"><div class="label">Recognition mode</div><div class="desc">Trade speed for accuracy</div></div>
+          <div class="control"><div class="segmented" data-seg-feat="mode">${['Fast','Accurate'].map(o=>`<button class="${o===d.mode?'active':''}" data-val="${o}">${o}</button>`).join('')}</div></div>
+        </div>
+      </div>`;
+  },
+
+  transcription(){
+    const f = features.transcription, d = f.data;
+    if (!f.enabled) return disabledBody('Audio transcription is off','Enable it above to turn captured speech into searchable text.');
+    const provider = (key,lbl,dsc) => `
+      <button class="radio ${d.provider===key?'active':''}" data-radio="provider" data-rval="${key}">
+        <span class="dot"></span><div class="rmeta"><div class="rlbl">${lbl}</div><div class="rdsc">${dsc}</div></div>
+      </button>`;
+    return `
+      <div class="card">
+        <div class="card-title">Provider</div>
+        <div class="row col">
+          <div class="radio-list">
+            ${provider('whisper','Local Whisper','On-device, private, model download — recommended')}
+            ${provider('apple','Apple Speech','Built-in macOS speech recognition')}
+            ${provider('parakeet','Parakeet','NVIDIA on-device model, fast streaming')}
+          </div>
+        </div>
+      </div>
+      <div class="card" id="trModelCard">
+        <div class="card-title">Model</div>
+        <div class="row">
+          <div class="meta"><div class="label">Model size</div><div class="desc">Larger is more accurate but slower</div></div>
+          <div class="control">
+            <select class="input" data-select-feat="model" id="trModelSel">
+              ${['base','small','medium','large'].map(o=>`<option value="${o}" ${o===d.model?'selected':''}>${o}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="row col">${modelBox('transcription')}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Language</div>
+        <div class="row">
+          <div class="meta"><div class="label">Spoken language</div><div class="desc">Auto-detect or pin a language</div></div>
+          <div class="control">
+            <select class="input" data-select-feat="lang">
+              ${[['auto','Auto-detect'],['en','English'],['fr','French'],['de','German']].map(([v,l])=>`<option value="${v}" ${v===d.lang?'selected':''}>${l}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      </div>`;
+  },
+
+  privacy(){
+    const f = features.privacy, d = f.data;
+    if (!f.enabled) return disabledBody('Privacy exclusions are off','Enable it above to choose apps Mnema should never record.');
+    return `
+      <div class="card">
+        <div class="card-title">Excluded apps <span style="float:right;color:var(--app-text-subtle);font-weight:600;font-size:9.5px" id="exclCount">${d.apps.length} excluded</span></div>
+        <div class="row col">
+          <div class="combo-wrap">
+            <input class="input" type="text" placeholder="Type an app name to exclude…" id="exclInput" autocomplete="off" style="width:100%">
+            <div class="combo-pop" id="exclPop" hidden></div>
+          </div>
+          <div class="chips" id="exclChips">${d.apps.length?d.apps.map(chipHTML).join(''):'<span style="font-size:11px;color:var(--app-text-subtle)">No apps excluded yet.</span>'}</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Recommended</div>
+        <div class="row">
+          <div class="meta"><div class="label">Apply recommended exclusions</div><div class="desc">1Password, banking apps and Zoom</div></div>
+          <div class="control"><button class="btn tiny accent" id="applyRecommended">Apply recommended</button></div>
+        </div>
+      </div>`;
+  },
+
+  askai(){
+    const f = features.askai, d = f.data;
+    if (!f.enabled) return disabledBody('Ask AI is off','Enable it above to ask natural-language questions about your activity.');
+    const configured = d.provider && d.key;
+    return `
+      <div class="callout"><span class="ic">${ICON.info}</span><div>Ask AI runs on the <b>Reasoning Engine</b>. Choose a provider — cloud (Anthropic / OpenAI) or local (Ollama / Llamafile) — and add a key. <b>API keys are stored only in the macOS keychain</b>, never in config files.</div></div>
+      <div class="card">
+        <div class="card-title">Reasoning Engine provider</div>
+        <div class="row">
+          <div class="meta"><div class="label">Provider</div><div class="desc">Where reasoning runs</div></div>
+          <div class="control">
+            <select class="input" data-select-feat="provider" id="aiProvider">
+              <option value="" ${!d.provider?'selected':''}>Choose provider…</option>
+              <option value="anthropic" ${d.provider==='anthropic'?'selected':''}>Anthropic (cloud)</option>
+              <option value="openai" ${d.provider==='openai'?'selected':''}>OpenAI (cloud)</option>
+              <option value="ollama" ${d.provider==='ollama'?'selected':''}>Ollama (local)</option>
+              <option value="llamafile" ${d.provider==='llamafile'?'selected':''}>Llamafile (local)</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="meta"><div class="label">API key</div><div class="desc">${d.key?'Stored securely in macOS keychain':'Required for cloud providers'}</div></div>
+          <div class="control">
+            ${d.key
+              ? `<span class="perm-pill granted"><span class="pdot"></span>Key stored</span><button class="btn tiny" id="aiKeyClear">Replace</button>`
+              : `<input class="input" type="password" placeholder="sk-…" id="aiKeyInput" style="width:180px"><button class="btn tiny accent" id="aiKeySave">Save to keychain</button>`}
+          </div>
+        </div>
+        <div class="row ${d.provider?'':'disabled-soft'}">
+          <div class="meta"><div class="label">Model</div><div class="desc">Reasoning model used for recall &amp; chat</div></div>
+          <div class="control">
+            <select class="input" data-select-feat="model">
+              ${['claude-opus-4','claude-sonnet-4','gpt-4o','llama3.3-70b'].map(o=>`<option value="${o}" ${o===d.model?'selected':''}>${o}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      </div>
+      ${configured?'':`<div class="callout warn"><span class="ic">${ICON.info}</span><div>Ask AI will stay in <b>Attention</b> until a provider and key are configured.</div></div>`}`;
+  }
+};
+
+/* ============================ DETAIL HELPERS ============================ */
+function disabledBody(title,msg){
+  return `<div class="card"><div class="row col" style="padding:30px 0; text-align:center; align-items:center;">
+    <div style="opacity:.4">${ICON.info}</div>
+    <div class="label" style="font-size:14px">${title}</div>
+    <div class="desc" style="max-width:330px">${msg}</div>
+  </div></div>`;
+}
+function chipHTML(name){ return `<span class="chip">${name}<button class="x" data-chip-remove="${name}">×</button></span>`; }
+function fmtSecs(s){ s=+s; return s>=60 ? `${(s/60).toFixed(s%60?1:0)} min` : `${s}s`; }
+
+// model picker box with download states
+function modelBox(featId){
+  const f = features[featId];
+  const st = featId==='ocr' ? f.data.model : f.data.modelStatus;
+  const name = featId==='ocr'
+    ? (f.data.provider==='apple' ? 'Apple Vision (built-in)' : `Tesseract · ${f.data.lang}`)
+    : `whisper-${f.data.model}`;
+  let badge='', body='';
+  if (st==='avail'){
+    badge=`<span class="mbadge avail">Available</span>`;
+    body=`<div class="dl-line"><span>Ready to use on this device.</span><button class="btn tiny" data-model-remove="${featId}">Remove</button></div>`;
+  } else if (st==='dl'){
+    const pct = f._dlPct || 42;
+    badge=`<span class="mbadge dl">Downloading</span>`;
+    body=`<div class="progress"><span style="width:${pct}%"></span></div>
+          <div class="dl-line"><span data-dl-label>${pct}% · ${(pct*4.8/100).toFixed(0)} MB / 480 MB</span><button class="btn tiny danger" data-model-cancel="${featId}">Cancel</button></div>`;
+  } else { // miss
+    badge=`<span class="mbadge miss">Not downloaded</span>`;
+    body=`<div class="dl-line"><span>Model must be downloaded before use.</span><button class="btn tiny accent" data-model-download="${featId}">Download</button></div>`;
+  }
+  return `<div class="modelbox" data-modelbox="${featId}">
+    <div class="modelbox-head"><span class="mname">${name}</span>${badge}</div>
+    ${body}
+  </div>`;
+}
+
+/* ============================ BIND DETAIL EVENTS ============================ */
+function bindDetail(id){
+  const body = $('detailBody');
+
+  // segmented (foundational data)
+  body.querySelectorAll('[data-seg]').forEach(seg=>{
+    seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+      seg.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      features[id].data[seg.dataset.seg]=b.dataset.val;
+    }));
+  });
+  // segmented (feature data)
+  body.querySelectorAll('[data-seg-feat]').forEach(seg=>{
+    seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+      seg.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      features[id].data[seg.dataset.segFeat]=b.dataset.val;
+    }));
+  });
+
+  // ranges
+  body.querySelectorAll('[data-range]').forEach(r=>{
+    r.addEventListener('input',()=>{
+      const k=r.dataset.range, v=+r.value;
+      features[id].data[k]=v;
+      const out=body.querySelector(`[data-rangeval="${k}"]`);
+      if(out) out.textContent = (k==='fps')?`${v} fps` : (k==='segment')?fmtSecs(v) : `${v}s`;
+    });
+  });
+
+  // boolean switches (foundational)
+  body.querySelectorAll('[data-bool]').forEach(sw=>{
+    sw.addEventListener('click',()=>{
+      const k=sw.dataset.bool, nv=sw.getAttribute('aria-checked')!=='true';
+      sw.setAttribute('aria-checked',nv);
+      features[id].data[k]=nv;
+      if(k==='idle'){ const row=$('idleTimeoutRow'); if(row) row.classList.toggle('disabled-soft',!nv); }
+    });
+  });
+  // boolean switches (feature)
+  body.querySelectorAll('[data-bool-feat]').forEach(sw=>{
+    sw.addEventListener('click',()=>{
+      const k=sw.dataset.boolFeat, nv=sw.getAttribute('aria-checked')!=='true';
+      sw.setAttribute('aria-checked',nv);
+      features[id].data[k]=nv;
+    });
+  });
+
+  // text + selects
+  body.querySelectorAll('[data-text]').forEach(t=>t.addEventListener('input',()=>{features[id].data[t.dataset.text]=t.value;}));
+  body.querySelectorAll('[data-select]').forEach(s=>s.addEventListener('change',()=>{features[id].data[s.dataset.select]=s.value;}));
+  body.querySelectorAll('[data-select-feat]').forEach(s=>s.addEventListener('change',()=>{
+    features[id].data[s.dataset.selectFeat]=s.value;
+    if(id==='transcription' && s.dataset.selectFeat==='model'){ features[id].data.modelStatus='miss'; rerenderModel('transcription'); }
+    if(id==='askai'){ refreshAiHead(); }
+  }));
+
+  // browse
+  const browse = body.querySelector('[data-browse]');
+  if(browse) browse.addEventListener('click',()=>{
+    const inp=body.querySelector('[data-text="dir"]');
+    inp.value='~/Mnema/captures'; features[id].data.dir=inp.value; toast('Save location updated');
+  });
+
+  // permissions
+  body.querySelectorAll('[data-perm-grant]').forEach(btn=>btn.addEventListener('click',()=>{
+    const row=btn.closest('[data-perm-row]'), key=row.dataset.permRow;
+    features.permissions.data[key]='granted';
+    refreshPermRow(key);
+    syncPermStatus();
+    toast('Permission granted');
+  }));
+  body.querySelectorAll('[data-perm-open]').forEach(btn=>btn.addEventListener('click',()=>{
+    toast('Opening System Settings…');
+  }));
+
+  // OCR / transcription provider radios
+  body.querySelectorAll('[data-radio="provider"]').forEach(r=>r.addEventListener('click',()=>{
+    body.querySelectorAll('[data-radio="provider"]').forEach(x=>x.classList.remove('active'));
+    r.classList.add('active');
+    features[id].data.provider=r.dataset.rval;
+    if(id==='ocr'){ features[id].data.model = (r.dataset.rval==='apple')?'avail':'miss'; openDetail('ocr'); }
+    if(id==='transcription'){ features[id].data.modelStatus = (r.dataset.rval==='apple')?'avail':'miss'; openDetail('transcription'); }
+  }));
+
+  // model download flow
+  bindModelEvents(body);
+
+  // privacy combobox
+  if(id==='privacy') bindPrivacy(body);
+
+  // ask ai key
+  bindAskAi(body);
+}
+
+function refreshPermRow(key){
+  const row=document.querySelector(`[data-perm-row="${key}"]`);
+  if(!row) return;
+  const st=features.permissions.data[key];
+  row.innerHTML=permPill(st)+permAction(st);
+  // rebind
+  const g=row.querySelector('[data-perm-grant]'); if(g) g.addEventListener('click',()=>{features.permissions.data[key]='granted';refreshPermRow(key);syncPermStatus();toast('Permission granted');});
+  const o=row.querySelector('[data-perm-open]'); if(o) o.addEventListener('click',()=>toast('Opening System Settings…'));
+}
+function syncPermStatus(){
+  const d=features.permissions.data;
+  const states=[d.screen,d.mic,d.sysaudio];
+  if(states.includes('denied')) features.permissions.status='danger';
+  else if(states.every(s=>s==='granted')) features.permissions.status='on';
+  else features.permissions.status='warn';
+  // screen permission gates screen capture liveness in spirit; keep simple
+  updateGauge();
+}
+
+/* ---------- model download simulation ---------- */
+let dlTimers={};
+function rerenderModel(featId){
+  const card = featId==='ocr' ? $('ocrModelCard') : $('trModelCard');
+  if(!card) return;
+  const holder = card.querySelector('[data-modelbox]')?.closest('.row');
+  if(holder) holder.innerHTML = modelBox(featId);
+  bindModelEvents($('detailBody'));
+}
+function bindModelEvents(scope){
+  scope.querySelectorAll('[data-model-download]').forEach(b=>b.addEventListener('click',()=>startDownload(b.dataset.modelDownload)));
+  scope.querySelectorAll('[data-model-cancel]').forEach(b=>b.addEventListener('click',()=>cancelDownload(b.dataset.modelCancel)));
+  scope.querySelectorAll('[data-model-remove]').forEach(b=>b.addEventListener('click',()=>{
+    const f=b.dataset.modelRemove; setModelStatus(f,'miss'); rerenderModel(f); toast('Model removed');
+  }));
+}
+function setModelStatus(featId,st){
+  if(featId==='ocr') features.ocr.data.model=st; else features.transcription.data.modelStatus=st;
+}
+function startDownload(featId){
+  setModelStatus(featId,'dl'); features[featId]._dlPct=2; rerenderModel(featId);
+  clearInterval(dlTimers[featId]);
+  dlTimers[featId]=setInterval(()=>{
+    let p=(features[featId]._dlPct||0)+Math.floor(Math.random()*9)+5;
+    if(p>=100){ p=100; clearInterval(dlTimers[featId]); features[featId]._dlPct=100;
+      setModelStatus(featId,'avail'); rerenderModel(featId); toast('Model downloaded'); return; }
+    features[featId]._dlPct=p;
+    const card=$('detailBody');
+    const bar=card.querySelector(`[data-modelbox="${featId}"] .progress > span`);
+    const lbl=card.querySelector(`[data-modelbox="${featId}"] [data-dl-label]`);
+    if(bar) bar.style.width=p+'%';
+    if(lbl) lbl.textContent=`${p}% · ${(p*4.8/100).toFixed(0)} MB / 480 MB`;
+  },360);
+}
+function cancelDownload(featId){
+  clearInterval(dlTimers[featId]); features[featId]._dlPct=0;
+  setModelStatus(featId,'miss'); rerenderModel(featId); toast('Download cancelled');
+}
+
+/* ---------- privacy combobox ---------- */
+const APP_POOL=['1Password','Bank of America','Chase','Zoom','Messages','Signal','WhatsApp','Mail','Slack','Notion','Keychain Access','Photos'];
+function bindPrivacy(scope){
+  const input=scope.querySelector('#exclInput'), pop=scope.querySelector('#exclPop');
+  const refresh=(q)=>{
+    const cur=features.privacy.data.apps;
+    const opts=APP_POOL.filter(a=>!cur.includes(a) && a.toLowerCase().includes((q||'').toLowerCase()));
+    if(!opts.length){ pop.hidden=true; return; }
+    pop.innerHTML=opts.slice(0,6).map(a=>`<div class="combo-opt" data-add="${a}"><span class="app-ic">${a[0]}</span>${a}</div>`).join('');
+    pop.hidden=false;
+    pop.querySelectorAll('[data-add]').forEach(o=>o.addEventListener('click',()=>{addApp(o.dataset.add); input.value=''; refresh('');}));
+  };
+  input.addEventListener('input',()=>refresh(input.value));
+  input.addEventListener('focus',()=>refresh(input.value));
+  input.addEventListener('keydown',e=>{ if(e.key==='Enter'&&input.value.trim()){ addApp(input.value.trim()); input.value=''; refresh(''); }});
+  document.addEventListener('click',e=>{ if(!scope.contains(e.target)) pop.hidden=true; },{once:true});
+  scope.querySelector('#applyRecommended')?.addEventListener('click',()=>{
+    ['1Password','Bank of America','Zoom'].forEach(a=>{ if(!features.privacy.data.apps.includes(a)) features.privacy.data.apps.push(a); });
+    renderChips(); toast('Recommended exclusions applied');
+  });
+  renderChips();
+}
+function addApp(name){ if(!features.privacy.data.apps.includes(name)) features.privacy.data.apps.push(name); renderChips(); }
+function renderChips(){
+  const wrap=$('exclChips'); if(!wrap) return;
+  const apps=features.privacy.data.apps;
+  wrap.innerHTML = apps.length? apps.map(chipHTML).join('') : '<span style="font-size:11px;color:var(--app-text-subtle)">No apps excluded yet.</span>';
+  const cnt=$('exclCount'); if(cnt) cnt.textContent=`${apps.length} excluded`;
+  wrap.querySelectorAll('[data-chip-remove]').forEach(x=>x.addEventListener('click',()=>{
+    features.privacy.data.apps=features.privacy.data.apps.filter(a=>a!==x.dataset.chipRemove); renderChips();
+  }));
+}
+
+/* ---------- ask ai ---------- */
+function bindAskAi(scope){
+  const save=scope.querySelector('#aiKeySave');
+  if(save) save.addEventListener('click',()=>{
+    const inp=scope.querySelector('#aiKeyInput');
+    if(!inp.value.trim()){ toast('Enter an API key'); return; }
+    features.askai.data.key=true; openDetail('askai'); toast('Key saved to keychain'); refreshAiHead();
+  });
+  const clear=scope.querySelector('#aiKeyClear');
+  if(clear) clear.addEventListener('click',()=>{ features.askai.data.key=false; openDetail('askai'); refreshAiHead(); });
+}
+function refreshAiHead(){ /* status recomputed on close; no-op live */ }
+
+/* ============================ TOAST ============================ */
+function toast(msg){
+  $('toastMsg').textContent=msg;
+  const t=$('toast'); t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>t.classList.remove('show'),1900);
+}
+
+/* ============================ GLOBAL EVENTS ============================ */
+$('backBtn').addEventListener('click',closeDetail);
+$('armBtn').addEventListener('click',()=>{
+  if($('armBtn').disabled) return;
+  toast('System armed — recording started');
+});
+$('skipBtn').addEventListener('click',()=>toast('Using defaults — you can change these in Settings'));
+
+// theme toggle
+$('themeToggle').addEventListener('click',()=>{
+  const html=document.documentElement;
+  const light = html.getAttribute('data-theme')==='light';
+  html.setAttribute('data-theme', light?'dark':'light');
+  $('themeLabel').textContent = light?'dark':'light';
+});
+
+// esc to go back
+document.addEventListener('keydown',e=>{ if(e.key==='Escape' && currentDetail) closeDetail(); });
+
+/* ============================ INIT ============================ */
+renderTiles();
+// animate gauge from 0 on load
+setTimeout(updateGauge, 120);
+</script>
+</body>
+</html>

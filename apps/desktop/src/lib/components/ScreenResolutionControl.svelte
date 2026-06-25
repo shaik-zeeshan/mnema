@@ -1,5 +1,7 @@
 <script lang="ts">
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import Input from "$lib/components/Input.svelte";
+  import FieldWarning from "$lib/components/FieldWarning.svelte";
   import type { ResolutionMode, ResolutionPreset } from "$lib/types";
 
   let {
@@ -14,116 +16,77 @@
     preset: ResolutionPreset;
     widthRaw: string;
     heightRaw: string;
-    disabledValues?: ResolutionMode[];
+    disabledValues?: string[];
     customErrors?: string[];
   } = $props();
 </script>
 
-<RadioGroup
-  bind:value={mode}
-  {disabledValues}
-  options={[
-    { value: "original", label: "Original", description: "Capture at the display's native resolution" },
-    { value: "preset", label: "Preset", description: "Select a standard output resolution" },
-    { value: "custom", label: "Custom", description: "Enter exact width and height in pixels" },
-  ]}
-/>
+<!-- A single column so the segmented control and the custom inputs stack
+     vertically regardless of how the parent lays its children out. -->
+<div class="resolution-control">
+  <!-- Original, the scaled presets, and Custom collapse into one segmented
+       control. Selecting a preset writes both mode and preset; "Custom" flips
+       mode to custom and reveals the width/height inputs below. -->
+  <Segmented
+    value={mode === "custom" ? "custom" : mode === "original" ? "original" : preset}
+    onValueChange={(v) => {
+      if (v === "custom") {
+        mode = "custom";
+      } else if (v === "original") {
+        mode = "original";
+      } else {
+        mode = "preset";
+        preset = v as ResolutionPreset;
+      }
+    }}
+    ariaLabel="Screen resolution"
+    {disabledValues}
+    options={[
+      { value: "original", label: "Original" },
+      { value: "1080p", label: "1080p" },
+      { value: "720p", label: "720p" },
+      { value: "540p", label: "540p" },
+      { value: "custom", label: "Custom" },
+    ]}
+  />
 
-{#if mode === "preset"}
-  <div class="resolution-preset-grid">
-    {#each (["1080p", "720p", "540p"] as const) as candidate}
-      {@const meta = { "1080p": { w: 1920, h: 1080 }, "720p": { w: 1280, h: 720 }, "540p": { w: 960, h: 540 } }[candidate]}
-      <button
-        class="preset-chip"
-        class:preset-chip--active={preset === candidate}
-        onclick={() => { preset = candidate; }}
-        type="button"
-      >
-        <span class="preset-chip__label">{candidate}</span>
-        <span class="preset-chip__dim">{meta.w}x{meta.h}</span>
-      </button>
-    {/each}
-  </div>
-{/if}
+  {#if mode === "custom"}
+    <div class="custom-resolution-inputs">
+      <div class="custom-res-field">
+        <label class="custom-res-label" for="res-width">Width (px)</label>
+        <Input id="res-width" bind:value={widthRaw} inputmode="numeric" placeholder="e.g. 1920" invalid={customErrors.length > 0} />
+      </div>
+      <span class="custom-res-sep" aria-hidden="true">x</span>
+      <div class="custom-res-field">
+        <label class="custom-res-label" for="res-height">Height (px)</label>
+        <Input id="res-height" bind:value={heightRaw} inputmode="numeric" placeholder="e.g. 1080" invalid={customErrors.length > 0} />
+      </div>
+      <FieldWarning messages={customErrors} />
+    </div>
+  {/if}
+</div>
 
 <style>
-  .resolution-preset-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    margin-top: 8px;
-  }
-
-  .preset-chip {
+  .resolution-control {
     display: flex;
-    min-width: 0;
-    min-height: 58px;
     flex-direction: column;
-    align-items: flex-start;
-    justify-content: center;
-    gap: 3px;
-    padding: 10px 12px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font: inherit;
-    cursor: pointer;
-    text-align: left;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-
-  .preset-chip:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
-    color: var(--app-text);
-  }
-
-  .preset-chip--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent);
-  }
-
-  .preset-chip:focus-visible {
-    outline: 1px solid var(--app-accent);
-    outline-offset: 1px;
-  }
-
-  .preset-chip__label {
-    color: var(--app-text);
-    font-size: 12px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .preset-chip--active .preset-chip__label {
-    color: var(--app-accent);
-  }
-
-  .preset-chip__dim {
-    color: var(--app-text-faint);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-  }
-
-  .preset-chip--active .preset-chip__dim {
-    color: var(--app-accent-strong);
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
   }
 
   .custom-resolution-inputs {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    align-items: end;
+    display: flex;
+    align-items: flex-end;
     gap: 8px;
-    margin-top: 8px;
+    min-width: 0;
+    flex-wrap: wrap;
   }
 
   .custom-res-field {
     display: flex;
     min-width: 0;
+    flex: 1 1 120px;
     flex-direction: column;
     gap: 6px;
   }
@@ -146,88 +109,8 @@
     font-weight: 800;
   }
 
-  .text-input {
-    width: 100%;
-    min-width: 0;
+  /* Sit the warning badge on the input row, not below the labels. */
+  .custom-resolution-inputs :global(.field-warning) {
     height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-size: 12px;
-    outline: none;
-    transition: border-color 0.12s, background 0.12s;
-  }
-
-  .text-input:focus {
-    border-color: var(--app-accent);
-    background: var(--app-surface-raised);
-  }
-
-  .text-input::placeholder {
-    color: var(--app-text-faint);
-  }
-
-  .inline-validation {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    padding: 8px 10px;
-    margin-top: 8px;
-    border: 1px solid var(--app-warn-border);
-    border-radius: 4px;
-    background: var(--app-warn-bg);
-  }
-
-  .inline-validation__item {
-    display: flex;
-    align-items: flex-start;
-    gap: 7px;
-    color: var(--app-warn);
-    font-size: 10px;
-    line-height: 1.45;
-  }
-
-  .inline-validation__icon {
-    flex: 0 0 auto;
-    font-weight: 800;
-  }
-
-  @media (max-width: 640px) {
-    .resolution-preset-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .custom-resolution-inputs {
-      grid-template-columns: 1fr;
-    }
-
-    .custom-res-sep {
-      display: none;
-    }
   }
 </style>
-
-{#if mode === "custom"}
-  <div class="custom-resolution-inputs">
-    <div class="custom-res-field">
-      <label class="custom-res-label" for="res-width">Width (px)</label>
-      <input id="res-width" type="text" inputmode="numeric" class="text-input custom-res-input" bind:value={widthRaw} placeholder="e.g. 1920" autocomplete="off" />
-    </div>
-    <span class="custom-res-sep" aria-hidden="true">x</span>
-    <div class="custom-res-field">
-      <label class="custom-res-label" for="res-height">Height (px)</label>
-      <input id="res-height" type="text" inputmode="numeric" class="text-input custom-res-input" bind:value={heightRaw} placeholder="e.g. 1080" autocomplete="off" />
-    </div>
-  </div>
-
-  {#if customErrors.length > 0}
-    <div class="inline-validation">
-      {#each customErrors as err}
-        <p class="inline-validation__item"><span class="inline-validation__icon">!</span>{err}</p>
-      {/each}
-    </div>
-  {/if}
-{/if}
