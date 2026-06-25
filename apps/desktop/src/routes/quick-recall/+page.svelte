@@ -4412,12 +4412,14 @@
     border-bottom: 1px solid var(--app-border);
   }
 
-  /* WKWebView focus idiom: the field bar (not the borderless input) is the focus
-     surface, so the ring lives on its :focus-within. */
-  .quick-recall__field:focus-within {
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
+  /* The search row keeps a constant neutral hairline divider (Spotlight/Raycast
+     style). We intentionally do NOT recolor it to the accent on :focus-within:
+     the field only has a `border-bottom`, so an accent border-color paints a
+     hard green line on that one edge rather than a ring, and the accompanying
+     box-shadow ring is clipped on three sides by the parent's `overflow: hidden`
+     rounded frame — leaving an asymmetric halo only below the field. The launcher
+     auto-focuses this input on open, so that focus chrome was effectively always
+     on. The blinking accent caret already signals focus. */
 
   .quick-recall__glyph {
     font-size: 16px;
