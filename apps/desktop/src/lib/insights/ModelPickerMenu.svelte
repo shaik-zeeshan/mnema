@@ -252,6 +252,15 @@
   // The selectable subset, for keyboard navigation bounds.
   let pickerOptions = $derived(pickerRows.filter((row) => row.type === "option"));
 
+  // The DOM id of the currently highlighted option, mirrored onto the combobox
+  // input's `aria-activedescendant` so assistive tech announces the arrow-key
+  // cursor (which moves a visual highlight while DOM focus stays on the input).
+  let activeDescendantId = $derived(
+    pickerOptions.some((row) => row.type === "option" && row.index === highlight)
+      ? `mpm-opt-${highlight}`
+      : null,
+  );
+
   // Measure room below vs above the trigger and flip the block popover upward
   // when there isn't enough room below (and there's more above). The inline pill
   // keeps its fixed upward open — only `--block` consults this. CSS `max-height`
@@ -372,6 +381,7 @@
         role="combobox"
         aria-expanded="true"
         aria-controls="mpm-list"
+        aria-activedescendant={activeDescendantId}
         aria-label="Search models"
         placeholder="Search or paste a model id…"
         spellcheck="false"
@@ -390,6 +400,7 @@
             <button
               type="button"
               bind:this={optionEls[row.index]}
+              id={`mpm-opt-${row.index}`}
               class="mpm-option"
               class:mpm-option--active={row.selected}
               class:mpm-option--cursor={row.index === highlight}

@@ -937,6 +937,15 @@
     <div class="state state--error">
       <p class="state-title">Couldn't load Subjects.</p>
       <p class="state-detail">{loadError}</p>
+      <button
+        type="button"
+        class="state-retry"
+        onclick={() => void loadConclusions()}
+        disabled={loading}
+      >
+        <span class="state-retry-ico" aria-hidden="true">↻</span>
+        Try again
+      </button>
     </div>
   {:else if loading && !conclusions}
     <!-- Loading skeleton — a few rows matching the loaded row shape so the swap
@@ -1055,7 +1064,7 @@
     font-size: 18px;
     font-weight: 600;
     color: var(--app-text-strong);
-    letter-spacing: 0.01em;
+    letter-spacing: -0.01em;
   }
   .conv-head .conv-sub {
     margin: 0;
@@ -1710,6 +1719,45 @@
     color: var(--app-text-muted);
     line-height: 1.6;
   }
+  /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
+  .state-retry {
+    align-self: flex-start;
+    margin-top: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .state-retry:hover:not(:disabled) {
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
+  }
+  .state-retry:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .state-retry:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .state-retry-ico {
+    font-size: 12px;
+    line-height: 1;
+    letter-spacing: 0;
+  }
 
   @media (prefers-reduced-motion: reduce) {
     .conv-row,
@@ -1727,7 +1775,8 @@
     .conv-caret:not(:disabled):active,
     .conv-caret.is-open:not(:disabled):active,
     .sort-seg button:not(:disabled):active,
-    .conv-tier-more:not(:disabled):active {
+    .conv-tier-more:not(:disabled):active,
+    .state-retry:not(:disabled):active {
       transform: none;
     }
     .btn-spinner {

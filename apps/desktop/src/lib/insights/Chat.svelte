@@ -941,6 +941,16 @@
   </span>
 {/snippet}
 
+<!-- Answer-shaped placeholder shown beneath the working line while a turn is
+     seeding/thinking (before any prose block arrives), so the answer region
+     reads as "an answer is forming" rather than a lone pulsing dot. -->
+{#snippet answerSkeleton()}
+  <div class="answer-sk" aria-hidden="true">
+    <Skeleton variant="text" width="94%" height="12px" />
+    <Skeleton variant="text" width="68%" height="12px" muted />
+  </div>
+{/snippet}
+
 <!-- The active conversation: transcript + composer. The history list / search /
      new-chat / rename / delete all live in the persistent shell rail
      (<InsightsRail>); this surface is JUST the conversation pane. -->
@@ -1052,11 +1062,13 @@
                       <span class="dot" aria-hidden="true"></span>
                       Searching your captures…
                     </p>
+                    {@render answerSkeleton()}
                   {:else if turn.phase === "thinking" && turn.liveActivity === null}
                     <p class="state state--working">
                       <span class="dot" aria-hidden="true"></span>
                       Thinking…
                     </p>
+                    {@render answerSkeleton()}
                   {:else}
                     {#if turn.phase === "streaming" || turn.phase === "done"}
                       <!-- Collapsed, expandable tool-activity summary chip. -->
@@ -1603,6 +1615,13 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+  /* Answer-shaped placeholder while a turn seeds/thinks (before prose lands). */
+  .answer-sk {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 8px;
   }
 
   /* Inline graphical answer segments. */

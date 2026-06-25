@@ -8,7 +8,9 @@
   // backdrop pointerdown-to-close, panel focus handoff for WebKit, overlay/
   // panel/header chrome) for visual + interaction consistency.
 
+  import { tick } from "svelte";
   import type { Activity } from "$lib/types/recording";
+  import { trapTabKey } from "$lib/keyboard";
   import { humanizeMs, focusHint } from "$lib/insights/activity-helpers";
   import Heatmap from "$lib/insights/charts/Heatmap.svelte";
 
@@ -119,10 +121,22 @@
   }
 
   // Move keyboard focus into the dialog when it opens, so Escape/Tab act on
-  // the modal immediately (WebKit gives the opener no focus handoff).
+  // the modal immediately (WebKit gives the opener no focus handoff). On open we
+  // also capture the opener so focus can return to it on close (else it falls to
+  // <body>); mirrors ModelPickerMenu's trigger-focus return.
   let panelEl = $state<HTMLDivElement | null>(null);
+  let opener: HTMLElement | null = null;
+  let wasOpen = false;
   $effect(() => {
-    if (open) panelEl?.focus();
+    if (open && !wasOpen) {
+      opener = document.activeElement as HTMLElement | null;
+      panelEl?.focus();
+    } else if (!open && wasOpen) {
+      const trigger = opener;
+      opener = null;
+      void tick().then(() => trigger?.focus());
+    }
+    wasOpen = open;
   });
 </script>
 
@@ -130,7 +144,10 @@
      surfaces; the tag must stay at the top level (Svelte forbids it in a block). -->
 <svelte:window
   onkeydown={(e) => {
-    if (!open || e.key !== "Escape") return;
+    if (!open) return;
+    // Keep Tab inside the dialog so focus never escapes behind the backdrop.
+    if (trapTabKey(e, panelEl)) return;
+    if (e.key !== "Escape") return;
     onClose();
   }}
 />

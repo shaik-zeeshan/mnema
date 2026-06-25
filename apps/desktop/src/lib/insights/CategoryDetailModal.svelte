@@ -10,7 +10,9 @@
   // closes the popover first, then defers to onClose. Corrections delegate to
   // the parent via the onCorrectCategory / onCorrectFocus callbacks.
 
+  import { tick } from "svelte";
   import type { Activity } from "$lib/types/recording";
+  import { trapTabKey } from "$lib/keyboard";
   import {
     CATEGORY_OPTIONS,
     FOCUS_OPTIONS,
@@ -85,10 +87,22 @@
   }
 
   // Move keyboard focus into the dialog when it opens, so Escape/Tab act on
-  // the modal immediately (WebKit gives the opener no focus handoff).
+  // the modal immediately (WebKit gives the opener no focus handoff). On open we
+  // also capture the opener so focus can return to it on close (else it falls to
+  // <body>); mirrors ModelPickerMenu's trigger-focus return.
   let panelEl = $state<HTMLDivElement | null>(null);
+  let opener: HTMLElement | null = null;
+  let wasOpen = false;
   $effect(() => {
-    if (open) panelEl?.focus();
+    if (open && !wasOpen) {
+      opener = document.activeElement as HTMLElement | null;
+      panelEl?.focus();
+    } else if (!open && wasOpen) {
+      const trigger = opener;
+      opener = null;
+      void tick().then(() => trigger?.focus());
+    }
+    wasOpen = open;
   });
 </script>
 
@@ -105,7 +119,10 @@
     }
   }}
   onkeydown={(e) => {
-    if (!open || e.key !== "Escape") return;
+    if (!open) return;
+    // Keep Tab inside the dialog so focus never escapes behind the backdrop.
+    if (trapTabKey(e, panelEl)) return;
+    if (e.key !== "Escape") return;
     if (editingActivity.size > 0) {
       e.stopPropagation();
       closeActivityEdit();

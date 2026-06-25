@@ -1363,6 +1363,15 @@
     <div class="state state--error">
       <p class="state-title">Couldn't load your usage charts.</p>
       <p class="state-detail">{freeError}</p>
+      <button
+        type="button"
+        class="re-read state-retry"
+        onclick={() => void loadFree()}
+        disabled={loadingFree}
+      >
+        <span class="re-read-ico" aria-hidden="true">↻</span>
+        Try again
+      </button>
     </div>
   {/if}
 
@@ -2109,6 +2118,15 @@
     cursor: default;
     opacity: 0.6;
   }
+  /* Retry affordance on a page-level error card — the re-read pill, sized to its
+     content and nudged off the detail line. */
+  .state-retry {
+    align-self: flex-start;
+    margin-top: 4px;
+  }
+  .re-read:not(:disabled):active {
+    transform: translateY(1px);
+  }
   .re-read-ico {
     font-size: 12px;
     line-height: 1;
@@ -2125,6 +2143,9 @@
   @media (prefers-reduced-motion: reduce) {
     .re-read.is-busy .re-read-ico {
       animation: none;
+    }
+    .re-read:not(:disabled):active {
+      transform: none;
     }
   }
   /* Re-read failure reason — sits where the prose would, in the same scale,
