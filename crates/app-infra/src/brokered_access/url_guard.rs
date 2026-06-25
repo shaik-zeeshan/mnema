@@ -80,6 +80,22 @@ use url::Url;
 /// (both emit `[REDACTED_SECRET: ...]` markers from the same vocabulary).
 const ARMED_TOKEN_PLACEHOLDER: &str = "[REDACTED_SECRET: ACCESS_TOKEN]";
 
+/// Upper bound on the path bytes the guard will redact per URL.
+///
+/// The guard runs the per-sub-part redaction passes (incl. the `secret-redaction`
+/// regex driver, which does NOT apply its own `max_surface_chars` cap on the
+/// `redact_searchable_text` path) once per sub-part, so total CPU is linear in
+/// path length. Path length is REMOTELY influenceable: a visited page controls
+/// its own URL, and a malicious site can navigate to a multi-megabyte path that
+/// is then captured and re-guarded at the broker boundary on EVERY search hit and
+/// EVERY timeline interval (up to `MAX_SEARCH_LIMIT` per page). Capping the
+/// guarded path keeps each `guard_url` call constant-bounded regardless of the
+/// captured URL's size. 8 KiB comfortably exceeds any legitimate human-navigated
+/// path (browsers themselves cap around 2 KB of address-bar URL); anything past it
+/// is adversarial padding or an oversized token, and the overflow is redacted
+/// wholesale so a token straddling the cut cannot leak.
+const MAX_GUARDED_PATH_BYTES: usize = 8 * 1024;
+
 /// Path segments (sub-parts) that, when they immediately precede a token-shaped
 /// segment, "arm" that following segment for redaction (the credential-bearing
 /// tail of a reset / verify / magic-link / OTP / auth / share flow). The keyword
@@ -179,7 +195,23 @@ pub fn guard_url(raw_url: &str) -> Option<String> {
         Some(port) => format!("{host}:{port}"),
         None => host.to_string(),
     };
-    let path = sanitized.path();
+    let full_path = sanitized.path();
+
+    // Bound the redacted path to a constant so the linear per-sub-part work
+    // (incl. the un-`max_surface_chars`-capped `redact_searchable_text` regex
+    // driver) can never be driven super-large by a remotely-influenceable URL
+    // length. Cut on a char boundary; when the path overflows, the truncated
+    // remainder is redacted wholesale (a token straddling the cut cannot leak).
+    let path_overflowed = full_path.len() > MAX_GUARDED_PATH_BYTES;
+    let path = if path_overflowed {
+        let mut cut = MAX_GUARDED_PATH_BYTES;
+        while cut > 0 && !full_path.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        &full_path[..cut]
+    } else {
+        full_path
+    };
 
     // 3 + 4 + 5. Both redaction passes run PER PATH SUB-PART (and the authority
     //         is redacted in isolation). Segmenting first matters: the
@@ -217,7 +249,14 @@ pub fn guard_url(raw_url: &str) -> Option<String> {
         );
         out.push(processed);
     }
-    let guarded_path = out.join("/");
+    let mut guarded_path = out.join("/");
+    if path_overflowed {
+        // The path exceeded the guard's bound and was cut. The dropped remainder
+        // could be (part of) a secret token, so emit a redaction marker in its
+        // place rather than silently truncating — and count it.
+        guarded_path.push_str(ARMED_TOKEN_PLACEHOLDER);
+        redacted_count += 1;
+    }
 
     // 6. Observability: one debug line per call. Never logs URL contents at
     //    info level; the counts keep the residual observable.
@@ -484,10 +523,33 @@ fn is_opaque_char(c: char) -> bool {
     // (split into sub-parts by `split_encoded_slash`); `%` is excluded so
     // percent-encoded readable content (`Hello%20World`) is not mis-read as one
     // opaque token and over-redacted.
+    //
+    // `[` `]` `^` `|` are included too: the `url` crate's `SPECIAL_PATH_SEGMENT`
+    // percent-encode set does NOT escape them, so they ride verbatim in `path()`
+    // for http(s) URLs. Without them a mixed-class opaque token split by one of
+    // these (`AbC9xK2mP4qR|7sT0xyz`) bailed the opaque scan and leaked whole —
+    // the same class of leak the sub-delimiter pchars above closed.
     c.is_ascii_alphanumeric()
         || matches!(
             c,
-            '-' | '_' | '.' | '~' | '+' | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | ',' | '@' | ':'
+            '-' | '_'
+                | '.'
+                | '~'
+                | '+'
+                | '!'
+                | '$'
+                | '&'
+                | '\''
+                | '('
+                | ')'
+                | '*'
+                | ','
+                | '@'
+                | ':'
+                | '['
+                | ']'
+                | '^'
+                | '|'
         )
 }
 
@@ -923,6 +985,35 @@ mod tests {
         }
     }
 
+    // REGRESSION (deep-review finding, sibling of the sub-delim gap above): the
+    // `url` crate's SPECIAL_PATH_SEGMENT percent-encode set keeps `[`, `]`, `^`,
+    // and `|` VERBATIM in `path()` (they are NOT in the set), yet none of them is
+    // an `is_opaque_char` member and none is a split delimiter. A mixed-class
+    // opaque token broken by ONE of these chars therefore bails the backstop's
+    // opaque-char scan exactly like the `@ : , ! …` chars did before their fix —
+    // and with a bare `/s/` carrier (no armed predecessor) ONLY the backstop can
+    // catch it, so the WHOLE token leaks verbatim to the cloud model. Each must
+    // now redact.
+    #[test]
+    fn bracket_caret_pipe_broken_opaque_token_is_redacted_by_backstop() {
+        for raw in [
+            "https://app.com/s/AbC9xK2mP4qR|7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR^7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR[7sT0xyz",
+            "https://app.com/s/AbC9xK2mP4qR]7sT0xyz",
+        ] {
+            let out = guard(raw).unwrap();
+            assert!(
+                !out.contains("AbC9xK2mP4qR"),
+                "the token must not leak: raw={raw} out={out}"
+            );
+            assert!(
+                out.contains(ARMED_TOKEN_PLACEHOLDER),
+                "bracket/caret/pipe-broken mixed-class opaque token must redact: raw={raw} out={out}"
+            );
+        }
+    }
+
     #[test]
     fn full_mode_style_input_still_strips_query_and_fragment() {
         // A URL captured under a "Full" mode would carry its query+fragment; the
@@ -1277,6 +1368,37 @@ mod tests {
         assert!(
             out.len() <= many_segments.len() + armed.len() + long_token.len() + 64,
             "guarded output is bounded by input size (no blowup): {} bytes",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn guarded_output_is_constant_bounded_regardless_of_url_length() {
+        // The captured `browser_url` path is REMOTELY influenceable (a visited
+        // page controls its own URL) and is re-guarded at the broker boundary on
+        // every search hit / timeline interval. `MAX_GUARDED_PATH_BYTES` caps the
+        // work + output: a 1 MB adversarial path produces the SAME bounded output
+        // size as an 8 KB one, and the dropped overflow is redacted (no leak).
+        let huge_path: String = std::iter::repeat('a').take(1_000_000).collect();
+        let out = guard(&format!("https://site.com/{huge_path}")).unwrap();
+        assert!(
+            out.len() <= "site.com/".len() + MAX_GUARDED_PATH_BYTES + ARMED_TOKEN_PLACEHOLDER.len(),
+            "guarded output must be constant-bounded by the path cap, got {} bytes",
+            out.len()
+        );
+        assert!(
+            out.contains(ARMED_TOKEN_PLACEHOLDER),
+            "overflow past the cap must be redacted, not silently dropped: {}",
+            &out[out.len().saturating_sub(40)..]
+        );
+
+        // A long single token straddling the cap must NOT leak its tail.
+        let token: String = "Ab9".repeat(4_000); // ~12 KB, > cap
+        let out = guard(&format!("https://site.com/s/{token}")).unwrap();
+        assert!(!out.contains(&token), "oversized token must not leak whole");
+        assert!(
+            out.len() <= "site.com/".len() + MAX_GUARDED_PATH_BYTES + ARMED_TOKEN_PLACEHOLDER.len(),
+            "oversized-token output stays bounded: {} bytes",
             out.len()
         );
     }

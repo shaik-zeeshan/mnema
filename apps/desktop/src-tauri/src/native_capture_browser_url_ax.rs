@@ -195,10 +195,10 @@ pub fn read_active_tab_url(pid: i32) -> Option<String> {
 /// (or [`ReadOutcome::Dormant`] if none yet), so a slow browser can't drag one
 /// attempt out to ~50 message timeouts.
 fn read_focused_outermost_url(app: AXUIElementRef, deadline: Instant) -> ReadOutcome {
-    // Wall-clock bound BEFORE the first messages: the two pre-loop reads below
-    // (`AXFocusedUIElement` + `AXRole`) each cost up to one per-message timeout,
-    // so if the budget is already spent we bail without issuing them. Treat an
-    // already-spent attempt as cold (worth re-polling within the poll budget).
+    // Wall-clock bound BEFORE the first message: `AXFocusedUIElement` costs up to
+    // one per-message timeout, so if the budget is already spent we bail without
+    // issuing it. Treat an already-spent attempt as cold (worth re-polling within
+    // the poll budget).
     if Instant::now() >= deadline {
         return ReadOutcome::Dormant;
     }
@@ -206,6 +206,15 @@ fn read_focused_outermost_url(app: AXUIElementRef, deadline: Instant) -> ReadOut
     let Some(focused) = copy_attribute(app, "AXFocusedUIElement") else {
         return ReadOutcome::Dormant;
     };
+    // Re-check the deadline BEFORE the second pre-loop message (`AXRole`): the
+    // `AXFocusedUIElement` read above may itself have consumed the whole budget on
+    // a slow browser, and issuing `AXRole` unconditionally would let a SECOND full
+    // per-message timeout overrun it — breaking the "at most one in-flight message
+    // after the budget is spent" bound. If the budget is already gone, treat the
+    // attempt as cold (worth re-polling) without issuing another message.
+    if Instant::now() >= deadline {
+        return ReadOutcome::Dormant;
+    }
     let role = string_attribute(focused.as_CFTypeRef(), "AXRole").unwrap_or_default();
 
     // Climb the parent chain from `focused`, collecting the URL of every
