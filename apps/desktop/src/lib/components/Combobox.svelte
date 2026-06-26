@@ -214,7 +214,7 @@
   }
 
   .combobox-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 

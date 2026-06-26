@@ -159,6 +159,32 @@
     background: var(--app-bg);
   }
 
+  /* The box itself transitions, but the glyph is conditionally mounted, so it
+     used to pop in hard. A short scale/opacity pop on mount makes the check
+     read as appearing rather than blinking on. */
+  .checkbox-check,
+  .checkbox-dash {
+    animation: checkbox-glyph-pop 0.12s ease-out;
+  }
+
+  @keyframes checkbox-glyph-pop {
+    from {
+      transform: scale(0.4);
+      opacity: 0;
+    }
+    to {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .checkbox-check,
+    .checkbox-dash {
+      animation: none;
+    }
+  }
+
   .checkbox-text {
     display: flex;
     flex-direction: column;

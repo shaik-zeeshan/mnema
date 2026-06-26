@@ -54,15 +54,15 @@
     <div class="custom-resolution-inputs">
       <div class="custom-res-field">
         <label class="custom-res-label" for="res-width">Width (px)</label>
-        <Input id="res-width" bind:value={widthRaw} inputmode="numeric" placeholder="e.g. 1920" invalid={customErrors.length > 0} />
+        <Input id="res-width" bind:value={widthRaw} inputmode="numeric" placeholder="e.g. 1920" invalid={customErrors.length > 0} errorId="res-custom-error" />
       </div>
       <span class="custom-res-sep" aria-hidden="true">×</span>
       <div class="custom-res-field">
         <label class="custom-res-label" for="res-height">Height (px)</label>
-        <Input id="res-height" bind:value={heightRaw} inputmode="numeric" placeholder="e.g. 1080" invalid={customErrors.length > 0} />
+        <Input id="res-height" bind:value={heightRaw} inputmode="numeric" placeholder="e.g. 1080" invalid={customErrors.length > 0} errorId="res-custom-error" />
       </div>
-      <FieldWarning messages={customErrors} />
     </div>
+    <FieldWarning id="res-custom-error" messages={customErrors} />
   {/if}
 </div>
 
@@ -107,10 +107,5 @@
     color: var(--app-text-faint);
     font-size: 12px;
     font-weight: 800;
-  }
-
-  /* Sit the warning badge on the input row, not below the labels. */
-  .custom-resolution-inputs :global(.field-warning) {
-    height: 34px;
   }
 </style>

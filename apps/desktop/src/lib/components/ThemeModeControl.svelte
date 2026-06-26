@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { AppearanceSetting } from "$lib/types";
+  import { message } from "@tauri-apps/plugin-dialog";
+  import { humanizeError } from "$lib/format-error";
   import Segmented from "$lib/components/Segmented.svelte";
   import IconSystem from "~icons/lucide/monitor";
   import IconLight from "~icons/lucide/sun";
@@ -52,7 +54,13 @@
       if (value === nextValue) {
         value = previous;
       }
-      console.error("Failed to update theme mode", err);
+      // The control silently snapped back before; tell the user why so the
+      // revert doesn't read as the click being ignored.
+      const detail = humanizeError(err);
+      await message(`The theme could not be changed.\n\n${detail}`, {
+        title: "Couldn't change theme",
+        kind: "error",
+      });
     } finally {
       pending = false;
     }

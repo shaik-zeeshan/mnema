@@ -34,6 +34,14 @@
     onValueChange?.(next);
   }
 
+  // Click handler: select, then pull DOM focus onto the clicked chip. The Tauri
+  // WKWebView doesn't focus a <button> on click, so without this the roving
+  // tabindex has no anchor and a follow-up arrow key does nothing.
+  function selectByClick(index: number) {
+    select(presets[index].value);
+    chipEls[index]?.focus();
+  }
+
   // After a keyboard selection, move focus to the new chip — but only when
   // focus is already inside this picker, so we never steal focus on mount or on
   // a programmatic value change.
@@ -89,7 +97,7 @@
         ? 0
         : -1}
       {disabled}
-      onclick={() => select(preset.value)}
+      onclick={() => selectByClick(index)}
       onkeydown={(e) => onKeydown(e, index)}
     >
       <span class="preset__label">{preset.label}</span>
@@ -108,7 +116,7 @@
   }
 
   .retention-picker--disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -144,6 +152,8 @@
 
   .preset:focus-visible {
     box-shadow: var(--app-ring);
+    outline: 2px solid var(--app-accent);
+    outline-offset: 2px;
   }
 
   .preset--active {

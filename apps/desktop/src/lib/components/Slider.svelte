@@ -80,7 +80,7 @@
   }
 
   .slider-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -159,6 +159,8 @@
 
   :global(.slider-thumb:focus-visible) {
     box-shadow: var(--app-ring);
+    outline: 2px solid var(--app-accent);
+    outline-offset: 2px;
   }
 
   :global(.slider-thumb:hover) {

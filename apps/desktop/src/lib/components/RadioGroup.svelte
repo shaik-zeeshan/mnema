@@ -93,7 +93,7 @@
   }
 
   .rg-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -137,7 +137,8 @@
   }
 
   :global(.rg-item:focus-visible) {
-    outline: none;
+    outline: 2px solid var(--app-accent);
+    outline-offset: -2px;
     box-shadow: var(--app-ring);
   }
 
@@ -185,7 +186,7 @@
     letter-spacing: 0.02em;
   }
   :global(.rg-item[data-disabled]) {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
     pointer-events: none;
   }

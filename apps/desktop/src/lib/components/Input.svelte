@@ -12,6 +12,7 @@
     invalid = false,
     id,
     ariaLabel,
+    errorId,
   }: {
     value?: string;
     inputmode?: "text" | "numeric" | "decimal" | "tel" | "email" | "url" | "search" | "none";
@@ -20,6 +21,10 @@
     invalid?: boolean;
     id?: string;
     ariaLabel?: string;
+    // Id of the element holding the validation message; wired to
+    // aria-describedby/aria-errormessage while `invalid` so AT announces the
+    // reason, not just that the field is invalid.
+    errorId?: string;
   } = $props();
 </script>
 
@@ -34,6 +39,8 @@
   bind:value
   aria-label={ariaLabel}
   aria-invalid={invalid}
+  aria-describedby={invalid && errorId ? errorId : undefined}
+  aria-errormessage={invalid && errorId ? errorId : undefined}
   autocomplete="off"
 />
 

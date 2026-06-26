@@ -15,6 +15,7 @@
     invalid = false,
     id,
     ariaLabel,
+    errorId,
   }: {
     value: string;
     min?: number;
@@ -26,6 +27,9 @@
     invalid?: boolean;
     id?: string;
     ariaLabel?: string;
+    // Id of the element holding the validation message; wired to
+    // aria-describedby/aria-errormessage while `invalid`.
+    errorId?: string;
   } = $props();
 
   // Commit clamps the raw string into range (blank stays blank, non-numeric is
@@ -44,6 +48,13 @@
   // assistive tech via the spinbutton aria-value* attributes so the +/- buttons
   // announce the resulting value and its bounds.
   const numericValue = $derived(parseStepperRaw(value));
+
+  // Bound state for the +/- buttons: once the value sits at (or past) a bound,
+  // the corresponding button is disabled so pressing it again gives an honest
+  // "can't go further" cue instead of a dead no-op. A blank/non-numeric field
+  // leaves both live so the user can step up or down from empty.
+  const atMax = $derived(max !== undefined && numericValue !== null && numericValue >= max);
+  const atMin = $derived(min !== undefined && numericValue !== null && numericValue <= min);
 
   function bump(direction: 1 | -1) {
     if (disabled) return;
@@ -68,7 +79,7 @@
   <button
     type="button"
     class="step-btn"
-    {disabled}
+    disabled={disabled || atMin}
     aria-label={`Decrease${ariaLabel ? ` ${ariaLabel}` : ""}`}
     onclick={() => bump(-1)}
   >
@@ -88,6 +99,8 @@
       {disabled}
       aria-label={ariaLabel}
       aria-invalid={invalid}
+      aria-describedby={invalid && errorId ? errorId : undefined}
+      aria-errormessage={invalid && errorId ? errorId : undefined}
       aria-valuenow={numericValue !== null
         ? clampNumber(numericValue, min, max)
         : undefined}
@@ -108,7 +121,7 @@
   <button
     type="button"
     class="step-btn"
-    {disabled}
+    disabled={disabled || atMax}
     aria-label={`Increase${ariaLabel ? ` ${ariaLabel}` : ""}`}
     onclick={() => bump(1)}
   >
@@ -164,7 +177,7 @@
   }
 
   .step-btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
