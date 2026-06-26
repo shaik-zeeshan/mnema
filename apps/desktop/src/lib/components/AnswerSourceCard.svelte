@@ -284,7 +284,7 @@
 
   .source-card__source {
     flex: 0 0 auto;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--app-text-muted);
   }

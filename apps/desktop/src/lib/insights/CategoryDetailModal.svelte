@@ -13,6 +13,7 @@
   import { tick } from "svelte";
   import type { Activity } from "$lib/types/recording";
   import { trapTabKey } from "$lib/keyboard";
+  import Select from "$lib/components/Select.svelte";
   import {
     CATEGORY_OPTIONS,
     FOCUS_OPTIONS,
@@ -22,6 +23,20 @@
     type ActivityThread,
     type ActivityCategory,
   } from "$lib/insights/activity-helpers";
+
+  // The shared Select primitive reads an empty-string value as "no selection"
+  // (showing the placeholder), so the "" sentinels in CATEGORY_OPTIONS /
+  // FOCUS_OPTIONS are mapped onto explicit tokens and translated back on change.
+  const CATEGORY_NONE = "__uncategorized__";
+  const FOCUS_NONE = "__none__";
+  const CATEGORY_SELECT_OPTIONS = CATEGORY_OPTIONS.map((o) => ({
+    value: o.value === "" ? CATEGORY_NONE : o.value,
+    label: o.label,
+  }));
+  const FOCUS_SELECT_OPTIONS = FOCUS_OPTIONS.map((o) => ({
+    value: o.value === "" ? FOCUS_NONE : o.value,
+    label: o.label,
+  }));
 
   interface Props {
     open: boolean;
@@ -228,46 +243,38 @@
                                 role="group"
                                 aria-label="Adjust activity"
                               >
-                                <label class="corr">
+                                <div class="corr">
                                   <span class="corr-label">Category</span>
-                                  <select
-                                    class="corr-select"
-                                    value={a.category ?? ""}
+                                  <Select
+                                    options={CATEGORY_SELECT_OPTIONS}
+                                    value={a.category ?? CATEGORY_NONE}
                                     disabled={correctingActivity.has(a.id)}
-                                    onchange={(e) =>
+                                    onValueChange={(v) =>
                                       onCorrectCategory(
                                         a,
-                                        (e.currentTarget.value || null) as
+                                        (v === CATEGORY_NONE ? null : v) as
                                           | ActivityCategory
                                           | null,
                                       )}
-                                  >
-                                    {#each CATEGORY_OPTIONS as opt (opt.value)}
-                                      <option value={opt.value}>{opt.label}</option>
-                                    {/each}
-                                  </select>
-                                </label>
-                                <label class="corr">
+                                  />
+                                </div>
+                                <div class="corr">
                                   <span class="corr-label">Focus</span>
-                                  <select
-                                    class="corr-select"
-                                    value={a.focus ?? ""}
+                                  <Select
+                                    options={FOCUS_SELECT_OPTIONS}
+                                    value={a.focus ?? FOCUS_NONE}
                                     disabled={correctingActivity.has(a.id)}
-                                    onchange={(e) =>
+                                    onValueChange={(v) =>
                                       onCorrectFocus(
                                         a,
-                                        (e.currentTarget.value || null) as
+                                        (v === FOCUS_NONE ? null : v) as
                                           | "deep"
                                           | "mixed"
                                           | "distracted"
                                           | null,
                                       )}
-                                  >
-                                    {#each FOCUS_OPTIONS as opt (opt.value)}
-                                      <option value={opt.value}>{opt.label}</option>
-                                    {/each}
-                                  </select>
-                                </label>
+                                  />
+                                </div>
                               </div>
                             {/if}
                           </div>
@@ -536,46 +543,19 @@
   }
   .adjust-pop .corr {
     display: flex;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
   }
-  .adjust-pop .corr-select {
+  .adjust-pop .corr :global(.select-wrapper) {
     flex: 0 0 auto;
-    min-width: 120px;
-  }
-  .corr {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
+    width: 132px;
   }
   .corr-label {
     font-size: 9px;
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
-  }
-  .corr-select {
-    font: inherit;
-    font-size: 11px;
-    padding: 3px 6px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    cursor: pointer;
-    transition: border-color 0.12s ease;
-  }
-  .corr-select:hover:not(:disabled) {
-    border-color: var(--app-border-hover);
-  }
-  .corr-select:focus {
-    outline: none;
-    border-color: var(--app-accent-border);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-  .corr-select:disabled {
-    opacity: 0.6;
-    cursor: default;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -584,7 +564,6 @@
     .thread-chevron,
     .act-row,
     .act-adjust-caret,
-    .corr-select,
     .evidence-link {
       transition: none;
     }

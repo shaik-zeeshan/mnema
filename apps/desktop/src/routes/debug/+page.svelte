@@ -1258,7 +1258,7 @@
       disabled={overviewRefreshing}
       aria-label="Refresh overview"
     >
-      {overviewRefreshing ? "…" : "↻"}
+      <span class="refresh-glyph" class:refresh-glyph--spin={overviewRefreshing} aria-hidden="true">↻</span>
     </button>
   </h2>
 
@@ -1495,7 +1495,7 @@
       disabled={loadingRuntimeSources}
       aria-label="Refresh runtime sources"
     >
-      {loadingRuntimeSources ? "…" : "↻"}
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingRuntimeSources} aria-hidden="true">↻</span>
     </button>
   </h2>
 
@@ -1624,7 +1624,7 @@
       disabled={loadingPrivacyFilter}
       aria-label="Refresh privacy filter"
     >
-      {loadingPrivacyFilter ? "…" : "↻"}
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingPrivacyFilter} aria-hidden="true">↻</span>
     </button>
   </h2>
 
@@ -1685,7 +1685,7 @@
       <div class="probe-block__header">
         <span class="probe-block__name">Support</span>
         <button class="btn btn--ghost btn--sm" onclick={loadSupport} disabled={loadingSupport}>
-          {loadingSupport ? "…" : "Query"}
+          Query{#if loadingSupport}&nbsp;<span class="refresh-glyph refresh-glyph--spin" aria-hidden="true">↻</span>{/if}
         </button>
       </div>
       {#if support}
@@ -1728,7 +1728,7 @@
       <div class="probe-block__header">
         <span class="probe-block__name">Permissions</span>
         <button class="btn btn--ghost btn--sm" onclick={loadPermissions} disabled={loadingPermissions}>
-          {loadingPermissions ? "…" : "Query"}
+          Query{#if loadingPermissions}&nbsp;<span class="refresh-glyph refresh-glyph--spin" aria-hidden="true">↻</span>{/if}
         </button>
       </div>
       {#if permissions}
@@ -2112,7 +2112,7 @@
       disabled={loadingOcrBudget}
       aria-label="Refresh OCR budget"
     >
-      {loadingOcrBudget ? "…" : "↻"}
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingOcrBudget} aria-hidden="true">↻</span>
     </button>
   </h2>
 
@@ -2240,6 +2240,7 @@
       placeholder="/…/recordings/YYYY/MM/DD/.session-segment-####"
       bind:value={workspaceDirInput}
       disabled={loadingWorkspaceClassification}
+      aria-invalid={workspaceClassificationError ? "true" : undefined}
       spellcheck="false"
       autocomplete="off"
     />
@@ -3072,7 +3073,7 @@
   }
 
   .kv-val--mono {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text);
   }
@@ -3096,7 +3097,7 @@
     border-radius: 4px;
     background: var(--app-surface-raised);
     color: var(--app-text-muted);
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     line-height: 1.45;
     white-space: pre-wrap;
@@ -3197,7 +3198,7 @@
   }
 
   .detector-card__metric-value {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     font-weight: 700;
     color: var(--app-source-screen);
@@ -3208,7 +3209,7 @@
   .detector-card--sysaudio .detector-card__metric-value { color: var(--app-source-sysaudio); }
 
   .detector-card__metric-source {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-muted);
   }
@@ -3233,14 +3234,14 @@
   }
 
   .effective-idle-summary__value {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     font-weight: 700;
     color: var(--app-text);
   }
 
   .effective-idle-summary__source {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-muted);
   }
@@ -3263,7 +3264,7 @@
   .debug-err {
     font-size: 10px;
     color: var(--app-danger);
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
   }
 
   .badge--warn {
@@ -3313,7 +3314,7 @@
   }
 
   .infra-db-path {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-subtle);
     word-break: break-all;
@@ -3329,9 +3330,9 @@
 
   .ocr-summary-grid > div {
     border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border-radius: 5px;
     padding: 10px;
-    background: var(--app-bg-soft);
+    background: var(--app-surface-raised);
   }
 
   .ocr-summary-grid span {
@@ -3342,7 +3343,7 @@
   }
 
   .ocr-summary-grid strong {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 12px;
     font-weight: 700;
   }
@@ -3350,7 +3351,7 @@
   .debug-table-wrap {
     overflow-x: auto;
     border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border-radius: 5px;
   }
 
   .debug-table {
@@ -3371,7 +3372,7 @@
   .debug-table th {
     color: var(--app-text-subtle);
     font-weight: 700;
-    background: var(--app-bg-soft);
+    background: var(--app-surface-subtle);
   }
 
   .debug-table tbody tr:last-child td {
@@ -3379,7 +3380,7 @@
   }
 
   .mono-cell {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     max-width: 180px;
     overflow-wrap: anywhere;
   }
@@ -3407,8 +3408,19 @@
   }
 
   .job-input:focus {
-    border-color: var(--app-info);
-    box-shadow: 0 0 0 2px var(--app-info-bg);
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .job-input--error,
+  .job-input[aria-invalid="true"] {
+    border-color: var(--app-danger);
+  }
+
+  .job-input--error:focus,
+  .job-input[aria-invalid="true"]:focus {
+    border-color: var(--app-danger);
+    box-shadow: var(--app-ring-danger);
   }
 
   .job-input::placeholder {
@@ -3416,7 +3428,7 @@
   }
 
   .job-input:disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
   }
 
   .job-list {
@@ -3451,8 +3463,8 @@
   }
 
   .job-row--selected {
-    background: var(--app-info-bg);
-    border-color: var(--app-info-border);
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
   }
 
   .job-row:focus-visible {
@@ -3462,7 +3474,7 @@
   }
 
   .job-row__id {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-subtle);
     min-width: 28px;
@@ -3471,7 +3483,7 @@
 
   .job-row__kind {
     font-size: 10px;
-    color: var(--app-info-strong);
+    color: var(--app-text);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3479,7 +3491,7 @@
   }
 
   .job-row__ts {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-faint);
     flex-shrink: 0;
@@ -3499,7 +3511,7 @@
   }
 
   .job-detail-text {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-neutral-text);
     white-space: pre-wrap;
@@ -3661,7 +3673,7 @@
     white-space: nowrap;
   }
   .rs-row__val--mono {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text-muted);
     /* Sample/activity readouts: show full text, allow wrapping. */
@@ -3689,7 +3701,7 @@
     color: var(--app-text-subtle);
   }
   .rs-path__val {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text-muted);
     overflow: hidden;
@@ -3719,6 +3731,27 @@
   .rs-legend__dot--on { background: linear-gradient(90deg, var(--app-source-mic-strong) 0%, var(--app-source-mic) 100%); }
   .rs-legend__dot--paused { background: linear-gradient(90deg, var(--app-warn-strong) 0%, var(--app-warn) 100%); }
   .rs-legend__dot--off { background: var(--app-neutral-border); }
+
+  /* ── Async refresh glyph ───────────────────────────────────── */
+  .refresh-glyph {
+    display: inline-block;
+    line-height: 1;
+  }
+
+  .refresh-glyph--spin {
+    animation: refresh-glyph-spin 0.6s linear infinite;
+  }
+
+  @keyframes refresh-glyph-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .refresh-glyph--spin {
+      animation: none;
+    }
+  }
 
   /* ── Section tabs ──────────────────────────────────────────── */
   .debug-tabs-wrap {
@@ -3753,19 +3786,19 @@
 
   .debug-tabs__btn:hover {
     color: var(--app-text);
-    background: var(--app-surface-raised);
+    background: var(--app-surface-subtle);
   }
 
   .debug-tabs__btn:focus-visible {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .debug-tabs__btn--active {
     color: var(--app-text-strong);
     background: var(--app-surface-raised);
-    border-color: var(--app-border-strong);
+    border-color: var(--app-accent);
   }
 
   /* ── Jobs pager ─────────────────────────────────────────────── */
@@ -3964,7 +3997,7 @@
 
   .ov-row__val {
     margin-left: auto;
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     font-weight: 700;
     color: var(--app-text);

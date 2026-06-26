@@ -18,6 +18,7 @@
     resyncCaptureSession,
   } from "$lib/capture-controls.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
+  import ActionSelect from "$lib/components/ActionSelect.svelte";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
@@ -1492,9 +1493,7 @@
     }
   }
 
-  async function linkSpeakerCluster(clusterId: number, event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
-    const personId = Number(select.value);
+  async function linkSpeakerCluster(clusterId: number, personId: number): Promise<void> {
     if (!Number.isFinite(personId) || personId <= 0) return;
     speakerCorrectionBusyClusterId = clusterId;
     speakerCorrectionError = null;
@@ -1507,7 +1506,6 @@
       speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
-      select.value = "";
     }
   }
 
@@ -1552,14 +1550,6 @@
     }
   }
 
-  async function mergeSpeakerCluster(sourceClusterId: number, event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
-    const targetClusterId = Number(select.value);
-    if (!Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
-    await mergeSpeakerClusterById(sourceClusterId, targetClusterId);
-    select.value = "";
-  }
-
   async function mergeSpeakerClusterById(
     sourceClusterId: number,
     targetClusterId: number | null,
@@ -1579,9 +1569,10 @@
     }
   }
 
-  async function moveSpeakerBlockTurns(group: SpeakerTranscriptGroup, event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
-    const targetClusterId = Number(select.value);
+  async function moveSpeakerBlockTurns(
+    group: SpeakerTranscriptGroup,
+    targetClusterId: number,
+  ): Promise<void> {
     if (!Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
     speakerCorrectionBusyClusterId = group.clusterId;
     speakerCorrectionError = null;
@@ -1596,7 +1587,6 @@
       speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
-      select.value = "";
     }
   }
 
@@ -7811,17 +7801,17 @@
                         </span>
                       {/if}
                       {#if selectablePersonProfiles(group).length > 0}
-                        <select
-                          class="audio-drawer__speaker-select"
+                        <ActionSelect
+                          compact
+                          placeholder="Use saved person…"
+                          ariaLabel="Use an existing saved person for this speaker"
                           disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                          onchange={(event) => linkSpeakerCluster(group.clusterId, event)}
-                          aria-label="Use an existing saved person for this speaker"
-                        >
-                          <option value="">Use saved person…</option>
-                          {#each selectablePersonProfiles(group) as profile}
-                            <option value={profile.id}>{profile.displayName}</option>
-                          {/each}
-                        </select>
+                          options={selectablePersonProfiles(group).map((profile) => ({
+                            value: String(profile.id),
+                            label: profile.displayName,
+                          }))}
+                          onpick={(value) => linkSpeakerCluster(group.clusterId, Number(value))}
+                        />
                       {/if}
                     </div>
                     <details class="audio-drawer__speaker-more">
@@ -7839,28 +7829,28 @@
                           </button>
                         {/if}
                         {#if selectedAudioSpeakerClusters.length > 1}
-                          <select
-                            class="audio-drawer__speaker-select"
+                          {@const mergeTargets = selectedAudioSpeakerClusters
+                            .filter((cluster) => cluster.id !== group.clusterId)
+                            .map((cluster) => ({
+                              value: String(cluster.id),
+                              label: speakerClusterOptionLabel(cluster),
+                            }))}
+                          <ActionSelect
+                            compact
+                            placeholder="Same speaker as…"
+                            ariaLabel="Merge this speaker cluster"
                             disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            onchange={(event) => mergeSpeakerCluster(group.clusterId, event)}
-                            aria-label="Merge this speaker cluster"
-                          >
-                            <option value="">Same speaker as…</option>
-                            {#each selectedAudioSpeakerClusters.filter((cluster) => cluster.id !== group.clusterId) as cluster}
-                              <option value={cluster.id}>{speakerClusterOptionLabel(cluster)}</option>
-                            {/each}
-                          </select>
-                          <select
-                            class="audio-drawer__speaker-select"
+                            options={mergeTargets}
+                            onpick={(value) => mergeSpeakerClusterById(group.clusterId, Number(value))}
+                          />
+                          <ActionSelect
+                            compact
+                            placeholder="Move this line to…"
+                            ariaLabel="Move this visible speaker block"
                             disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            onchange={(event) => moveSpeakerBlockTurns(group, event)}
-                            aria-label="Move this visible speaker block"
-                          >
-                            <option value="">Move this line to…</option>
-                            {#each selectedAudioSpeakerClusters.filter((cluster) => cluster.id !== group.clusterId) as cluster}
-                              <option value={cluster.id}>{speakerClusterOptionLabel(cluster)}</option>
-                            {/each}
-                          </select>
+                            options={mergeTargets}
+                            onpick={(value) => moveSpeakerBlockTurns(group, Number(value))}
+                          />
                         {/if}
                       </div>
                     </details>
@@ -8124,10 +8114,10 @@
   }
 
   .audio-drawer:focus-visible {
-    border-color: rgba(255, 68, 85, 0.5);
+    border-color: color-mix(in srgb, var(--app-danger-strong) 50%, transparent);
     box-shadow:
       0 18px 40px rgba(0, 0, 0, 0.55),
-      0 0 0 2px rgba(255, 68, 85, 0.35);
+      0 0 0 2px color-mix(in srgb, var(--app-danger-strong) 35%, transparent);
   }
 
   @keyframes audio-drawer-rise {
@@ -8184,16 +8174,16 @@
   .audio-drawer__source--microphone .audio-drawer__swatch {
     background: linear-gradient(
       90deg,
-      rgba(120, 200, 255, 0.95),
-      rgba(80, 160, 230, 0.95)
+      var(--app-source-mic),
+      var(--app-source-mic-strong)
     );
   }
 
   .audio-drawer__source--systemAudio .audio-drawer__swatch {
     background: linear-gradient(
       90deg,
-      rgba(255, 180, 100, 0.95),
-      rgba(220, 130, 60, 0.95)
+      var(--app-source-sysaudio),
+      var(--app-source-sysaudio-strong)
     );
   }
 
@@ -8226,11 +8216,7 @@
     color: var(--app-text-muted);
     text-transform: none;
     letter-spacing: 0;
-    font-family:
-      ui-monospace,
-      SFMono-Regular,
-      Menlo,
-      monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     text-align: right;
   }
@@ -8256,7 +8242,7 @@
   .audio-drawer__close:focus-visible {
     color: var(--app-danger);
     border-color: var(--app-danger-strong);
-    background: rgba(255, 68, 85, 0.08);
+    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
     outline: none;
   }
 
@@ -8302,7 +8288,7 @@
   .audio-drawer__play:focus-visible {
     outline: none;
     border-color: var(--app-danger-strong);
-    box-shadow: 0 0 0 2px rgba(255, 68, 85, 0.35);
+    box-shadow: var(--app-ring-danger);
   }
 
   .audio-drawer__play:active {
@@ -8377,7 +8363,7 @@
     background: var(--app-danger);
     border: 2px solid var(--app-surface-raised);
     margin-top: -3px;
-    box-shadow: 0 0 0 0 rgba(255, 68, 85, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 0%, transparent);
     transition:
       transform 0.12s,
       box-shadow 0.12s;
@@ -8389,7 +8375,7 @@
     border-radius: 50%;
     background: var(--app-danger);
     border: 2px solid var(--app-surface-raised);
-    box-shadow: 0 0 0 0 rgba(255, 68, 85, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 0%, transparent);
     transition:
       transform 0.12s,
       box-shadow 0.12s;
@@ -8398,13 +8384,13 @@
   .audio-drawer__scrub:hover::-webkit-slider-thumb,
   .audio-drawer__scrub:focus-visible::-webkit-slider-thumb {
     transform: scale(1.15);
-    box-shadow: 0 0 0 4px rgba(255, 68, 85, 0.18);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-danger-strong) 18%, transparent);
   }
 
   .audio-drawer__scrub:hover::-moz-range-thumb,
   .audio-drawer__scrub:focus-visible::-moz-range-thumb {
     transform: scale(1.15);
-    box-shadow: 0 0 0 4px rgba(255, 68, 85, 0.18);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-danger-strong) 18%, transparent);
   }
 
   .audio-drawer__scrub:focus-visible {
@@ -8448,7 +8434,7 @@
 
   .audio-drawer__error-label {
     flex: 0 0 auto;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8458,7 +8444,7 @@
 
   .audio-drawer__error-msg {
     flex: 1 1 auto;
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     word-break: break-word;
     line-height: 1.4;
   }
@@ -8795,15 +8781,14 @@
 
   .audio-drawer__speaker-toolset-label {
     color: var(--app-text-muted);
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 900;
     letter-spacing: 0.13em;
     line-height: 1;
     text-transform: uppercase;
   }
 
-  .audio-drawer__speaker-tool,
-  .audio-drawer__speaker-select {
+  .audio-drawer__speaker-tool {
     min-height: 24px;
     border: 1px solid var(--app-border);
     border-radius: 999px;
@@ -8844,29 +8829,15 @@
     text-transform: uppercase;
   }
 
-  .audio-drawer__speaker-select {
-    max-width: 12rem;
-    padding: 3px 7px;
-    color: var(--app-text);
-  }
-
-  .audio-drawer__speaker-select option {
-    background: var(--app-surface-raised);
-    color: var(--app-text);
-  }
-
   .audio-drawer__speaker-tool:hover:not(:disabled),
-  .audio-drawer__speaker-tool:focus-visible:not(:disabled),
-  .audio-drawer__speaker-select:hover:not(:disabled),
-  .audio-drawer__speaker-select:focus-visible:not(:disabled) {
+  .audio-drawer__speaker-tool:focus-visible:not(:disabled) {
     border-color: var(--app-accent);
     color: var(--app-text);
     outline: none;
   }
 
-  .audio-drawer__speaker-tool:disabled,
-  .audio-drawer__speaker-select:disabled {
-    opacity: 0.42;
+  .audio-drawer__speaker-tool:disabled {
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -9053,7 +9024,7 @@
 
   .audio-drawer__transcript-error {
     color: var(--app-danger-text);
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     word-break: break-word;
   }
 
@@ -9193,7 +9164,7 @@
   }
 
   .timeline__picker-key {
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -9201,7 +9172,7 @@
   }
 
   .timeline__picker-val {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     color: var(--app-text);
   }
@@ -9234,7 +9205,7 @@
     background: transparent;
     border: 1px solid var(--app-border);
     border-radius: 3px;
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text-muted);
     cursor: pointer;
@@ -9253,9 +9224,9 @@
   }
 
   .timeline__picker-time--active {
-    color: var(--app-danger-strong);
-    border-color: color-mix(in srgb, var(--app-danger-strong) 40%, transparent);
-    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
+    color: var(--app-accent);
+    border-color: color-mix(in srgb, var(--app-accent) 40%, transparent);
+    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
   }
 
   @media (max-width: 640px) {
@@ -9320,7 +9291,7 @@
   }
 
   :global(.cal__weekday) {
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -9340,7 +9311,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 3px;
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     color: var(--app-text);
     background: transparent;
@@ -9361,9 +9332,9 @@
   }
 
   :global(.cal__day[data-selected]) {
-    background: rgba(255, 68, 85, 0.12);
-    border-color: rgba(255, 68, 85, 0.5);
-    color: var(--app-danger-text);
+    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--app-accent) 50%, transparent);
+    color: var(--app-accent);
   }
 
   :global(.cal__day[data-today]:not([data-selected])) {
@@ -9393,7 +9364,7 @@
   }
 
   .timeline__error-msg {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     word-break: break-word;
   }
 
@@ -9425,8 +9396,8 @@
   .timeline__empty-title {
     margin: 0;
     font-family: inherit;
-    font-size: 17px;
-    font-weight: 600;
+    font-size: var(--text-lg);
+    font-weight: 700;
     letter-spacing: 0.01em;
     color: var(--app-text);
   }
@@ -9445,17 +9416,25 @@
     color: var(--app-text-muted);
   }
 
+  /* "Record" is a title-bar button, not a keystroke — so it reads as an
+     emphasized inline label with a small record-dot glyph that matches the
+     title-bar control, rather than a misleading kbd chip. */
   .timeline__empty-cue-key {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--app-border-strong);
-    background: var(--app-surface-raised);
-    color: var(--app-text);
-    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--app-text-strong);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+  }
+
+  .timeline__empty-cue-key::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-danger-strong);
   }
 
   /* ── Stage (preview dominates) ─────────────────────────────── */
@@ -9681,7 +9660,7 @@
     padding-top: 3px;
     border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
     color: var(--app-text-subtle);
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     line-height: 1.45;
     white-space: pre-wrap;
@@ -9737,7 +9716,7 @@
   }
 
   .timeline__overlay-key {
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -9746,14 +9725,14 @@
   }
 
   .timeline__overlay-val {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text);
     min-width: 0;
   }
 
   .timeline__overlay-link {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-info);
     min-width: 0;
@@ -9942,11 +9921,7 @@
     background: var(--app-ocr-chip-bg);
     color: var(--app-ocr-chip-text);
     text-shadow: var(--app-ocr-chip-text-shadow);
-    font-family:
-      ui-monospace,
-      SFMono-Regular,
-      Menlo,
-      monospace;
+    font-family: var(--app-font-mono);
     font-size: var(--ocr-font-size, 11px);
     line-height: 1;
     letter-spacing: -0.01em;
@@ -10026,11 +10001,7 @@
   .timeline__ocr-status-msg {
     text-transform: none;
     letter-spacing: 0;
-    font-family:
-      ui-monospace,
-      SFMono-Regular,
-      Menlo,
-      monospace;
+    font-family: var(--app-font-mono);
     word-break: break-word;
     max-width: 360px;
   }
@@ -10112,8 +10083,8 @@
 
   .timeline-rail:focus-visible {
     outline: none;
-    border-color: var(--app-danger-strong);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-danger-strong) 35%, transparent);
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .timeline-rail::-webkit-scrollbar {
@@ -10234,7 +10205,7 @@
     justify-content: space-between;
     align-items: flex-end;
     padding: 1px 4px 1px 0;
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -10242,11 +10213,11 @@
   }
 
   .timeline-rail__audio-lane-label--microphone {
-    color: rgba(120, 200, 255, 0.85);
+    color: var(--app-source-mic);
   }
 
   .timeline-rail__audio-lane-label--systemAudio {
-    color: rgba(255, 180, 100, 0.85);
+    color: var(--app-source-sysaudio);
   }
 
   .timeline-rail__audio-lane-viewport {
@@ -10341,7 +10312,7 @@
     outline: none;
     box-shadow:
       0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      0 0 0 2px rgba(255, 208, 96, 0.85);
+      var(--app-ring);
     z-index: 2;
   }
 
@@ -10356,16 +10327,16 @@
   .timeline-rail__audio-bar--microphone {
     background: linear-gradient(
       180deg,
-      rgba(140, 215, 255, 0.95),
-      rgba(70, 150, 220, 0.9)
+      var(--app-source-mic),
+      var(--app-source-mic-strong)
     );
   }
 
   .timeline-rail__audio-bar--systemAudio {
     background: linear-gradient(
       180deg,
-      rgba(255, 195, 120, 0.95),
-      rgba(215, 125, 55, 0.9)
+      var(--app-source-sysaudio),
+      var(--app-source-sysaudio-strong)
     );
   }
 
@@ -10386,8 +10357,8 @@
   .timeline-rail__slot:focus-visible .timeline-rail__tick {
     width: 2px;
     height: 18px;
-    background: var(--app-warn);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-warn) 35%, transparent);
+    background: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .timeline-rail__tick {
@@ -10440,7 +10411,7 @@
     top: 4px;
     width: fit-content;
     padding: 2px 6px;
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;

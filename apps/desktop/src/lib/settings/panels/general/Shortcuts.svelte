@@ -6,6 +6,7 @@
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import IconRestore from "~icons/lucide/rotate-ccw";
   import IconClear from "~icons/lucide/x";
+  import IconAlert from "~icons/lucide/triangle-alert";
 
   const c = getSettingsController();
   const keyboard = c.keyboard;
@@ -91,7 +92,7 @@
     {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
       <div class="shortcuts-error-row">
         <div class="inline-error" role="alert">
-          <span class="inline-error__icon" aria-hidden="true">⚠</span>
+          <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
           <span class="inline-error__msg">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</span>
         </div>
       </div>

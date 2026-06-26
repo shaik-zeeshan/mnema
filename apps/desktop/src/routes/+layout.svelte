@@ -261,6 +261,9 @@
   const hasErrorNotification = $derived(
     appNotifications.items.some((n) => n.severity === "error"),
   );
+  const hasWarningNotification = $derived(
+    appNotifications.items.some((n) => n.severity === "warning"),
+  );
 
   $effect(() => {
     if (!hasNotifications) notificationsOpen = false;
@@ -980,12 +983,10 @@
          surface toggle + the (Timeline-only) centered search trigger. -->
     <div class="titlebar__drag" data-tauri-drag-region>
       <!-- Surface toggle — Main hosts Timeline + Insights; "dashboard" retired (#103). -->
-      <div class="surface-toggle" role="tablist" aria-label="Main surface">
+      <div class="surface-toggle" role="navigation" aria-label="Main surface">
         <button
           type="button"
-          role="tab"
           class:active={isMainRoute}
-          aria-selected={isMainRoute}
           aria-current={isMainRoute ? "page" : undefined}
           onclick={() => goToSurface("timeline")}
         >
@@ -993,9 +994,7 @@
         </button>
         <button
           type="button"
-          role="tab"
           class:active={isInsightsRoute}
-          aria-selected={isInsightsRoute}
           aria-current={isInsightsRoute ? "page" : undefined}
           onclick={() => goToSurface("insights")}
         >
@@ -1037,6 +1036,7 @@
               </svg>
               <span
                 class="titlebar__notification-dot"
+                class:titlebar__notification-dot--warning={hasWarningNotification && !hasErrorNotification}
                 class:titlebar__notification-dot--error={hasErrorNotification}
                 aria-hidden="true"
               >{notificationCount}</span>
@@ -1079,7 +1079,10 @@
                         aria-label="Clear notification"
                         onclick={() => void clearAppNotification(notification.id)}
                       >
-                        x
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+                          <path d="M2.5 2.5 9.5 9.5" />
+                          <path d="M9.5 2.5 2.5 9.5" />
+                        </svg>
                       </button>
                     </div>
                   {/each}
@@ -1211,7 +1214,12 @@
             class="shortcut-help__close"
             aria-label="Close keyboard shortcuts"
             onclick={closeShortcutsHelp}
-          >×</button>
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+              <path d="M2.5 2.5 9.5 9.5" />
+              <path d="M9.5 2.5 2.5 9.5" />
+            </svg>
+          </button>
         </header>
 
         <div class="shortcut-help__groups">
@@ -1345,6 +1353,14 @@
     --app-ring: 0 0 0 3px var(--app-accent-glow);
     --app-ring-danger: 0 0 0 3px
       color-mix(in srgb, var(--app-danger) 30%, transparent);
+
+    /* Canonical disabled-control opacity (mode-independent) — one source of
+       truth so dimmed controls stop drifting across 0.35/0.38/0.4/0.45. */
+    --app-disabled-opacity: 0.4;
+
+    /* Shared popover / tooltip elevation. Page depth is normally surface
+       lightness, but floating layers lift off with this one shadow. */
+    --app-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.22);
 
     /* Type scale (mode-independent). 6 integer steps consumed app-wide. */
     --text-xs: 10px;
@@ -1594,7 +1610,7 @@
     background-color: var(--app-bg);
     color: var(--app-fg);
     font-family: var(--app-font-mono);
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
@@ -1802,7 +1818,7 @@
     background: var(--app-surface-raised);
     color: var(--app-text-muted);
     font-family: inherit;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -1896,7 +1912,7 @@
     background: var(--app-status-bg);
     border: 1px solid var(--app-status-border);
     border-radius: 4px;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -2050,7 +2066,7 @@
     border: 1px solid var(--app-warn-border);
     background: var(--app-warn-bg);
     color: var(--app-warn);
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2078,7 +2094,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2113,7 +2129,7 @@
     border-radius: 4px;
     border: 1px solid transparent;
     font-family: inherit;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2246,15 +2262,20 @@
     height: 12px;
     padding: 0 3px;
     border-radius: 999px;
-    background: var(--app-warn);
-    color: var(--app-bg);
-    font-size: 8px;
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    font-size: var(--text-xs);
     font-weight: 800;
     line-height: 12px;
     text-align: center;
   }
+  .titlebar__notification-dot--warning {
+    background: var(--app-warn);
+    color: var(--app-bg);
+  }
   .titlebar__notification-dot--error {
     background: var(--app-danger);
+    color: var(--app-bg);
   }
   .notification-popover {
     position: absolute;
@@ -2278,7 +2299,7 @@
     gap: 10px;
     padding: 10px 12px;
     border-bottom: 1px solid var(--app-border);
-    font-size: 11px;
+    font-size: var(--text-sm);
     font-weight: 700;
     color: var(--app-text-strong);
   }
@@ -2291,7 +2312,7 @@
     font: inherit;
   }
   .notification-popover__clear {
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 700;
   }
   .notification-popover__clear:hover,
@@ -2345,13 +2366,13 @@
   }
   .notification-item__title {
     color: var(--app-text-strong);
-    font-size: 11px;
+    font-size: var(--text-sm);
     font-weight: 700;
     line-height: 1.2;
   }
   .notification-item__message {
     color: var(--app-text-muted);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.35;
   }
   .notification-item__action {
@@ -2362,7 +2383,7 @@
     border: 1px solid var(--app-border-strong);
     background: var(--app-surface);
     color: var(--app-text);
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2378,14 +2399,15 @@
   }
   .notification-item__clear {
     align-self: start;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 20px;
     height: 20px;
-    font-size: 16px;
-    line-height: 18px;
   }
   .titlebar__settings-label {
     display: block;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     line-height: 1;
@@ -2466,7 +2488,7 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: rgba(0, 0, 0, 0.42);
+    background: var(--app-overlay-bg);
     backdrop-filter: blur(10px);
   }
 
@@ -2492,7 +2514,7 @@
 
   .shortcut-help__eyebrow {
     color: var(--app-text-muted);
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     line-height: 1;
@@ -2502,12 +2524,15 @@
 
   .shortcut-help h2 {
     color: var(--app-text-strong);
-    font-size: 18px;
+    font-size: var(--text-xl);
     line-height: 1.15;
     letter-spacing: -0.02em;
   }
 
   .shortcut-help__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 30px;
     height: 30px;
     border: 1px solid var(--app-border);
@@ -2516,8 +2541,6 @@
     color: var(--app-text-muted);
     cursor: pointer;
     font: inherit;
-    font-size: 20px;
-    line-height: 1;
   }
 
   .shortcut-help__close:hover,
@@ -2539,7 +2562,7 @@
 
   .shortcut-help__group h3 {
     color: var(--app-text-muted);
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.12em;
     line-height: 1;
@@ -2571,7 +2594,7 @@
 
   .shortcut-help__row dd {
     color: var(--app-text);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.3;
     text-align: right;
   }
@@ -2584,8 +2607,8 @@
     border-radius: 7px;
     background: var(--app-bg);
     color: var(--app-text-strong);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-sm);
     font-weight: 700;
     line-height: 1;
     text-align: center;
@@ -2595,7 +2618,7 @@
   .shortcut-help__note {
     margin-top: 14px;
     color: var(--app-text-muted);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.45;
   }
 </style>

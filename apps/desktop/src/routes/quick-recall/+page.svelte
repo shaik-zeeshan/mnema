@@ -4407,7 +4407,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 15px;
+    padding: 8px 16px;
     flex-shrink: 0;
     border-bottom: 1px solid var(--app-border);
   }
@@ -4503,7 +4503,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     line-height: 1;
     color: var(--app-text-subtle);
     white-space: nowrap;
@@ -4580,8 +4580,8 @@
     font-size: 12px;
     line-height: 1.5;
     color: var(--app-text-muted);
-    background: var(--app-surface-raised, rgba(127, 127, 127, 0.08));
-    border: 1px solid var(--app-border, rgba(127, 127, 127, 0.2));
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
     border-radius: 6px;
     cursor: pointer;
   }
@@ -4628,7 +4628,7 @@
 
   .quick-recall__orient-tagline {
     margin: 0;
-    font-size: 13.5px;
+    font-size: var(--text-md);
     line-height: 1.4;
     color: var(--app-text-strong);
   }
@@ -4659,7 +4659,7 @@
 
   .quick-recall__orient-hint {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--app-text-subtle);
   }
@@ -4690,9 +4690,9 @@
      real results arrive — the shimmer blocks inside carry the loading signal. */
   .quick-recall__skeleton-row {
     display: flex;
-    gap: 11px;
+    gap: 12px;
     align-items: stretch;
-    padding: 6px 9px;
+    padding: 6px 8px;
     border: 1px solid transparent;
     border-radius: 9px;
     background: transparent;
@@ -4773,7 +4773,7 @@
     background: var(--app-surface-subtle);
     border: 1px solid var(--app-border);
     border-radius: 6px;
-    padding: 6px 9px;
+    padding: 6px 8px;
     cursor: pointer;
     transition: border-color 0.12s ease, color 0.12s ease;
   }
@@ -4896,8 +4896,7 @@
   }
 
   .quick-recall__syntax-row dt code {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-      monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     line-height: 1;
     padding: 0.15em 0.4em;
@@ -4910,7 +4909,7 @@
 
   .quick-recall__syntax-row dd {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.35;
     color: var(--app-text);
   }
@@ -4933,7 +4932,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding: 8px 15px 0;
+    padding: 8px 16px 0;
     flex-shrink: 0;
   }
 
@@ -4941,7 +4940,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1;
     color: var(--app-text);
     background: var(--app-surface-subtle);
@@ -4988,9 +4987,9 @@
      a genuine failure, so it reads as a correction prompt, not success chrome. */
   .quick-recall__parse-error {
     margin: 0;
-    padding: 8px 15px 0;
+    padding: 8px 16px 0;
     flex-shrink: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.4;
     color: var(--app-danger-text);
   }
@@ -5073,7 +5072,7 @@
     margin: 0;
     padding: 2px 2px 0;
     flex-shrink: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.4;
     color: var(--app-accent);
   }
@@ -5082,7 +5081,7 @@
     margin: 0;
     padding: 2px 2px 0;
     flex-shrink: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.4;
     color: var(--app-text-muted);
   }
@@ -5104,7 +5103,7 @@
   .quick-recall__picker-item-hint {
     flex: 1;
     min-width: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.3;
     color: var(--app-text-muted);
     white-space: nowrap;
@@ -5122,7 +5121,7 @@
     margin: auto 0 0;
     padding: 8px 2px 0;
     flex-shrink: 0;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     line-height: 1;
     color: var(--app-text-subtle);
     display: flex;
@@ -5157,7 +5156,7 @@
     background: var(--app-surface-subtle);
     border: 1px solid var(--app-border);
     border-radius: 6px;
-    padding: 6px 9px;
+    padding: 6px 8px;
     cursor: pointer;
     transition: border-color 0.12s ease, color 0.12s ease;
   }
@@ -5254,7 +5253,7 @@
      to the bar it sits in. */
   .quick-recall__composer:focus-within {
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .quick-recall__composer-input {
@@ -5298,7 +5297,7 @@
     background: var(--app-surface-subtle);
   }
   .quick-recall__graphic-title {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -5319,7 +5318,7 @@
     gap: 9px;
   }
   .quick-recall__dossier-statement {
-    font-size: 12.5px;
+    font-size: var(--text-base);
     color: var(--app-text-strong);
     line-height: 1.5;
     margin: 0;
@@ -5334,7 +5333,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -5452,7 +5451,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1;
     letter-spacing: 0.02em;
     color: var(--app-text-muted);

@@ -125,7 +125,7 @@
   }
 
   .stepper--disabled {
-    opacity: 0.45;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 

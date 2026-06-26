@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount, tick } from "svelte";
   import { trapTabKey } from "$lib/keyboard";
+  import Segmented from "$lib/components/Segmented.svelte";
 
   type PendingCliAccessRequest = {
     requestId: string;
@@ -59,6 +60,33 @@
     scopeOptions.find((option) => option.value === selectedScope) ?? scopeOptions[0],
   );
   const isBroadScope = $derived(selectedScope === "allRetained");
+
+  // Plain option arrays for the shared Segmented control (its Option type is
+  // {value,label}); the hint copy stays on scopeOptions/durationOptions.
+  const scopeSegments = scopeOptions.map((option) => ({
+    value: option.value,
+    label: option.label,
+  }));
+  const durationSegments = durationOptions.map((option) => ({
+    value: option.value,
+    label: option.label,
+  }));
+
+  const scopeDisabledValues = $derived(
+    scopeOptions.filter((option) => scopeDisabled(option.value)).map((option) => option.value),
+  );
+  const durationDisabledValues = $derived(
+    durationOptions
+      .filter((option) => durationDisabled(option.value))
+      .map((option) => option.value),
+  );
+
+  // "Why is this greyed out" signifiers for the disabled choices.
+  const scopeLocked = $derived(pendingRequest?.minimumScope === "allRetained");
+  const durationLocked = $derived(durationDisabledValues.length > 0);
+  const minDurationLabel = $derived(
+    durationLabelForSeconds(pendingRequest?.minimumDurationSeconds ?? 0),
+  );
 
   const expiryLabel = $derived.by(() => {
     const endsAt = new Date(Date.now() + durationSeconds[selectedDuration] * 1000);
@@ -246,24 +274,19 @@
 
         <fieldset class="request-section">
           <legend class="group-label">What it can read</legend>
-          <div class="choice-row choice-row--scope" role="radiogroup" aria-label="Access scope">
-            {#each scopeOptions as option}
-              {@const disabled = scopeDisabled(option.value) || approving || cancelling}
-              <button
-                class="choice"
-                class:choice--active={selectedScope === option.value}
-                type="button"
-                role="radio"
-                aria-checked={selectedScope === option.value}
-                {disabled}
-                onclick={() => {
-                  if (!disabled) selectedScope = option.value;
-                }}
-              >
-                <span class="choice__label">{option.label}</span>
-              </button>
-            {/each}
-          </div>
+          <Segmented
+            options={scopeSegments}
+            value={selectedScope}
+            disabledValues={scopeDisabledValues}
+            disabled={approving || cancelling}
+            ariaLabel="What it can read"
+            onValueChange={(v) => (selectedScope = v as "lastDay" | "allRetained")}
+          />
+          {#if scopeLocked}
+            <p class="choice-hint">
+              <span>This tool requires access to all retained history.</span>
+            </p>
+          {/if}
           {#if isBroadScope}
             <p class="choice-hint choice-hint--warn">
               <span class="choice-hint__icon" aria-hidden="true">
@@ -284,24 +307,19 @@
 
         <fieldset class="request-section">
           <legend class="group-label">For how long</legend>
-          <div class="choice-row choice-row--duration" role="radiogroup" aria-label="Access duration">
-            {#each durationOptions as option}
-              {@const disabled = durationDisabled(option.value) || approving || cancelling}
-              <button
-                class="choice"
-                class:choice--active={selectedDuration === option.value}
-                type="button"
-                role="radio"
-                aria-checked={selectedDuration === option.value}
-                {disabled}
-                onclick={() => {
-                  if (!disabled) selectedDuration = option.value;
-                }}
-              >
-                <span class="choice__label">{option.label}</span>
-              </button>
-            {/each}
-          </div>
+          <Segmented
+            options={durationSegments}
+            value={selectedDuration}
+            disabledValues={durationDisabledValues}
+            disabled={approving || cancelling}
+            ariaLabel="For how long"
+            onValueChange={(v) => (selectedDuration = v as "1h" | "24h" | "7d")}
+          />
+          {#if durationLocked}
+            <p class="choice-hint">
+              <span>This tool requires at least {minDurationLabel} of access.</span>
+            </p>
+          {/if}
           <p class="choice-hint">
             <span>Access ends {expiryLabel}.</span>
           </p>
@@ -494,7 +512,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 999px;
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -513,8 +531,8 @@
     border-radius: 4px;
     background: var(--app-surface-hover);
     color: var(--app-text);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-    font-size: 10.5px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-sm);
   }
 
   .trust-note {
@@ -526,7 +544,7 @@
 
   .trust-note > span:last-child {
     color: var(--app-text-muted);
-    font-size: 10.5px;
+    font-size: var(--text-sm);
     line-height: 1.45;
   }
 
@@ -573,80 +591,13 @@
     text-transform: uppercase;
   }
 
-  .choice-row {
-    display: grid;
-    gap: 6px;
-  }
-
-  .choice-row--scope {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .choice-row--duration {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .choice {
-    min-width: 0;
-    min-height: 34px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 7px 8px;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
-  }
-
-  .choice:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-  }
-
-  .choice:focus-visible {
-    outline: 1px solid var(--app-accent);
-    outline-offset: 2px;
-  }
-
-  .choice:active:not(:disabled) {
-    transform: translateY(0.5px);
-    background: var(--app-surface-active);
-  }
-
-  .choice:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-  }
-
-  .choice--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent);
-  }
-
-  .choice__label {
-    overflow: hidden;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
   .choice-hint {
     display: flex;
     gap: 6px;
     align-items: flex-start;
     margin: 0;
     color: var(--app-text-muted);
-    font-size: 10.5px;
+    font-size: var(--text-sm);
     line-height: 1.4;
   }
 

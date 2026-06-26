@@ -199,9 +199,9 @@
     min-width: 0;
     display: grid;
     grid-template-columns: 96px 1fr;
-    gap: 11px;
+    gap: 12px;
     align-items: center;
-    padding: 6px 9px;
+    padding: 6px 8px;
     overflow: hidden;
     text-align: left;
     border: 1px solid transparent;
@@ -324,7 +324,7 @@
 
   .search-card__source {
     flex: 0 0 auto;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--app-text-muted);
   }
@@ -350,7 +350,7 @@
   .search-card__snippet {
     margin: 0;
     color: var(--app-text);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.45;
     min-width: 0;
     overflow-wrap: anywhere;
@@ -378,7 +378,7 @@
     border-radius: 4px;
     background: color-mix(in srgb, var(--app-accent) 16%, transparent);
     color: var(--app-accent);
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;

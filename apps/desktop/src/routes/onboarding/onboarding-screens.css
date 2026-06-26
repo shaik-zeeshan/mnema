@@ -24,7 +24,7 @@
    .cta); restate the base here since `.ob-screen` is a separate namespace. */
 .ob-screen .cta {
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-md);
   font-weight: 600;
   letter-spacing: -0.005em;
   color: var(--app-bg);
@@ -46,8 +46,12 @@
 .ob-screen .cta:active:not(:disabled) {
   transform: translateY(1px);
 }
+.ob-screen .cta:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+}
 .ob-screen .cta:disabled {
-  opacity: 0.45;
+  opacity: var(--app-disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -77,7 +81,7 @@
   box-shadow: var(--app-ring);
 }
 .ob-screen .finale__back:disabled {
-  opacity: 0.5;
+  opacity: var(--app-disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -110,7 +114,7 @@
   box-shadow: var(--app-ring);
 }
 .ob-screen .ghost:disabled {
-  opacity: 0.5;
+  opacity: var(--app-disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -180,8 +184,8 @@
   border-radius: 999px;
   background: var(--app-accent-bg);
   color: var(--app-accent);
-  font-size: 9px;
-  font-weight: 700;
+  font-size: var(--text-xs);
+  font-weight: 800;
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
@@ -203,7 +207,7 @@
   color: var(--app-text-strong);
   font-size: 38px;
   font-weight: 700;
-  line-height: 1.02;
+  line-height: 1.1;
   letter-spacing: -0.01em;
 }
 .ob-screen .welcome__title em {
@@ -237,7 +241,7 @@
   padding: 0;
   list-style: none;
   color: var(--app-text-muted);
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -335,8 +339,8 @@
   border: 1px solid var(--app-accent-border);
   background: var(--app-accent-bg);
   color: var(--app-accent);
-  font-size: 9px;
-  font-weight: 700;
+  font-size: var(--text-xs);
+  font-weight: 800;
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
@@ -353,12 +357,12 @@
   font-size: 42px;
   font-weight: 700;
   letter-spacing: -0.015em;
-  line-height: 1;
+  line-height: 1.1;
 }
 .ob-screen .finale__tag {
   margin: 0;
   color: var(--app-text);
-  font-size: 12px;
+  font-size: var(--text-base);
   line-height: 1.5;
   max-width: 46ch;
 }
@@ -372,7 +376,7 @@
 }
 .ob-screen .chip {
   padding: 4px 10px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -411,19 +415,19 @@
 }
 .ob-screen .finale__link {
   /* ghost-tier button (border/box from `.ghost`); compact padding for the finale */
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.06em;
   padding: 7px 12px;
 }
 .ob-screen .finale__back {
-  font-size: 10px;
+  font-size: var(--text-xs);
   letter-spacing: 0.06em;
   padding: 4px 8px;
 }
 .ob-screen .finale__foot {
   margin: 6px 0 0;
   color: var(--app-text-muted);
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .ob-screen .finale__foot em {
   font-style: normal;

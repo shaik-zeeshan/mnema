@@ -143,7 +143,7 @@
   }
 
   .preset:focus-visible {
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .preset--active {

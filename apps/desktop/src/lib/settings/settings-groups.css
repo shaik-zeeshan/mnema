@@ -126,7 +126,7 @@
 
   .settings-shell .shortcut-capture:hover, .settings-shell .shortcut-capture:focus-visible {
     border-color: var(--app-accent-border);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
     outline: none;
   }
 
@@ -317,7 +317,7 @@
     min-width: 0;
     overflow-wrap: anywhere;
     color: var(--app-text);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.4;
   }
 
@@ -352,6 +352,16 @@
   .settings-shell .about-link__arrow {
     font-size: 10px;
     opacity: 0.7;
+  }
+  .settings-shell .about-link__arrow svg {
+    display: block;
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .settings-shell .about-error {

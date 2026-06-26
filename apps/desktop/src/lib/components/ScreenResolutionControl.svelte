@@ -56,7 +56,7 @@
         <label class="custom-res-label" for="res-width">Width (px)</label>
         <Input id="res-width" bind:value={widthRaw} inputmode="numeric" placeholder="e.g. 1920" invalid={customErrors.length > 0} />
       </div>
-      <span class="custom-res-sep" aria-hidden="true">x</span>
+      <span class="custom-res-sep" aria-hidden="true">×</span>
       <div class="custom-res-field">
         <label class="custom-res-label" for="res-height">Height (px)</label>
         <Input id="res-height" bind:value={heightRaw} inputmode="numeric" placeholder="e.g. 1080" invalid={customErrors.length > 0} />

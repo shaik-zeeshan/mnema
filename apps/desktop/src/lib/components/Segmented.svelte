@@ -150,7 +150,7 @@
   }
 
   .segmented--disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -184,7 +184,7 @@
   }
 
   .seg:focus-visible {
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .seg--active {

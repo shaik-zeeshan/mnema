@@ -99,7 +99,7 @@
   }
 
   .checkbox-wrapper--disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -167,7 +167,7 @@
   }
 
   .checkbox-label {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;

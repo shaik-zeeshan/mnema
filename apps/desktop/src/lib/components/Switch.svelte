@@ -68,7 +68,7 @@
   }
 
   .switch-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -81,7 +81,7 @@
   }
 
   .switch-label {
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;

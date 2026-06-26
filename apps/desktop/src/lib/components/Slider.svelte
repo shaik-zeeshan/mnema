@@ -91,7 +91,7 @@
   }
 
   .slider-label {
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;
@@ -158,7 +158,7 @@
   }
 
   :global(.slider-thumb:focus-visible) {
-    box-shadow: 0 0 0 4px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   :global(.slider-thumb:hover) {

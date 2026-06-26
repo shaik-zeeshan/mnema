@@ -1515,7 +1515,7 @@
     height: 7px;
     border-radius: 50%;
     background: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
     animation: chat-pulse 1.1s ease-in-out infinite;
     flex: 0 0 auto;
   }
@@ -1749,7 +1749,7 @@
   }
   .composer:focus-within {
     border-color: var(--app-accent-border);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
   .composer-input {
     flex: 0 0 auto;

@@ -310,7 +310,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 6px;
     padding: 4px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--app-shadow-popover);
     z-index: 100;
     min-width: var(--bits-floating-anchor-width, 200px);
     max-height: 260px;

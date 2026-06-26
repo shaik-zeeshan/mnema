@@ -720,7 +720,7 @@
     min-width: 0;
   }
   .subj-title {
-    font-size: 25px;
+    font-size: 24px;
     letter-spacing: -0.01em;
     color: var(--app-text-strong);
     font-weight: 600;

@@ -541,7 +541,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 6px;
     background: var(--app-surface-raised);
-    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-bg) 34%, transparent);
+    box-shadow: var(--app-shadow-popover);
   }
 
   .app-combobox__option {
@@ -664,8 +664,13 @@
   }
 
   .btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
+  }
+
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
 
   .btn--ghost {

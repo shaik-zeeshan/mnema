@@ -234,7 +234,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: monospace;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
   }
 
   .settings-shell .debug-log-status__dot {

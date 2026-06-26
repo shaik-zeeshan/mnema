@@ -5,6 +5,8 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconClear from "~icons/lucide/x";
 
   const c = getSettingsController();
   const audio = c.audio;
@@ -130,9 +132,9 @@
       <SettingRow label="Error" warn full divider={false}>
         {#snippet control()}
           <div class="inline-error">
-            <span class="inline-error__icon">⚠</span>
+            <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{audio.micError}</span>
-            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => audio.micError = null}>×</button>
+            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => audio.micError = null}><IconClear aria-hidden="true" /></button>
           </div>
         {/snippet}
       </SettingRow>

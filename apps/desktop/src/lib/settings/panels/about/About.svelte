@@ -16,6 +16,9 @@
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconClear from "~icons/lucide/x";
+  import IconArrowUpRight from "~icons/lucide/arrow-up-right";
   import type { AppUpdateChannel, AppUpdateStatus } from "$lib/types";
 
   const c = getSettingsController();
@@ -102,10 +105,10 @@
     {#snippet control()}
       <div class="about-links">
         <button type="button" class="about-link" onclick={() => openExternalUrl(ABOUT_REPO_URL)}>
-          Source<span class="about-link__arrow" aria-hidden="true">↗</span>
+          Source<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
         </button>
         <button type="button" class="about-link" onclick={() => openExternalUrl(ABOUT_RELEASES_URL)}>
-          Release notes<span class="about-link__arrow" aria-hidden="true">↗</span>
+          Release notes<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
         </button>
       </div>
     {/snippet}
@@ -223,9 +226,9 @@
 
         {#if about.appUpdateActionError}
           <div class="inline-error">
-            <span class="inline-error__icon">⚠</span>
+            <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{about.appUpdateActionError}</span>
-            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => about.appUpdateActionError = null}>×</button>
+            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => about.appUpdateActionError = null}><IconClear aria-hidden="true" /></button>
           </div>
         {/if}
       </div>
@@ -272,7 +275,7 @@
                           onclick={() => openExternalUrl(entry.sourceUrl ?? "")}
                           title={entry.sourceUrl}
                         >
-                          {entry.sourceUrl}<span class="about-link__arrow" aria-hidden="true">↗</span>
+                          {entry.sourceUrl}<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
                         </button>
                       {/if}
                     </li>

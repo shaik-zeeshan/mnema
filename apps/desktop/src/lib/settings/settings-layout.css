@@ -107,7 +107,7 @@
   .settings-shell .rail-back:focus-visible {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
   .settings-shell .rail-back svg {
     width: 13px;
@@ -154,7 +154,7 @@
   }
   .settings-shell .rail-search input:focus {
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   /* ── Scrolling nav zone ───────────────────────────────────────────── */
@@ -194,7 +194,7 @@
     align-items: center;
     gap: 9px;
     width: 100%;
-    height: 31px;
+    height: 32px;
     padding: 6px 10px;
     background: transparent;
     border: 1px solid transparent;
@@ -233,7 +233,7 @@
   .settings-shell .nav-item:focus-visible {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   /* Active item — quiet neutral fill + a restrained Mnema cue: a 2px accent
@@ -378,7 +378,7 @@
   .settings-shell [role="tabpanel"] {
     display: flex;
     flex-direction: column;
-    gap: 26px;
+    gap: 24px;
     width: 100%;
     max-width: 640px;
     margin: 0 auto;

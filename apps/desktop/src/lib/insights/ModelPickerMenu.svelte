@@ -543,7 +543,7 @@
   }
   .mpm-trigger--block:focus-visible {
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
     outline: none;
   }
   .mpm-trigger--block[aria-expanded="true"] {

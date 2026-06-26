@@ -59,6 +59,8 @@
   import Heatmap from "$lib/insights/charts/Heatmap.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import Select from "$lib/components/Select.svelte";
 
   interface Props {
     onOpenSubject?: (subject: string) => void;
@@ -141,6 +143,23 @@
   function setMode(mode: RangeMode): void {
     rangeMode = mode;
   }
+
+  // Date-range Segmented options (shared primitive replaces the hand-rolled
+  // button group).
+  const RANGE_OPTIONS = [
+    { value: "day", label: "Day" },
+    { value: "week", label: "Week" },
+    { value: "month", label: "Month" },
+  ];
+
+  // The shared Select primitive can't round-trip an empty-string value (it
+  // reads "" as "no selection" and shows the placeholder), so map the
+  // Uncategorized option onto a sentinel and translate back on change.
+  const CATEGORY_NONE = "__uncategorized__";
+  const CATEGORY_SELECT_OPTIONS = CATEGORY_OPTIONS.map((o) => ({
+    value: o.value === "" ? CATEGORY_NONE : o.value,
+    label: o.label,
+  }));
 
   const rangeLabel = $derived.by<string>(() => {
     const { startMs, endMs } = range;
@@ -981,26 +1000,12 @@
       <p class="subtitle">Scan your {rangeMode}, then read what it adds up to.</p>
     </div>
     <div class="ov-controls">
-      <div class="date-range" role="group" aria-label="Date range">
-        <button
-          type="button"
-          class:active={rangeMode === "day"}
-          aria-pressed={rangeMode === "day"}
-          onclick={() => setMode("day")}>Day</button
-        >
-        <button
-          type="button"
-          class:active={rangeMode === "week"}
-          aria-pressed={rangeMode === "week"}
-          onclick={() => setMode("week")}>Week</button
-        >
-        <button
-          type="button"
-          class:active={rangeMode === "month"}
-          aria-pressed={rangeMode === "month"}
-          onclick={() => setMode("month")}>Month</button
-        >
-      </div>
+      <Segmented
+        options={RANGE_OPTIONS}
+        value={rangeMode}
+        onValueChange={(v) => setMode(v as RangeMode)}
+        ariaLabel="Date range"
+      />
       <div class="date-stepper">
         <button class="nav" type="button" aria-label="Previous" onclick={() => stepRange(-1)}>‹</button>
         <span class="range-label">{rangeLabel}</span>
@@ -1578,23 +1583,19 @@
                       )}</span
                     >
                   </div>
-                  <label class="attn-pick">
+                  <div class="attn-pick">
                     <span class="attn-pick-label">Category</span>
-                    <select
-                      class="corr-select"
-                      value={a.category ?? ""}
+                    <Select
+                      options={CATEGORY_SELECT_OPTIONS}
+                      value={a.category ?? CATEGORY_NONE}
                       disabled={correctingActivity.has(a.id)}
-                      onchange={(e) =>
+                      onValueChange={(v) =>
                         void correctCategory(
                           a,
-                          (e.currentTarget.value || null) as ActivityCategory | null,
+                          (v === CATEGORY_NONE ? null : v) as ActivityCategory | null,
                         )}
-                    >
-                      {#each CATEGORY_OPTIONS as opt (opt.value)}
-                        <option value={opt.value}>{opt.label}</option>
-                      {/each}
-                    </select>
-                  </label>
+                    />
+                  </div>
                 </div>
               {/each}
             </div>
@@ -1721,46 +1722,6 @@
     flex: 0 0 auto;
   }
 
-  /* Date-range segmented control (mirrors the canonical segmented look). */
-  .date-range {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-  }
-  .date-range button {
-    font: inherit;
-    font-size: 11.5px;
-    line-height: 1;
-    letter-spacing: 0.02em;
-    padding: 0 11px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .date-range button:hover {
-    color: var(--app-text-strong);
-  }
-  .date-range button:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .date-range button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
-  }
-
   .date-stepper {
     display: inline-flex;
     align-items: center;
@@ -1863,7 +1824,7 @@
   }
   .exhibit--clickable:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
   .exhibit-head {
     display: flex;
@@ -2557,32 +2518,12 @@
     text-transform: uppercase;
     color: var(--app-text-subtle);
   }
+  .attn-pick :global(.select-wrapper) {
+    width: 160px;
+  }
   .attn-more {
     align-self: flex-start;
     margin-top: 9px;
-  }
-  .corr-select {
-    font: inherit;
-    font-size: 11px;
-    padding: 3px 6px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    cursor: pointer;
-    transition: border-color 0.12s ease;
-  }
-  .corr-select:hover:not(:disabled) {
-    border-color: var(--app-border-hover);
-  }
-  .corr-select:focus {
-    outline: none;
-    border-color: var(--app-accent-border);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-  .corr-select:disabled {
-    opacity: 0.6;
-    cursor: default;
   }
 
   .feed-end {

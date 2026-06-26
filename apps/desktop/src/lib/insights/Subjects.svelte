@@ -35,6 +35,7 @@
   } from "$lib/types/recording";
   import Sparkline from "$lib/insights/charts/Sparkline.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import {
     type Axis,
     type Trend,
@@ -101,6 +102,10 @@
   // Grouping axis for the tier layout. "conviction" = how firmly held (default);
   // "movement" = which way it's heading. Drives `buildTiers`.
   let axis = $state<Axis>("conviction");
+  const AXIS_OPTIONS = [
+    { value: "conviction", label: "By conviction" },
+    { value: "movement", label: "By movement" },
+  ];
 
   // Search box. `searchQuery` is the raw input; `appliedQuery` is the debounced
   // value the ranking actually runs on (filtering is in-memory and cheap, so the
@@ -705,7 +710,7 @@
           ></span>
           <span class="conv-name">{r.subject}</span>
           {#if r.pinned}
-            <span class="conv-pin" title="Pinned">📌</span>
+            <span class="conv-pin" title="Pinned">★</span>
           {/if}
           <span class="pill {trendPillClass(r.trend)}">{trendLabel(r.trend)}</span>
           <span class="conv-cc">
@@ -729,7 +734,8 @@
           type="button"
           class="conv-caret"
           class:is-open={open}
-          aria-label="Expand"
+          aria-label={open ? "Collapse conclusions" : "Expand conclusions"}
+          title={open ? "Collapse conclusions" : "Expand conclusions"}
           aria-expanded={open}
           onclick={(e) => {
             e.stopPropagation();
@@ -903,7 +909,20 @@
   <!-- Controls: search box + grouping-axis toggle -->
   <div class="conv-controls">
     <div class="search">
-      <span class="search-glyph" aria-hidden="true">⌕</span>
+      <svg
+        class="search-glyph"
+        width="13"
+        height="13"
+        viewBox="0 0 14 14"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        aria-hidden="true"
+      >
+        <circle cx="6" cy="6" r="4.5" />
+        <path d="M9.5 9.5 13 13" />
+      </svg>
       <input
         type="search"
         class="search-input"
@@ -915,22 +934,12 @@
         oninput={onSearchInput}
       />
     </div>
-    <div class="sort-seg" role="group" aria-label="Organize subjects by">
-      <button
-        type="button"
-        class:active={axis === "conviction"}
-        aria-pressed={axis === "conviction"}
-        aria-current={axis === "conviction" ? "true" : undefined}
-        onclick={() => (axis = "conviction")}>By conviction</button
-      >
-      <button
-        type="button"
-        class:active={axis === "movement"}
-        aria-pressed={axis === "movement"}
-        aria-current={axis === "movement" ? "true" : undefined}
-        onclick={() => (axis = "movement")}>By movement</button
-      >
-    </div>
+    <Segmented
+      options={AXIS_OPTIONS}
+      value={axis}
+      onValueChange={(v) => (axis = v as Axis)}
+      ariaLabel="Organize subjects by"
+    />
   </div>
 
   {#if loadError}
@@ -1122,8 +1131,9 @@
     border-color: var(--app-border-hover);
   }
   .search-glyph {
+    display: block;
+    flex: 0 0 auto;
     color: var(--app-text-subtle);
-    font-size: 12px;
   }
   .search-input {
     flex: 1 1 auto;
@@ -1141,49 +1151,6 @@
   .search-input::-webkit-search-cancel-button {
     -webkit-appearance: none;
     appearance: none;
-  }
-
-  /* Segmented grouping-axis control — the canonical segmented control look. */
-  .sort-seg {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-  }
-  .sort-seg button {
-    font: inherit;
-    font-size: 11.5px;
-    line-height: 1;
-    letter-spacing: 0.02em;
-    padding: 0 11px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .sort-seg button:hover {
-    color: var(--app-text-strong);
-  }
-  .sort-seg button:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .sort-seg button:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .sort-seg button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
   }
 
   /* ---- Realtime refresh pill ---- */
@@ -1764,7 +1731,6 @@
     .conv-caret,
     .conv-refresh-pill,
     .conv-tier-more,
-    .sort-seg button,
     .btn {
       transition: none;
     }
@@ -1774,7 +1740,6 @@
     .btn:not(:disabled):active,
     .conv-caret:not(:disabled):active,
     .conv-caret.is-open:not(:disabled):active,
-    .sort-seg button:not(:disabled):active,
     .conv-tier-more:not(:disabled):active,
     .state-retry:not(:disabled):active {
       transform: none;

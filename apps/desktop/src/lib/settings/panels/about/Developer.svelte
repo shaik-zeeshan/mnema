@@ -4,6 +4,8 @@
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconClear from "~icons/lucide/x";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -114,9 +116,9 @@
 
           {#if logs.debugLogError}
             <div class="inline-error">
-              <span class="inline-error__icon">⚠</span>
+              <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
               <span class="inline-error__msg">{logs.debugLogError}</span>
-              <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.debugLogError = null}>×</button>
+              <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.debugLogError = null}><IconClear aria-hidden="true" /></button>
             </div>
           {/if}
         </div>
@@ -181,9 +183,9 @@
 
         {#if logs.generalLogError}
           <div class="inline-error">
-            <span class="inline-error__icon">⚠</span>
+            <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{logs.generalLogError}</span>
-            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.generalLogError = null}>×</button>
+            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.generalLogError = null}><IconClear aria-hidden="true" /></button>
           </div>
         {/if}
       </div>

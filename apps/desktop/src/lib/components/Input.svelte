@@ -62,7 +62,7 @@
   .input:focus {
     border-color: var(--app-accent);
     background: var(--app-surface-raised);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), var(--app-ring);
   }
 
   .input--invalid {
@@ -76,7 +76,7 @@
   }
 
   .input:disabled {
-    opacity: 0.45;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 </style>

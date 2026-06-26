@@ -15,6 +15,8 @@
     placeholder?: string;
     disabled?: boolean;
     label?: string;
+    /** Accessible name for the trigger when there is no visible `label`. */
+    ariaLabel?: string;
     warn?: boolean;
   }
 
@@ -25,6 +27,7 @@
     placeholder = "Select…",
     disabled = false,
     label,
+    ariaLabel,
     warn = false,
   }: Props = $props();
 
@@ -91,6 +94,7 @@
     <BitsSelect.Trigger
       class={warn ? "select-trigger select-trigger--warn" : "select-trigger"}
       aria-labelledby={label ? labelId : undefined}
+      aria-label={label ? undefined : ariaLabel}
     >
       <span class={selectedLabel ? "select-trigger-text" : "select-trigger-text select-trigger-text--placeholder"}>
         {selectedLabel ?? placeholder}
@@ -166,7 +170,7 @@
   }
 
   .select-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -260,7 +264,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 6px;
     padding: 4px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--app-shadow-popover);
     z-index: 100;
     min-width: var(--bits-select-anchor-width);
     max-height: 220px;

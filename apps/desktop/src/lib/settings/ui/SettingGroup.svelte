@@ -66,7 +66,8 @@
 
   .setting-group__title {
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 10.5px;
+    font-size: var(--text-xs);
+    font-weight: 700;
     letter-spacing: 0.13em;
     text-transform: uppercase;
     color: var(--app-text-muted);

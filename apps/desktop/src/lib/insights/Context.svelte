@@ -755,7 +755,7 @@
     outline: none;
     border-color: var(--app-accent-border);
     background: var(--app-surface);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .composer-topic {
@@ -780,7 +780,7 @@
   .topic-input:focus {
     outline: none;
     border-color: var(--app-accent-border);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .composer-suggest {
@@ -979,7 +979,7 @@
   .stmt-edit textarea:focus {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
   .stmt-edit .edit-row {
     display: flex;
