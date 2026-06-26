@@ -21,10 +21,18 @@
   let selectedScope = $state<"lastDay" | "allRetained">("lastDay");
   let selectedDuration = $state<"1h" | "24h" | "7d">("24h");
   let pendingRequest = $state<PendingCliAccessRequest | null>(null);
+  // Action errors (approve/deny) surface inline at the foot of the dialog.
   let error = $state<string | null>(null);
+  // Load errors are kept separate so the body can show a Retry state instead
+  // of the contradictory "nothing pending" empty copy.
+  let loadError = $state<string | null>(null);
   let loading = $state(true);
   let approving = $state(false);
   let cancelling = $state(false);
+
+  // Watchdog so a grant/deny never hangs forever on the spinner if the backend
+  // window teardown is delayed or never arrives.
+  let actionWatchdog: ReturnType<typeof setTimeout> | null = null;
 
   // Bound to the dialog container and the Deny button so focus can land on a
   // SAFE anchor on open, and Tab is contained inside the consent dialog.
@@ -106,10 +114,12 @@
     void tick().then(() => {
       (denyButton ?? dialogEl)?.focus();
     });
+    return () => clearActionWatchdog();
   });
 
   async function loadPendingRequest() {
     error = null;
+    loadError = null;
     loading = true;
     try {
       pendingRequest = await invoke<PendingCliAccessRequest | null>("get_pending_cli_access_request");
@@ -118,18 +128,38 @@
         selectedDuration = durationLabelForSeconds(pendingRequest.preferredDurationSeconds);
       }
     } catch (err) {
-      error = friendlyError(err);
+      loadError = friendlyError(err);
     } finally {
       loading = false;
+    }
+  }
+
+  // On success the backend tears this window down; if that never arrives the
+  // watchdog re-enables the action and explains, so it can never hang forever.
+  function startActionWatchdog(reset: () => void) {
+    clearActionWatchdog();
+    actionWatchdog = setTimeout(() => {
+      actionWatchdog = null;
+      reset();
+      error = "Couldn't finish — the request didn't complete. Please try again.";
+    }, 6000);
+  }
+
+  function clearActionWatchdog() {
+    if (actionWatchdog) {
+      clearTimeout(actionWatchdog);
+      actionWatchdog = null;
     }
   }
 
   async function closeWindow() {
     error = null;
     cancelling = true;
+    startActionWatchdog(() => (cancelling = false));
     try {
       await invoke("cancel_pending_cli_access_request");
     } catch (err) {
+      clearActionWatchdog();
       error = friendlyError(err);
       cancelling = false;
     }
@@ -139,6 +169,7 @@
     if (!pendingRequest) return;
     error = null;
     approving = true;
+    startActionWatchdog(() => (approving = false));
     try {
       await invoke("approve_pending_cli_access_request", {
         approval: {
@@ -147,6 +178,7 @@
         },
       });
     } catch (err) {
+      clearActionWatchdog();
       error = friendlyError(err);
       approving = false;
     }
@@ -212,13 +244,17 @@
     aria-modal="true"
     aria-labelledby="access-dialog-title"
     aria-describedby="access-dialog-lede"
+    aria-busy={loading}
     tabindex="-1"
   >
     <header class="access-dialog__header">
       <span class="access-dialog__icon" aria-hidden="true">
+        <!-- Neutral padlock (permission) glyph — NOT a green check-shield, which
+             would read as "verified/safe" on a request whose identity can't be
+             independently verified. -->
         <svg viewBox="0 0 24 24">
-          <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6Z" />
-          <path d="M9.5 12.5 11.2 14 15 10" />
+          <rect x="5" y="11" width="14" height="9" rx="2" />
+          <path d="M8 11V8a4 4 0 0 1 8 0v3" />
         </svg>
       </span>
       <div class="access-dialog__title">
@@ -232,10 +268,26 @@
 
     <div class="access-dialog__body">
       {#if loading}
+        <span class="sr-only" role="status" aria-live="polite">Loading access request…</span>
         <div class="skeleton" aria-hidden="true">
           <div class="skeleton__line skeleton__line--lg"></div>
           <div class="skeleton__line"></div>
           <div class="skeleton__line skeleton__line--sm"></div>
+        </div>
+      {:else if loadError}
+        <div class="load-error" role="alert">
+          <span class="load-error__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
+          </span>
+          <p class="load-error__title">Couldn't load the request</p>
+          <p class="load-error__body">{loadError}</p>
+          <button class="btn btn--ghost load-error__retry" type="button" onclick={() => loadPendingRequest()}>
+            Retry
+          </button>
         </div>
       {:else if !pendingRequest}
         <div class="empty">
@@ -405,15 +457,17 @@
     background: var(--app-surface-raised);
   }
 
+  /* Neutral treatment — green is reserved for an actual granted state, not for
+     decorating an as-yet-unverified, ungranted request. */
   .access-dialog__icon {
     display: grid;
     width: 30px;
     height: 30px;
     place-items: center;
-    border: 1px solid var(--app-accent-border);
+    border: 1px solid var(--app-border-strong);
     border-radius: 8px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
   }
 
   .access-dialog__icon svg {
@@ -454,7 +508,7 @@
   .eyebrow {
     margin: 0 0 4px;
     color: var(--app-text-subtle);
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -464,7 +518,7 @@
   h1 {
     margin: 0;
     color: var(--app-text-strong);
-    font-size: 16px;
+    font-size: var(--text-lg);
     font-weight: 700;
     letter-spacing: 0.02em;
     line-height: 1.2;
@@ -473,7 +527,7 @@
   .lede {
     margin: 4px 0 0;
     color: var(--app-text-muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.45;
   }
 
@@ -522,7 +576,7 @@
   .requester__trigger {
     margin: 0;
     color: var(--app-text-muted);
-    font-size: 10px;
+    font-size: var(--text-base);
     line-height: 1.55;
   }
 
@@ -585,7 +639,7 @@
     /* Load-bearing scope/duration legends on a consent screen — must clear the
        contrast floor, so use the legible muted token, not faint subtle. */
     color: var(--app-text-muted);
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -597,7 +651,7 @@
     align-items: flex-start;
     margin: 0;
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: 1.4;
   }
 
@@ -611,7 +665,7 @@
     border-radius: 6px;
     background: var(--app-warn-bg);
     color: var(--app-warn);
-    font-size: 11px;
+    font-size: var(--text-base);
   }
 
   .choice-hint--warn strong {
@@ -700,7 +754,7 @@
   .empty__title {
     margin: 0;
     color: var(--app-text);
-    font-size: 13px;
+    font-size: var(--text-md);
     font-weight: 700;
   }
 
@@ -708,8 +762,68 @@
     margin: 0;
     max-width: 34ch;
     color: var(--app-text-muted);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.45;
+  }
+
+  /* Visible only to assistive tech (announces the loading state). */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Load failure gets its own recoverable state (Retry) instead of the
+     contradictory "nothing pending" empty copy. */
+  .load-error {
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+    margin: auto 0;
+    padding: 24px 16px;
+    text-align: center;
+  }
+
+  .load-error__icon {
+    display: grid;
+    place-items: center;
+    color: var(--app-danger);
+  }
+
+  .load-error__icon svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .load-error__title {
+    margin: 0;
+    color: var(--app-text);
+    font-size: var(--text-md);
+    font-weight: 700;
+  }
+
+  .load-error__body {
+    margin: 0;
+    max-width: 34ch;
+    color: var(--app-text-muted);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .load-error__retry {
+    margin-top: 4px;
   }
 
   .inline-error {
@@ -743,7 +857,7 @@
   .inline-error__msg {
     flex: 1;
     color: var(--app-danger-text);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     word-break: break-word;
   }
@@ -757,7 +871,7 @@
     padding: 7px 12px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -768,13 +882,16 @@
   }
 
   .btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
+  /* One focus-ring treatment for BOTH footer buttons (accent border + glow) so
+     keyboard focus reads identically as the user tabs Deny ↔ Allow. */
   .btn:focus-visible {
-    outline: 1px solid var(--app-accent);
-    outline-offset: 2px;
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .btn:active:not(:disabled) {
@@ -803,15 +920,13 @@
     border-color: var(--app-accent-border);
   }
 
+  /* Multi-property hover (subtle bg lift + brighter border) so the affirmative
+     action gives the same depth of feedback as Deny, while the resting state
+     stays a restrained outline (no go-green solid fill). */
   .btn--allow:not(:disabled):hover {
-    background: var(--app-accent-bg);
+    background: color-mix(in srgb, var(--app-accent) 10%, var(--app-accent-bg));
     color: var(--app-accent);
     border-color: var(--app-accent);
-  }
-
-  .btn--allow:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
   }
 
   /* In-flight spinner reuses the file's keyframes vocabulary (see @keyframes spin). */
@@ -829,6 +944,23 @@
   @keyframes spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  /* Respect the OS "reduce motion" preference: hold the skeleton at a static
+     opacity and slow the in-flight spinner to a near-still crawl. */
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton__line {
+      animation: none;
+      opacity: 0.6;
+    }
+
+    .btn__spinner {
+      animation-duration: 2.4s;
+    }
+
+    .btn:active:not(:disabled) {
+      transform: none;
     }
   }
 
