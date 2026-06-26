@@ -34,6 +34,7 @@
     ProcessingJobStatus,
   } from "$lib/types";
   import { captureSession, setSession } from "$lib/session.svelte";
+  import { humanizeError } from "$lib/format-error";
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -51,7 +52,22 @@
   // preventing a slow response from overwriting a newer stopped state.
   let sessionGeneration = $state(0);
 
+  // Background reconcile / wake-resync are best-effort and swallow transient
+  // errors. But a sustained string of failures means the displayed "Recording"
+  // status may no longer reflect the backend — surface a note after N
+  // consecutive misses so the user knows the readout may be stale.
+  const RECONCILE_STALE_THRESHOLD = 3;
+  let reconcileFailures = $state(0);
+  let reconcileStale = $derived(reconcileFailures >= RECONCILE_STALE_THRESHOLD);
+  function noteReconcileSuccess() { reconcileFailures = 0; }
+  function noteReconcileFailure() { reconcileFailures += 1; }
+
   let lastError = $state<string | null>(null);
+  // Start/Stop failures get their own inline chip beside the action buttons so
+  // the failure is visible where the user clicked, not only in the page-bottom
+  // error card. Set on the start/stop catch; cleared by clearError() (which
+  // every start/stop attempt calls first) and on the next success.
+  let lifecycleError = $state<string | null>(null);
   let loadingSupport = $state(false);
   let loadingPermissions = $state(false);
   let loadingStart = $state(false);
@@ -149,6 +165,10 @@
 
   let ocrBudgetDebug = $state<OcrBudgetDebug | null>(null);
   let ocrBudgetDebugError = $state<string | null>(null);
+  // True while a budget fetch is in flight. Drives first-load skeleton rows so
+  // the table can distinguish "fetching" from "never loaded" (the 1s poll keeps
+  // toggling this, but the skeleton only renders while no data exists yet).
+  let ocrBudgetFetching = $state(false);
   let admissionPage = $state(0);
   let executionPage = $state(0);
   const OCR_EVENT_PAGE_SIZE = 10;
@@ -162,7 +182,7 @@
       idleDebug = await invoke<IdleDebugInfo>("get_idle_debug");
       idleDebugError = null;
     } catch (err) {
-      idleDebugError = typeof err === "string" ? err : JSON.stringify(err);
+      idleDebugError = humanizeError(err);
     }
   }
 
@@ -173,18 +193,21 @@
       privacyDebug = await invoke<CapturePrivacyDebugInfo>("get_capture_privacy_debug");
       privacyDebugError = null;
     } catch (err) {
-      privacyDebugError = typeof err === "string" ? err : JSON.stringify(err);
+      privacyDebugError = humanizeError(err);
     }
   }
 
   async function fetchOcrBudgetDebug() {
     if (activeTab !== "pipeline") return;
     if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    ocrBudgetFetching = true;
     try {
       ocrBudgetDebug = await invoke<OcrBudgetDebug>("get_ocr_budget_debug");
       ocrBudgetDebugError = null;
     } catch (err) {
-      ocrBudgetDebugError = typeof err === "string" ? err : JSON.stringify(err);
+      ocrBudgetDebugError = humanizeError(err);
+    } finally {
+      ocrBudgetFetching = false;
     }
   }
 
@@ -369,10 +392,18 @@
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
-  function clearError() { lastError = null; }
+  function clearError() {
+    lastError = null;
+    lifecycleError = null;
+  }
 
   function setError(err: unknown) {
-    lastError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    lastError = humanizeError(err);
+  }
+
+  // Short, single-line message for the inline action-row chip.
+  function lifecycleErrorMessage(err: unknown): string {
+    return humanizeError(err);
   }
 
   function permissionBadgeClass(status: PermissionStatus | undefined): string {
@@ -484,8 +515,10 @@
       });
       sessionGeneration += 1;
       setSession(result.session);
+      noteReconcileSuccess();
     } catch (err) {
       setError(err);
+      lifecycleError = lifecycleErrorMessage(err);
     } finally {
       loadingStart = false;
     }
@@ -498,8 +531,10 @@
       const result = await invoke<{ session: CaptureSession }>("stop_native_capture");
       sessionGeneration += 1;
       setSession(result.session);
+      noteReconcileSuccess();
     } catch (err) {
       setError(err);
+      lifecycleError = lifecycleErrorMessage(err);
       try {
         const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
         permissions = r.permissions;
@@ -542,6 +577,8 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenControllerChanged = fn;
+    }).catch(() => {
+      // Non-fatal: this listener only clears stale errors. Nothing to surface.
     });
 
     listen<MicrophoneAutoDisconnectTransitionFailedEvent>(
@@ -553,6 +590,13 @@
     ).then((fn) => {
       if (destroyed) fn();
       else unlistenAutoDisconnectFailure = fn;
+    }).catch(() => {
+      // This is the channel that reports microphone auto-disconnect failures —
+      // if we can't subscribe, those failures would go unreported. Surface it
+      // once so the operator knows this debug signal is missing.
+      if (!destroyed && !lastError) {
+        setError("Could not subscribe to microphone auto-disconnect failure events — those failures will not be reported here.");
+      }
     });
 
     listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
@@ -561,6 +605,8 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenRecordingSettingsChanged = fn;
+    }).catch(() => {
+      // Non-fatal: settings still load via loadSettings(); live updates only.
     });
 
     return () => {
@@ -632,8 +678,11 @@
         const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
         if (sessionGeneration !== gen) return; // stale — discard
         if (r.session) setSession(r.session);
+        noteReconcileSuccess();
       } catch {
-        // Best-effort — a transient backend error should not crash the UI.
+        // Best-effort — a transient backend error should not crash the UI, but
+        // count it so a sustained outage surfaces a "status may be stale" note.
+        noteReconcileFailure();
       }
     }
 
@@ -670,8 +719,11 @@
         const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
         if (sessionGeneration !== gen) return; // superseded by start/stop
         if (r.session) setSession(r.session);
+        noteReconcileSuccess();
       } catch {
-        // Best-effort — the periodic reconcile still covers steady-state drift.
+        // Best-effort — the periodic reconcile still covers steady-state drift,
+        // but count the miss so a sustained outage surfaces a stale-status note.
+        noteReconcileFailure();
       }
     }
     const onVisibility = () => {
@@ -687,6 +739,9 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenSystemDidWake = fn;
+    }).catch(() => {
+      // Non-fatal: focus/visibility/drift backstops still trigger resync; only
+      // the explicit wake event is lost.
     });
 
     document.addEventListener("visibilitychange", onVisibility);
@@ -770,7 +825,7 @@
     } catch (err) {
       workspaceClassification = null;
       workspaceClassificationLoaded = false;
-      workspaceClassificationError = typeof err === "string" ? err : JSON.stringify(err);
+      workspaceClassificationError = humanizeError(err);
     } finally {
       loadingWorkspaceClassification = false;
     }
@@ -826,7 +881,7 @@
     try {
       infraStatus = await invoke<AppInfraStatus>("get_app_infra_status");
     } catch (err) {
-      infraStatusError = typeof err === "string" ? err : JSON.stringify(err);
+      infraStatusError = humanizeError(err);
     } finally {
       loadingInfraStatus = false;
     }
@@ -851,7 +906,7 @@
         }
       }
     } catch (err) {
-      jobsError = typeof err === "string" ? err : JSON.stringify(err);
+      jobsError = humanizeError(err);
     } finally {
       loadingJobs = false;
     }
@@ -884,7 +939,7 @@
         selectedJobId = null;
       }
     } catch (err) {
-      selectedJobError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedJobError = humanizeError(err);
       selectedJob = job;
     } finally {
       loadingSelectedJob = false;
@@ -905,7 +960,7 @@
         selectedJobId = null;
       }
     } catch (err) {
-      selectedJobError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedJobError = humanizeError(err);
     } finally {
       loadingSelectedJob = false;
     }
@@ -938,7 +993,7 @@
         }
       }, POST_SUBMIT_POLL_MS);
     } catch (err) {
-      submitError = typeof err === "string" ? err : JSON.stringify(err);
+      submitError = humanizeError(err);
     } finally {
       submitting = false;
     }
@@ -1266,6 +1321,9 @@
     <div class="session-status" class:session-status--recording={isCapturing}>
       <span class="rec-dot" class:rec-dot--active={isCapturing}></span>
       <span class="session-label">{isCapturing ? "Recording" : session?.isRunning === false ? "Stopped" : "Idle"}</span>
+      {#if reconcileStale}
+        <span class="session-stale" role="status" aria-live="polite" title="The backend stopped responding to status checks; this readout may be out of date.">status may be stale</span>
+      {/if}
     </div>
     <div class="action-row">
       <button class="btn btn--primary" onclick={startCapture} disabled={isCapturing || loadingStart || loadingSettings}>
@@ -1274,6 +1332,12 @@
       <button class="btn btn--danger" onclick={stopCapture} disabled={!isCapturing || loadingStop}>
         {loadingStop ? "Stopping…" : "Stop"}
       </button>
+      {#if lifecycleError}
+        <span class="lifecycle-error" role="alert" aria-live="assertive" title={lifecycleError}>
+          <span class="lifecycle-error__tag" aria-hidden="true">✕</span>
+          <span class="lifecycle-error__text">{lifecycleError}</span>
+        </span>
+      {/if}
     </div>
   </div>
 
@@ -1480,6 +1544,12 @@
     >
       {loadingStop ? "Stopping…" : "Stop Recording"}
     </button>
+    {#if lifecycleError}
+      <span class="lifecycle-error" role="alert" aria-live="assertive" title={lifecycleError}>
+        <span class="lifecycle-error__tag" aria-hidden="true">✕</span>
+        <span class="lifecycle-error__text">{lifecycleError}</span>
+      </span>
+    {/if}
   </div>
 </div>
 
@@ -1492,8 +1562,9 @@
     <button
       class="btn btn--ghost btn--sm"
       onclick={refreshRuntimeSources}
-      disabled={loadingRuntimeSources}
+      disabled={loadingRuntimeSources || !isCapturing}
       aria-label="Refresh runtime sources"
+      title={isCapturing ? "Refresh runtime sources" : "No active capture session — start recording to refresh"}
     >
       <span class="refresh-glyph" class:refresh-glyph--spin={loadingRuntimeSources} aria-hidden="true">↻</span>
     </button>
@@ -1621,8 +1692,9 @@
     <button
       class="btn btn--ghost btn--sm"
       onclick={refreshPrivacyFilter}
-      disabled={loadingPrivacyFilter}
+      disabled={loadingPrivacyFilter || !isCapturing}
       aria-label="Refresh privacy filter"
+      title={isCapturing ? "Refresh privacy filter" : "No active capture session — start recording to refresh"}
     >
       <span class="refresh-glyph" class:refresh-glyph--spin={loadingPrivacyFilter} aria-hidden="true">↻</span>
     </button>
@@ -1820,8 +1892,9 @@
     <button
       class="btn btn--ghost btn--sm"
       onclick={refreshInactivity}
-      disabled={loadingInactivity}
+      disabled={loadingInactivity || !isCapturing}
       aria-label="Refresh inactivity policy"
+      title={isCapturing ? "Refresh inactivity policy" : "No active capture session — start recording to refresh"}
     >
       {loadingInactivity ? "…" : "↻"}
     </button>
@@ -2213,6 +2286,14 @@
       {/if}
     {/if}
     </details>
+  {:else if ocrBudgetFetching || loadingOcrBudget}
+    <!-- First load in flight: skeleton rows distinguish "fetching" from
+         "never loaded" / "no data", and aria-busy announces the wait. -->
+    <div class="ocr-skeleton" aria-busy="true" aria-live="polite" aria-label="Loading OCR budget state">
+      {#each Array.from({ length: 5 }) as _, i (i)}
+        <div class="skeleton-row"></div>
+      {/each}
+    </div>
   {:else}
     <p class="empty">OCR budget state has not loaded yet</p>
   {/if}
@@ -2372,7 +2453,11 @@
       bind:value={submitSourceText}
       disabled={submitting}
     />
-    <button class="btn btn--primary btn--sm" type="submit" disabled={submitting}>
+    <button
+      class="btn btn--primary btn--sm"
+      type="submit"
+      disabled={submitting || submitDocName.trim() === "" || submitSourceText.trim() === ""}
+    >
       {submitting ? "…" : "submit"}
     </button>
   </form>
@@ -3266,6 +3351,82 @@
     font-size: 10px;
     color: var(--app-danger);
     font-family: var(--app-font-mono);
+  }
+
+  /* ── Inline lifecycle (start/stop) error chip ───────────────── */
+  .lifecycle-error {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 360px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--app-danger-bg);
+    border: 1px solid var(--app-danger-border);
+    color: var(--app-danger);
+    font-size: 11px;
+    font-family: var(--app-font-mono);
+  }
+
+  .lifecycle-error__tag {
+    flex-shrink: 0;
+    font-weight: 700;
+  }
+
+  .lifecycle-error__text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ── Stale-status note (sustained reconcile failure) ────────── */
+  .session-stale {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--app-warn-bg);
+    border: 1px solid var(--app-warn-border);
+    color: var(--app-warn);
+    font-size: 10px;
+    font-family: var(--app-font-mono);
+    letter-spacing: 0.02em;
+  }
+
+  /* ── Skeleton rows (OCR budget first load) ──────────────────── */
+  .ocr-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .skeleton-row {
+    height: 14px;
+    border-radius: 4px;
+    background: linear-gradient(
+      90deg,
+      var(--app-surface-subtle) 0%,
+      var(--app-surface-raised) 50%,
+      var(--app-surface-subtle) 100%
+    );
+    background-size: 200% 100%;
+    animation: debug-skeleton-shimmer 1.2s ease-in-out infinite;
+  }
+
+  .skeleton-row:nth-child(2) { width: 90%; }
+  .skeleton-row:nth-child(3) { width: 80%; }
+  .skeleton-row:nth-child(4) { width: 95%; }
+  .skeleton-row:nth-child(5) { width: 70%; }
+
+  @keyframes debug-skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton-row { animation: none; }
   }
 
   .badge--warn {
