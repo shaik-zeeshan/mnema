@@ -1334,7 +1334,7 @@
         {#if canShowShortcutsHelp}
           <button
             type="button"
-            class="titlebar__settings"
+            class="titlebar__settings titlebar__settings--help"
             class:active={shortcutsHelpOpen}
             aria-label="Keyboard shortcuts"
             aria-haspopup="dialog"
@@ -1386,12 +1386,14 @@
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
         </button>
-        <ThemeModeControl
-          bind:value={chromeAppearance}
-          compact
-          disabled={!theme.loaded || savingChromeAppearance}
-          onChange={setChromeAppearance}
-        />
+        <div class="titlebar__theme">
+          <ThemeModeControl
+            bind:value={chromeAppearance}
+            compact
+            disabled={!theme.loaded || savingChromeAppearance}
+            onChange={setChromeAppearance}
+          />
+        </div>
         {#if devEnabled}
           <button
             type="button"
@@ -2046,6 +2048,11 @@
     padding: 0 8px 0 78px;
     background: var(--app-titlebar-bg);
     border-bottom: 1px solid var(--app-titlebar-border);
+    /* Hard backstop: a tiling WM (e.g. aerospace) can force the window below the
+       640px app minimum, and flex items can't shrink past their content width —
+       clip rather than let the row spill the right-hand controls off-screen.
+       The responsive tiers below shed items progressively so this rarely bites. */
+    overflow: hidden;
     user-select: none;
     -webkit-user-select: none;
     /* Sticky so the title bar stays visible when a route's main content
@@ -2133,6 +2140,10 @@
 
   .titlebar__drag {
     flex: 1 1 auto;
+    /* Let the centre region collapse to zero so the inert drag slack yields
+       first under width pressure and never pushes the surface toggle, search,
+       or right-hand controls off-screen. */
+    min-width: 0;
     height: 100%;
     display: flex;
     align-items: center;
@@ -2274,6 +2285,82 @@
     filter: brightness(0.92);
   }
 
+  /* ── Responsive title-bar degradation ─────────────────────────
+     Three progressive tiers that shed non-essential affordances as the window
+     narrows. The app's own minimum is 640px (min_inner_size in
+     src-tauri/src/windows.rs), but a tiling WM (e.g. aerospace) ignores that
+     and can force the window down to ~400px — so the bar must keep shedding
+     well below 640px. Flex items can't shrink past their content width, so
+     instead of squeezing we drop whole items, lowest-priority first.
+
+     ALWAYS VISIBLE at every width (never hidden, never clipped):
+       • record / pause / stop control
+       • the Timeline⇄Insights `.surface-toggle`
+       • the settings gear (`.titlebar__settings`, sans `--help`)
+       • notifications bell when present
+     Combined with `.titlebar { overflow: hidden }`, the right group can never
+     spill off-screen. (The dashboard body's own breakpoint lives in
+     +page.svelte.) */
+
+  /* The titlebar is control-dense; the fully-labelled row needs ~820px to fit,
+     and the WM can force widths well below the app's 640px minimum, so the row
+     sheds progressively. Always-visible at every width: record/pause/stop, the
+     surface toggle, the settings gear, and notifications-when-present. Combined
+     with the base `.titlebar__status-label` ellipsis (left cluster yields
+     first) and `.titlebar { overflow: hidden }`, nothing can spill off-screen.
+     Breakpoints are tuned to real content widths — the labelled row overflows
+     below ~820px, which includes the 800px default window. */
+
+  /* Compact ≤820px: drop the Search word + kbd to an icon-only button, hide the
+     status text (the colored dot still conveys state), tighten the row gap. */
+  @media (max-width: 820px) {
+    .titlebar {
+      gap: 6px;
+    }
+    .titlebar__search-label,
+    .titlebar__search-kbd {
+      display: none;
+    }
+    .titlebar__search {
+      gap: 0;
+      padding: 0 6px;
+    }
+    .titlebar__status-label {
+      display: none;
+    }
+  }
+
+  /* Narrow ≤720px: drop the lowest-value right-group items — the help button and
+     the theme control (both still reachable from Settings). Gap tightens. */
+  @media (max-width: 720px) {
+    .titlebar {
+      gap: 4px;
+    }
+    /* `.titlebar`-prefixed to outrank the later base `.titlebar__settings`
+       display rule (equal specificity would otherwise lose on source order). */
+    .titlebar .titlebar__settings--help {
+      display: none;
+    }
+    .titlebar__theme {
+      display: none;
+    }
+  }
+
+  /* Tight ≤600px (incl. WM-forced sub-minimum widths): drop the source toggles
+     — recording sources stay reachable via the tray menu + Settings — and
+     shrink the surface toggle's button padding so Timeline/Insights still fit
+     beside the record control and gear. */
+  @media (max-width: 600px) {
+    /* `.titlebar`-prefixed to outrank the later base `.titlebar__source`
+       display rule. */
+    .titlebar .titlebar__source {
+      display: none;
+    }
+    .surface-toggle button {
+      padding: 0 8px;
+    }
+  }
+
   /* ── Recording status indicator ───────────────────────────── */
   .titlebar__status {
     display: inline-flex;
@@ -2289,6 +2376,19 @@
     text-transform: uppercase;
     color: var(--app-status-fg);
     font-variant-numeric: tabular-nums;
+    /* Let the status pill yield first under width pressure (its label width
+       varies with state — "Recording" is far wider than "Idle"), so the row
+       self-compresses before anything overflows, at any width. */
+    min-width: 0;
+  }
+
+  /* Base ellipsis so the label can shrink at any width (not just at a
+     breakpoint); the ≤820px tier hides it entirely in favour of the dot. */
+  .titlebar__status-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .titlebar__status-dot {
