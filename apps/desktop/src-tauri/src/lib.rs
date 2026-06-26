@@ -595,6 +595,8 @@ pub fn run() {
             user_context::commands::regenerate_user_context_digest,
             user_context::commands::user_context_run_derivation_now,
             user_context::commands::user_context_dismiss_conclusion,
+            user_context::commands::user_context_list_dismissed,
+            user_context::commands::user_context_restore_dismissed,
             user_context::commands::user_context_set_pinned,
             user_context::commands::user_context_correct_activity_category,
             user_context::commands::user_context_correct_activity_focus,

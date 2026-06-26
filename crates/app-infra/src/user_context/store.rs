@@ -1491,6 +1491,25 @@ impl UserContextStore {
         Ok(rows.into_iter().map(map_dismissal).collect())
     }
 
+    /// **Lift the dismissal veto** for a belief, identified case-insensitively by
+    /// the same `(subject, statement)` key the resurface gate uses. Deletes ALL
+    /// matching veto rows (a belief can accumulate duplicate dismissals over
+    /// time) so a single leftover row can never keep re-suppressing the
+    /// Conclusion. The Conclusion itself is NOT restored here — it re-forms on the
+    /// next derivation pass if its evidence still supports it. A no-op when no
+    /// veto matches.
+    pub async fn undismiss(&self, subject: &str, statement: &str) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM user_context_dismissals \
+             WHERE subject = ?1 COLLATE NOCASE AND statement = ?2 COLLATE NOCASE",
+        )
+        .bind(subject)
+        .bind(statement)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // --- #107: User-authored Context --------------------------------------
 
     /// Insert a standing **user-authored Context** statement, returning its id.
@@ -2888,6 +2907,139 @@ mod tests {
         let store = test_store().await;
         store.dismiss_conclusion(9999).await.expect("dismiss noop");
         assert!(store.list_dismissals().await.expect("dismissals").is_empty());
+        });
+    }
+
+    #[test]
+    fn undismiss_lifts_the_veto_for_a_dismissed_belief() {
+        block_on(async {
+        let store = test_store().await;
+        let a1 = seed_activity(&store, "Read Apple news", 100).await;
+        let id = store
+            .upsert_conclusion(draft("Apple", "Interested in Apple", 0.6))
+            .await
+            .expect("upsert");
+        store
+            .replace_conclusion_evidence(
+                id,
+                vec![NewConclusionEvidence { activity_id: a1, stance: EvidenceStance::Support }],
+            )
+            .await
+            .expect("evidence");
+        store.dismiss_conclusion(id).await.expect("dismiss");
+        assert_eq!(store.list_dismissals().await.expect("before").len(), 1);
+
+        store
+            .undismiss("Apple", "Interested in Apple")
+            .await
+            .expect("undismiss");
+
+        // The veto is gone, so the belief is free to re-form on the next pass.
+        assert!(store.list_dismissals().await.expect("after").is_empty());
+        });
+    }
+
+    /// The double-suppression guard: a belief dismissed more than once accrues
+    /// multiple veto rows; `undismiss` must clear EVERY one, or a leftover row
+    /// keeps the resurface gate blocking and Restore looks broken.
+    #[test]
+    fn undismiss_clears_all_duplicate_veto_rows() {
+        block_on(async {
+        let store = test_store().await;
+        // Dismiss the same belief twice (forming + dismissing it again), leaving
+        // two veto rows for the one (subject, statement).
+        for ts in [100, 200] {
+            let a = seed_activity(&store, "Read Apple news", ts).await;
+            let id = store
+                .upsert_conclusion(draft("Apple", "Interested in Apple", 0.6))
+                .await
+                .expect("upsert");
+            store
+                .replace_conclusion_evidence(
+                    id,
+                    vec![NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support }],
+                )
+                .await
+                .expect("evidence");
+            store.dismiss_conclusion(id).await.expect("dismiss");
+        }
+        assert_eq!(store.list_dismissals().await.expect("two vetoes").len(), 2);
+
+        store
+            .undismiss("Apple", "Interested in Apple")
+            .await
+            .expect("undismiss");
+
+        assert!(
+            store.list_dismissals().await.expect("after").is_empty(),
+            "both duplicate veto rows must be cleared"
+        );
+        });
+    }
+
+    #[test]
+    fn undismiss_matches_subject_and_statement_case_insensitively() {
+        block_on(async {
+        let store = test_store().await;
+        let a = seed_activity(&store, "Read Apple news", 100).await;
+        let id = store
+            .upsert_conclusion(draft("Apple", "Interested in Apple", 0.6))
+            .await
+            .expect("upsert");
+        store
+            .replace_conclusion_evidence(
+                id,
+                vec![NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support }],
+            )
+            .await
+            .expect("evidence");
+        store.dismiss_conclusion(id).await.expect("dismiss");
+
+        store
+            .undismiss("apple", "INTERESTED IN APPLE")
+            .await
+            .expect("undismiss");
+
+        assert!(store.list_dismissals().await.expect("after").is_empty());
+        });
+    }
+
+    #[test]
+    fn undismiss_leaves_other_beliefs_dismissed() {
+        block_on(async {
+        let store = test_store().await;
+        for (subject, statement) in [("Apple", "Interested in Apple"), ("Rust", "Learning Rust")] {
+            let a = seed_activity(&store, statement, 100).await;
+            let id = store
+                .upsert_conclusion(draft(subject, statement, 0.6))
+                .await
+                .expect("upsert");
+            store
+                .replace_conclusion_evidence(
+                    id,
+                    vec![NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support }],
+                )
+                .await
+                .expect("evidence");
+            store.dismiss_conclusion(id).await.expect("dismiss");
+        }
+
+        store.undismiss("Apple", "Interested in Apple").await.expect("undismiss");
+
+        let remaining = store.list_dismissals().await.expect("after");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].subject, "Rust");
+        });
+    }
+
+    #[test]
+    fn undismiss_unknown_belief_is_a_noop() {
+        block_on(async {
+        let store = test_store().await;
+        store
+            .undismiss("Nobody", "Never dismissed this")
+            .await
+            .expect("noop ok");
         });
     }
 

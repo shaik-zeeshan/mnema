@@ -247,6 +247,19 @@ pub struct DismissalState {
     pub dismissed_at_ms: i64,
 }
 
+/// Render-only projection of a [`DismissalState`] for the "Dismissed" archive in
+/// the Context surface: just what the UI shows (the rejected belief + when),
+/// deduplicated by `(subject, statement)` so a belief dismissed more than once
+/// appears once. The internal resurface-gate detail (`evidence_fingerprint`,
+/// `evidence_activity_count`) is intentionally omitted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DismissedView {
+    pub subject: String,
+    pub statement: String,
+    pub dismissed_at_ms: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,5 +598,25 @@ mod tests {
         );
         let round_tripped: DismissalState = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, dismissal);
+    }
+
+    #[test]
+    fn dismissed_view_round_trips() {
+        let view = DismissedView {
+            subject: "Apple".to_string(),
+            statement: "Interested in Apple".to_string(),
+            dismissed_at_ms: 1234,
+        };
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "subject": "Apple",
+                "statement": "Interested in Apple",
+                "dismissedAtMs": 1234
+            })
+        );
+        let round_tripped: DismissedView = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, view);
     }
 }

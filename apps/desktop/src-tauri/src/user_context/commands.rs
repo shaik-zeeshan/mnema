@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use capture_types::{
-    Activity, ActivityCategory, AuthoredContext, Conclusion, FocusLevel, SubjectTrajectory,
-    SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
+    Activity, ActivityCategory, AuthoredContext, Conclusion, DismissalState, DismissedView,
+    FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
     UserContextDistillationSummary, UserContextStatus, UserContextTokenUsage,
 };
 use serde::Serialize;
@@ -466,6 +466,66 @@ pub async fn user_context_dismiss_conclusion(
     Ok(())
 }
 
+/// Collapse the raw, newest-first dismissal list into one render-only
+/// [`DismissedView`] per belief. A belief dismissed more than once accrues
+/// duplicate veto rows; keyed case-insensitively on `(subject, statement)` (the
+/// resurface-gate identity), the first occurrence — the newest, since the input
+/// is `dismissed_at_ms DESC` — wins, preserving newest-first order.
+fn dedupe_dismissed(dismissals: Vec<DismissalState>) -> Vec<DismissedView> {
+    let mut seen = std::collections::HashSet::new();
+    let mut views = Vec::new();
+    for dismissal in dismissals {
+        let key = (
+            dismissal.subject.to_lowercase(),
+            dismissal.statement.to_lowercase(),
+        );
+        if seen.insert(key) {
+            views.push(DismissedView {
+                subject: dismissal.subject,
+                statement: dismissal.statement,
+                dismissed_at_ms: dismissal.dismissed_at_ms,
+            });
+        }
+    }
+    views
+}
+
+/// List the user's **dismissed beliefs** for the Context "Dismissed" archive —
+/// the negative space of the inferred dossier ("what you told Mnema you're
+/// not"). Deduplicated by `(subject, statement)`, newest first.
+#[tauri::command]
+pub async fn user_context_list_dismissed(
+    infra: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<DismissedView>, String> {
+    let dismissals = infra
+        .user_context()
+        .list_dismissals()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(dedupe_dismissed(dismissals))
+}
+
+/// **Restore** a dismissed belief: lift the suppression veto (all matching rows)
+/// so the Conclusion can re-form on the next derivation pass IF its evidence
+/// still supports it. It does NOT resurrect the old Conclusion (that row was
+/// deleted at dismiss time). Emits `user_context_changed` so the archive
+/// refreshes.
+#[tauri::command]
+pub async fn user_context_restore_dismissed(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    subject: String,
+    statement: String,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        .undismiss(&subject, &statement)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}
+
 /// **Pin** / unpin a Conclusion (#99): a pinned Conclusion is exempt from
 /// confidence decay so it does not quietly fade during a quiet stretch. Emits
 /// `user_context_changed` so the surface reflects the new pinned state.
@@ -677,4 +737,52 @@ pub async fn wipe_user_context(
     // 4. Refresh the (now empty) User Context surface.
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use capture_types::DismissalState;
+
+    fn dismissal(subject: &str, statement: &str, dismissed_at_ms: i64) -> DismissalState {
+        DismissalState {
+            subject: subject.to_string(),
+            statement: statement.to_string(),
+            evidence_fingerprint: "fp".to_string(),
+            evidence_activity_count: 1,
+            dismissed_at_ms,
+        }
+    }
+
+    #[test]
+    fn dedupe_dismissed_collapses_duplicates_keeping_newest() {
+        // Newest-first global order, as `list_dismissals` returns it.
+        let input = vec![
+            dismissal("Apple", "Interested in Apple", 200),
+            dismissal("Rust", "Learning Rust", 150),
+            dismissal("Apple", "Interested in Apple", 100),
+        ];
+
+        let views = dedupe_dismissed(input);
+
+        // One entry per (subject, statement); the Apple duplicate collapses to its
+        // newest dismissal; newest-first order is preserved.
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].subject, "Apple");
+        assert_eq!(views[0].dismissed_at_ms, 200);
+        assert_eq!(views[1].subject, "Rust");
+    }
+
+    #[test]
+    fn dedupe_dismissed_keys_case_insensitively() {
+        let input = vec![
+            dismissal("Apple", "Interested in Apple", 200),
+            dismissal("apple", "INTERESTED IN APPLE", 100),
+        ];
+
+        let views = dedupe_dismissed(input);
+
+        assert_eq!(views.len(), 1, "case variants are the same belief");
+        assert_eq!(views[0].dismissed_at_ms, 200);
+    }
 }
