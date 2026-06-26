@@ -7021,9 +7021,17 @@
   </header>
 
   {#if timelineError}
-    <div class="timeline__error">
-      <span class="timeline__error-label">load error</span>
-      <span class="timeline__error-msg">{timelineError}</span>
+    <div class="timeline__error" role="alert">
+      <div class="timeline__error-body">
+        <span class="timeline__error-label">load error</span>
+        <span class="timeline__error-msg">{timelineError}</span>
+      </div>
+      <button
+        type="button"
+        class="btn btn--ghost btn--sm timeline__error-retry"
+        onclick={refreshTimelineAndDashboard}
+        disabled={timelineLoading || timelineLoadingMore}
+      >{timelineLoading ? "retrying…" : "retry"}</button>
     </div>
   {/if}
 
@@ -7035,7 +7043,11 @@
        audio lane bars themselves remain visible above the rail so audio
        presence/discovery is unaffected. -->
 
-  <div class="timeline__stage" bind:this={stageEl}>
+  <div
+    class="timeline__stage"
+    class:timeline__stage--stale={timelineError && timelineFrames.length > 0}
+    bind:this={stageEl}
+  >
     {#if timelineLoading && timelineFrames.length === 0}
       <div class="timeline__preview-pending">
         <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
@@ -7159,13 +7171,21 @@
         {#if displayedActiveExactPreview && ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0 && renderedImageRect.width > 0 && renderedImageRect.height > 0}
           <div
             class="timeline__ocr-overlay"
-            aria-hidden="true"
+            role="list"
+            aria-label="Recognized on-screen text"
             style={`left: ${renderedImageRect.left}px; top: ${renderedImageRect.top}px; width: ${renderedImageRect.width}px; height: ${renderedImageRect.height}px;`}
           >
             {#each ocrObservations as obs, i (i)}
+              <!-- Boxes are a pixel-positioned visual overlay; the recognized
+                   text is exposed to assistive tech via the list/listitem role
+                   + aria-label (no per-box tabindex — that would add dozens of
+                   tab stops and trip a11y_no_noninteractive_tabindex). The
+                   chip still reveals on hover for pointer users. -->
               <div
                 class="timeline__ocr-box"
+                role="listitem"
                 style={ocrBoxStyle(obs)}
+                aria-label={`${obs.text} (${(obs.confidence * 100).toFixed(0)}% confidence)`}
                 title={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
               >
                 <span class="timeline__ocr-text">{obs.text}</span>
@@ -7430,12 +7450,22 @@
                 {/each}
               </div>
             </div>
+          {:else if audioSegmentsError}
+            <div class="timeline-rail__audio-lane-error" role="alert">
+              <span class="timeline-rail__audio-lane-error-label" title={audioSegmentsError}>audio unavailable</span>
+              <button
+                type="button"
+                class="timeline-rail__audio-lane-retry"
+                onclick={(e) => { e.stopPropagation(); void refreshAudioSegments(); }}
+                onpointerdown={(e) => e.stopPropagation()}
+                disabled={audioSegmentsLoading}
+                title={`Retry loading audio · ${audioSegmentsError}`}
+              >{audioSegmentsLoading ? "retrying…" : "retry"}</button>
+            </div>
           {:else}
             <span class="timeline-rail__audio-lane-empty">
               {#if audioSegmentsLoading}
                 loading audio…
-              {:else if audioSegmentsError}
-                audio unavailable
               {:else}
                 no audio in range
               {/if}
@@ -7458,17 +7488,28 @@
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--systemAudio">sys</span>
         </div>
         <div class="timeline-rail__audio-lane-viewport">
-          <span class="timeline-rail__audio-lane-empty">
-            {#if audioSegmentsLoading}
-              loading audio…
-            {:else if audioSegmentsError}
-              audio unavailable
-            {:else if timelineLoading}
-              waiting for frames…
-            {:else}
-              no frames loaded
-            {/if}
-          </span>
+          {#if audioSegmentsError}
+            <div class="timeline-rail__audio-lane-error" role="alert">
+              <span class="timeline-rail__audio-lane-error-label" title={audioSegmentsError}>audio unavailable</span>
+              <button
+                type="button"
+                class="timeline-rail__audio-lane-retry"
+                onclick={() => void refreshAudioSegments()}
+                disabled={audioSegmentsLoading}
+                title={`Retry loading audio · ${audioSegmentsError}`}
+              >{audioSegmentsLoading ? "retrying…" : "retry"}</button>
+            </div>
+          {:else}
+            <span class="timeline-rail__audio-lane-empty">
+              {#if audioSegmentsLoading}
+                loading audio…
+              {:else if timelineLoading}
+                waiting for frames…
+              {:else}
+                no frames loaded
+              {/if}
+            </span>
+          {/if}
         </div>
       </div>
     {/if}
@@ -8114,10 +8155,10 @@
   }
 
   .audio-drawer:focus-visible {
-    border-color: color-mix(in srgb, var(--app-danger-strong) 50%, transparent);
+    border-color: var(--app-accent);
     box-shadow:
       0 18px 40px rgba(0, 0, 0, 0.55),
-      0 0 0 2px color-mix(in srgb, var(--app-danger-strong) 35%, transparent);
+      var(--app-ring);
   }
 
   @keyframes audio-drawer-rise {
@@ -8128,6 +8169,25 @@
     to {
       transform: translateY(0);
       opacity: 1;
+    }
+  }
+
+  /* Honor the OS reduced-motion preference for every CSS animation defined in
+     this surface: the drawer's slide-in entrance, the OCR-running glyph pulse,
+     and the OCR spinner. Spinners/pulses degrade to a static state; the drawer
+     simply appears without the rising transform. */
+  @media (prefers-reduced-motion: reduce) {
+    .audio-drawer {
+      animation: none;
+    }
+
+    .timeline__ocr-btn--running .timeline__ocr-glyph {
+      animation: none;
+    }
+
+    .timeline__ocr-spinner,
+    .timeline__preview-pending-spinner {
+      animation: none;
     }
   }
 
@@ -8327,7 +8387,7 @@
 
   .audio-drawer__scrub:disabled {
     cursor: not-allowed;
-    opacity: 0.55;
+    opacity: var(--app-disabled-opacity);
   }
 
   .audio-drawer__scrub::-webkit-slider-runnable-track {
@@ -8476,7 +8536,7 @@
 
   .audio-drawer__transcript-title,
   .audio-drawer__transcript-state {
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8498,7 +8558,7 @@
 
   .audio-drawer__transcript-hint {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -8522,7 +8582,7 @@
     background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
     color: var(--app-text-muted);
     font: inherit;
-    font-size: 9px;
+    font-size: var(--text-sm);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -8542,8 +8602,12 @@
     outline: none;
   }
 
+  .audio-drawer__transcript-action:focus-visible:not(:disabled) {
+    box-shadow: var(--app-ring);
+  }
+
   .audio-drawer__transcript-action:disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -8754,7 +8818,7 @@
 
   .audio-drawer__speaker-label-input:disabled {
     cursor: not-allowed;
-    opacity: 0.48;
+    opacity: var(--app-disabled-opacity);
   }
 
   .audio-drawer__speaker-time {
@@ -8947,7 +9011,7 @@
   }
 
   .audio-drawer__speaker-action-button:disabled {
-    opacity: 0.42;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -9051,7 +9115,7 @@
     padding: 8px 16px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: var(--text-sm);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -9062,7 +9126,7 @@
   }
 
   .btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -9081,7 +9145,7 @@
     background: transparent;
     color: var(--app-text-muted);
     border-color: var(--app-border-strong);
-    font-size: 10px;
+    font-size: var(--text-sm);
   }
 
   .btn--ghost:not(:disabled):hover {
@@ -9092,7 +9156,7 @@
 
   .btn--sm {
     padding: 3px 8px;
-    font-size: 9px;
+    font-size: var(--text-sm);
   }
 
   /* The previous dashboard-local settings/menu anchor moved into the shared
@@ -9219,7 +9283,7 @@
   }
 
   .timeline__picker-time:disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -9345,18 +9409,31 @@
   /* ── Error / empty ─────────────────────────────────────────── */
   .timeline__error {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
     padding: 10px 12px;
     background: var(--app-danger-bg-soft);
     border: 1px solid var(--app-danger-border);
     border-radius: 4px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-danger-text);
   }
 
+  .timeline__error-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .timeline__error-retry {
+    flex: 0 0 auto;
+  }
+
   .timeline__error-label {
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -9449,6 +9526,14 @@
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+
+  /* When the timeline load fails but stale frames remain decoded, dim and
+     desaturate the stage so the last preview never reads as live data. The
+     inline alert above carries the recovery action. */
+  .timeline__stage--stale {
+    opacity: var(--app-disabled-opacity);
+    filter: grayscale(0.6);
   }
 
   .timeline__preview {
@@ -9600,7 +9685,7 @@
      and drop the pointer cursor so it reads as inert without shifting layout. */
   .timeline__stage-action-menu-item:disabled {
     cursor: default;
-    opacity: 0.45;
+    opacity: var(--app-disabled-opacity);
   }
 
   .timeline__stage-action-menu-item:disabled:hover {
@@ -9904,6 +9989,12 @@
     z-index: 2;
   }
 
+  .timeline__ocr-box:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
   /* Text is hidden by default — boxes alone act as a quiet visual scan
      layer over the original pixels. On hover/focus a single chip is
      revealed; it sits flush with the bbox and is fully opaque so it
@@ -9961,7 +10052,7 @@
     border-radius: 4px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    font-size: 10px;
+    font-size: var(--text-sm);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text);
@@ -10037,6 +10128,35 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+
+  /* Persistent center playhead: a pair of neutral carets framing the rail's
+     midpoint so the relationship "center = currently shown frame" is
+     self-evident without reading the floating tooltip. Carets sit over the
+     rail's top/bottom edges (rail height = 36px), never covering the active
+     tick body, and stay non-interactive. */
+  .timeline__rail-wrap::before,
+  .timeline__rail-wrap::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    pointer-events: none;
+    z-index: 4;
+  }
+
+  .timeline__rail-wrap::before {
+    top: 0;
+    border-top: 5px solid var(--app-text-subtle);
+  }
+
+  .timeline__rail-wrap::after {
+    top: 31px;
+    border-bottom: 5px solid var(--app-text-subtle);
   }
 
   .timeline-rail {
@@ -10268,12 +10388,63 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 9px;
+    font-size: var(--text-sm);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     pointer-events: none;
+  }
+
+  .timeline-rail__audio-lane-error {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    pointer-events: none;
+  }
+
+  .timeline-rail__audio-lane-error-label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--app-danger-text);
+  }
+
+  .timeline-rail__audio-lane-retry {
+    pointer-events: auto;
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-family: inherit;
+    font-size: var(--text-sm);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--app-danger-text);
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+    outline: none;
+  }
+
+  .timeline-rail__audio-lane-retry:not(:disabled):hover {
+    background: color-mix(in srgb, var(--app-danger-strong) 10%, transparent);
+    border-color: var(--app-danger-strong);
+  }
+
+  .timeline-rail__audio-lane-retry:focus-visible {
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .timeline-rail__audio-lane-retry:disabled {
+    opacity: var(--app-disabled-opacity);
+    cursor: not-allowed;
   }
 
   .timeline-rail__audio-bar {
@@ -10841,7 +11012,7 @@
     color: var(--app-text-subtle);
   }
   :global([data-theme="light"]) .timeline-rail__audio-lane-empty {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
   }
   :global([data-theme="light"]) .timeline-rail--placeholder {
     background: var(--app-surface);
