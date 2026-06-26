@@ -63,19 +63,33 @@ tempfile = "3"
 speakrs = { version = "0.4", default-features = false, features = ["coreml", "default-linalg"], optional = true }
 cidre = { version = "0.15", default-features = false, features = ["async", "av", "blocks", "cat", "cf", "cm", "dispatch", "ns", "ut", "macos_15_0"] }
 
-# Windows = CPU backend (ADR 0004, CPU-first; CUDA is deferred follow-up #137).
-# speakrs's `default-linalg` resolves to `intel-mkl-static` on x86_64, so MKL is
-# linked statically (no DLL, no Fortran toolchain — intel-mkl-src self-links).
-# ORT is statically linked via its default `download-binaries`, so the CPU build
-# ships ZERO ONNX Runtime DLL. No `coreml`, no `cuda`, no `online`. One platform-
-# stable `model_id`; only the on-disk artifact differs (`.onnx`/`.npy` subset).
-# `default-linalg` (not the explicit `intel-mkl` feature) must match the macOS
-# entry above to avoid the `ndarray-linalg` multi-alias union error (see there).
+# Windows = CPU baseline + opt-in CUDA Execution Backend (ADR 0005, the #137
+# follow-up to ADR 0004's CPU-first ship). speakrs's `default-linalg` resolves to
+# `intel-mkl-static` on x86_64, so MKL is linked statically (no DLL, no Fortran
+# toolchain — intel-mkl-src self-links). One platform-stable `model_id`; only the
+# on-disk artifact differs (`.onnx`/`.npy` subset).
+#
+# `cuda` is what activates `ExecutionMode::Cuda`: it turns on `ort/cuda` so the
+# ONNX Runtime CUDA execution provider can be registered. It is INERT without the
+# rest of the #137 stack — it requires (a) Slice 1's `ort/load-dynamic` (the CUDA
+# provider DLLs load dynamically, never static-linked), (b) the operator-provided
+# CUDA-capable `onnxruntime_providers_cuda.dll` next to the exe, and (c) the
+# in-app GPU Acceleration Pack (NVIDIA CUDA 12 + cuDNN 9 redist) present at
+# runtime. With none of those staged the CPU path is unaffected: speakrs only
+# attempts `ExecutionMode::Cuda` when the pack is present, and a CUDA-init failure
+# falls back to CPU (see providers/speakrs.rs). So enabling `cuda` here never
+# regresses the CPU-only Windows build — it only makes the GPU path *possible*.
+#
+# `default-linalg` (NOT the explicit `intel-mkl`/`cuda`-implied feature) must
+# match the macOS entry above to avoid the `ndarray-linalg` multi-alias union
+# error: dropping it (or swapping to a different linalg alias) re-triggers the
+# "depends on crate `ndarray-linalg` multiple times with different names" hard
+# error documented at length on the macOS entry. KEEP `default-linalg`.
 #
 # Audio decode goes through the shared `media-decode` Media Foundation seam
 # (ADR 0024), mirroring audio-transcription. media-decode is NOT optional and NOT
 # feature-gated: the `windows_audio_decode` module + its tests build under plain
 # `cargo check`/`cargo test` on Windows even when the `speakrs` feature is off.
 [target.'cfg(target_os = "windows")'.dependencies]
-speakrs = { version = "0.4", default-features = false, features = ["default-linalg"], optional = true }
+speakrs = { version = "0.4", default-features = false, features = ["default-linalg", "cuda"], optional = true }
 media-decode = { path = "../media-decode" }

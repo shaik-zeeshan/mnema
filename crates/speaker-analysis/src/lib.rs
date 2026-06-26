@@ -631,6 +631,126 @@ pub fn speaker_analysis_models_dir(app_data_dir: impl AsRef<Path>) -> PathBuf {
     app_data_dir.as_ref().join(MODEL_STORE_DIR_NAME)
 }
 
+// ---------------------------------------------------------------------------
+// GPU Acceleration Pack (Windows CUDA Execution Backend, #137 / ADR 0005)
+// ---------------------------------------------------------------------------
+//
+// The CUDA backend is gated behind an opt-in, in-app NVIDIA-redist *pack* that is
+// kept SEPARATE from the model store: the model is identity (the Voiceprint Space
+// / Speaker Continuity), the pack is hardware (CUDA 12 + cuDNN 9 redistributables
+// loaded via ORT's `preload_dylibs`). The base installer never ships it; Slice 4
+// downloads it on demand. These helpers are platform-neutral and feature-free so
+// the pure selection logic below can be unit-tested with no GPU and no speakrs
+// build. Slices 3–4 build on them (pack-presence gating, the downloader).
+
+/// App-data subdir holding the opt-in NVIDIA GPU Acceleration Pack (CUDA 12 +
+/// cuDNN 9 redistributables). Sits alongside the speaker-analysis model store but
+/// is a distinct provisioning unit (ADR 0005).
+pub const GPU_ACCELERATION_PACK_DIR_NAME: &str = "gpu-acceleration-pack";
+
+/// Marker written once the GPU Acceleration Pack is fully installed + verified
+/// (reuses the `.installed.json` pattern of the model store). Its presence — not
+/// merely the dir existing — is what [`gpu_pack_present`] treats as "provisioned".
+pub const GPU_ACCELERATION_PACK_MARKER: &str = ".installed.json";
+
+/// Resolve the GPU Acceleration Pack dir under the app data dir.
+pub fn gpu_acceleration_pack_dir(app_data_dir: impl AsRef<Path>) -> PathBuf {
+    app_data_dir.as_ref().join(GPU_ACCELERATION_PACK_DIR_NAME)
+}
+
+/// Whether the GPU Acceleration Pack is present (its install marker exists).
+///
+/// This is the ONLY gate the helper uses to decide whether CUDA may be
+/// *attempted* (ADR 0005): a GPU machine with no pack is plain CPU with **no**
+/// fallback noise — "not provisioned" is not a failure. NVML detection drives the
+/// Settings *offer* (Slice 3/5), never the attempt.
+pub fn gpu_pack_present(pack_dir: &Path) -> bool {
+    pack_dir.join(GPU_ACCELERATION_PACK_MARKER).is_file()
+}
+
+// ---------------------------------------------------------------------------
+// Execution Backend selection + provenance (pure, platform-neutral — Slice 2)
+// ---------------------------------------------------------------------------
+//
+// Backend is orthogonal to identity (ADR 0004/0005): it only chooses a *hardware
+// path*, never a `model_id`, Voiceprint Space, or Speaker Continuity key, and is
+// observable only in result provenance (`executionMode`). These two functions are
+// the GPU-free, feature-free heart of that decision so they unit-test under plain
+// `cargo test -p speaker-analysis` (the heavy speakrs/ort/CUDA build stays opt-in);
+// the runtime try/CPU-fallback that consumes them lives in providers/speakrs.rs.
+
+/// Whether a Speaker Analysis Job should *attempt* the CUDA Execution Backend or
+/// run plain CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionModeSelection {
+    /// Try `ExecutionMode::Cuda`; on an init failure the caller falls back to CPU
+    /// (still a successful job — ADR 0005). Chosen only when the pack is present
+    /// AND the user has not forced CPU.
+    AttemptCuda,
+    /// Run plain CPU — no CUDA attempt and therefore no fallback diagnostics.
+    Cpu,
+}
+
+/// Decide whether to attempt the CUDA Execution Backend for one job.
+///
+/// `AttemptCuda` iff `!force_cpu && pack_present`; otherwise `Cpu`.
+///
+/// `gpu_detected` is DELIBERATELY not part of the decision: it informs the
+/// Settings *offer* (Slice 5), not the attempt. The try/CPU-fallback in
+/// `run_speakrs_blocking` subsumes detection — attempting CUDA without the pack is
+/// pointless (no provider DLLs to load), and attempting it *with* the pack but no
+/// usable GPU just fails init and falls back to CPU, so a separate detect-gate
+/// here could only add a way to wrongly skip a GPU that would actually have
+/// worked. It stays a parameter so the signature documents the full input space
+/// and the tests can prove it is inert.
+pub fn select_execution_mode(
+    force_cpu: bool,
+    pack_present: bool,
+    gpu_detected: bool,
+) -> ExecutionModeSelection {
+    // Intentionally inert; see the doc-comment above. Bound to `_` so a future
+    // edit that tries to branch on it has to delete this line on purpose.
+    let _ = gpu_detected;
+    if !force_cpu && pack_present {
+        ExecutionModeSelection::AttemptCuda
+    } else {
+        ExecutionModeSelection::Cpu
+    }
+}
+
+/// Stamp the **Execution Backend** outcome into a result's provenance map.
+///
+/// `executionMode` always records the backend that ACTUALLY ran
+/// (`"cpu"` | `"cuda"` | `"coreml"`). Only on a CUDA-init fallback — the caller
+/// ran CPU because `from_dir(.., Cuda)` returned `Err` — do we also add the two
+/// diagnostics `executionModeRequested = "cuda"` and `cudaFallbackReason = <error>`.
+/// A plain CPU run (no pack or Force-CPU), and a successful CUDA or CoreML run,
+/// get `executionMode` ONLY, with NO extra keys ("not provisioned" is not a
+/// failure; ADR 0005). Pure + map-only so it unit-tests without a GPU.
+///
+/// Takes the concrete `BTreeMap` the metadata provenance uses (not a generic
+/// `serde_json::Map`) so it can be called directly on `output.metadata.provenance`.
+pub fn apply_execution_mode_provenance(
+    provenance: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    actual_mode: &str,
+    cuda_fallback: Option<&str>,
+) {
+    provenance.insert(
+        "executionMode".to_string(),
+        serde_json::Value::String(actual_mode.to_string()),
+    );
+    if let Some(reason) = cuda_fallback {
+        provenance.insert(
+            "executionModeRequested".to_string(),
+            serde_json::Value::String("cuda".to_string()),
+        );
+        provenance.insert(
+            "cudaFallbackReason".to_string(),
+            serde_json::Value::String(reason.to_string()),
+        );
+    }
+}
+
 pub fn model_install_dir(
     models_dir: impl AsRef<Path>,
     descriptor: &SpeakerAnalysisModelDescriptor,
@@ -933,6 +1053,98 @@ mod tests {
         let decoded: SpeakerAnalysisModelDescriptor =
             serde_json::from_str(&encoded).expect("decodes");
         assert_eq!(decoded, descriptor);
+    }
+
+    #[test]
+    fn select_execution_mode_matrix_gpu_detected_is_inert() {
+        use ExecutionModeSelection::*;
+        // The full {force_cpu × pack_present × gpu_detected} matrix (8 cases).
+        // AttemptCuda iff (!force_cpu && pack_present); everything else is Cpu, and
+        // `gpu_detected` NEVER changes the result (it only drives the Settings
+        // offer, not the attempt — ADR 0005).
+        for &gpu_detected in &[false, true] {
+            assert_eq!(select_execution_mode(false, true, gpu_detected), AttemptCuda);
+            assert_eq!(select_execution_mode(false, false, gpu_detected), Cpu);
+            assert_eq!(select_execution_mode(true, true, gpu_detected), Cpu);
+            assert_eq!(select_execution_mode(true, false, gpu_detected), Cpu);
+        }
+        // Pairwise proof that toggling gpu_detected ALONE is inert at every
+        // (force_cpu, pack_present) corner — the invariant the plan calls out.
+        for &force_cpu in &[false, true] {
+            for &pack_present in &[false, true] {
+                assert_eq!(
+                    select_execution_mode(force_cpu, pack_present, false),
+                    select_execution_mode(force_cpu, pack_present, true),
+                    "gpu_detected changed the selection at force_cpu={force_cpu}, pack_present={pack_present}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn execution_mode_provenance_plain_cpu_has_no_diagnostics() {
+        // (a) plain cpu (no pack / Force-CPU): only executionMode, no fallback keys.
+        let mut provenance = std::collections::BTreeMap::new();
+        apply_execution_mode_provenance(&mut provenance, "cpu", None);
+        assert_eq!(provenance.get("executionMode"), Some(&serde_json::json!("cpu")));
+        assert!(!provenance.contains_key("executionModeRequested"));
+        assert!(!provenance.contains_key("cudaFallbackReason"));
+    }
+
+    #[test]
+    fn execution_mode_provenance_records_cuda_init_fallback() {
+        // (b) init-fallback: all three keys; executionMode is what actually ran
+        // (cpu), requested is cuda, and the reason is carried verbatim.
+        let mut provenance = std::collections::BTreeMap::new();
+        let reason = "CUDA EP init failed: cudnn64_9.dll not found";
+        apply_execution_mode_provenance(&mut provenance, "cpu", Some(reason));
+        assert_eq!(provenance.get("executionMode"), Some(&serde_json::json!("cpu")));
+        assert_eq!(
+            provenance.get("executionModeRequested"),
+            Some(&serde_json::json!("cuda"))
+        );
+        assert_eq!(
+            provenance.get("cudaFallbackReason"),
+            Some(&serde_json::json!(reason))
+        );
+    }
+
+    #[test]
+    fn execution_mode_provenance_cuda_success_has_no_diagnostics() {
+        // (c) cuda success: executionMode=cuda, no requested/reason keys.
+        let mut provenance = std::collections::BTreeMap::new();
+        apply_execution_mode_provenance(&mut provenance, "cuda", None);
+        assert_eq!(provenance.get("executionMode"), Some(&serde_json::json!("cuda")));
+        assert!(!provenance.contains_key("executionModeRequested"));
+        assert!(!provenance.contains_key("cudaFallbackReason"));
+    }
+
+    #[test]
+    fn execution_mode_provenance_coreml() {
+        // (d) macOS CoreML: executionMode=coreml, no requested/reason keys (the
+        // macOS path is byte-identical, no new keys — ADR 0005).
+        let mut provenance = std::collections::BTreeMap::new();
+        apply_execution_mode_provenance(&mut provenance, "coreml", None);
+        assert_eq!(
+            provenance.get("executionMode"),
+            Some(&serde_json::json!("coreml"))
+        );
+        assert!(!provenance.contains_key("executionModeRequested"));
+        assert!(!provenance.contains_key("cudaFallbackReason"));
+    }
+
+    #[test]
+    fn gpu_pack_present_requires_install_marker() {
+        // Pack-presence is the install MARKER, not just the dir: an empty/absent
+        // dir is "not provisioned" (plain CPU, no fallback noise — ADR 0005).
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pack_dir = gpu_acceleration_pack_dir(temp.path());
+        assert_eq!(pack_dir.file_name().unwrap(), GPU_ACCELERATION_PACK_DIR_NAME);
+        assert!(!gpu_pack_present(&pack_dir));
+        fs::create_dir_all(&pack_dir).expect("create pack dir");
+        assert!(!gpu_pack_present(&pack_dir), "dir alone is not provisioned");
+        fs::write(pack_dir.join(GPU_ACCELERATION_PACK_MARKER), "{}").expect("write marker");
+        assert!(gpu_pack_present(&pack_dir), "install marker means provisioned");
     }
 
     #[test]

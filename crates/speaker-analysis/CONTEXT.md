@@ -10,6 +10,7 @@ Root entry point: [CONTEXT-MAP.md](../../CONTEXT-MAP.md).
 - [ADR 0002: Adopt speakrs as a Second On-Device Diarization Provider, Trending to Replacement](docs/adr/0002-adopt-speakrs-as-second-on-device-diarization-provider.md) — its replacement path is now realized by 0003
 - [ADR 0003: Remove sherpa, Make speakrs the Sole On-Device Diarization Provider](docs/adr/0003-remove-sherpa-make-speakrs-sole-diarization-provider.md)
 - [ADR 0004: Windows speaker-analysis Runs speakrs on a Derived Execution Backend; CPU Ships First, CUDA Deferred](docs/adr/0004-windows-speakrs-derived-execution-backend-cpu-first.md)
+- [ADR 0005: Windows CUDA Execution Backend — in-app NVIDIA-redist provisioning, Windows-scoped dynamic ORT, init-only fallback](docs/adr/0005-windows-cuda-backend-in-app-provisioning-and-dynamic-ort.md)
 
 ## Language
 
@@ -34,8 +35,8 @@ The set of enrolled **Person Profile** embeddings that are comparable to each ot
 _Avoid_: global voiceprints, cross-model recognition, embedding-only scope
 
 **Execution Backend**:
-The hardware acceleration path (CoreML, CPU, or CUDA) a **Speaker Analysis Job** runs a **Speaker Model Preset** on. Orthogonal to model identity: it never changes `model_id`, **Voiceprint Space**, or **Speaker Continuity** keying. Recorded only in result provenance (`executionMode`).
-_Avoid_: CPU/GPU model, execution-mode-as-preset, backend-scoped voiceprints, GPU model variant
+The hardware acceleration path (CoreML, CPU, or CUDA) a **Speaker Analysis Job** runs a **Speaker Model Preset** on. Orthogonal to model identity: it never changes `model_id`, **Voiceprint Space**, or **Speaker Continuity** keying. A backend is *purely* a hardware path — every backend runs the same-precision pipeline, so a backend never trades speaker-turn boundary precision for speed; a faster-but-coarser variant is a different, future axis, not a backend. Recorded only in result provenance (`executionMode`).
+_Avoid_: CPU/GPU model, execution-mode-as-preset, backend-scoped voiceprints, GPU model variant, fast/low-precision variant as a backend
 
 ## Relationships
 
@@ -62,7 +63,8 @@ _Avoid_: CPU/GPU model, execution-mode-as-preset, backend-scoped voiceprints, GP
 - Switching **Speaker Model Preset** does not delete prior enrollments: **Person Profile** embeddings persist per `model_id`, so an earlier preset's recognition returns if the user switches back.
 - Changing **Speaker Model Preset** warns (when enrolled people exist) but does not block, auto-migrate voiceprints, or re-run diarization on past recordings; re-enrollment is organic re-tagging under the new preset.
 - **Execution Backend** is orthogonal to identity: CoreML, CPU, and CUDA produce results for the same **Speaker Model Preset**, share one **Voiceprint Space**, and key **Speaker Continuity** identically; a single **Speaker Analysis Job** may fall back from CUDA to CPU without crossing identity.
-- **Execution Backend** is selected automatically by the helper at execution time — not a user setting and not frozen at admission like provider/model/timeout — and is observable only in provenance (`executionMode`). It is not a model-list entry.
+- **Execution Backend** is selected automatically by the helper at execution time — not frozen at admission like provider/model/timeout — and is observable only in provenance (`executionMode`). It is not a model-list entry. The one user lever is a Windows-only *Use GPU acceleration* override that caps selection at CPU when off (the identity-safe Force-CPU override: CPU and CUDA share `model_id`, **Voiceprint Space**, and **Speaker Continuity** keying, so it changes speed, never identity). It chooses *whether* the GPU backend may be used, never *which* model or identity, and is read live at execution time. macOS always runs CoreML with no such override.
+- A CUDA-init failure that falls back to CPU is a *successful* **Speaker Analysis Job** (it ran on CPU); the fallback is observable in provenance (the actual `executionMode` plus a recorded requested-backend and reason), never surfaced as a job failure. A CUDA failure *after* the backend successfully initialized is a normal **Speaker Analysis Job** failure, not a silent CPU re-run.
 
 ## Example Dialogue
 
