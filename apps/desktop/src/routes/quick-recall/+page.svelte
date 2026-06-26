@@ -22,6 +22,7 @@
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { message } from "@tauri-apps/plugin-dialog";
+  import { humanizeError } from "$lib/format-error";
   import type {
     Conversation,
     ConversationTurn,
@@ -225,7 +226,7 @@
       appliedRefinements = null;
       residualQuery = "";
       parseErrors = [];
-      errorMessage = error instanceof Error ? error.message : String(error);
+      errorMessage = humanizeError(error);
     }
   }
 
@@ -263,12 +264,27 @@
     }
   }
 
+  // Surface a hand-off failure for the open-result/open-source paths. The
+  // brokered open is this window's core action, so a rejected invoke must not
+  // close the window onto nothing — we keep the window open and report instead.
+  async function surfaceResultHandoffFailure(err: unknown): Promise<void> {
+    await message(
+      `Couldn't open that result: ${humanizeError(err, "it may no longer be available.")}`,
+      { title: "Couldn't open result", kind: "error" },
+    );
+  }
+
   async function selectFrame(result: FrameSearchResultDto): Promise<void> {
-    await invoke("open_capture_result_in_main_window", {
-      kind: "frame",
-      frameId: result.representativeFrame.id,
-      audioSegmentId: null,
-    });
+    try {
+      await invoke("open_capture_result_in_main_window", {
+        kind: "frame",
+        frameId: result.representativeFrame.id,
+        audioSegmentId: null,
+      });
+    } catch (err) {
+      await surfaceResultHandoffFailure(err);
+      return;
+    }
     await closeCurrentWindow();
   }
 
@@ -276,13 +292,18 @@
     // Carry the Audio Search Result Anchor (match span start + aligned frame)
     // so the dashboard lands on the selected transcript match rather than the
     // segment start, mirroring the in-dashboard selectAudioSearchResult path.
-    await invoke("open_capture_result_in_main_window", {
-      kind: "audio",
-      frameId: null,
-      audioSegmentId: result.audioSegment.id,
-      spanStartMs: result.spanStartMs,
-      alignedFrameId: result.alignedFrame?.id ?? null,
-    });
+    try {
+      await invoke("open_capture_result_in_main_window", {
+        kind: "audio",
+        frameId: null,
+        audioSegmentId: result.audioSegment.id,
+        spanStartMs: result.spanStartMs,
+        alignedFrameId: result.alignedFrame?.id ?? null,
+      });
+    } catch (err) {
+      await surfaceResultHandoffFailure(err);
+      return;
+    }
     await closeCurrentWindow();
   }
 
@@ -292,13 +313,18 @@
     // Carry the Audio Search Result Anchor for audio sources (frame sources
     // leave these null), mirroring selectAudio so the dashboard lands on the
     // cited transcript match rather than the segment start.
-    await invoke("open_capture_result_in_main_window", {
-      kind: source.kind,
-      frameId: source.frameId,
-      audioSegmentId: source.audioSegmentId,
-      spanStartMs: source.spanStartMs ?? null,
-      alignedFrameId: source.alignedFrameId ?? null,
-    });
+    try {
+      await invoke("open_capture_result_in_main_window", {
+        kind: source.kind,
+        frameId: source.frameId,
+        audioSegmentId: source.audioSegmentId,
+        spanStartMs: source.spanStartMs ?? null,
+        alignedFrameId: source.alignedFrameId ?? null,
+      });
+    } catch (err) {
+      await surfaceResultHandoffFailure(err);
+      return;
+    }
     await closeCurrentWindow();
   }
 
@@ -895,6 +921,9 @@
     summaryExpanded: boolean;
     // Per-turn copy-confirmation flash (icon swaps to a check briefly).
     copied: boolean;
+    // Per-turn copy-FAILURE flash (button flashes red briefly when the
+    // clipboard write rejects, so a failed copy isn't silent).
+    copyFailed: boolean;
     // Last applied `ask_ai_update` version for this turn (0 if none — e.g. a
     // hydrated past turn that isn't live).
     version: number;
@@ -907,6 +936,14 @@
   // True between a turn starting and that turn's terminal done/error event.
   // Thread-level: gates the composer (disabled while any turn streams).
   let askStreaming = $state(false);
+
+  // True once the user has Stopped a streaming answer in place. Stopping drops
+  // the live session id (cancelActiveAsk), so the composer and "Continue in
+  // Chat" hide via their askConversationId guards — which would otherwise strand
+  // the partial answer with no way forward. This flag drives an explicit
+  // "Stopped — start a new question" affordance so the surface isn't a dead end.
+  // Cleared whenever a fresh thread starts or the thread state is reset.
+  let askStopped = $state(false);
 
   // The seed used for the current thread's FIRST turn, so an error "Try again"
   // can re-run the exact same question + seed pairing as a fresh thread.
@@ -1007,7 +1044,17 @@
     } catch {
       // Best-effort: proceed to open even if the suppression call failed.
     }
-    void openUrl(href);
+    // Await the open so a launcher failure surfaces instead of vanishing; match
+    // the openCapturedUrl "Couldn't open URL: …" feedback so every open-link
+    // affordance reports the same way.
+    try {
+      await openUrl(href);
+    } catch (err) {
+      await message(
+        `Couldn't open URL: ${humanizeError(err, "the link could not be opened")}`,
+        { title: "Couldn't open link", kind: "error" },
+      );
+    }
   }
 
   // The scrollable transcript region; focused on entry so Escape (back-to-search)
@@ -1118,7 +1165,7 @@
       // Treat a failed availability probe as unavailable rather than erroring.
       askAvailability = {
         available: false,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: humanizeError(error),
       };
     }
   }
@@ -1146,6 +1193,7 @@
       seededResultCount: null,
       summaryExpanded: false,
       copied: false,
+      copyFailed: false,
       version: 0,
     };
   }
@@ -1452,6 +1500,7 @@
     // outcome has not been seen yet — re-arm so it survives dismiss/blur until
     // the user lays eyes on its terminal turn (one conversation, newest wins).
     askOutcomeSeen = false;
+    askStopped = false;
     clearAskCopiedTimers();
     askTurns = [makeAskTurn(0, trimmedQuestion, "seeding")];
     askStreaming = true;
@@ -1479,7 +1528,7 @@
       const last = askTurns[askTurns.length - 1];
       if (last) {
         last.phase = "error";
-        last.errorMessage = error instanceof Error ? error.message : String(error);
+        last.errorMessage = humanizeError(error);
       }
     }
   }
@@ -1526,8 +1575,13 @@
     }
     try {
       await invoke("open_conversation_in_chat", { conversationId });
-    } catch {
-      // Best-effort hand-off; if it fails, leave the Quick Recall thread open.
+    } catch (err) {
+      // Leave the Quick Recall thread open AND tell the user, so the action
+      // doesn't appear to do nothing when the hand-off rejects.
+      await message(
+        `Couldn't open this in Chat: ${humanizeError(err, "please try again.")}`,
+        { title: "Couldn't continue in Chat", kind: "error" },
+      );
       return;
     }
     await closeCurrentWindow();
@@ -1572,7 +1626,7 @@
       const turn = askTurns[turnIndex];
       if (turn) {
         turn.phase = "error";
-        turn.errorMessage = error instanceof Error ? error.message : String(error);
+        turn.errorMessage = humanizeError(error);
       }
     }
   }
@@ -1687,7 +1741,23 @@
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      // Clipboard write is best-effort; swallow (no toast surface here).
+      // Clipboard write rejected: flash the button red so the failure isn't
+      // silent, reusing the same per-turn flash-timer machinery as success.
+      turn.copyFailed = true;
+      const existingFail = askCopiedTimers.get(turnIndex);
+      if (existingFail !== undefined) {
+        clearTimeout(existingFail);
+      }
+      askCopiedTimers.set(
+        turnIndex,
+        setTimeout(() => {
+          const t = askTurns[turnIndex];
+          if (t) {
+            t.copyFailed = false;
+          }
+          askCopiedTimers.delete(turnIndex);
+        }, 1500),
+      );
       return;
     }
     turn.copied = true;
@@ -1810,6 +1880,22 @@
       live.phase = "done";
       live.liveActivity = null;
     }
+    // Mark the thread as stopped so the surface shows an explicit
+    // "Stopped — start a new question" affordance (the composer and
+    // "Continue in Chat" hide once the session id is dropped).
+    askStopped = true;
+  }
+
+  // Leave the stranded (stopped) thread and open a fresh, empty ask composer so
+  // the user can start a new question instead of being stuck on the partial
+  // answer with no way forward. The partial answer is intentionally abandoned —
+  // the live session was already dropped on Stop.
+  async function startNewQuestionAfterStop(): Promise<void> {
+    resetAskThreadState();
+    askStopped = false;
+    mode = "ask";
+    await tick();
+    askInputEl?.focus();
   }
 
   // Tear down all ephemeral thread state (transcript, ids, timers, inputs). Does
@@ -1825,6 +1911,7 @@
     askFirstQuestion = "";
     askStreaming = false;
     askOutcomeSeen = false;
+    askStopped = false;
   }
 
   // Return to search mode, abandoning the whole thread (a single Escape drops
@@ -3179,6 +3266,12 @@
   async function openSemanticSearchSettings(): Promise<void> {
     await openSettings("semanticSearch");
   }
+  // Route the unavailable-Ask-AI hint to the Intelligence pane (providers + Ask
+  // AI + Reasoning Engine), so the friendly "do X in Settings" reason becomes
+  // actionable from here instead of a dead end.
+  async function openAskAiSettings(): Promise<void> {
+    await openSettings("intelligence");
+  }
   // Show the hint once results have run and no model is installed — the hint is
   // most useful exactly when keyword-only search underwhelms.
   let showSemanticSearchHint = $derived(
@@ -3196,6 +3289,31 @@
   let resultsPaused = $derived(
     !belowMinimum && !loading && !errorMessage && parseErrorMessage !== null,
   );
+
+  // Screen-reader announcement for the results region. The cards live in an
+  // aria-activedescendant listbox whose count/loading/empty/error transitions
+  // are otherwise silent to AT; this polite live-region string mirrors the
+  // visible state so a result-count change (or a switch to loading/no-matches/
+  // error) is spoken. Branch order matches the results markup so the spoken
+  // state and the rendered state never disagree.
+  let searchStatusAnnouncement = $derived.by((): string => {
+    if (mode !== "search" || belowMinimum) {
+      return "";
+    }
+    if (loading) {
+      return "Searching…";
+    }
+    if (errorMessage) {
+      return errorMessage;
+    }
+    if (resultsPaused) {
+      return "Results paused — fix the filter above to search.";
+    }
+    if (showEmpty) {
+      return `No matches for ${resultsQuery}.`;
+    }
+    return `${resultCount} ${resultCount === 1 ? "result" : "results"} for ${resultsQuery}.`;
+  });
 
   // A search or Ask AI operation is in flight — that counts as activity, so the
   // idle countdown is suspended while it runs.
@@ -3583,6 +3701,12 @@
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
+        <!-- Polite live region announcing result-count / loading / no-matches /
+             error transitions to AT, which the aria-activedescendant results
+             listbox cannot convey on its own. Visually hidden. -->
+        <span class="quick-recall__sr-status" role="status" aria-live="polite"
+          >{searchStatusAnnouncement}</span
+        >
         <div class="quick-recall__field">
           <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
           <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
@@ -3761,9 +3885,14 @@
              disabled button's condition) with a fallback so the reference never
              dangles before the availability probe resolves. -->
         {#if !askAvailable}
-          <p id={ASK_UNAVAILABLE_HINT_ID} class="quick-recall__ask-hint">
-            {askUnavailableHint ?? "Ask AI unavailable"}
-          </p>
+          <button
+            type="button"
+            id={ASK_UNAVAILABLE_HINT_ID}
+            class="quick-recall__ask-hint"
+            onclick={() => void openAskAiSettings()}
+          >
+            {askUnavailableHint ?? "Ask AI unavailable"} — open Settings →
+          </button>
         {/if}
 
         {#if pickerOpen}
@@ -4167,11 +4296,26 @@
                           type="button"
                           class="quick-recall__copy"
                           class:quick-recall__copy--copied={turn.copied}
+                          class:quick-recall__copy--failed={turn.copyFailed}
                           onclick={() => void copyTurnAnswer(ti)}
-                          aria-label="Copy answer"
-                          title="Copy answer"
+                          aria-label={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
+                          title={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
                         >
-                          {#if turn.copied}
+                          {#if turn.copyFailed}
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 14 14"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.4"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
+                            </svg>
+                          {:else if turn.copied}
                             <svg
                               width="14"
                               height="14"
@@ -4415,6 +4559,20 @@
               onkeydown={handleFollowupKeydown}
             ></textarea>
           </div>
+        {:else if askStopped}
+          <!-- Stopping a streaming answer drops the live session, so the
+               composer and "Continue in Chat" hide — without this the partial
+               answer would be a dead end. Offer an explicit way forward. -->
+          <div class="quick-recall__stopped" role="status">
+            <span class="quick-recall__stopped-label">Stopped.</span>
+            <button
+              type="button"
+              class="quick-recall__stopped-action"
+              onclick={() => void startNewQuestionAfterStop()}
+            >
+              Start a new question
+            </button>
+          </div>
         {/if}
       </div>
     {/if}
@@ -4489,6 +4647,19 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  /* Visually-hidden polite live region for AT-only result-status announcements. */
+  .quick-recall__sr-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .quick-recall__field {
@@ -5011,12 +5182,30 @@
   }
 
   .quick-recall__ask-hint {
+    display: block;
+    width: 100%;
     margin: 0;
     padding: 6px 18px 0;
+    text-align: left;
     font-size: var(--text-sm);
     line-height: 1.4;
     color: var(--app-text-subtle);
+    background: none;
+    border: none;
+    cursor: pointer;
     flex-shrink: 0;
+  }
+
+  .quick-recall__ask-hint:hover {
+    color: var(--app-text);
+    text-decoration: underline;
+  }
+
+  .quick-recall__ask-hint:focus-visible {
+    outline: none;
+    color: var(--app-text);
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
   }
 
   /* Slice 2: active filter chip band. A thin wrapping row beneath the input,
@@ -5406,6 +5595,43 @@
     overflow-wrap: anywhere;
   }
 
+  /* Stopped-thread affordance: replaces the composer once the user Stops a
+     streaming answer (the session is gone, so a follow-up can't continue). A
+     quiet bottom bar offering an explicit way to start a fresh question. */
+  .quick-recall__stopped {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 15px;
+    border-top: 1px solid var(--app-border);
+    font-size: 13px;
+  }
+
+  .quick-recall__stopped-label {
+    color: var(--app-text-muted);
+  }
+
+  .quick-recall__stopped-action {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--app-accent);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .quick-recall__stopped-action:hover {
+    text-decoration: underline;
+  }
+
+  .quick-recall__stopped-action:focus-visible {
+    outline: none;
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
+  }
+
   /* Follow-up composer: pinned beneath the scrolling transcript. Mirrors the
      unseeded ask input but framed as its own bottom bar. Disabled (dimmed) while
      a turn streams. */
@@ -5607,6 +5833,13 @@
   .quick-recall__copy--copied {
     color: var(--app-accent);
     border-color: var(--app-accent-border);
+  }
+
+  /* Copy-failed flash: a brief red cue so a rejected clipboard write isn't
+     silent (the icon also swaps to an error glyph). */
+  .quick-recall__copy--failed {
+    color: var(--app-danger-text);
+    border-color: var(--app-danger);
   }
 
   /* "Continue in Chat" hand-off affordance (#111). A subtle, terminal-style
