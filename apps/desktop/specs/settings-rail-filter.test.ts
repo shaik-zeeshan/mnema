@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { SETTINGS_GROUPS } from "../src/lib/settings/groups";
-import { filterGroups, flattenSections } from "../src/lib/settings/rail-filter";
+import { filterGroups, filterPlatform, flattenSections } from "../src/lib/settings/rail-filter";
 
 // Section ids in full rail order — the canonical sequence the keyboard model
 // must preserve.
@@ -119,5 +119,45 @@ describe("rail-filter: flattenSections", () => {
 
   test("of an empty group list is empty", () => {
     expect(flattenSections([])).toEqual([]);
+  });
+});
+
+describe("rail-filter: filterPlatform (Windows-only sections)", () => {
+  test("Windows keeps every section, including GPU Acceleration", () => {
+    const ids = flattenSections(filterPlatform(SETTINGS_GROUPS, "windows")).map((s) => s.id);
+    expect(ids).toContain("gpuAcceleration");
+    expect(ids).toEqual(ALL_SECTION_IDS);
+  });
+
+  test("macOS / other drop every windowsOnly section but keep the rest in order", () => {
+    for (const platform of ["macos", "other"] as const) {
+      const groups = filterPlatform(SETTINGS_GROUPS, platform);
+      const ids = flattenSections(groups).map((s) => s.id);
+      expect(ids).not.toContain("gpuAcceleration");
+      // Intelligence survives (it has non-windowsOnly sections) and keeps the rest
+      // in canonical order — gpuAcceleration simply removed.
+      const intelligence = groups.find((g) => g.id === "intelligence");
+      expect(intelligence?.sections.map((s) => s.id)).toEqual([
+        "intelligence",
+        "askAi",
+        "userContext",
+        "ocr",
+        "transcription",
+        "speakers",
+        "semanticSearch",
+      ]);
+    }
+  });
+
+  test("search cannot resurface a windowsOnly section off Windows (gate THEN search)", () => {
+    const gated = filterPlatform(SETTINGS_GROUPS, "macos");
+    const hits = flattenSections(filterGroups(gated, "cuda")).map((s) => s.id);
+    expect(hits).not.toContain("gpuAcceleration");
+  });
+
+  test("does not mutate the input groups", () => {
+    const before = SETTINGS_GROUPS.map((g) => g.sections.length);
+    filterPlatform(SETTINGS_GROUPS, "macos");
+    expect(SETTINGS_GROUPS.map((g) => g.sections.length)).toEqual(before);
   });
 });
