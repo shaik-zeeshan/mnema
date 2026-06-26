@@ -2,7 +2,7 @@
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, confirm } from "@tauri-apps/plugin-dialog";
   import { humanizeError } from "$lib/format-error";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import RetentionPicker from "$lib/components/RetentionPicker.svelte";
@@ -58,6 +58,29 @@
   }
 
   onMount(loadStorageLocation);
+
+  // Apply a pending save-directory change by relaunching. The backend
+  // (`request_app_relaunch`) finalizes any in-flight recording before
+  // restarting, so this is safe mid-capture — confirm first because a restart is
+  // disruptive, then leave the button busy until the process tears down.
+  let restarting = $state(false);
+
+  async function restartNow() {
+    if (restarting) return;
+    const ok = await confirm(
+      "Restart now? Any in-progress recording will be saved first.",
+      { title: "Restart Mnema", kind: "warning" },
+    );
+    if (!ok) return;
+    restarting = true;
+    try {
+      await invoke<void>("request_app_relaunch");
+    } catch (err) {
+      // Relaunch failed before tearing down — surface it and re-enable the button.
+      storageLocationError = humanizeError(err);
+      restarting = false;
+    }
+  }
 
   async function browseSaveDirectory() {
     if (browsing) return;
@@ -125,9 +148,22 @@
           <p class="error-text">{storageLocationError}</p>
         {/if}
         {#if pendingRestart}
-          <p class="group-hint group-hint--warn" role="status">
-            Saved — but this takes effect after you restart Mnema. Captures already on disk stay where they are.
-          </p>
+          <div class="restart-notice" role="status">
+            <p class="group-hint group-hint--warn">
+              Saved — but this takes effect after you restart Mnema. Captures already on disk stay where they are.
+            </p>
+            <div class="row-actions">
+              <button
+                type="button"
+                class="btn btn--ghost btn--sm"
+                onclick={restartNow}
+                disabled={restarting}
+                aria-busy={restarting}
+              >
+                {#if restarting}<ButtonSpinner />Restarting…{:else}Restart Mnema{/if}
+              </button>
+            </div>
+          </div>
         {/if}
       </div>
     {/snippet}
@@ -208,6 +244,19 @@
   }
 
   .retention-control .row-actions {
+    justify-content: flex-start;
+  }
+
+  /* The pending-restart notice stacks its warning copy above an inline
+     "Restart Mnema" action, left-aligned under the path field. */
+  .restart-notice {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .restart-notice .row-actions {
+    display: flex;
     justify-content: flex-start;
   }
 </style>

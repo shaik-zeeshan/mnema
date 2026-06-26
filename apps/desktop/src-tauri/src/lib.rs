@@ -626,6 +626,7 @@ pub fn run() {
             native_capture::stop_native_capture,
             windows::focus_main_and_open_settings,
             windows::drain_pending_open_settings,
+            windows::request_app_relaunch,
             windows::open_debug_window,
             windows::close_current_window,
             windows::focus_quick_recall_window,
