@@ -27,7 +27,10 @@
     appNotifications,
     clearAppNotification,
     clearAppNotifications,
+    dismissAppNotificationError,
     initAppNotifications,
+    noteAppNotificationError,
+    reloadAppNotifications,
     type AppNotification,
   } from "$lib/notifications.svelte";
   import {
@@ -86,6 +89,8 @@
   let notificationsOpenedByKeyboard = false;
   let notificationsButtonEl = $state<HTMLButtonElement | null>(null);
   let notificationsPopoverEl = $state<HTMLDivElement | null>(null);
+  let settingsButtonEl = $state<HTMLButtonElement | null>(null);
+  let restartingPrivacyCapture = $state(false);
   let shortcutsHelpOpen = $state(false);
   let shortcutsHelpPanelEl = $state<HTMLDivElement | null>(null);
   let shortcutsHelpCloseEl = $state<HTMLButtonElement | null>(null);
@@ -258,6 +263,14 @@
   const isNarrow = $derived(isDebug);
   const notificationCount = $derived(appNotifications.count);
   const hasNotifications = $derived(notificationCount > 0);
+  const notificationLoadError = $derived(appNotifications.loadError);
+  const notificationActionError = $derived(appNotifications.actionError);
+  // The bell must also stay reachable when the initial load failed (count 0 but
+  // a recoverable error) so the failure isn't indistinguishable from "no
+  // notifications" and a retry remains available.
+  const hasNotificationIndicator = $derived(
+    hasNotifications || notificationLoadError !== null,
+  );
   const hasErrorNotification = $derived(
     appNotifications.items.some((n) => n.severity === "error"),
   );
@@ -266,15 +279,23 @@
   );
 
   $effect(() => {
-    if (!hasNotifications) notificationsOpen = false;
+    if (!hasNotificationIndicator) notificationsOpen = false;
   });
 
   async function runNotificationAction(notification: AppNotification): Promise<void> {
-    if (notification.action?.type === "open_settings_tab") {
+    if (notification.action?.type !== "open_settings_tab") return;
+    try {
       await openSettings(notification.action.tab);
-      await clearAppNotification(notification.id);
-      notificationsOpen = false;
+    } catch {
+      // Navigation failed — keep the notification and the popover so the user
+      // can see the action did not complete and retry.
+      noteAppNotificationError("Couldn't open settings. Try again.");
+      return;
     }
+    // Only dismiss + close once the navigation succeeded; if the clear itself
+    // fails it surfaces its own error and we leave the popover open.
+    const cleared = await clearAppNotification(notification.id);
+    if (cleared) notificationsOpen = false;
   }
 
   function notificationActionLabel(notification: AppNotification): string {
@@ -295,6 +316,11 @@
   const captureLoadingSettings = $derived(captureControls.loadingSettings);
   const captureStatusLabel = $derived(captureControls.statusLabel);
   const captureStatusModifier = $derived(captureControls.statusModifier);
+  // The shared seam captures every lifecycle failure (start/stop/pause/resume
+  // and source-toggle persistence) here; without surfacing it the Record button
+  // just snaps back with no explanation. Clears on the next successful session
+  // apply (capture-controls.svelte.ts) so the chip is self-healing.
+  const captureError = $derived(captureControls.error);
 
   // ── Per-source runtime indicators ──────────────────────────────────────
   // While a capture session is running, fetch `get_idle_debug` periodically
@@ -528,10 +554,17 @@
   }
 
   async function restartCaptureForPrivacyRecovery(): Promise<void> {
-    if (captureLoadingStart || captureLoadingStop || !isCapturing) return;
-    await stopCapture();
-    if (!captureControls.isRunning) {
-      await startCapture();
+    if (captureLoadingStart || captureLoadingStop || restartingPrivacyCapture || !isCapturing) return;
+    restartingPrivacyCapture = true;
+    try {
+      // stop/start funnel any failure into `captureControls.error`, which the
+      // title-bar error chip renders — so a failed restart is now visible.
+      await stopCapture();
+      if (!captureControls.isRunning) {
+        await startCapture();
+      }
+    } finally {
+      restartingPrivacyCapture = false;
     }
   }
 
@@ -546,9 +579,42 @@
   }
 
   function openNotifications(openedByKeyboard = false): void {
-    if (!hasNotifications) return;
+    if (!hasNotificationIndicator) return;
     notificationsOpenedByKeyboard = openedByKeyboard;
     notificationsOpen = true;
+  }
+
+  // Relative age for each notification row so a stale alert is distinguishable
+  // from a fresh one. Recomputed against `notificationsNow`, which ticks while
+  // the popover is open.
+  let notificationsNow = $state(Date.now());
+  $effect(() => {
+    if (!notificationsOpen) return;
+    notificationsNow = Date.now();
+    const handle = setInterval(() => {
+      notificationsNow = Date.now();
+    }, 30_000);
+    return () => clearInterval(handle);
+  });
+
+  function formatNotificationAge(createdAtUnixMs: number): string {
+    const deltaMs = Math.max(0, notificationsNow - createdAtUnixMs);
+    const seconds = Math.floor(deltaMs / 1000);
+    if (seconds < 45) return "just now";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    return `${days}d ago`;
+  }
+
+  function formatNotificationTimestamp(createdAtUnixMs: number): string {
+    try {
+      return new Date(createdAtUnixMs).toLocaleString();
+    } catch {
+      return "";
+    }
   }
 
   function closeNotifications(): void {
@@ -753,7 +819,13 @@
         (notificationsOpenedByKeyboard && (!active || active === document.body)) ||
         (active && notificationsPopoverEl?.contains(active))
       ) {
-        notificationsButtonEl?.focus({ preventScroll: true });
+        // Clearing the last notification removes the bell, so fall back to a
+        // stable neighbour (the settings button) instead of dropping focus to
+        // <body>.
+        const target = notificationsButtonEl?.isConnected
+          ? notificationsButtonEl
+          : settingsButtonEl;
+        target?.focus({ preventScroll: true });
       }
       notificationsOpenedByKeyboard = false;
     };
@@ -790,6 +862,32 @@
           <span class="titlebar__status-dot" aria-hidden="true"></span>
           <span class="titlebar__status-label">{captureStatusLabel}</span>
         </span>
+        {#if captureError}
+          <span
+            class="titlebar__capture-error"
+            role="alert"
+            aria-live="assertive"
+            title={captureError}
+          >
+            <svg
+              class="titlebar__capture-error-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+              <path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+            </svg>
+            <span class="titlebar__capture-error-label">{captureError}</span>
+          </span>
+        {/if}
         {#if isCapturing}
           <button
             type="button"
@@ -968,10 +1066,11 @@
                 class="titlebar__privacy-warning-action"
                 title={privacyVisualCaptureStatus.detail}
                 aria-label={privacyVisualCaptureStatus.detail}
-                disabled={captureLoadingStart || captureLoadingStop}
+                aria-busy={restartingPrivacyCapture}
+                disabled={captureLoadingStart || captureLoadingStop || restartingPrivacyCapture}
                 onclick={restartCaptureForPrivacyRecovery}
               >
-                Restart
+                {restartingPrivacyCapture ? "Restarting…" : "Restart"}
               </button>
             {/if}
           </span>
@@ -1005,7 +1104,7 @@
 
     <div class="titlebar__group titlebar__group--right">
       {#if showMainTitlebar}
-        {#if hasNotifications}
+        {#if hasNotificationIndicator}
           <div class="titlebar__notifications">
             <button
               bind:this={notificationsButtonEl}
@@ -1036,10 +1135,10 @@
               </svg>
               <span
                 class="titlebar__notification-dot"
-                class:titlebar__notification-dot--warning={hasWarningNotification && !hasErrorNotification}
-                class:titlebar__notification-dot--error={hasErrorNotification}
+                class:titlebar__notification-dot--warning={hasWarningNotification && !hasErrorNotification && !notificationLoadError}
+                class:titlebar__notification-dot--error={hasErrorNotification || notificationLoadError !== null}
                 aria-hidden="true"
-              >{notificationCount}</span>
+              >{notificationCount > 0 ? notificationCount : "!"}</span>
             </button>
             {#if notificationsOpen}
               <div
@@ -1053,16 +1152,50 @@
               >
                 <div class="notification-popover__head">
                   <span>Notifications</span>
-                  <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
-                    Clear all
-                  </button>
+                  {#if hasNotifications}
+                    <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
+                      Clear all
+                    </button>
+                  {/if}
                 </div>
+                {#if notificationActionError}
+                  <div class="notification-popover__error" role="alert">
+                    <span class="notification-popover__error-text">{notificationActionError}</span>
+                    <button
+                      type="button"
+                      class="notification-popover__error-dismiss"
+                      onclick={dismissAppNotificationError}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                {/if}
                 <div class="notification-popover__list">
+                  {#if notificationLoadError}
+                    <div class="notification-item notification-item--error" role="alert">
+                      <div class="notification-item__body">
+                        <span class="notification-item__title">Couldn't load notifications</span>
+                        <span class="notification-item__message">{notificationLoadError}</span>
+                        <button
+                          type="button"
+                          class="notification-item__action"
+                          onclick={() => void reloadAppNotifications()}
+                        >
+                          Try again
+                        </button>
+                      </div>
+                    </div>
+                  {/if}
                   {#each appNotifications.items as notification (notification.id)}
                     <div class="notification-item notification-item--{notification.severity}">
                       <div class="notification-item__body">
                         <span class="notification-item__title">{notification.title}</span>
                         <span class="notification-item__message">{notification.message}</span>
+                        <time
+                          class="notification-item__time"
+                          datetime={new Date(notification.createdAtUnixMs).toISOString()}
+                          title={formatNotificationTimestamp(notification.createdAtUnixMs)}
+                        >{formatNotificationAge(notification.createdAtUnixMs)}</time>
                         {#if notification.action?.type === "open_settings_tab"}
                           <button
                             type="button"
@@ -1121,6 +1254,7 @@
           </button>
         {/if}
         <button
+          bind:this={settingsButtonEl}
           type="button"
           class="titlebar__settings"
           class:active={isSettings}
@@ -2110,6 +2244,35 @@
     box-shadow: var(--app-ring);
   }
 
+  /* Inline lifecycle-failure chip shown beside the status pill when a
+     start/stop/pause/resume or source-toggle command rejects. Mirrors the
+     danger treatment of the privacy warning; self-clears on the next
+     successful session apply. */
+  .titlebar__capture-error {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: min(360px, 30vw);
+    height: 22px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--app-danger-border);
+    background: var(--app-danger-bg-soft);
+    color: var(--app-danger-text);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .titlebar__capture-error-icon {
+    flex: 0 0 auto;
+  }
+  .titlebar__capture-error-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .titlebar__privacy-warning {
     display: inline-flex;
     align-items: center;
@@ -2437,6 +2600,50 @@
     color: var(--app-text-muted);
     font-size: var(--text-sm);
     line-height: 1.35;
+  }
+  .notification-item__time {
+    margin-top: 2px;
+    color: var(--app-text-faint, var(--app-text-muted));
+    font-size: var(--text-xs);
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+  }
+  .notification-popover__error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 6px 6px 0;
+    padding: 7px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--app-danger-border);
+    background: var(--app-danger-bg-soft);
+    color: var(--app-danger-text);
+    font-size: var(--text-sm);
+  }
+  .notification-popover__error-text {
+    min-width: 0;
+  }
+  .notification-popover__error-dismiss {
+    flex: 0 0 auto;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-xs);
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .notification-popover__error-dismiss:hover {
+    background: color-mix(in srgb, currentColor 14%, transparent);
+  }
+  .notification-popover__error-dismiss:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .notification-item__action {
     align-self: flex-start;
