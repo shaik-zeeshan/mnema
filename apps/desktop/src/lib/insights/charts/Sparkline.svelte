@@ -16,9 +16,28 @@
   interface Props {
     series: SparkSeries[];
     floor?: number;
+    // Contextual accessible label (e.g. the subject name + trend). When omitted a
+    // generic trend description is derived from the lead series so the chart is
+    // never announced as a bare "Trend".
+    label?: string;
   }
 
-  let { series, floor }: Props = $props();
+  let { series, floor, label }: Props = $props();
+
+  // Describe the lead (first) series' direction for the fallback aria-label, so
+  // an unlabelled sparkline still announces a meaningful trend, not just "Trend".
+  function derivedTrendLabel(): string {
+    const lead = series.find((s) => s.points.length >= 2);
+    if (!lead) return "Trend (no movement)";
+    const first = lead.points[0];
+    const last = lead.points[lead.points.length - 1];
+    const delta = last - first;
+    if (delta > 0.04) return "Trend rising";
+    if (delta < -0.04) return "Trend falling";
+    return "Trend steady";
+  }
+
+  const ariaLabel = $derived(label ?? derivedTrendLabel());
 
   const W = 120;
   const H = 32;
@@ -44,7 +63,7 @@
   viewBox="0 0 {W} {H}"
   preserveAspectRatio="none"
   role="img"
-  aria-label="Trend"
+  aria-label={ariaLabel}
 >
   {#if floor !== undefined}
     <line class="floor" x1={PAD} y1={y(floor)} x2={W - PAD} y2={y(floor)} />

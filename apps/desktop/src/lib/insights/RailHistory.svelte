@@ -277,6 +277,9 @@
     position: relative;
     display: flex;
     align-items: center;
+    /* Reserve room for the active row's 3px inset bar on EVERY row so toggling
+       the active state never shifts the title horizontally. */
+    padding-left: 8px;
     /* The inner `.rail-chat` is a fixed 24px tall, so the row height matches it
        without an explicit `min-height` — and dropping the min-height lets the
        removal slide collapse smoothly to 0 instead of snapping at 24px. */
@@ -330,7 +333,23 @@
   .rail-chat-row:focus-within .when {
     opacity: 0;
   }
-  /* active row — accent title only (matches active nav). */
+  /* active row — accent title PLUS a tinted background and a 3px inset accent
+     bar, so the selection never relies on text colour alone (matches the
+     primary nav's multi-signal active treatment). */
+  .rail-chat-row.active {
+    background: var(--app-accent-bg);
+    border-radius: 5px;
+  }
+  .rail-chat-row.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 3px;
+    bottom: 3px;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    background: var(--app-accent-strong);
+  }
   .rail-chat-row.active .t {
     color: var(--app-accent-strong);
   }

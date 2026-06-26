@@ -26,6 +26,7 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
   import type {
     Conclusion,
@@ -37,6 +38,7 @@
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import { humanizeError } from "$lib/format-error";
 
   interface Props {
     subject: string;
@@ -276,7 +278,7 @@
       }
       void loadActivities(next);
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      loadError = humanizeError(error);
     } finally {
       loading = false;
     }
@@ -325,7 +327,13 @@
       await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
       await loadSubject();
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // A write failure must NOT blank the inspector — surface it in a dialog
+      // and leave the loaded subject intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: c.pinned ? "Couldn't unpin conclusion" : "Couldn't pin conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
       actionKind = null;
@@ -340,7 +348,13 @@
       await invoke("user_context_dismiss_conclusion", { id: c.id });
       await loadSubject();
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // A write failure must NOT blank the inspector — surface it in a dialog
+      // and leave the loaded subject intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't dismiss conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
       actionKind = null;
@@ -403,7 +417,7 @@
 </script>
 
 <section class="subject-detail" aria-label={`Subject — ${subject}`}>
-  {#if loadError}
+  {#if loadError && !view}
     <div class="state state--error">
       <p class="state-title">Couldn't load this subject.</p>
       <p class="state-detail">{loadError}</p>

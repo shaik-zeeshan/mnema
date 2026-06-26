@@ -21,6 +21,7 @@
   import { untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { openSettings } from "$lib/surface-windows";
   import {
     appIconFallback,
@@ -61,6 +62,7 @@
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import Select from "$lib/components/Select.svelte";
+  import { humanizeError } from "$lib/format-error";
 
   interface Props {
     onOpenSubject?: (subject: string) => void;
@@ -225,6 +227,11 @@
   let loadingFree = $state(true);
   let loadingEngine = $state(false);
   let freeError = $state<string | null>(null);
+  // Engine-data (activities + conclusions) load failure for the active range.
+  // Mirrors `freeError`: kept DISTINCT from the "still learning" empty state so a
+  // real fetch failure surfaces a recoverable error (with Retry) instead of
+  // misrepresenting itself as "the engine hasn't formed anything yet".
+  let engineError = $state<string | null>(null);
   // Whether the engine-status calls have resolved at least once. Until then we
   // don't yet know engine on/off, so engine tiles + the story feed show a
   // skeleton rather than flashing the "enable the engine" invite.
@@ -688,7 +695,7 @@
       freeError = null;
     } catch (error) {
       if (token === freeRequestToken)
-        freeError = error instanceof Error ? error.message : String(error);
+        freeError = humanizeError(error);
     } finally {
       if (token === freeRequestToken) loadingFree = false;
     }
@@ -705,6 +712,7 @@
     if (!engineOn) {
       activities = [];
       conclusions = [];
+      engineError = null;
       engineLoadedOnce = true;
       return;
     }
@@ -723,11 +731,15 @@
       if (token !== engineRequestToken) return; // range moved on — stale
       activities = nextActivities;
       conclusions = nextConclusions;
+      engineError = null;
       // Clear stale optimistic overrides now that we have fresh truth.
       pinnedOverride = new Map();
       dismissedIds = new Set();
-    } catch {
-      // Best-effort; engine tiles degrade to empty / "still learning".
+    } catch (error) {
+      // A real fetch failure is NOT the "still learning" empty state — record it
+      // so the feed renders a recoverable error with Retry.
+      if (token === engineRequestToken)
+        engineError = humanizeError(error);
     } finally {
       if (token === engineRequestToken) {
         loadingEngine = false;
@@ -788,7 +800,7 @@
         digestError = "Not enough activity in this range to write a read.";
       }
     } catch (error) {
-      if (token === digestRequestToken) digestError = String(error);
+      if (token === digestRequestToken) digestError = humanizeError(error);
     } finally {
       if (token === digestRequestToken) digestRegenerating = false;
     }
@@ -867,8 +879,14 @@
       activities = activities.map((x) =>
         x.id === a.id ? { ...x, category } : x,
       );
-    } catch {
-      // leave as-is; the event refresh will reconcile
+    } catch (error) {
+      // Surface the failure — a silent no-op leaves the user thinking the
+      // correction stuck. The event refresh will still reconcile state.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't update category",
+        kind: "error",
+      });
     } finally {
       const done = new Set(correctingActivity);
       done.delete(a.id);
@@ -888,8 +906,14 @@
       activities = activities.map((x) =>
         x.id === a.id ? ({ ...x, focus } as Activity) : x,
       );
-    } catch {
-      // ignore
+    } catch (error) {
+      // Surface the failure — a silent no-op leaves the user thinking the
+      // correction stuck. The event refresh will still reconcile state.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't update focus",
+        kind: "error",
+      });
     } finally {
       const done = new Set(correctingActivity);
       done.delete(a.id);
@@ -904,11 +928,16 @@
     pinnedOverride = map;
     try {
       await invoke("user_context_set_pinned", { id: c.id, pinned: next });
-    } catch {
-      // revert on failure
+    } catch (error) {
+      // revert on failure — and explain why the pin snapped back.
       const revert = new Map(pinnedOverride);
       revert.set(c.id, !next);
       pinnedOverride = revert;
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: next ? "Couldn't pin conclusion" : "Couldn't unpin conclusion",
+        kind: "error",
+      });
     }
   }
 
@@ -918,10 +947,15 @@
     dismissedIds = set;
     try {
       await invoke("user_context_dismiss_conclusion", { id: c.id });
-    } catch {
+    } catch (error) {
       const revert = new Set(dismissedIds);
       revert.delete(c.id);
       dismissedIds = revert;
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't dismiss conclusion",
+        kind: "error",
+      });
     }
   }
 
@@ -1409,7 +1443,23 @@
          renders here. -->
   {:else}
     <!-- ── Story / dossier feed (ENGINE) ── -->
-    {#if engineEmpty}
+    {#if engineError}
+      <div class="feed-column">
+        <div class="state state--error">
+          <p class="state-title">Couldn't load your engine data.</p>
+          <p class="state-detail">{engineError}</p>
+          <button
+            type="button"
+            class="re-read state-retry"
+            onclick={() => void loadEngine()}
+            disabled={loadingEngine}
+          >
+            <span class="re-read-ico" aria-hidden="true">↻</span>
+            Try again
+          </button>
+        </div>
+      </div>
+    {:else if engineEmpty}
       <div class="feed-column">
         <div class="state state--empty">
           <p class="state-title">Mnema is still learning…</p>

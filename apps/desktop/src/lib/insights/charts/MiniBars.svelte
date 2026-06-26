@@ -68,7 +68,11 @@
         {/if}
         <span class="label-text">{item.label}</span>
       </span>
-      <span class="track">
+      <span
+        class="track"
+        role="img"
+        aria-label={`${item.label}: ${item.sublabel ?? item.value} (${Math.round(widthFor(item.value))}% of the top value)`}
+      >
         <span
           class="fill"
           style="width:{widthFor(item.value)}%; background:{fillFor(i)};"

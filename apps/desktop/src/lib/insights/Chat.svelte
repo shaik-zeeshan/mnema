@@ -30,10 +30,12 @@
   import { onMount, onDestroy, tick, untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { openSettings } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
   import { askAiClock } from "$lib/askAiClock";
+  import { humanizeError } from "$lib/format-error";
   import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
@@ -81,7 +83,7 @@
     } catch (error) {
       askAvailability = {
         available: false,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: humanizeError(error),
       };
     }
   }
@@ -151,6 +153,10 @@
   );
   let turns = $state<ChatTurn[]>([]);
   let loadingConversation = $state(false);
+  // Set when opening a thread from the rail/handoff throws — so a failed load
+  // renders a recoverable error state (with Retry) instead of silently dropping
+  // the user on an empty "new chat" invite that looks like nothing happened.
+  let conversationLoadError = $state<string | null>(null);
   // True between a turn starting and that turn's terminal done/error event.
   let streaming = $state(false);
   // The live activity line just above the composer: what the engine is doing
@@ -265,6 +271,7 @@
     activeConversationId = crypto.randomUUID();
     activeTitle = "";
     turns = [];
+    conversationLoadError = null;
     streaming = false;
     liveActivity = null;
     activePinProvider = null;
@@ -299,6 +306,7 @@
     // Already on this thread with its transcript loaded — nothing to do.
     if (id === activeConversationId && turns.length > 0) return;
     loadingConversation = true;
+    conversationLoadError = null;
     activeConversationId = id;
     activeTitle = "";
     turns = [];
@@ -321,8 +329,13 @@
       if (activeConversationId !== id) return;
       await tick();
       scrollTranscriptToBottom();
-    } catch {
-      // Best-effort: leave the pane on the armed (empty) thread on a load failure.
+    } catch (error) {
+      // A load failure must not masquerade as an empty "new chat" pane — record
+      // it so the transcript renders a recoverable error state with Retry.
+      if (activeConversationId === id) {
+        conversationLoadError =
+          humanizeError(error);
+      }
     } finally {
       if (activeConversationId === id) loadingConversation = false;
     }
@@ -559,7 +572,7 @@
       const t = turns[turnIndex];
       if (t) {
         t.phase = "error";
-        t.errorMessage = error instanceof Error ? error.message : String(error);
+        t.errorMessage = humanizeError(error);
       }
     }
   }
@@ -690,8 +703,14 @@
         spanStartMs: source.spanStartMs ?? null,
         alignedFrameId: source.alignedFrameId ?? null,
       });
-    } catch {
-      // Best-effort hand-off.
+    } catch (error) {
+      // Opening the source in the timeline failed — surface it rather than
+      // letting the click look like a no-op.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't open in timeline",
+        kind: "error",
+      });
     }
   }
 
@@ -984,6 +1003,21 @@
         <div class="convo-skeleton">
           <Skeleton width="55%" height="13px" radius="6px" />
           <Skeleton width="100%" height="48px" radius="8px" muted />
+        </div>
+      {:else if conversationLoadError}
+        <div class="thread-load-error" role="alert">
+          <p class="thread-empty-title">Couldn't open this conversation.</p>
+          <p class="thread-empty-detail">{conversationLoadError}</p>
+          <button
+            type="button"
+            class="btn btn--accent thread-retry"
+            onclick={() => {
+              const id = activeConversationId;
+              if (id !== null) void loadConversationById(id);
+            }}
+          >
+            ↻ Try again
+          </button>
         </div>
       {:else if turns.length === 0}
         <div class="thread-empty">
@@ -1389,6 +1423,21 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+  /* Recoverable load-failure state for a thread that threw while opening. */
+  .thread-load-error {
+    margin: 4px 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 16px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 9px;
+    background: var(--app-danger-bg);
+  }
+  .thread-retry {
+    margin-top: 2px;
   }
   .thread-empty-title {
     font-size: 13px;

@@ -26,6 +26,7 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
   import type {
     Conclusion,
@@ -49,6 +50,7 @@
     debounce,
   } from "$lib/insights/subjectsTiers";
   import { rankSubjects } from "$lib/insights/subjectSearch";
+  import { humanizeError } from "$lib/format-error";
 
   // Number of placeholder rows shown while the conclusions load.
   const SKELETON_COUNT = 6;
@@ -327,7 +329,13 @@
       await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
       applyConclusions(await fetchConclusions());
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // Write failure must NOT blow away the loaded list — surface it in a
+      // dialog (mirrors Context.svelte) and leave the rows intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: c.pinned ? "Couldn't unpin conclusion" : "Couldn't pin conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
       actionKind = null;
@@ -342,7 +350,13 @@
       await invoke("user_context_dismiss_conclusion", { id: c.id });
       applyConclusions(await fetchConclusions());
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // Write failure must NOT blow away the loaded list — surface it in a
+      // dialog (mirrors Context.svelte) and leave the rows intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't dismiss conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
       actionKind = null;
@@ -507,7 +521,7 @@
       // failure keeps the intact rendered rows instead of flashing the error
       // state over good content; we still return the current list below.
       if (!conclusions?.length) {
-        loadError = error instanceof Error ? error.message : String(error);
+        loadError = humanizeError(error);
       }
       return conclusions ?? [];
     }
@@ -717,7 +731,11 @@
       <!-- RIGHT: hero sparkline + figure + caret -->
       <div class="conv-hero">
         <div class="conv-spark">
-          <Sparkline series={r.spark} floor={FLOOR} />
+          <Sparkline
+            series={r.spark}
+            floor={FLOOR}
+            label={`${r.subject} — confidence trend, ${trendLabel(r.trend)}, across ${r.conclusionCount} ${r.conclusionCount === 1 ? "conclusion" : "conclusions"}`}
+          />
         </div>
         <div class="conv-figure">
           <div class="conv-conf">{r.topConfidence.toFixed(2)}</div>
@@ -935,7 +953,7 @@
     />
   </div>
 
-  {#if loadError}
+  {#if loadError && !conclusions}
     <div class="state state--error">
       <p class="state-title">Couldn't load Subjects.</p>
       <p class="state-detail">{loadError}</p>

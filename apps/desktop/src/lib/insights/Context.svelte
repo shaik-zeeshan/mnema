@@ -32,6 +32,7 @@
     AuthoredContext,
   } from "$lib/types/recording";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import { humanizeError } from "$lib/format-error";
 
   // Placeholder statement rows shown while authored context loads.
   const SKELETON_COUNT = 3;
@@ -121,7 +122,7 @@
       statements = list;
       loadError = null;
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      loadError = humanizeError(error);
       statements = statements ?? [];
     } finally {
       loading = false;
@@ -167,7 +168,7 @@
       draftText = "";
       draftTopic = "";
     } catch (error) {
-      composerError = error instanceof Error ? error.message : String(error);
+      composerError = humanizeError(error);
     } finally {
       submitting = false;
     }
@@ -204,7 +205,7 @@
       // The list-load error surface only renders when there are no statements,
       // so it's unreachable here (we're editing an existing one). Show a visible
       // dialog instead of silently swallowing the failure.
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = humanizeError(error);
       await message(detail, { title: "Couldn't save context", kind: "error" });
     } finally {
       savingEdit = false;
@@ -223,7 +224,7 @@
       if (editingId === s.id) cancelEdit();
     } catch (error) {
       // Same unreachable-surface problem as saveEdit — surface a visible dialog.
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = humanizeError(error);
       await message(detail, { title: "Couldn't delete context", kind: "error" });
     }
   }
