@@ -5,6 +5,7 @@
   import SelectMenu from "$lib/components/Select.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import AdvancedReveal from "./AdvancedReveal.svelte";
+  import { serializeError } from "./onboarding-mapping";
 
   let { controller }: { controller: OnboardingController } = $props();
 
@@ -26,6 +27,11 @@
       if (typeof picked === "string" && picked.trim().length > 0) {
         controller.draftSaveDirectory = picked;
       }
+    } catch (err) {
+      // The folder picker can reject (dialog plugin error / cancelled host).
+      // Surface it via the controller's error banner instead of swallowing it,
+      // so the failed Browse… gives visible feedback rather than reading as dead.
+      controller.errorMessage = `Couldn't open the folder picker: ${serializeError(err)}`;
     } finally {
       browsing = false;
     }

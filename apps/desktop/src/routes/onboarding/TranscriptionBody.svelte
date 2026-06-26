@@ -110,7 +110,20 @@
   </div>
 
   {#if controller.transcriptionModelError}
-    <div class="note">Failed to load model status: {controller.transcriptionModelError}</div>
+    <div class="note">
+      <div>Failed to load model status: {controller.transcriptionModelError}</div>
+      <div class="dl-meta">
+        <span>This is a fetch error, not a missing model — retry to recheck.</span>
+        <button
+          type="button"
+          class="btn sm"
+          disabled={controller.loadingTranscriptionModelStatus}
+          onclick={() => controller.loadTranscriptionModelStatus()}
+        >
+          {controller.loadingTranscriptionModelStatus ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    </div>
   {:else if model}
     <div class="model-card">
       <div class="model-top">

@@ -104,7 +104,20 @@
   </div>
 
   {#if controller.speakerModelError}
-    <div class="note">Failed to load speaker model status: {controller.speakerModelError}</div>
+    <div class="note">
+      <div>Failed to load speaker model status: {controller.speakerModelError}</div>
+      <div class="dl-meta">
+        <span>This is a fetch error, not a missing model — retry to recheck.</span>
+        <button
+          type="button"
+          class="btn sm"
+          disabled={controller.loadingSpeakerModelStatus}
+          onclick={() => controller.loadSpeakerModelStatus()}
+        >
+          {controller.loadingSpeakerModelStatus ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    </div>
   {:else if model}
     <div class="model-card">
       <div class="model-top">

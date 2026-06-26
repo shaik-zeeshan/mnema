@@ -66,7 +66,17 @@
         {/if}
       </button>
       {#if c.errorMessage}
-        <div class="welcome__err" role="alert">{c.errorMessage}</div>
+        <div class="welcome__err" role="alert">
+          <span>{c.errorMessage}</span>
+          <button
+            type="button"
+            class="ghost welcome__retry"
+            onclick={() => c.load()}
+            disabled={c.loading}
+          >
+            {c.loading ? "Retrying…" : "Retry"}
+          </button>
+        </div>
       {/if}
     </div>
   </section>
@@ -101,6 +111,11 @@
      exclusion silently leaves the recommended apps un-excluded (a privacy
      regression). Terminal/green danger tokens. */
   .welcome__err {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
     margin: 12px auto 0;
     max-width: 44ch;
     padding: 10px 14px;
@@ -110,5 +125,21 @@
     background: var(--app-danger-bg);
     border: 1px solid var(--app-danger-border);
     border-radius: 8px;
+  }
+
+  /* Recovery affordance: the welcome-phase load (`c.load()`) can fail and would
+     otherwise strand a first-run user with no path forward. Retry re-runs the
+     load; it disables + relabels while in flight via `c.loading`. */
+  .welcome__retry {
+    flex: 0 0 auto;
+    padding: 4px 12px;
+    font-size: 12px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 6px;
+    color: var(--app-danger);
+  }
+  .welcome__retry:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 </style>
