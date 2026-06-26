@@ -1345,7 +1345,7 @@
     <section class="ov-tile">
       <div class="ov-tile__label">Background jobs</div>
       {#if infraStatusError}
-        <p class="debug-err">{infraStatusError}</p>
+        <p class="debug-err" role="alert" aria-live="polite">{infraStatusError}</p>
       {:else if infraStatus}
         <ul class="ov-rows">
           <li class="ov-row">
@@ -1607,7 +1607,7 @@
       <span class="idle-note">sample = raw probe timestamp · activity = threshold-qualified idle</span>
     </p>
   {:else if idleDebugError}
-    <p class="debug-err">{idleDebugError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{idleDebugError}</p>
   {:else}
     <p class="empty">runtime status only available while a session is active</p>
   {/if}
@@ -1629,7 +1629,7 @@
   </h2>
 
   {#if privacyDebugError}
-    <p class="debug-err">{privacyDebugError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{privacyDebugError}</p>
   {:else if privacyDebug}
     <ul class="kv-list">
       <li>
@@ -1720,7 +1720,7 @@
           </li>
         </ul>
       {:else}
-        <p class="empty">—</p>
+        <p class="empty">not queried yet — press Query</p>
       {/if}
     </div>
 
@@ -1753,7 +1753,7 @@
           </li>
         </ul>
       {:else}
-        <p class="empty">—</p>
+        <p class="empty">not queried yet — press Query</p>
       {/if}
     </div>
   </div>
@@ -1770,7 +1770,7 @@
   </h2>
 
   {#if infraStatusError}
-    <p class="debug-err">{infraStatusError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{infraStatusError}</p>
   {:else if infraStatus}
     <ul class="kv-list">
       <li>
@@ -1805,7 +1805,7 @@
     <div class="idle-section-label">DB path</div>
     <p class="infra-db-path">{infraStatus.databasePath}</p>
   {:else}
-    <p class="empty">—</p>
+    <p class="empty">infra status has not loaded yet — press ↻</p>
   {/if}
 </div>
 </div>
@@ -1828,7 +1828,7 @@
   </h2>
 
   {#if idleDebugError}
-    <p class="debug-err">{idleDebugError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{idleDebugError}</p>
   {:else if idleDebug}
     <!-- ── Status row ──────────────────────────────────── -->
     <ul class="kv-list">
@@ -2094,7 +2094,7 @@
     </ul>
     </details>
   {:else}
-    <p class="empty">—</p>
+    <p class="empty">inactivity policy has not loaded yet — press ↻</p>
   {/if}
 </div>
 {/if}
@@ -2117,7 +2117,7 @@
   </h2>
 
   {#if ocrBudgetDebugError}
-    <p class="debug-err">{ocrBudgetDebugError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{ocrBudgetDebugError}</p>
   {:else if ocrBudgetDebug}
     <div class="ocr-summary-grid">
       <div><span>queued/running</span><strong>{ocrBudgetDebug.summary.queuedOrRunningCount}</strong></div>
@@ -2137,7 +2137,7 @@
         <table class="debug-table">
           <thead>
             <tr>
-              <th>time</th><th>session</th><th>workspace</th><th>frame</th><th>outcome</th><th>reason</th><th>queue</th><th>job</th><th>related</th><th>signals</th>
+              <th>time</th><th>session</th><th>workspace</th><th class="cell-num" title="frame id">frame</th><th>outcome</th><th>reason</th><th class="cell-num" title="queue pressure — OCR jobs queued or running at admission">queue</th><th class="cell-num" title="job id">job</th><th class="cell-num" title="related frame id (near-duplicate source)">related</th><th title="active admission signal badges">signals</th>
             </tr>
           </thead>
           <tbody>
@@ -2146,12 +2146,12 @@
                 <td>{formatDebugTime(event.occurredAt)}</td>
                 <td class="mono-cell">{event.sessionId}</td>
                 <td class="mono-cell">{event.workspaceScope}</td>
-                <td>#{event.frameId}</td>
+                <td class="cell-num">#{event.frameId}</td>
                 <td>{event.outcome}</td>
                 <td>{event.reason}</td>
-                <td>{event.queuePressureCount}</td>
-                <td>{event.jobId == null ? "—" : `#${event.jobId}`}</td>
-                <td>{event.relatedFrameId == null ? "—" : `#${event.relatedFrameId}`}</td>
+                <td class="cell-num">{event.queuePressureCount}</td>
+                <td class="cell-num">{event.jobId == null ? "—" : `#${event.jobId}`}</td>
+                <td class="cell-num">{event.relatedFrameId == null ? "—" : `#${event.relatedFrameId}`}</td>
                 <td>
                   {#each activeSignalBadges(event.signals) as signal}
                     <span class="badge badge--neutral badge--sm">{signal}</span>
@@ -2181,23 +2181,23 @@
         <table class="debug-table">
           <thead>
             <tr>
-              <th>time</th><th>job</th><th>frame</th><th>provider</th><th>model</th><th>mode</th><th>status</th><th>run</th><th>wait</th><th>text</th><th>obs</th><th>error</th>
+              <th>time</th><th class="cell-num" title="job id">job</th><th class="cell-num" title="frame id">frame</th><th>provider</th><th>model</th><th>mode</th><th>status</th><th class="cell-num" title="run duration (ms)">run</th><th class="cell-num" title="queue wait before execution (ms)">wait</th><th class="cell-num" title="result text length (chars)">text</th><th class="cell-num" title="observation count extracted">obs</th><th>error</th>
             </tr>
           </thead>
           <tbody>
             {#each pagedExecutionEvents as event (`execution-${event.occurredAt}-${event.jobId}`)}
               <tr>
                 <td>{formatDebugTime(event.occurredAt)}</td>
-                <td>#{event.jobId}</td>
-                <td>{event.frameId == null ? "—" : `#${event.frameId}`}</td>
+                <td class="cell-num">#{event.jobId}</td>
+                <td class="cell-num">{event.frameId == null ? "—" : `#${event.frameId}`}</td>
                 <td>{event.provider}</td>
                 <td>{event.modelId ?? "—"}</td>
                 <td>{event.recognitionMode ?? "—"}</td>
                 <td>{event.status}</td>
-                <td>{formatOptionalMs(event.runDurationMs)}</td>
-                <td>{formatOptionalMs(event.queueWaitMs)}</td>
-                <td>{event.resultTextLength ?? "—"}</td>
-                <td>{event.observationCount ?? "—"}</td>
+                <td class="cell-num">{formatOptionalMs(event.runDurationMs)}</td>
+                <td class="cell-num">{formatOptionalMs(event.queueWaitMs)}</td>
+                <td class="cell-num">{event.resultTextLength ?? "—"}</td>
+                <td class="cell-num">{event.observationCount ?? "—"}</td>
                 <td title={event.lastError ?? ""}>{truncateDebugText(event.lastError)}</td>
               </tr>
             {/each}
@@ -2254,7 +2254,7 @@
   </form>
 
   {#if workspaceClassificationError}
-    <p class="debug-err">{workspaceClassificationError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{workspaceClassificationError}</p>
   {:else if workspaceClassificationLoaded && workspaceClassification == null}
     <p class="empty">
       not a hidden segment workspace path (expected a directory named
@@ -2377,7 +2377,7 @@
     </button>
   </form>
   {#if submitError}
-    <p class="debug-err">{submitError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{submitError}</p>
   {/if}
   </details>
 
@@ -2392,7 +2392,7 @@
     {/if}
   </div>
   {#if jobsError}
-    <p class="debug-err">{jobsError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{jobsError}</p>
   {:else if jobs.length === 0}
     <p class="empty">no jobs yet</p>
   {:else}
@@ -2467,7 +2467,7 @@
       {/if}
     </div>
     {#if selectedJobError}
-      <p class="debug-err">{selectedJobError}</p>
+      <p class="debug-err" role="alert" aria-live="polite">{selectedJobError}</p>
     {/if}
     {#if selectedJob}
       <ul class="kv-list">
@@ -2512,7 +2512,7 @@
 
 <!-- ── Error display ─────────────────────────────────────────────────────── -->
 {#if lastError}
-  <section class="card card--error">
+  <section class="card card--error" role="alert" aria-live="assertive">
     <h2 class="card__title">
       Error
       <button class="btn btn--ghost btn--sm" onclick={() => lastError = null}>dismiss</button>
@@ -2876,7 +2876,7 @@
   }
 
   .btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -2922,7 +2922,8 @@
 
   .btn--sm {
     padding: 3px 8px;
-    font-size: 9px;
+    min-height: 24px;
+    font-size: var(--text-xs);
   }
 
   /* ── Probe grid ─────────────────────────────────────────────── */
@@ -3061,7 +3062,7 @@
     background: var(--app-neutral-bg);
     border: 1px solid var(--app-neutral-border);
     border-radius: 2px;
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.1em;
     color: var(--app-text-muted);
@@ -3112,17 +3113,17 @@
 
   /* ── Idle debug sub-sections ────────────────────────── */
   .idle-section-label {
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     margin-top: 4px;
   }
 
   .idle-note {
-    font-size: 9px;
-    color: var(--app-text-faint);
+    font-size: var(--text-sm);
+    color: var(--app-text-subtle);
     font-style: italic;
     margin-left: 4px;
   }
@@ -3370,6 +3371,9 @@
   }
 
   .debug-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     color: var(--app-text-subtle);
     font-weight: 700;
     background: var(--app-surface-subtle);
@@ -3377,6 +3381,15 @@
 
   .debug-table tbody tr:last-child td {
     border-bottom: 0;
+  }
+
+  /* Numeric columns: right-aligned with tabular figures so magnitudes
+     line up down a column. Compound selector is needed to outrank the
+     `.debug-table th, .debug-table td { text-align: left }` base rule. */
+  .debug-table th.cell-num,
+  .debug-table td.cell-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
   .mono-cell {
@@ -3591,7 +3604,7 @@
   }
 
   .rs-state {
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -3630,7 +3643,7 @@
   }
 
   .rs-row__label {
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
