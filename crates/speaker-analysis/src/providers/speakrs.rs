@@ -1,7 +1,9 @@
 //! speakrs on-device diarization provider (Slice 2 + 3).
 //!
-//! speakrs is a pure-Rust pyannote community-1 pipeline with native CoreML
-//! acceleration. Segments at or below [`SPEAKRS_SAFE_CHUNK_SECONDS`] are diarized
+//! speakrs is a pure-Rust pyannote community-1 pipeline run on a per-platform
+//! derived Execution Backend (CoreML on macOS, CPU on Windows; see
+//! [`derived_execution_mode`]), orthogonal to identity (ADR 0004). Segments at or
+//! below [`SPEAKRS_SAFE_CHUNK_SECONDS`] are diarized
 //! in a single whole-segment pass; longer segments are diarized in sequential
 //! safe-chunks through the same pipeline and the per-chunk speaker clusters are
 //! stitched back into segment-wide identities by centroid similarity
@@ -61,6 +63,43 @@ const SPEAKRS_MIN_CHUNK_TAIL_SECONDS: usize = 20;
 /// segment-wide identities. Tuned on the VoxConverse bench: 0.5 over-merges
 /// distinct speakers (+3.4pp DER), 0.8 over-splits; 0.6 is DER-neutral.
 const SPEAKRS_STITCH_SIMILARITY: f32 = 0.6;
+
+/// The speakrs **Execution Backend** for this build target (ADR 0004). The
+/// backend is derived per platform — CoreML on macOS, CPU on Windows — and is
+/// orthogonal to identity: it never changes `model_id`, the Voiceprint Space, or
+/// Speaker Continuity keying; it is observable only in provenance
+/// (`executionMode`, see [`execution_mode_provenance`]). v1 is CPU on Windows;
+/// CUDA is a deferred follow-up (#137).
+#[cfg(target_os = "macos")]
+fn derived_execution_mode() -> speakrs::ExecutionMode {
+    speakrs::ExecutionMode::CoreMl
+}
+#[cfg(target_os = "windows")]
+fn derived_execution_mode() -> speakrs::ExecutionMode {
+    speakrs::ExecutionMode::Cpu
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn derived_execution_mode() -> speakrs::ExecutionMode {
+    // speakrs.rs only compiles under the `speakrs` feature (macOS/Windows only),
+    // but keep a fallback so the module always type-checks.
+    speakrs::ExecutionMode::Cpu
+}
+
+/// Provenance string for the derived **Execution Backend** ([`derived_execution_mode`]),
+/// stamped into the result's `executionMode` provenance key. Parallels the mode
+/// helper so the two stay in lock-step per platform.
+#[cfg(target_os = "macos")]
+fn execution_mode_provenance() -> &'static str {
+    "coreml"
+}
+#[cfg(target_os = "windows")]
+fn execution_mode_provenance() -> &'static str {
+    "cpu"
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn execution_mode_provenance() -> &'static str {
+    "cpu"
+}
 
 #[derive(Debug, Clone)]
 pub struct SpeakrsSpeakerAnalysisProvider {
@@ -184,11 +223,14 @@ fn run_speakrs_blocking(
         return Ok(output);
     }
 
-    // 5. Create the CoreML pipeline (compute units left at speakrs's default; the
-    //    GPU-vs-ANE choice was measured not to affect the memory peak).
+    // 5. Create the pipeline on the per-platform-derived Execution Backend
+    //    (CoreML on macOS, CPU on Windows — see `derived_execution_mode`). The
+    //    backend is orthogonal to identity and recorded only in provenance. On
+    //    macOS the compute units are left at speakrs's default; the GPU-vs-ANE
+    //    choice was measured not to affect the memory peak.
     let mut pipeline = speakrs::OwnedDiarizationPipeline::from_dir(
         install_dir.clone(),
-        speakrs::ExecutionMode::CoreMl,
+        derived_execution_mode(),
     )
     .map_err(|error| SpeakerAnalysisError::Runtime {
         stage: "create_pipeline".to_string(),
@@ -397,7 +439,12 @@ fn speaker_output_for_request(
     provenance.insert("skipReason".to_string(), serde_json::Value::Null);
     // Default; overridden to "safe_chunked" when a long segment is chunked.
     provenance.insert("chunkingMode".to_string(), json!("single"));
-    provenance.insert("executionMode".to_string(), json!("coreml"));
+    // Derived Execution Backend, provenance-only (CoreML on macOS, CPU on
+    // Windows); orthogonal to identity (ADR 0004).
+    provenance.insert(
+        "executionMode".to_string(),
+        json!(execution_mode_provenance()),
+    );
     provenance.insert("turnCount".to_string(), json!(0));
     provenance.insert("clusterCount".to_string(), json!(0));
     provenance.insert(

@@ -107,12 +107,14 @@ fn run_subprocess_helper() -> Result<(), String> {
 /// `speaker-analysis-models` dir.
 ///
 /// speakrs is the sole on-device provider. Its arm is gated on
-/// `all(target_os = "macos", feature = "speaker-analysis-speakrs")`: the speakrs
-/// engine (CoreML + OpenBLAS) is Apple Silicon only and is compiled into the
-/// crate solely on macOS, so the arm must not reference it on Windows. When the
-/// arm is off (Windows, or the feature disabled) the `#[cfg(not(...))]` branch
-/// returns a typed `ProviderUnavailable`; the desktop crate enables the feature
-/// by default so the shipped macOS build's arm is live.
+/// `all(any(target_os = "macos", target_os = "windows"), feature =
+/// "speaker-analysis-speakrs")`: the speakrs engine is compiled into the crate on
+/// macOS (CoreML + OpenBLAS) and Windows (CPU via intel-mkl-static) — its
+/// Execution Backend is derived per platform (ADR 0004) — so the arm must not
+/// reference it on other platforms. When the arm is off (other OS, or the feature
+/// disabled) the `#[cfg(not(...))]` branch returns a typed `ProviderUnavailable`;
+/// the desktop crate enables the feature by default so the shipped macOS and
+/// Windows builds' arm is live.
 ///
 /// MIGRATION: sherpa-onnx is removed. A request that still carries the legacy
 /// `provider = "sherpa_onnx"` (or any other non-speakrs provider) — e.g. an
@@ -130,11 +132,17 @@ fn analyze_request_for_provider(
         request.provider = speaker_analysis::SPEAKRS_PROVIDER_ID.to_string();
     }
 
-    #[cfg(all(target_os = "macos", feature = "speaker-analysis-speakrs"))]
+    #[cfg(all(
+        any(target_os = "macos", target_os = "windows"),
+        feature = "speaker-analysis-speakrs"
+    ))]
     {
         speaker_analysis::providers::speakrs::analyze_speakrs_request_blocking(request, models_dir)
     }
-    #[cfg(not(all(target_os = "macos", feature = "speaker-analysis-speakrs")))]
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "windows"),
+        feature = "speaker-analysis-speakrs"
+    )))]
     {
         let _ = models_dir;
         Err(SpeakerAnalysisError::ProviderUnavailable(format!(

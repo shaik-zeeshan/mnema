@@ -22,9 +22,11 @@ fn main() {
     // paths are discovered at build time from the Fortran compiler — never baked
     // in, since they are toolchain/version specific (see CLAUDE.md).
     //
-    // speakrs is macOS-only (CoreML), so this never runs on Windows; the
-    // `target_macos` guard keeps the Windows build free of any Fortran toolchain
-    // requirement.
+    // This Fortran/OpenBLAS static-link is macOS-only: it exists because the
+    // macOS speakrs Execution Backend (CoreML) uses OpenBLAS, whose LAPACK drags
+    // in gfortran/quadmath. Windows speakrs runs the CPU backend on
+    // `intel-mkl-static` (no OpenBLAS, no Fortran), so the `target_macos` guard
+    // keeps the Windows build free of any Fortran toolchain requirement.
     let target_macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
     if target_macos && std::env::var_os("CARGO_FEATURE_SPEAKER_ANALYSIS_SPEAKRS").is_some() {
         link_static_fortran_runtime();

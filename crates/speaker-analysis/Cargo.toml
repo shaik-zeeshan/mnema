@@ -5,10 +5,12 @@ edition = "2021"
 
 [features]
 default = []
-# speakrs is the sole on-device diarization provider (pure-Rust + native
-# CoreML): tokio drives `spawn_blocking`, and cidre powers the macOS audio
-# decode path.
-speakrs = ["dep:speakrs", "dep:tokio", "dep:cidre"]
+# speakrs is the sole on-device diarization provider (pure-Rust + a derived
+# native execution backend): tokio drives `spawn_blocking`. The macOS audio
+# decode path uses cidre, which is a non-optional macOS-target dependency (a
+# strict superset for macOS shipping builds, which always enable speakrs) and
+# is kept off Windows entirely — so the feature itself no longer pulls cidre.
+speakrs = ["dep:speakrs", "dep:tokio"]
 
 # speakrs DER benchmark harness binary (see
 # scripts/diarization_bench/). Only built with the speakrs feature, so the heavy
@@ -29,21 +31,51 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt"], optional = true }
 tempfile = "3"
 
-# speakrs is the CoreML on-device diarization engine: Apple Silicon only (it
-# links `objc2-core-ml`), so it is declared under the macOS target and the
-# `speakrs` feature is only ever enabled on macOS (the desktop crate selects it
-# via a macOS-only target dependency). On Windows on-device diarization is
-# unavailable — the subprocess dispatcher reports `ProviderUnavailable`.
+# speakrs runs the one shipping Speaker Model Preset on a per-platform-derived
+# Execution Backend (ADR 0004): the backend is orthogonal to identity — same
+# `model_id`, same Voiceprint Space, recorded only in provenance (`executionMode`).
 #
-# speakrs needs a BLAS backend; its `default-linalg` is Intel-MKL (x86 only), so
-# on Apple Silicon we select an OpenBLAS feature. `openblas-static` builds
-# OpenBLAS from source and links it statically, so the shipped binary carries no
-# `/opt/homebrew/.../libopenblas.dylib` runtime dependency (the v0.1.9 launch
-# crash). Building it needs a C/Fortran toolchain at build time (`brew install
-# gcc`); the dynamic gfortran/quadmath runtime that openblas-src still emits is
-# force-statically-linked in `apps/desktop/src-tauri/build.rs`. The `online`
-# HuggingFace download path is dropped because we load via `from_dir` against the
-# app model store.
+# macOS = CoreML backend. speakrs links `objc2-core-ml` (Apple Silicon), so it is
+# a macOS-target dependency. Its BLAS is OpenBLAS, built from source and linked
+# statically so the shipped binary carries no `/opt/homebrew/.../libopenblas.dylib`
+# runtime dependency (the v0.1.9 launch crash). Building it needs a C/Fortran
+# toolchain at build time (`brew install gcc`); the dynamic gfortran/quadmath
+# runtime that openblas-src still emits is force-statically-linked in
+# `apps/desktop/src-tauri/build.rs`. The `online` HuggingFace download path is
+# dropped because we load via `from_dir` against the app model store. cidre powers
+# the macOS audio decode path and is non-optional here (a strict superset for
+# macOS shipping builds, which always enable speakrs).
+#
+# We select OpenBLAS through `default-linalg` (NOT the explicit `openblas-static`
+# feature). `default-linalg` is arch-split inside speakrs: it resolves to
+# `openblas-static` on Apple Silicon (non-x86_64) and `intel-mkl-static` on
+# x86_64 — so macOS gets the exact same statically-linked OpenBLAS as before. This
+# matters because both target dependency tables below request the SAME `speakrs`
+# package, and Cargo unions their requested features onto that one package node
+# (resolver v2's platform de-unification does NOT cover a shared optional dep's
+# parent-requested features). `speakrs` aliases `ndarray-linalg` four ways
+# (default/mkl/static/system, all `package = "ndarray-linalg"`); requesting two
+# different linalg features (e.g. macOS `openblas-static` + Windows
+# `default-linalg`) activates two aliases of the same crate and Cargo hard-errors
+# ("depends on crate `ndarray-linalg` multiple times with different names").
+# Using `default-linalg` on BOTH targets keeps it to one alias.
 [target.'cfg(target_os = "macos")'.dependencies]
-speakrs = { version = "0.4", default-features = false, features = ["coreml", "openblas-static"], optional = true }
-cidre = { version = "0.15", default-features = false, features = ["async", "av", "blocks", "cat", "cf", "cm", "dispatch", "ns", "ut", "macos_15_0"], optional = true }
+speakrs = { version = "0.4", default-features = false, features = ["coreml", "default-linalg"], optional = true }
+cidre = { version = "0.15", default-features = false, features = ["async", "av", "blocks", "cat", "cf", "cm", "dispatch", "ns", "ut", "macos_15_0"] }
+
+# Windows = CPU backend (ADR 0004, CPU-first; CUDA is deferred follow-up #137).
+# speakrs's `default-linalg` resolves to `intel-mkl-static` on x86_64, so MKL is
+# linked statically (no DLL, no Fortran toolchain — intel-mkl-src self-links).
+# ORT is statically linked via its default `download-binaries`, so the CPU build
+# ships ZERO ONNX Runtime DLL. No `coreml`, no `cuda`, no `online`. One platform-
+# stable `model_id`; only the on-disk artifact differs (`.onnx`/`.npy` subset).
+# `default-linalg` (not the explicit `intel-mkl` feature) must match the macOS
+# entry above to avoid the `ndarray-linalg` multi-alias union error (see there).
+#
+# Audio decode goes through the shared `media-decode` Media Foundation seam
+# (ADR 0024), mirroring audio-transcription. media-decode is NOT optional and NOT
+# feature-gated: the `windows_audio_decode` module + its tests build under plain
+# `cargo check`/`cargo test` on Windows even when the `speakrs` feature is off.
+[target.'cfg(target_os = "windows")'.dependencies]
+speakrs = { version = "0.4", default-features = false, features = ["default-linalg"], optional = true }
+media-decode = { path = "../media-decode" }

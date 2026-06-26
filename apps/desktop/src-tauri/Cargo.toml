@@ -13,7 +13,18 @@ default-run = "mnema"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "mnema_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# `cdylib` is what the Tauri runtime loads; `rlib` is what the `mnema` bin (and
+# tests) link against. The Tauri scaffold also lists `staticlib`, but that is
+# only needed for the mobile (iOS/Android) targets — which this desktop-only app
+# does not build (no gen/apple, gen/android, nor mobile keys in tauri.conf.json).
+# It is REMOVED because on Windows the `staticlib` path bundles every transitive
+# object (now including the statically-linked intel-mkl + ONNX Runtime pulled in
+# by the speakrs CPU backend) into one COFF `.lib` archive whose 32-bit member
+# offsets overflow, crashing rustc's bundled `ar_archive_writer` with an ICE
+# (`TryFromIntError`) at link time. macOS never hit this (Mach-O ar is 64-bit),
+# but it built the unused archive anyway; dropping it fixes Windows and speeds
+# both. Restore `staticlib` here only if/when mobile targets are added.
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["speaker-analysis-speakrs"]
@@ -21,11 +32,12 @@ cargo-clippy = []
 ocr-budget-trace = []
 privacy-refresh-trace = []
 # Marker cfg the subprocess dispatcher gates the speakrs arm on (see
-# `speaker_analysis_runtime`). The speakrs engine itself (CoreML + OpenBLAS,
-# Apple Silicon only) is enabled via the macOS-only `speaker-analysis` target
-# dependency below — never on Windows, where it cannot build — and the dispatch
-# arm is additionally gated on `target_os = "macos"`. Default-on so the shipped
-# macOS build compiles the on-device diarization engine.
+# `speaker_analysis_runtime`). The speakrs engine itself is enabled via the
+# per-target `speaker-analysis` dependencies below — macOS (CoreML + OpenBLAS,
+# Apple Silicon) and Windows (CPU via intel-mkl-static, x86_64) — and the dispatch
+# arm is additionally gated on `any(target_os = "macos", target_os = "windows")`.
+# Default-on so the shipped macOS and Windows builds compile the on-device
+# diarization engine.
 speaker-analysis-speakrs = []
 
 [build-dependencies]
@@ -63,12 +75,13 @@ app-infra = { path = "../../../crates/app-infra" }
 # Aliased so the Tauri-side `mod ai_runtime;` does not collide with the crate name.
 ai-engine = { package = "ai-runtime", path = "../../../crates/ai-runtime" }
 audio-transcription = { path = "../../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }
-# speakrs (the on-device diarization engine) is CoreML + OpenBLAS — Apple
-# Silicon only — so its `speakrs` feature is enabled through the macOS-only
-# target dependency below, never here. On Windows this base entry compiles
-# speaker-analysis with no on-device engine; the dispatcher reports the provider
-# unavailable. OCR is selected per-target further down (paddle-rs does not build
-# on Windows), so there is no generic `ocr` entry here.
+# speakrs (the on-device diarization engine) runs on a per-platform Execution
+# Backend, so its `speakrs` feature is enabled through the per-target
+# dependencies below — macOS (CoreML + OpenBLAS) and Windows (CPU via
+# intel-mkl-static) — never here. This base entry stays default-features = false
+# so platforms without a target entry compile speaker-analysis with no on-device
+# engine. OCR is selected per-target further down (paddle-rs does not build on
+# Windows), so there is no generic `ocr` entry here.
 speaker-analysis = { path = "../../../crates/speaker-analysis", default-features = false }
 # Semantic Search now runs on candle (ADR 0037). The base dep has no default
 # features (candle-CPU); the macOS target dep below adds `metal` for the Apple GPU
@@ -92,6 +105,11 @@ tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(windows)'.dependencies]
+# Enable the speakrs on-device diarization engine on Windows (CPU backend via
+# intel-mkl-static, x86_64; ORT statically linked). Cargo unions this `speakrs`
+# feature with the base (default-features = false) entry above, mirroring the
+# macOS target entry, so only macOS + Windows pull speakrs.
+speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["speakrs"] }
 ocr = { path = "../../../crates/ocr", features = ["tesseract-embedded"] }
 media-decode = { path = "../../../crates/media-decode" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
