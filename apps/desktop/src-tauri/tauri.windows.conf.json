@@ -1,6 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "resources": {}
+    "resources": {
+      "resources/ort/onnxruntime.dll": "onnxruntime.dll",
+      "resources/ort/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
+      "resources/ort/onnxruntime_providers_cuda.dll": "onnxruntime_providers_cuda.dll"
+    }
   }
 }

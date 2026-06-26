@@ -1548,7 +1548,13 @@ impl Drop for AppInfraDirectoryLock {
 
 fn desktop_processing_registry(
     app_handle: &tauri::AppHandle,
-) -> Result<::app_infra::ProcessorRegistry, String> {
+) -> Result<
+    (
+        ::app_infra::ProcessorRegistry,
+        Arc<crate::gpu_acceleration::GpuAccelerationState>,
+    ),
+    String,
+> {
     let app_data_dir = app_handle.path().app_data_dir().map_err(|error| {
         format!("failed to resolve app data directory for processing registry: {error}")
     })?;
@@ -1557,7 +1563,18 @@ fn desktop_processing_registry(
 
     let ocr_models_dir = ocr::ocr_models_dir(&app_data_dir);
 
-    Ok(::app_infra::ProcessorRegistry::new()
+    // GPU Acceleration shared state (Windows CUDA Execution Backend, #137 / ADR
+    // 0005). Constructed HERE — where `app_data_dir` is resolved — because it needs
+    // that dir to locate the GPU pack (`gpu_acceleration_pack_dir`), exactly like
+    // `speaker_models_dir` above. A clone is handed to the subprocess provider so
+    // it can read the live Force-CPU override + pack dir at each spawn and record
+    // the job's backend outcome; the same `Arc` is threaded out and `.manage()`d in
+    // `initialize` (mirroring how `infra` is surfaced) so the Slice 5 Settings
+    // commands reach the SAME state. Default "Use GPU acceleration" ON; the NVML
+    // probe is lazy and only drives the Settings offer.
+    let gpu_state = crate::gpu_acceleration::GpuAccelerationState::new(app_data_dir.clone());
+
+    let registry = ::app_infra::ProcessorRegistry::new()
         .register(::app_infra::OcrProcessorBackend::from_provider_arcs([
             Arc::new(::app_infra::AppleVisionProvider::new()) as Arc<dyn ocr::OcrProvider>,
             Arc::new(::app_infra::TesseractProvider::with_models_dir(
@@ -1585,13 +1602,16 @@ fn desktop_processing_registry(
             // removed. Legacy `sherpa_onnx` job payloads are remapped to speakrs
             // at the normalize/dispatch seam, so only this provider is registered.
             Arc::new(
-                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider(
+                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider_and_gpu(
                     speaker_analysis::SPEAKRS_PROVIDER_ID,
                     speaker_models_dir,
+                    gpu_state.clone(),
                 ),
             ) as Arc<dyn speaker_analysis::SpeakerAnalysisProvider>,
         ]))
-        .register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
+        .register(::app_infra::SystemAudioSpeechActivityProcessorBackend);
+
+    Ok((registry, gpu_state))
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
@@ -1619,7 +1639,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
             }
         })?;
 
-    let processing_registry =
+    let (processing_registry, gpu_state) =
         desktop_processing_registry(&app_handle).map_err(AppInfraInitializeError::Other)?;
     let infra = tauri::async_runtime::block_on(
         ::app_infra::AppInfra::initialize_fast_with_processing_registry(
@@ -1677,6 +1697,21 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         );
         return Err(AppInfraInitializeError::Other(
             "background workers state was already initialized".to_string(),
+        ));
+    }
+
+    // Surface the GPU Acceleration state (constructed in
+    // `desktop_processing_registry`, where `app_data_dir` is resolved) as managed
+    // Tauri state so the Slice 5 Settings commands can read/update it via
+    // `tauri::State<Arc<GpuAccelerationState>>`. The SAME `Arc` was handed to the
+    // subprocess provider, so the live toggle and the recorded last-outcome stay
+    // coherent. Mirrors how `infra` above is surfaced.
+    if !app.manage(gpu_state) {
+        crate::native_capture::debug_log::log_error(
+            "GPU acceleration state was already initialized; refusing duplicate setup",
+        );
+        return Err(AppInfraInitializeError::Other(
+            "GPU acceleration state was already initialized".to_string(),
         ));
     }
 

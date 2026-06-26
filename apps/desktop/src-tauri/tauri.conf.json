@@ -4,9 +4,9 @@
   "version": "0.1.9",
   "identifier": "com.shaikzeeshan.mnema",
   "build": {
-    "beforeDevCommand": "bun ../../scripts/prepare-mnema-cli-sidecar.mjs debug && bun run dev",
+    "beforeDevCommand": "bun ../../scripts/prepare-mnema-cli-sidecar.mjs debug && bun ../../scripts/prepare-ort-dylibs.mjs debug && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun ../../scripts/prepare-mnema-cli-sidecar.mjs release && bun run build",
+    "beforeBuildCommand": "bun ../../scripts/prepare-mnema-cli-sidecar.mjs release && bun ../../scripts/prepare-ort-dylibs.mjs release && bun run build",
     "frontendDist": "../build"
   },
   "app": {

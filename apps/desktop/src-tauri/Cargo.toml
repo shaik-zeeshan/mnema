@@ -99,6 +99,13 @@ tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 tempfile = "3"
 tar = "0.4"
+# The GPU Acceleration Pack downloader (#137, ADR 0005) extracts a handful of
+# NVIDIA CUDA/cuDNN redistributable DLLs out of NVIDIA's official `.zip` archives.
+# `default-features = false` + `deflate` mirrors the audio-transcription crate's
+# entry exactly (NVIDIA's redist zips are DEFLATE-compressed), keeping a single
+# `zip` build in the workspace and dropping the bzip2/zstd/aes back-ends we do not
+# use here.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 url = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-deep-link = "2.4.9"
@@ -112,7 +119,7 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["speakrs"] }
 ocr = { path = "../../../crates/ocr", features = ["tesseract-embedded"] }
 media-decode = { path = "../../../crates/media-decode" }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(not(windows))'.dependencies]
 ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }

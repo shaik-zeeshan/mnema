@@ -7,12 +7,15 @@ mod broker_authorization_channel;
 mod cli_access;
 mod conversation;
 mod general_app_log;
+mod gpu_acceleration;
+mod gpu_acceleration_pack;
 mod keyboard_bindings;
 mod managed_storage_layout;
 mod native_capture;
 mod ocr_budget;
 mod ocr_models;
 mod one_time_prompts;
+mod ort_dylib;
 mod privacy_redaction_sources;
 mod semantic_search_models;
 mod semantic_search_query;
@@ -25,6 +28,12 @@ mod third_party_notices;
 mod usage_charts;
 mod user_context;
 mod windows;
+
+// Re-exported for the bin entry (`main.rs`) so `ORT_DYLIB_PATH` can be pinned as
+// the very first thing the process does, before any ORT use in either role
+// (main app or re-invoked speaker-analysis helper). Windows-only effect; a no-op
+// elsewhere. See `ort_dylib`.
+pub use ort_dylib::ensure_ort_dylib_path;
 
 use std::{collections::VecDeque, path::Path, sync::Mutex};
 
@@ -369,6 +378,11 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Defensive: `main()` already pins ORT_DYLIB_PATH before this, but `run()` is
+    // also a public entry, so re-assert it (idempotent) so the main-app role never
+    // reaches parakeet's `Session::builder()` with an unset dylib path on Windows.
+    ensure_ort_dylib_path();
+
     tauri::Builder::default()
         .manage(native_capture::NativeCaptureState::default())
         .manage(native_capture::MicrophoneControllerPreferencesState::default())
@@ -386,6 +400,7 @@ pub fn run() {
         .manage(app_updates::AppUpdateRuntimeState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
+        .manage(gpu_acceleration_pack::GpuAccelerationPackDownloadState::default())
         .manage(ocr_models::OcrModelDownloadState::default())
         .manage(semantic_search_models::SemanticSearchModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
@@ -499,6 +514,12 @@ pub fn run() {
             speaker_analysis_models::start_speaker_analysis_model_download,
             speaker_analysis_models::cancel_speaker_analysis_model_download,
             speaker_analysis_models::delete_speaker_analysis_model,
+            gpu_acceleration_pack::get_gpu_acceleration_pack_status,
+            gpu_acceleration_pack::start_gpu_acceleration_pack_download,
+            gpu_acceleration_pack::cancel_gpu_acceleration_pack_download,
+            gpu_acceleration_pack::delete_gpu_acceleration_pack,
+            gpu_acceleration::get_gpu_acceleration_state,
+            gpu_acceleration::set_use_gpu_acceleration,
             ocr_models::get_ocr_model_status,
             ocr_models::start_ocr_model_download,
             ocr_models::cancel_ocr_model_download,
