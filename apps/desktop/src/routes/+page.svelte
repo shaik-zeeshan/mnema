@@ -10849,14 +10849,23 @@
     flex: 0 0 28px;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    align-items: flex-end;
-    padding: 1px 4px 1px 0;
+    padding: 0 4px 0 0;
     font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
     user-select: none;
+  }
+
+  /* Each label owns half the lane height so its baseline lands on the
+     vertical center of its row in the viewport (mic row center ~6.5px,
+     sys row center ~19.5px within the 26px lane). */
+  .timeline-rail__audio-lane-label {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    line-height: 1;
   }
 
   .timeline-rail__audio-lane-label--microphone {
