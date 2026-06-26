@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { captureSession, setSession } from "$lib/session.svelte";
+import { humanizeError } from "$lib/format-error";
 import type {
   CaptureSession,
   GetPermissionsResponse,
@@ -39,7 +40,7 @@ const NATIVE_CAPTURE_SESSION_CHANGED_EVENT = "native_capture_session_changed";
 let _settingsSyncInitialized = false;
 
 function serializeError(err: unknown): string {
-  return typeof err === "string" ? err : (JSON.stringify(err) ?? "Unknown error");
+  return humanizeError(err);
 }
 
 export const captureControls = {
