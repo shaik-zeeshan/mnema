@@ -940,10 +940,25 @@
     // Last applied `ask_ai_update` version for this turn (0 if none — e.g. a
     // hydrated past turn that isn't live).
     version: number;
+    // The user STOPPED this turn mid-stream. Frontend-only marker (the backend
+    // persists the partial as an ordinary `done` turn) driving a "Stopped early"
+    // tag in Quick Recall so the cut-off is acknowledged where it happened.
+    stoppedEarly?: boolean;
   };
 
-  // The thread id (one live PI session). null when no thread is open.
+  // The thread id of the live, streamable thread. null when no thread is open,
+  // OR after a Stop (the partial is persisted; its id moves to
+  // `stoppedConversationId` so late buffered updates stop matching the guard).
   let askConversationId = $state<string | null>(null);
+  // The persisted id of a STOPPED thread. Kept apart from `askConversationId`
+  // (so the late-update guard in cancelActiveAsk stays intact) purely to keep
+  // "Continue in Chat" + the follow-up composer pointed at the real, already-
+  // persisted `done` thread. Cleared on reset or when a follow-up re-adopts it.
+  let stoppedConversationId = $state<string | null>(null);
+  // The id of whichever thread is continuable right now — live or just-stopped.
+  let askContinuableConversationId = $derived(
+    askConversationId ?? stoppedConversationId,
+  );
   // The transcript. The last entry is the live turn that stream events feed.
   let askTurns = $state<AskTurn[]>([]);
   // True between a turn starting and that turn's terminal done/error event.
@@ -1028,11 +1043,12 @@
   // follow-up streams. Hidden entirely while turn 1 is still seeding / streaming
   // / errored-with-no-completed-answer.
   let askHasCompletedTurn = $derived(askTurns.some((t) => t.phase === "done"));
-  // Also require a live session: stopping a stream abandons the PI session (id
-  // nulled) while leaving the partial answer rendered, so the composer hides
-  // rather than sitting dead (a follow-up would no-op without a session id).
+  // Visible once the first answer completes. A STOPPED thread stays continuable
+  // (its partial is persisted as a `done` turn under `stoppedConversationId`),
+  // so the composer keeps showing — a follow-up re-adopts that thread and runs
+  // a fresh turn that builds on the partial.
   let askComposerVisible = $derived(
-    askSubmitted && askHasCompletedTurn && askConversationId !== null,
+    askSubmitted && askHasCompletedTurn && askContinuableConversationId !== null,
   );
 
   // ---------------------------------------------------------------------------
@@ -1624,7 +1640,7 @@
   // Whether the current thread has at least one completed (done) turn, gating the
   // "Open in Chat" affordance — the handoff promotes a real, answered thread.
   let askCanOpenInChat = $derived(
-    askConversationId !== null && askHasCompletedTurn,
+    askContinuableConversationId !== null && askHasCompletedTurn,
   );
 
   // Promote the current Quick Recall thread into the Insights → Chat workspace.
@@ -1635,7 +1651,7 @@
   // hand-off (open_capture_result_in_main_window), which also dismisses the Quick
   // Recall window — so we do the same here for consistency.
   async function openInChat(): Promise<void> {
-    const conversationId = askConversationId;
+    const conversationId = askContinuableConversationId;
     if (conversationId === null || !askHasCompletedTurn) {
       return;
     }
@@ -1661,9 +1677,16 @@
     if (trimmed.length === 0) {
       return;
     }
-    const conversationId = askConversationId;
+    const conversationId = askContinuableConversationId;
     if (conversationId === null || askStreaming) {
       return;
+    }
+    // Resuming a STOPPED thread: re-adopt its persisted id as the live thread so
+    // the new turn's streaming `ask_ai_update` events match the id guard again.
+    if (askConversationId === null) {
+      askConversationId = conversationId;
+      stoppedConversationId = null;
+      askStopped = false;
     }
 
     followupInput = "";
@@ -1933,35 +1956,25 @@
     await submitFollowup();
   }
 
-  // Stop a streaming answer in place: abandon the live PI session (ask_ai_cancel)
-  // but settle the live turn to `done` so its partial answer stays rendered and
-  // copyable, rather than abandoning the whole surface the way Escape does. The
-  // session id is dropped by cancelActiveAsk, so the thread becomes non-continuable
-  // (the composer/handoff hide via their `askConversationId` guards) — a true
-  // resume-after-stop needs a backend stop-turn-but-keep-session command.
+  // Stop a streaming answer in place: cooperatively cancel the turn and settle it
+  // to `done` so its partial answer stays rendered and copyable, rather than
+  // abandoning the whole surface the way Escape does. `cancelActiveAsk` nulls the
+  // live id (so late buffered updates stop applying), but the backend has already
+  // persisted the partial as an ordinary `done` turn — so we stash that id in
+  // `stoppedConversationId` to keep the thread continuable ("Continue in Chat" +
+  // the follow-up composer both re-point at it; a follow-up re-adopts it live).
   async function stopActiveAsk(): Promise<void> {
     const live = askLiveTurn;
+    const conversationId = askConversationId;
     await cancelActiveAsk();
+    stoppedConversationId = conversationId;
     if (live && live.phase !== "done" && live.phase !== "error") {
       live.phase = "done";
       live.liveActivity = null;
+      // Tag this turn as cut off, so Quick Recall shows "Stopped early" on it.
+      live.stoppedEarly = true;
     }
-    // Mark the thread as stopped so the surface shows an explicit
-    // "Stopped — start a new question" affordance (the composer and
-    // "Continue in Chat" hide once the session id is dropped).
     askStopped = true;
-  }
-
-  // Leave the stranded (stopped) thread and open a fresh, empty ask composer so
-  // the user can start a new question instead of being stuck on the partial
-  // answer with no way forward. The partial answer is intentionally abandoned —
-  // the live session was already dropped on Stop.
-  async function startNewQuestionAfterStop(): Promise<void> {
-    resetAskThreadState();
-    askStopped = false;
-    mode = "ask";
-    await tick();
-    askInputEl?.focus();
   }
 
   // Tear down all ephemeral thread state (transcript, ids, timers, inputs). Does
@@ -1969,6 +1982,7 @@
   function resetAskThreadState(): void {
     clearAskCopiedTimers();
     askConversationId = null;
+    stoppedConversationId = null;
     askTurns = [];
     askSubmitted = false;
     askInput = "";
@@ -4680,6 +4694,13 @@
                     {/if}
                   {/if}
                 {/if}
+                {#if turn.stoppedEarly}
+                  <!-- This turn was cut off by Stop; the partial below is kept
+                       and is still continuable (composer / "Continue in Chat"). -->
+                  <p class="quick-recall__stopped-tag" role="status">
+                    Stopped early
+                  </p>
+                {/if}
               </div>
             {/each}
           {/if}
@@ -4725,20 +4746,6 @@
               disabled={askStreaming}
               onkeydown={handleFollowupKeydown}
             ></textarea>
-          </div>
-        {:else if askStopped}
-          <!-- Stopping a streaming answer drops the live session, so the
-               composer and "Continue in Chat" hide — without this the partial
-               answer would be a dead end. Offer an explicit way forward. -->
-          <div class="quick-recall__stopped" role="status">
-            <span class="quick-recall__stopped-label">Stopped.</span>
-            <button
-              type="button"
-              class="quick-recall__stopped-action"
-              onclick={() => void startNewQuestionAfterStop()}
-            >
-              Start a new question
-            </button>
           </div>
         {/if}
       </div>
@@ -5863,41 +5870,14 @@
     overflow-wrap: anywhere;
   }
 
-  /* Stopped-thread affordance: replaces the composer once the user Stops a
-     streaming answer (the session is gone, so a follow-up can't continue). A
-     quiet bottom bar offering an explicit way to start a fresh question. */
-  .quick-recall__stopped {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 15px;
-    border-top: 1px solid var(--app-border);
-    font-size: 13px;
-  }
-
-  .quick-recall__stopped-label {
+  /* "Stopped early" tag on a turn the user cut off mid-stream. The partial
+     answer below stays kept and continuable; this just acknowledges the cut. */
+  .quick-recall__stopped-tag {
+    margin: 8px 0 0;
+    font-size: 12px;
     color: var(--app-text-muted);
-  }
-
-  .quick-recall__stopped-action {
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--app-accent);
-    font-family: inherit;
-    font-size: 13px;
-    cursor: pointer;
-  }
-
-  .quick-recall__stopped-action:hover {
-    text-decoration: underline;
-  }
-
-  .quick-recall__stopped-action:focus-visible {
-    outline: none;
-    border-radius: 4px;
-    box-shadow: var(--app-ring);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   /* Follow-up composer: pinned beneath the scrolling transcript. Mirrors the
