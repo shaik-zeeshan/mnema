@@ -27,6 +27,12 @@
 
   const c = new OnboardingController();
 
+  // Cross-phase wayfinding: map the three-state phase machine
+  // (welcome → configure → done) to a 1-based step so the shell can show a quiet
+  // "Welcome · Configure · Finish" stepper telling the user where they are and
+  // what remains. Purely presentational — derived from the existing phase state.
+  const phaseStep = $derived(c.phase === "welcome" ? 1 : c.phase === "configure" ? 2 : 3);
+
   // Mount loaders. The `untrack` is MANDATORY: without it, editing a draft
   // re-runs init and reverts the edit (known onboarding/settings mount-effect
   // bug in this app — see CLAUDE memory "Settings init effect untrack").
@@ -69,6 +75,36 @@
 </script>
 
 <div class="onboarding-root">
+  <nav class="ob-progress" aria-label="Setup progress">
+    <ol class="ob-progress__list">
+      <li
+        class="ob-progress__step"
+        class:is-active={phaseStep === 1}
+        class:is-done={phaseStep > 1}
+        aria-current={phaseStep === 1 ? "step" : undefined}
+      >
+        <span class="ob-progress__dot" aria-hidden="true"></span>
+        <span class="ob-progress__label">Welcome</span>
+      </li>
+      <li
+        class="ob-progress__step"
+        class:is-active={phaseStep === 2}
+        class:is-done={phaseStep > 2}
+        aria-current={phaseStep === 2 ? "step" : undefined}
+      >
+        <span class="ob-progress__dot" aria-hidden="true"></span>
+        <span class="ob-progress__label">Configure</span>
+      </li>
+      <li
+        class="ob-progress__step"
+        class:is-active={phaseStep === 3}
+        aria-current={phaseStep === 3 ? "step" : undefined}
+      >
+        <span class="ob-progress__dot" aria-hidden="true"></span>
+        <span class="ob-progress__label">Finish</span>
+      </li>
+    </ol>
+  </nav>
   {#if c.phase === "welcome"}
     <WelcomeScreen controller={c} />
   {:else if c.phase === "done"}
@@ -147,5 +183,75 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    position: relative;
+  }
+
+  /* Quiet cross-phase wayfinding stepper, pinned top-center across all three
+     phases (welcome hero / configure accordion / finale crest) so the user can
+     always see where they are and what remains. Non-interactive — purely a
+     signifier — so it ignores pointer events. */
+  .ob-progress {
+    position: absolute;
+    top: 16px;
+    left: 0;
+    right: 0;
+    z-index: 5;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    font-family: var(--app-font-mono);
+  }
+  .ob-progress__list {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    margin: 0;
+    padding: 6px 14px;
+    list-style: none;
+    border-radius: var(--app-radius-pill, 999px);
+    background: color-mix(in srgb, var(--app-surface) 70%, transparent);
+    border: 1px solid var(--app-border);
+  }
+  .ob-progress__step {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: var(--text-sm);
+    letter-spacing: 0.02em;
+    color: var(--app-text-subtle);
+  }
+  /* Connector tick between steps. */
+  .ob-progress__step:not(:last-child)::after {
+    content: "";
+    width: 14px;
+    height: 1px;
+    margin-left: 11px;
+    background: var(--app-border);
+  }
+  .ob-progress__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    border: 1px solid var(--app-border);
+    background: transparent;
+    flex: 0 0 auto;
+  }
+  /* Completed steps: filled accent dot, muted label. */
+  .ob-progress__step.is-done {
+    color: var(--app-text-muted);
+  }
+  .ob-progress__step.is-done .ob-progress__dot {
+    background: var(--app-accent);
+    border-color: var(--app-accent);
+  }
+  /* Current step: accent label + weight per the active-nav contract, glowing dot. */
+  .ob-progress__step.is-active {
+    color: var(--app-accent);
+    font-weight: 600;
+  }
+  .ob-progress__step.is-active .ob-progress__dot {
+    background: var(--app-accent);
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-bg);
   }
 </style>

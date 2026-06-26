@@ -200,6 +200,12 @@
   align-items: center;
   gap: 8px;
   white-space: nowrap;
+  /* Clip rather than visually overflow when the header is tight (a long gated
+     lockReason chip competes for the same row on narrow widths). The full title
+     is short and the titlewrap has `min-width: 0`, so it degrades gracefully. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .onboarding-shell .row.open .row-name {
   font-size: 17px;
@@ -327,7 +333,12 @@
    surface chip with a lock glyph and the reason text. Hidden when open (the
    body's lock-callout explains it). */
 .onboarding-shell .row-lock {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Bound the chip so a long reason ("Turn on Transcription first") can't crowd
+     out the nowrap title on narrow widths — the full text stays in the title
+     attribute and the open-body lock-callout. */
+  max-width: 18ch;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -337,6 +348,12 @@
   border: 1px solid var(--app-border);
   border-radius: 999px;
   padding: 2px 8px;
+}
+.onboarding-shell .row-lock .row-lock-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .onboarding-shell .row-lock .lock-ico {
   color: var(--app-text-subtle);

@@ -127,11 +127,19 @@
         {#if controller.selectedTranscriptionDownloadRunning}
           <div class="dl">
             <div class="dl-track">
-              <div class="dl-fill" style={`width: ${controller.selectedTranscriptionDownloadPercent ?? 8}%`}></div>
+              <div
+                class="dl-fill"
+                class:dl-fill--indeterminate={controller.selectedTranscriptionDownloadPercent === null}
+                style={controller.selectedTranscriptionDownloadPercent === null
+                  ? undefined
+                  : `width: ${controller.selectedTranscriptionDownloadPercent}%`}
+              ></div>
             </div>
             <div class="dl-meta">
               <span>
-                <b>{controller.selectedTranscriptionDownloadPercent ?? 0}%</b>
+                <b>{controller.selectedTranscriptionDownloadPercent === null
+                    ? "…"
+                    : `${controller.selectedTranscriptionDownloadPercent}%`}</b>
                 · {controller.selectedTranscriptionDownloadProgress?.status ?? "downloading"}
               </span>
               <button

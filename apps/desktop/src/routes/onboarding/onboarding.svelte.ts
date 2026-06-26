@@ -785,6 +785,18 @@ export class OnboardingController {
   ctaLabel = $derived("Start recording");
   ctaDisabled = $derived(this.loading || this.saving || this.completing || !this.canComplete);
 
+  // The finale escape hatch ("Just open the dashboard") must NOT share the
+  // model-readiness gate that "Start recording" uses — opening the dashboard
+  // while a model still downloads (or with an attention item outstanding) is
+  // harmless, so blocking the skip would be a dead-end. It only needs the
+  // settings to serialize cleanly, so it stays gated solely on the custom
+  // resolution/bitrate validity that would break the backend save (those
+  // serialize as null) plus the in-flight save/complete guard.
+  canSkipToDashboard = $derived(
+    this.customResolutionErrors.length === 0 && this.customBitrateErrors.length === 0,
+  );
+  skipDisabled = $derived(this.loading || this.saving || this.completing || !this.canSkipToDashboard);
+
   // Surfaced reason the finale CTAs are dead for an attention regression (not an in-flight op). Helper owns gate + copy.
   finaleBlockReason = $derived(finaleBlockReasonFor(this.phase === "done" && !this.loading && !this.saving && !this.completing,
     FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name)));

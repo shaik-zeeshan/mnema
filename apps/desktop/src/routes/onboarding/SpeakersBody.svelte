@@ -121,11 +121,19 @@
         {#if controller.selectedSpeakerDownloadRunning}
           <div class="dl">
             <div class="dl-track">
-              <div class="dl-fill" style={`width: ${controller.selectedSpeakerDownloadPercent ?? 8}%`}></div>
+              <div
+                class="dl-fill"
+                class:dl-fill--indeterminate={controller.selectedSpeakerDownloadPercent === null}
+                style={controller.selectedSpeakerDownloadPercent === null
+                  ? undefined
+                  : `width: ${controller.selectedSpeakerDownloadPercent}%`}
+              ></div>
             </div>
             <div class="dl-meta">
               <span>
-                <b>{controller.selectedSpeakerDownloadPercent ?? 0}%</b>
+                <b>{controller.selectedSpeakerDownloadPercent === null
+                    ? "…"
+                    : `${controller.selectedSpeakerDownloadPercent}%`}</b>
                 · {controller.selectedSpeakerDownloadProgress?.status ?? "downloading"}
               </span>
               <button

@@ -158,6 +158,23 @@
   box-shadow: 0 0 10px var(--app-accent-glow);
   transition: width 0.3s ease;
 }
+/* Indeterminate fill: unknown totalBytes (percent === null) means we can't show a
+   real width, so a 0/8% sliver reads as stalled. A short fill sweeping across the
+   track signals "working, total unknown" instead. Reduced-motion (below) freezes
+   it to a static partial bar rather than an animated one. */
+.onboarding-shell .dl-fill--indeterminate {
+  width: 38%;
+  transition: none;
+  animation: onboarding-dl-indeterminate 1.3s ease-in-out infinite;
+}
+@keyframes onboarding-dl-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(290%);
+  }
+}
 .onboarding-shell .dl-meta {
   display: flex;
   justify-content: space-between;
@@ -498,5 +515,11 @@
   .onboarding-shell .dl-fill,
   .onboarding-shell .footer .secondary {
     transition: none;
+  }
+  /* Freeze the indeterminate sweep to a static partial bar (still clearly not a
+     stalled 0%) rather than animating it. */
+  .onboarding-shell .dl-fill--indeterminate {
+    animation: none;
+    transform: none;
   }
 }

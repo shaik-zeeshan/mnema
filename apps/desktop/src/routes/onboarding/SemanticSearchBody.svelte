@@ -94,11 +94,19 @@
       {#if controller.selectedSemanticSearchDownloadRunning}
         <div class="dl">
           <div class="dl-track">
-            <div class="dl-fill" style={`width: ${controller.selectedSemanticSearchDownloadPercent ?? 8}%`}></div>
+            <div
+              class="dl-fill"
+              class:dl-fill--indeterminate={controller.selectedSemanticSearchDownloadPercent === null}
+              style={controller.selectedSemanticSearchDownloadPercent === null
+                ? undefined
+                : `width: ${controller.selectedSemanticSearchDownloadPercent}%`}
+            ></div>
           </div>
           <div class="dl-meta">
             <span>
-              <b>{controller.selectedSemanticSearchDownloadPercent ?? 0}%</b>
+              <b>{controller.selectedSemanticSearchDownloadPercent === null
+                  ? "…"
+                  : `${controller.selectedSemanticSearchDownloadPercent}%`}</b>
               · {controller.selectedSemanticSearchDownloadProgress?.status ?? "downloading"}
             </span>
             <button

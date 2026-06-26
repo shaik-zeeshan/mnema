@@ -134,11 +134,19 @@
         {#if controller.selectedOcrDownloadRunning}
           <div class="dl">
             <div class="dl-track">
-              <div class="dl-fill" style={`width: ${controller.selectedOcrDownloadPercent ?? 8}%`}></div>
+              <div
+                class="dl-fill"
+                class:dl-fill--indeterminate={controller.selectedOcrDownloadPercent === null}
+                style={controller.selectedOcrDownloadPercent === null
+                  ? undefined
+                  : `width: ${controller.selectedOcrDownloadPercent}%`}
+              ></div>
             </div>
             <div class="dl-meta">
               <span>
-                <b>{controller.selectedOcrDownloadPercent ?? 0}%</b>
+                <b>{controller.selectedOcrDownloadPercent === null
+                    ? "…"
+                    : `${controller.selectedOcrDownloadPercent}%`}</b>
                 · {controller.selectedOcrDownloadProgress?.status ?? "downloading"}
               </span>
               <button

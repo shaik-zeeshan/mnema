@@ -160,9 +160,13 @@
           <!-- A live download takes precedence over the On/Off + Needs-setup /
                lock labels: the row should read "Downloading N%" while fetching.
                Kept shown even when open, to confirm continuity. percent may be
-               null (unknown totalBytes) — always render `{percent ?? 0}%`. -->
+               null (unknown totalBytes) — show an indeterminate "Downloading…"
+               (the pulsing dot alone carries progress) rather than a misleading
+               "0%" that reads as a stalled/failed fetch. -->
           <span class="row-dl"
-            ><span class="dl-dot"></span>Downloading {download.percent ?? 0}%</span
+            ><span class="dl-dot"></span>{download.percent === null
+              ? "Downloading…"
+              : `Downloading ${download.percent}%`}</span
           >
         {:else}
           <span class="status-dot" class:on={enabled}></span>{enabled
@@ -181,7 +185,9 @@
                  turned on until a prerequisite is met — quieter than the warn
                  chip because nothing is actively broken yet. -->
             <span class="row-lock" title="Locked: {lockReason}"
-              ><span class="lock-ico"><IconLock aria-hidden="true" /></span>{lockReason}</span
+              ><span class="lock-ico"><IconLock aria-hidden="true" /></span><span class="row-lock-text"
+                >{lockReason}</span
+              ></span
             >
           {/if}
         {/if}

@@ -23,10 +23,10 @@
         <span class="welcome__pulse"></span>
         Welcome
       </span>
-      <h2 id="welcome-title" class="welcome__title">
+      <h1 id="welcome-title" class="welcome__title">
         Your <em>memory</em>,
         <br />on rewind.
-      </h2>
+      </h1>
       <p class="welcome__tag">
         mnema quietly records your screen so you can scrub back to anything you've
         seen — searchable, local, and yours.
@@ -62,7 +62,7 @@
         {#if c.applyingRecommended}
           Applying…
         {:else}
-          Use recommended setup →
+          Apply recommended defaults
         {/if}
       </button>
       {#if c.errorMessage}

@@ -330,5 +330,8 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
 // nothing regressed (empty names → null, so the finale stays clean).
 export function finaleBlockReasonFor(active: boolean, names: string[]): string | null {
   if (!active || names.length === 0) return null;
-  return `Needs attention: ${names.join(", ")}. Return to setup to fix it.`;
+  // Only "Start recording" is gated by these — the "Just open the dashboard"
+  // escape hatch stays enabled, so the copy points at both the recover path
+  // (back to setup) and the still-available skip rather than implying a dead end.
+  return `Start recording is waiting on: ${names.join(", ")}. Open the dashboard now, or return to setup to fix it.`;
 }
