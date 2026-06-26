@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, tick } from "svelte";
   import { trapTabKey } from "$lib/keyboard";
   import Segmented from "$lib/components/Segmented.svelte";
@@ -29,6 +30,13 @@
   let loading = $state(true);
   let approving = $state(false);
   let cancelling = $state(false);
+  // A resolved Ok from the backend approve means the grant really landed. We
+  // capture the consent terms so the body can show a brief positive receipt
+  // (naming tool + scope + expiry) before/while the backend tears the window
+  // down — and so a delayed teardown is never misreported as a failure.
+  let granted = $state<{ tool: string; scopeLabel: string; expiryLabel: string } | null>(null);
+  // Ticks so the request-age label stays honest while the dialog sits open.
+  let now = $state(Date.now());
 
   // Watchdog so a grant/deny never hangs forever on the spinner if the backend
   // window teardown is delayed or never arrives.
@@ -107,6 +115,20 @@
     });
   });
 
+  // How long this request has been waiting. The hard timeout is CLI-side (~120s),
+  // so this is an honesty cue, not a countdown — if the tool stops waiting the
+  // approve/deny call surfaces a specific "no longer valid" message instead.
+  const requestAgeLabel = $derived.by(() => {
+    if (!pendingRequest) return null;
+    const createdMs = new Date(pendingRequest.createdAt).getTime();
+    if (Number.isNaN(createdMs)) return null;
+    const ageSeconds = Math.max(0, Math.round((now - createdMs) / 1000));
+    if (ageSeconds < 5) return "Requested just now";
+    if (ageSeconds < 60) return `Requested ${ageSeconds}s ago`;
+    const minutes = Math.round(ageSeconds / 60);
+    return `Requested ${minutes} min ago`;
+  });
+
   onMount(() => {
     void loadPendingRequest();
     // Land focus on a SAFE anchor — never Allow — so a reflexive keypress can't
@@ -114,7 +136,11 @@
     void tick().then(() => {
       (denyButton ?? dialogEl)?.focus();
     });
-    return () => clearActionWatchdog();
+    const ageTimer = setInterval(() => (now = Date.now()), 15000);
+    return () => {
+      clearInterval(ageTimer);
+      clearActionWatchdog();
+    };
   });
 
   async function loadPendingRequest() {
@@ -140,6 +166,9 @@
     clearActionWatchdog();
     actionWatchdog = setTimeout(() => {
       actionWatchdog = null;
+      // A grant that already resolved Ok is a success even if the window
+      // teardown is slow — never overwrite the receipt with a failure.
+      if (granted) return;
       reset();
       error = "Couldn't finish — the request didn't complete. Please try again.";
     }, 6000);
@@ -152,6 +181,21 @@
     }
   }
 
+  // Granted-state dismiss. The grant has already landed, so there is no pending
+  // request to cancel — closing the window directly (not via
+  // cancel_pending_cli_access_request, which would reject with "no pending
+  // request") backs the receipt's "Close" affordance in the rare case the
+  // backend teardown is delayed or never arrives. If the backend already closed
+  // the window first, this button never renders long enough to be pressed.
+  async function closeGrantedWindow() {
+    try {
+      await getCurrentWindow().close();
+    } catch {
+      // If the window is already being torn down by the backend, the close is a
+      // harmless no-op — nothing more to do here.
+    }
+  }
+
   async function closeWindow() {
     error = null;
     cancelling = true;
@@ -160,7 +204,7 @@
       await invoke("cancel_pending_cli_access_request");
     } catch (err) {
       clearActionWatchdog();
-      error = friendlyError(err);
+      error = mapActionError(err);
       cancelling = false;
     }
   }
@@ -169,6 +213,13 @@
     if (!pendingRequest) return;
     error = null;
     approving = true;
+    // Snapshot the consent terms now: the receipt must keep naming them even as
+    // the backend clears the pending request and tears the window down.
+    const receipt = {
+      tool: pendingRequest.client.label,
+      scopeLabel: scopeMeta.label,
+      expiryLabel,
+    };
     startActionWatchdog(() => (approving = false));
     try {
       await invoke("approve_pending_cli_access_request", {
@@ -177,9 +228,14 @@
           durationSeconds: durationSeconds[selectedDuration],
         },
       });
+      // The backend resolves Ok only on a real grant. Show the positive receipt
+      // and stand the watchdog down so a slow teardown can't report failure.
+      clearActionWatchdog();
+      approving = false;
+      granted = receipt;
     } catch (err) {
       clearActionWatchdog();
-      error = friendlyError(err);
+      error = mapActionError(err);
       approving = false;
     }
   }
@@ -215,6 +271,18 @@
     if (typeof err === "string") return err;
     if (err instanceof Error && err.message) return err.message;
     return "Something went wrong. Please try again.";
+  }
+
+  // The pending request is cleared once the requesting tool stops waiting (its
+  // client-side timeout is ~120s) — approve/deny then rejects with the backend's
+  // "no pending CLI Access request". Map that to a specific, non-alarming reason
+  // instead of leaking the raw string as a generic action failure.
+  function mapActionError(err: unknown) {
+    const message = friendlyError(err);
+    if (/no pending CLI Access request/i.test(message)) {
+      return "This request is no longer valid — the requesting tool stopped waiting. You can close this window.";
+    }
+    return message;
   }
 
   // Esc denies the request; Enter is intentionally not bound to approve, so
@@ -267,7 +335,23 @@
     </header>
 
     <div class="access-dialog__body">
-      {#if loading}
+      {#if granted}
+        <div class="receipt" role="status" aria-live="polite">
+          <span class="receipt__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          </span>
+          <p class="receipt__title">Access granted</p>
+          <p class="receipt__body">
+            <strong>{granted.tool}</strong> can read your
+            <strong>{granted.scopeLabel}</strong> text until <strong>{granted.expiryLabel}</strong>.
+          </p>
+          <p class="receipt__hint">
+            Manage or revoke this in Settings → Data → Access.
+          </p>
+        </div>
+      {:else if loading}
         <span class="sr-only" role="status" aria-live="polite">Loading access request…</span>
         <div class="skeleton" aria-hidden="true">
           <div class="skeleton__line skeleton__line--lg"></div>
@@ -311,6 +395,9 @@
           <p class="requester__trigger">
             Requested via <code>mnema {pendingRequest.command}</code>
           </p>
+          {#if requestAgeLabel}
+            <p class="requester__age">{requestAgeLabel}</p>
+          {/if}
         </section>
 
         <p class="trust-note">
@@ -392,37 +479,53 @@
       {/if}
     </div>
 
-    <footer class="access-dialog__actions">
-      <button
-        class="btn btn--ghost"
-        bind:this={denyButton}
-        type="button"
-        disabled={approving || cancelling}
-        onclick={closeWindow}
-      >
-        {#if cancelling}
-          <span class="btn__spinner" aria-hidden="true"></span>
-          {pendingRequest ? "Denying…" : "Closing…"}
-        {:else}
-          {pendingRequest ? "Deny" : "Close"}
-        {/if}
-      </button>
-      {#if pendingRequest}
+    {#if granted}
+      <!-- The backend closes this window on a real grant, so this footer is
+           normally torn down before it can be used. It exists for the rare
+           lingering case (delayed/failed teardown) so the granted state is never
+           left with zero in-app affordance backing the "Close" copy. -->
+      <footer class="access-dialog__actions">
+        <button class="btn btn--ghost" type="button" onclick={closeGrantedWindow}>
+          Close
+        </button>
+      </footer>
+    {:else}
+      <footer class="access-dialog__actions">
         <button
-          class="btn btn--allow"
+          class="btn btn--ghost"
+          bind:this={denyButton}
           type="button"
-          disabled={loading || approving || cancelling}
-          onclick={approveAccess}
+          disabled={approving || cancelling}
+          onclick={closeWindow}
         >
-          {#if approving}
+          {#if cancelling}
             <span class="btn__spinner" aria-hidden="true"></span>
-            Allowing…
+            {pendingRequest ? "Denying…" : "Closing…"}
           {:else}
-            Allow access
+            {pendingRequest ? "Deny" : "Close"}
           {/if}
         </button>
-      {/if}
-    </footer>
+        {#if pendingRequest}
+          <button
+            class="btn btn--allow"
+            type="button"
+            disabled={loading || approving || cancelling}
+            onclick={approveAccess}
+          >
+            {#if approving}
+              <span class="btn__spinner" aria-hidden="true"></span>
+              Allowing…
+            {:else if isBroadScope}
+              <!-- Escalate the affirmative label to match the broad-scope warning
+                   above: the button names the heavier consent it grants. -->
+              Allow full-history access
+            {:else}
+              Allow access
+            {/if}
+          </button>
+        {/if}
+      </footer>
+    {/if}
   </div>
 </main>
 
@@ -578,6 +681,13 @@
     color: var(--app-text-muted);
     font-size: var(--text-base);
     line-height: 1.55;
+  }
+
+  .requester__age {
+    margin: 0;
+    color: var(--app-text-subtle);
+    font-size: var(--text-xs);
+    letter-spacing: 0.04em;
   }
 
   .requester code {
@@ -762,6 +872,66 @@
     margin: 0;
     max-width: 34ch;
     color: var(--app-text-muted);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+  }
+
+  /* Positive granted receipt — this is the one moment green is earned (an actual
+     grant just landed), so it uses the accent rather than the neutral padlock. */
+  .receipt {
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+    margin: auto 0;
+    padding: 24px 16px;
+    text-align: center;
+  }
+
+  .receipt__icon {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+  }
+
+  .receipt__icon svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .receipt__title {
+    margin: 0;
+    color: var(--app-text-strong);
+    font-size: var(--text-md);
+    font-weight: 700;
+  }
+
+  .receipt__body {
+    margin: 0;
+    max-width: 38ch;
+    color: var(--app-text-muted);
+    font-size: var(--text-base);
+    line-height: 1.5;
+  }
+
+  .receipt__body strong {
+    color: var(--app-text);
+    font-weight: 700;
+  }
+
+  .receipt__hint {
+    margin: 0;
+    max-width: 36ch;
+    color: var(--app-text-subtle);
     font-size: var(--text-sm);
     line-height: 1.45;
   }
