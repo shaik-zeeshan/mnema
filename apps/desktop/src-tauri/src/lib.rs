@@ -628,6 +628,7 @@ pub fn run() {
             windows::close_current_window,
             windows::focus_quick_recall_window,
             windows::quick_recall_suppress_blur_dismiss,
+            windows::summon_quick_recall_window_command,
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,

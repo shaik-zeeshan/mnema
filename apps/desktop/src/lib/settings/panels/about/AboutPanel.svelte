@@ -3,7 +3,7 @@
   import Developer from "./Developer.svelte";
 </script>
 
-<div role="tabpanel" id="settings-panel-about" tabindex="0">
+<div class="settings-panel" id="settings-panel-about">
   <About />
   <Developer />
 </div>

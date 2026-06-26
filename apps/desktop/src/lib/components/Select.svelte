@@ -18,6 +18,10 @@
     /** Accessible name for the trigger when there is no visible `label`. */
     ariaLabel?: string;
     warn?: boolean;
+    /** Show a loading row instead of an empty/options list while async-fetching. */
+    loading?: boolean;
+    /** Copy for the no-options row (when not loading). */
+    emptyText?: string;
   }
 
   let {
@@ -29,6 +33,8 @@
     label,
     ariaLabel,
     warn = false,
+    loading = false,
+    emptyText = "No options",
   }: Props = $props();
 
   let openUp = $state(false);
@@ -122,6 +128,11 @@
               {/snippet}
             </BitsSelect.Item>
           {/each}
+          {#if loading}
+            <div class="select-empty" role="status">Loading…</div>
+          {:else if options.length === 0}
+            <div class="select-empty">{emptyText}</div>
+          {/if}
         </BitsSelect.Viewport>
       </BitsSelect.Content>
     </BitsSelect.Portal>
@@ -312,6 +323,17 @@
     color: var(--app-accent);
     flex-shrink: 0;
     font-family: inherit;
+  }
+
+  /* Mirrors Combobox's .combobox-empty so a blank/loading popover reads as a
+     state, not a dead-end. */
+  .select-empty {
+    padding: 14px 10px;
+    text-align: center;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    font-style: italic;
+    color: var(--app-text-subtle);
   }
 
   @media (prefers-reduced-motion: reduce) {

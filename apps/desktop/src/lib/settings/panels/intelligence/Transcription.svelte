@@ -23,6 +23,13 @@
   const rec = c.rec;
   const models = c.models;
 
+  // Near-the-control autosave cue: transcription drafts persist through the
+  // "processing" recording domain. Mirror its saving/just-saved state beside the
+  // toggle rows so the edit is confirmed at the point of interaction — matching
+  // Capture/Audio/Video/Storage — not only at the remote rail footer.
+  const processingSaving = $derived(c.rec.savingRecDomains.processing);
+  const processingSaved = $derived(c.recSavedDomain === "processing");
+
   // Store-read aliases.
   const loadingTranscriptionModelStatus = $derived(models.loadingTranscriptionModelStatus);
   const transcriptionModelError = $derived(models.transcriptionModelError);
@@ -76,6 +83,8 @@
   <SettingRow
     label="Enable audio transcription"
     description="Master switch for source-specific audio transcription"
+    saving={processingSaving}
+    saved={processingSaved}
   >
     {#snippet control()}
       <Switch bind:checked={rec.draftTranscriptionEnabled} ariaLabel="Enable audio transcription" />
@@ -86,6 +95,8 @@
     label="Transcribe microphone"
     description="Automatically queue transcription for committed microphone audio segments"
     disabled={!rec.draftTranscriptionEnabled}
+    saving={processingSaving}
+    saved={processingSaved}
   >
     {#snippet control()}
       <Switch
@@ -100,6 +111,8 @@
     label="Transcribe system audio"
     description="Transcribe system audio only when speech is detected."
     disabled={!rec.draftTranscriptionEnabled}
+    saving={processingSaving}
+    saved={processingSaved}
   >
     {#snippet control()}
       <Switch
@@ -110,7 +123,7 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Provider" full>
+  <SettingRow label="Provider" full saving={processingSaving} saved={processingSaved}>
     {#snippet control()}
       <RadioGroup
         value={rec.draftTranscriptionProvider}
@@ -124,7 +137,7 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Model" full>
+  <SettingRow label="Model" full saving={processingSaving} saved={processingSaved}>
     {#snippet control()}
       <Combobox
         value={rec.draftTranscriptionModelId ?? "__os_managed__"}
@@ -141,6 +154,8 @@
     label="Language"
     description="Use auto for automatic language detection, or enter a language hint such as en. Settings changes affect future audio segments; already-queued jobs keep their admitted provider/model payload."
     full
+    saving={processingSaving}
+    saved={processingSaved}
   >
     {#snippet control()}
       <Combobox
@@ -211,14 +226,17 @@
     {#snippet control()}
       <div class="tx-stack">
         {#if transcriptionModelError}
-          <p class="group-hint group-hint--warn">Failed to load model status: {transcriptionModelError}</p>
+          <p class="group-hint group-hint--warn" role="alert">Failed to load model status: {transcriptionModelError}</p>
         {:else if selectedTranscriptionModel}
           <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
             <div>
               <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
               <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
             </div>
-            <span class="model-status__pill">{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
+            <span
+              class="model-status__pill"
+              class:model-status__pill--ok={selectedTranscriptionModel.available}
+            >{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
           </div>
           <p class="group-hint">{selectedTranscriptionModel.description}</p>
           {#if selectedAppleSpeechPermissionStatus}
@@ -247,7 +265,7 @@
               {/if}
             </div>
             {#if appleSpeechPermissionError}
-              <p class="group-hint group-hint--warn">Permission request failed: {appleSpeechPermissionError}</p>
+              <p class="group-hint group-hint--warn" role="alert">Permission request failed: {appleSpeechPermissionError}</p>
             {/if}
           {/if}
           {#if selectedTranscriptionModel.installPath}
@@ -291,7 +309,7 @@
               </p>
             {/if}
             {#if transcriptionDownloadError}
-              <p class="group-hint group-hint--warn">Download failed: {transcriptionDownloadError}</p>
+              <p class="group-hint group-hint--warn" role="alert">Download failed: {transcriptionDownloadError}</p>
             {/if}
           {:else}
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
@@ -332,7 +350,7 @@
             </div>
           {/if}
           {#if deleteUnusedTranscriptionModelsError}
-            <p class="group-hint group-hint--warn">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
+            <p class="group-hint group-hint--warn" role="alert">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
           {/if}
         {:else if loadingTranscriptionModelStatus}
           <p class="group-hint">Checking installed transcription models…</p>

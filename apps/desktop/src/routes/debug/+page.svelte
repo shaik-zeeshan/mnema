@@ -40,6 +40,10 @@
 
   let support = $state<CaptureSupport | null>(null);
   let permissions = $state<PermissionsMap | null>(null);
+  // Per-block probe errors so a failed auto-load (on mount) surfaces inline
+  // instead of silently falling back to the "not queried yet" empty state.
+  let supportError = $state<string | null>(null);
+  let permissionsError = $state<string | null>(null);
   let recordingSettings = $state<RecordingSettings | null>(null);
 
   // Read-only alias — writes go through captureSession.value so the shared
@@ -463,8 +467,10 @@
     clearError();
     try {
       support = await invoke<CaptureSupport>("get_capture_support");
+      supportError = null;
     } catch (err) {
       support = null;
+      supportError = humanizeError(err);
       setError(err);
     } finally {
       loadingSupport = false;
@@ -478,11 +484,13 @@
     try {
       const result = await invoke<GetPermissionsResponse>("get_capture_permissions");
       permissions = result.permissions;
+      permissionsError = null;
       // Only apply the session when no authoritative action (start/stop)
       // occurred while this request was in-flight.
       if (result.session && sessionGeneration === gen) setSession(result.session);
     } catch (err) {
       permissions = null;
+      permissionsError = humanizeError(err);
       setError(err);
     } finally {
       loadingPermissions = false;
@@ -1275,7 +1283,6 @@
         role="tab"
         id="debug-tab-{tab.id}"
         aria-selected={activeTab === tab.id}
-        aria-controls="debug-panel-{tab.id}"
         tabindex={activeTab === tab.id ? 0 : -1}
         class="debug-tabs__btn"
         class:debug-tabs__btn--active={activeTab === tab.id}
@@ -1740,8 +1747,10 @@
         <p class="empty">no metadata snapshot captured yet</p>
       {/if}
     </details>
+  {:else if isCapturing}
+    <p class="empty">privacy filter status has not loaded yet — press ↻</p>
   {:else}
-    <p class="empty">privacy filter status has not loaded yet</p>
+    <p class="empty">only available while a session is active</p>
   {/if}
 </div>
 </div>
@@ -1791,6 +1800,8 @@
             </span>
           </li>
         </ul>
+      {:else if supportError}
+        <p class="debug-err" role="alert" aria-live="polite">{supportError}</p>
       {:else}
         <p class="empty">not queried yet — press Query</p>
       {/if}
@@ -1824,6 +1835,8 @@
             </span>
           </li>
         </ul>
+      {:else if permissionsError}
+        <p class="debug-err" role="alert" aria-live="polite">{permissionsError}</p>
       {:else}
         <p class="empty">not queried yet — press Query</p>
       {/if}
@@ -1836,8 +1849,13 @@
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     App Infra
-    <button class="btn btn--ghost btn--sm card__title-action" onclick={refreshAll} disabled={loadingInfraStatus || loadingJobs}>
-      {loadingInfraStatus || loadingJobs ? "…" : "↻"}
+    <button
+      class="btn btn--ghost btn--sm card__title-action"
+      onclick={refreshAll}
+      disabled={loadingInfraStatus || loadingJobs}
+      aria-label="Refresh app infra"
+    >
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingInfraStatus || loadingJobs} aria-hidden="true">↻</span>
     </button>
   </h2>
 
@@ -1896,7 +1914,7 @@
       aria-label="Refresh inactivity policy"
       title={isCapturing ? "Refresh inactivity policy" : "No active capture session — start recording to refresh"}
     >
-      {loadingInactivity ? "…" : "↻"}
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingInactivity} aria-hidden="true">↻</span>
     </button>
   </h2>
 
@@ -2166,8 +2184,10 @@
       {/if}
     </ul>
     </details>
-  {:else}
+  {:else if isCapturing}
     <p class="empty">inactivity policy has not loaded yet — press ↻</p>
+  {:else}
+    <p class="empty">only available while a session is active</p>
   {/if}
 </div>
 {/if}

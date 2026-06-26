@@ -126,7 +126,7 @@
               disabled={controller.recheckingGeckoAccess}
               onclick={() => controller.recheckGeckoAccess()}
             >
-              {controller.recheckingGeckoAccess ? "Checking…" : "Recheck"}
+              {controller.recheckingGeckoAccess ? "Checking…" : "Re-check"}
             </button>
           </div>
         </div>

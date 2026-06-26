@@ -13,6 +13,15 @@
   const rec = c.rec;
   const aiRuntime = c.aiRuntime;
 
+  // Near-the-control autosave cue: the master switch, the connected-provider list
+  // (label/base-URL edits), and the default model all persist through the
+  // "ai_runtime" recording domain. Mirror its saving/just-saved state beside
+  // these controls so the silently-autosaving fields confirm at the point of
+  // interaction — matching Capture/Audio/Video/Storage. (The keychain API key is
+  // a separate explicit Save, surfaced by its own per-provider spinner/badge.)
+  const aiRuntimeSaving = $derived(c.rec.savingRecDomains.ai_runtime);
+  const aiRuntimeSaved = $derived(c.recSavedDomain === "ai_runtime");
+
   // Re-exported constants the markup references verbatim.
   const AI_PROVIDER_KINDS = c.AI_PROVIDER_KINDS;
   const AI_LOCAL_DEFAULT_ENDPOINTS = c.AI_LOCAL_DEFAULT_ENDPOINTS;
@@ -73,6 +82,8 @@
     description="The master switch for everything AI in Mnema. While off, nothing is sent to any AI model. Off by default."
     full
     divider={false}
+    saving={aiRuntimeSaving}
+    saved={aiRuntimeSaved}
   >
     {#snippet aside()}
       <Switch
@@ -90,12 +101,22 @@
         <p>A cloud provider receives redacted capture text over HTTPS to reason about it — continuous outbound egress and per-token cost billed to your own key.</p>
         <p>A local runtime (Ollama or Llamafile) runs entirely on this machine — nothing is sent anywhere and no API key is needed.</p>
       </div>
+      <!-- Near-the-switch readiness cue: the full runtime-status pill lives in the
+           Status group far below, so a user who flips the master switch on with
+           nothing configured gets no nearby signal. Echo the "still not ready"
+           condition right under the switch so the next step (connect a provider /
+           pick a default model) is obvious. -->
+      {#if rec.draftAiEnabled && !aiRuntimeStatusLoading && aiRuntimeStatus && !aiRuntimeStatus.available}
+        <p class="group-hint group-hint--warn" role="status">
+          AI features are on, but nothing is ready yet. {aiRuntimeReasonLabel(aiRuntimeStatus.reason)} Connect a provider and choose a default model below.
+        </p>
+      {/if}
     {/snippet}
   </SettingRow>
 </SettingGroup>
 
 <SettingGroup title="Connected providers">
-  <SettingRow label="Providers" full divider={false}>
+  <SettingRow label="Providers" full divider={false} saving={aiRuntimeSaving} saved={aiRuntimeSaved}>
     {#snippet control()}
       <div class="prov-stack">
         {#if rec.draftAiProviders.length === 0}
@@ -194,6 +215,13 @@
                   </div>
                   {#if aiProviderKeyErrors[provider.id]}
                     <p class="error-text" id="ai-provider-key-error-{provider.id}" role="alert">{aiProviderKeyErrors[provider.id]}</p>
+                  {:else if (aiProviderKeyInputs[provider.id] ?? "").trim().length > 0 && aiProviderKeySavingProvider !== provider.id}
+                    <!-- Unlike the autosaving Label/Base URL fields, the API key
+                         only reaches the keychain on an explicit "Save key" click.
+                         A typed-but-unsaved key is lost on navigate-away, so warn
+                         while the input is dirty so the user can't leave thinking
+                         the provider is connected. -->
+                    <p class="group-hint group-hint--warn">Unsaved API key — click <strong>Save key</strong> to store it in the keychain.</p>
                   {/if}
                 {/if}
               </li>
@@ -215,7 +243,7 @@
         </div>
         <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider instance, shared by every feature. Add a kind more than once to connect several instances (e.g. two OpenAI-compatible servers).</p>
         {#if aiProviderRemovalError}
-          <p class="error-text">{aiProviderRemovalError}</p>
+          <p class="error-text" role="alert">{aiProviderRemovalError}</p>
         {/if}
         {#if anyCloudAiProviderConnected}
           <div class="cloud-egress-disclosure" role="note">
@@ -238,7 +266,7 @@
 </SettingGroup>
 
 <SettingGroup title="Default model">
-  <SettingRow label="Global default model" full divider={false}>
+  <SettingRow label="Global default model" full divider={false} saving={aiRuntimeSaving} saved={aiRuntimeSaved}>
     {#snippet control()}
       <div class="prov-stack">
         <ModelPickerMenu
@@ -269,7 +297,7 @@
           }}
         />
         {#if settingsModelsError}
-          <p class="group-hint group-hint--warn">
+          <p class="group-hint group-hint--warn" role="alert">
             Could not list every provider's models — check keys/base URLs/endpoints above, then use Retry in the menu. You can still type any model id.
           </p>
           <p class="error-text">{aiRuntimeReasonLabel(settingsModelsError)}</p>
@@ -308,7 +336,7 @@
           >{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
         </div>
         {#if aiRuntimeStatusError}
-          <p class="error-text">{aiRuntimeStatusError}</p>
+          <p class="error-text" role="alert">{aiRuntimeStatusError}</p>
         {/if}
         <div class="row-actions">
           <button
@@ -344,8 +372,10 @@
           </div>
         {/if}
         {#if aiRuntimeTestError}
-          <p class="group-hint group-hint--warn">Test connection failed.</p>
-          <p class="error-text">{aiRuntimeTestError}</p>
+          <div role="alert">
+            <p class="group-hint group-hint--warn">Test connection failed.</p>
+            <p class="error-text">{aiRuntimeTestError}</p>
+          </div>
         {/if}
       </div>
     {/snippet}

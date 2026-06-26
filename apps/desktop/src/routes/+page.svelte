@@ -27,6 +27,7 @@
   import IconScanText from "~icons/lucide/scan-text";
   import IconMoreHorizontal from "~icons/lucide/ellipsis";
   import IconClapperboard from "~icons/lucide/clapperboard";
+  import IconHeadphones from "~icons/lucide/headphones";
   import {
     activeExactPreviewDelayMs,
     scrubPreviewResponseShouldApply,
@@ -334,6 +335,13 @@
       id: "dashboard.downloadFrame",
       label: "Download active frame image",
       bindings: [{ key: "D" }],
+      kind: "command",
+      scope: "dashboard",
+    },
+    playMoment: {
+      id: "dashboard.playMoment",
+      label: "Play audio at this moment",
+      bindings: [{ key: "P" }],
       kind: "command",
       scope: "dashboard",
     },
@@ -1366,10 +1374,13 @@
   ): Promise<void> {
     const id = selectedAudioSegmentId;
     if (id == null) return;
-    const scrollEl = audioDrawerEl;
+    // The transcript body (not the drawer) now owns the scroll, so preserve
+    // its position across a turns refresh rather than the drawer's (which no
+    // longer scrolls).
+    const scrollEl = selectedAudioTranscriptContainerEl;
     const scrollTop = scrollEl?.scrollTop ?? null;
     await loadSelectedAudioSpeakerTurns(id, selectedAudioTranscriptGeneration, null, options);
-    if (scrollEl && scrollTop != null && audioDrawerEl === scrollEl) {
+    if (scrollEl && scrollTop != null && selectedAudioTranscriptContainerEl === scrollEl) {
       await tick();
       scrollEl.scrollTop = scrollTop;
     }
@@ -2358,50 +2369,44 @@
     return `${start}–${formatPlayerTime(segment.endMs / 1000)}`;
   }
 
-  // ─── Outside-click dismissal ─────────────────────────────────────────────
-  // While the drawer is open, a pointerdown anywhere outside the drawer
-  // dismisses it. Timeline audio bars are outside the drawer too, but when
-  // the drawer is already open a click on any bar should close only — not
-  // immediately re-open/switch the drawer on the trailing `click`. Pointerdown
-  // — not click — because `click` doesn't fire on every dismiss target (e.g.
-  // dragging a scrollbar) and we want the close to feel immediate.
-  let suppressNextAudioSegmentBarClick = false;
-  let suppressNextAudioSegmentBarClickResetTimer: ReturnType<typeof setTimeout> | null =
-    null;
-
-  function clearPendingSuppressedAudioSegmentBarClick() {
-    if (suppressNextAudioSegmentBarClickResetTimer != null) {
-      clearTimeout(suppressNextAudioSegmentBarClickResetTimer);
-      suppressNextAudioSegmentBarClickResetTimer = null;
-    }
-    suppressNextAudioSegmentBarClick = false;
-  }
-
-  function rememberSuppressedAudioSegmentBarClick() {
-    clearPendingSuppressedAudioSegmentBarClick();
-    suppressNextAudioSegmentBarClick = true;
-    suppressNextAudioSegmentBarClickResetTimer = setTimeout(() => {
-      suppressNextAudioSegmentBarClickResetTimer = null;
-      suppressNextAudioSegmentBarClick = false;
-    }, 250);
+  // ─── Outside-click & scroll dismissal ────────────────────────────────────
+  // While the drawer is open, a pointerdown genuinely outside the timeline
+  // surface dismisses it. Two interactions are deliberately NOT dismissals:
+  //   1. Clicking a *different* segment's bar is a SWITCH — the bar's own
+  //      click handler reselects; the drawer stays open on the new segment.
+  //   2. Scrubbing/scrolling the rail or stage keeps the player open so the
+  //      user can browse frames while listening (the rail scrolls as it
+  //      scrubs, which used to slam the drawer shut on every wheel tick).
+  // Close therefore stays reserved for the X button, Escape, and a true click
+  // or scroll outside the timeline surface.
+  function isWithinTimelineSurface(node: Node): boolean {
+    return (
+      stageEl?.contains(node) === true ||
+      timelineRailWrap?.contains(node) === true
+    );
   }
 
   function onAudioDrawerOutsidePointerDown(event: PointerEvent) {
     if (selectedAudioSegmentId == null) return;
-    clearPendingSuppressedAudioSegmentBarClick();
     const target = event.target;
     if (!(target instanceof Node)) return;
     if (audioDrawerEl?.contains(target)) return;
+    const onAudioBar =
+      target instanceof Element &&
+      target.closest(".timeline-rail__audio-bar") != null;
+    // A click on another segment's bar switches the drawer, never closes it —
+    // collapse a transient speaker-actions popover first, then let the bar's
+    // click handler reselect.
+    if (onAudioBar) {
+      if (speakerActionsOpenIndex != null) closeSpeakerActions();
+      return;
+    }
     if (speakerActionsOpenIndex != null) {
-      if (target instanceof Element && target.closest(".timeline-rail__audio-bar")) {
-        rememberSuppressedAudioSegmentBarClick();
-      }
       closeSpeakerActions();
       return;
     }
-    if (target instanceof Element && target.closest(".timeline-rail__audio-bar")) {
-      rememberSuppressedAudioSegmentBarClick();
-    }
+    // Scrubbing or clicking the rail/stage keeps the drawer open.
+    if (isWithinTimelineSurface(target)) return;
     closeAudioDrawer();
   }
 
@@ -2409,6 +2414,9 @@
     if (selectedAudioSegmentId == null) return;
     const target = event.target;
     if (target instanceof Node && audioDrawerEl?.contains(target)) return;
+    // Rail/stage scrubbing must not dismiss the player — only a scroll
+    // genuinely elsewhere collapses speaker actions or closes the drawer.
+    if (target instanceof Node && isWithinTimelineSurface(target)) return;
     if (speakerActionsOpenIndex != null) {
       closeSpeakerActions();
       return;
@@ -2662,6 +2670,45 @@
     }
     return out;
   });
+
+  // ─── "Play this moment" bridge ───────────────────────────────────────────
+  // The audio segment (if any) whose [startUnixMs, endUnixMs] window contains
+  // the active frame's capture time, so the user can jump straight from a
+  // frame to hearing what was happening at that instant. Microphone wins when
+  // both lanes cover the same moment; segments within a lane don't overlap.
+  const activeFrameAudioMoment = $derived.by<{
+    segment: AudioSegmentRecord;
+    offsetMs: number;
+  } | null>(() => {
+    const frame = timelineActive;
+    if (!frame || audioSegments.length === 0) return null;
+    const capturedMs = parseCapturedAt(frame.capturedAt).getTime();
+    if (!Number.isFinite(capturedMs)) return null;
+    const overlapping = audioSegments.filter(
+      (s) => capturedMs >= s.startUnixMs && capturedMs <= s.endUnixMs,
+    );
+    if (overlapping.length === 0) return null;
+    const chosen =
+      overlapping.find((s) => s.source === "microphone") ?? overlapping[0]!;
+    return { segment: chosen, offsetMs: Math.max(0, capturedMs - chosen.startUnixMs) };
+  });
+
+  // Open the audio drawer on the segment that covers the active frame and seek
+  // to the matching offset. Surfaces a status ack when no audio covers the
+  // frame so the control never silently no-ops. Reuses the pinned-segment slot
+  // so the selection survives a window that hasn't refreshed the segment list.
+  function playActiveFrameMoment(): void {
+    const moment = activeFrameAudioMoment;
+    if (!moment) {
+      setFrameActionStatus("No audio captured at this moment.", {
+        detail: "This frame isn't covered by a microphone or system-audio segment.",
+      });
+      return;
+    }
+    selectedAudioSegmentPinned = moment.segment;
+    pendingAudioSeekMs = moment.offsetMs;
+    selectedAudioSegmentId = moment.segment.id;
+  }
 
   // Custom tooltip state for the rail. `hoveredFrameId` tracks which slot the
   // pointer is currently over; `hoveredX` is the pointer x relative to the
@@ -3280,10 +3327,20 @@
   function scheduleFrameActionStatusDismiss() {
     clearFrameActionStatusTimer();
     if (!frameActionStatus || frameActionStatusHovered) return;
+    // Error-tone messages must persist until the user dismisses them (X / hover
+    // is no longer the only escape) — only neutral success/progress acks
+    // auto-clear. The banner carries an explicit close affordance for errors.
+    if (frameActionStatus.tone === "error") return;
     frameActionStatusTimer = setTimeout(() => {
       frameActionStatus = null;
       frameActionStatusTimer = null;
     }, 2200);
+  }
+
+  function dismissFrameActionStatus() {
+    clearFrameActionStatusTimer();
+    frameActionStatus = null;
+    frameActionStatusHovered = false;
   }
 
   function setFrameActionStatus(
@@ -5262,6 +5319,12 @@
         void downloadActiveFrameImage();
         return;
       }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.playMoment)) {
+        if (!timelineActive) return;
+        event.preventDefault();
+        playActiveFrameMoment();
+        return;
+      }
     }
 
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -5341,12 +5404,9 @@
   // navigation everywhere else.
   function onAudioSegmentBarClick(event: MouseEvent, id: number) {
     event.stopPropagation();
-    if (suppressNextAudioSegmentBarClick) {
-      clearPendingSuppressedAudioSegmentBarClick();
-      closeAudioDrawer();
-      return;
-    }
-    clearPendingSuppressedAudioSegmentBarClick();
+    // Clicking the already-selected bar toggles the drawer closed; clicking a
+    // different bar switches the drawer to that segment (the capture-phase
+    // outside-pointerdown handler now lets bar clicks through for exactly this).
     selectedAudioSegmentPinned = null;
     pendingAudioSeekMs = null;
     selectedAudioSegmentId = selectedAudioSegmentId === id ? null : id;
@@ -6012,6 +6072,22 @@
     const top = (sh - height) / 2;
     return { left, top, width, height };
   });
+
+  // OCR succeeded with text, but the active frame carries no intrinsic
+  // dimensions, so the boxes can't be anchored to an image rect (the overlay
+  // renders nothing). Surface a hint pointing at the ⋯ → Copy text path so the
+  // recognized text isn't silently inaccessible. Gated on a measured stage so
+  // it never flashes during the initial mount before dimensions resolve.
+  const ocrSuccessUnpositionable = $derived(
+    ocrVisible &&
+      ocrStatus === "success" &&
+      timelineActive != null &&
+      ocrFrameId === timelineActive.id &&
+      ocrObservations.length > 0 &&
+      stageWidth > 0 &&
+      stageHeight > 0 &&
+      (renderedImageRect.width <= 0 || renderedImageRect.height <= 0),
+  );
 
   // Track the stage's content-box size so the derived rect updates as the
   // window/layout resizes around it.
@@ -6732,6 +6808,10 @@
         ...effectiveShortcut(DASHBOARD_SHORTCUTS.downloadFrame),
         enabled: activePreviewPath != null,
       },
+      {
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.playMoment),
+        enabled: activeFrameAudioMoment != null,
+      },
     ];
 
     const groups: KeyboardHelpGroup[] = [
@@ -7188,14 +7268,29 @@
       <div
         class="timeline__stage-status"
         class:timeline__stage-status--error={frameActionStatus.tone === "error"}
-        role="status"
-        aria-live="polite"
+        role={frameActionStatus.tone === "error" ? "alert" : "status"}
+        aria-live={frameActionStatus.tone === "error" ? "assertive" : "polite"}
         onpointerenter={onFrameActionStatusPointerEnter}
         onpointerleave={onFrameActionStatusPointerLeave}
       >
-        <div class="timeline__stage-status-summary">{frameActionStatus.message}</div>
-        {#if frameActionStatus.detail}
-          <div class="timeline__stage-status-detail">{frameActionStatus.detail}</div>
+        <div class="timeline__stage-status-body">
+          <div class="timeline__stage-status-summary">{frameActionStatus.message}</div>
+          {#if frameActionStatus.detail}
+            <div class="timeline__stage-status-detail">{frameActionStatus.detail}</div>
+          {/if}
+        </div>
+        {#if frameActionStatus.tone === "error"}
+          <button
+            type="button"
+            class="timeline__stage-status-close"
+            aria-label="Dismiss message"
+            title="Dismiss"
+            onclick={dismissFrameActionStatus}
+          >
+            <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+              <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
+            </svg>
+          </button>
         {/if}
       </div>
     {/if}
@@ -7205,16 +7300,30 @@
         <span>loading frames…</span>
       </div>
     {:else if timelineFrames.length === 0}
-      <div class="timeline__empty">
-        <span class="timeline__empty-glyph" aria-hidden="true"><IconClapperboard /></span>
-        <h2 class="timeline__empty-title">No frames yet</h2>
-        <p class="timeline__empty-hint">
-          Your timeline fills up as Mnema captures your screen.
-        </p>
-        <p class="timeline__empty-cue">
-          Press <span class="timeline__empty-cue-key">Record</span> in the title bar above to start a capture session.
-        </p>
-      </div>
+      {#if captureControls.isCapturing}
+        <!-- Capture is live but no frames have landed yet: drop the misleading
+             "Press Record" cue and reassure that the first frames are imminent. -->
+        <div class="timeline__empty timeline__empty--capturing">
+          <span class="timeline__empty-glyph" aria-hidden="true"><IconClapperboard /></span>
+          <h2 class="timeline__empty-title">
+            <span class="timeline__empty-rec-dot" aria-hidden="true"></span>Recording started
+          </h2>
+          <p class="timeline__empty-hint">
+            Your first frames will appear here in a moment…
+          </p>
+        </div>
+      {:else}
+        <div class="timeline__empty">
+          <span class="timeline__empty-glyph" aria-hidden="true"><IconClapperboard /></span>
+          <h2 class="timeline__empty-title">No frames yet</h2>
+          <p class="timeline__empty-hint">
+            Your timeline fills up as Mnema captures your screen.
+          </p>
+          <p class="timeline__empty-cue">
+            Press <span class="timeline__empty-cue-key">Record</span> in the title bar above to start a capture session.
+          </p>
+        </div>
+      {/if}
     {:else if timelineActive}
       {@const previewDisplay = timelinePreviewDisplay}
       {@const previewPath = previewDisplay?.filePath ?? null}
@@ -7226,6 +7335,18 @@
           class="timeline__stage-actions"
           class:timeline__stage-actions--open={stageActionsMenuOpen}
         >
+          {#if activeFrameAudioMoment}
+            <!-- Play-this-moment bridge: opens the audio segment that overlaps
+                 this frame's capture time and seeks to the matching offset.
+                 Mirrors the "P" dashboard shortcut. -->
+            <button
+              type="button"
+              class="btn btn--ghost btn--sm timeline__stage-action-trigger timeline__stage-play-moment"
+              aria-label={`Play audio at this moment (${audioSourceLabel(activeFrameAudioMoment.segment.source)})`}
+              title="Play audio at this moment (P)"
+              onclick={playActiveFrameMoment}
+            ><span class="timeline__stage-action-glyph" aria-hidden="true"><IconHeadphones /></span></button>
+          {/if}
           <button
             type="button"
             class="btn btn--ghost btn--sm timeline__stage-action-trigger"
@@ -7348,7 +7469,10 @@
         {/if}
       {:else}
         <div class="timeline__preview-pending">
-          {frameActionStatus?.tone === "error" ? "preview unavailable" : "decoding preview…"}
+          {#if frameActionStatus?.tone !== "error"}
+            <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
+          {/if}
+          <span>{frameActionStatus?.tone === "error" ? "preview unavailable" : "decoding preview…"}</span>
         </div>
       {/if}
     {/if}
@@ -7376,6 +7500,13 @@
           <span class="timeline__ocr-status-glyph" aria-hidden="true">!</span>
           <span class="timeline__ocr-status-msg">{ocrError ?? "OCR failed"}</span>
         {/if}
+      </div>
+    {/if}
+
+    {#if ocrSuccessUnpositionable}
+      <div class="timeline__ocr-status timeline__ocr-status--empty" role="status" aria-live="polite">
+        <span class="timeline__ocr-status-glyph" aria-hidden="true">⌶</span>
+        <span>Text detected but can't be positioned — use ⋯ → Copy text.</span>
       </div>
     {/if}
 
@@ -7466,7 +7597,11 @@
        The rail itself is locked to a fixed height and the loading indicator
        lives outside the rail so neither pagination loads nor the
        loading→loaded swap can change page/stage/rail height. -->
-  <div class="timeline__rail-wrap" bind:this={timelineRailWrap}>
+  <div
+    class="timeline__rail-wrap"
+    class:timeline__rail-wrap--scrubbable={timelineFrames.length > 0}
+    bind:this={timelineRailWrap}
+  >
     {#if timelineFrames.length > 0}
       <div
         class="timeline-rail"
@@ -7554,7 +7689,7 @@
         class="timeline-rail__audio-lane-wrap"
         aria-label="Audio segments"
       >
-        <div class="timeline-rail__audio-lane-labels" aria-hidden="true">
+        <div class="timeline-rail__audio-lane-labels">
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--microphone">mic</span>
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--systemAudio">sys</span>
         </div>
@@ -7608,7 +7743,7 @@
               <span class="timeline-rail__audio-lane-error-label" title={audioSegmentsError}>audio unavailable</span>
               <button
                 type="button"
-                class="timeline-rail__audio-lane-retry"
+                class="btn btn--ghost btn--sm timeline-rail__audio-lane-retry"
                 onclick={(e) => { e.stopPropagation(); void refreshAudioSegments(); }}
                 onpointerdown={(e) => e.stopPropagation()}
                 disabled={audioSegmentsLoading}
@@ -7636,7 +7771,7 @@
         class="timeline-rail__audio-lane-wrap"
         aria-label="Audio segments"
       >
-        <div class="timeline-rail__audio-lane-labels" aria-hidden="true">
+        <div class="timeline-rail__audio-lane-labels">
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--microphone">mic</span>
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--systemAudio">sys</span>
         </div>
@@ -7646,23 +7781,16 @@
               <span class="timeline-rail__audio-lane-error-label" title={audioSegmentsError}>audio unavailable</span>
               <button
                 type="button"
-                class="timeline-rail__audio-lane-retry"
+                class="btn btn--ghost btn--sm timeline-rail__audio-lane-retry"
                 onclick={() => void refreshAudioSegments()}
                 disabled={audioSegmentsLoading}
                 title={`Retry loading audio · ${audioSegmentsError}`}
               >{audioSegmentsLoading ? "retrying…" : "retry"}</button>
             </div>
-          {:else}
-            <span class="timeline-rail__audio-lane-empty">
-              {#if audioSegmentsLoading}
-                loading audio…
-              {:else if timelineLoading}
-                waiting for frames…
-              {:else}
-                no frames loaded
-              {/if}
-            </span>
           {/if}
+          <!-- The big stage empty state ("No frames yet") already carries the
+               zero-frame messaging, so the lane stays silent here rather than
+               stacking a redundant "no frames loaded" line beneath it. -->
         </div>
       </div>
     {/if}
@@ -7886,7 +8014,7 @@
             </span>
           {/if}
           {#if selectedAudioSpeakerGroups.length > 0}
-            <span class="audio-drawer__transcript-hint">Click words to seek · click speaker to edit</span>
+            <span class="audio-drawer__transcript-hint">Click a line to jump · click a speaker to edit</span>
           {/if}
         </div>
         <div class="audio-drawer__transcript-actions">
@@ -8255,6 +8383,25 @@
   .timeline__error,
   .timeline__rail-wrap {
     flex: 0 0 auto;
+    position: relative;
+  }
+
+  /* Always-visible center position indicator: a thin accent line marking the
+     "you are here" point the rail scrubs frames under, so the rail reads as an
+     interactive time scrubber even before the user hovers it. Only shown once
+     frames exist (the empty placeholder rail has nothing to point at). The
+     36px height matches `.timeline-rail`. */
+  .timeline__rail-wrap--scrubbable::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 1px;
+    height: 36px;
+    transform: translateX(-50%);
+    background: color-mix(in srgb, var(--app-accent) 55%, transparent);
+    pointer-events: none;
+    z-index: 1;
   }
 
   /* Header bar: two clearly-separated control groups (recording + jump on
@@ -8304,7 +8451,11 @@
     gap: 6px;
     max-height: 50vh;
     padding: 8px 12px 10px;
-    overflow-y: auto;
+    /* The drawer itself no longer scrolls — the meta row and transport stay
+       pinned while only the transcript body scrolls (see
+       `.audio-drawer__transcript`). Auto-scroll-to-active therefore moves the
+       transcript, never the controls. */
+    overflow: hidden;
     scrollbar-width: none;
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border-strong);
@@ -8476,6 +8627,12 @@
     border-color: var(--app-danger-strong);
     background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
     outline: none;
+  }
+
+  /* A distinct ring on keyboard focus so the close affordance no longer reads
+     identically to its hover state. */
+  .audio-drawer__close:focus-visible {
+    box-shadow: var(--app-ring);
   }
 
   .audio-drawer__audio-native {
@@ -8711,13 +8868,48 @@
   }
 
   .audio-drawer__transcript {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 6px;
     margin-top: 2px;
     padding: 8px 10px;
+    /* Take the drawer's remaining height and allow shrinking so the body
+       below can own the scroll instead of the whole drawer. */
+    flex: 1 1 auto;
+    min-height: 0;
     background: color-mix(in srgb, var(--app-surface-hover) 58%, transparent);
     border: 1px solid var(--app-border);
     border-radius: 6px;
+  }
+
+  /* Scrollable transcript bodies: each becomes its own scroll region (so the
+     transport stays pinned) with a thin, always-styled scrollbar as the scroll
+     signifier and contained overscroll so a transcript scroll never chains out
+     to dismiss the drawer or scroll the page. */
+  .audio-drawer__speaker-transcript,
+  .audio-drawer__transcript-text--segmented,
+  .audio-drawer__transcript-text {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-border-strong) transparent;
+  }
+
+  .audio-drawer__speaker-transcript::-webkit-scrollbar,
+  .audio-drawer__transcript-text--segmented::-webkit-scrollbar,
+  .audio-drawer__transcript-text::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .audio-drawer__speaker-transcript::-webkit-scrollbar-thumb,
+  .audio-drawer__transcript-text--segmented::-webkit-scrollbar-thumb,
+  .audio-drawer__transcript-text::-webkit-scrollbar-thumb {
+    background: var(--app-border-strong);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
   }
 
   .audio-drawer__transcript-header {
@@ -8932,6 +9124,12 @@
     outline: none;
   }
 
+  /* Keyboard focus gets a ring so it's distinguishable from the hover tint. */
+  .audio-drawer__speaker-chip:focus-visible {
+    border-radius: 3px;
+    box-shadow: var(--app-ring);
+  }
+
   .audio-drawer__speaker-chip:hover::after,
   .audio-drawer__speaker-chip:focus-visible::after,
   .audio-drawer__speaker-chip--open::after {
@@ -9029,7 +9227,8 @@
     background: transparent;
     color: var(--app-text);
     font: inherit;
-    font-size: 9px;
+    /* Bumped from 9px: the uppercase secondary metadata was borderline-legible. */
+    font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -9087,7 +9286,7 @@
 
   .audio-drawer__speaker-profile {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.08em;
     line-height: 1.2;
@@ -9114,14 +9313,14 @@
 
   .audio-drawer__speaker-overlap-note {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
     line-height: 1.2;
   }
 
   .audio-drawer__speaker-confidence {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -9163,7 +9362,7 @@
 
   .audio-drawer__speaker-action-meta {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
   }
 
@@ -9239,6 +9438,11 @@
     outline: none;
   }
 
+  /* Distinct keyboard-focus ring so a focused line isn't mistaken for a hover. */
+  .audio-drawer__speaker-text:focus-visible {
+    box-shadow: var(--app-ring);
+  }
+
   .audio-drawer__transcript-segment {
     display: inline;
     margin-right: 0.28em;
@@ -9263,6 +9467,10 @@
     background: color-mix(in srgb, var(--app-accent) 12%, transparent);
     color: var(--app-text);
     outline: none;
+  }
+
+  .audio-drawer__transcript-segment:focus-visible {
+    box-shadow: var(--app-ring);
   }
 
   .audio-drawer__transcript-segment--active {
@@ -9680,6 +9888,42 @@
     color: var(--app-text);
   }
 
+  /* Live-capture variant of the empty state: a pulsing record dot inline with
+     the title so the surface reads as "recording, waiting for first frames"
+     rather than the idle "Press Record" prompt. */
+  .timeline__empty--capturing .timeline__empty-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .timeline__empty-rec-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--app-danger-strong);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 60%, transparent);
+    animation: timeline-empty-rec-pulse 1.6s ease-out infinite;
+  }
+
+  @keyframes timeline-empty-rec-pulse {
+    0% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 55%, transparent);
+    }
+    70% {
+      box-shadow: 0 0 0 6px color-mix(in srgb, var(--app-danger-strong) 0%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 0%, transparent);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .timeline__empty-rec-dot {
+      animation: none;
+    }
+  }
+
   .timeline__empty-hint {
     margin: 0;
     font-size: 13px;
@@ -9760,6 +10004,19 @@
     top: 10px;
     right: 10px;
     z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* The play-this-moment trigger tints toward the recording accent so it reads
+     as a distinct "listen" affordance next to the neutral frame-actions menu. */
+  .timeline__stage-play-moment {
+    color: color-mix(in srgb, var(--app-accent) 70%, var(--app-text-muted));
+  }
+
+  .timeline__stage-play-moment:hover {
+    color: var(--app-accent-strong, var(--app-accent));
   }
 
   .timeline__stage-actions--open {
@@ -9922,9 +10179,10 @@
     bottom: 10px;
     z-index: 2;
     max-width: min(60%, 360px);
-    padding: 6px 8px;
-    display: grid;
-    gap: 4px;
+    padding: 7px 9px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
     background: var(--app-overlay-bg-strong);
     border: 1px solid var(--app-overlay-border);
     border-radius: 8px;
@@ -9934,6 +10192,12 @@
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
     box-shadow: 0 10px 24px color-mix(in srgb, var(--app-bg) 28%, transparent);
+  }
+
+  .timeline__stage-status-body {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
   }
 
   .timeline__stage-status-summary {
@@ -9953,9 +10217,46 @@
     word-break: break-word;
   }
 
+  /* Errors persist until dismissed, so they read at a more legible size than
+     the transient neutral acks and carry a close affordance. */
   .timeline__stage-status--error {
     color: color-mix(in srgb, var(--app-danger) 72%, var(--app-text) 28%);
     border-color: color-mix(in srgb, var(--app-danger) 40%, var(--app-overlay-border));
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .timeline__stage-status--error .timeline__stage-status-detail {
+    font-size: 10px;
+  }
+
+  .timeline__stage-status-close {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin: -1px -2px 0 0;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.75;
+    cursor: pointer;
+    transition: opacity 0.12s ease, background 0.12s ease;
+  }
+
+  .timeline__stage-status-close:hover {
+    opacity: 1;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+  }
+
+  .timeline__stage-status-close:focus-visible {
+    outline: none;
+    opacity: 1;
+    box-shadow: var(--app-ring);
   }
 
   .timeline__preview-pending {
@@ -10188,7 +10489,10 @@
   .timeline__ocr-box {
     position: absolute;
     border: 1px solid var(--app-ocr-box);
-    background: transparent;
+    /* A faint at-rest fill (plus the text cursor) signals these boxes are
+       live, copyable text rather than inert decoration — without tinting the
+       preview enough to fight the underlying pixels. Hover deepens it. */
+    background: color-mix(in srgb, var(--app-ocr-box-fill) 18%, transparent);
     border-radius: 2px;
     /* Allow zero-width/height edge cases to remain visible as a hairline. */
     min-width: 1px;
@@ -10637,37 +10941,12 @@
     color: var(--app-danger-text);
   }
 
+  /* The retry now reuses the shared `btn btn--ghost btn--sm` style so the
+     audio-lane retry matches the timeline retry (the danger-bordered variant
+     was the lone inconsistent retry affordance). This class only restores
+     pointer-events inside the pointer-events:none lane error row. */
   .timeline-rail__audio-lane-retry {
     pointer-events: auto;
-    appearance: none;
-    background: transparent;
-    border: 1px solid var(--app-danger-border);
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-danger-text);
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-
-  .timeline-rail__audio-lane-retry:not(:disabled):hover {
-    background: color-mix(in srgb, var(--app-danger-strong) 10%, transparent);
-    border-color: var(--app-danger-strong);
-  }
-
-  .timeline-rail__audio-lane-retry:focus-visible {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .timeline-rail__audio-lane-retry:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
   }
 
   .timeline-rail__audio-bar {

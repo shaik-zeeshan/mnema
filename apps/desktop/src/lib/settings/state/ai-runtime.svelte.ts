@@ -13,6 +13,7 @@
 // into its own draft module, only the injected closures change.
 
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { humanizeError } from "$lib/format-error";
 import type {
   AiProviderConfig,
@@ -182,6 +183,32 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   async function clearAiProviderKey(provider: string) {
     // A save/clear for this same id is already in flight — bail so a rapid
     // double-invoke (save+clear, or two clears) can't race on the keychain.
+    if (aiProviderKeyInFlight.has(provider)) return;
+    // Clearing deletes the keychain credential with no undo — gate it on an
+    // explicit confirm, matching the Remove-provider flow, so a single mis-click
+    // can't wipe a saved API key. Arm the in-flight latch BEFORE the awaited
+    // dialog so a second click can't open a second dialog mid-confirm; release it
+    // if the user cancels.
+    aiProviderKeyInFlight.add(provider);
+    try {
+      const confirmed = await confirm(
+        `Deleting the API key for “${deps.labelForProvider(provider)}” removes it from the macOS keychain right away. Any AI feature using this provider will stop working until you enter a new key.`,
+        {
+          title: "Delete this API key?",
+          kind: "warning",
+          okLabel: "Delete Key",
+          cancelLabel: "Keep Key",
+        },
+      );
+      if (!confirmed) return;
+    } catch {
+      // A dialog failure must not silently delete the key — bail.
+      return;
+    } finally {
+      // The block below re-arms the latch for the actual keychain call; release
+      // it here so a cancel/dialog-error path doesn't leave it stuck.
+      aiProviderKeyInFlight.delete(provider);
+    }
     if (aiProviderKeyInFlight.has(provider)) return;
     aiProviderKeyInFlight.add(provider);
     aiProviderKeySavingProvider = provider;

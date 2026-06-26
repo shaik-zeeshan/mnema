@@ -44,6 +44,11 @@
 </script>
 
 {#snippet lockCallout()}
+  <!-- macOS won't re-prompt once mic access is denied, so `requestPermission`
+       deep-links to System Settings instead — mirror PermissionsBody and relabel
+       the button ("Open Settings"/"Opening…") so it doesn't promise a prompt that
+       never appears. `permissionAction` returns the mode for the current state. -->
+  {@const micAction = controller.permissionAction(controller.permissions?.microphone)}
   <div class="lock-callout">
     <div class="lock-callout-text">
       Microphone access is required before you can record your mic.
@@ -54,7 +59,11 @@
       disabled={controller.requestingPerm === "microphone"}
       onclick={() => controller.requestPermission("microphone")}
     >
-      {controller.requestingPerm === "microphone" ? "Requesting…" : "Grant Microphone access"}
+      {#if controller.requestingPerm === "microphone"}
+        {micAction?.mode === "settings" ? "Opening…" : "Requesting…"}
+      {:else}
+        {micAction?.mode === "settings" ? "Open Settings" : "Grant Microphone access"}
+      {/if}
     </button>
   </div>
 {/snippet}

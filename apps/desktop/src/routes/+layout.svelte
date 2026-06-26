@@ -6,7 +6,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
-  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
+  import { closeCurrentWindow, getLastMainSurface, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
   import { createSettingsDeeplink } from "$lib/settings/deeplink.svelte";
   import {
     bootstrapCaptureControls,
@@ -277,6 +277,30 @@
   const hasWarningNotification = $derived(
     appNotifications.items.some((n) => n.severity === "warning"),
   );
+  // The count + worst-severity badge is `aria-hidden` (decorative), so assistive
+  // tech otherwise hears only "Open notifications" with no sense of how many or
+  // how urgent. Fold the live summary into the button name and mirror it into a
+  // dedicated live region (assertive when an error is present) so a new alert is
+  // announced even while the popover is closed.
+  const notificationSummary = $derived.by<string>(() => {
+    if (notificationLoadError) {
+      return "Notifications failed to load — open to retry.";
+    }
+    if (notificationCount === 0) return "";
+    const noun = notificationCount === 1 ? "notification" : "notifications";
+    const severity = hasErrorNotification
+      ? ", including an error"
+      : hasWarningNotification
+        ? ", including a warning"
+        : "";
+    return `${notificationCount} ${noun}${severity}`;
+  });
+  const notificationsAriaLabel = $derived(
+    notificationSummary ? `Open notifications — ${notificationSummary}` : "Open notifications",
+  );
+  const notificationLiveTone = $derived(
+    hasErrorNotification || notificationLoadError !== null ? "assertive" : "polite",
+  );
 
   $effect(() => {
     if (!hasNotificationIndicator) notificationsOpen = false;
@@ -321,6 +345,25 @@
   // just snaps back with no explanation. Clears on the next successful session
   // apply (capture-controls.svelte.ts) so the chip is self-healing.
   const captureError = $derived(captureControls.error);
+
+  // ── Pause / resume control ──────────────────────────────────────────────
+  // The control must reflect the *actual* paused state, not only a user pause:
+  // an inactivity or low-disk auto-pause also shows the session as "Paused", so
+  // labelling the button "Pause" there contradicts the status pill. Manual
+  // resume only applies to a user pause (auto-pauses clear themselves when
+  // activity returns / disk frees), so during an auto-pause the button reads
+  // "Resume" but is disabled with a title that explains why.
+  const isPaused = $derived(captureControls.paused);
+  const isAutoPaused = $derived(isPaused && !captureControls.isUserPaused);
+  const pauseButtonTitle = $derived(
+    captureControls.isUserPaused
+      ? "Resume recording"
+      : captureControls.isLowDiskSuspended
+        ? "Paused — free up disk space to resume recording"
+        : captureControls.isInactivityPaused
+          ? "Paused while you're away — recording resumes automatically when you return"
+          : "Pause recording",
+  );
 
   // ── Per-source runtime indicators ──────────────────────────────────────
   // While a capture session is running, fetch `get_idle_debug` periodically
@@ -497,6 +540,7 @@
     }
 
     rows.push(getEffectiveGlobalShortcut("toggleMainWindow"));
+    rows.push(getEffectiveGlobalShortcut("toggleQuickRecall"));
     rows.push(getEffectiveGlobalShortcut("openSettings"));
 
     if (devEnabled) {
@@ -576,6 +620,28 @@
     const target = surface === "insights" ? "/insights" : "/";
     if (normalizeAppPathname($page.url.pathname) === target) return;
     void goto(target);
+  }
+
+  // On the Settings route neither surface is the current page, so the toggle has
+  // no active segment. Rather than leaving it blank we de-emphasize it and mark
+  // the surface "Back to app" will return to (visually only — no `aria-current`,
+  // since Settings is the page).
+  const settingsReturnsToInsights = $derived(
+    isSettingsRoute && normalizeAppPathname(getLastMainSurface()).startsWith("/insights"),
+  );
+  const settingsReturnsToTimeline = $derived(isSettingsRoute && !settingsReturnsToInsights);
+
+  // Quick Recall has no in-app door otherwise — it is only summonable via the
+  // global ⌥Space shortcut, which a new user can't discover. The titlebar
+  // affordance asks Rust to toggle the Quick Recall panel (the same path the
+  // global shortcut takes); the shortcut stays the canonical fallback if the
+  // command is unavailable.
+  async function summonQuickRecall(): Promise<void> {
+    try {
+      await invoke("summon_quick_recall_window_command");
+    } catch {
+      // Best-effort: leave the global ⌥Space shortcut as the summon path.
+    }
   }
 
   function openNotifications(openedByKeyboard = false): void {
@@ -892,13 +958,13 @@
           <button
             type="button"
             class="titlebar__record titlebar__record--pause"
-            class:titlebar__record--resume={captureControls.isUserPaused}
-            onclick={captureControls.isUserPaused ? resumeCapture : pauseCapture}
-            disabled={captureLoadingPause}
-            title={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
-            aria-label={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
+            class:titlebar__record--resume={isPaused}
+            onclick={isPaused ? resumeCapture : pauseCapture}
+            disabled={captureLoadingPause || isAutoPaused}
+            title={pauseButtonTitle}
+            aria-label={pauseButtonTitle}
           >
-            <span>{captureLoadingPause ? (captureControls.isUserPaused ? "Resuming…" : "Pausing…") : captureControls.isUserPaused ? "Resume" : "Pause"}</span>
+            <span>{captureLoadingPause ? (isPaused ? "Resuming…" : "Pausing…") : isPaused ? "Resume" : "Pause"}</span>
           </button>
           <button
             type="button"
@@ -917,11 +983,12 @@
             class="titlebar__record titlebar__record--start"
             onclick={startCapture}
             disabled={captureLoadingStart || captureLoadingSettings}
-            title={`Start recording (${shortcutDisplay("toggleRecording")})`}
+            aria-busy={captureLoadingStart || captureLoadingSettings}
+            title={captureLoadingSettings ? "Preparing recording controls…" : `Start recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Start recording"
           >
             <span class="titlebar__record-glyph" aria-hidden="true"></span>
-            <span>{captureLoadingStart ? "Starting…" : "Record"}</span>
+            <span>{captureLoadingStart ? "Starting…" : captureLoadingSettings ? "Loading…" : "Record"}</span>
           </button>
         {/if}
         {#snippet sourceIcon(key: SourceLane["key"])}
@@ -1079,13 +1146,19 @@
     </div>
 
     <!-- Inert centre area carries the drag region + the Timeline⇄Insights
-         surface toggle + the (Timeline-only) centered search trigger. -->
+         surface toggle + the Quick Recall (Search) door. -->
     <div class="titlebar__drag" data-tauri-drag-region>
       <!-- Surface toggle — Main hosts Timeline + Insights; "dashboard" retired (#103). -->
-      <div class="surface-toggle" role="navigation" aria-label="Main surface">
+      <div
+        class="surface-toggle"
+        class:surface-toggle--muted={isSettingsRoute}
+        role="navigation"
+        aria-label="Main surface"
+      >
         <button
           type="button"
           class:active={isMainRoute}
+          class:return-target={settingsReturnsToTimeline}
           aria-current={isMainRoute ? "page" : undefined}
           onclick={() => goToSurface("timeline")}
         >
@@ -1094,23 +1167,57 @@
         <button
           type="button"
           class:active={isInsightsRoute}
+          class:return-target={settingsReturnsToInsights}
           aria-current={isInsightsRoute ? "page" : undefined}
           onclick={() => goToSurface("insights")}
         >
           Insights
         </button>
       </div>
+      <!-- Quick Recall door — otherwise summonable only via the global ⌥Space
+           shortcut, which a new user can't discover. -->
+      <button
+        type="button"
+        class="titlebar__search"
+        title={`Search · Recall (${shortcutDisplay("toggleQuickRecall")})`}
+        aria-label={`Search and recall (${shortcutDisplay("toggleQuickRecall")})`}
+        onclick={() => void summonQuickRecall()}
+      >
+        <svg
+          class="titlebar__search-icon"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+        <span class="titlebar__search-label">Search</span>
+        <kbd class="titlebar__search-kbd" aria-hidden="true">{shortcutDisplay("toggleQuickRecall")}</kbd>
+      </button>
     </div>
 
     <div class="titlebar__group titlebar__group--right">
       {#if showMainTitlebar}
+        <!-- Persistent live region: announces a new/cleared alert (assertive
+             when an error is present) even while the bell popover is closed. The
+             count badge itself stays aria-hidden decoration. -->
+        <span class="sr-only" aria-live={notificationLiveTone} aria-atomic="true">
+          {notificationSummary}
+        </span>
         {#if hasNotificationIndicator}
           <div class="titlebar__notifications">
             <button
               bind:this={notificationsButtonEl}
               type="button"
               class="titlebar__settings titlebar__notifications-button"
-              aria-label="Open notifications"
+              aria-label={notificationsAriaLabel}
               aria-expanded={notificationsOpen}
               aria-controls="notification-popover"
               title="Notifications"
@@ -2091,6 +2198,81 @@
     color: var(--app-accent);
     font-weight: 600;
   }
+  /* On the Settings route neither surface is the current page; de-emphasize the
+     whole toggle so it doesn't read as a live selection, and quietly mark the
+     surface "Back to app" returns to (no accent fill — that's reserved for the
+     active page). */
+  .surface-toggle--muted {
+    opacity: 0.72;
+  }
+  .surface-toggle--muted button.return-target {
+    color: var(--app-text);
+    border-color: var(--app-border);
+    background: var(--app-surface-raised);
+  }
+
+  /* ── Quick Recall door ─────────────────────────────────────────
+     A visible, mouse-discoverable entry to Quick Recall; the global ⌥Space
+     shortcut alone is undiscoverable for a new user. */
+  .titlebar__search {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 26px;
+    padding: 0 8px 0 9px;
+    border: 1px solid var(--app-border);
+    border-radius: 7px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: var(--text-base);
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  }
+  .titlebar__search-icon {
+    flex: 0 0 auto;
+  }
+  .titlebar__search-label {
+    letter-spacing: 0.02em;
+  }
+  .titlebar__search-kbd {
+    flex: 0 0 auto;
+    padding: 1px 5px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-subtle);
+    font-family: var(--app-font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.3;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .titlebar__search:hover {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+  }
+  .titlebar__search:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .titlebar__search:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
+  }
 
   /* ── Recording status indicator ───────────────────────────── */
   .titlebar__status {
@@ -2227,10 +2409,14 @@
     background: var(--app-surface-raised);
   }
   .titlebar__source--toggle.titlebar__source--unselected {
-    color: var(--app-fg-subtle);
+    /* "Off" must still be legible: --app-fg-subtle at 0.7 opacity rendered the
+       glyph near-invisible (well under the 3:1 non-text floor). --app-text-subtle
+       (~4.9:1) at near-full opacity reads clearly as a disabled-but-present
+       source while staying dimmer than the selected --app-text-strong. */
+    color: var(--app-text-subtle);
     border-color: var(--app-status-border);
     background: var(--app-status-bg);
-    opacity: 0.7;
+    opacity: 0.9;
   }
   .titlebar__source--toggle:not(:disabled):hover {
     color: var(--app-text-strong);

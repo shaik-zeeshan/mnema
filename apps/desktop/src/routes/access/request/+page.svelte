@@ -34,7 +34,7 @@
   // capture the consent terms so the body can show a brief positive receipt
   // (naming tool + scope + expiry) before/while the backend tears the window
   // down — and so a delayed teardown is never misreported as a failure.
-  let granted = $state<{ tool: string; scopeLabel: string; expiryLabel: string } | null>(null);
+  let granted = $state<{ tool: string; scopeProse: string; expiryLabel: string } | null>(null);
   // Ticks so the request-age label stays honest while the dialog sits open.
   let now = $state(Date.now());
 
@@ -46,6 +46,9 @@
   // SAFE anchor on open, and Tab is contained inside the consent dialog.
   let dialogEl = $state<HTMLDivElement | null>(null);
   let denyButton = $state<HTMLButtonElement | null>(null);
+  // Bound to the granted-receipt Close button so focus follows into the receipt
+  // when the grant lands (the Deny anchor it replaced is gone by then).
+  let grantedCloseButton = $state<HTMLButtonElement | null>(null);
 
   const durationSeconds = {
     "1h": 60 * 60,
@@ -71,6 +74,13 @@
     { value: "24h", label: "24h" },
     { value: "7d", label: "7d" },
   ] as const;
+
+  // Noun-phrase scope wording for prose sentences (the receipt), where the bare
+  // Segmented label ("Last day") would read as "your Last day text".
+  const scopeProse = {
+    lastDay: "text from the last 24 hours",
+    allRetained: "your entire retained capture history",
+  } as const;
 
   const scopeMeta = $derived(
     scopeOptions.find((option) => option.value === selectedScope) ?? scopeOptions[0],
@@ -217,7 +227,7 @@
     // the backend clears the pending request and tears the window down.
     const receipt = {
       tool: pendingRequest.client.label,
-      scopeLabel: scopeMeta.label,
+      scopeProse: scopeProse[selectedScope],
       expiryLabel,
     };
     startActionWatchdog(() => (approving = false));
@@ -233,6 +243,9 @@
       clearActionWatchdog();
       approving = false;
       granted = receipt;
+      // The Deny anchor that held focus is gone; follow focus into the receipt's
+      // Close button so keyboard users aren't dropped onto <body>.
+      void tick().then(() => grantedCloseButton?.focus());
     } catch (err) {
       clearActionWatchdog();
       error = mapActionError(err);
@@ -327,9 +340,9 @@
       </span>
       <div class="access-dialog__title">
         <p class="eyebrow">CLI Access</p>
-        <h1 id="access-dialog-title">Review local tool access</h1>
+        <h1 id="access-dialog-title">Review command-line tool access</h1>
         <p id="access-dialog-lede" class="lede">
-          A local tool is requesting time-bounded access to your searchable Mnema text.
+          A command-line tool is requesting time-bounded access to your searchable Mnema text.
         </p>
       </div>
     </header>
@@ -344,8 +357,8 @@
           </span>
           <p class="receipt__title">Access granted</p>
           <p class="receipt__body">
-            <strong>{granted.tool}</strong> can read your
-            <strong>{granted.scopeLabel}</strong> text until <strong>{granted.expiryLabel}</strong>.
+            <strong>{granted.tool}</strong> can read
+            <strong>{granted.scopeProse}</strong> until <strong>{granted.expiryLabel}</strong>.
           </p>
           <p class="receipt__hint">
             Manage or revoke this in Settings → Data → Access.
@@ -389,9 +402,21 @@
       {:else}
         <section class="requester" aria-label="Requesting tool">
           <div class="requester__head">
-            <span class="requester__label">{pendingRequest.client.label}</span>
+            <span class="requester__label" title={pendingRequest.client.label}
+              >{pendingRequest.client.label}</span
+            >
             <span class="requester__source">{identitySourceLabel(pendingRequest.client.source)}</span>
           </div>
+          <p class="trust-note">
+            <span class="trust-note__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
+                <path d="M12 9v4" />
+                <path d="M12 17h.01" />
+              </svg>
+            </span>
+            <span>This identity is reported by the requesting process and cannot be independently verified.</span>
+          </p>
           <p class="requester__trigger">
             Requested via <code>mnema {pendingRequest.command}</code>
           </p>
@@ -399,17 +424,6 @@
             <p class="requester__age">{requestAgeLabel}</p>
           {/if}
         </section>
-
-        <p class="trust-note">
-          <span class="trust-note__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
-              <path d="M12 9v4" />
-              <path d="M12 17h.01" />
-            </svg>
-          </span>
-          <span>This identity is reported by the requesting process and cannot be independently verified.</span>
-        </p>
 
         <fieldset class="request-section">
           <legend class="group-label">What it can read</legend>
@@ -485,7 +499,12 @@
            lingering case (delayed/failed teardown) so the granted state is never
            left with zero in-app affordance backing the "Close" copy. -->
       <footer class="access-dialog__actions">
-        <button class="btn btn--ghost" type="button" onclick={closeGrantedWindow}>
+        <button
+          class="btn btn--ghost"
+          bind:this={grantedCloseButton}
+          type="button"
+          onclick={closeGrantedWindow}
+        >
           Close
         </button>
       </footer>
@@ -646,21 +665,22 @@
 
   .requester__head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
     justify-content: space-between;
   }
 
+  /* The requester identity is the load-bearing "who is asking" line on a consent
+     screen — never silently clip it. Wrap a long name across lines (and keep the
+     full string in title=) rather than ellipsizing it away. */
   .requester__label {
     min-width: 0;
-    overflow: hidden;
     color: var(--app-text-strong);
     font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.01em;
     line-height: 1.25;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
   .requester__source {
@@ -699,16 +719,24 @@
     font-size: var(--text-sm);
   }
 
+  /* Verification caveat sits directly under the identity it qualifies, in a
+     warn-tinted container — it must visibly outrank a benign hint, not read as
+     the faintest line on the screen. */
   .trust-note {
     display: flex;
     gap: 7px;
     align-items: flex-start;
     margin: 0;
+    padding: 7px 9px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 6px;
+    background: var(--app-warn-bg);
   }
 
   .trust-note > span:last-child {
-    color: var(--app-text-muted);
+    color: var(--app-warn);
     font-size: var(--text-sm);
+    font-weight: 600;
     line-height: 1.45;
   }
 

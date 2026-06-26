@@ -124,7 +124,9 @@
     display: flex;
     align-items: center;
   }
-  .settings-shell .rail-search svg {
+  /* Leading search glyph only (direct child) — the trailing clear button nests
+     its own svg and styles it itself. */
+  .settings-shell .rail-search > svg {
     position: absolute;
     left: 10px;
     width: 14px;
@@ -142,7 +144,8 @@
     background: var(--app-surface);
     border: 1px solid var(--app-border);
     border-radius: 8px;
-    padding: 8px 10px 8px 32px;
+    /* Right padding reserves room for the in-field clear (X) button. */
+    padding: 8px 32px 8px 32px;
     color: var(--app-text);
     font-family: inherit;
     font-size: var(--text-base);
@@ -375,7 +378,10 @@
      (Processing, Capture) they lay out in a column with an airy gap that reads
      as distinct sections. The trailing `padding-bottom` lives on this scrolling
      child so WebKit counts it in scrollHeight and the last row stays reachable. */
-  .settings-shell [role="tabpanel"] {
+  /* Group panels are plain content regions (not tabpanels — the rail is a
+     navigation landmark over one scrolling panel, not a tablist), so layout
+     keys off a class. */
+  .settings-shell .settings-panel {
     display: flex;
     flex-direction: column;
     gap: 24px;

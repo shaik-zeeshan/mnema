@@ -284,6 +284,23 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
+/* The accel fast-path + its clarifying microcopy share a tight column so the note
+   reads as belonging to the button (the `.welcome__inner` gap is larger). */
+.ob-screen .welcome__accel-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+/* Plain human-readable explainer (sans, muted) of what the recommended fast path
+   actually does — kept off the uppercase eyebrow treatment so it reads as prose. */
+.ob-screen .welcome__accel-note {
+  margin: 0;
+  max-width: 46ch;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--app-text-muted);
+}
 .ob-screen .welcome__accel {
   align-self: flex-start;
   margin-top: 2px;

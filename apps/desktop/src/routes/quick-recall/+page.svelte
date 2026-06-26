@@ -307,6 +307,16 @@
     await closeCurrentWindow();
   }
 
+  // Opening a cited source closes the Quick Recall window. By the time the user
+  // clicks a source they have almost always SEEN the answer (focused + terminal →
+  // askOutcomeSeen), so without this flag the dismiss/idle-clear would treat the
+  // close as ordinary teardown and re-summon would land on an empty search — the
+  // answer gone with no breadcrumb. This one-shot flag keeps the thread alive
+  // across the source hand-off so re-summoning restores the same answer (the
+  // thread is also persisted server-side and reachable via "Continue in Chat").
+  // Reset on the next focus (re-summon) so an ordinary later dismiss is normal.
+  let sourceHandoffPending = $state(false);
+
   // Hand off an Ask AI answer source to the main window, mirroring
   // selectFrame/selectAudio (frame xor audio carried by the source kind).
   async function selectSource(source: AskAiSource): Promise<void> {
@@ -325,6 +335,9 @@
       await surfaceResultHandoffFailure(err);
       return;
     }
+    // Preserve the thread across the close so re-summon restores the answer
+    // instead of dropping to a blank search (see sourceHandoffPending above).
+    sourceHandoffPending = true;
     await closeCurrentWindow();
   }
 
@@ -945,7 +958,7 @@
   // Cleared whenever a fresh thread starts or the thread state is reset.
   let askStopped = $state(false);
 
-  // The seed used for the current thread's FIRST turn, so an error "Try again"
+  // The seed used for the current thread's FIRST turn, so an error "Retry"
   // can re-run the exact same question + seed pairing as a fresh thread.
   let askLastSeed = $state<string | null>(null);
 
@@ -962,6 +975,52 @@
   // markup that needs the streaming turn's phase (e.g. composer focus).
   let askLiveTurn = $derived<AskTurn | null>(
     askTurns.length > 0 ? askTurns[askTurns.length - 1] : null,
+  );
+
+  // AT-only phase announcement for the Ask AI transcript. The transcript itself
+  // is NOT an aria-live region — streaming the answer token-by-token through one
+  // polite region floods a screen reader with a re-read of the whole growing
+  // answer on every delta. Instead this small string announces ONLY the live
+  // turn's phase transitions (searching → thinking → writing → settled / error /
+  // stopped), mirroring the search door's `searchStatusAnnouncement` + its
+  // visually-hidden `role="status"` region. The visible transcript carries
+  // `aria-busy` while streaming so AT knows it's updating without narrating each
+  // token.
+  let askPhaseAnnouncement = $derived.by((): string => {
+    if (mode !== "ask" || !askSubmitted) {
+      return "";
+    }
+    if (askStopped) {
+      return "Stopped.";
+    }
+    const live = askLiveTurn;
+    if (live === null) {
+      return "";
+    }
+    switch (live.phase) {
+      case "seeding":
+        return "Searching your captures.";
+      case "thinking":
+        return "Thinking.";
+      case "streaming":
+        return "Writing the answer.";
+      case "error":
+        return live.errorMessage ?? "Ask AI failed.";
+      case "done":
+        return live.sources.length > 0
+          ? "Answer ready, with sources."
+          : "Answer ready.";
+      default:
+        return "";
+    }
+  });
+
+  // The live answer is settled and has copyable text — gates the footer's ⌃C
+  // copy hint (the ⌘C shortcut existed but was never surfaced anywhere).
+  let askCopyAvailable = $derived(
+    askLiveTurn !== null &&
+      askLiveTurn.phase === "done" &&
+      turnAnswerText(askLiveTurn).length > 0,
   );
 
   // The composer is available once the FIRST answer has completed and no turn is
@@ -1304,7 +1363,7 @@
       if (hydrated.length === 0) return;
       askTurns = hydrated;
       askSubmitted = true;
-      // Restore the first-turn question so the turn-1 "Try again" button (which
+      // Restore the first-turn question so the turn-1 "Retry" button (which
       // re-runs the whole thread via retryAsk) isn't silently dead after a
       // re-summon. The seed isn't persisted per turn, so retry re-runs without
       // one (askLastSeed stays null, which startAsk handles).
@@ -1388,6 +1447,13 @@
         break;
       case "reasoning":
         turn.reasoning = (turn.reasoning ?? "") + update.text;
+        // Reasoning streamed LIVE shows as an always-expanded panel; once the
+        // answer starts it settles into the collapsed "Thought process" chip.
+        // Mark it expanded so a reader mid-thought isn't collapsed out from under
+        // them on settle — they can still collapse it manually. Only set on the
+        // live stream (this op), never on snapshot/hydrate (adoptView), so a
+        // cold-reloaded turn stays collapsed.
+        turn.reasoningExpanded = true;
         break;
       case "toolActivity":
         turn.toolActivities = [...turn.toolActivities, update.entry];
@@ -1487,7 +1553,7 @@
       await cancelActiveAsk();
     }
 
-    // Normalize and record the seed so an error "Try again" reuses it exactly.
+    // Normalize and record the seed so an error "Retry" reuses it exactly.
     const normalizedSeed =
       seedQuery && seedQuery.trim().length > 0 ? seedQuery.trim() : null;
     askLastSeed = normalizedSeed;
@@ -1912,6 +1978,7 @@
     askStreaming = false;
     askOutcomeSeen = false;
     askStopped = false;
+    sourceHandoffPending = false;
   }
 
   // Return to search mode, abandoning the whole thread (a single Escape drops
@@ -2456,7 +2523,7 @@
   let pickerIndex = $state(0);
   // Bound to the picker overlay so we can move DOM focus there on open (the
   // search input keeps focus via aria-activedescendant; this is the listbox the
-  // input's keydown drives, and the date inputs live inside it).
+  // input's keydown drives).
   let pickerEl = $state<HTMLDivElement | null>(null);
 
   // The three categories, in display order. `level` is the operator family the
@@ -2472,7 +2539,7 @@
     {
       id: "date",
       label: "Date range",
-      hint: "A day, a preset, or a from/to span",
+      hint: "A day, a preset, or a typed range",
       level: "date" as const,
     },
   ];
@@ -3390,7 +3457,8 @@
       !windowFocused &&
       hasClearableState &&
       !operationRunning &&
-      !askConversationPending
+      !askConversationPending &&
+      !sourceHandoffPending
     ) {
       scheduleIdleClear();
     } else {
@@ -3525,6 +3593,10 @@
       .onFocusChanged(({ payload: focused }) => {
         windowFocused = focused;
         if (focused) {
+          // A source hand-off kept the thread alive across the close; now that the
+          // user re-summoned, return to ordinary ephemeral rules (the in-memory
+          // thread is still present, so it renders immediately — no re-hydrate).
+          sourceHandoffPending = false;
           // The panel is hidden/re-shown rather than recreated, so re-probe Ask
           // AI availability each time it becomes key — onMount fires only once,
           // and the user may have enabled Ask AI or fixed PI/auth since the last
@@ -3574,7 +3646,7 @@
     // conversation is seen, or when there is no conversation at all — restoring
     // today's ephemeral search behavior. App exit / onDestroy still tears down.
     listen("quick_recall_dismissed", () => {
-      if (askConversationPending) {
+      if (askConversationPending || sourceHandoffPending) {
         return;
       }
       void cancelActiveAsk().then(() => {
@@ -3734,11 +3806,13 @@
               placeholder="Search your captures…"
               aria-label="Search your captures"
               role="combobox"
-              aria-expanded={pickerOpen || resultCount > 0}
+              aria-expanded={pickerOpen || valueListActive || resultCount > 0}
               aria-keyshortcuts="ArrowUp ArrowDown Enter Escape Control+Enter Control+O"
               aria-controls={pickerOpen
                 ? "quick-recall-picker"
-                : "quick-recall-results-list"}
+                : valueListActive
+                  ? "quick-recall-value-list"
+                  : "quick-recall-results-list"}
               aria-activedescendant={pickerOpen
                 ? pickerActiveOptionId
                 : valueListActive
@@ -3755,6 +3829,37 @@
               }}
             />
           </div>
+          <!-- Visible Filter Picker trigger: the picker was previously reachable
+               only via ⌘F / `/`, advertised nowhere — a funnel in the field row
+               gives it a mouse-discoverable door (and surfaces the ⌘F shortcut via
+               its title). Click opens the same category picker as the key path; DOM
+               focus stays on the search input (openPicker refocuses it), so the
+               picker's aria-activedescendant navigation keeps working. -->
+          <button
+            type="button"
+            class="quick-recall__filter-trigger"
+            class:quick-recall__filter-trigger--active={pickerOpen}
+            onclick={() => (pickerOpen ? closePicker() : openPicker())}
+            aria-label="Filter results"
+            title="Filter results (⌘F)"
+            aria-expanded={pickerOpen}
+            aria-controls={pickerOpen ? "quick-recall-picker" : undefined}
+            aria-keyshortcuts="Control+F"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M2 3h10l-3.8 4.5v3.2l-2.4 1.2V7.5z" />
+            </svg>
+          </button>
           <!-- Slice 7: syntax-help affordance. A quiet `?` trigger toggling a
                static popover that documents the typed Body Match Operators (and,
                for completeness, the field operators that pair with the picker).
@@ -3965,6 +4070,7 @@
                lists, and the input's keydown owns Arrow/Enter/Escape while up. -->
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div
+            id="quick-recall-value-list"
             class="quick-recall__results quick-recall__picker"
             role="listbox"
             aria-label="Filter values"
@@ -4026,8 +4132,10 @@
           <div
             id="quick-recall-results-list"
             class="quick-recall__results"
+            class:quick-recall__results--refetching={loading && hasResults}
             role="listbox"
             aria-label="Search results"
+            aria-busy={loading}
           >
             {#if belowMinimum}
             <!-- Slice 4: feature-teaching orientation view for the pristine /
@@ -4050,9 +4158,13 @@
                   > to ask AI.{/if}
               </p>
             </div>
-          {:else if loading}
+          {:else if loading && !hasResults}
             <!-- Slice 6: skeleton rows mirroring SearchResultCard's two-column
-                 layout (116px 16/10 thumb + stacked text lines). -->
+                 layout (116px 16/10 thumb + stacked text lines). Only the FIRST
+                 search (no prior results) shows the full skeleton; a refetch on a
+                 subsequent keystroke keeps the prior results visible-but-dimmed
+                 (the `--refetching` class on the list) so the surface doesn't flash
+                 empty between every keystroke. -->
             <div class="quick-recall__skeletons" aria-hidden="true">
               {#each [0, 1, 2] as row (row)}
                 <div class="quick-recall__skeleton-row">
@@ -4071,7 +4183,7 @@
             </div>
           {:else if errorMessage}
             <!-- A backend search failure offers an explicit recovery (re-issue the
-                 same query), mirroring the Ask AI "Try again" so the path isn't a
+                 same query), mirroring the Ask AI "Retry" so the path isn't a
                  soft dead end the user has to guess at by editing the query. -->
             <p class="quick-recall__state quick-recall__state--error">{errorMessage}</p>
             <div class="quick-recall__retry-row">
@@ -4096,6 +4208,26 @@
             </p>
           {:else if showEmpty}
             <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
+            <!-- Recovery for a constrained search: when filter chips narrow the
+                 query, the most likely fix is loosening a filter, so name that
+                 path; offer the Ask AI pivot too so the empty result isn't a dead
+                 end. Both are quiet inline actions, not a heavy empty-state block. -->
+            {#if activeFilterChips.length > 0 || askAvailable}
+              <p class="quick-recall__empty-recovery">
+                {#if activeFilterChips.length > 0}
+                  Try removing a filter{askAvailable ? ", or " : "."}
+                {/if}
+                {#if askAvailable}
+                  <button
+                    type="button"
+                    class="quick-recall__empty-action"
+                    onclick={() => void activateAskAi()}
+                  >
+                    ask AI instead <kbd>⌃↵</kbd>
+                  </button>
+                {/if}
+              </p>
+            {/if}
             {@render semanticHint()}
           {:else}
             {@render semanticHint()}
@@ -4188,11 +4320,19 @@
           {/if}
         </div>
 
+        <!-- Visually-hidden polite live region announcing ONLY the Ask AI phase
+             transitions to AT. The transcript below is intentionally NOT a live
+             region (token-by-token deltas flooded screen readers); this mirrors
+             the search door's `searchStatusAnnouncement` pattern. -->
+        <span class="quick-recall__sr-status" role="status" aria-live="polite"
+          >{askPhaseAnnouncement}</span
+        >
+
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div
           bind:this={askAreaEl}
           class="quick-recall__results quick-recall__answer-area"
-          aria-live="polite"
+          aria-busy={askStreaming}
           tabindex="-1"
           onkeydown={handleAnswerAreaKeydown}
         >
@@ -4229,7 +4369,7 @@
                         }
                       }}
                     >
-                      Try again
+                      Retry
                     </button>
                   </div>
                 {:else}
@@ -4490,6 +4630,33 @@
                           {/if}
                         </div>
                       {/if}
+
+                      <!-- Empty-answer fallback: a settled turn that produced no
+                           answer blocks and no sources (e.g. the model returned
+                           nothing) would otherwise render a blank turn with no
+                           explanation or way forward. Surface a calm line plus the
+                           same retry the error branch offers. -->
+                      {#if turn.phase === "done" && turn.blocks.length === 0 && turn.sources.length === 0}
+                        <p class="quick-recall__state">
+                          No answer came back. Try asking again.
+                        </p>
+                        <div class="quick-recall__retry-row">
+                          <button
+                            type="button"
+                            class="quick-recall__retry"
+                            disabled={askStreaming}
+                            onclick={() => {
+                              if (ti === 0) {
+                                void retryAsk();
+                              } else {
+                                void retryFollowupTurn(turn);
+                              }
+                            }}
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      {/if}
                     {/if}
                     {#if turn.liveActivity !== null}
                       <!-- Live animated working line: the real tool filter string. -->
@@ -4592,11 +4759,13 @@
         {#if selectedResultIsOpenable}
           <span class="quick-recall__hint-item"><kbd>⌃O</kbd> open page</span>
         {/if}
+        <span class="quick-recall__hint-item"><kbd>⌃F</kbd> filters</span>
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> Ask AI</span>
         {/if}
         <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
       {:else}
+        <span class="quick-recall__hint-item"><kbd>⌃F</kbd> filters</span>
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> Ask AI</span>
         {/if}
@@ -4606,6 +4775,9 @@
       <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {:else}
+      {#if askCopyAvailable}
+        <span class="quick-recall__hint-item"><kbd>⌃C</kbd> copy</span>
+      {/if}
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {/if}
   </div>
@@ -4796,6 +4968,14 @@
     gap: 16px;
   }
 
+  /* Refetch-in-flight: prior results stay on screen but dim slightly so the
+     keystroke-driven refresh reads as "updating" without the surface flashing
+     empty between every keystroke. */
+  .quick-recall__results--refetching {
+    opacity: 0.55;
+    transition: opacity 0.12s ease;
+  }
+
   .quick-recall__section {
     display: flex;
     flex-direction: column;
@@ -4827,6 +5007,55 @@
 
   .quick-recall__state--error {
     color: var(--app-danger-text);
+  }
+
+  /* Quiet recovery line under the "No matches" empty state: muted prose with an
+     inline link-style action, so it reads as a gentle next step rather than a
+     loud CTA block (the dedicated empty-state styling is reserved for the
+     semantic-search hint card). */
+  .quick-recall__empty-recovery {
+    margin: 0;
+    padding: 0 2px 8px;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    color: var(--app-text-subtle);
+  }
+
+  .quick-recall__empty-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0;
+    font: inherit;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .quick-recall__empty-action:hover {
+    color: var(--app-accent);
+  }
+
+  .quick-recall__empty-action:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__empty-action kbd {
+    font-family: inherit;
+    font-size: var(--text-xs);
+    line-height: 1;
+    color: var(--app-text-muted);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 5px;
+    padding: 2px 5px;
   }
 
   /* In-search discoverability hint (issue #125): keyword-only search → Settings. */
@@ -4902,16 +5131,16 @@
     gap: 9px;
   }
 
+  /* Plain muted labels, NOT pills: the bordered/padded chip styling previously
+     read as clickable buttons but these cues are inert (they only name what's
+     searchable). Stripping the border/background/padding removes that false
+     affordance while keeping the quiet uppercase label tone. */
   .quick-recall__orient-cue {
     font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--app-text-subtle);
-    background: var(--app-surface-subtle);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    padding: 6px 10px;
   }
 
   .quick-recall__orient-cue-dot {
@@ -5114,6 +5343,43 @@
     background: var(--app-surface-active);
   }
 
+  /* Funnel Filter Picker trigger: shares the quiet round-chip idiom of the
+     syntax `?` trigger (accent reserved for hover/active), so the two field-row
+     affordances read as a matched pair. The active variant marks it pressed while
+     the picker overlay is open. */
+  .quick-recall__filter-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  }
+
+  .quick-recall__filter-trigger:hover {
+    border-color: var(--app-accent);
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__filter-trigger:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__filter-trigger:active,
+  .quick-recall__filter-trigger--active {
+    background: var(--app-surface-active);
+    border-color: var(--app-accent);
+    color: var(--app-accent);
+  }
+
   /* The popover floats below-right of the trigger, anchored to the wrapper. It's
      static documentation — no interactive content — so role="tooltip" suffices.
      The raised surface + hairline border match the rest of the surface chrome. */
@@ -5298,8 +5564,10 @@
 
   /* Slice 5: Filter Picker overlay. Reuses the results-region box (flex column,
      scroll) so it occupies the same slot the results would, then layers a header,
-     a vertical option list, and (for dates) the From/To row + presets. Item
-     highlight uses the same accent-tinted surface idiom as a selected result. */
+     a vertical option list, and (for dates) the preset rows plus a typed-range
+     hint (custom ranges are typed as after:/before: — there is no From/To field
+     pair). Item highlight uses the same accent-tinted surface idiom as a selected
+     result. */
   .quick-recall__picker {
     gap: 10px;
   }
@@ -5890,7 +6158,7 @@
     line-height: 1;
   }
 
-  /* Error "Try again" affordance. */
+  /* Error "Retry" affordance. */
   .quick-recall__retry-row {
     padding: 2px;
   }
@@ -6137,6 +6405,8 @@
     .quick-recall__activity-chip,
     .quick-recall__activity-caret,
     .quick-recall__syntax-trigger,
+    .quick-recall__filter-trigger,
+    .quick-recall__results--refetching,
     .quick-recall__stop {
       transition: none;
     }

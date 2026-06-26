@@ -718,22 +718,44 @@ export class OnboardingController {
     FEATURES.find((feature) => this.featureAttention(feature.id))?.id ?? null,
   );
 
-  // Names the rows blocking the configure→finale step, or null when nothing
-  // blocks. Mirrors the finale's `finaleBlockReason` copy idiom so the footer can
-  // say WHAT is blocking instead of only a terse "N need attention" count. Stays
-  // null while a custom resolution/bitrate is the (separately-surfaced) blocker.
+  // True when a selected custom resolution/bitrate is invalid. These serialize as
+  // null and break the backend save, so they block the configure→finale step just
+  // like an attention item — but they live in the `screen` row's body, not the
+  // attention tally, so they need their own footer reason + jump target.
+  customValueInvalid = $derived(
+    this.customResolutionErrors.length > 0 || this.customBitrateErrors.length > 0,
+  );
+
+  // The first row blocking the configure→finale step (attention rows first, then
+  // the custom resolution/bitrate which lives in the `screen` row), or null. This
+  // is what the footer's "jump to the blocker" affordance targets so EVERY reason
+  // the CTA is disabled points at the row to fix — including the custom-value case.
+  firstConfigureBlockerId = $derived(
+    this.firstAttentionFeatureId ?? (this.customValueInvalid ? ("screen" as FeatureId) : null),
+  );
+
+  // Names what is blocking the configure→finale step, or null when nothing blocks.
+  // Mirrors the finale's `finaleBlockReason` copy idiom so the footer can say WHAT
+  // is blocking instead of only a terse "N need attention" count. Covers both the
+  // attention rows AND an invalid custom resolution/bitrate (which would otherwise
+  // disable the CTA with no stated reason).
   configureBlockReason = $derived.by(() => {
     const names = FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name);
-    if (names.length === 0) return null;
-    return `Needs attention before you can finish: ${names.join(", ")}.`;
+    if (names.length > 0) {
+      return `Needs attention before you can finish: ${names.join(", ")}.`;
+    }
+    if (this.customValueInvalid) {
+      return "Fix the custom recording resolution or bitrate before you can finish.";
+    }
+    return null;
   });
 
-  // Open + scroll to the first attention row so the count chip is an actionable
-  // jump target (not just a tally). Opening is the controller's job; the scroll
-  // is a best-effort DOM nudge (the row mounts its body on open), guarded for the
-  // no-attention case.
+  // Open + scroll to the first row blocking the step (attention OR the custom
+  // resolution/bitrate) so the footer reason is an actionable jump target (not
+  // just text). Opening is the controller's job; the scroll is a best-effort DOM
+  // nudge (the row mounts its body on open), guarded for the no-blocker case.
   jumpToFirstAttention(): void {
-    const id = this.firstAttentionFeatureId;
+    const id = this.firstConfigureBlockerId;
     if (!id) return;
     this.openId = id;
     // Defer the scroll until the row has re-rendered open.

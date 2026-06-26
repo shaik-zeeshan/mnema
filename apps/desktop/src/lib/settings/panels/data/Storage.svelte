@@ -32,11 +32,25 @@
   let storageLocationError = $state<string | null>(null);
   let browsing = $state(false);
 
+  // The storage root currently IN EFFECT (resolved at launch). The backend only
+  // re-resolves it on the next launch, so a freshly-picked directory updates the
+  // display but not this — the gap drives the "restart to apply" notice below.
+  let appliedLocation = $state("");
+
   const displayPath = $derived(storageLocation || rec.draftSaveDirectory);
+
+  // A picked directory differs from the one the running app resolved at launch,
+  // so the change is saved but won't take effect until Mnema restarts.
+  const pendingRestart = $derived(
+    appliedLocation.length > 0 &&
+      displayPath.length > 0 &&
+      displayPath !== appliedLocation,
+  );
 
   async function loadStorageLocation() {
     try {
       storageLocation = await invoke<string>("get_storage_location");
+      appliedLocation = storageLocation;
       storageLocationError = null;
     } catch (err) {
       storageLocationError = humanizeError(err);
@@ -109,6 +123,11 @@
         </div>
         {#if storageLocationError}
           <p class="error-text">{storageLocationError}</p>
+        {/if}
+        {#if pendingRestart}
+          <p class="group-hint group-hint--warn" role="status">
+            Saved — but this takes effect after you restart Mnema. Captures already on disk stay where they are.
+          </p>
         {/if}
       </div>
     {/snippet}

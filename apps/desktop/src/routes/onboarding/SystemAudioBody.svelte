@@ -26,6 +26,10 @@
 </script>
 
 {#snippet lockCallout()}
+  <!-- Once system-audio access is denied macOS won't re-prompt, so
+       `requestPermission` deep-links to System Settings — mirror PermissionsBody
+       and relabel ("Open Settings"/"Opening…") rather than promising a prompt. -->
+  {@const sysAction = controller.permissionAction(controller.permissions?.systemAudio)}
   <div class="lock-callout">
     <div class="lock-callout-text">
       System audio access is required before you can capture system sound.
@@ -36,7 +40,11 @@
       disabled={controller.requestingPerm === "systemAudio"}
       onclick={() => controller.requestPermission("systemAudio")}
     >
-      {controller.requestingPerm === "systemAudio" ? "Requesting…" : "Grant System audio access"}
+      {#if controller.requestingPerm === "systemAudio"}
+        {sysAction?.mode === "settings" ? "Opening…" : "Requesting…"}
+      {:else}
+        {sysAction?.mode === "settings" ? "Open Settings" : "Grant System audio access"}
+      {/if}
     </button>
   </div>
 {/snippet}

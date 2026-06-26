@@ -63,7 +63,9 @@
   }
 
   .input::placeholder {
-    color: var(--app-text-faint);
+    /* Format hints must clear AA contrast; --app-text-faint is decoration-only
+       and falls below it. Match Select/Combobox placeholder text. */
+    color: var(--app-text-subtle);
   }
 
   .input:focus {

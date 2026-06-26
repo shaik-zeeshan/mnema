@@ -81,8 +81,11 @@
   .trend--up {
     color: var(--app-accent);
   }
+  /* "cooling" (▼) is normal decay, not an error — read it QUIET (muted neutral)
+     so the saturated --app-danger token stays reserved for destructive/
+     contradiction states and the two never collide (matches the Subjects index). */
   .trend--down {
-    color: var(--app-danger);
+    color: var(--app-text-muted);
   }
   .trend--steady {
     color: var(--app-text-subtle);

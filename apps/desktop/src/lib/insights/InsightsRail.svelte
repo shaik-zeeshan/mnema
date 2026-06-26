@@ -60,6 +60,18 @@
     { id: "subjects", label: "Subjects" },
     { id: "context", label: "Context" },
   ];
+
+  // "New chat" carries the Chat-group active treatment ONLY when the open thread
+  // is an unsaved/new one — i.e. the active conversation id isn't a saved history
+  // row. When a SAVED conversation is open that row (in <RailHistory/>) owns the
+  // "you are here" highlight, so "New chat" reverts to its quiet state instead of
+  // doubly reading active beside the selected row (the section-vs-selection nit).
+  const newChatActive = $derived(
+    view === "chat" &&
+      !conversationStore.conversations.some(
+        (c) => c.conversationId === conversationStore.activeConversationId,
+      ),
+  );
 </script>
 
 {#if !collapsed}
@@ -102,8 +114,8 @@
     <button
       type="button"
       class="rail-newchat"
-      class:active={view === "chat"}
-      aria-current={view === "chat" ? "page" : undefined}
+      class:active={newChatActive}
+      aria-current={newChatActive ? "page" : undefined}
       onclick={() => conversationStore.requestNewChat()}
     >
       <span class="plus" aria-hidden="true">＋</span> New chat

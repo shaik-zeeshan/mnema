@@ -123,6 +123,7 @@
   class="row"
   class:open
   class:is-on={armed}
+  class:needs-attention={required && attention}
   class:disabled-feature={open && !enabled && !required}
   data-feature-row
   data-feature-id={featureId}
@@ -151,9 +152,27 @@
     </div>
 
     {#if required}
-      <span class="row-status row-status--req" title="Required — always on">
+      <span
+        class="row-status row-status--req"
+        title={attention
+          ? "Required — a permission still needs to be granted."
+          : "Required — always on"}
+      >
         <span class="lock-ico"><IconLock aria-hidden="true" /></span>Required
       </span>
+      {#if attention}
+        <!-- A required feature can still need setup (e.g. an ungranted capture
+             permission). Without this the row read identically to a satisfied
+             required row — the warn chip + row accent (`needs-attention`) make
+             the outstanding action visible. Kept shown even when the row is open
+             so it stays legible while the user resolves it. -->
+        <span
+          class="row-attn row-attn--req"
+          title="A required permission still needs to be granted before recording can start."
+        >
+          <span class="attn-dot"></span>Needs setup
+        </span>
+      {/if}
     {:else}
       <span class="row-status">
         {#if download?.running}

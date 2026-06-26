@@ -55,7 +55,9 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 9.5px;
+    /* 9.5px was below the legible floor for this persistent status line; lift it
+       to 11px (the rest of the line/Enable link inherit, so it reads clearly). */
+    font-size: 11px;
     color: var(--app-text-muted);
   }
   .rail-foot-skeleton {
@@ -96,7 +98,7 @@
     background: transparent;
     padding: 0;
     font: inherit;
-    font-size: 9.5px;
+    font-size: 11px;
   }
   .rail-enable:hover {
     color: var(--app-accent);

@@ -23,7 +23,7 @@
         <span class="welcome__pulse"></span>
         Welcome
       </span>
-      <h1 id="welcome-title" class="welcome__title">
+      <h1 id="welcome-title" class="welcome__title" tabindex="-1" data-ob-phase-heading>
         Your <em>memory</em>,
         <br />on rewind.
       </h1>
@@ -51,20 +51,31 @@
             <span class="btn__arrow" aria-hidden="true">→</span>
           {/if}
         </button>
-        <span class="welcome__meta">≈ 60 seconds</span>
+        <span class="welcome__meta">About a minute</span>
       </div>
-      <button
-        type="button"
-        class="ghost welcome__accel"
-        onclick={() => c.applyRecommendedSetup()}
-        disabled={c.loading || c.applyingRecommended}
-      >
-        {#if c.applyingRecommended}
-          Applying…
-        {:else}
-          Apply recommended defaults
-        {/if}
-      </button>
+      <div class="welcome__accel-wrap">
+        <button
+          type="button"
+          class="ghost welcome__accel"
+          onclick={() => c.applyRecommendedSetup()}
+          disabled={c.loading || c.applyingRecommended}
+        >
+          {#if c.applyingRecommended}
+            Applying…
+          {:else}
+            Use recommended defaults
+          {/if}
+        </button>
+        <!-- The old "Apply recommended defaults" read as if it might finish setup
+             or start recording. Spell out what it actually does: presets the
+             capture/processing options, then still drops into the permissions
+             step (nothing records until you grant access and finish). -->
+        <p class="welcome__accel-note">
+          Turns on screen recording, on-screen text search, and transcription with
+          sensible settings — then takes you to grant permissions. Nothing records
+          until you finish setup.
+        </p>
+      </div>
       {#if c.errorMessage}
         <div class="welcome__err" role="alert">
           <span>{c.errorMessage}</span>

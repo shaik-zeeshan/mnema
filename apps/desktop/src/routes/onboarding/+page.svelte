@@ -33,6 +33,35 @@
   // what remains. Purely presentational — derived from the existing phase state.
   const phaseStep = $derived(c.phase === "welcome" ? 1 : c.phase === "configure" ? 2 : 3);
 
+  // Spoken step announcement for the polite live region below: a phase change is a
+  // full content swap (welcome hero ↔ accordion ↔ finale crest), so without an
+  // announcement a screen-reader user only hears silence after activating the CTA.
+  const phaseAnnouncement = $derived(
+    c.phase === "welcome"
+      ? "Step 1 of 3: Welcome."
+      : c.phase === "configure"
+        ? "Step 2 of 3: Configure what mnema records."
+        : "Step 3 of 3: Finish and start recording.",
+  );
+
+  // Move focus to the new phase's heading on every transition. Each phase renders
+  // a different component tree, so without this the focus is stranded on the
+  // (now-unmounted) button the user just pressed — keyboard/SR users would land on
+  // <body>. The headings carry `tabindex="-1"` + `data-ob-phase-heading` so they
+  // accept programmatic focus. The first run (initial mount) is skipped so we
+  // don't yank focus to the heading before the user has interacted.
+  let phaseFocusPrimed = false;
+  $effect(() => {
+    c.phase; // track phase transitions
+    if (!phaseFocusPrimed) {
+      phaseFocusPrimed = true;
+      return;
+    }
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>("[data-ob-phase-heading]")?.focus();
+    });
+  });
+
   // Mount loaders. The `untrack` is MANDATORY: without it, editing a draft
   // re-runs init and reverts the edit (known onboarding/settings mount-effect
   // bug in this app — see CLAUDE memory "Settings init effect untrack").
@@ -75,6 +104,10 @@
 </script>
 
 <div class="onboarding-root">
+  <!-- Polite step announcement for assistive tech — phase transitions otherwise
+       swap the whole screen silently. Visually hidden; mirrors the access-request
+       page's `.sr-only` live-status pattern. -->
+  <span class="ob-sr-only" role="status" aria-live="polite">{phaseAnnouncement}</span>
   <nav class="ob-progress" aria-label="Setup progress">
     <ol class="ob-progress__list">
       <li
@@ -114,7 +147,7 @@
       onCount={c.onCount}
       attentionCount={c.attentionCount}
       blockReason={c.configureBlockReason}
-      onJumpToAttention={c.firstAttentionFeatureId ? () => c.jumpToFirstAttention() : undefined}
+      onJumpToAttention={c.firstConfigureBlockerId ? () => c.jumpToFirstAttention() : undefined}
       ctaLabel="Review &amp; finish →"
       ctaDisabled={!c.canProceedToFinale}
       errorMessage={c.errorMessage}
@@ -184,6 +217,30 @@
     flex-direction: column;
     min-height: 0;
     position: relative;
+  }
+
+  /* Visually-hidden live region (step announcements). Same recipe as the
+     access-request page's `.sr-only`. */
+  .ob-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Programmatic focus targets (phase headings) must not paint a focus ring — the
+     focus is moved by the phase-transition effect, not a user tab, so a ring here
+     would read as a stray highlight. */
+  :global(.onboarding-root [data-ob-phase-heading]:focus) {
+    outline: none;
+  }
+  :global(.onboarding-root [data-ob-phase-heading]:focus-visible) {
+    outline: none;
   }
 
   /* Quiet cross-phase wayfinding stepper, pinned top-center across all three

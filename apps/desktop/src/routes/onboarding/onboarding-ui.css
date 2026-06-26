@@ -101,6 +101,15 @@
   border-color: var(--app-border-strong);
   background: var(--app-surface-raised);
 }
+/* A required row whose prerequisite (e.g. a capture permission) is still unmet:
+   warn-tinted edge so it's distinguishable from a satisfied required row at a
+   glance. Applies collapsed AND open (the user resolves it inside the open row). */
+.onboarding-shell .row.needs-attention {
+  border-color: var(--app-warn-border);
+}
+.onboarding-shell .row.needs-attention:not(.open):hover {
+  border-color: var(--app-warn-border);
+}
 /* accent hairline on expanded panel */
 .onboarding-shell .row.open::after {
   content: "";
@@ -288,6 +297,12 @@
 }
 .onboarding-shell .row.open .row-attn {
   display: none;
+}
+/* Required-row "Needs setup" chip stays visible when open (the user resolves the
+   permission inside the open body), unlike the optional-row variant above. */
+.onboarding-shell .row.open .row-attn--req {
+  display: inline-flex;
+  margin-top: 5px;
 }
 /* live model-download indicator on a (possibly collapsed) feature row. Accent
    (green) chip so an in-progress fetch reads as active work, not a warning;

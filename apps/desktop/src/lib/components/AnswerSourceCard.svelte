@@ -69,14 +69,17 @@
 
 <!-- The card root is itself the <button> select target, so the "open in browser"
      control cannot nest inside it (invalid HTML). This positioned wrapper makes
-     the card-button and the open-button DOM siblings. -->
+     the card-button and the open-button DOM siblings. The select button is a
+     natural tab stop (no tabindex override): the strip is plain presentation with
+     no roving model, so every cited source — frame AND audio — is reachable and
+     activatable (Enter/Space) by keyboard, not mouse-only. -->
+
 <div class="source-card-wrap">
 <button
   class="source-card"
   class:source-card--frame={kind === "frame"}
   class:source-card--audio={kind === "audio"}
   type="button"
-  tabindex="-1"
   aria-label={kind === "frame"
     ? `Screen capture from ${appName ?? "Unknown app"}`
     : `${isMic ? "Microphone" : "System audio"} capture`}

@@ -8,7 +8,7 @@
   import SemanticSearch from "./SemanticSearch.svelte";
 </script>
 
-<div role="tabpanel" id="settings-panel-intelligence" tabindex="0">
+<div class="settings-panel" id="settings-panel-intelligence">
   <Providers />
   <AskAi />
   <UserContext />

@@ -18,6 +18,7 @@
   import { goto } from "$app/navigation";
   import IconBack from "~icons/lucide/chevron-left";
   import IconSearch from "~icons/lucide/search";
+  import IconClear from "~icons/lucide/x";
   import { SECTION_ICONS } from "./section-icons";
   import {
     SETTINGS_GROUPS,
@@ -77,6 +78,13 @@
   // Defer the clear to a macrotask so the pending click + navigation fire first.
   function clearSearch() {
     searchQuery = "";
+  }
+  // The in-field clear button and the empty-state "Clear search" CTA both wipe
+  // the query and return focus to the input so the user can keep typing without
+  // a second click — distinct from `clearSearch` (the deferred blur path).
+  function clearSearchAndFocus() {
+    searchQuery = "";
+    searchInput?.focus();
   }
   function onSearchBlur(event: FocusEvent) {
     // Only clear when focus actually leaves the rail. A keyboard user who Tabs
@@ -175,6 +183,17 @@
         onkeydown={onSearchKeydown}
         onblur={onSearchBlur}
       />
+      {#if searchQuery}
+        <button
+          class="rail-search__clear"
+          type="button"
+          aria-label="Clear search"
+          title="Clear search"
+          onclick={clearSearchAndFocus}
+        >
+          <IconClear aria-hidden="true" />
+        </button>
+      {/if}
     </div>
   </div>
 
@@ -190,7 +209,7 @@
     <div class="rail-nav__list" role="list">
       {#each visibleGroups as group (group.id)}
         <div class="nav-group" role="group" aria-labelledby="settings-cat-{group.id}">
-          <p class="nav-cat" id="settings-cat-{group.id}">{group.label}</p>
+          <h2 class="nav-cat" id="settings-cat-{group.id}">{group.label}</h2>
           {#each group.sections as section (section.id)}
             {@const SectionIcon = SECTION_ICONS[section.id]}
             <button
@@ -211,7 +230,12 @@
         </div>
       {/each}
       {#if visibleGroups.length === 0}
-        <p class="rail-empty" role="status">No settings match</p>
+        <div class="rail-empty" role="status">
+          <p class="rail-empty__msg">No settings match “{searchQuery.trim()}”.</p>
+          <button class="btn btn--ghost btn--sm" type="button" onclick={clearSearchAndFocus}>
+            Clear search
+          </button>
+        </div>
       {/if}
     </div>
   </nav>
@@ -301,11 +325,58 @@
      to match `.nav-cat`). Component-scoped so it never touches the shared
      `.settings-shell` cascade in settings-layout.css. */
   .rail-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
     margin: 4px 8px;
     padding: 6px 10px;
     font-size: 12px;
     line-height: 1.4;
     color: var(--app-text-subtle);
+  }
+
+  .rail-empty__msg {
+    margin: 0;
+    word-break: break-word;
+  }
+
+  /* In-field clear (X) for the search input. Sits at the right edge of the
+     recessed search field, mirroring the leading search glyph; tokens-only and
+     namespaced under the rail's search family. */
+  .rail-search__clear {
+    position: absolute;
+    right: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+  .rail-search__clear:hover {
+    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
+  }
+  .rail-search__clear:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .rail-search__clear :global(svg) {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   /* Autosave failure banner pinned under the footer status line. Keeps the real

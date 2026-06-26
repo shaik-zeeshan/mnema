@@ -70,6 +70,9 @@
   .switch-wrapper--disabled {
     opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
+    /* Kill the label's `cursor: pointer` (and any hit-target activation) while
+       disabled, matching the Select/Combobox `--disabled` wrappers. */
+    pointer-events: none;
   }
 
   .switch-text {

@@ -43,7 +43,7 @@
         <span class="finale__crest-dot"></span>
         All set
       </span>
-      <h1 id="finale-title" class="finale__title">Press record.</h1>
+      <h1 id="finale-title" class="finale__title" tabindex="-1" data-ob-phase-heading>Press record.</h1>
       <p class="finale__tag">
         Setup is complete. {sourceSummary} · {c.draftFrameRate} fps · {formatDuration(c.draftSegmentDuration)}
         segments{c.draftPauseCaptureOnInactivity

@@ -28,11 +28,14 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { message } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
+  import { openSettings } from "$lib/surface-windows";
   import type {
     Conclusion,
     SubjectView,
     ConclusionEvidenceRef,
     Activity,
+    AiRuntimeStatus,
+    UserContextStatus,
   } from "$lib/types/recording";
   import Sparkline from "$lib/insights/charts/Sparkline.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
@@ -95,6 +98,10 @@
   let conclusions = $state<Conclusion[] | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
+  // Engine on/off — lets the empty state tell "engine is off, turn it on" apart
+  // from "engine is on but hasn't formed any views yet" (two very different
+  // next steps). null until the first status call resolves.
+  let engineOn = $state<boolean | null>(null);
 
   // Grouping axis for the tier layout. "conviction" = how firmly held (default);
   // "movement" = which way it's heading. Drives `buildTiers`.
@@ -545,6 +552,19 @@
     }
   }
 
+  // Probe whether the Reasoning Engine is on so the empty state can disambiguate
+  // engine-off from no-data. Best-effort: a failed probe leaves `engineOn` null,
+  // and the empty state falls back to neutral both-cases copy.
+  async function loadEngineStatus(): Promise<void> {
+    const [ai, ctx] = await Promise.all([
+      invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null),
+      invoke<UserContextStatus>("get_user_context_status").catch(() => null),
+    ]);
+    engineOn =
+      Boolean(ai?.enabled && ai?.available) ||
+      Boolean(ctx?.engineAvailable);
+  }
+
   // Apply the staged reload now (the refresh-pill click, or auto-apply on idle).
   function applyStaged(): void {
     if (!stagedConclusions) return;
@@ -634,6 +654,7 @@
 
   $effect(() => {
     void untrack(() => loadConclusions());
+    void untrack(() => loadEngineStatus());
 
     // Debounce the engine-change reload (store the wrapped fn so cleanup can
     // cancel a pending trailing call on unmount).
@@ -643,6 +664,7 @@
     let disposed = false;
     void listen("user_context_changed", () => {
       debounced();
+      void loadEngineStatus();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -702,13 +724,23 @@
     class:is-faded={r.faded}
     class:is-open={open}
   >
-    <div class="conv-rowmain">
-      <!-- LEFT: meta — the navigation trigger. -->
+    <!-- The whole main strip opens the subject on click (so the hover highlight
+         matches the hit-area, not just the left meta). This is a MOUSE-ONLY
+         convenience; the real keyboard path stays the inner `.conv-open` button
+         (one tab stop per action). The caret + pin/dismiss stopPropagation so
+         they don't also navigate. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="conv-rowmain" onclick={() => openSubject(r)}>
+      <!-- LEFT: meta — the navigation trigger (keyboard path). -->
       <button
         type="button"
         class="conv-meta conv-open"
         aria-label={`Open ${r.subject}`}
-        onclick={() => openSubject(r)}
+        onclick={(e) => {
+          e.stopPropagation();
+          openSubject(r);
+        }}
       >
         <div class="conv-metatop">
           <span
@@ -952,6 +984,15 @@
       ariaLabel="Organize subjects by"
     />
   </div>
+  <!-- Define the grouping axis for newcomers — "conviction" and "movement" aren't
+       self-evident terms. The line tracks the active axis. -->
+  <p class="axis-hint">
+    {#if axis === "conviction"}
+      Conviction — how firmly the engine holds each view (its confidence).
+    {:else}
+      Movement — which way each view is trending: warming, steady, or cooling.
+    {/if}
+  </p>
 
   {#if loadError && !conclusions}
     <div class="state state--error">
@@ -992,12 +1033,29 @@
     </div>
   {:else if displayRows.length === 0}
     <div class="state">
-      <p class="state-title">No subjects yet.</p>
-      <p class="state-detail">
-        As the Reasoning Engine forms views about you, each one appears here with
-        its own confidence trajectory. If the engine is off, turn it on in
-        Settings → Access to begin.
-      </p>
+      {#if engineOn === false}
+        <!-- Engine is off — the actionable case: a direct path to turn it on. -->
+        <p class="state-title">The Reasoning Engine is off.</p>
+        <p class="state-detail">
+          Subjects appear as the engine forms views about you — each with its own
+          confidence trajectory. Turn it on to begin.
+        </p>
+        <button
+          type="button"
+          class="state-cta"
+          onclick={() => void openSettings("intelligence")}
+        >
+          Open engine settings
+        </button>
+      {:else}
+        <!-- Engine is on (or status unknown) — nothing concluded yet. -->
+        <p class="state-title">No subjects yet.</p>
+        <p class="state-detail">
+          As the Reasoning Engine forms views about you, each one appears here
+          with its own confidence trajectory. Keep working and check back — they
+          build up as evidence accumulates.
+        </p>
+      {/if}
     </div>
   {:else if searching}
     <!-- Search active: one flat list ranked by relevance, no tier headers. -->
@@ -1123,6 +1181,13 @@
     gap: 10px;
     flex-wrap: wrap;
     margin: 14px 0 10px;
+  }
+  /* Quiet definition of the active grouping axis (conviction / movement). */
+  .axis-hint {
+    margin: 0 0 14px;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    line-height: 1.5;
   }
 
   /* Search box — same surface as the Chat rail's search so the two read alike. */
@@ -1345,6 +1410,8 @@
     align-items: center;
     gap: 14px;
     padding: 11px 14px;
+    /* The whole strip opens the subject (matches the full-row hover highlight). */
+    cursor: pointer;
   }
 
   /* row LEFT — meta */
@@ -1726,6 +1793,32 @@
     font-size: var(--text-sm);
     color: var(--app-text-muted);
     line-height: 1.6;
+  }
+  /* Empty-state CTA — accent button (e.g. "Open engine settings"). */
+  .state-cta {
+    align-self: flex-start;
+    margin-top: 8px;
+    font: inherit;
+    font-size: var(--text-sm);
+    padding: 6px 13px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 7px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
+  }
+  .state-cta:hover {
+    border-color: var(--app-accent);
+  }
+  .state-cta:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .state-cta:active {
+    transform: translateY(1px);
   }
   /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
   .state-retry {

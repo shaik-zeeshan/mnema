@@ -39,6 +39,7 @@
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import { humanizeError } from "$lib/format-error";
+  import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
   interface Props {
     subject: string;
@@ -319,6 +320,18 @@
     selectedId = id;
   }
 
+  // Subject → Chat hand-off (#106 / fix #5). Open a fresh Chat thread with the
+  // composer prefilled to ask about THIS subject. The hand-off routes through
+  // the shared store's selection bus (the Insights shell watches the same bus
+  // and switches to the Chat sub-surface); the prompt is seeded, not auto-sent,
+  // so the user can review/edit before pressing Enter. The engine recalls what
+  // it knows about the subject through its brokered tools when answering.
+  function askAboutSubject(): void {
+    conversationStore.requestNewChat(
+      `Tell me what you know about ${subject} and what I've been doing related to it.`,
+    );
+  }
+
   async function togglePinned(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
@@ -390,7 +403,13 @@
     } catch {
       // fall through to a plain Timeline navigation
     }
-    // Graceful fallback: open the Timeline surface.
+    // No precise frame/audio span was resolvable (or the handoff threw) — tell
+    // the user before the graceful fallback so jumping to the Timeline top isn't
+    // a silent surprise that looks like the wrong moment opened.
+    await message("Couldn't pinpoint the exact moment — opening the Timeline.", {
+      title: "Opening Timeline",
+      kind: "info",
+    });
     void goto("/");
   }
 
@@ -509,6 +528,12 @@
           {/if}
         </div>
       </div>
+      <!-- Subject → Chat hand-off: open a fresh chat prefilled to ask the engine
+           about this subject (the prompt is seeded for review/edit, not sent). -->
+      <button type="button" class="ask-subject" onclick={askAboutSubject}>
+        <span class="ask-subject-glyph" aria-hidden="true">✦</span>
+        Ask AI about {subject}
+      </button>
     </div>
 
     <!-- Master-detail: ranked conclusions (master) + evidence inspector -->
@@ -755,6 +780,41 @@
     white-space: nowrap;
   }
 
+  /* Subject → Chat hand-off button (top-right of the hero). The primary outbound
+     action from a subject, so it carries the accent treatment. */
+  .ask-subject {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: inherit;
+    font-size: 11.5px;
+    padding: 6px 12px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 7px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
+  }
+  .ask-subject:hover {
+    border-color: var(--app-accent);
+  }
+  .ask-subject:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .ask-subject:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .ask-subject-glyph {
+    font-size: 11px;
+    line-height: 1;
+  }
+
   .section-title {
     font-size: 13px;
     font-weight: 600;
@@ -875,8 +935,11 @@
   .rank-trend--up {
     color: var(--app-accent);
   }
+  /* "cooling" is normal decay, not an error — read it QUIET (muted neutral), so
+     the saturated --app-danger token stays reserved for destructive/contradiction
+     states and the two never collide. Matches the Subjects index trend pill. */
   .rank-trend--down {
-    color: var(--app-danger);
+    color: var(--app-text-muted);
   }
   .rank-trend--steady {
     color: var(--app-text-subtle);

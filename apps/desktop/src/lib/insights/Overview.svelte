@@ -146,6 +146,12 @@
     rangeMode = mode;
   }
 
+  // Jump back to the current period (today / this week / this month) — the
+  // stepper otherwise has no one-click way home once you've paged into the past.
+  function resetRange(): void {
+    anchor = Date.now();
+  }
+
   // Date-range Segmented options (shared primitive replaces the hand-rolled
   // button group).
   const RANGE_OPTIONS = [
@@ -941,7 +947,38 @@
     }
   }
 
-  async function dismissConclusion(c: Conclusion): Promise<void> {
+  // Dismiss now has an UNDO window: rather than vanishing (and persisting) at
+  // once, the row collapses into a "Dismissed · Undo" placeholder and the backend
+  // dismiss is DEFERRED. If the user clicks Undo before the window elapses the
+  // pending commit is cancelled and the row returns — no backend call was made,
+  // so no un-dismiss command is needed. After the window the commit fires and the
+  // row leaves the feed for good.
+  const DISMISS_UNDO_MS = 5000;
+  let pendingDismiss = $state<Map<number, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+
+  function dismissConclusion(c: Conclusion): void {
+    if (pendingDismiss.has(c.id)) return;
+    const timer = setTimeout(() => void commitDismiss(c), DISMISS_UNDO_MS);
+    const next = new Map(pendingDismiss);
+    next.set(c.id, timer);
+    pendingDismiss = next;
+  }
+
+  function undoDismiss(c: Conclusion): void {
+    const timer = pendingDismiss.get(c.id);
+    if (timer !== undefined) clearTimeout(timer);
+    const next = new Map(pendingDismiss);
+    next.delete(c.id);
+    pendingDismiss = next;
+  }
+
+  async function commitDismiss(c: Conclusion): Promise<void> {
+    // Clear the pending state, hide the row (optimistic), then persist.
+    const next = new Map(pendingDismiss);
+    next.delete(c.id);
+    pendingDismiss = next;
     const set = new Set(dismissedIds);
     set.add(c.id);
     dismissedIds = set;
@@ -1050,6 +1087,22 @@
           disabled={atLatest}
           onclick={() => stepRange(1)}>›</button
         >
+        <!-- Jump home — only when paged into the past (the stepper otherwise has
+             no one-click way back to the current period). -->
+        {#if !atLatest}
+          <button
+            class="range-today"
+            type="button"
+            onclick={resetRange}
+            title="Jump to the current period"
+          >
+            {rangeMode === "day"
+              ? "Today"
+              : rangeMode === "week"
+                ? "This week"
+                : "This month"}
+          </button>
+        {/if}
       </div>
     </div>
   </div>
@@ -1336,6 +1389,22 @@
             </div>
           {:else if !engineOn}
             <p class="tile-note tile-note--locked">Enable the engine to light up categories.</p>
+          {:else if engineError}
+            <!-- A failed engine fetch must NOT masquerade as "no data" — say it
+                 couldn't load and offer a compact retry. -->
+            <p class="tile-note tile-note--error">
+              Couldn't load.
+              <button
+                type="button"
+                class="tile-retry"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  void loadEngine();
+                }}
+              >
+                Retry
+              </button>
+            </p>
           {:else if categorySegments.length === 0}
             <p class="tile-note">No categorized activity yet.</p>
           {:else}
@@ -1383,6 +1452,22 @@
             </div>
           {:else if !engineOn}
             <p class="tile-note tile-note--locked">Enable the engine to see focus.</p>
+          {:else if engineError}
+            <!-- A failed engine fetch must NOT masquerade as "no data" — say it
+                 couldn't load and offer a compact retry. -->
+            <p class="tile-note tile-note--error">
+              Couldn't load.
+              <button
+                type="button"
+                class="tile-retry"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  void loadEngine();
+                }}
+              >
+                Retry
+              </button>
+            </p>
           {:else if focusRows.length === 0}
             <p class="tile-note">No focus signal yet.</p>
           {:else}
@@ -1481,6 +1566,21 @@
         {#snippet deltaRow(d: ConclusionDelta)}
           {@const c = d.c}
           {@const open = expandedDeltaRows.has(c.id)}
+          {#if pendingDismiss.has(c.id)}
+            <!-- Undo window: the dismiss hasn't committed yet — collapse to a
+                 quiet "Dismissed · Undo" line so the action is reversible and
+                 isn't a silent vanish. -->
+            <div class="delta-row delta-row--dismissed" role="status">
+              <span class="dismissed-note">Dismissed “{c.statement}”</span>
+              <button
+                type="button"
+                class="dismissed-undo"
+                onclick={() => undoDismiss(c)}
+              >
+                Undo
+              </button>
+            </div>
+          {:else}
           <div class="delta-row" class:delta-row--faded={d.kind === "fading"}>
             <div class="delta-line">
               <span class="delta-statement">{c.statement}</span>
@@ -1561,6 +1661,7 @@
               </div>
             {/if}
           </div>
+          {/if}
         {/snippet}
 
         <!-- Pinned — conclusions the user pinned, kept in view and out of the
@@ -1595,6 +1696,12 @@
               <span class="rule"></span>
               expand a row for detail
             </p>
+            <!-- One-line explainer so the vocabulary ("conclusion", confidence)
+                 isn't opaque to a first-time reader. -->
+            <p class="section-explainer">
+              Conclusions are what the engine has inferred about you — each carries
+              a confidence the evidence keeps raising or letting fade.
+            </p>
             <div class="delta-groups">
               {#each visibleDeltaGroups as g (g.kind)}
                 <div class="delta-group">
@@ -1605,6 +1712,23 @@
                 </div>
               {/each}
             </div>
+            <!-- The group heads sum the FULL group sizes but the list is capped,
+                 so when more changed than fits, say so honestly and point to the
+                 standing dossier (Subjects) where they all live. -->
+            {#if unpinnedDeltas.length > WHAT_CHANGED_CAP}
+              <div class="delta-overflow">
+                <span class="delta-overflow-count">
+                  showing {visibleDeltas.length} of {unpinnedDeltas.length}
+                </span>
+                <button
+                  type="button"
+                  class="evidence-link"
+                  onclick={() => onOpenTab?.("subjects")}
+                >
+                  View all in Subjects →
+                </button>
+              </div>
+            {/if}
           </article>
         {/if}
 
@@ -1814,6 +1938,29 @@
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
   }
+  /* "Today / This week / This month" reset — quiet pill, only shown in the past. */
+  .date-stepper .range-today {
+    margin-left: 2px;
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.02em;
+    padding: 3px 9px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .date-stepper .range-today:hover {
+    border-color: var(--app-accent);
+  }
+  .date-stepper .range-today:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
 
   /* ---- Bento glance band ---- */
   /* Exhibits — demoted supporting-evidence strip. Derived from the bento
@@ -1918,6 +2065,38 @@
   .tile-note--locked {
     color: var(--app-text-subtle);
     font-style: italic;
+  }
+  /* Engine-fetch failure on a glance tile — distinct from the muted "no data"
+     note, with an inline retry. */
+  .tile-note--error {
+    color: var(--app-danger);
+    display: inline-flex;
+    align-items: baseline;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .tile-retry {
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 1px 7px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-danger-text);
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .tile-retry:hover {
+    border-color: var(--app-danger);
+    background: var(--app-danger-bg);
+  }
+  .tile-retry:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring-danger);
   }
 
   /* Non-interactive visual cue at the bottom of each exhibit card hinting that
@@ -2327,6 +2506,29 @@
     text-transform: uppercase;
     color: var(--app-text-subtle);
   }
+  /* Quiet one-line explainer for first-time readers, under a section eyebrow. */
+  .section-explainer {
+    margin: -2px 0 12px;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    line-height: 1.5;
+  }
+  /* Honest "showing N of M" footer + path to the rest when the capped list hides
+     changes. */
+  .delta-overflow {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--app-border);
+  }
+  .delta-overflow-count {
+    font-size: var(--text-xs);
+    color: var(--app-text-subtle);
+  }
   .delta-row {
     display: flex;
     flex-direction: column;
@@ -2337,6 +2539,43 @@
   }
   .delta-row--faded {
     opacity: 0.7;
+  }
+  /* Undo-window placeholder: a quiet single line with a dotted Undo link. */
+  .delta-row--dismissed {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .dismissed-note {
+    font-size: var(--text-sm);
+    color: var(--app-text-subtle);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .dismissed-undo {
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: var(--text-sm);
+    padding: 0 0 1px;
+    border: 0;
+    border-bottom: 1px dotted var(--app-accent-border);
+    background: transparent;
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    transition: color 0.12s ease;
+  }
+  .dismissed-undo:hover {
+    color: var(--app-accent);
+  }
+  .dismissed-undo:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+    box-shadow: var(--app-ring);
+    border-radius: 3px;
   }
   /* Statement stacks above a meta line (subject + time + toggle) — the
      subject no longer competes with the statement for horizontal room. */

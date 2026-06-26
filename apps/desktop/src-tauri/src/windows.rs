@@ -1314,6 +1314,14 @@ pub fn toggle_main_window_visibility_command(app: tauri::AppHandle) {
     toggle_main_window_visibility(&app);
 }
 
+/// Summon (toggle) the Quick Recall panel from in-app UI — the titlebar
+/// "Search / Recall" affordance. Mirrors what the ⌥Space global shortcut does so
+/// the launcher is discoverable by mouse, not only by chord.
+#[tauri::command]
+pub fn summon_quick_recall_window_command(app: tauri::AppHandle) -> Result<(), String> {
+    toggle_quick_recall_window(&app)
+}
+
 #[tauri::command]
 pub fn get_onboarding_state(
     app: tauri::AppHandle,
