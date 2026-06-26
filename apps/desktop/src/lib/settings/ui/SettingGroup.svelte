@@ -45,7 +45,7 @@
   .setting-group {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
   }
 
   /* ── Section head (above the card) ─────────────────────────── */
@@ -54,23 +54,26 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
-    padding: 0 3px;
+    padding: 0 4px;
   }
 
   .setting-group__heading {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
     min-width: 0;
   }
 
+  /* Eyebrow/overline: kept smaller than the row labels by design, but pushed to
+     the strong text tone so it registers on the squint test rather than reading
+     as the faintest line on the page. */
   .setting-group__title {
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.13em;
     text-transform: uppercase;
-    color: var(--app-text-muted);
+    color: var(--app-text-strong);
   }
 
   .setting-group__hint {

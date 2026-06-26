@@ -72,7 +72,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 14px 18px;
+    padding: 16px 20px;
     min-width: 0;
   }
 
@@ -86,8 +86,8 @@
     content: "";
     position: absolute;
     top: 0;
-    left: 18px;
-    right: 18px;
+    left: 20px;
+    right: 20px;
     height: 1px;
     background: var(--app-border);
     pointer-events: none;
@@ -121,7 +121,7 @@
   .setting-row__text {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
     min-width: 0;
     flex: 1 1 auto;
   }
@@ -171,7 +171,7 @@
   .setting-row--full {
     flex-direction: column;
     align-items: stretch;
-    gap: 10px;
+    gap: 12px;
   }
 
   /* In a `full` row the header can be tall (multi-line description), so pin the

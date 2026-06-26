@@ -215,9 +215,16 @@
   }
 
   .settings-shell .cloud-egress-disclosure__icon {
+    display: inline-flex;
+    align-items: center;
     color: var(--app-warn);
-    font-size: 13px;
     line-height: 1.4;
+  }
+
+  .settings-shell .cloud-egress-disclosure__icon svg {
+    display: block;
+    width: 14px;
+    height: 14px;
   }
 
   .settings-shell .cloud-egress-disclosure__body {

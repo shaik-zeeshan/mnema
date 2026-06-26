@@ -6,6 +6,8 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import IconCheck from "~icons/lucide/check";
+  import IconAlert from "~icons/lucide/triangle-alert";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -106,10 +108,10 @@
                   <span class="provider-row__name">{aiProviderInstanceLabel(provider)}</span>
                   <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
                   {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.id]}
-                    <span class="saved-badge">✓ key in keychain</span>
+                    <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />key in keychain</span>
                   {/if}
                   <button
-                    class="btn btn--ghost btn--sm provider-row__remove"
+                    class="btn btn--danger btn--sm provider-row__remove"
                     type="button"
                     disabled={aiProviderKeySavingProvider !== null || c.aiProviderRemoving}
                     onclick={() => removeAiProvider(provider.id)}
@@ -130,8 +132,10 @@
                   <input
                     id="ai-provider-base-url-{provider.id}"
                     class="text-input"
+                    class:text-input--empty={provider.baseUrl.trim().length === 0}
                     autocomplete="off"
                     placeholder="https://api.fireworks.ai/inference/v1"
+                    aria-invalid={provider.baseUrl.trim().length === 0}
                     bind:value={provider.baseUrl}
                     oninput={() => aiRuntime.resetTestResult()}
                   />
@@ -155,9 +159,12 @@
                   <input
                     id="ai-provider-key-{provider.id}"
                     class="text-input"
+                    class:text-input--error={!!aiProviderKeyErrors[provider.id]}
                     type="password"
                     autocomplete="off"
                     placeholder={aiProviderKeySavedByProvider[provider.id] ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
+                    aria-invalid={!!aiProviderKeyErrors[provider.id]}
+                    aria-describedby={aiProviderKeyErrors[provider.id] ? `ai-provider-key-error-${provider.id}` : undefined}
                     disabled={aiProviderKeySavingProvider === provider.id}
                     bind:value={
                       () => aiProviderKeyInputs[provider.id] ?? "",
@@ -186,7 +193,7 @@
                     </button>
                   </div>
                   {#if aiProviderKeyErrors[provider.id]}
-                    <p class="error-text">{aiProviderKeyErrors[provider.id]}</p>
+                    <p class="error-text" id="ai-provider-key-error-{provider.id}" role="alert">{aiProviderKeyErrors[provider.id]}</p>
                   {/if}
                 {/if}
               </li>
@@ -212,7 +219,7 @@
         {/if}
         {#if anyCloudAiProviderConnected}
           <div class="cloud-egress-disclosure" role="note">
-            <span class="cloud-egress-disclosure__icon" aria-hidden="true">⚠</span>
+            <span class="cloud-egress-disclosure__icon" aria-hidden="true"><IconAlert /></span>
             <div class="cloud-egress-disclosure__body">
               <strong>Cloud egress consent</strong>
               <p>
@@ -295,7 +302,10 @@
               {/if}
             </div>
           </div>
-          <span class="model-status__pill">{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
+          <span
+            class="model-status__pill"
+            class:model-status__pill--ok={aiRuntimeStatus?.available}
+          >{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
         </div>
         {#if aiRuntimeStatusError}
           <p class="error-text">{aiRuntimeStatusError}</p>
@@ -326,7 +336,10 @@
             <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
             <p>Provider: {aiProviderLabelById(aiRuntimeTestResult.provider)} · Model: {aiRuntimeTestResult.model || "(none)"}</p>
             {#if aiRuntimeTestResult.rawJson}
-              <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
+              <details class="ai-runtime-details">
+                <summary>Raw response</summary>
+                <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
+              </details>
             {/if}
           </div>
         {/if}
@@ -346,7 +359,7 @@
   .prov-stack {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
     width: 100%;
   }
 

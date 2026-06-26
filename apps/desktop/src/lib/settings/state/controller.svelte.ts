@@ -272,6 +272,22 @@ export class SettingsController {
 
   async removeAiProvider(id: string): Promise<void> {
     const removed = this.rec.draftAiProviders.find((p) => p.id === id);
+    // Removing a cloud provider tears down its keychain secret immediately
+    // (clearKeyForRemovedProvider below), with no undo — gate that on an
+    // explicit confirm so a single mis-click can't wipe a saved API key.
+    if (removed && this.isCloudAiProviderKind(removed.kind)) {
+      const label = this.aiProviderInstanceLabel(removed);
+      const confirmed = await confirm(
+        `Removing “${label}” deletes its API key from the macOS keychain right away. Any AI feature using this provider will stop working until you reconnect it.`,
+        {
+          title: "Remove this provider?",
+          kind: "warning",
+          okLabel: "Remove & Delete Key",
+          cancelLabel: "Keep Provider",
+        },
+      );
+      if (!confirmed) return;
+    }
     this.rec.draftAiProviders = this.rec.draftAiProviders.filter((p) => p.id !== id);
     if (this.rec.draftAiDefaultModel?.provider === id) {
       this.rec.draftAiDefaultModel = null;

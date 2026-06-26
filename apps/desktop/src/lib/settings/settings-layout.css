@@ -325,7 +325,7 @@
   }
 
   .settings-shell .rail-foot__label {
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;

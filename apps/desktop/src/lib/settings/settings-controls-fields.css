@@ -73,8 +73,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 7px;
-    padding: 9px 18px;
+    gap: 8px;
+    padding: 8px 16px;
     border-radius: 8px;
     font-family: inherit;
     font-size: var(--text-sm);
@@ -182,19 +182,30 @@
     box-shadow: var(--app-ring-danger);
   }
 
+  /* PERSISTENT status indicator — the key actually lives in the keychain for
+     as long as this renders, so it must NOT auto-erase. A brief one-shot
+     fade-in is fine (gated for reduced motion), but there is no fade-OUT
+     keyframe: the badge stays fully visible. */
   .settings-shell .saved-badge {
-    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--text-sm);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--app-accent);
-    animation: fade-in-out 2.2s ease forwards;
+    animation: saved-badge-in 0.25s ease both;
   }
 
-  @keyframes fade-in-out {
+  .settings-shell .saved-badge svg {
+    display: block;
+    width: 13px;
+    height: 13px;
+  }
+
+  @keyframes saved-badge-in {
     0% { opacity: 0; transform: translateX(-4px); }
-    15% { opacity: 1; transform: translateX(0); }
-    80% { opacity: 1; }
-    100% { opacity: 0; }
+    100% { opacity: 1; transform: translateX(0); }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -246,7 +257,7 @@
 
   .settings-shell .badge--sm {
     padding: 1px 7px;
-    font-size: 9px;
+    font-size: var(--text-xs);
   }
 
   /* ── Effective device ─────────────────────────────────────── */
@@ -376,15 +387,18 @@
   }
 
   /* ── Misc ──────────────────────────────────────────────────── */
+  /* Loading/empty are exactly the states a user must read — conveyed copy must
+     clear AA, so --app-text-muted (secondary), not the sub-AA placeholder
+     --app-text-faint. */
   .settings-shell .loading-text {
-    font-size: 11px;
-    color: var(--app-text-faint);
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
     font-style: italic;
   }
 
   .settings-shell .empty-state {
-    font-size: 11px;
-    color: var(--app-text-faint);
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
     font-style: italic;
   }
 
