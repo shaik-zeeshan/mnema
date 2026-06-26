@@ -800,7 +800,7 @@
             title={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
             aria-label={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
           >
-            <span>{captureLoadingPause ? "Working…" : captureControls.isUserPaused ? "Resume" : "Pause"}</span>
+            <span>{captureLoadingPause ? (captureControls.isUserPaused ? "Resuming…" : "Pausing…") : captureControls.isUserPaused ? "Resume" : "Pause"}</span>
           </button>
           <button
             type="button"
@@ -1091,6 +1091,35 @@
             {/if}
           </div>
         {/if}
+        {#if canShowShortcutsHelp}
+          <button
+            type="button"
+            class="titlebar__settings"
+            class:active={shortcutsHelpOpen}
+            aria-label="Keyboard shortcuts"
+            aria-haspopup="dialog"
+            aria-expanded={shortcutsHelpOpen}
+            title={`Keyboard shortcuts (${shortcutDisplay("toggleShortcutsHelp")})`}
+            onclick={() => toggleShortcutsHelp()}
+          >
+            <svg
+              class="titlebar__settings-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M9.4 9.2a2.6 2.6 0 0 1 5 .9c0 1.7-2.4 2-2.4 3.6" />
+              <path d="M12 17h.01" />
+            </svg>
+          </button>
+        {/if}
         <button
           type="button"
           class="titlebar__settings"
@@ -1330,8 +1359,14 @@
     --app-border-hover: #3a3a5a;
     --app-text-strong: #e2e2e8;
     --app-text: #c0c0d0;
-    --app-text-muted: #7a7a9a;
-    --app-text-subtle: #44445a;
+    /* Secondary conveyed text — brightened to sit comfortably above the AA
+       4.5:1 floor on the dark surface (#9696ae ≈ 6.6:1, was #7a7a9a ≈ 4.6:1). */
+    --app-text-muted: #9696ae;
+    /* Tertiary conveyed text / structural labels — was #44445a (~2:1, FAIL);
+       #7e7e98 ≈ 4.9:1 clears AA while staying clearly dimmer than muted. */
+    --app-text-subtle: #7e7e98;
+    /* Placeholder / decorative ONLY (intentionally sub-AA). Never use for text
+       a user must read. */
     --app-text-faint: #33334a;
     --app-accent: #3dffa0;
     --app-accent-strong: #2a8a60;
@@ -1357,6 +1392,10 @@
     /* Canonical disabled-control opacity (mode-independent) — one source of
        truth so dimmed controls stop drifting across 0.35/0.38/0.4/0.45. */
     --app-disabled-opacity: 0.4;
+
+    /* In-flight / saving (`cursor: progress`) controls dim less than a true
+       disabled control so the action still reads as "busy, not unavailable". */
+    --app-busy-opacity: 0.6;
 
     /* Shared popover / tooltip elevation. Page depth is normally surface
        lightness, but floating layers lift off with this one shadow. */
@@ -1511,8 +1550,12 @@
     --app-border-hover: #a4a4a0;
     --app-text-strong: #14141a;
     --app-text: #2a2a32;
+    /* Secondary conveyed text — already ~6:1 on the light surface, unchanged. */
     --app-text-muted: #5a5a6a;
-    --app-text-subtle: #7a7a86;
+    /* Tertiary conveyed text / structural labels — was #7a7a86 (~3.8:1,
+       borderline); #5e5e6a ≈ 6.2:1 clears AA. */
+    --app-text-subtle: #5e5e6a;
+    /* Placeholder / decorative ONLY (intentionally sub-AA). */
     --app-text-faint: #9a9aa4;
     --app-accent: #1f7a4a;
     --app-accent-strong: #155a36;
@@ -1839,6 +1882,14 @@
     flex: 0 0 auto;
   }
 
+  /* Let the left cluster yield at narrow widths so the deficit is absorbed by
+     the privacy-warning's ellipsis (its label already truncates) rather than
+     the centered drag region clipping the primary surface-toggle nav. */
+  .titlebar__group--left {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
   .titlebar__drag {
     flex: 1 1 auto;
     height: 100%;
@@ -1900,7 +1951,11 @@
   .surface-toggle button.active {
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
+    /* Active = "you are here": use the brighter --app-accent (AA-legible on
+       accent-bg) + 600 weight. --app-accent-strong is a fill/border tone, not
+       body text, and reads ~4:1 here. */
+    color: var(--app-accent);
+    font-weight: 600;
   }
 
   /* ── Recording status indicator ───────────────────────────── */
@@ -1970,8 +2025,8 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 3px 7px;
-    height: 22px;
+    padding: 4px 8px;
+    height: 24px;
     background: var(--app-status-bg);
     border: 1px solid var(--app-status-border);
     border-radius: 4px;
@@ -2030,7 +2085,7 @@
   }
   .titlebar__source--toggle:disabled {
     cursor: progress;
-    opacity: 0.6;
+    opacity: var(--app-busy-opacity);
   }
   .titlebar__source--toggle.titlebar__source--selected {
     color: var(--app-text-strong);
@@ -2105,7 +2160,7 @@
   }
   .titlebar__privacy-warning-action:disabled {
     cursor: progress;
-    opacity: 0.55;
+    opacity: var(--app-busy-opacity);
   }
 
   /* Diagonal slash glyph used when a source is unselected (idle) or
@@ -2137,7 +2192,7 @@
     transition: background 0.12s, border-color 0.12s, opacity 0.12s, color 0.12s;
   }
   .titlebar__record:disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
   .titlebar__record:focus-visible {
@@ -2262,8 +2317,11 @@
     height: 12px;
     padding: 0 3px;
     border-radius: 999px;
-    background: var(--app-accent);
-    color: var(--app-accent-contrast);
+    /* Notification count = "items need attention", not "success" — use the
+       info tone, not the green success accent. Warning/error variants below
+       escalate it. */
+    background: var(--app-info);
+    color: var(--app-bg);
     font-size: var(--text-xs);
     font-weight: 800;
     line-height: 12px;
@@ -2290,7 +2348,7 @@
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border);
     border-radius: 8px;
-    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+    box-shadow: var(--app-shadow-popover);
   }
   .notification-popover__head {
     display: flex;
@@ -2305,19 +2363,24 @@
   }
   .notification-popover__clear,
   .notification-item__clear {
-    border: 0;
+    border: 1px solid transparent;
     background: transparent;
     color: var(--app-text-muted);
     cursor: pointer;
     font: inherit;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
   .notification-popover__clear {
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
     font-weight: 700;
+    padding: 4px 7px;
   }
   .notification-popover__clear:hover,
   .notification-item__clear:hover {
     color: var(--app-text-strong);
+    background: var(--app-surface-hover);
+    border-color: var(--app-border);
   }
   .notification-popover__clear:focus-visible,
   .notification-item__clear:focus-visible {
@@ -2402,8 +2465,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
   }
   .titlebar__settings-label {
     display: block;
@@ -2497,10 +2560,10 @@
     max-height: min(680px, calc(100vh - 48px));
     overflow-y: auto;
     border: 1px solid var(--app-border-strong);
-    border-radius: 18px;
+    border-radius: 12px;
     background: var(--app-surface-raised);
     color: var(--app-text);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+    box-shadow: var(--app-shadow-popover);
     padding: 18px;
   }
 
@@ -2581,7 +2644,7 @@
     gap: 18px;
     padding: 9px 10px;
     border: 1px solid var(--app-border);
-    border-radius: 12px;
+    border-radius: 8px;
     background: var(--app-surface-raised);
   }
 
