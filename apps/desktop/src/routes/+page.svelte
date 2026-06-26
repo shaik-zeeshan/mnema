@@ -4,7 +4,7 @@
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
-  import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
+  import { writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
   import { Calendar } from "bits-ui";
@@ -20,6 +20,7 @@
   import { developerOptions } from "$lib/developer-options.svelte";
   import ActionSelect from "$lib/components/ActionSelect.svelte";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
+  import { humanizeError } from "$lib/format-error";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
   import IconCalendar from "~icons/lucide/calendar";
@@ -566,6 +567,12 @@
   let frameActionStatus = $state<FrameActionStatus | null>(null);
   let frameActionStatusTimer: ReturnType<typeof setTimeout> | null = null;
   let frameActionStatusHovered = $state(false);
+  // In-flight latch for the stage's copy/download frame-image actions so the
+  // triggering menu item can show a "Copying…/Saving…" status and disable while
+  // the async clipboard/file write runs. Cleared in each action's finally.
+  let frameImageActionBusy = $state<null | "copy" | "download">(null);
+  // In-flight latch for the OCR "copy all recognized text" action.
+  let ocrCopyAllBusy = $state(false);
   let stageActionsMenuOpen = $state(false);
   // In-flight latch for the stage's "open captured URL" action: only one open
   // runs at a time on the stage, so a single boolean keeps a double-click on the
@@ -612,6 +619,12 @@
   let activePreviewLoadErrorFrameId = $state<number | null>(null);
   let timelineAppIconPathsByBundleId = $state<Record<string, string>>({});
   const requestedTimelineAppIconBundleIds = new Set<string>();
+  // A refetched preview whose bytes still fail to decode in the <img> sentinel
+  // would otherwise retry forever (fetch succeeds → paint fails → onerror →
+  // refetch …). Cap decode retries per frameId; on exhaustion we surface a
+  // terminal error in the always-visible stage status and stop refetching.
+  const MAX_ACTIVE_PREVIEW_DECODE_RETRIES = 2;
+  const activePreviewDecodeRetries = new Map<number, number>();
 
   function handleActivePreviewLoadError(frameId: number): void {
     const activeIndex = timelineFrames.findIndex((frame) => frame.id === frameId);
@@ -633,11 +646,32 @@
       return;
     }
     if (activePreviewLoadErrorFrameId === frameId) return;
+    const retries = activePreviewDecodeRetries.get(frameId) ?? 0;
+    if (retries >= MAX_ACTIVE_PREVIEW_DECODE_RETRIES) {
+      // Refetching keeps returning bytes the browser can't decode — stop the
+      // loop and leave a terminal, visible error instead of churning silently.
+      if (isTimelineActiveFrame(frameId)) {
+        setFrameActionStatus("Preview couldn't be displayed", {
+          detail: "This frame's image failed to decode after several attempts.",
+          tone: "error",
+        });
+      }
+      return;
+    }
+    activePreviewDecodeRetries.set(frameId, retries + 1);
     activePreviewLoadErrorFrameId = frameId;
     previewStaleRetryCount += 1;
     dropPreviewCacheEntry(frameId);
     clearPreviewFailure(frameId);
     void ensurePreview(frameId);
+  }
+
+  function handleActivePreviewLoad(frameId: number): void {
+    // A successful repaint means the current bytes decoded fine, so clear this
+    // frame's decode-retry budget. Otherwise a frame that transiently failed
+    // (then recovered) keeps a poisoned counter, and a later genuine decode
+    // failure on the same frame would trip the terminal error immediately.
+    activePreviewDecodeRetries.delete(frameId);
   }
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
@@ -948,7 +982,7 @@
       selectedAudioMediaError = null;
     } catch (err) {
       if (gen !== selectedAudioMediaGeneration || selectedAudioSegmentId !== id) return;
-      selectedAudioMediaError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioMediaError = humanizeError(err);
       selectedAudioSrc = null;
     } finally {
       if (gen === selectedAudioMediaGeneration && selectedAudioSegmentId === id) {
@@ -1323,7 +1357,7 @@
       selectedAudioSpeakerClusters = [];
       selectedAudioSpeakerTurnsNotice = null;
       selectedAudioSpeakerAnalysisFailedJobId = null;
-      selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioSpeakerTurnsError = humanizeError(err);
     }
   }
 
@@ -1408,7 +1442,7 @@
       speakerNameDrafts = remainingDrafts;
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1487,7 +1521,7 @@
       });
       await refreshCurrentSpeakerTurns();
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1503,7 +1537,7 @@
       });
       await refreshCurrentSpeakerTurns();
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1518,7 +1552,7 @@
       });
       await refreshCurrentSpeakerTurns();
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1531,7 +1565,7 @@
       await invoke("reject_speaker_recognition_suggestion", { request: { clusterId } });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1544,7 +1578,7 @@
       await invoke("unlink_speaker_cluster_from_person", { request: { clusterId } });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1563,7 +1597,7 @@
       });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1584,7 +1618,7 @@
       }
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1650,7 +1684,7 @@
       selectedAudioTranscriptStatus = "error";
       selectedAudioTranscriptText = null;
       selectedAudioTranscriptSegments = [];
-      selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioTranscriptError = humanizeError(err);
     }
   }
 
@@ -1820,7 +1854,7 @@
       selectedAudioSpeakerAnalysisRunning = false;
       selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsNotice = null;
-      selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioSpeakerTurnsError = humanizeError(err);
     }
   }
 
@@ -2011,7 +2045,7 @@
       selectedAudioSpeakerAnalysisRunning = false;
       selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsNotice = null;
-      selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioTranscriptError = humanizeError(err);
     }
   }
 
@@ -2098,7 +2132,7 @@
       await applySelectedAudioTranscriptJob(id, gen, result.job);
     } catch (err) {
       if (selectedAudioSegmentId !== id) return;
-      selectedAudioTranscriptRerunError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioTranscriptRerunError = humanizeError(err);
     } finally {
       if (selectedAudioSegmentId === id) {
         selectedAudioTranscriptRerunLoading = false;
@@ -2127,7 +2161,7 @@
       await applySelectedAudioSpeakerAnalysisJob(id, gen, result.job);
     } catch (err) {
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
-      selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioSpeakerTurnsError = humanizeError(err);
     } finally {
       if (selectedAudioSegmentId === id) {
         selectedAudioSpeakerAnalysisRetryLoading = false;
@@ -2156,6 +2190,13 @@
   // While the user drags the scrub thumb we hold UI updates from `timeupdate`
   // events so the indicator doesn't fight the drag. Commit on release.
   let audioScrubbing = $state(false);
+  // Whether the user has explicitly seeked (clicked a transcript segment, used
+  // the scrubber, etc.) within the current segment. The active-segment
+  // highlight is normally suppressed at the paused-at-zero start so a fresh
+  // segment doesn't auto-highlight its first line; but once the user seeks —
+  // even to the very first segment at 0ms while paused — that highlight should
+  // resolve from the seek target. Reset whenever the selected segment changes.
+  let audioHasSeeked = $state(false);
 
   function findActiveTranscriptSegmentIndex(
     segments: TranscriptionSegment[],
@@ -2170,7 +2211,8 @@
   }
 
   const selectedAudioTranscriptActiveSegmentIndex = $derived(
-    selectedAudioTranscriptSegments.length === 0 || (!audioIsPlaying && audioCurrentTime <= 0)
+    selectedAudioTranscriptSegments.length === 0 ||
+      (!audioIsPlaying && audioCurrentTime <= 0 && !audioHasSeeked)
       ? null
       : findActiveTranscriptSegmentIndex(selectedAudioTranscriptSegments, audioCurrentTime),
   );
@@ -2188,7 +2230,8 @@
   }
 
   const selectedAudioSpeakerActiveGroupIndex = $derived(
-    selectedAudioSpeakerGroups.length === 0 || (!audioIsPlaying && audioCurrentTime <= 0)
+    selectedAudioSpeakerGroups.length === 0 ||
+      (!audioIsPlaying && audioCurrentTime <= 0 && !audioHasSeeked)
       ? null
       : findActiveSpeakerGroupIndex(selectedAudioSpeakerGroups, audioCurrentTime),
   );
@@ -2219,6 +2262,7 @@
     audioCurrentTime = 0;
     audioDuration = 0;
     audioScrubbing = false;
+    audioHasSeeked = false;
   });
 
   function togglePlayPause() {
@@ -2276,6 +2320,9 @@
     if (!Number.isFinite(nextTime)) return;
     el.currentTime = nextTime;
     audioCurrentTime = nextTime;
+    // Mark an explicit seek so the active-segment highlight resolves even when
+    // the target is the first segment at 0ms while paused.
+    audioHasSeeked = true;
   }
 
   $effect(() => {
@@ -2435,6 +2482,7 @@
     if (!Number.isFinite(nextTime)) return;
     el.currentTime = nextTime;
     audioCurrentTime = nextTime;
+    audioHasSeeked = true;
   }
 
   function isAudioDrawerShortcutSuppressedTarget(target: EventTarget | null): boolean {
@@ -3287,7 +3335,7 @@
       }
     } catch (error) {
       scrubPerfLog("preview_video_generation_cancel_failed", {
-        message: error instanceof Error ? error.message : String(error),
+        message: humanizeError(error),
       });
     }
   }
@@ -3783,6 +3831,7 @@
   }
 
   async function copyActiveFrameImage(): Promise<void> {
+    if (frameImageActionBusy) return;
     const frame = timelineActive;
     const previewUrl = frame ? previewCache.get(frame.id) : null;
     if (!frame || !previewUrl) {
@@ -3790,8 +3839,10 @@
       return;
     }
 
+    frameImageActionBusy = "copy";
     try {
       if (!(await confirmOriginalMediaAccessIfRedacted(frame.id))) return;
+      setFrameActionStatus("Copying…");
       const image = await previewFilePathToClipboardImage(previewUrl);
       try {
         await writeImage(image);
@@ -3804,10 +3855,13 @@
       setFrameActionStatus(
         `Copy failed: ${typeof err === "string" ? err : "clipboard write was rejected"}`,
       );
+    } finally {
+      frameImageActionBusy = null;
     }
   }
 
   async function downloadActiveFrameImage(): Promise<void> {
+    if (frameImageActionBusy) return;
     const frame = timelineActive;
     const previewUrl = frame ? previewCache.get(frame.id) : null;
     if (!frame || !previewUrl) {
@@ -3815,8 +3869,10 @@
       return;
     }
 
+    frameImageActionBusy = "download";
     try {
       if (!(await confirmOriginalMediaAccessIfRedacted(frame.id))) return;
+      setFrameActionStatus("Saving…");
       await writeFile(
         activeFrameDownloadName(frame, previewMimeTypeCache.get(frame.id) ?? null),
         await readFramePreviewBytes(previewUrl),
@@ -3830,6 +3886,38 @@
       setFrameActionStatus(
         `Download failed: ${typeof err === "string" ? err : "file write was rejected"}`,
       );
+    } finally {
+      frameImageActionBusy = null;
+    }
+  }
+
+  // Copy every recognized OCR text region for the active frame as one block.
+  // The on-image overlay only reveals text on hover, so this gives a
+  // discoverable, single-shot way to lift all recognized text — with visible
+  // in-flight + success/failure feedback through the stage status banner.
+  async function copyAllRecognizedText(): Promise<void> {
+    if (ocrCopyAllBusy) return;
+    const text = ocrObservations
+      .map((obs) => obs.text)
+      .join("\n")
+      .trim();
+    if (!text) {
+      setFrameActionStatus("No recognized text to copy");
+      return;
+    }
+    ocrCopyAllBusy = true;
+    setFrameActionStatus("Copying text…");
+    try {
+      await writeText(text);
+      const count = ocrObservations.length;
+      setFrameActionStatus(`Copied ${count} text region${count === 1 ? "" : "s"}`);
+      stageActionsMenuOpen = false;
+    } catch (err) {
+      setFrameActionStatus(
+        `Copy failed: ${typeof err === "string" ? err : "clipboard write was rejected"}`,
+      );
+    } finally {
+      ocrCopyAllBusy = false;
     }
   }
 
@@ -3950,14 +4038,22 @@
       const frame = await invoke<FrameDto | null>("get_frame", {
         request: { frameId: payload.frameId },
       });
-      if (frame) await jumpToFrame(frame, false);
+      if (!frame) {
+        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+        return;
+      }
+      await jumpToFrame(frame, false);
       return;
     }
     if (payload.kind === "audio" && payload.audioSegmentId != null) {
       const request: GetAudioSegmentRequest = { audioSegmentId: payload.audioSegmentId };
       const audio = await invoke<AudioSegmentDto | null>("get_audio_segment", { request });
       const mapped = audio ? mapAudioSegmentDto(audio) : null;
-      if (mapped && !audioSegments.some((segment) => segment.id === mapped.id)) {
+      if (!mapped) {
+        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+        return;
+      }
+      if (!audioSegments.some((segment) => segment.id === mapped.id)) {
         audioSegments = [...audioSegments, mapped].sort((a, b) => a.startUnixMs - b.startUnixMs);
       }
       selectedAudioSegmentPinned = mapped;
@@ -3976,11 +4072,23 @@
   }
 
   async function drainPendingBrokerOpenCaptureResults(): Promise<void> {
-    const payloads = await invoke<BrokerOpenCaptureResultPayload[]>(
-      "drain_pending_broker_open_capture_results",
-    );
+    let payloads: BrokerOpenCaptureResultPayload[];
+    try {
+      payloads = await invoke<BrokerOpenCaptureResultPayload[]>(
+        "drain_pending_broker_open_capture_results",
+      );
+    } catch {
+      setFrameActionStatus("Couldn't open that capture — please try again.", { tone: "error" });
+      return;
+    }
     for (const payload of payloads) {
-      await openBrokerCaptureResult(payload);
+      try {
+        await openBrokerCaptureResult(payload);
+      } catch {
+        // get_frame / get_audio_segment threw (capture gone or DB error) — the
+        // broker handoff must never fail silently, so surface a visible note.
+        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+      }
     }
   }
 
@@ -4041,7 +4149,7 @@
       audioSegmentsError = null;
     } catch (err) {
       if (gen !== audioSegmentsGeneration) return;
-      audioSegmentsError = typeof err === "string" ? err : JSON.stringify(err);
+      audioSegmentsError = humanizeError(err);
     } finally {
       if (gen === audioSegmentsGeneration) {
         audioSegmentsLoading = false;
@@ -4136,7 +4244,7 @@
         active: isTimelineActiveFrame(frameId),
       }, SCRUB_PERF_SLOW_PREVIEW_MS);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = humanizeError(error);
       if (isPreviewGenerationCancelled(message)) {
         scrubPerfLog("exact_preview_cancelled", {
           frameId,
@@ -4472,7 +4580,7 @@
       timelineError = null;
     } catch (err) {
       if (gen !== timelineGeneration) return;
-      timelineError = typeof err === "string" ? err : JSON.stringify(err);
+      timelineError = humanizeError(err);
     } finally {
       // Only the request that still owns the current generation should clear
       // the loading flags; otherwise a superseding reset's flags would be
@@ -4583,7 +4691,7 @@
       timelineError = null;
     } catch (err) {
       if (gen !== timelineGeneration) return;
-      timelineError = typeof err === "string" ? err : JSON.stringify(err);
+      timelineError = humanizeError(err);
     } finally {
       if (gen === timelineGeneration) {
         timelineLoadingMore = false;
@@ -5711,7 +5819,7 @@
         status: "error",
         observations: [],
         providerLabel: null,
-        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        error: humanizeError(err),
         job: null,
       });
     }
@@ -5767,7 +5875,7 @@
         status: "error",
         observations: [],
         providerLabel: null,
-        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        error: humanizeError(err),
         job: null,
       });
     }
@@ -5864,7 +5972,7 @@
         status: "error",
         observations: [],
         providerLabel: null,
-        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        error: humanizeError(err),
         job: null,
       });
     }
@@ -6157,7 +6265,7 @@
       }
       pickerError = null;
     } catch (err) {
-      pickerError = typeof err === "string" ? err : JSON.stringify(err);
+      pickerError = humanizeError(err);
     } finally {
       monthsInFlight.delete(key);
       if (isFirstLoad) pickerLoading = false;
@@ -6224,6 +6332,18 @@
     return out;
   });
 
+  // Route a jump failure to a surface the user can actually see: the popover's
+  // own `pickerError` is invisible once the picker has closed (or was never the
+  // origin), so non-picker jumps (broker handoff, duplicate-frame link) report
+  // through the always-visible stage status banner instead.
+  function reportJumpError(message: string): void {
+    if (pickerOpen) {
+      pickerError = message;
+    } else {
+      setFrameActionStatus(message, { tone: "error" });
+    }
+  }
+
   async function jumpToFrame(target: FrameDto, closePicker = true): Promise<void> {
     pickerJumping = true;
     pickerError = null;
@@ -6243,7 +6363,7 @@
       );
       if (gen !== timelineGeneration) return;
       if (!window.frames[window.targetIndex] || window.frames[window.targetIndex]?.id !== target.id) {
-        pickerError = "failed to focus selected frame";
+        reportJumpError("failed to focus selected frame");
         return;
       }
       timelineFrames = window.frames;
@@ -6264,6 +6384,7 @@
       scrubPreviewLoadMsCache = new Map();
       scrubPreviewFailedAt = new Map();
       scrubPreviewIntervalCache = new Map();
+      activePreviewDecodeRetries.clear();
       resetTimelinePreviewDisplay();
       await syncTimelineScrollToActiveFrame();
       void refreshAudioSegments();
@@ -6286,7 +6407,7 @@
       if (closePicker) pickerOpen = false;
     } catch (err) {
       if (gen !== timelineGeneration) return;
-      pickerError = typeof err === "string" ? err : JSON.stringify(err);
+      reportJumpError(humanizeError(err));
     } finally {
       if (gen === timelineGeneration) {
         timelineLoading = false;
@@ -6310,12 +6431,12 @@
         request: req,
       });
       if (!frame) {
-        pickerError = "no frame in that range";
+        reportJumpError("no frame in that range");
         return;
       }
       await jumpToFrame(frame, closePicker);
     } catch (err) {
-      pickerError = typeof err === "string" ? err : JSON.stringify(err);
+      reportJumpError(humanizeError(err));
     }
   }
 
@@ -6747,6 +6868,7 @@
       if (deletedFrameIds.size > 0) {
         const nextFrames = timelineFrames.filter((frame) => !deletedFrameIds.has(frame.id));
         if (nextFrames.length !== timelineFrames.length) {
+          const activeWasDeleted = activeFrameId !== null && deletedFrameIds.has(activeFrameId);
           timelineFrames = nextFrames;
           if (timelineFrames.length === 0) {
             timelineActiveIndex = 0;
@@ -6760,6 +6882,16 @@
           }
           prunePreviewCache(timelineFrames);
           void syncTimelineScrollToActiveFrame();
+          // The active frame just vanished from under the user. The stage
+          // status banner only renders when a frame is shown, so surface the
+          // acknowledgment in the nearest-frame case (the empty case already
+          // collapses to the "No frames yet" empty state).
+          if (activeWasDeleted && timelineFrames.length > 0) {
+            setFrameActionStatus(
+              "This capture was deleted — showing the nearest frame.",
+              { tone: "error" },
+            );
+          }
         }
       }
 
@@ -7048,6 +7180,25 @@
     class:timeline__stage--stale={timelineError && timelineFrames.length > 0}
     bind:this={stageEl}
   >
+    <!-- Stage status banner is hoisted to a direct child of the stage (it is
+         absolutely positioned bottom-right, so DOM order doesn't move it) so
+         broker open-capture failures and deletion acks surface even when there
+         is no active frame (e.g. the "No frames yet" empty state). -->
+    {#if frameActionStatus}
+      <div
+        class="timeline__stage-status"
+        class:timeline__stage-status--error={frameActionStatus.tone === "error"}
+        role="status"
+        aria-live="polite"
+        onpointerenter={onFrameActionStatusPointerEnter}
+        onpointerleave={onFrameActionStatusPointerLeave}
+      >
+        <div class="timeline__stage-status-summary">{frameActionStatus.message}</div>
+        {#if frameActionStatus.detail}
+          <div class="timeline__stage-status-detail">{frameActionStatus.detail}</div>
+        {/if}
+      </div>
+    {/if}
     {#if timelineLoading && timelineFrames.length === 0}
       <div class="timeline__preview-pending">
         <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
@@ -7068,21 +7219,6 @@
       {@const previewDisplay = timelinePreviewDisplay}
       {@const previewPath = previewDisplay?.filePath ?? null}
       {@const previewUrl = previewPath ? framePreviewAssetUrl(previewPath) : null}
-      {#if frameActionStatus}
-        <div
-          class="timeline__stage-status"
-          class:timeline__stage-status--error={frameActionStatus.tone === "error"}
-          role="status"
-          aria-live="polite"
-          onpointerenter={onFrameActionStatusPointerEnter}
-          onpointerleave={onFrameActionStatusPointerLeave}
-        >
-          <div class="timeline__stage-status-summary">{frameActionStatus.message}</div>
-          {#if frameActionStatus.detail}
-            <div class="timeline__stage-status-detail">{frameActionStatus.detail}</div>
-          {/if}
-        </div>
-      {/if}
       {#if previewUrl}
         {@const activeExactPreviewReady = previewCache.has(timelineActive.id)}
         {@const displayedActiveExactPreview = previewDisplay?.frameId === timelineActive.id && previewDisplay.source === "exact"}
@@ -7115,18 +7251,31 @@
                 type="button"
                 class="timeline__stage-action-menu-item"
                 onclick={copyActiveFrameImage}
-                disabled={!activeExactPreviewReady}
+                disabled={!activeExactPreviewReady || frameImageActionBusy !== null}
                 aria-label="Copy active frame image"
+                aria-busy={frameImageActionBusy === "copy"}
                 title="Copy image (C)"
-              >copy</button>
+              >{frameImageActionBusy === "copy" ? "copying…" : "copy"}</button>
               <button
                 type="button"
                 class="timeline__stage-action-menu-item"
                 onclick={downloadActiveFrameImage}
-                disabled={!activeExactPreviewReady}
+                disabled={!activeExactPreviewReady || frameImageActionBusy !== null}
                 aria-label="Download active frame image"
+                aria-busy={frameImageActionBusy === "download"}
                 title="Download image (D)"
-              >download</button>
+              >{frameImageActionBusy === "download" ? "saving…" : "download"}</button>
+              {#if ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0}
+                <button
+                  type="button"
+                  class="timeline__stage-action-menu-item"
+                  onclick={copyAllRecognizedText}
+                  disabled={ocrCopyAllBusy}
+                  aria-busy={ocrCopyAllBusy}
+                  aria-label="Copy all recognized text"
+                  title="Copy all recognized on-screen text"
+                >{ocrCopyAllBusy ? "copying text…" : "copy text"}</button>
+              {/if}
               {#if currentFrameHost}
                 <button
                   type="button"
@@ -7158,6 +7307,7 @@
           src={previewUrl}
           alt=""
           aria-hidden="true"
+          onload={() => handleActivePreviewLoad(previewDisplay?.frameId ?? timelineActive.id)}
           onerror={() => handleActivePreviewLoadError(previewDisplay?.frameId ?? timelineActive.id)}
         />
         <!-- OCR overlay: anchored to the painted background-image rect
@@ -7191,6 +7341,9 @@
                 <span class="timeline__ocr-text">{obs.text}</span>
               </div>
             {/each}
+            <span class="timeline__ocr-overlay-hint" aria-hidden="true">
+              hover to read · copy all in ⋯
+            </span>
           </div>
         {/if}
       {:else}
@@ -7626,8 +7779,8 @@
       >×</button>
     </div>
     {#if selectedAudioMediaLoading}
-      <div class="audio-drawer__status">
-        <span class="audio-drawer__status-glyph" aria-hidden="true">…</span>
+      <div class="audio-drawer__status" role="status" aria-live="polite" aria-busy="true">
+        <span class="audio-drawer__spinner" aria-hidden="true"></span>
         <span>loading audio segment…</span>
       </div>
     {:else if selectedAudioMediaError}
@@ -7748,7 +7901,17 @@
               ? "Starting…"
               : selectedAudioTranscriptActionLabel}
           </button>
-          <span class="audio-drawer__transcript-state audio-drawer__transcript-state--{selectedAudioTranscriptStatus}">
+          <span
+            class="audio-drawer__transcript-state audio-drawer__transcript-state--{selectedAudioTranscriptStatus}"
+            role="status"
+            aria-live="polite"
+            aria-busy={selectedAudioSpeakerAnalysisRunning ||
+              selectedAudioTranscriptStatus === "running" ||
+              selectedAudioTranscriptStatus === "loading"}
+          >
+            {#if selectedAudioSpeakerAnalysisRunning || selectedAudioTranscriptStatus === "running" || selectedAudioTranscriptStatus === "loading"}
+              <span class="audio-drawer__spinner audio-drawer__spinner--pill" aria-hidden="true"></span>
+            {/if}
             {#if selectedAudioSpeakerAnalysisRunning}
               speakers
             {:else if selectedAudioSegment.source === "systemAudio" && selectedAudioTranscriptStatus === "running"}
@@ -7767,6 +7930,8 @@
               no speech
             {:else if selectedAudioTranscriptStatus === "error"}
               error
+            {:else if selectedAudioTranscriptStatus === "missing"}
+              not run
             {:else}
               unavailable
             {/if}
@@ -7774,7 +7939,7 @@
         </div>
       </div>
       {#if selectedAudioTranscriptRerunError}
-        <p class="audio-drawer__transcript-error">{selectedAudioTranscriptRerunError}</p>
+        <p class="audio-drawer__transcript-error" role="alert">{selectedAudioTranscriptRerunError}</p>
       {/if}
       {#if selectedAudioTranscriptStatus === "success"}
         {#if selectedAudioSpeakerGroups.length > 0}
@@ -8002,7 +8167,7 @@
             {/each}
           </div>
           {#if speakerCorrectionError}
-            <p class="audio-drawer__transcript-error">{speakerCorrectionError}</p>
+            <p class="audio-drawer__transcript-error" role="alert">{speakerCorrectionError}</p>
           {/if}
         {:else if selectedAudioTranscriptSegments.length > 0}
           <div
@@ -8027,7 +8192,7 @@
           <p class="audio-drawer__transcript-text">{selectedAudioTranscriptText}</p>
         {/if}
         {#if selectedAudioSpeakerTurnsError}
-          <div class="audio-drawer__transcript-error-row">
+          <div class="audio-drawer__transcript-error-row" role="alert">
             <p class="audio-drawer__transcript-error">{selectedAudioSpeakerTurnsError}</p>
             {#if selectedAudioSpeakerRetryVisible}
               <button
@@ -8049,11 +8214,17 @@
       {:else if selectedAudioTranscriptStatus === "empty"}
         <p class="audio-drawer__transcript-empty">No speech detected in this segment.</p>
       {:else if selectedAudioTranscriptStatus === "loading"}
-        <p class="audio-drawer__transcript-empty">Loading transcript…</p>
+        <p class="audio-drawer__transcript-empty audio-drawer__transcript-empty--loading" role="status" aria-live="polite" aria-busy="true">
+          <span class="audio-drawer__spinner" aria-hidden="true"></span>
+          Loading transcript…
+        </p>
       {:else if selectedAudioTranscriptStatus === "running"}
-        <p class="audio-drawer__transcript-empty">Transcription is queued or still processing.</p>
+        <p class="audio-drawer__transcript-empty audio-drawer__transcript-empty--loading" role="status" aria-live="polite" aria-busy="true">
+          <span class="audio-drawer__spinner" aria-hidden="true"></span>
+          Transcription is queued or still processing.
+        </p>
       {:else if selectedAudioTranscriptStatus === "error"}
-        <p class="audio-drawer__transcript-error">{selectedAudioTranscriptError}</p>
+        <p class="audio-drawer__transcript-error" role="alert">{selectedAudioTranscriptError}</p>
       {:else}
         <p class="audio-drawer__transcript-empty">No transcript has been recorded for this segment.</p>
       {/if}
@@ -8186,7 +8357,8 @@
     }
 
     .timeline__ocr-spinner,
-    .timeline__preview-pending-spinner {
+    .timeline__preview-pending-spinner,
+    .audio-drawer__spinner {
       animation: none;
     }
   }
@@ -8478,6 +8650,35 @@
     border-radius: 50%;
     color: var(--app-danger);
     font-size: 9px;
+  }
+
+  /* Indeterminate motion for in-flight audio/transcript states so a long
+     poll or media load reads as active rather than stuck. Reuses the shared
+     `timeline-ocr-spin` keyframe; degrades to a static ring under
+     reduced-motion (see the media query below). */
+  .audio-drawer__spinner {
+    flex: 0 0 auto;
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in srgb, var(--app-text-muted) 30%, transparent);
+    border-top-color: var(--app-text-muted);
+    animation: timeline-ocr-spin 0.9s linear infinite;
+  }
+
+  .audio-drawer__spinner--pill {
+    width: 9px;
+    height: 9px;
+    border-width: 1.25px;
+    vertical-align: middle;
+    margin-right: 4px;
+  }
+
+  .audio-drawer__transcript-empty--loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .audio-drawer__error {
@@ -9959,6 +10160,28 @@
   .timeline__ocr-overlay {
     position: absolute;
     overflow: hidden;
+    pointer-events: none;
+  }
+
+  /* Persistent signifier that the overlaid boxes hold copyable recognized
+     text — the per-box chip is otherwise only discoverable by hovering each
+     box. Non-interactive (pointer-events stay off so scrub/click pass through)
+     and tucked into the corner so it never competes with the frame. */
+  .timeline__ocr-overlay-hint {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--app-ocr-chip-bg);
+    color: var(--app-ocr-chip-text);
+    border: 1px solid var(--app-ocr-chip-border);
+    font-family: var(--app-font-mono);
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    line-height: 1.2;
+    white-space: nowrap;
+    opacity: 0.72;
     pointer-events: none;
   }
 
