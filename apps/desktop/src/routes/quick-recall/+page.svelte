@@ -932,7 +932,12 @@
   // follow-up streams. Hidden entirely while turn 1 is still seeding / streaming
   // / errored-with-no-completed-answer.
   let askHasCompletedTurn = $derived(askTurns.some((t) => t.phase === "done"));
-  let askComposerVisible = $derived(askSubmitted && askHasCompletedTurn);
+  // Also require a live session: stopping a stream abandons the PI session (id
+  // nulled) while leaving the partial answer rendered, so the composer hides
+  // rather than sitting dead (a follow-up would no-op without a session id).
+  let askComposerVisible = $derived(
+    askSubmitted && askHasCompletedTurn && askConversationId !== null,
+  );
 
   // ---------------------------------------------------------------------------
   // "Seen" state (background completion — see PLAN.md slice 1)
@@ -1767,6 +1772,46 @@
     }
   }
 
+  // Auto-grow a composer textarea to fit its content (the standard chat-composer
+  // affordance): reset to one row, then expand to scrollHeight capped at ~5 rows,
+  // after which it scrolls. Driven reactively off the bound value so the field
+  // reflects multi-line questions as they're typed (and collapses on clear).
+  const ASK_TEXTAREA_MAX_PX = 112;
+  function autosizeAskTextarea(el: HTMLTextAreaElement | null): void {
+    if (el === null) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, ASK_TEXTAREA_MAX_PX)}px`;
+    el.style.overflowY =
+      el.scrollHeight > ASK_TEXTAREA_MAX_PX ? "auto" : "hidden";
+  }
+
+  // Re-send a failed FOLLOW-UP turn's question through ask_ai_followup. The PI
+  // session stays resident after a follow-up error, so this appends a fresh
+  // attempt (mirroring a normal follow-up) rather than rebuilding the thread the
+  // way retryAsk does for a turn-1 failure.
+  async function retryFollowupTurn(turn: AskTurn): Promise<void> {
+    if (askStreaming || askConversationId === null) {
+      return;
+    }
+    followupInput = turn.question;
+    await submitFollowup();
+  }
+
+  // Stop a streaming answer in place: abandon the live PI session (ask_ai_cancel)
+  // but settle the live turn to `done` so its partial answer stays rendered and
+  // copyable, rather than abandoning the whole surface the way Escape does. The
+  // session id is dropped by cancelActiveAsk, so the thread becomes non-continuable
+  // (the composer/handoff hide via their `askConversationId` guards) — a true
+  // resume-after-stop needs a backend stop-turn-but-keep-session command.
+  async function stopActiveAsk(): Promise<void> {
+    const live = askLiveTurn;
+    await cancelActiveAsk();
+    if (live && live.phase !== "done" && live.phase !== "error") {
+      live.phase = "done";
+      live.liveActivity = null;
+    }
+  }
+
   // Tear down all ephemeral thread state (transcript, ids, timers, inputs). Does
   // NOT cancel the live session — callers route through cancelActiveAsk first.
   function resetAskThreadState(): void {
@@ -1794,6 +1839,17 @@
 
   $effect(() => {
     scheduleSearch(query);
+  });
+
+  // Keep both Ask AI composer textareas grown to their content. Reading the bound
+  // value + the element ref tracks typing AND programmatic clears / first mount.
+  $effect(() => {
+    void askInput;
+    autosizeAskTextarea(askInputEl);
+  });
+  $effect(() => {
+    void followupInput;
+    autosizeAskTextarea(followupInputEl);
   });
 
   // Keep the live (last) turn and the composer in view as the transcript grows:
@@ -3885,7 +3941,19 @@
               {/each}
             </div>
           {:else if errorMessage}
+            <!-- A backend search failure offers an explicit recovery (re-issue the
+                 same query), mirroring the Ask AI "Try again" so the path isn't a
+                 soft dead end the user has to guess at by editing the query. -->
             <p class="quick-recall__state quick-recall__state--error">{errorMessage}</p>
+            <div class="quick-recall__retry-row">
+              <button
+                type="button"
+                class="quick-recall__retry"
+                onclick={() => void runSearch(resultsQuery)}
+              >
+                Retry
+              </button>
+            </div>
           {:else if resultsPaused}
             <!-- Slice 3: paused-results state. The backend suppressed results for
                  a malformed filter, so we render neither stale cards nor the bare
@@ -3960,6 +4028,20 @@
             <!-- Once the thread exists the header is just the Back affordance —
                  each turn's question renders as its own header in the transcript. -->
             <span class="quick-recall__ask-thread-label" aria-hidden="true">Ask AI</span>
+            {#if askStreaming}
+              <!-- Interrupt a streaming answer in place (keeps the partial answer
+                   visible) instead of forcing Escape, which abandons the surface. -->
+              <button
+                type="button"
+                class="quick-recall__stop"
+                onclick={() => void stopActiveAsk()}
+                aria-label="Stop generating"
+                title="Stop generating"
+              >
+                <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
+                Stop
+              </button>
+            {/if}
           {:else}
             <textarea
               bind:this={askInputEl}
@@ -4002,19 +4084,25 @@
                   <p class="quick-recall__state quick-recall__state--error">
                     {turn.errorMessage ?? "Ask AI failed."}
                   </p>
-                  {#if ti === 0}
-                    <!-- Turn-1 error retries the whole thread (same question +
-                         seed) as a fresh thread. Follow-up errors have no retry. -->
-                    <div class="quick-recall__retry-row">
-                      <button
-                        type="button"
-                        class="quick-recall__retry"
-                        onclick={() => void retryAsk()}
-                      >
-                        Try again
-                      </button>
-                    </div>
-                  {/if}
+                  <!-- Every errored turn gets a retry. Turn 1 rebuilds the whole
+                       thread (same question + seed); a follow-up error re-sends its
+                       question through ask_ai_followup on the still-resident session. -->
+                  <div class="quick-recall__retry-row">
+                    <button
+                      type="button"
+                      class="quick-recall__retry"
+                      disabled={askStreaming}
+                      onclick={() => {
+                        if (ti === 0) {
+                          void retryAsk();
+                        } else {
+                          void retryFollowupTurn(turn);
+                        }
+                      }}
+                    >
+                      Try again
+                    </button>
+                  </div>
                 {:else}
                   <!-- Thinking disclosure: the model's reasoning, ABOVE the
                        answer body. Rendered only when reasoning text arrived.
@@ -4422,7 +4510,7 @@
      on. The blinking accent caret already signals focus. */
 
   .quick-recall__glyph {
-    font-size: 16px;
+    font-size: var(--text-lg);
     line-height: 1;
     color: var(--app-text-muted);
     flex-shrink: 0;
@@ -4511,7 +4599,7 @@
 
   .quick-recall__footer kbd {
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     line-height: 1;
     text-transform: lowercase;
     color: var(--app-text-muted);
@@ -4544,7 +4632,7 @@
   }
 
   .quick-recall__section-label {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -4561,7 +4649,7 @@
   .quick-recall__state {
     margin: 0;
     padding: 8px 2px;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text-muted);
   }
@@ -4577,7 +4665,7 @@
     margin: 4px 0 8px;
     padding: 8px 10px;
     text-align: left;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text-muted);
     background: var(--app-surface-raised);
@@ -4595,6 +4683,10 @@
     outline: none;
     border-color: var(--app-accent);
     box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__semantic-hint:active {
+    background: var(--app-surface-active);
   }
 
   /* Slice 4: feature-teaching orientation view shown pre-query (belowMinimum).
@@ -4617,7 +4709,7 @@
     justify-content: center;
     width: 40px;
     height: 40px;
-    font-size: 20px;
+    font-size: var(--text-xl);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-bg);
@@ -4640,7 +4732,7 @@
   }
 
   .quick-recall__orient-cue {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -4653,7 +4745,7 @@
 
   .quick-recall__orient-cue-dot {
     color: var(--app-text-subtle);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
   }
 
@@ -4666,7 +4758,7 @@
 
   .quick-recall__orient-hint kbd {
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface);
@@ -4767,7 +4859,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     color: var(--app-text);
     background: var(--app-surface-subtle);
@@ -4794,7 +4886,7 @@
   }
 
   .quick-recall__ask-key {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
 
@@ -4823,10 +4915,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -4845,6 +4937,10 @@
     outline: none;
     border-color: var(--app-accent);
     box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__syntax-trigger:active {
+    background: var(--app-surface-active);
   }
 
   /* The popover floats below-right of the trigger, anchored to the wrapper. It's
@@ -4866,7 +4962,7 @@
 
   .quick-recall__syntax-heading {
     margin: 0 0 6px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.3;
     color: var(--app-text-muted);
   }
@@ -4897,7 +4993,7 @@
 
   .quick-recall__syntax-row dt code {
     font-family: var(--app-font-mono);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     padding: 0.15em 0.4em;
     border-radius: 4px;
@@ -4917,7 +5013,7 @@
   .quick-recall__ask-hint {
     margin: 0;
     padding: 6px 18px 0;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.4;
     color: var(--app-text-subtle);
     flex-shrink: 0;
@@ -4954,13 +5050,14 @@
   }
 
   .quick-recall__chip-remove {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 16px;
     height: 16px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1;
     color: var(--app-text-muted);
     background: transparent;
@@ -4971,6 +5068,18 @@
     transition: color 0.12s ease, background-color 0.12s ease;
   }
 
+  /* Invisible hit area expanding the 16px glyph to the 24px comfortable minimum
+     without enlarging the chip itself. */
+  .quick-recall__chip-remove::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 24px;
+    height: 24px;
+    transform: translate(-50%, -50%);
+  }
+
   .quick-recall__chip-remove:hover {
     color: var(--app-text-strong);
     background: color-mix(in srgb, var(--app-accent) 18%, transparent);
@@ -4979,6 +5088,10 @@
   .quick-recall__chip-remove:focus-visible {
     outline: none;
     box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__chip-remove:active {
+    background: color-mix(in srgb, var(--app-accent) 28%, transparent);
   }
 
   /* Slice 3: inline parse-error line under the input. Shares the chip band's
@@ -5011,7 +5124,7 @@
   }
 
   .quick-recall__picker-title {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -5019,7 +5132,7 @@
   }
 
   .quick-recall__picker-crumb-hint {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     color: var(--app-text-subtle);
   }
@@ -5051,6 +5164,14 @@
     border-color: var(--app-border);
   }
 
+  /* Pressed feedback for a clickable row (excludes disabled/selected, which carry
+     their own treatment), so a pointer click reads as responsive. */
+  .quick-recall__picker-item:not(.quick-recall__picker-item--disabled):not(
+      .quick-recall__picker-item--selected
+    ):active {
+    background: var(--app-surface-active);
+  }
+
   .quick-recall__picker-item--selected {
     background: color-mix(in srgb, var(--app-accent) 12%, transparent);
     border-color: var(--app-accent-border);
@@ -5060,21 +5181,21 @@
      chip (app + audio source are mutually exclusive). Dimmed and non-selectable —
      it never highlights on hover and Enter skips it. */
   .quick-recall__picker-item--disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     cursor: default;
   }
 
   /* Slice 4 (typed path): the one-line conflict note below the value list, and
-     the typed-date hint for the date operators. Both read as muted guidance
-     rather than chrome; the conflict note borrows the accent the parse-error line
-     uses so it lands as a live correction prompt. */
+     the typed-date hint for the date operators. The conflict note is a correction
+     prompt ("these filters can't combine"), so it shares the danger ramp with the
+     sibling .quick-recall__parse-error line rather than reading as success-green. */
   .quick-recall__picker-conflict {
     margin: 0;
     padding: 2px 2px 0;
     flex-shrink: 0;
     font-size: var(--text-sm);
     line-height: 1.4;
-    color: var(--app-accent);
+    color: var(--app-danger-text);
   }
 
   .quick-recall__picker-hint {
@@ -5092,7 +5213,7 @@
   }
 
   .quick-recall__picker-item-label {
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1.3;
     color: var(--app-text-strong);
     white-space: nowrap;
@@ -5113,7 +5234,7 @@
 
   .quick-recall__picker-item-chevron {
     flex-shrink: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     color: var(--app-text-muted);
   }
 
@@ -5131,7 +5252,7 @@
 
   .quick-recall__picker-cue kbd {
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     line-height: 1;
     text-transform: lowercase;
     color: var(--app-text-muted);
@@ -5150,7 +5271,7 @@
   .quick-recall__back {
     flex-shrink: 0;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -5181,11 +5302,53 @@
   .quick-recall__ask-thread-label {
     flex: 1;
     min-width: 0;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--app-text-subtle);
+  }
+
+  /* Stop the streaming answer in place — quiet by default, shifting to the danger
+     register on hover since it interrupts an in-flight action. */
+  .quick-recall__stop {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: inherit;
+    font-size: var(--text-base);
+    line-height: 1;
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    padding: 6px 9px;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease;
+  }
+
+  .quick-recall__stop-glyph {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: currentColor;
+    flex-shrink: 0;
+  }
+
+  .quick-recall__stop:hover {
+    border-color: var(--app-danger);
+    color: var(--app-danger-text);
+  }
+
+  .quick-recall__stop:focus-visible {
+    outline: none;
+    border-color: var(--app-danger);
+    box-shadow: var(--app-ring-danger);
+  }
+
+  .quick-recall__stop:active {
+    background: var(--app-surface-active);
   }
 
   .quick-recall__ask-input {
@@ -5200,6 +5363,11 @@
     line-height: 1.4;
     padding: 0;
     resize: none;
+    /* Auto-grown to content in JS (autosizeAskTextarea); the cap + hidden
+       overflow keep it bounded to ~5 rows before scrolling. */
+    box-sizing: border-box;
+    max-height: 112px;
+    overflow-y: hidden;
     caret-color: var(--app-accent);
   }
 
@@ -5268,6 +5436,11 @@
     line-height: 1.4;
     padding: 0;
     resize: none;
+    /* Auto-grown to content in JS (autosizeAskTextarea); the cap + hidden
+       overflow keep it bounded to ~5 rows before scrolling. */
+    box-sizing: border-box;
+    max-height: 112px;
+    overflow-y: hidden;
     caret-color: var(--app-accent);
   }
 
@@ -5359,7 +5532,7 @@
   }
 
   .quick-recall__sources-heading {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -5480,7 +5653,7 @@
   }
 
   .quick-recall__handoff-arrow {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
   }
 
@@ -5491,7 +5664,7 @@
 
   .quick-recall__retry {
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     color: var(--app-text);
     background: var(--app-surface-subtle);
@@ -5514,6 +5687,11 @@
 
   .quick-recall__retry:not(:disabled):active {
     background: var(--app-surface-active);
+  }
+
+  .quick-recall__retry:disabled {
+    opacity: var(--app-disabled-opacity);
+    cursor: not-allowed;
   }
 
   /* Collapsed, expandable activity summary chip. */
@@ -5542,7 +5720,7 @@
     border-radius: 6px;
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -5555,7 +5733,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -5574,6 +5752,10 @@
     outline: none;
     border-color: var(--app-accent);
     box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__activity-chip:active {
+    background: var(--app-surface-active);
   }
 
   .quick-recall__activity-caret {
@@ -5606,7 +5788,7 @@
   /* The expanded disclosure exists to show the full filter detail, so its rows
      wrap rather than truncate (unlike the one-line live working label). */
   .quick-recall__activity-item {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.4;
     color: var(--app-text-subtle);
     min-width: 0;
@@ -5663,7 +5845,7 @@
   .quick-recall__seeded {
     margin: 0;
     padding: 0 2px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -5721,7 +5903,8 @@
     .quick-recall__retry,
     .quick-recall__activity-chip,
     .quick-recall__activity-caret,
-    .quick-recall__syntax-trigger {
+    .quick-recall__syntax-trigger,
+    .quick-recall__stop {
       transition: none;
     }
   }
