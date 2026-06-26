@@ -15,6 +15,16 @@
   const recValidationErrors = $derived(c.recValidationErrors);
 
   const loadRecordingSettings = () => rec.loadRecordingSettings();
+
+  // Near-the-control autosave cue, per owning recording domain: the source
+  // toggles save through "capture_sources", segment duration through
+  // "capture_timing", and the idle/voice-detection controls through "inactivity".
+  const sourcesSaving = $derived(c.rec.savingRecDomains.capture_sources);
+  const sourcesSaved = $derived(c.recSavedDomain === "capture_sources");
+  const timingSaving = $derived(c.rec.savingRecDomains.capture_timing);
+  const timingSaved = $derived(c.recSavedDomain === "capture_timing");
+  const inactivitySaving = $derived(c.rec.savingRecDomains.inactivity);
+  const inactivitySaved = $derived(c.recSavedDomain === "inactivity");
 </script>
 
 <SettingGroup
@@ -33,13 +43,13 @@
       {/snippet}
     </SettingRow>
   {:else}
-    <SettingRow label="Screen" description="Capture the display">
+    <SettingRow label="Screen" description="Capture the display" saving={sourcesSaving} saved={sourcesSaved}>
       {#snippet control()}
         <Switch bind:checked={rec.draftCaptureScreen} ariaLabel="Screen" />
       {/snippet}
     </SettingRow>
 
-    <SettingRow label="Microphone" description="Capture audio from microphone">
+    <SettingRow label="Microphone" description="Capture audio from microphone" saving={sourcesSaving} saved={sourcesSaved}>
       {#snippet control()}
         <Switch bind:checked={rec.draftCaptureMicrophone} ariaLabel="Microphone" />
       {/snippet}
@@ -51,6 +61,8 @@
         ? "Capture Mac system audio (macOS 15+)"
         : "Capture Mac system audio (macOS 15+). System Audio is unavailable — enable Screen first."}
       disabled={!rec.draftCaptureScreen}
+      saving={sourcesSaving}
+      saved={sourcesSaved}
     >
       {#snippet control()}
         <Switch
@@ -66,6 +78,8 @@
       description="How long each recording segment is before a new one starts."
       full
       divider={false}
+      saving={timingSaving}
+      saved={timingSaved}
     >
       {#snippet control()}
         <Slider
@@ -88,6 +102,8 @@
       label="Pause capture when idle"
       description="Automatically pause recording after the system has been idle, and resume when system activity is detected"
       divider={rec.draftPauseCaptureOnInactivity}
+      saving={inactivitySaving}
+      saved={inactivitySaved}
     >
       {#snippet control()}
         <Switch bind:checked={rec.draftPauseCaptureOnInactivity} ariaLabel="Pause capture when idle" />
@@ -95,7 +111,7 @@
     </SettingRow>
 
     {#if rec.draftPauseCaptureOnInactivity}
-      <SettingRow label="Idle timeout" full>
+      <SettingRow label="Idle timeout" full saving={inactivitySaving} saved={inactivitySaved}>
         {#snippet control()}
           <div class="control-stack">
           <Slider
@@ -128,7 +144,7 @@
         {/snippet}
       </SettingRow>
 
-      <SettingRow label="Microphone Voice Detection" full>
+      <SettingRow label="Microphone Voice Detection" full saving={inactivitySaving} saved={inactivitySaved}>
           {#snippet control()}
             <div class="control-stack">
             <RadioGroup
@@ -164,7 +180,7 @@
         </SettingRow>
 
         {#if rec.draftMicrophoneVadAdapter === "off"}
-          <SettingRow label="Microphone Activity Sensitivity" full>
+          <SettingRow label="Microphone Activity Sensitivity" full saving={inactivitySaving} saved={inactivitySaved}>
             {#snippet control()}
               <div class="control-stack">
               <Slider
@@ -198,7 +214,7 @@
           </SettingRow>
         {/if}
 
-        <SettingRow label="System Audio Activity Sensitivity" full>
+        <SettingRow label="System Audio Activity Sensitivity" full saving={inactivitySaving} saved={inactivitySaved}>
           {#snippet control()}
             <div class="control-stack">
             <Slider

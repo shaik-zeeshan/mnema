@@ -13,6 +13,7 @@
 // into its own draft module, only the injected closures change.
 
 import { invoke } from "@tauri-apps/api/core";
+import { humanizeError } from "$lib/format-error";
 import type {
   AiProviderConfig,
   AiRuntimeStatus,
@@ -80,7 +81,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       aiRuntimeStatus = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
     } catch (error) {
-      aiRuntimeStatusError = error instanceof Error ? error.message : String(error);
+      aiRuntimeStatusError = humanizeError(error);
     } finally {
       aiRuntimeStatusLoading = false;
     }
@@ -125,7 +126,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
         delete probed[id];
         aiProviderKeyErrors = {
           ...aiProviderKeyErrors,
-          [id]: error instanceof Error ? error.message : String(error),
+          [id]: humanizeError(error),
         };
       }
     }
@@ -170,7 +171,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     } catch (error) {
       aiProviderKeyErrors = {
         ...aiProviderKeyErrors,
-        [provider]: error instanceof Error ? error.message : String(error),
+        [provider]: humanizeError(error),
       };
     } finally {
       aiProviderKeyInFlight.delete(provider);
@@ -196,7 +197,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     } catch (error) {
       aiProviderKeyErrors = {
         ...aiProviderKeyErrors,
-        [provider]: error instanceof Error ? error.message : String(error),
+        [provider]: humanizeError(error),
       };
     } finally {
       aiProviderKeyInFlight.delete(provider);
@@ -227,7 +228,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       aiProviderKeySavedByProvider = rest;
       aiProviderRemovalError = null;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = humanizeError(error);
       aiProviderRemovalError = `Could not clear the saved key for the removed provider ${label} — it may still be in the keychain. ${message}`;
     }
   }
@@ -248,7 +249,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       aiRuntimeTestResult = await invoke<AiRuntimeTestResult>("ai_runtime_test_connection");
     } catch (error) {
-      aiRuntimeTestError = error instanceof Error ? error.message : String(error);
+      aiRuntimeTestError = humanizeError(error);
     } finally {
       aiRuntimeTestRunning = false;
       void loadAiRuntimeStatus();

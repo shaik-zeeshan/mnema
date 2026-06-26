@@ -15,6 +15,7 @@
 import { getContext, setContext } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, confirm } from "@tauri-apps/plugin-dialog";
+import { humanizeError } from "$lib/format-error";
 import { retentionToDays } from "$lib/components/retention";
 import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
 import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
@@ -167,6 +168,20 @@ export class SettingsController {
   retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   retentionCleanupRunning = $state(false);
   retentionCleanupError = $state<string | null>(null);
+
+  // ─── Autosave failure surfacing + exponential backoff ──────────────────────
+  // A failed recording-domain save leaves the domain dirty, so the autosave
+  // engine's re-tick (on the `savingRecDomains` flag flipping back to false)
+  // would re-fire the save every ~450ms forever — a silent hammer. These track
+  // the failed domain (so the rail footer can offer a targeted Retry/Dismiss),
+  // the consecutive-failure count, and the per-domain "don't retry before"
+  // timestamp that throttles the loop with capped exponential backoff.
+  lastFailedSaveDomain = $state<AutosaveRecordingDomain | null>(null);
+  recSaveFailureCount = $state<Record<string, number>>({});
+  recSaveBackoffUntil = $state<Record<string, number>>({});
+  // The domain whose save most recently succeeded — drives a near-the-control
+  // "Saved" micro-affordance (the rail footer status is remote from the edit).
+  recSavedDomain = $state<AutosaveRecordingDomain | null>(null);
 
   // Ask AI / AI model picker open state.
   askAiModelOpen = $state(false);
@@ -648,6 +663,9 @@ export class SettingsController {
     if (this.rec.recDomainSaveBlocked(domain)) {
       if (domain === "video" && this.resolutionSupportPendingForNonOriginal) {
         this.rec.recError = "Wait for capture support to load before saving preset/custom resolution.";
+        // This is a validation-block, not a failed dispatch — don't offer Retry
+        // against a stale failed domain alongside this message.
+        this.lastFailedSaveDomain = null;
       }
       return;
     }
@@ -659,6 +677,13 @@ export class SettingsController {
     // SECOND preview + confirm. Setting it now closes that window; the single
     // `finally` below always clears it.
     if (this.rec.savingRecDomains[domain]) return;
+    // Exponential-backoff gate: a failed save leaves the domain dirty, so the
+    // autosave engine would otherwise re-fire every ~450ms forever. While a
+    // backoff window is open, skip the attempt — the engine quiesces because we
+    // return before toggling `savingRecDomains` (no flag flip = no re-tick), and
+    // `noteSaveFailure` has scheduled a single one-shot re-tick at expiry. The
+    // manual Retry clears the window so it is never swallowed here.
+    if (Date.now() < (this.recSaveBackoffUntil[domain] ?? 0)) return;
     this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: true };
 
     try {
@@ -694,7 +719,7 @@ export class SettingsController {
             return;
           }
         } catch (err) {
-          this.rec.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+          this.noteSaveFailure(domain, humanizeError(err));
           return;
         }
       }
@@ -714,7 +739,12 @@ export class SettingsController {
         this.rec.recordingSettings = updated;
         this.rec.syncRecordingDomainFromCanonical(response.domain, updated, { dispatchedSnapshot });
         this.rec.recSaved = true;
-        setTimeout(() => { this.rec.recSaved = false; }, 2200);
+        this.recSavedDomain = domain;
+        this.clearSaveFailure(domain);
+        setTimeout(() => {
+          this.rec.recSaved = false;
+          if (this.recSavedDomain === domain) this.recSavedDomain = null;
+        }, 2200);
 
         // Only run cleanup when retention was TIGHTENED (same predicate that
         // gates the confirm dialog above). Loosening the policy (longer window or
@@ -726,16 +756,67 @@ export class SettingsController {
           try {
             this.retentionCleanupSummary = await invoke<RetentionCleanupSummary>("run_retention_cleanup_now");
           } catch (err) {
-            this.retentionCleanupError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+            this.retentionCleanupError = humanizeError(err);
           } finally {
             this.retentionCleanupRunning = false;
           }
         }
       } catch (err) {
-        this.rec.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+        this.noteSaveFailure(domain, humanizeError(err));
       }
     } finally {
       this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: false };
+    }
+  }
+
+  // Record a failed recording-domain save: surface the message, remember the
+  // domain (so the rail footer can target Retry/Dismiss), and arm capped
+  // exponential backoff with a single one-shot re-tick so the retry resumes
+  // once — not as a tight ~450ms hammer — when the window elapses.
+  private noteSaveFailure(domain: AutosaveRecordingDomain, message: string) {
+    this.rec.recError = message;
+    this.lastFailedSaveDomain = domain;
+    const failures = (this.recSaveFailureCount[domain] ?? 0) + 1;
+    this.recSaveFailureCount = { ...this.recSaveFailureCount, [domain]: failures };
+    const delay = Math.min(30_000, 500 * 2 ** (failures - 1));
+    this.recSaveBackoffUntil = { ...this.recSaveBackoffUntil, [domain]: Date.now() + delay };
+    setTimeout(() => this.autosaveEngine.tick(), delay + 50);
+  }
+
+  // Clear the failure bookkeeping for a domain (on a successful save, a manual
+  // retry, or a dismiss-and-reconcile).
+  private clearSaveFailure(domain: AutosaveRecordingDomain) {
+    if (this.lastFailedSaveDomain === domain) this.lastFailedSaveDomain = null;
+    if (this.recSaveFailureCount[domain]) {
+      this.recSaveFailureCount = { ...this.recSaveFailureCount, [domain]: 0 };
+    }
+    if (this.recSaveBackoffUntil[domain]) {
+      this.recSaveBackoffUntil = { ...this.recSaveBackoffUntil, [domain]: 0 };
+    }
+  }
+
+  // Re-run the last failed domain save immediately (the user pressed Retry).
+  // Clears the backoff window first so the attempt is not swallowed by the gate.
+  retryFailedSave(): void {
+    const domain = this.lastFailedSaveDomain;
+    if (!domain) return;
+    this.recSaveBackoffUntil = { ...this.recSaveBackoffUntil, [domain]: 0 };
+    this.recSaveFailureCount = { ...this.recSaveFailureCount, [domain]: 0 };
+    void this.saveRecordingDomain(domain);
+  }
+
+  // Dismiss the autosave error banner. When a domain save is the source, reconcile
+  // its control back to the last-saved canonical value — this both shows the user
+  // what is actually persisted and clears the dirtiness that was driving the retry
+  // loop. Non-domain errors (e.g. a privacy-echo failure) just clear the message.
+  dismissRecError(): void {
+    const domain = this.lastFailedSaveDomain;
+    this.rec.recError = null;
+    if (domain) {
+      if (this.rec.recordingSettings) {
+        this.rec.syncRecordingDomainFromCanonical(domain, this.rec.recordingSettings, true);
+      }
+      this.clearSaveFailure(domain);
     }
   }
 
@@ -752,7 +833,7 @@ export class SettingsController {
     try {
       this.retentionCleanupSummary = await invoke<RetentionCleanupSummary>("run_retention_cleanup_now");
     } catch (err) {
-      this.retentionCleanupError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      this.retentionCleanupError = humanizeError(err);
     } finally {
       this.retentionCleanupRunning = false;
     }

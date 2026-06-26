@@ -4,6 +4,8 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
+  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { formatLastDerived, distillationWithheldLine } from "$lib/settings/state/user-context.svelte";
   import type { DerivationBudgetTier } from "$lib/types";
 
@@ -26,9 +28,23 @@
   // Store action methods.
   const aiRuntimeReasonLabel = (reason: string | null | undefined) =>
     aiRuntime.aiRuntimeReasonLabel(reason);
-  const refreshUserContext = () => userContext.refreshUserContext();
   const runUserContextDerivationNow = () => userContext.runUserContextDerivationNow();
   const wipeUserContext = () => userContext.wipeUserContext();
+
+  // The store's `refreshUserContext()` is a bare status reload with no in-flight
+  // flag, so the ReloadButton would otherwise stay enabled and be double-fireable.
+  // Track a local flag and feed it to the button's `busy` prop (which both spins
+  // and disables) so rapid double-clicks are hard-prevented, not just debounced.
+  let refreshing = $state(false);
+  async function refreshUserContext() {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      await userContext.refreshUserContext();
+    } finally {
+      refreshing = false;
+    }
+  }
 </script>
 
 <SettingGroup
@@ -183,17 +199,17 @@
             class="btn btn--ghost btn--sm"
             type="button"
             disabled={userContextRunNowRunning || !userContextStatus?.engineAvailable}
+            aria-busy={userContextRunNowRunning}
             onclick={runUserContextDerivationNow}
           >
-            {userContextRunNowRunning ? "Deriving" : "Run derivation now"}
+            {#if userContextRunNowRunning}<ButtonSpinner />Deriving…{:else}Run derivation now{/if}
           </button>
-          <button
-            class="btn btn--ghost btn--sm"
-            type="button"
+          <ReloadButton
             onclick={refreshUserContext}
-          >
-            Refresh
-          </button>
+            busy={refreshing}
+            title="Refresh"
+            label="Refresh derivation status"
+          />
         </div>
 
         {#if userContextRunNowMessage}
@@ -209,12 +225,13 @@
           </p>
           <div class="row-actions">
             <button
-              class="btn btn--ghost btn--sm user-context-wipe__btn"
+              class="btn btn--danger btn--sm user-context-wipe__btn"
               type="button"
               disabled={userContextWiping}
+              aria-busy={userContextWiping}
               onclick={wipeUserContext}
             >
-              {userContextWiping ? "Wiping…" : "Wipe User Context"}
+              {#if userContextWiping}<ButtonSpinner />Wiping…{:else}Wipe User Context{/if}
             </button>
           </div>
         </div>

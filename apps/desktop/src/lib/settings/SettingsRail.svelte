@@ -235,6 +235,64 @@
       <span class="rail-foot__label">auto-save on</span>
     {/if}
   </div>
+
+  <!-- Autosave failure detail: the bare "save failed" dot above discards the
+       message, so surface the actual error here. Each of the three error sources
+       that light the footer dot (recording, keyboard, microphone) gets its own
+       detail line so none is left as just an unexplained dot. role="alert" so the
+       failure is announced, not just shown.
+
+       The recording path has a targeted Retry (re-runs the failed domain save,
+       bypassing the backoff window) + a Dismiss that reconciles the control back
+       to the last-saved value. The keyboard + microphone domains have no
+       equivalent manual-retry surface (their autosave engine re-attempts a dirty
+       save on its own), so they show the message text + a Dismiss that clears the
+       error — consistent with the recError treatment. -->
+  {#if rec.recError}
+    <div class="rail-foot-error" role="alert">
+      <p class="rail-foot-error__msg">{rec.recError}</p>
+      <div class="rail-foot-error__actions">
+        {#if c.lastFailedSaveDomain}
+          <button class="btn btn--ghost btn--sm" type="button" onclick={() => c.retryFailedSave()}>
+            Retry
+          </button>
+        {/if}
+        <button class="btn btn--ghost btn--sm" type="button" onclick={() => c.dismissRecError()}>
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if keyboard.keyboardBindingsError}
+    <div class="rail-foot-error" role="alert">
+      <p class="rail-foot-error__msg">{keyboard.keyboardBindingsError}</p>
+      <div class="rail-foot-error__actions">
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          onclick={() => (keyboard.keyboardBindingsError = null)}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if audio.micError}
+    <div class="rail-foot-error" role="alert">
+      <p class="rail-foot-error__msg">{audio.micError}</p>
+      <div class="rail-foot-error__actions">
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          onclick={() => (audio.micError = null)}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
 </aside>
 
 <style>
@@ -248,5 +306,34 @@
     font-size: 12px;
     line-height: 1.4;
     color: var(--app-text-subtle);
+  }
+
+  /* Autosave failure banner pinned under the footer status line. Keeps the real
+     error message visible (it scrolls if long) with the Retry/Dismiss actions
+     directly beneath it. Tokens-only, namespaced under the rail. */
+  .rail-foot-error {
+    margin: 0 8px 8px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 6px;
+    background: var(--app-danger-bg);
+  }
+
+  .rail-foot-error__msg {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--app-danger-text);
+    max-height: 6.4em;
+    overflow-y: auto;
+    word-break: break-word;
+  }
+
+  .rail-foot-error__actions {
+    display: flex;
+    gap: 6px;
   }
 </style>

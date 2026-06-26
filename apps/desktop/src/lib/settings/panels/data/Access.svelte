@@ -103,9 +103,10 @@
                     class="btn btn--ghost btn--sm"
                     type="button"
                     disabled={brokerGrantSaving || status !== "active"}
+                    aria-busy={brokerGrantSaving && status === "active"}
                     onclick={() => revokeAgentBrokerGrant(grant.id)}
                   >
-                    Revoke
+                    {#if brokerGrantSaving && status === "active"}<ButtonSpinner />Revoking…{:else}Revoke{/if}
                   </button>
                 </li>
               {/each}

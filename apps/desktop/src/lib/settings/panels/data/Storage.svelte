@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { humanizeError } from "$lib/format-error";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import RetentionPicker from "$lib/components/RetentionPicker.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
@@ -14,6 +15,12 @@
   const retentionCleanupSummary = $derived(c.retentionCleanupSummary);
   const retentionCleanupRunning = $derived(c.retentionCleanupRunning);
   const retentionCleanupError = $derived(c.retentionCleanupError);
+
+  // Per-control autosave micro-affordance: the rail footer status is remote from
+  // the edit, so mirror the "storage" domain's saving/just-saved state right next
+  // to these controls (Save Directory + Retention both autosave through it).
+  const storageSaving = $derived(c.rec.savingRecDomains.storage);
+  const storageSaved = $derived(c.recSavedDomain === "storage");
 
   const runRetentionCleanupNow = () => c.runRetentionCleanupNow();
 
@@ -32,7 +39,7 @@
       storageLocation = await invoke<string>("get_storage_location");
       storageLocationError = null;
     } catch (err) {
-      storageLocationError = typeof err === "string" ? err : String(err);
+      storageLocationError = humanizeError(err);
     }
   }
 
@@ -54,7 +61,12 @@
         // the storage root on the next launch).
         rec.draftSaveDirectory = picked;
         storageLocation = picked;
+        storageLocationError = null;
       }
+    } catch (err) {
+      // The folder picker can reject (dialog plugin error / cancelled-by-error).
+      // Surface it instead of swallowing — the error-text block below renders it.
+      storageLocationError = humanizeError(err);
     } finally {
       browsing = false;
     }
@@ -70,6 +82,8 @@
     label="Save Directory"
     description="Where captures, the database, and model caches live on disk."
     full
+    saving={storageSaving}
+    saved={storageSaved}
   >
     {#snippet control()}
       <div class="storage-control">
@@ -105,6 +119,8 @@
     description="Automatically delete captured data after the chosen window."
     full
     divider={false}
+    saving={storageSaving}
+    saved={storageSaved}
   >
     {#snippet control()}
       <div class="retention-control">
@@ -175,5 +191,4 @@
   .retention-control .row-actions {
     justify-content: flex-start;
   }
-
 </style>
