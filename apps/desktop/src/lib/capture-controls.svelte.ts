@@ -100,6 +100,15 @@ export const captureControls = {
       if (captureControls.isLowDiskSuspended) {
         return "Paused — low disk";
       }
+      // Differentiate WHY recording is paused so the pill explains itself:
+      // a manual pause vs. an automatic inactivity pause read very differently
+      // to the user. Low-disk keeps precedence above.
+      if (captureControls.isUserPaused) {
+        return "Paused — manual";
+      }
+      if (captureControls.isInactivityPaused) {
+        return "Paused — inactive";
+      }
       return captureControls.paused ? "Paused" : "Recording";
     }
     // "Stopped" and "Idle" are visually identical (both render with the
