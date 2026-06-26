@@ -59,17 +59,12 @@
 
   let { onOpenSubject }: Props = $props();
 
-  // Category palette cycled to colour each conclusion's sparkline line.
-  const CAT_PALETTE = [
-    "--cat-creating",
-    "--cat-communication",
-    "--cat-meetings",
-    "--cat-research",
-    "--cat-learning",
-    "--cat-organizing",
-    "--cat-personal",
-    "--cat-entertainment",
-  ] as const;
+  // Sparkline lines encode MAGNITUDE, not identity: the top conclusion draws in
+  // accent and the remaining lines are a single neutral grey, so a subject with
+  // many conclusions never fans out into a hard-to-decode rainbow of hues
+  // (categorical colours past ~5-6 stop mapping reliably to meaning).
+  const SPARK_LEAD = "--app-accent";
+  const SPARK_REST = "--chart-grey-3";
 
   const FLOOR = 0.15;
 
@@ -204,7 +199,7 @@
             ? [pts[0], pts[0]]
             : [c.confidence, c.confidence]; // flat baseline (2 pts so a line draws)
       return {
-        colorVar: CAT_PALETTE[i % CAT_PALETTE.length],
+        colorVar: i === 0 ? SPARK_LEAD : SPARK_REST,
         faded: c.status === "faded",
         points,
       };
@@ -235,7 +230,7 @@
         trend: deriveTrend(cs, history),
         spark,
         topConfidence: top?.confidence ?? 0,
-        catColorVar: spark[0]?.colorVar ?? CAT_PALETTE[0],
+        catColorVar: spark[0]?.colorVar ?? SPARK_LEAD,
       });
     }
     return out;
@@ -309,12 +304,6 @@
 
   function openSubject(row: SubjectRow): void {
     onOpenSubject(row.subject);
-  }
-  function onRowKey(e: KeyboardEvent, row: SubjectRow): void {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      openSubject(row);
-    }
   }
   function toggleExpand(subject: string): void {
     expandedSubject = expandedSubject === subject ? null : subject;
@@ -691,18 +680,22 @@
 
 {#snippet row(r: SubjectRow)}
   {@const open = expandedSubject === r.subject}
+  <!-- The row is a non-interactive container; navigation lives on an explicit
+       button (the subject name/headline) and the caret/Pin/Dismiss are the only
+       other controls — one keyboard path per action, no button-in-button. -->
   <div
     class="card conv-row"
     class:is-faded={r.faded}
     class:is-open={open}
-    role="button"
-    tabindex="0"
-    onclick={() => openSubject(r)}
-    onkeydown={(e) => onRowKey(e, r)}
   >
     <div class="conv-rowmain">
-      <!-- LEFT: meta -->
-      <div class="conv-meta">
+      <!-- LEFT: meta — the navigation trigger. -->
+      <button
+        type="button"
+        class="conv-meta conv-open"
+        aria-label={`Open ${r.subject}`}
+        onclick={() => openSubject(r)}
+      >
         <div class="conv-metatop">
           <span
             class="conv-catdot"
@@ -719,7 +712,7 @@
           </span>
         </div>
         <div class="conv-headline">{r.headline}</div>
-      </div>
+      </button>
 
       <!-- RIGHT: hero sparkline + figure + caret -->
       <div class="conv-hero">
@@ -1077,7 +1070,7 @@
   }
   .conv-head .conv-sub {
     margin: 0;
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text-muted);
     max-width: 760px;
   }
@@ -1085,7 +1078,7 @@
   /* Honest counts line — token-driven, tabular figures so it never reflows. */
   .conv-summary {
     margin: 8px 0 0;
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
@@ -1096,8 +1089,9 @@
   .conv-summary .up {
     color: var(--app-accent-strong);
   }
+  /* faded/cooling count reads quiet (normal decay), not as a danger red. */
   .conv-summary .down {
-    color: var(--app-danger);
+    color: var(--app-text-muted);
   }
   .conv-summary .sep {
     color: var(--app-text-faint);
@@ -1128,7 +1122,8 @@
     max-width: 320px;
   }
   .search:focus-within {
-    border-color: var(--app-border-hover);
+    border-color: var(--app-accent-border);
+    box-shadow: var(--app-ring);
   }
   .search-glyph {
     display: block;
@@ -1139,7 +1134,7 @@
     flex: 1 1 auto;
     min-width: 0;
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     border: none;
     background: transparent;
     color: var(--app-text);
@@ -1171,7 +1166,7 @@
     align-items: center;
     gap: 6px;
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     letter-spacing: 0.02em;
     padding: 4px 13px;
     border-radius: 999px;
@@ -1214,14 +1209,14 @@
     margin-bottom: 8px;
   }
   .section-title {
-    font-size: 13px;
+    font-size: var(--text-md);
     font-weight: 600;
     color: var(--app-text-strong);
     letter-spacing: -0.01em;
   }
   .conv-tier-note {
     margin-left: auto;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
@@ -1242,7 +1237,7 @@
     align-self: flex-start;
     margin-top: 8px;
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     letter-spacing: 0.02em;
     padding: 4px 10px;
     border: 1px solid var(--app-border);
@@ -1283,7 +1278,6 @@
   }
   .conv-row {
     padding: 0;
-    cursor: pointer;
     overflow: hidden;
     transition:
       background 0.12s ease,
@@ -1293,10 +1287,30 @@
     background: var(--app-surface-hover);
     border-color: var(--app-border-hover);
   }
-  .conv-row:focus-visible {
-    outline: none;
+  /* The whole card lifts to the accent affordance when its navigation button is
+     focused, so keyboard focus is obvious without the card itself being a button. */
+  .conv-row:has(.conv-open:focus-visible) {
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
+  }
+  /* Navigation trigger — a real button reset to look like the meta block. */
+  .conv-open {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: block;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+  .conv-open:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 6px;
   }
   .conv-row.is-faded {
     opacity: 0.6;
@@ -1333,25 +1347,25 @@
     flex: 0 0 auto;
   }
   .conv-name {
-    font-size: 13.5px;
+    font-size: var(--text-md);
     font-weight: 600;
     color: var(--app-text-strong);
     letter-spacing: 0.01em;
     min-width: 0;
   }
   .conv-pin {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-accent-strong);
     flex: 0 0 auto;
   }
   .conv-cc {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
   .conv-headline {
     margin-top: 3px;
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text);
     white-space: nowrap;
     overflow: hidden;
@@ -1363,7 +1377,7 @@
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 1px 7px;
     border-radius: 999px;
@@ -1378,10 +1392,14 @@
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
   }
+  /* "cooling" is normal decay, not an error — so it reads QUIET (muted text on a
+     neutral surface) and the ▼ glyph carries the direction. This keeps the
+     saturated --app-danger token reserved for destructive/contradiction states
+     so the two never collide. */
   .pill.trend-down {
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
+    color: var(--app-text-muted);
+    border-color: var(--app-border);
+    background: var(--app-surface);
   }
   .pill.trend-steady {
     color: var(--app-text-muted);
@@ -1404,23 +1422,28 @@
     min-width: 56px;
   }
   .conv-conf {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
     line-height: 1.2;
   }
   .conv-moved {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;
   }
   .conv-caret {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
     color: var(--app-text-subtle);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
-    padding: 4px;
+    padding: 0;
     border: none;
     background: transparent;
     cursor: pointer;
@@ -1456,7 +1479,7 @@
     padding: 12px 14px 13px;
   }
   .conv-detail-label {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -1466,7 +1489,7 @@
     margin-top: 13px;
   }
   .ev-empty {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     margin: 0;
   }
@@ -1487,7 +1510,7 @@
     opacity: 0.55;
   }
   .conv-concl-stmt {
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text-strong);
     min-width: 0;
     overflow: hidden;
@@ -1500,10 +1523,10 @@
   .conv-concl-pin {
     color: var(--app-accent-strong);
     margin-right: 5px;
-    font-size: 11px;
+    font-size: var(--text-sm);
   }
   .conv-concl-pct {
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
     text-align: right;
@@ -1543,7 +1566,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -1589,7 +1612,7 @@
     align-items: center;
     gap: 6px;
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     padding: 3px 10px;
     border: 1px solid var(--app-border);
     border-radius: 6px;
@@ -1657,7 +1680,7 @@
     margin-top: 22px;
     padding-top: 12px;
     border-top: 1px solid var(--app-border);
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
 
@@ -1677,12 +1700,12 @@
   }
   .state-title {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     line-height: 1.6;
   }
@@ -1699,7 +1722,7 @@
     background: transparent;
     color: var(--app-text-subtle);
     font: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     cursor: pointer;
@@ -1721,7 +1744,7 @@
     opacity: 0.6;
   }
   .state-retry-ico {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     letter-spacing: 0;
   }

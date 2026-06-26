@@ -179,7 +179,10 @@
   const RAIL_WIDTH_KEY = "mnema.insights.rail-width";
   const RAIL_MIN_WIDTH = 180;
   const RAIL_MAX_WIDTH = 400;
-  const RAIL_DEFAULT_WIDTH = 200;
+  // First-run width sits in the conventional 240-280px expanded-sidebar band so
+  // long conversation titles + the engine/model footer get room (still drag-
+  // resizable within [min,max] and persisted).
+  const RAIL_DEFAULT_WIDTH = 240;
 
   function clampRailWidth(px: number): number {
     return Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(px)));

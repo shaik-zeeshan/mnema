@@ -967,6 +967,12 @@
       <button type="button" class="btn btn--accent" onclick={startNewChat}>
         ＋ New chat
       </button>
+    {:else}
+      <!-- Engine-off + no conversation: surface the same enable affordance the
+           composer's engine-off card shows, so the empty pane isn't a dead end. -->
+      <button type="button" class="btn btn--accent" onclick={enableEngine}>
+        Enable engine
+      </button>
     {/if}
   </div>
 {:else}

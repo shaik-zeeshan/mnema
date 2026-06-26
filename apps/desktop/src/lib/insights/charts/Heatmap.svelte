@@ -53,6 +53,19 @@
     },
   );
 
+  // Per-cell readout so the heatmap is never decode-by-hue only: every cell
+  // exposes its row label + a readable value via title (hover) and aria-label.
+  function cellTitle(rowLabel: string, value: number): string {
+    const v = Math.max(0, Math.min(1, value));
+    if (v <= 0) return `${rowLabel} — no signal`;
+    const pct = Math.round(v * 100);
+    if (colorMode === "focus") {
+      const band = v >= 0.66 ? "deep focus" : v >= 0.33 ? "mixed focus" : "scattered";
+      return `${rowLabel} — ${band} (${pct}%)`;
+    }
+    return `${rowLabel} — ${pct}% activity`;
+  }
+
   function cellStyle(value: number): string {
     const v = Math.max(0, Math.min(1, value));
     if (v <= 0) {
@@ -78,7 +91,13 @@
         <span class="rlabel">{row.label}</span>
         <div class="cells">
           {#each row.cells as cell, i (i)}
-            <span class="cell" style={cellStyle(cell)}></span>
+            <span
+              class="cell"
+              style={cellStyle(cell)}
+              role="img"
+              title={cellTitle(row.label, cell)}
+              aria-label={cellTitle(row.label, cell)}
+            ></span>
           {/each}
         </div>
       </div>
@@ -119,7 +138,7 @@
     gap: 8px;
   }
   .rlabel {
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     white-space: nowrap;
   }
@@ -135,7 +154,7 @@
   }
   .legend {
     margin-top: 9px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-subtle);
   }
   /* Focus-mode key: colored swatch + label per intensity band. */

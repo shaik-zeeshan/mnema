@@ -1711,7 +1711,7 @@
   }
   .ov-header .subtitle {
     margin: 3px 0 0;
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text-muted);
     text-transform: capitalize;
   }
@@ -1726,12 +1726,12 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
   .date-stepper .nav {
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1756,7 +1756,7 @@
     box-shadow: var(--app-ring);
   }
   .date-stepper .nav:disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     cursor: default;
   }
   .date-stepper .range-label {
@@ -1822,9 +1822,19 @@
   .exhibit--clickable:hover {
     border-color: var(--app-border-hover);
   }
+  /* Reinforce the "whole card opens detail" affordance: on card hover the hint
+     lifts to accent (text + underline) so the cue and hover feedback agree. */
+  .exhibit--clickable:hover .exhibit-hint {
+    color: var(--app-accent);
+    border-bottom-color: var(--app-accent-border);
+  }
   .exhibit--clickable:focus-visible {
     outline: none;
     box-shadow: var(--app-ring);
+  }
+  .exhibit--clickable:focus-visible .exhibit-hint {
+    color: var(--app-accent);
+    border-bottom-color: var(--app-accent-border);
   }
   .exhibit-head {
     display: flex;
@@ -1833,10 +1843,10 @@
     margin-bottom: 9px;
   }
   .exhibit-title {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.07em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     white-space: nowrap;
   }
   .exhibit-body {
@@ -1851,12 +1861,12 @@
 
   .tile-note {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     line-height: 1.5;
   }
   .tile-note--locked {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     font-style: italic;
   }
 
@@ -1871,10 +1881,13 @@
     margin-top: auto;
     padding-top: 12px;
     align-self: flex-start;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     border-bottom: 1px dotted var(--app-border-strong);
     line-height: 1.3;
+    transition:
+      color 0.12s ease,
+      border-bottom-color 0.12s ease;
   }
 
   /* ---- Tile / feed loading skeletons ---- */
@@ -1985,21 +1998,31 @@
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
   }
+  /* Visible keyboard focus on the primary Overview→Chat handoff. The second
+     shadow layer preserves the sticky bottom-padding mask (see box-shadow above). */
+  .ask-entry:focus-visible {
+    outline: none;
+    border-color: var(--app-accent-border);
+    box-shadow:
+      var(--app-ring),
+      0 28px 0 0 var(--app-bg);
+  }
   .ask-entry .glyph {
     color: var(--app-accent-strong);
-    font-size: 13px;
+    font-size: var(--text-md);
   }
   .ask-entry .label {
     flex: 1 1 auto;
-    font-size: 12.5px;
+    font-size: var(--text-md);
   }
   .ask-entry .hint {
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
   }
-  .ask-entry:hover .hint {
+  .ask-entry:hover .hint,
+  .ask-entry:focus-visible .hint {
     color: var(--app-accent-strong);
   }
 
@@ -2022,7 +2045,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -2061,7 +2084,7 @@
     background: transparent;
     color: var(--app-text-subtle);
     font: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     cursor: pointer;
@@ -2089,7 +2112,7 @@
     transform: translateY(1px);
   }
   .re-read-ico {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     letter-spacing: 0;
   }
@@ -2113,7 +2136,7 @@
      tinted toward the app's danger register without shouting. */
   .lede-error {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1.7;
     color: var(--app-danger, var(--app-text-subtle));
   }
@@ -2161,7 +2184,7 @@
   }
   .lede-text {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1.7;
     color: var(--app-text);
   }
@@ -2182,7 +2205,7 @@
     min-width: 0;
   }
   .lede-stat-n {
-    font-size: 17px;
+    font-size: var(--text-lg);
     line-height: 1.1;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
@@ -2205,7 +2228,7 @@
     border-radius: 50%;
   }
   .lede-stat-cap {
-    font-size: 9px;
+    font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -2232,7 +2255,7 @@
     flex: 1 1 240px;
     min-width: 0;
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.6;
     color: var(--app-text-muted);
   }
@@ -2249,10 +2272,10 @@
   }
   .delta-group-head {
     margin: 0 0 2px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
   }
   .delta-row {
     display: flex;
@@ -2274,7 +2297,7 @@
   }
   .delta-statement {
     min-width: 0;
-    font-size: 12.5px;
+    font-size: var(--text-base);
     line-height: 1.45;
     color: var(--app-text-strong);
     display: -webkit-box;
@@ -2293,7 +2316,7 @@
        the left and only ellipsises if the subject is very long. */
     margin-left: auto;
     flex: 0 0 auto;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -2302,17 +2325,18 @@
      itself can't be one (a button inside a button is invalid HTML). */
   .delta-toggle {
     flex: 0 0 auto;
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1;
     border: none;
+    border-radius: 5px;
     background: transparent;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     cursor: pointer;
     transition:
       transform 0.12s ease,
@@ -2320,6 +2344,10 @@
   }
   .delta-toggle:hover {
     color: var(--app-text-strong);
+  }
+  .delta-toggle:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .delta-toggle.open {
     transform: rotate(90deg);
@@ -2344,7 +2372,7 @@
     align-items: center;
     gap: 5px;
     font: inherit;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -2372,7 +2400,7 @@
   }
   .gentle-btn {
     font: inherit;
-    font-size: 11px;
+    font-size: var(--text-sm);
     padding: 3px 9px;
     border: 1px solid transparent;
     border-radius: 6px;
@@ -2397,7 +2425,7 @@
 
   .evidence-link {
     font: inherit;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     background: transparent;
     border: none;
@@ -2427,11 +2455,11 @@
     align-items: baseline;
     gap: 8px;
     flex-wrap: wrap;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text);
   }
   .ev-stance {
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     padding: 1px 6px;
@@ -2450,18 +2478,18 @@
     color: var(--app-text-strong);
   }
   .ev-time {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
   .evidence-empty {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
 
   .fade-note {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-faint);
     font-style: italic;
   }
@@ -2495,14 +2523,14 @@
     flex: 1 1 auto;
   }
   .attn-title {
-    font-size: 12.5px;
+    font-size: var(--text-base);
     color: var(--app-text-strong);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .attn-time {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
@@ -2513,7 +2541,7 @@
     flex: 0 0 auto;
   }
   .attn-pick-label {
-    font-size: 9px;
+    font-size: var(--text-xs);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -2529,7 +2557,7 @@
   .feed-end {
     text-align: center;
     padding: 6px 0 0;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-faint);
@@ -2538,7 +2566,7 @@
   /* ---- Free-tier enable-engine CTA button ---- */
   .btn {
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1;
     letter-spacing: 0.02em;
     display: inline-flex;
@@ -2598,12 +2626,12 @@
   }
   .state-title {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     line-height: 1.6;
   }
