@@ -13,20 +13,12 @@
 
   const setBrowserUrlMode = (m: string) => c.setBrowserUrlMode(m);
 
-  // Near-the-control autosave cue: frame-context + browser-URL mode both persist
-  // through the "metadata" recording domain. Mirror its saving/just-saved state
-  // beside these controls so an edit is confirmed at the point of interaction —
-  // matching Capture/Audio/Video/Storage — not only at the remote rail footer.
-  const metadataSaving = $derived(c.rec.savingRecDomains.metadata);
-  const metadataSaved = $derived(c.recSavedDomain === "metadata");
 </script>
 
 <SettingGroup id="settings-section-privacy" title="Privacy">
   <SettingRow
     label="Capture frame context"
     description="Store app, window, and supported browser context with frames"
-    saving={metadataSaving}
-    saved={metadataSaved}
   >
     {#snippet control()}
       <Switch bind:checked={rec.draftMetadataEnabled} ariaLabel="Capture frame context" />
@@ -38,8 +30,6 @@
     description="How much of a captured browser URL is stored with the frame."
     disabled={!rec.draftMetadataEnabled}
     full
-    saving={metadataSaving}
-    saved={metadataSaved}
   >
     {#snippet control()}
       <RadioGroup

@@ -16,11 +16,6 @@
   const retentionCleanupRunning = $derived(c.retentionCleanupRunning);
   const retentionCleanupError = $derived(c.retentionCleanupError);
 
-  // Per-control autosave micro-affordance: the rail footer status is remote from
-  // the edit, so mirror the "storage" domain's saving/just-saved state right next
-  // to these controls (Save Directory + Retention both autosave through it).
-  const storageSaving = $derived(c.rec.savingRecDomains.storage);
-  const storageSaved = $derived(c.recSavedDomain === "storage");
 
   const runRetentionCleanupNow = () => c.runRetentionCleanupNow();
 
@@ -93,9 +88,6 @@
         defaultPath: displayPath || undefined,
       });
       if (typeof picked === "string" && picked.trim().length > 0) {
-        // Drive the autosaved draft; mirror it into the display immediately so
-        // the field doesn't lag behind the picker (the backend only re-resolves
-        // the storage root on the next launch).
         rec.draftSaveDirectory = picked;
         storageLocation = picked;
         storageLocationError = null;
@@ -119,8 +111,6 @@
     label="Save Directory"
     description="Where captures, the database, and model caches live on disk."
     full
-    saving={storageSaving}
-    saved={storageSaved}
   >
     {#snippet control()}
       <div class="storage-control">
@@ -174,8 +164,6 @@
     description="Automatically delete captured data after the chosen window."
     full
     divider={false}
-    saving={storageSaving}
-    saved={storageSaved}
   >
     {#snippet control()}
       <div class="retention-control">

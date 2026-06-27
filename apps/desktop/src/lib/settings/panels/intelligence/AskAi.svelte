@@ -15,12 +15,6 @@
   const rec = c.rec;
   const askAi = c.askAi;
 
-  // Near-the-control autosave cue: Ask AI enable / tool-call limit / model
-  // override all persist through the "access" recording domain. Mirror its
-  // saving/just-saved state beside these controls so the edit is confirmed at
-  // the point of interaction, not only at the remote rail footer.
-  const accessSaving = $derived(c.rec.savingRecDomains.access);
-  const accessSaved = $derived(c.recSavedDomain === "access");
 
   // Store-read aliases.
   const askAiAvailable = $derived(askAi.askAiAvailable);
@@ -51,8 +45,6 @@
     label="Enable Ask AI"
     description="Allow Quick Recall and Insights Chat to answer questions over your redacted capture history. Off by default."
     full
-    saving={accessSaving}
-    saved={accessSaved}
   >
     {#snippet aside()}
       <Switch bind:checked={rec.draftAskAiEnabled} ariaLabel="Enable Ask AI" />
@@ -69,8 +61,6 @@
     label="Limit tool calls per question"
     description="Cap how many follow-up searches Ask AI can run for one question. Off means no cap."
     full
-    saving={accessSaving}
-    saved={accessSaved}
   >
     {#snippet aside()}
       <Switch bind:checked={rec.draftAskAiLimitToolCalls} ariaLabel="Limit tool calls per question" />
@@ -101,7 +91,7 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Model override" full divider={false} saving={accessSaving} saved={accessSaved}>
+  <SettingRow label="Model override" full divider={false}>
     {#snippet control()}
       <div class="ask-ai-stack">
         <ModelPickerMenu

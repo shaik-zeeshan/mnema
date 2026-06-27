@@ -23,12 +23,6 @@
   const rec = c.rec;
   const models = c.models;
 
-  // Near-the-control autosave cue: transcription drafts persist through the
-  // "processing" recording domain. Mirror its saving/just-saved state beside the
-  // toggle rows so the edit is confirmed at the point of interaction — matching
-  // Capture/Audio/Video/Storage — not only at the remote rail footer.
-  const processingSaving = $derived(c.rec.savingRecDomains.processing);
-  const processingSaved = $derived(c.recSavedDomain === "processing");
 
   // Store-read aliases.
   const loadingTranscriptionModelStatus = $derived(models.loadingTranscriptionModelStatus);
@@ -83,8 +77,6 @@
   <SettingRow
     label="Enable audio transcription"
     description="Master switch for source-specific audio transcription"
-    saving={processingSaving}
-    saved={processingSaved}
   >
     {#snippet control()}
       <Switch bind:checked={rec.draftTranscriptionEnabled} ariaLabel="Enable audio transcription" />
@@ -95,8 +87,6 @@
     label="Transcribe microphone"
     description="Automatically queue transcription for committed microphone audio segments"
     disabled={!rec.draftTranscriptionEnabled}
-    saving={processingSaving}
-    saved={processingSaved}
   >
     {#snippet control()}
       <Switch
@@ -111,8 +101,6 @@
     label="Transcribe system audio"
     description="Transcribe system audio only when speech is detected."
     disabled={!rec.draftTranscriptionEnabled}
-    saving={processingSaving}
-    saved={processingSaved}
   >
     {#snippet control()}
       <Switch
@@ -123,7 +111,7 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Provider" full saving={processingSaving} saved={processingSaved}>
+  <SettingRow label="Provider" full>
     {#snippet control()}
       <RadioGroup
         value={rec.draftTranscriptionProvider}
@@ -137,7 +125,7 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Model" full saving={processingSaving} saved={processingSaved}>
+  <SettingRow label="Model" full>
     {#snippet control()}
       <Combobox
         value={rec.draftTranscriptionModelId ?? "__os_managed__"}
@@ -154,8 +142,6 @@
     label="Language"
     description="Use auto for automatic language detection, or enter a language hint such as en. Settings changes affect future audio segments; already-queued jobs keep their admitted provider/model payload."
     full
-    saving={processingSaving}
-    saved={processingSaved}
   >
     {#snippet control()}
       <Combobox

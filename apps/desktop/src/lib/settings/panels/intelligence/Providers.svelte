@@ -13,14 +13,6 @@
   const rec = c.rec;
   const aiRuntime = c.aiRuntime;
 
-  // Near-the-control autosave cue: the master switch, the connected-provider list
-  // (label/base-URL edits), and the default model all persist through the
-  // "ai_runtime" recording domain. Mirror its saving/just-saved state beside
-  // these controls so the silently-autosaving fields confirm at the point of
-  // interaction — matching Capture/Audio/Video/Storage. (The keychain API key is
-  // a separate explicit Save, surfaced by its own per-provider spinner/badge.)
-  const aiRuntimeSaving = $derived(c.rec.savingRecDomains.ai_runtime);
-  const aiRuntimeSaved = $derived(c.recSavedDomain === "ai_runtime");
 
   // Re-exported constants the markup references verbatim.
   const AI_PROVIDER_KINDS = c.AI_PROVIDER_KINDS;
@@ -82,8 +74,6 @@
     description="The master switch for everything AI in Mnema. While off, nothing is sent to any AI model. Off by default."
     full
     divider={false}
-    saving={aiRuntimeSaving}
-    saved={aiRuntimeSaved}
   >
     {#snippet aside()}
       <Switch
@@ -116,7 +106,7 @@
 </SettingGroup>
 
 <SettingGroup title="Connected providers">
-  <SettingRow label="Providers" full divider={false} saving={aiRuntimeSaving} saved={aiRuntimeSaved}>
+  <SettingRow label="Providers" full divider={false}>
     {#snippet control()}
       <div class="prov-stack">
         {#if rec.draftAiProviders.length === 0}
@@ -266,7 +256,7 @@
 </SettingGroup>
 
 <SettingGroup title="Default model">
-  <SettingRow label="Global default model" full divider={false} saving={aiRuntimeSaving} saved={aiRuntimeSaved}>
+  <SettingRow label="Global default model" full divider={false}>
     {#snippet control()}
       <div class="prov-stack">
         <ModelPickerMenu

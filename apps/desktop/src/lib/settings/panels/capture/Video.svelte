@@ -18,10 +18,6 @@
   const customResolutionErrors = $derived(c.customResolutionErrors);
   const customBitrateErrors = $derived(c.customBitrateErrors);
 
-  // Near-the-control autosave cue (frame rate, resolution, and bitrate all
-  // persist through the "video" recording domain).
-  const videoSaving = $derived(c.rec.savingRecDomains.video);
-  const videoSaved = $derived(c.recSavedDomain === "video");
 </script>
 
 <SettingGroup id="settings-section-video" title="Video Output">
@@ -29,8 +25,6 @@
     label="Screen Frame Rate"
     description="Higher frame rates produce larger files."
     full
-    saving={videoSaving}
-    saved={videoSaved}
   >
     {#snippet control()}
       <Slider
@@ -44,7 +38,7 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Screen Resolution" full divider={false} saving={videoSaving} saved={videoSaved}>
+  <SettingRow label="Screen Resolution" full divider={false}>
     {#snippet control()}
       <div class="control-stack">
         {#if nativeCaptureUnsupported}
@@ -118,7 +112,7 @@
   title="Video Bitrate"
   hint="Bitrate controls how much data is encoded per second of video. Higher bitrate = sharper image but larger files and higher CPU/GPU load. Applied on macOS 15+ via ScreenCaptureKit; older systems fall back to the system-default bitrate."
 >
-  <SettingRow label="Bitrate" full divider={false} saving={videoSaving} saved={videoSaved}>
+  <SettingRow label="Bitrate" full divider={false}>
     {#snippet control()}
       <div class="control-stack">
         <!-- Mode selector: presets (low/medium/high) + custom as one segmented

@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
 
   interface Props {
     label: string;
@@ -25,16 +24,6 @@
     full?: boolean;
     /** Show the inset divider above this row. Defaults true; pass false to suppress. */
     divider?: boolean;
-    /**
-     * Near-the-control autosave cue. Pass the owning domain's saving / just-saved
-     * flags and the row renders a quiet, transient "Saving…/Saved" line beside (or,
-     * in a `full` row, below) the control — so an edit is confirmed at the point of
-     * interaction instead of only at the remote rail footer. The rail footer remains
-     * the single announced status (`aria-live`); this cue is visual-only to avoid
-     * spamming multiple live regions when several same-domain rows light at once.
-     */
-    saving?: boolean;
-    saved?: boolean;
   }
 
   let {
@@ -47,11 +36,7 @@
     disabled = false,
     full = false,
     divider = true,
-    saving = false,
-    saved = false,
   }: Props = $props();
-
-  const showAutosaveCue = $derived(saving || saved);
 </script>
 
 <div
@@ -73,13 +58,8 @@
       <div class="setting-row__aside">{@render aside()}</div>
     {/if}
   </div>
-  <div class="setting-row__control" class:setting-row__control--with-cue={showAutosaveCue}>
+  <div class="setting-row__control">
     {@render control()}
-    {#if saving}
-      <span class="setting-row__autosave-cue"><ButtonSpinner />Saving…</span>
-    {:else if saved}
-      <span class="setting-row__autosave-cue setting-row__autosave-cue--ok">Saved</span>
-    {/if}
   </div>
 </div>
 
@@ -205,33 +185,5 @@
     justify-content: stretch;
     flex-shrink: 1;
     width: 100%;
-  }
-
-  /* When the autosave cue is present, allow the control slot to wrap so the cue
-     can sit beside a compact control or drop onto its own line under a wide one
-     (see the `--full` rule below). Only applied with the cue so existing
-     single-control rows keep their nowrap layout. */
-  .setting-row__control--with-cue {
-    flex-wrap: wrap;
-  }
-
-  /* Near-the-control autosave cue: a quiet, transient "Saving…/Saved" line so the
-     user sees their edit persist without looking down to the remote rail footer. */
-  .setting-row__autosave-cue {
-    display: inline-flex;
-    align-items: center;
-    font-size: 12px;
-    line-height: 1.4;
-    color: var(--app-text-subtle);
-  }
-
-  .setting-row__autosave-cue--ok {
-    color: var(--app-accent, var(--app-text-subtle));
-  }
-
-  /* In a `full` row the control fills the width, so push the cue onto its own
-     line beneath it (left-aligned) instead of squeezing it against the control. */
-  .setting-row--full .setting-row__autosave-cue {
-    flex-basis: 100%;
   }
 </style>

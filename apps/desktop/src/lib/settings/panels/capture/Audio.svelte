@@ -16,11 +16,6 @@
   const loadingMicState = $derived(audio.loadingMicState);
   const loadMicState = () => audio.loadMicState();
 
-  // Near-the-control autosave cue. The microphone controller is its OWN autosave
-  // domain (separate from the recording-settings domains), so the cue keys off
-  // the mic store's own saving/just-saved flags rather than `recSavedDomain`.
-  const micSettingsSaving = $derived(audio.savingMicSettings);
-  const micSettingsSaved = $derived(audio.micSaved);
 </script>
 
 <SettingGroup id="settings-section-audio" title="Microphone Controller">
@@ -82,7 +77,7 @@
       {/snippet}
     </SettingRow>
 
-    <SettingRow label="Preference" description="Which microphone capture should use." full saving={micSettingsSaving} saved={micSettingsSaved}>
+    <SettingRow label="Preference" description="Which microphone capture should use." full>
       {#snippet control()}
         <Segmented
           bind:value={audio.draftPreferenceMode}
@@ -96,7 +91,7 @@
     </SettingRow>
 
     {#if audio.draftPreferenceMode === "specific_device"}
-      <SettingRow label="Device" description="Pick the microphone to lock to." full saving={micSettingsSaving} saved={micSettingsSaved}>
+      <SettingRow label="Device" description="Pick the microphone to lock to." full>
         {#snippet control()}
           <div class="control-stack">
             {#if micDeviceOptions.length > 0}
@@ -121,8 +116,6 @@
       description="What to do when the chosen microphone disconnects."
       full
       divider={!!audio.micError}
-      saving={micSettingsSaving}
-      saved={micSettingsSaved}
     >
       {#snippet control()}
         <Segmented
