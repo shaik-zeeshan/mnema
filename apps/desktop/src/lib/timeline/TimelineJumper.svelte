@@ -371,7 +371,7 @@
           viewportHeight - viewportMargin - Math.min(pickerRect.height, maxHeight),
         );
 
-    pickerStyle = `left: ${left}px; top: ${top}px; max-height: ${maxHeight}px;`;
+    pickerStyle = `left: ${left}px; top: ${top}px; height: ${maxHeight}px;`;
   }
 
   function getPickerFocusable(): HTMLElement[] {
@@ -712,9 +712,9 @@
   .timeline__picker-panes {
     display: grid;
     grid-template-columns: 1fr 200px;
-    /* Bound the panes to the popover's capped height (max-height set inline by
+    /* Bound the panes to the popover's fixed height (height set inline by
        updatePickerPosition) so the time list scrolls instead of the popover
-       clipping. minmax(0,1fr) + min-height:0 break the default min-content
+       resizing with content. minmax(0,1fr) + min-height:0 break the default min-content
        floor; the WebKit flex/grid overflow trap (memory: webkit-height-100). */
     grid-template-rows: minmax(0, 1fr);
     flex: 1 1 auto;
@@ -752,6 +752,10 @@
     }
     .timeline__picker-panes {
       grid-template-columns: minmax(0, 1fr);
+      /* Single column: calendar + time list stack and the whole pane scrolls
+         within the fixed popover height instead of clipping. */
+      grid-template-rows: auto auto;
+      overflow-y: auto;
     }
   }
 </style>

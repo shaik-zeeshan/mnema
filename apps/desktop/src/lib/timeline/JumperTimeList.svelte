@@ -39,7 +39,6 @@
 
   const dayHasFrames = $derived(buckets.some((b) => !b.disabled));
   const dayHourCount = $derived(buckets.filter((b) => b.count > 0).length);
-  const dayFrameTotal = $derived(buckets.reduce((a, b) => a + b.count, 0));
 
   function densityFraction(count: number): number {
     if (count <= 0) return 0;
@@ -52,7 +51,7 @@
     <span class="timeline__picker-day">{dayLabel || "—"}</span>
     {#if hasSelection && dayHasFrames && !loading}
       <span class="timeline__picker-day-count"
-        >{dayHourCount} hr · {dayFrameTotal} fr</span
+        >{dayHourCount} hr</span
       >
     {/if}
   </div>
@@ -134,6 +133,7 @@
     font-size: var(--text-base);
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .timeline__picker-day-count {
     font-size: var(--text-xs);
