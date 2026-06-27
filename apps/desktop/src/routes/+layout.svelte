@@ -347,21 +347,31 @@
   const captureError = $derived(captureControls.error);
 
   // ── Pause / resume control ──────────────────────────────────────────────
-  // The control must reflect the *actual* paused state, not only a user pause:
-  // an inactivity or low-disk auto-pause also shows the session as "Paused", so
-  // labelling the button "Pause" there contradicts the status pill. Manual
-  // resume only applies to a user pause (auto-pauses clear themselves when
-  // activity returns / disk frees), so during an auto-pause the button reads
-  // "Resume" but is disabled with a title that explains why.
-  const isPaused = $derived(captureControls.paused);
-  const isAutoPaused = $derived(isPaused && !captureControls.isUserPaused);
+  // Pause is a *whole-session* control and must stay available even while an
+  // inactivity auto-pause has idled one or more sources: inactivity pausing is
+  // per-source (the session reports `is_inactivity_paused` when *any* source
+  // idles, even though others may still be recording), so it must not steal the
+  // user's ability to deliberately pause the entire session. This matches the
+  // pause/resume keyboard shortcut, which already keys off the user pause alone.
+  //
+  // The button reads "Resume" only when the *user* paused, or when a low-disk
+  // suspension (which the user cannot clear from here) holds the session — that
+  // is the one case the control is disabled. An inactivity pause leaves the
+  // button as an enabled "Pause" so the user can lock the whole session paused.
+  const showResume = $derived(
+    captureControls.isUserPaused || captureControls.isLowDiskSuspended,
+  );
+  const pauseDisabled = $derived(
+    captureLoadingPause ||
+      (captureControls.isLowDiskSuspended && !captureControls.isUserPaused),
+  );
   const pauseButtonTitle = $derived(
     captureControls.isUserPaused
       ? "Resume recording"
       : captureControls.isLowDiskSuspended
         ? "Paused — free up disk space to resume recording"
         : captureControls.isInactivityPaused
-          ? "Paused while you're away — recording resumes automatically when you return"
+          ? "Pause the whole session (recording auto-paused while you're away)"
           : "Pause recording",
   );
 
@@ -958,13 +968,13 @@
           <button
             type="button"
             class="titlebar__record titlebar__record--pause"
-            class:titlebar__record--resume={isPaused}
-            onclick={isPaused ? resumeCapture : pauseCapture}
-            disabled={captureLoadingPause || isAutoPaused}
+            class:titlebar__record--resume={showResume}
+            onclick={showResume ? resumeCapture : pauseCapture}
+            disabled={pauseDisabled}
             title={pauseButtonTitle}
             aria-label={pauseButtonTitle}
           >
-            <span>{captureLoadingPause ? (isPaused ? "Resuming…" : "Pausing…") : isPaused ? "Resume" : "Pause"}</span>
+            <span>{captureLoadingPause ? (showResume ? "Resuming…" : "Pausing…") : showResume ? "Resume" : "Pause"}</span>
           </button>
           <button
             type="button"
