@@ -218,7 +218,7 @@
   .rail-nav {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 2px;
   }
   .rail-nav-item {
     position: relative;
@@ -286,30 +286,52 @@
     background: var(--app-accent);
   }
 
-  /* new chat — quiet borderless text link. */
+  /* new chat — a full row that shares the nav's geometry exactly: same 28px
+     height, same 0 8px padding, same 8px gap, and a 16px leading-glyph box. That
+     puts the ＋ on the SAME vertical guide as the nav icons and the label on the
+     same guide as the nav labels (the previous inline link sat ~15px off, which
+     read as the rail's broken alignment). */
   .rail-newchat {
-    display: inline-flex;
+    position: relative;
+    display: flex;
     align-items: center;
-    gap: 7px;
-    margin-top: 18px;
+    gap: 8px;
+    width: 100%;
+    height: 28px;
+    margin-top: 16px;
     background: transparent;
     border: 0;
-    padding: 0;
+    border-radius: 6px;
+    padding: 0 8px;
     font: inherit;
     font-size: var(--text-base);
     color: var(--app-text-muted);
+    text-align: left;
     cursor: pointer;
-    transition: color 0.12s ease;
+    transition:
+      color 0.12s ease,
+      background 0.12s ease;
   }
   .rail-newchat .plus {
+    flex: none;
+    width: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    line-height: 1;
     color: var(--app-text-subtle);
     transition: color 0.12s ease;
   }
-  .rail-newchat:hover,
+  .rail-newchat:hover {
+    color: var(--app-accent);
+    background: var(--app-surface-hover);
+  }
   .rail-newchat:hover .plus {
     color: var(--app-accent);
   }
-  /* Chat group anchor — when the user is in Chat this row stays accent + bold so
+  /* Chat group anchor — when the user is in Chat this row carries the same
+     multi-signal active treatment as the nav (accent label + tint + inset bar) so
      the rail always shows a stable "you are here" landmark. */
   .rail-newchat.active,
   .rail-newchat.active .plus {
@@ -317,6 +339,18 @@
   }
   .rail-newchat.active {
     font-weight: 600;
+    background: var(--app-accent-bg);
+  }
+  .rail-newchat.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 16px;
+    border-radius: 0 2px 2px 0;
+    background: var(--app-accent);
   }
   .rail-newchat:focus-visible {
     outline: none;

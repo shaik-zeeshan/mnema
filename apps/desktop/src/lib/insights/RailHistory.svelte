@@ -171,19 +171,35 @@
      on focus the only cue is the glyph brightening to the accent (plus the
      caret), matching the nav's box-free focus idiom. Token-driven,
      sentence-case placeholder. */
+  /* search — shares the nav / new-chat row geometry exactly (28px tall, 0 8px
+     padding, 8px gap, 16px leading-glyph box) so the magnifier lands on the nav
+     icon guide and the input text on the nav label guide. Sits tight under New
+     chat as one "actions" cluster, then the history list. */
   .rail-search {
     display: flex;
     align-items: center;
     gap: 8px;
-    height: 30px;
-    margin-top: 16px;
+    height: 28px;
+    margin-top: 8px;
+    padding: 0 8px;
+    border-radius: 6px;
+    transition: background 0.12s ease;
   }
-  /* Focus the search → the glyph brightens to the accent (quiet, no box/line). */
+  /* Focus the search → glyph brightens to the accent + a quiet tint fill, matching
+     the nav/new-chat hover idiom (no box/line). */
+  .rail-search:focus-within {
+    background: var(--app-surface-hover);
+  }
   .rail-search:focus-within .icon {
     color: var(--app-accent);
   }
   .rail-search .icon {
-    flex: 0 0 auto;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--app-text-subtle);
     transition: color 0.12s ease;
   }
