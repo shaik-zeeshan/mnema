@@ -7,11 +7,6 @@
   import { writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
-  import { Calendar } from "bits-ui";
-  import {
-    CalendarDate,
-    type DateValue,
-  } from "@internationalized/date";
   import {
     bootstrapCaptureControls,
     captureControls,
@@ -19,11 +14,11 @@
   } from "$lib/capture-controls.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
   import ActionSelect from "$lib/components/ActionSelect.svelte";
+  import TimelineJumper from "$lib/timeline/TimelineJumper.svelte";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
-  import IconCalendar from "~icons/lucide/calendar";
   import IconScanText from "~icons/lucide/scan-text";
   import IconMoreHorizontal from "~icons/lucide/ellipsis";
   import IconClapperboard from "~icons/lucide/clapperboard";
@@ -3240,7 +3235,9 @@
     timelineScrollLeft = scrollLeft;
   }
 
-  async function syncTimelineScrollToActiveFrame(): Promise<void> {
+  async function syncTimelineScrollToActiveFrame(
+    opts: { animate?: boolean } = {},
+  ): Promise<void> {
     await tick();
     if (!timelineRail) {
       commitTimelineScrollPosition(0);
@@ -3251,7 +3248,23 @@
       0,
       Math.min(max, max - timelineActiveIndex * TIMELINE_SLOT_WIDTH),
     );
-    timelineRail.scrollLeft = targetScrollLeft;
+    // Explicit user jumps animate the playhead to the new moment (matching the
+    // arrow-key scrub's smooth scroll); every other caller — initial load,
+    // refresh, resize recovery, head poll — hard-pins to avoid spurious motion.
+    // Honor `prefers-reduced-motion` by falling back to the instant set.
+    const animate =
+      opts.animate === true &&
+      typeof timelineRail.scrollTo === "function" &&
+      !(
+        typeof window !== "undefined" &&
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      );
+    if (animate) {
+      timelineRail.scrollTo({ left: targetScrollLeft, behavior: "smooth" });
+    } else {
+      timelineRail.scrollLeft = targetScrollLeft;
+    }
     commitTimelineScrollPosition(targetScrollLeft);
   }
 
@@ -4099,7 +4112,7 @@
         setFrameActionStatus("That capture is no longer available.", { tone: "error" });
         return;
       }
-      await jumpToFrame(frame, false);
+      await jumpToFrameWithBanner(frame);
       return;
     }
     if (payload.kind === "audio" && payload.audioSegmentId != null) {
@@ -4123,7 +4136,7 @@
         const alignedFrame = await invoke<FrameDto | null>("get_frame", {
           request: { frameId: payload.alignedFrameId },
         });
-        if (alignedFrame) await jumpToFrame(alignedFrame, false);
+        if (alignedFrame) await jumpToFrameWithBanner(alignedFrame);
       }
     }
   }
@@ -4538,7 +4551,10 @@
     }
   }
 
-  async function loadTimelinePage(reset = false) {
+  async function loadTimelinePage(
+    reset = false,
+    opts: { animate?: boolean } = {},
+  ) {
     // A reset must always be able to supersede an in-flight page request, so
     // only "load more" is gated on the loading flags. The generation token
     // below ensures the older response is discarded if a reset bumps it.
@@ -4582,8 +4598,10 @@
         // Newest frame (slot 0) sits at the right edge of the track; scroll
         // all the way to the right so it's centered under the static cursor.
         // Wait for the DOM to lay out the new track before reading
-        // scrollWidth, else we'd just set 0 → 0.
-        await syncTimelineScrollToActiveFrame();
+        // scrollWidth, else we'd just set 0 → 0. For an explicit picker-Latest
+        // commit (`animate`) this glides to the live head; every other reset
+        // caller hard-cuts.
+        await syncTimelineScrollToActiveFrame({ animate: opts.animate });
         // Drop cached previews from any prior generation — keeping them
         // would grow unboundedly across refreshes.
         previewCache = new Map();
@@ -5286,7 +5304,9 @@
     if (!timelineShortcutSuppressed) {
       if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.openJumpPicker)) {
         event.preventDefault();
-        if (!pickerOpen) togglePicker();
+        // Opening seeds from the active frame inside the jumper component
+        // (rising-edge $effect). Guard so the shortcut never toggles closed.
+        if (!pickerOpen) pickerOpen = true;
         return;
       }
       if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.jumpLatest)) {
@@ -6165,264 +6185,48 @@
   );
 
   // ─── Date / time jump picker ──────────────────────────────────────────────
-  // A custom Bits UI calendar + time list that lets the user jump the
-  // timeline to a specific local date (and optionally a specific minute).
-  // Strategy:
-  //   - Frame summaries (id + capturedAt) are loaded per visible calendar
-  //     month and grouped by LOCAL date. The calendar disables dates with
-  //     no frames in months we've already loaded.
-  //   - When a date is selected we expose the available minute-buckets for
-  //     that day; the user can pick the latest frame of the day, or a
-  //     specific minute. Either way we delegate the "latest at or before"
-  //     resolution to `get_latest_frame_in_range` so the backend remains
-  //     the source of truth for the jump target.
-  //   - After resolving the target we load a focused newest-first window
-  //     around that frame in one request, then scroll the rail to the
-  //     returned target index. From there the rail can page both directions:
-  //     newer frames back toward the live head from the loaded start, and
-  //     older history from the loaded tail via the normal `beforeId` path.
-
-  type DateKey = string; // "YYYY-MM-DD" in local time
-  type MonthKey = string; // "YYYY-MM" in local time
-
+  // The jump picker UI (trigger + two-pane calendar/time popover, per-month
+  // summary cache + stale-while-revalidate, focus trap, positioning) lives in
+  // `TimelineJumper.svelte`. The dashboard keeps ownership of the actual
+  // timeline-mutating jump (`jumpToFrame`, which loads a focused newest-first
+  // window via `get_timeline_window_around_frame` and rebuilds preview caches)
+  // and reaches into the component only for per-month cache invalidation.
+  //
+  // `pickerOpen` / `pickerJumping` stay here as bindable state so the
+  // dashboard's keyboard shortcuts, shortcut-help table, wheel/Escape guards,
+  // and tooltip gating keep working unchanged.
   let pickerOpen = $state(false);
-  let pickerPlaceholder = $state<DateValue>(todayLocal());
-  let pickerSelectedDate = $state<DateValue | undefined>(undefined);
-  // Selected hour bucket label, e.g. "1:00 AM". Null when nothing has been
-  // chosen for the current selected date yet.
-  let pickerSelectedTime = $state<string | null>(null);
-  // Guard token that suppresses the date-change auto-jump effect for one
-  // tick after we programmatically seed `pickerSelectedDate` (e.g. when the
-  // picker opens, or when we sync the selection back to the resolved
-  // jump-target frame). Without this, opening the picker would immediately
-  // trigger a date-jump, and post-jump bookkeeping would re-jump in a loop.
-  let suppressPickerDateAutoJump = false;
-  let summariesByDate = $state<Map<DateKey, FrameSummaryDto[]>>(new Map());
-  let loadedMonths = $state<Set<MonthKey>>(new Set());
-  // Months whose cached summaries are known to be out-of-date because new
-  // frames have arrived in them. Kept SEPARATE from `loadedMonths` /
-  // `summariesByDate` so the open picker keeps rendering the existing
-  // disabled-date map while a background revalidation is in flight — a
-  // stale-while-revalidate strategy that avoids the visible flicker that
-  // came from deleting a month's cache before its replacement landed.
-  let staleMonths = $state<Set<MonthKey>>(new Set());
-  // In-flight month fetches. Dedupes concurrent revalidations triggered by
-  // the picker effect, manual refresh, and head poll all racing to refresh
-  // the same month.
-  const monthsInFlight = new Set<MonthKey>();
-  let pickerLoading = $state(false);
   let pickerJumping = $state(false);
-  let pickerError = $state<string | null>(null);
-  let pickerStyle = $state("");
-
-  function todayLocal(): DateValue {
-    const d = new Date();
-    return new CalendarDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-  }
-
-  function pad2(n: number): string {
-    return String(n).padStart(2, "0");
-  }
-
-  function dateKeyOf(d: { year: number; month: number; day: number }): DateKey {
-    return `${d.year}-${pad2(d.month)}-${pad2(d.day)}`;
-  }
-
-  function monthKeyOf(d: { year: number; month: number }): MonthKey {
-    return `${d.year}-${pad2(d.month)}`;
-  }
-
-  function localDateKeyFromTs(ts: string): DateKey {
-    const d = parseCapturedAt(ts);
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-  }
+  let jumperRef = $state<ReturnType<typeof TimelineJumper> | null>(null);
 
   /**
-   * Targeted invalidation of the date-jump picker's per-month summary
-   * cache. Given a set of newly-arrived frames, compute the LOCAL months
-   * they belong to and MARK those months stale. We deliberately do NOT
-   * delete `loadedMonths` entries or drop rows from `summariesByDate`:
-   * doing so during a routine refresh / head poll would unmount the open
-   * picker's disabled-date map for the visible month and produce a
-   * visible flicker every poll, even when no UI-visible change exists.
-   *
-   * Reactivity: `staleMonths` is itself reactive state, and the picker's
-   * `$effect` reads it via `loadMonthSummaries`, so marking the visible
-   * month stale here re-triggers a background revalidation. The existing
-   * cached data stays mounted until the replacement response lands, at
-   * which point `loadMonthSummaries` swaps the affected month's rows in
-   * one assignment and clears the stale flag (see below).
+   * Targeted invalidation of the jump picker's per-month summary cache. Given
+   * newly-arrived frames, the component marks the LOCAL months they belong to
+   * stale (not deleted) so the open picker keeps rendering its disabled-date
+   * map until the background revalidation lands — a flicker-free
+   * stale-while-revalidate. Thin delegate so existing head-poll / refresh call
+   * sites stay unchanged.
    */
-  function invalidatePickerMonthsForFrames(frames: { capturedAt: string }[]): void {
-    if (frames.length === 0) return;
-    const affectedMonths = new Set<MonthKey>();
-    for (const f of frames) {
-      const d = parseCapturedAt(f.capturedAt);
-      if (isNaN(d.getTime())) continue;
-      affectedMonths.add(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
-    }
-    if (affectedMonths.size === 0) return;
-    let changed = false;
-    const next = new Set(staleMonths);
-    for (const m of affectedMonths) {
-      if (!next.has(m)) {
-        next.add(m);
-        changed = true;
-      }
-    }
-    if (changed) staleMonths = next;
+  function invalidatePickerMonthsForFrames(
+    frames: { capturedAt: string }[],
+  ): void {
+    jumperRef?.invalidateMonthsForFrames(frames);
   }
 
   function invalidateLoadedPickerSummaryMonths(): void {
-    if (loadedMonths.size === 0) return;
-    const next = new Set(staleMonths);
-    for (const month of loadedMonths) {
-      next.add(month);
-    }
-    staleMonths = next;
+    jumperRef?.invalidateAllLoadedMonths();
   }
 
-  async function loadMonthSummaries(value: DateValue): Promise<void> {
-    const key = monthKeyOf(value);
-    const isStale = staleMonths.has(key);
-    // Already up-to-date and loaded — nothing to do.
-    if (loadedMonths.has(key) && !isStale) return;
-    // Another caller is already revalidating this month; let its response
-    // be the one that swaps the data in. Prevents fetch storms when the
-    // picker effect, head poll, and manual refresh all race.
-    if (monthsInFlight.has(key)) return;
-    monthsInFlight.add(key);
-    // Only show the spinner when there's nothing to render yet. Stale
-    // revalidations happen quietly so the existing disabled-date map keeps
-    // rendering until replacement data arrives.
-    const isFirstLoad = !loadedMonths.has(key);
-    if (isFirstLoad) pickerLoading = true;
-    try {
-      // Local month bounds, converted to UTC ISO for the backend.
-      const start = new Date(value.year, value.month - 1, 1, 0, 0, 0, 0);
-      const end = new Date(value.year, value.month, 1, 0, 0, 0, 0);
-      const req: FrameRangeRequest = {
-        capturedAtStart: start.toISOString(),
-        capturedAtEnd: end.toISOString(),
-      };
-      const summaries = await invoke<FrameSummaryDto[]>(
-        "list_frame_summaries_in_range",
-        { request: req },
-      );
-      // Atomically swap this month's rows: drop any prior entries whose
-      // local date falls inside this month, then insert the fresh ones.
-      // Doing this in one assignment means the picker never observes an
-      // intermediate "month exists in loadedMonths but has no rows" state.
-      const next = new Map(summariesByDate);
-      for (const k of Array.from(next.keys())) {
-        if (k.startsWith(`${key}-`)) next.delete(k);
-      }
-      for (const s of summaries) {
-        const k = localDateKeyFromTs(s.capturedAt);
-        const arr = next.get(k);
-        if (arr) arr.push(s);
-        else next.set(k, [s]);
-      }
-      // Ascending by capture time within each day so minute buckets resolve
-      // their "latest in bucket" by simple last-write-wins below.
-      for (const arr of next.values()) {
-        arr.sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
-      }
-      summariesByDate = next;
-      if (!loadedMonths.has(key)) {
-        const nextMonths = new Set(loadedMonths);
-        nextMonths.add(key);
-        loadedMonths = nextMonths;
-      }
-      if (staleMonths.has(key)) {
-        const nextStale = new Set(staleMonths);
-        nextStale.delete(key);
-        staleMonths = nextStale;
-      }
-      pickerError = null;
-    } catch (err) {
-      pickerError = humanizeError(err);
-    } finally {
-      monthsInFlight.delete(key);
-      if (isFirstLoad) pickerLoading = false;
-    }
-  }
-
-  // Eagerly fetch the visible month whenever the placeholder lands on a new
-  // month while the picker is open.
-  $effect(() => {
-    if (!pickerOpen) return;
-    void loadMonthSummaries(pickerPlaceholder);
-  });
-
-  function isPickerDateDisabled(d: DateValue): boolean {
-    // Pre-load: don't disable so the user can navigate into a month before
-    // its summaries arrive. Once a month is loaded, disable any local date
-    // not present in the dataset.
-    if (!loadedMonths.has(monthKeyOf(d))) return false;
-    return !summariesByDate.has(dateKeyOf(d));
-  }
-
-  // Hourly time buckets for the selected date. Labels use 12-hour clock
-  // (e.g. "1:00 AM", "12:00 PM", "11:00 PM"). For today we stop at the
-  // current hour; for any other date we render the full day through 11 PM.
-  // The chosen hour resolves to the latest frame at-or-before that hour's
-  // end via `get_latest_frame_in_range`, so the rail jumps near the picked
-  // time even if no frame falls exactly inside that hour.
-  type TimeBucket = { label: string; hour: number; disabled: boolean };
-  function formatHourLabel(hour: number): string {
-    const period = hour < 12 ? "AM" : "PM";
-    const display = hour % 12 === 0 ? 12 : hour % 12;
-    return `${display}:00 ${period}`;
-  }
-  const availableTimes = $derived.by<TimeBucket[]>(() => {
-    if (!pickerSelectedDate) return [];
-    const now = new Date();
-    const isToday =
-      pickerSelectedDate.year === now.getFullYear() &&
-      pickerSelectedDate.month === now.getMonth() + 1 &&
-      pickerSelectedDate.day === now.getDate();
-    const lastHour = isToday ? now.getHours() : 23;
-    // Determine which hours of the selected date have at least one frame,
-    // using the already-loaded month summaries. If the month for this date
-    // has not loaded yet, leave every hour enabled — disabling everything on
-    // a not-yet-loaded month would block the user from time-picking before
-    // background data arrives. Once the month is loaded, an absent day key
-    // means the day truly has no frames, so all its hours render disabled.
-    const monthLoaded = loadedMonths.has(monthKeyOf(pickerSelectedDate));
-    const hoursWithFrames = new Set<number>();
-    if (monthLoaded) {
-      const daySummaries = summariesByDate.get(dateKeyOf(pickerSelectedDate));
-      if (daySummaries) {
-        for (const s of daySummaries) {
-          const d = parseCapturedAt(s.capturedAt);
-          if (!isNaN(d.getTime())) hoursWithFrames.add(d.getHours());
-        }
-      }
-    }
-    const out: TimeBucket[] = [];
-    for (let h = 0; h <= lastHour; h++) {
-      const disabled = monthLoaded && !hoursWithFrames.has(h);
-      out.push({ label: formatHourLabel(h), hour: h, disabled });
-    }
-    return out;
-  });
-
-  // Route a jump failure to a surface the user can actually see: the popover's
-  // own `pickerError` is invisible once the picker has closed (or was never the
-  // origin), so non-picker jumps (broker handoff, duplicate-frame link) report
-  // through the always-visible stage status banner instead.
-  function reportJumpError(message: string): void {
-    if (pickerOpen) {
-      pickerError = message;
-    } else {
-      setFrameActionStatus(message, { tone: "error" });
-    }
-  }
-
-  async function jumpToFrame(target: FrameDto, closePicker = true): Promise<void> {
-    pickerJumping = true;
-    pickerError = null;
+  // Performs the timeline jump to an already-resolved frame: loads a focused
+  // newest-first window in one request, rebuilds the preview caches, and pins
+  // the rail to the returned target index. Returns null on success or a
+  // human-readable error string on failure (the caller decides where to
+  // surface it — the picker's footer, or the stage status banner). `animate`
+  // smooth-scrolls the playhead to the new moment for explicit user commits.
+  async function jumpToFrame(
+    target: FrameDto,
+    opts: { animate?: boolean } = {},
+  ): Promise<string | null> {
     timelineGeneration += 1;
     const gen = timelineGeneration;
     timelineLoading = true;
@@ -6437,10 +6241,9 @@
         "get_timeline_window_around_frame",
         { request },
       );
-      if (gen !== timelineGeneration) return;
+      if (gen !== timelineGeneration) return null;
       if (!window.frames[window.targetIndex] || window.frames[window.targetIndex]?.id !== target.id) {
-        reportJumpError("failed to focus selected frame");
-        return;
+        return "failed to focus selected frame";
       }
       timelineFrames = window.frames;
       timelineActiveIndex = window.targetIndex;
@@ -6462,310 +6265,49 @@
       scrubPreviewIntervalCache = new Map();
       activePreviewDecodeRetries.clear();
       resetTimelinePreviewDisplay();
-      await syncTimelineScrollToActiveFrame();
+      await syncTimelineScrollToActiveFrame({ animate: opts.animate });
       void refreshAudioSegments();
-      // Keep picker selection state in sync with the resolved target frame
-      // so the calendar/time list reflects where we actually landed. The
-      // suppression flag prevents the date-change effect from re-jumping
-      // in response to our own assignment.
-      const resolved = parseCapturedAt(target.capturedAt);
-      if (!isNaN(resolved.getTime())) {
-        suppressPickerDateAutoJump = true;
-        const cd = new CalendarDate(
-          resolved.getFullYear(),
-          resolved.getMonth() + 1,
-          resolved.getDate(),
-        );
-        pickerPlaceholder = cd;
-        pickerSelectedDate = cd;
-        pickerSelectedTime = formatHourLabel(resolved.getHours());
-      }
-      if (closePicker) pickerOpen = false;
+      return null;
     } catch (err) {
-      if (gen !== timelineGeneration) return;
-      reportJumpError(humanizeError(err));
+      if (gen !== timelineGeneration) return null;
+      return humanizeError(err);
     } finally {
       if (gen === timelineGeneration) {
         timelineLoading = false;
         timelineLoadingMore = false;
       }
-      pickerJumping = false;
     }
   }
 
-  async function resolveAndJump(
-    rangeStart: Date,
-    rangeEnd: Date,
-    closePicker = true,
-  ): Promise<void> {
-    const req: FrameRangeRequest = {
-      capturedAtStart: rangeStart.toISOString(),
-      capturedAtEnd: rangeEnd.toISOString(),
-    };
-    try {
-      const frame = await invoke<FrameDto | null>("get_latest_frame_in_range", {
-        request: req,
-      });
-      if (!frame) {
-        reportJumpError("no frame in that range");
-        return;
-      }
-      await jumpToFrame(frame, closePicker);
-    } catch (err) {
-      reportJumpError(humanizeError(err));
-    }
+  // Surfaces a jump error from a NON-picker entry point (broker handoff,
+  // duplicate-frame link) on the always-visible stage status banner — the
+  // picker owns its own footer-strip error for picker-originated commits.
+  async function jumpToFrameWithBanner(target: FrameDto): Promise<void> {
+    const err = await jumpToFrame(target);
+    if (err) setFrameActionStatus(err, { tone: "error" });
   }
 
-  async function jumpToSelectedDateLatest(closePicker = true): Promise<void> {
-    const d = pickerSelectedDate;
-    if (!d) return;
-    const start = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
-    const end = new Date(d.year, d.month - 1, d.day, 23, 59, 59, 999);
-    await resolveAndJump(start, end, closePicker);
+  // Bridges the jumper component's commit to the dashboard's timeline jump.
+  // Returns null on success (popover closes) or an error string (popover
+  // stays open and shows it). `animate` smooth-scrolls the playhead.
+  async function onJumperJump(target: FrameDto): Promise<string | null> {
+    return jumpToFrame(target, { animate: true });
   }
 
-  async function jumpToSelectedDateTime(label: string, hour: number): Promise<void> {
-    const d = pickerSelectedDate;
-    if (!d) return;
-    const start = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
-    // "Latest at or before the end of the picked hour" — backend treats
-    // the range as inclusive, so we extend to :59:59.999 of that hour.
-    const end = new Date(d.year, d.month - 1, d.day, hour, 59, 59, 999);
-    pickerSelectedTime = label;
-    await resolveAndJump(start, end);
-  }
-
-  // Auto-jump when the user picks a date in the calendar. We deliberately
-  // do NOT close the picker so the user can then choose a time, dismiss it
-  // manually, or keep navigating. Programmatic seeding (open, post-jump
-  // sync) bypasses this via `suppressPickerDateAutoJump`.
-  $effect(() => {
-    const d = pickerSelectedDate;
-    if (!pickerOpen) return;
-    if (suppressPickerDateAutoJump) {
-      suppressPickerDateAutoJump = false;
-      return;
-    }
-    if (!d) return;
-    if (pickerJumping) return;
-    // Once the month for this date has been loaded, we know definitively
-    // whether the date has any frames. If it doesn't, skip the futile
-    // backend call (and the resulting "no frame in that range" error).
-    // When the month is still loading we don't over-block — the user may
-    // have navigated into a freshly visible month whose summaries haven't
-    // arrived yet, and the backend call is the cheapest way to land on a
-    // real frame once data is available.
-    if (loadedMonths.has(monthKeyOf(d)) && !summariesByDate.has(dateKeyOf(d))) {
-      return;
-    }
-    void jumpToSelectedDateLatest(false);
-  });
-
-  // ─── Picker dialog a11y ───────────────────────────────────────────────────
-  // The jump picker is rendered as a non-modal `role="dialog"` popover. To
-  // give keyboard and screen-reader users a baseline dialog experience we
-  // wire up: focus-into-dialog on open, focus-restore on close, Escape to
-  // dismiss, a Tab focus trap while open, and click-outside to dismiss.
-  let pickerEl = $state<HTMLDivElement | null>(null);
-  let pickerTriggerEl = $state<HTMLButtonElement | null>(null);
-
-  function updatePickerPosition(): void {
-    if (!pickerEl || !pickerTriggerEl) return;
-    const viewportMargin = 12;
-    const triggerGap = 6;
-    const triggerRect = pickerTriggerEl.getBoundingClientRect();
-    const pickerRect = pickerEl.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const pickerWidth = Math.min(
-      pickerRect.width,
-      Math.max(0, viewportWidth - viewportMargin * 2),
-    );
-
-    let left = triggerRect.left;
-    if (triggerRect.left + pickerWidth > viewportWidth - viewportMargin) {
-      left = triggerRect.right - pickerWidth;
-    }
-    left = Math.min(
-      Math.max(viewportMargin, left),
-      Math.max(viewportMargin, viewportWidth - viewportMargin - pickerWidth),
-    );
-
-    const availableBelow = Math.max(
-      160,
-      viewportHeight - triggerRect.bottom - triggerGap - viewportMargin,
-    );
-    const availableAbove = Math.max(160, triggerRect.top - triggerGap - viewportMargin);
-    const maxHeight = Math.min(420, Math.max(availableBelow, availableAbove));
-    const openAbove = availableBelow < 260 && availableAbove > availableBelow;
-    const top = openAbove
-      ? Math.max(
-          viewportMargin,
-          triggerRect.top - triggerGap - Math.min(pickerRect.height, maxHeight),
-        )
-      : Math.min(
-          triggerRect.bottom + triggerGap,
-          viewportHeight - viewportMargin - Math.min(pickerRect.height, maxHeight),
-        );
-
-    pickerStyle = `left: ${left}px; top: ${top}px; max-height: ${maxHeight}px;`;
-  }
-
-  function getPickerFocusable(): HTMLElement[] {
-    if (!pickerEl) return [];
-    const sel =
-      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-    return Array.from(pickerEl.querySelectorAll<HTMLElement>(sel)).filter(
-      (el) => el.offsetParent !== null || el === document.activeElement,
-    );
-  }
-
-  function onPickerKeydown(e: KeyboardEvent) {
-    if (!pickerOpen) return;
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      pickerOpen = false;
-      return;
-    }
-    if (e.key !== "Tab") return;
-    const focusable = getPickerFocusable();
-    if (focusable.length === 0) {
-      e.preventDefault();
-      pickerEl?.focus();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement as HTMLElement | null;
-    if (e.shiftKey) {
-      if (active === first || !pickerEl?.contains(active)) {
-        e.preventDefault();
-        last.focus();
-      }
-    } else if (active === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  }
-
-  function onPickerPointerDownOutside(e: MouseEvent) {
-    if (!pickerOpen) return;
-    const target = e.target as Node | null;
-    if (!target) return;
-    if (pickerEl?.contains(target)) return;
-    if (pickerTriggerEl?.contains(target)) return; // trigger handles its own toggle
-    pickerOpen = false;
-  }
-
-  // When the picker opens, move focus inside it; when it closes, restore
-  // focus to the trigger so keyboard users don't get stranded.
-  $effect(() => {
-    if (!pickerOpen) return;
-    let cancelled = false;
-    void tick().then(() => {
-      if (cancelled || !pickerOpen) return;
-      updatePickerPosition();
-      const focusable = getPickerFocusable();
-      (focusable[0] ?? pickerEl)?.focus();
-    });
-    return () => {
-      cancelled = true;
-      // Restore focus to trigger only if focus is still inside (or has
-      // landed on body) — avoids stealing focus from elsewhere on the page.
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        !active ||
-        active === document.body ||
-        pickerEl?.contains(active)
-      ) {
-        pickerTriggerEl?.focus();
-      }
-    };
-  });
-
-  $effect(() => {
-    if (!pickerOpen) {
-      pickerStyle = "";
-      return;
-    }
-
-    let frame = 0;
-    const scheduleUpdate = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => updatePickerPosition());
-    };
-
-    void tick().then(scheduleUpdate);
-
-    const ro = new ResizeObserver(scheduleUpdate);
-    if (pickerEl) ro.observe(pickerEl);
-    if (pickerTriggerEl) ro.observe(pickerTriggerEl);
-
-    window.addEventListener("resize", scheduleUpdate);
-    window.addEventListener("scroll", scheduleUpdate, true);
-
-    return () => {
-      cancelAnimationFrame(frame);
-      ro.disconnect();
-      window.removeEventListener("resize", scheduleUpdate);
-      window.removeEventListener("scroll", scheduleUpdate, true);
-    };
-  });
-
-  function togglePicker() {
-    if (pickerOpen) {
-      pickerOpen = false;
-      return;
-    }
-    // Always re-initialize from the active frame on open so the picker
-    // reflects "you are here" rather than whatever was last selected.
-    // Suppress the date-change auto-jump for this seeding so opening the
-    // picker doesn't immediately re-jump to the frame already shown.
-    suppressPickerDateAutoJump = true;
-    if (timelineActive) {
-      const d = parseCapturedAt(timelineActive.capturedAt);
-      const cd = new CalendarDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-      pickerPlaceholder = cd;
-      pickerSelectedDate = cd;
-      // Containing hour bucket: align with the hour the active frame
-      // actually falls inside (floor), rather than rounding into the next
-      // hour. Clamp to today's current hour when the active frame is on
-      // today's date so we don't pre-select a future hour the list won't
-      // even render.
-      const candidate = d.getHours();
-      const now = new Date();
-      const isToday =
-        d.getFullYear() === now.getFullYear() &&
-        d.getMonth() === now.getMonth() &&
-        d.getDate() === now.getDate();
-      const maxHour = isToday ? now.getHours() : 23;
-      const hour = Math.max(0, Math.min(maxHour, candidate));
-      pickerSelectedTime = formatHourLabel(hour);
-    } else {
-      pickerSelectedDate = undefined;
-      pickerSelectedTime = null;
-    }
-    pickerError = null;
-    pickerOpen = true;
-  }
-
-  // Display string for the picker trigger button — reflects the active
-  // frame's local time so the control doubles as a compact jump readout.
-  const triggerLabel = $derived(
-    timelineActive
-      ? formatCapturedAt(timelineActive.capturedAt)
-      : "no active frame",
-  );
   const latestFrameOffset = $derived(
     timelineFrames.length === 0 ? 0 : timelineActiveIndex + (timelineHasNewer ? 1 : 0),
   );
   const showJumpToLatestButton = $derived(latestFrameOffset > 50);
 
+  // Snap the timeline to the live head ("Latest" / "snap to now"). Closes the
+  // jump picker if open, then reloads the newest page. This is an explicit
+  // user "go to now" commit, so the playhead glides to the live head rather
+  // than hard-cutting (§12.6) — gated on `prefers-reduced-motion` inside
+  // `syncTimelineScrollToActiveFrame`. Refresh / initial-load / head-poll
+  // resets keep the hard-cut (they pass no `animate`).
   async function jumpToLatestFrame(): Promise<void> {
     pickerOpen = false;
-    pickerError = null;
-    await loadTimelinePage(true);
+    await loadTimelinePage(true, { animate: true });
   }
 
   $effect(() => {
@@ -7050,7 +6592,6 @@
 <!-- ── Timeline browser ──────────────────────────────────────────────────── -->
 <svelte:window
   onpointerdown={(event) => {
-    onPickerPointerDownOutside(event);
     onFrameActionsPointerDownOutside(event);
     const target = event.target;
     if (
@@ -7071,118 +6612,16 @@
            recording affordance is visible regardless of which route is
            active. The timeline header retains only timeline-specific
            controls below (jump, OCR toggle, refresh). -->
-      <div class="timeline__jump">
-        <button
-          class="btn btn--ghost btn--sm timeline__jump-trigger"
-          onclick={togglePicker}
-          bind:this={pickerTriggerEl}
-          aria-haspopup="dialog"
-          aria-expanded={pickerOpen}
-          aria-controls="timeline-jump-picker"
-          title="Jump to date and time (J)"
-        >
-          <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
-          <span class="timeline__jump-label">{triggerLabel}</span>
-        </button>
-        {#if showJumpToLatestButton}
-          <button
-            class="btn btn--ghost btn--sm timeline__jump-latest"
-            onclick={jumpToLatestFrame}
-            disabled={timelineLoading || timelineLoadingMore || pickerJumping}
-            title="Jump to latest frame (L)"
-          >latest</button>
-        {/if}
-        {#if pickerOpen}
-          <div
-            class="timeline__picker"
-            id="timeline-jump-picker"
-            style={pickerStyle}
-            role="dialog"
-            aria-modal="false"
-            aria-label="Jump to date and time"
-            tabindex="-1"
-            bind:this={pickerEl}
-            onkeydown={onPickerKeydown}
-          >
-            <Calendar.Root
-              type="single"
-              bind:value={pickerSelectedDate}
-              bind:placeholder={pickerPlaceholder}
-              isDateDisabled={isPickerDateDisabled}
-              weekdayFormat="short"
-              class="cal"
-            >
-              {#snippet children({ months, weekdays })}
-                <header class="cal__header">
-                  <Calendar.PrevButton class="cal__nav">‹</Calendar.PrevButton>
-                  <Calendar.Heading class="cal__heading" />
-                  <Calendar.NextButton class="cal__nav">›</Calendar.NextButton>
-                </header>
-                {#each months as month (month.value)}
-                  <Calendar.Grid class="cal__grid">
-                    <Calendar.GridHead>
-                      <Calendar.GridRow class="cal__row">
-                        {#each weekdays as wd (wd)}
-                          <Calendar.HeadCell class="cal__weekday">{wd}</Calendar.HeadCell>
-                        {/each}
-                      </Calendar.GridRow>
-                    </Calendar.GridHead>
-                    <Calendar.GridBody>
-                      {#each month.weeks as weekDates, weekIdx (weekIdx)}
-                        <Calendar.GridRow class="cal__row">
-                          {#each weekDates as date (date.toString())}
-                            <Calendar.Cell {date} month={month.value} class="cal__cell">
-                              <Calendar.Day class="cal__day" />
-                            </Calendar.Cell>
-                          {/each}
-                        </Calendar.GridRow>
-                      {/each}
-                    </Calendar.GridBody>
-                  </Calendar.Grid>
-                {/each}
-              {/snippet}
-            </Calendar.Root>
-
-            <div class="timeline__picker-side">
-              {#if pickerLoading}
-                <div class="timeline__picker-pending">loading month…</div>
-              {/if}
-              {#if pickerError}
-                <div class="timeline__picker-error">{pickerError}</div>
-              {/if}
-              {#if pickerSelectedDate}
-                <div class="timeline__picker-row">
-                  <span class="timeline__picker-key">date</span>
-                  <span class="timeline__picker-val">{dateKeyOf(pickerSelectedDate)}</span>
-                </div>
-                <button
-                  class="btn btn--ghost btn--sm"
-                  onclick={() => jumpToSelectedDateLatest()}
-                  disabled={pickerJumping || availableTimes.length === 0}
-                >jump to latest of day</button>
-                <div class="timeline__picker-key">times</div>
-                {#if availableTimes.length === 0}
-                  <div class="timeline__picker-pending">no frames on this day</div>
-                {:else}
-                  <div class="timeline__picker-times">
-                    {#each availableTimes as t (t.label)}
-                      <button
-                        type="button"
-                        class="timeline__picker-time"
-                        class:timeline__picker-time--active={pickerSelectedTime === t.label}
-                        onclick={() => jumpToSelectedDateTime(t.label, t.hour)}
-                        disabled={pickerJumping || t.disabled}
-                      >{t.label}</button>
-                    {/each}
-                  </div>
-                {/if}
-              {:else}
-                <div class="timeline__picker-pending">pick a date</div>
-              {/if}
-            </div>
-          </div>
-        {/if}
-      </div>
+      <TimelineJumper
+        bind:this={jumperRef}
+        bind:open={pickerOpen}
+        bind:jumping={pickerJumping}
+        activeFrame={timelineActive}
+        timelineBusy={timelineLoading || timelineLoadingMore}
+        showLatest={showJumpToLatestButton}
+        onJump={onJumperJump}
+        onJumpToLatest={jumpToLatestFrame}
+      />
     </div>
 
     <div class="timeline__bar-group timeline__bar-group--secondary">
@@ -7584,7 +7023,7 @@
             <button
               type="button"
               class="timeline__overlay-link"
-              onclick={() => void jumpToFrame(duplicateOf)}
+              onclick={() => void jumpToFrameWithBanner(duplicateOf)}
             >{duplicateOf.id}</button>
           </div>
         {/if}
@@ -9571,250 +9010,6 @@
   /* The previous dashboard-local settings/menu anchor moved into the shared
      title bar as reusable surface actions, so those local rules were removed. */
 
-  /* ── Date jump picker ──────────────────────────────────────── */
-  .timeline__jump {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    position: relative;
-  }
-
-  .timeline__jump-trigger {
-    gap: 6px;
-    font-variant-numeric: tabular-nums;
-    max-width: 220px;
-  }
-
-  .timeline__jump-latest {
-    flex: 0 0 auto;
-  }
-
-  .timeline__jump-icon {
-    display: inline-flex;
-    align-items: center;
-    color: var(--app-text-muted);
-  }
-
-  .timeline__jump-icon :global(svg) {
-    width: 1.1em;
-    height: 1.1em;
-  }
-
-  .timeline__jump-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .timeline__picker {
-    position: fixed;
-    z-index: 20;
-    display: grid;
-    grid-template-columns: auto 200px;
-    width: min(520px, calc(100vw - 24px));
-    gap: 12px;
-    padding: 12px;
-    box-sizing: border-box;
-    overflow: auto;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  }
-
-  .timeline__picker-side {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .timeline__picker-row {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .timeline__picker-key {
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-
-  .timeline__picker-val {
-    font-family: var(--app-font-mono);
-    font-size: 11px;
-    color: var(--app-text);
-  }
-
-  .timeline__picker-pending {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-
-  .timeline__picker-error {
-    font-size: 10px;
-    color: var(--app-danger-text);
-    word-break: break-word;
-  }
-
-  .timeline__picker-times {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
-    gap: 4px;
-    max-height: 180px;
-    overflow-y: auto;
-    padding-right: 2px;
-  }
-
-  .timeline__picker-time {
-    padding: 4px 6px;
-    background: transparent;
-    border: 1px solid var(--app-border);
-    border-radius: 3px;
-    font-family: var(--app-font-mono);
-    font-size: 10px;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-
-  .timeline__picker-time:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-
-  .timeline__picker-time:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .timeline__picker-time--active {
-    color: var(--app-accent);
-    border-color: color-mix(in srgb, var(--app-accent) 40%, transparent);
-    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
-  }
-
-  @media (max-width: 640px) {
-    .timeline__picker {
-      grid-template-columns: minmax(0, 1fr);
-      width: min(320px, calc(100vw - 24px));
-    }
-  }
-
-  /* Bits UI calendar — narrow themed shell. */
-  :global(.cal) {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    color: var(--app-text);
-  }
-
-  :global(.cal__header) {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 0 2px 4px;
-  }
-
-  :global(.cal__nav) {
-    width: 22px;
-    height: 22px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: 1px solid var(--app-border);
-    border-radius: 3px;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-  }
-
-  :global(.cal__nav:hover) {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-
-  :global(.cal__heading) {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text);
-  }
-
-  :global(.cal__grid) {
-    border-collapse: collapse;
-  }
-
-  :global(.cal__row) {
-    display: grid;
-    grid-template-columns: repeat(7, 28px);
-  }
-
-  :global(.cal__weekday) {
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    text-align: center;
-    padding: 4px 0;
-  }
-
-  :global(.cal__cell) {
-    padding: 1px;
-  }
-
-  :global(.cal__day) {
-    width: 26px;
-    height: 26px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 3px;
-    font-family: var(--app-font-mono);
-    font-size: 11px;
-    color: var(--app-text);
-    background: transparent;
-    border: 1px solid transparent;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-
-  :global(.cal__day:hover:not([data-disabled])) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-
-  :global(.cal__day[data-disabled]),
-  :global(.cal__day[data-outside-month]) {
-    color: var(--app-text-faint);
-    cursor: not-allowed;
-  }
-
-  :global(.cal__day[data-selected]) {
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    border-color: color-mix(in srgb, var(--app-accent) 50%, transparent);
-    color: var(--app-accent);
-  }
-
-  :global(.cal__day[data-today]:not([data-selected])) {
-    border-color: var(--app-border-strong);
-    color: var(--app-text-strong);
-  }
-
   /* ── Error / empty ─────────────────────────────────────────── */
   .timeline__error {
     display: flex;
@@ -11340,51 +10535,6 @@
   :global([data-theme="light"]) .btn--ghost:not(:disabled):hover {
     color: var(--app-text-strong);
     background: var(--app-surface-hover);
-  }
-
-  :global([data-theme="light"]) .timeline__jump-trigger {
-    background: var(--app-surface);
-    color: var(--app-text);
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .timeline__jump-trigger:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .timeline__jump-icon {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline__jump-label {
-    color: var(--app-text);
-  }
-
-  :global([data-theme="light"]) .timeline__picker {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-    box-shadow: 0 12px 28px rgba(20, 28, 40, 0.12);
-  }
-  :global([data-theme="light"]) .timeline__picker-key {
-    color: var(--app-text-subtle);
-  }
-  :global([data-theme="light"]) .timeline__picker-val {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline__picker-pending {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline__picker-time {
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline__picker-time:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .timeline__picker-time--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
   }
 
   :global([data-theme="light"]) .timeline__stage-action-trigger {
