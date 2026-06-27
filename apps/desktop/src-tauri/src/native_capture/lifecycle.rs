@@ -290,6 +290,13 @@ impl RecordingLifecycle {
             return false;
         }
 
+        // Never fight a deliberate suspension: a DisplayUnavailable/LowDisk/privacy
+        // suspension or a manual user pause owns the screen state and re-arms
+        // through its own path. Recovering here would race that owner.
+        if self.runtime.capture_suspension.is_some() || self.runtime.user_capture_paused {
+            return false;
+        }
+
         !self.runtime.inactivity.is_screen_paused()
             && self.runtime.recording_file.is_none()
             && !capture_screen::screen_capture_session_is_live(

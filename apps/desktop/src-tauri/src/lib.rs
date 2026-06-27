@@ -374,6 +374,7 @@ pub fn run() {
         .manage(native_capture::MicrophoneControllerPreferencesState::default())
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
         .manage(native_capture::SystemWakeNotifierState::default())
+        .manage(native_capture::DisplayReconfigurationNotifierState::default())
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::PrivacyFilterRefreshState::default())
         .manage(native_capture::RecordingSettingsState::default())
@@ -686,6 +687,7 @@ pub fn run() {
             native_capture::maybe_push_ocr_unavailable_startup_warning(app.handle());
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());
+            native_capture::start_display_reconfiguration_notifier(app.handle().clone());
             native_capture::start_metadata_notifier(app.handle().clone());
             let onboarding_complete = windows::is_onboarding_complete(app.handle());
             let handled_startup_authorization_request =

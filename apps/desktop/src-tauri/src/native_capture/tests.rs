@@ -90,6 +90,48 @@ struct TestDir {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn display_reconfiguration_online_flags_trigger_wake_recovery() {
+    use core_graphics::display::CGDisplayChangeSummaryFlags as F;
+    use super::display_reconfiguration_flags_indicate_display_online as online;
+
+    // End-of-configuration with a display coming (back) online re-arms capture:
+    // the dark/deep-idle wake case where NSWorkspaceDidWake never fires.
+    assert!(online(F::kCGDisplayAddFlag.bits()));
+    assert!(online(F::kCGDisplayEnabledFlag.bits()));
+    assert!(online(F::kCGDisplaySetMainFlag.bits()));
+    assert!(online(F::kCGDisplaySetModeFlag.bits()));
+    assert!(online(
+        (F::kCGDisplayAddFlag | F::kCGDisplaySetModeFlag).bits()
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn display_reconfiguration_begin_and_offline_flags_skip_wake_recovery() {
+    use core_graphics::display::CGDisplayChangeSummaryFlags as F;
+    use super::display_reconfiguration_flags_indicate_display_online as online;
+
+    // The begin-configuration half of the pair must not fire — even when paired
+    // with online flags — so recovery runs once, at end-of-configuration.
+    assert!(!online(F::kCGDisplayBeginConfigurationFlag.bits()));
+    assert!(!online(
+        (F::kCGDisplayBeginConfigurationFlag | F::kCGDisplayAddFlag).bits()
+    ));
+
+    // A display going away (remove/disable only) is not a wake.
+    assert!(!online(F::kCGDisplayRemoveFlag.bits()));
+    assert!(!online(F::kCGDisplayDisabledFlag.bits()));
+    assert!(!online(
+        (F::kCGDisplayRemoveFlag | F::kCGDisplayDisabledFlag).bits()
+    ));
+
+    // A bare move/mirror reconfiguration with no display coming online is a no-op.
+    assert!(!online(F::kCGDisplayMovedFlag.bits()));
+    assert!(!online(0));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn insert_privacy_app_candidate_fills_icon_materialization_fields_from_duplicate() {
     let mut candidates = std::collections::BTreeMap::new();
     let bundle_path = PathBuf::from("/Applications/Example.app");
@@ -1784,6 +1826,43 @@ fn paused_screen_state_is_not_eligible_for_possible_wake_recovery_resync() {
     let mut lifecycle = RecordingLifecycle::default();
     *lifecycle.runtime_mut() = screen_paused_runtime_fixture();
 
+    assert!(!lifecycle.should_attempt_recovery_after_possible_wake());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn suspended_screen_state_is_not_eligible_for_possible_wake_recovery_resync() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    // Sleep-clearing the screen state makes it eligible (the resync entry point).
+    assert!(lifecycle.handle_system_will_sleep());
+    assert!(lifecycle.should_attempt_recovery_after_possible_wake());
+
+    // A live suspension owns the screen and re-arms through its own path; a
+    // possible-wake resync must not fight it.
+    let suspension_error = CaptureErrorResponse {
+        code: "capture_low_disk".to_string(),
+        message: "disk full".to_string(),
+    };
+    lifecycle.runtime_mut().capture_suspension = Some(CaptureSuspension::with_kind(
+        CaptureSuspensionKind::LowDisk,
+        &suspension_error,
+    ));
+    assert!(!lifecycle.should_attempt_recovery_after_possible_wake());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn user_paused_screen_state_is_not_eligible_for_possible_wake_recovery_resync() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    assert!(lifecycle.handle_system_will_sleep());
+    assert!(lifecycle.should_attempt_recovery_after_possible_wake());
+
+    // A manual pause must survive a possible-wake resync.
+    lifecycle.runtime_mut().user_capture_paused = true;
     assert!(!lifecycle.should_attempt_recovery_after_possible_wake());
 }
 
