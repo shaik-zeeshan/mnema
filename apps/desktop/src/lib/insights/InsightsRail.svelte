@@ -20,6 +20,11 @@
   import RailHistory from "$lib/insights/RailHistory.svelte";
   import RailFooter from "$lib/insights/RailFooter.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
+  import type { IconComponent } from "$lib/settings/section-icons";
+  import IconOverview from "~icons/lucide/layout-dashboard";
+  import IconSubjects from "~icons/lucide/lightbulb";
+  import IconContext from "~icons/lucide/notebook-text";
+  import IconCollapse from "~icons/lucide/chevrons-left";
 
   type InsightsTab = "overview" | "subjects" | "context" | "chat";
 
@@ -55,10 +60,14 @@
 
   // The nav is the three persistent sub-surfaces only — Chat is reached via
   // new-chat / a history row, never a nav item.
-  const NAV: { id: Exclude<InsightsTab, "chat">; label: string }[] = [
-    { id: "overview", label: "Overview" },
-    { id: "subjects", label: "Subjects" },
-    { id: "context", label: "Context" },
+  const NAV: {
+    id: Exclude<InsightsTab, "chat">;
+    label: string;
+    icon: IconComponent;
+  }[] = [
+    { id: "overview", label: "Overview", icon: IconOverview },
+    { id: "subjects", label: "Subjects", icon: IconSubjects },
+    { id: "context", label: "Context", icon: IconContext },
   ];
 
   // "New chat" carries the Chat-group active treatment ONLY when the open thread
@@ -76,26 +85,29 @@
 
 {#if !collapsed}
 <aside class="sidebar" aria-label="Insights" style="width: {width}px;">
-  <!-- A quiet collapse chevron, floated into the empty top-right gutter so it
-       never claims a full header band of dead space above the nav. Hides the
-       rail to give the active sub-surface full width; the shell shows a matching
-       expand button. -->
-  <button
-    type="button"
-    class="rail-collapse"
-    aria-label="Collapse sidebar"
-    aria-expanded="true"
-    title="Collapse sidebar"
-    onclick={onToggleCollapse}
-  >
-    <span aria-hidden="true">«</span>
-  </button>
-
   <div class="sidebar-scroll">
-    <!-- primary nav — plain title-case text rows. Active = accent label + tint
-         + inset bar. -->
+    <!-- A quiet collapse chevron in a compact right-aligned header row. It owns
+         its own band so it never sits on top of the (full-width) Overview nav
+         button. Hides the rail to give the active sub-surface full width; the
+         shell shows a matching expand button. -->
+    <div class="rail-header">
+      <button
+        type="button"
+        class="rail-collapse"
+        aria-label="Collapse sidebar"
+        aria-expanded="true"
+        title="Collapse sidebar"
+        onclick={onToggleCollapse}
+      >
+        <IconCollapse aria-hidden="true" />
+      </button>
+    </div>
+
+    <!-- primary nav — title-case text rows with a leading glyph. Active =
+         accent label + tint + inset bar. -->
     <nav class="rail-nav" aria-label="Insights sub-surface">
       {#each NAV as item (item.id)}
+        {@const Icon = item.icon}
         <button
           type="button"
           class="rail-nav-item"
@@ -103,6 +115,7 @@
           aria-current={view === item.id ? "page" : undefined}
           onclick={() => onOpenTab(item.id)}
         >
+          <Icon aria-hidden="true" />
           {item.label}
         </button>
       {/each}
@@ -154,18 +167,22 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    padding: 16px 16px 0;
+    padding: 10px 16px 0;
   }
 
-  /* Collapse chevron — floated into the empty top-right gutter (the nav labels
-     are short + left-aligned, so the right half of the first row is dead space).
-     Floating it keeps the nav starting at the same top padding as the mockup
-     instead of pushing everything down behind a header band. */
+  /* Compact header band — holds only the collapse chevron, right-aligned. Giving
+     it its own row keeps the chevron off the (full-width) Overview nav button it
+     used to overlap when it was absolutely positioned. */
+  .rail-header {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    height: 24px;
+    margin-bottom: 4px;
+  }
+
+  /* Collapse chevron. */
   .rail-collapse {
-    position: absolute;
-    top: 12px;
-    right: 10px;
-    z-index: 2;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -182,6 +199,10 @@
     transition:
       color 0.12s ease,
       background 0.12s ease;
+  }
+  .rail-collapse :global(svg) {
+    width: 16px;
+    height: 16px;
   }
   .rail-collapse:hover {
     color: var(--app-accent);
@@ -217,6 +238,17 @@
     padding: 0 8px;
     text-align: left;
     cursor: pointer;
+  }
+  /* Leading glyph — inherits the row's color (muted → strong on hover → accent
+     when active) via currentColor, and never shrinks below its 16px box. */
+  .rail-nav-item :global(svg) {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    opacity: 0.85;
+  }
+  .rail-nav-item.active :global(svg) {
+    opacity: 1;
   }
   .rail-nav-item:hover {
     color: var(--app-text-strong);
