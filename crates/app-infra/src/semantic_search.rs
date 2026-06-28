@@ -167,7 +167,7 @@ impl SemanticSearchStore {
             )));
         }
         let blob = vector_to_le_bytes(vector);
-        let mut tx = self.db.write().begin().await?;
+        let mut tx = self.db.begin_write().await?;
         // Drop any existing vector for this anchor first — vec0 0.1.9 rejects a
         // re-insert of the same rowid with a UNIQUE constraint error rather than
         // replacing, so the upsert must DELETE then INSERT. Harmless when no prior
@@ -309,7 +309,7 @@ impl SemanticSearchStore {
     /// could land in the new index undetected — that case requires a stronger
     /// model-identity/epoch guard stamped here, not just the dimension width.
     pub async fn recreate_vectors_table(&self, dimension: usize) -> Result<u64> {
-        let mut tx = self.db.write().begin().await?;
+        let mut tx = self.db.begin_write().await?;
         // Count existing vectors only when the table is actually present: this is
         // also reached from `reconcile_vectors_table`'s "absent → rebuild" self-heal
         // path, where the table is missing — an unguarded `COUNT(*)` would raise

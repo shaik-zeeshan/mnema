@@ -47,7 +47,7 @@ Brokered Reader.
   `max_connections(1)` Writer Connection and reads through a separate multi-connection Reader
   Pool. One writer connection means there is never more than one write transaction in flight,
   so the upgrade deadlock is *structurally* impossible, while WAL keeps Owner reads concurrent
-  with the Owner write.
+  with the Owner write. **(Superseded — see Amendment below.)**
 
 - **Pragma tuning.** `synchronous=NORMAL` on the Writer Connection (WAL-safe; only at-risk
   window is the last transaction on an OS/power crash). Keep WAL and `busy_timeout` on every
@@ -88,5 +88,31 @@ Brokered Reader.
 - **Perf pragmas** (`mmap_size`, `cache_size`, `temp_store=MEMORY`) are out of scope here; they
   are throughput levers, not locking fixes.
 
+## Amendment — single Writer Connection replaced by a Writer Pool with `BEGIN IMMEDIATE`
+
+The original decision used a `max_connections(1)` **Writer Connection** to make the writer-writer
+upgrade deadlock structurally impossible, and explicitly rejected `BEGIN IMMEDIATE`. In practice the
+single connection moved the failure rather than removing it: SQLite already serializes writers at the
+lock level, so the one pooled connection became a throughput bottleneck under capture load. Every write
+in the app (capture frames, frame-batch upserts, job claims, processing results, user-context,
+conversation, semantic backfill) funnelled through one connection, so independent writes queued on the
+pool's `acquire` instead of on the write lock. The queue saturated and surfaced as
+`pool timed out while waiting for an open connection` — reproducibly when **stopping a recording**
+(the stop path's `close frame batches` / `complete capture sessions` writes waited behind the live
+capture pipeline and timed out after the 30 s `acquire_timeout`).
+
+**Revised decision:** the Owner uses a **multi-connection Writer Pool** (`max_connections(4)`) and
+begins every write transaction with `BEGIN IMMEDIATE` (`CaptureDb::begin_write` / `Database::begin_write`).
+`BEGIN IMMEDIATE` takes the write (RESERVED) lock at `begin` rather than starting deferred and upgrading
+read→write — the upgrade was the deadlock — so the second writer waits on `busy_timeout` (and then
+proceeds) instead of getting an instant `SQLITE_BUSY`. This keeps the deadlock fix while removing the
+single-connection bottleneck. Single auto-commit write statements (`execute(db.write())`) need no
+special begin. The Reader Pool, `query_only` Brokered Readers, `synchronous=NORMAL`, `busy_timeout`,
+and `journal_size_limit` are unchanged.
+
+This means the previously-rejected "**Force `BEGIN IMMEDIATE`**" option is now adopted — combined with
+the read/write pool split — and the "**single `max_connections(1)`**" reasoning is superseded. The
+regression is guarded by `concurrent_read_modify_write_transactions_never_lock_or_timeout` in `db.rs`.
+
 See `crates/app-infra/CONTEXT.md` for the resolved terms: **Capture Index Owner**,
-**Writer Connection**, **Reader Pool**, **Brokered Reader**.
+**Writer Pool**, **Reader Pool**, **Brokered Reader**.

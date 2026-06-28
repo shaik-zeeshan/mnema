@@ -274,7 +274,7 @@ impl SearchStore {
     }
 
     pub(crate) async fn backfill_missing_projections(&self) -> Result<()> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let rows = sqlx::query(
             "SELECT processing_results.id, processing_results.job_id, \
                     processing_results.subject_type, processing_results.subject_id, \

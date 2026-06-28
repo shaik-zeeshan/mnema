@@ -135,7 +135,7 @@ impl FrameBatchStore {
         session_id: &str,
         captured_at: &str,
     ) -> Result<FrameBatch> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let batch = self
             .upsert_open_batch_for_frame_in_transaction(&mut transaction, session_id, captured_at)
             .await?;
@@ -188,7 +188,7 @@ impl FrameBatchStore {
         batch_id: i64,
         captured_at: &str,
     ) -> Result<FrameBatch> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let batch = self
             .attach_frame_to_batch_in_transaction(&mut transaction, frame_id, batch_id, captured_at)
@@ -456,7 +456,7 @@ impl FrameBatchStore {
         session_id: &str,
         active_batch_id: Option<i64>,
     ) -> Result<Vec<FrameBatch>> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let closed = self
             .close_completed_batches_for_session_in_transaction(
                 &mut transaction,
@@ -473,7 +473,7 @@ impl FrameBatchStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<FrameBatch>> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let closed = self
             .close_and_schedule_all_batches_for_session_in_transaction(&mut transaction, session_id)
             .await?;
@@ -537,7 +537,7 @@ impl FrameBatchStore {
         &self,
         batch_id: i64,
     ) -> Result<Option<BackgroundJob>> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let job = self
             .enqueue_finalize_job_if_needed_in_transaction(&mut transaction, batch_id)
             .await?;
@@ -597,7 +597,7 @@ impl FrameBatchStore {
 
     pub async fn claim_next_finalize_job(&self) -> Result<Option<BackgroundJob>> {
         loop {
-            let mut transaction = self.db.write().begin().await?;
+            let mut transaction = self.db.begin_write().await?;
             let row = sqlx::query(
                 "SELECT background_jobs.id FROM background_jobs \
                  INNER JOIN frame_batches ON frame_batches.finalize_job_id = background_jobs.id \

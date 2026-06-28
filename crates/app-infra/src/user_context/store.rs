@@ -229,7 +229,7 @@ impl UserContextStore {
     /// `activity_id`/`subject_type`/`subject_id`) is ignored.
     pub async fn insert_activity_with_evidence(&self, draft: NewActivity) -> Result<i64> {
         let created_at_ms = now_ms();
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let activity_id = sqlx::query(
             "INSERT INTO user_context_activities \
@@ -966,7 +966,7 @@ impl UserContextStore {
         evidence: Vec<NewConclusionEvidence>,
     ) -> Result<i64> {
         let now = now_ms();
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         // Read the existing row's confidence + decay anchor + pin inside the txn so
         // the ratchet is computed against a consistent snapshot. Absent → formation.
@@ -1034,7 +1034,7 @@ impl UserContextStore {
         evidence: Vec<NewConclusionEvidence>,
     ) -> Result<()> {
         let created_at_ms = now_ms();
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         sqlx::query("DELETE FROM user_context_conclusion_evidence WHERE conclusion_id = ?1")
             .bind(conclusion_id)
@@ -1437,7 +1437,7 @@ impl UserContextStore {
     /// rows via FK.
     pub async fn dismiss_conclusion(&self, id: i64) -> Result<()> {
         let now = now_ms();
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         // Load the Conclusion's subject/statement; bail (no dismissal) if absent.
         let conclusion = sqlx::query(
@@ -1789,7 +1789,7 @@ impl UserContextStore {
             return Ok(UserContextCascadeSummary::default());
         }
 
-        let mut tx = self.db.write().begin().await?;
+        let mut tx = self.db.begin_write().await?;
         let summary =
             cascade_derived_for_deleted_subjects_in(&mut tx, frame_ids, audio_ids).await?;
         tx.commit().await?;
@@ -1804,7 +1804,7 @@ impl UserContextStore {
     /// here. Deletes children before parents to stay correct regardless of FK
     /// enforcement.
     pub async fn wipe_all(&self) -> Result<()> {
-        let mut tx = self.db.write().begin().await?;
+        let mut tx = self.db.begin_write().await?;
         for table in [
             // Children first (leaf evidence / history), then parents, then the
             // FK-free dismissal + derivation-run + authored ledgers.

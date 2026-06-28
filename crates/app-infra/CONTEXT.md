@@ -84,19 +84,19 @@ The platform-owned secret storage boundary that holds **Encrypted Capture Index*
 _Avoid_: key file, save-directory secret, hard-coded key
 
 **Capture Index Owner**:
-The single process — the desktop app — that is allowed to write the **Encrypted Capture Index** and to run migrations against it. Inside the owner, all writes funnel through one **Writer Connection** while reads use a separate **Reader Pool**, so there is never more than one write transaction in flight and SQLite's single-writer rule is satisfied structurally rather than by hope.
+The single process — the desktop app — that is allowed to write the **Encrypted Capture Index** and to run migrations against it. Inside the owner, all writes go through the **Writer Pool** while reads use a separate **Reader Pool**, so SQLite's single-writer rule is satisfied with `BEGIN IMMEDIATE` (not by serializing every write onto one connection).
 _Avoid_: primary connection, main pool, db owner
 
-**Writer Connection**:
-The single SQLite connection (a `max_connections(1)` writer pool) through which the **Capture Index Owner** performs every write. One writer connection means two in-process writers can never deadlock on a lock upgrade, so capture, OCR-completion projection, job updates, frame-batch finalize, and **Semantic Index Backfill** writes serialize cleanly instead of racing.
-_Avoid_: write pool, exclusive connection
+**Writer Pool**:
+The multi-connection pool through which the **Capture Index Owner** performs every write. Write transactions begin with `BEGIN IMMEDIATE` (`CaptureDb::begin_write`), which takes SQLite's write lock up front instead of starting deferred and upgrading read→write — the upgrade is what produced the instant `SQLITE_BUSY` deadlock between two writers. With IMMEDIATE the second writer waits on `busy_timeout` and then proceeds, so several connections can be in flight (capture, OCR-completion projection, job updates, frame-batch finalize, **Semantic Index Backfill**) without deadlocking. A single-connection writer was tried first but starved under capture load — independent writes queued on the one pooled connection and surfaced as `pool timed out while waiting for an open connection` (see ADR 0041 amendment).
+_Avoid_: writer connection, exclusive connection, single writer
 
 **Reader Pool**:
-The multi-connection pool the **Capture Index Owner** uses for reads (UI, search, timeline). In WAL mode these run concurrently with the **Writer Connection**, so a long read never blocks a write and vice versa.
+The multi-connection pool the **Capture Index Owner** uses for reads (UI, search, timeline). In WAL mode these run concurrently with the **Writer Pool**, so a long read never blocks a write and vice versa.
 _Avoid_: query pool, shared pool
 
 **Brokered Reader**:
-A read-only handle onto the **Encrypted Capture Index** used by brokered consumers — the `mnema` CLI process and the in-app Ask AI agent. A **Brokered Reader** opens the database read-write at the OS level (so it can still open and recover the file after an owner crash) but is made logically read-only with `PRAGMA query_only=ON`, and it **never runs the migrator and never sets `journal_mode`**. Because it only ever takes read locks, it never collides with the **Capture Index Owner**'s **Writer Connection**.
+A read-only handle onto the **Encrypted Capture Index** used by brokered consumers — the `mnema` CLI process and the in-app Ask AI agent. A **Brokered Reader** opens the database read-write at the OS level (so it can still open and recover the file after an owner crash) but is made logically read-only with `PRAGMA query_only=ON`, and it **never runs the migrator and never sets `journal_mode`**. Because it only ever takes read locks, it never collides with the **Capture Index Owner**'s **Writer Pool**.
 _Avoid_: read-only pool, readonly handle, broker db connection
 
 **User Context Store**:
@@ -301,7 +301,7 @@ _Avoid_: open-in-browser tool, agent URL navigation, raw URL field, broker open,
 - Exactly one **Capture Index Owner** (the desktop app) writes and migrates the **Encrypted Capture Index**; every other opener is a **Brokered Reader**. This is the rule that keeps "database is locked" errors structurally impossible rather than merely rare.
 - A **Brokered Reader** never runs the migrator: the **Capture Index Owner** is the only opener that applies migrations, and a reader opening a not-yet-migrated index reads what is there rather than mutating schema it does not own. (Before this rule, `initialize_read_only` shared the owner's open path and ran `MIGRATOR.run` + `PRAGMA journal_mode=WAL` on every `mnema` CLI invocation and every Ask AI turn — write/lock operations against the live owner — which was a primary lock-contention source.)
 - A **Brokered Reader** opens a read-write OS handle guarded by `PRAGMA query_only=ON` rather than a strict `SQLITE_OPEN_READONLY` handle, because a brokered read must still succeed when the desktop app is closed after a crash (dirty `-wal`), where a strict read-only handle cannot recover the WAL sidecars and fails to open. `mnema` data commands run against an on-disk grant and do not require the app to be running.
-- Inside the **Capture Index Owner**, writes use a single **Writer Connection** and reads use a separate **Reader Pool**; this split (not `BEGIN IMMEDIATE` on a shared multi-writer pool) is how in-process writer-writer lock-upgrade deadlocks are prevented while preserving WAL read/write concurrency.
+- Inside the **Capture Index Owner**, writes use the **Writer Pool** and reads use a separate **Reader Pool** (preserving WAL read/write concurrency). Writer-writer lock-upgrade deadlocks are prevented by beginning every write transaction with `BEGIN IMMEDIATE` (`CaptureDb::begin_write`), not by limiting the writer to one connection — a single writer connection was tried first but starved under capture load and surfaced as `pool timed out` on stop (see ADR 0041 amendment).
 - An **Encrypted Capture Index** may expose non-secret index identity metadata through a readable header or sidecar so the app and broker can locate the corresponding **Capture Index Key Store** entry.
 - If an **Encrypted Capture Index** key is missing or inaccessible, Mnema treats the index as undecryptable unless an explicit future backup/export key flow exists; fallback keys must not live in `saveDirectory`.
 - V1 does not change default browser URL metadata settings.

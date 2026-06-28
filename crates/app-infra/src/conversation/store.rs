@@ -103,7 +103,7 @@ impl ConversationStore {
             None => None,
         };
 
-        let mut tx = self.db.write().begin().await?;
+        let mut tx = self.db.begin_write().await?;
 
         // Ensure the conversation exists (and bump its activity stamps). Inlined
         // from `upsert_conversation` so it shares this transaction; the conflict
@@ -410,7 +410,7 @@ impl ConversationStore {
     /// delete every turn then every conversation (children first so it is
     /// correct regardless of FK enforcement).
     pub async fn wipe_all(&self) -> Result<()> {
-        let mut tx = self.db.write().begin().await?;
+        let mut tx = self.db.begin_write().await?;
         sqlx::query("DELETE FROM conversation_turns")
             .execute(&mut *tx)
             .await?;

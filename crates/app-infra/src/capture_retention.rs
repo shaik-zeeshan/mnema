@@ -523,7 +523,7 @@ impl CaptureRetentionStore {
             .filter(|path| path.capture_segment_id.is_some() && path.path_kind == "media_file")
             .map(|path| path.path.clone())
             .collect::<Vec<_>>();
-        let mut tx = self.db.write().begin().await?;
+        let mut tx = self.db.begin_write().await?;
         let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", &segment_ids).await?;
         frame_ids.extend(orphan_frame_ids);
         let mut audio_ids =

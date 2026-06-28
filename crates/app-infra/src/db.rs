@@ -48,12 +48,22 @@ fn register_vec0_auto_extension() {
     });
 }
 
-/// A handle to the Encrypted Capture Index that carries both the single
-/// **Writer Connection** (`write`) and the multi-connection **Reader Pool**
-/// (`read`). Cheap to clone (the inner `SqlitePool`s are `Arc`-backed). Stores
-/// hold this instead of a bare `SqlitePool` and pick `write()`/`read()` per
-/// method. For a **Brokered Reader** both pools are `query_only` handles, so a
-/// write routed to `write()` correctly fails — that is the read-only guarantee.
+/// The transaction-begin statement used for every write transaction. `BEGIN
+/// IMMEDIATE` takes SQLite's write (RESERVED) lock up front rather than starting
+/// deferred and upgrading read→write later. Upgrading is what produced the
+/// instant `SQLITE_BUSY` deadlock between two writers; with IMMEDIATE the second
+/// writer simply waits on `busy_timeout` instead, so the **Writer Pool** can hold
+/// several connections without reintroducing the deadlock.
+const BEGIN_IMMEDIATE: &str = "BEGIN IMMEDIATE";
+
+/// A handle to the Encrypted Capture Index that carries both the **Writer Pool**
+/// (`write`) and the **Reader Pool** (`read`). Cheap to clone (the inner
+/// `SqlitePool`s are `Arc`-backed). Stores hold this instead of a bare
+/// `SqlitePool` and pick `write()`/`read()` per method. Write transactions must
+/// begin via [`CaptureDb::begin_write`] (`BEGIN IMMEDIATE`); plain single-statement
+/// writes can use `write()` directly. For a **Brokered Reader** both pools are
+/// `query_only` handles, so a write routed to `write()` correctly fails — that is
+/// the read-only guarantee.
 #[derive(Clone)]
 pub struct CaptureDb {
     write: SqlitePool,
@@ -61,13 +71,23 @@ pub struct CaptureDb {
 }
 
 impl CaptureDb {
-    /// Owner-internal write path: the single Writer Connection.
+    /// Owner-internal write path: the Writer Pool. Use for single auto-commit
+    /// write statements; for multi-statement / read-modify-write transactions use
+    /// [`Self::begin_write`].
     pub fn write(&self) -> &SqlitePool {
         &self.write
     }
-    /// Read path: the Reader Pool (concurrent with the writer under WAL).
+    /// Read path: the Reader Pool (concurrent with writers under WAL).
     pub fn read(&self) -> &SqlitePool {
         &self.read
+    }
+    /// Begin a write transaction with `BEGIN IMMEDIATE` (see [`BEGIN_IMMEDIATE`]).
+    /// Every explicit writer transaction must start here so the writer-writer
+    /// upgrade deadlock cannot occur.
+    pub async fn begin_write(
+        &self,
+    ) -> std::result::Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
+        self.write.begin_with(BEGIN_IMMEDIATE).await
     }
     /// Test/back-compat helper: use one pool for both roles. ONLY for tests.
     pub fn single(pool: SqlitePool) -> Self {
@@ -94,9 +114,9 @@ pub struct Database {
 }
 
 impl Database {
-    /// Owner path: sole writer and sole migrator. Builds the single Writer
-    /// Connection pool and the multi-connection Reader Pool, then runs the
-    /// migrator on the writer only.
+    /// Owner path: sole writer and sole migrator. Builds the Writer Pool and the
+    /// Reader Pool, then runs the migrator on the writer only. Write transactions
+    /// use `BEGIN IMMEDIATE` (see [`CaptureDb::begin_write`]).
     pub async fn initialize(base_dir: &Path) -> Result<Self> {
         let database_path = prepare_database_path(base_dir)?;
         let encryption =
@@ -166,6 +186,14 @@ impl Database {
         self.write_pool()
     }
 
+    /// Begin a write transaction with `BEGIN IMMEDIATE` on the Writer Pool. Use
+    /// for every explicit writer transaction so the upgrade deadlock cannot occur.
+    pub async fn begin_write(
+        &self,
+    ) -> std::result::Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
+        self.write_pool.begin_with(BEGIN_IMMEDIATE).await
+    }
+
     pub fn write_pool(&self) -> &SqlitePool {
         &self.write_pool
     }
@@ -213,7 +241,14 @@ struct PoolConfig {
 impl PoolConfig {
     fn owner_writer() -> Self {
         Self {
-            max_connections: 1,
+            // SQLite still serializes writers at the lock level, but several
+            // connections let independent write transactions queue on the write
+            // lock (fairly, via `busy_timeout`) instead of starving on a single
+            // pooled connection's acquire — which a `max_connections(1)` writer
+            // turned into 30s `pool timed out` errors under capture load. The
+            // upgrade deadlock is prevented by `BEGIN IMMEDIATE`, not by a single
+            // connection.
+            max_connections: 4,
             busy_timeout: Duration::from_secs(10),
             set_wal: true,
             synchronous: Some(SqliteSynchronous::Normal),
@@ -811,7 +846,7 @@ mod tests {
 
             let mut handles = Vec::new();
 
-            // Writers — all funnel through the single Writer Connection.
+            // Writers — single auto-commit inserts through the Writer Pool.
             for writer in 0..3 {
                 let write_pool = owner.write_pool().clone();
                 handles.push(tokio::spawn(async move {
@@ -889,6 +924,86 @@ mod tests {
                 all_errors.is_empty(),
                 "no concurrent operation should error, got: {all_errors:?}"
             );
+        });
+    }
+
+    /// Concurrent read-modify-write TRANSACTIONS do not deadlock or time out.
+    ///
+    /// This is the regression guard for the writer-pool design (ADR 0041): each
+    /// task opens a write transaction that first reads then writes. With a
+    /// multi-connection writer pool and *deferred* (`BEGIN`) transactions this is
+    /// exactly the read→write upgrade that returns an instant `SQLITE_BUSY`
+    /// deadlock; with a single-connection writer pool it instead starves on the
+    /// pool `acquire` and surfaces as `pool timed out while waiting for an open
+    /// connection`. `begin_write` (`BEGIN IMMEDIATE`) on a multi-connection writer
+    /// pool resolves both — the second writer waits on `busy_timeout` and then
+    /// proceeds, so every transaction must commit cleanly.
+    #[test]
+    fn concurrent_read_modify_write_transactions_never_lock_or_timeout() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime should build");
+
+        runtime.block_on(async {
+            const TASKS: usize = 6;
+            const ITERS: usize = 60;
+
+            let dir = unique_test_dir("rmw-transactions");
+            let owner = Database::initialize(&dir).await.expect("owner init");
+            let handle = owner.handle();
+
+            let mut tasks = Vec::new();
+            for task in 0..TASKS {
+                let db = handle.clone();
+                tasks.push(tokio::spawn(async move {
+                    let mut errors = Vec::new();
+                    for i in 0..ITERS {
+                        let attempt = async {
+                            let mut tx = db.begin_write().await?;
+                            // Read inside the transaction...
+                            let _count: i64 =
+                                sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                                    .fetch_one(&mut *tx)
+                                    .await?;
+                            // ...then write inside the same transaction (the
+                            // read→write that deadlocks under deferred begins).
+                            sqlx::query(
+                                "INSERT INTO frames (session_id, file_path, captured_at) \
+                                 VALUES (?, ?, '2026-06-17T00:00:00Z')",
+                            )
+                            .bind(format!("rmw-{task}"))
+                            .bind(format!("/frames/rmw-{task}-{i}.jpg"))
+                            .execute(&mut *tx)
+                            .await?;
+                            tx.commit().await?;
+                            Ok::<(), sqlx::Error>(())
+                        };
+                        if let Err(error) = attempt.await {
+                            errors.push(error.to_string());
+                        }
+                    }
+                    errors
+                }));
+            }
+
+            let mut all_errors = Vec::new();
+            for task in tasks {
+                all_errors.extend(task.await.expect("task should join"));
+            }
+            assert!(
+                all_errors.is_empty(),
+                "concurrent read-modify-write transactions should never lock or \
+                 time out, got: {all_errors:?}"
+            );
+
+            // Every transaction committed: TASKS * ITERS rows landed.
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                .fetch_one(owner.read_pool())
+                .await
+                .expect("count frames");
+            assert_eq!(total, (TASKS * ITERS) as i64, "all inserts should commit");
         });
     }
 

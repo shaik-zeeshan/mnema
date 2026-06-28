@@ -802,7 +802,7 @@ impl AppInfra {
         let should_enqueue_speaker = speaker_admission.should_enqueue_for(segment);
         let should_enqueue_system_audio_speech =
             system_audio_speech_admission.should_enqueue_for(segment);
-        let mut transaction = self.pool().begin().await?;
+        let mut transaction = self.database.begin_write().await?;
         let mut segment = self
             .audio_segments
             .upsert_in_transaction(&mut transaction, segment)
@@ -959,7 +959,7 @@ impl AppInfra {
             return Ok(0);
         }
 
-        let mut transaction = self.pool().begin().await?;
+        let mut transaction = self.database.begin_write().await?;
         let segments = self
             .audio_segments
             .list_microphone_without_audio_transcription_job_in_transaction(&mut transaction)
@@ -1003,7 +1003,7 @@ impl AppInfra {
             return Ok(0);
         }
 
-        let mut transaction = self.pool().begin().await?;
+        let mut transaction = self.database.begin_write().await?;
         let segments = self
             .audio_segments
             .list_microphone_without_speaker_analysis_job_in_transaction(&mut transaction)
@@ -1072,7 +1072,7 @@ impl AppInfra {
             })?
         };
 
-        let mut transaction = self.pool().begin().await?;
+        let mut transaction = self.database.begin_write().await?;
         let subject = ProcessingSubject::audio_segment(segment.id);
         let existing_job = self
             .processing
@@ -1166,7 +1166,7 @@ impl AppInfra {
             })?
         };
 
-        let mut transaction = self.pool().begin().await?;
+        let mut transaction = self.database.begin_write().await?;
         let subject = ProcessingSubject::audio_segment(segment.id);
         let existing_job = self
             .processing
@@ -1259,7 +1259,7 @@ impl AppInfra {
             })?
         };
 
-        let mut transaction = self.pool().begin().await?;
+        let mut transaction = self.database.begin_write().await?;
         let subject = ProcessingSubject::audio_segment(segment.id);
         let existing_job = self
             .processing

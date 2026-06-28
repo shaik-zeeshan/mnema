@@ -213,11 +213,11 @@ impl ProcessingStore {
     }
 
     pub(crate) async fn begin_transaction(&self) -> Result<Transaction<'_, Sqlite>> {
-        Ok(self.db.write().begin().await?)
+        Ok(self.db.begin_write().await?)
     }
 
     pub async fn insert_frame(&self, frame: &NewFrame) -> Result<Frame> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let frame_id = insert_frame_record_in_transaction(&mut transaction, frame).await?;
         let frame = get_frame_optional(&mut *transaction, frame_id)
             .await?
@@ -1037,7 +1037,7 @@ impl ProcessingStore {
         model_keys: &BTreeSet<String>,
         lock_token: &str,
     ) -> Result<ProcessingModelCleanupLock> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let mut acquired_model_keys = BTreeSet::new();
 
         for model_key in model_keys {
@@ -1166,7 +1166,7 @@ impl ProcessingStore {
             speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID,
         );
         loop {
-            let mut transaction = self.db.write().begin().await?;
+            let mut transaction = self.db.begin_write().await?;
             let row = match (processor, excluded_processors.is_empty()) {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
@@ -1337,7 +1337,7 @@ impl ProcessingStore {
     }
 
     pub async fn claim_queued_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let Some(job) = get_processing_job_optional(&mut *transaction, job_id).await? else {
             transaction.commit().await?;
             return Ok(None);
@@ -1380,7 +1380,7 @@ impl ProcessingStore {
     }
 
     pub async fn mark_job_running(&self, job_id: i64) -> Result<ProcessingJob> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1447,7 +1447,7 @@ impl ProcessingStore {
     /// `failed` as a crash-loop backstop. Safe to run only when nothing is executing: at startup
     /// (workers spawn afterward) and at graceful shutdown (after workers are aborted and awaited).
     pub async fn reconcile_orphaned_running_jobs(&self) -> Result<ProcessingJobReclamationSummary> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         // Requeue orphaned running jobs that are still under the ceiling. `next_attempt_at` is
         // cleared so they are immediately eligible (abandonment is not a failure to back off from),
@@ -1559,7 +1559,7 @@ impl ProcessingStore {
         job_id: i64,
         error_text: Option<&str>,
     ) -> Result<ProcessingJob> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1621,7 +1621,7 @@ impl ProcessingStore {
         &self,
         job_id: i64,
     ) -> Result<Option<ProcessingJob>> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1681,7 +1681,7 @@ impl ProcessingStore {
         job_id: i64,
         result: &ProcessingResultDraft,
     ) -> Result<ProcessingJobCompletion> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -2049,7 +2049,7 @@ impl ProcessingStore {
         person_id: i64,
         add_embedding: bool,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         if cluster
             .person_id
@@ -2097,7 +2097,7 @@ impl ProcessingStore {
         &self,
         cluster_id: i64,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         persist_speaker_recognition_rejection_for_cluster(
             &mut transaction,
@@ -2137,7 +2137,7 @@ impl ProcessingStore {
         &self,
         cluster_id: i64,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         persist_speaker_recognition_rejection_for_cluster(
             &mut transaction,
@@ -2169,7 +2169,7 @@ impl ProcessingStore {
                 "cannot merge a speaker cluster into itself".to_string(),
             ));
         }
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let source = get_speaker_cluster_row(&mut *transaction, source_cluster_id).await?;
         let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
         if source.session_id != target.session_id {
@@ -2205,7 +2205,7 @@ impl ProcessingStore {
         turn_id: i64,
         target_cluster_id: i64,
     ) -> Result<SpeakerTurnView> {
-        let mut transaction = self.db.write().begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let turn = fetch_required_speaker_turn(&mut *transaction, turn_id).await?;
         let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
         if turn.session_id != target.session_id {
