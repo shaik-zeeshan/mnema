@@ -2698,14 +2698,21 @@ fn finish_recording_settings_update(
 
     if previous_settings.ocr.enabled && !settings.ocr.enabled {
         if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
-            match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
-                Ok(failed_count) => debug_log::log_info(format!(
-                    "marked queued OCR jobs failed because OCR was disabled (count={failed_count})"
-                )),
-                Err(error) => debug_log::log_error(format!(
-                    "failed to mark queued OCR jobs failed after disabling OCR: {error}"
-                )),
-            }
+            // Fire-and-forget off the main thread: this only marks already-queued
+            // OCR jobs failed now that OCR is disabled (cleanup whose result is
+            // merely logged). Settings commands run on the main thread, so we must
+            // not block the UI awaiting this capture-index write.
+            let infra = std::sync::Arc::clone(&*infra);
+            tauri::async_runtime::spawn(async move {
+                match infra.fail_queued_ocr_jobs_because_disabled().await {
+                    Ok(failed_count) => debug_log::log_info(format!(
+                        "marked queued OCR jobs failed because OCR was disabled (count={failed_count})"
+                    )),
+                    Err(error) => debug_log::log_error(format!(
+                        "failed to mark queued OCR jobs failed after disabling OCR: {error}"
+                    )),
+                }
+            });
         } else {
             debug_log::log_warn(
                 "app infrastructure state unavailable while disabling OCR; queued OCR jobs were not updated",
@@ -3230,11 +3237,24 @@ fn stop_native_capture_with_state(
 }
 
 #[tauri::command]
-pub fn stop_native_capture(
-    state: tauri::State<'_, NativeCaptureState>,
+pub async fn stop_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let response = stop_native_capture_with_state(state, &app_handle)?;
+    // Stopping does a synchronous capture-index write (marking sessions
+    // completed). This command runs on the main thread, so run the stop on the
+    // blocking pool and await it — keeping the UI responsive while preserving
+    // ordering (the completion write finishes before we emit the change event).
+    // The tray/relaunch/shortcut entry points keep calling the sync helper
+    // directly so they still complete in-line.
+    let handle = app_handle.clone();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        stop_native_capture_with_state(handle.state::<NativeCaptureState>(), &handle)
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "stop_native_capture_join".to_string(),
+        message: format!("stop native capture task failed: {error}"),
+    })??;
     emit_native_capture_session_changed(&app_handle, &response.session);
     crate::status_bar::refresh(&app_handle);
     Ok(response)
