@@ -83,6 +83,22 @@ _Avoid_: encrypted capture store, media encryption, secure erase
 The platform-owned secret storage boundary that holds **Encrypted Capture Index** keys outside the recording save directory.
 _Avoid_: key file, save-directory secret, hard-coded key
 
+**Capture Index Owner**:
+The single process — the desktop app — that is allowed to write the **Encrypted Capture Index** and to run migrations against it. Inside the owner, all writes funnel through one **Writer Connection** while reads use a separate **Reader Pool**, so there is never more than one write transaction in flight and SQLite's single-writer rule is satisfied structurally rather than by hope.
+_Avoid_: primary connection, main pool, db owner
+
+**Writer Connection**:
+The single SQLite connection (a `max_connections(1)` writer pool) through which the **Capture Index Owner** performs every write. One writer connection means two in-process writers can never deadlock on a lock upgrade, so capture, OCR-completion projection, job updates, frame-batch finalize, and **Semantic Index Backfill** writes serialize cleanly instead of racing.
+_Avoid_: write pool, exclusive connection
+
+**Reader Pool**:
+The multi-connection pool the **Capture Index Owner** uses for reads (UI, search, timeline). In WAL mode these run concurrently with the **Writer Connection**, so a long read never blocks a write and vice versa.
+_Avoid_: query pool, shared pool
+
+**Brokered Reader**:
+A read-only handle onto the **Encrypted Capture Index** used by brokered consumers — the `mnema` CLI process and the in-app Ask AI agent. A **Brokered Reader** opens the database read-write at the OS level (so it can still open and recover the file after an owner crash) but is made logically read-only with `PRAGMA query_only=ON`, and it **never runs the migrator and never sets `journal_mode`**. Because it only ever takes read locks, it never collides with the **Capture Index Owner**'s **Writer Connection**.
+_Avoid_: read-only pool, readonly handle, broker db connection
+
 **User Context Store**:
 The app-infra storage owner for the User Context dossier (`crates/app-infra/src/user_context/store.rs`, `UserContextStore`) over the `user_context_*` tables added in migrations `0022`–`0025`: Activities + evidence + derivation runs, Conclusions + evidence, Confidence history, and pinned/dismissal state. It also owns the deterministic policy that needs no model — the fixed Confidence Policy math (`confidence.rs`) and the Sensitive Category Guardrail (`guardrail.rs`, soft instruction text plus the hard `is_sensitive` post-filter) — plus the capture-window reader (`capture_source.rs`) that assembles already-redacted OCR/transcript text. The LLM call itself lives in the desktop Tauri layer, so app-infra takes no `ai-runtime`/`rig-core` dependency.
 _Avoid_: profile table, inference engine, dossier service, ai-runtime dependency
@@ -282,6 +298,10 @@ _Avoid_: open-in-browser tool, agent URL navigation, raw URL field, broker open,
 - **Encrypted Capture Index** should use maintained page-level SQLite encryption rather than hand-rolled field encryption.
 - **Encrypted Capture Index** keys belong in a **Capture Index Key Store** outside `saveDirectory`; macOS should use Keychain through that abstraction.
 - Each **Encrypted Capture Index** should have its own key tied to a stable index identity rather than sharing one global app key.
+- Exactly one **Capture Index Owner** (the desktop app) writes and migrates the **Encrypted Capture Index**; every other opener is a **Brokered Reader**. This is the rule that keeps "database is locked" errors structurally impossible rather than merely rare.
+- A **Brokered Reader** never runs the migrator: the **Capture Index Owner** is the only opener that applies migrations, and a reader opening a not-yet-migrated index reads what is there rather than mutating schema it does not own. (Before this rule, `initialize_read_only` shared the owner's open path and ran `MIGRATOR.run` + `PRAGMA journal_mode=WAL` on every `mnema` CLI invocation and every Ask AI turn — write/lock operations against the live owner — which was a primary lock-contention source.)
+- A **Brokered Reader** opens a read-write OS handle guarded by `PRAGMA query_only=ON` rather than a strict `SQLITE_OPEN_READONLY` handle, because a brokered read must still succeed when the desktop app is closed after a crash (dirty `-wal`), where a strict read-only handle cannot recover the WAL sidecars and fails to open. `mnema` data commands run against an on-disk grant and do not require the app to be running.
+- Inside the **Capture Index Owner**, writes use a single **Writer Connection** and reads use a separate **Reader Pool**; this split (not `BEGIN IMMEDIATE` on a shared multi-writer pool) is how in-process writer-writer lock-upgrade deadlocks are prevented while preserving WAL read/write concurrency.
 - An **Encrypted Capture Index** may expose non-secret index identity metadata through a readable header or sidecar so the app and broker can locate the corresponding **Capture Index Key Store** entry.
 - If an **Encrypted Capture Index** key is missing or inaccessible, Mnema treats the index as undecryptable unless an explicit future backup/export key flow exists; fallback keys must not live in `saveDirectory`.
 - V1 does not change default browser URL metadata settings.
@@ -545,4 +565,5 @@ _Avoid_: open-in-browser tool, agent URL navigation, raw URL field, broker open,
 - "Semantic Search embeddings from redacted text" was the early privacy stance; resolved per [ADR 0036](../../docs/adr/0036-semantic-search-v1-hybrid-fastembed-vectors-with-fts5.md): a **Semantic Search Vector** is derived from the same raw body text **Text Search** indexes and protected at rest by the **Encrypted Capture Index**, while redaction is enforced at any boundary that takes a vector or its text out of that index — embeddings are not separately redacted at rest.
 - "Semantic Search is local-only" overstated the posture; resolved per [ADR 0037](../../docs/adr/0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md): **Semantic Search** is **local-first** — the default **Semantic Search Backend** (candle, on-device) sends nothing off-device, while a remote/cloud backend is opt-in only and embeds egress-redacted text. The raw-text-at-rest rule above still governs local backends.
 - "embeddings are produced in-process by fastembed/ONNX" was the v1 runtime; resolved per [ADR 0037](../../docs/adr/0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md): the runtime is **candle** (Apple GPU via Metal, or CPU) behind a pluggable **Semantic Search Backend**, and the model catalog is hand-maintained (candle has none) guarded by a `config.json` cross-check. `fastembed`/`ort` leave **Semantic Search** (`ort` stays only for transcription).
+- "read-only" (as in `initialize_read_only`) originally meant only "skip the startup maintenance workers," not a read-only database handle — the path still ran migrations and `PRAGMA journal_mode=WAL` (both writes) against the live owner; resolved: a brokered consumer is a **Brokered Reader** that is genuinely read-only (`query_only`, no migrator, no `journal_mode`), and only the **Capture Index Owner** writes or migrates.
 - "one vector per anchor" was used for two different operations; resolved: **one (stored) vector per anchor** is the pooling/dedup invariant (one stored vector per anchor; text overflowing the window is split and mean-pooled into that one vector), whereas **first-window embed** is a distinct, deferred quality lever (embed only the first token window instead of pooling all chunks). They are not the same change.
