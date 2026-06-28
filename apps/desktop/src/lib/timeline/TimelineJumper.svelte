@@ -643,6 +643,12 @@
   }
   .timeline__jump-latest {
     flex: 0 0 auto;
+    /* Match the date trigger's typography so the two controls read as one
+       row instead of the loud bold/uppercase `.btn` default. */
+    text-transform: none;
+    letter-spacing: 0.01em;
+    font-weight: 400;
+    font-size: var(--text-xs);
   }
   .timeline__jump-icon {
     display: inline-flex;
