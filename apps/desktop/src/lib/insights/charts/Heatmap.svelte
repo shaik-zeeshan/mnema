@@ -86,7 +86,13 @@
 
 <div class="heatmap">
   <div class="grid">
-    {#each rows as row (row.label)}
+    <!-- Key by index, not `row.label`: labels are weekday/short-date names that
+         legitimately repeat (4–5 "Mon"s in a month; a boundary-straddling day
+         can even repeat within a week), and a duplicate `{#each}` key throws and
+         aborts the whole Svelte flush — freezing this tile AND its siblings on
+         their skeletons. Rows are a positional, fully-recomputed list, so index
+         keys are both correct and collision-proof across all range modes. -->
+    {#each rows as row, i (i)}
       <div class="row">
         <span class="rlabel">{row.label}</span>
         <div class="cells">

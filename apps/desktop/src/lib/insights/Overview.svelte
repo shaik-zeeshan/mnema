@@ -445,6 +445,7 @@
   const SLOT_COUNT = 24 / SLOT_SPAN_HOURS; // 12 slots: 12a,2a,…,10p
 
   const focusRows = $derived.by(() => {
+    const { startMs, endMs } = range;
     // Group range activities by local day → slot, averaging focus weight.
     const days = new Map<number, { sum: number[]; n: number[] }>();
     for (const a of rangeActivities) {
@@ -453,6 +454,12 @@
       const w = FOCUS_WEIGHT[focus] ?? 0;
       const start = new Date(a.startedAtMs);
       const dayKey = startOfDay(a.startedAtMs);
+      // `rangeActivities` includes boundary-straddling activities whose START
+      // day falls OUTSIDE the selected range; bucketing by start day would then
+      // add an extra row for that out-of-range day (and, since labels are
+      // weekday names, a second "Sun"/"Mon" within a week). Keep the heatmap to
+      // days actually in range.
+      if (dayKey < startMs || dayKey >= endMs) continue;
       const hour = start.getHours();
       // Full-day band: every 0–23 hour maps to its own slot, so off-band
       // (early/late) hours aren't folded into an edge slot. The clamp is now
@@ -725,15 +732,17 @@
     loadingEngine = true;
     try {
       const { startMs, endMs } = range;
-      const nextActivities = await invoke<Activity[]>(
-        "list_user_context_activities",
-        { startMs, endMs },
-      );
-      if (token !== engineRequestToken) return; // range moved on — stale
-      const nextConclusions = await invoke<Conclusion[]>(
-        "list_user_context_conclusions",
-        { includeFaded: true },
-      );
+      // Activities and conclusions are independent DB queries and BOTH gate
+      // every engine tile + the whole story feed, so fetch them concurrently —
+      // serialising them made the slowest tile wait on the SUM of both.
+      const [nextActivities, nextConclusions] = await Promise.all([
+        invoke<Activity[]>("list_user_context_activities", { startMs, endMs }),
+        invoke<Conclusion[]>("list_user_context_conclusions", {
+          includeFaded: true,
+          startMs,
+          endMs,
+        }),
+      ]);
       if (token !== engineRequestToken) return; // range moved on — stale
       activities = nextActivities;
       conclusions = nextConclusions;
@@ -817,6 +826,9 @@
   // `loadDigest` directly instead.
   const DIGEST_DEBOUNCE_MS = 500;
   let digestDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Guards the range-watch effect against double-loading on mount — see the
+  // effect below. Plain (non-reactive) flag: it only gates effect bookkeeping.
+  let rangeWatchPrimed = false;
   function scheduleDigestLoad(): void {
     // Drop the old range's prose at once and invalidate in-flight responses —
     // last week's lede never sits over this week's cards.
@@ -853,6 +865,15 @@
     range.startMs;
     range.endMs;
     void untrack(() => {
+      // Skip the initial mount run: `reloadAll()` (the mount effect below) owns
+      // the first load. Without this guard both effects fire on mount, so
+      // loadFree/loadEngine run twice and the digest gets an immediate model
+      // call that the 500ms-debounced one then discards. React only to genuine
+      // range *changes* here.
+      if (!rangeWatchPrimed) {
+        rangeWatchPrimed = true;
+        return;
+      }
       engineLoadedOnce = false;
       // A new range is new content: stale expansion state would leave rows
       // open over different (possibly empty) content.
@@ -1641,7 +1662,11 @@
                   {#if c.evidence.length === 0}
                     <p class="evidence-empty">No grounding activities recorded.</p>
                   {:else}
-                    {#each c.evidence as ev (ev.activityId + "-" + ev.stance)}
+                    <!-- Index key: (activityId, stance) is not guaranteed unique
+                         (the engine can record the same activity+stance twice),
+                         and a duplicate key throws + aborts the flush. Evidence
+                         is a positional, recomputed list, so index is safe. -->
+                    {#each c.evidence as ev, evIdx (evIdx)}
                       <div class="evidence-row">
                         <span
                           class="ev-stance"

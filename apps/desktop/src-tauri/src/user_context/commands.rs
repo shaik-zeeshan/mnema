@@ -196,8 +196,20 @@ pub async fn list_user_context_activities(
 pub async fn list_user_context_conclusions(
     infra: tauri::State<'_, AppInfraState>,
     include_faded: Option<bool>,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
 ) -> Result<Vec<Conclusion>, String> {
     let include_faded = include_faded.unwrap_or(false);
+    // Range-scoped (Overview feed) returns only Conclusions with a delta in the
+    // window — bounded as the dossier grows. Absent bounds (Subjects, brokered
+    // access) return the whole dossier, as before.
+    if let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) {
+        return infra
+            .user_context()
+            .list_conclusions_in_range(include_faded, start_ms, end_ms)
+            .await
+            .map_err(|e| e.to_string());
+    }
     infra
         .user_context()
         .list_conclusions(include_faded)

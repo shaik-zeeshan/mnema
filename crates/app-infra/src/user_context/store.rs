@@ -1102,6 +1102,44 @@ impl UserContextStore {
         self.hydrate_conclusions(rows).await
     }
 
+    /// Conclusions with a *delta* in `[start_ms, end_ms)` — the bounded set the
+    /// Overview feed actually renders. A Conclusion is in range when it was
+    /// formed in the window, or (visible) last strengthened in it, or (faded)
+    /// faded in it — mirroring the client-side `conclusionDeltas` filter exactly.
+    /// Unlike [`Self::list_conclusions`] (used by Subjects/brokered access, which
+    /// need the whole dossier), this stays bounded as the dossier grows over
+    /// time and so avoids the unbounded scan + per-row evidence hydration.
+    pub async fn list_conclusions_in_range(
+        &self,
+        include_faded: bool,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> Result<Vec<Conclusion>> {
+        let status_filter = if include_faded {
+            "status IN ('visible', 'faded')"
+        } else {
+            "status = 'visible'"
+        };
+        let sql = format!(
+            "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
+                    last_supported_at_ms, updated_at_ms \
+             FROM user_context_conclusions \
+             WHERE {status_filter} AND ( \
+                 (formed_at_ms >= ?1 AND formed_at_ms < ?2) \
+                 OR (status = 'visible' AND last_supported_at_ms >= ?1 AND last_supported_at_ms < ?2) \
+                 OR (status = 'faded' AND updated_at_ms >= ?1 AND updated_at_ms < ?2) \
+             ) \
+             ORDER BY confidence DESC, updated_at_ms DESC, id DESC"
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(start_ms)
+            .bind(end_ms)
+            .fetch_all(&self.pool)
+            .await?;
+        self.hydrate_conclusions(rows).await
+    }
+
     /// All non-dismissed Conclusions about a Subject (case-insensitive match),
     /// faded included, hydrated with their evidence. Powers the Subject page.
     pub async fn list_conclusions_for_subject(&self, subject: &str) -> Result<Vec<Conclusion>> {

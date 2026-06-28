@@ -657,7 +657,12 @@
             {#if evidenceRows.length === 0}
               <p class="ev-empty">No grounding evidence linked.</p>
             {:else}
-              {#each evidenceRows as ev (ev.activityId)}
+              <!-- Index key: `ev.activityId` is NOT unique — one activity can be
+                   cited by the same conclusion under two stances (supports +
+                   contradicts), giving two rows with the same id. A duplicate
+                   `{#each}` key throws and aborts the Svelte flush, freezing this
+                   pane. evidenceRows is a positional, recomputed list. -->
+              {#each evidenceRows as ev, evIdx (evIdx)}
                 {@const thumbUrl =
                   ev.frameId != null
                     ? (thumbnailCache.get(ev.frameId) ?? null)
