@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, Transaction};
 
+use crate::db::CaptureDb;
 use crate::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,17 +82,17 @@ pub struct AudioSegment {
 
 #[derive(Clone)]
 pub struct AudioSegmentStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl AudioSegmentStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     pub async fn upsert(&self, segment: &NewAudioSegment) -> Result<AudioSegment> {
-        upsert_audio_segment_record(&self.pool, segment).await?;
-        get_audio_segment_by_unique_key(&self.pool, segment).await
+        upsert_audio_segment_record(self.db.write(), segment).await?;
+        get_audio_segment_by_unique_key(self.db.write(), segment).await
     }
 
     pub(crate) async fn upsert_in_transaction(
@@ -110,7 +111,7 @@ impl AudioSegmentStore {
              WHERE id = ?1",
         )
         .bind(audio_segment_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         row.map(map_audio_segment).transpose()
@@ -192,7 +193,7 @@ impl AudioSegmentStore {
 
         query.push(" ORDER BY started_at ASC, ended_at ASC, id ASC");
 
-        let rows = query.build().fetch_all(&self.pool).await?;
+        let rows = query.build().fetch_all(self.db.read()).await?;
         rows.into_iter().map(map_audio_segment).collect()
     }
 }

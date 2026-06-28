@@ -27,6 +27,7 @@
 
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
+use crate::db::CaptureDb;
 use crate::Result;
 
 /// One **Search Result Anchor** that needs a **Semantic Search Vector**: its
@@ -46,12 +47,12 @@ pub struct AnchorMissingVector {
 /// Store seam for the **Semantic Index Backfill** worker.
 #[derive(Clone)]
 pub struct SemanticSearchStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl SemanticSearchStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     /// Select up to `limit` `direct` **Search Result Anchor**s that have
@@ -81,7 +82,7 @@ impl SemanticSearchStore {
              LIMIT ?1",
         )
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows
@@ -110,7 +111,7 @@ impl SemanticSearchStore {
              LIMIT 1",
         )
         .bind(anchor_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
         Ok(exists.is_some())
     }
@@ -166,7 +167,7 @@ impl SemanticSearchStore {
             )));
         }
         let blob = vector_to_le_bytes(vector);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.write().begin().await?;
         // Drop any existing vector for this anchor first — vec0 0.1.9 rejects a
         // re-insert of the same rowid with a UNIQUE constraint error rather than
         // replacing, so the upsert must DELETE then INSERT. Harmless when no prior
@@ -251,7 +252,7 @@ impl SemanticSearchStore {
     /// "no usable dimension" — the worker idles and the query path degrades to
     /// keyword-only rather than erroring).
     pub async fn live_vector_dimension(&self) -> Result<Option<usize>> {
-        live_vector_dimension(&self.pool).await
+        live_vector_dimension(self.db.read()).await
     }
 
     /// Reconcile the live `vec0` table dimension against `expected_dimension`,
@@ -308,7 +309,7 @@ impl SemanticSearchStore {
     /// could land in the new index undetected — that case requires a stronger
     /// model-identity/epoch guard stamped here, not just the dimension width.
     pub async fn recreate_vectors_table(&self, dimension: usize) -> Result<u64> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.write().begin().await?;
         // Count existing vectors only when the table is actually present: this is
         // also reached from `reconcile_vectors_table`'s "absent → rebuild" self-heal
         // path, where the table is missing — an unguarded `COUNT(*)` would raise
@@ -351,7 +352,7 @@ impl SemanticSearchStore {
                    SELECT rowid FROM search_document_vectors\
                )",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         Ok(count)
     }

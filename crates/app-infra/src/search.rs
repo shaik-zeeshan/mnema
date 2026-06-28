@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime, UtcOffset};
 
+use crate::db::CaptureDb;
 use crate::{
     captured_frame_equivalence::CapturedFrameEquivalenceScope,
     processing::{map_frame_for_search, Frame},
@@ -229,7 +230,7 @@ enum NormalizedAppRefinement {
 
 #[derive(Clone)]
 pub struct SearchStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 pub(crate) struct EquivalentReuseText {
@@ -239,8 +240,8 @@ pub(crate) struct EquivalentReuseText {
 }
 
 impl SearchStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     pub(crate) async fn equivalent_reuse_text_for_frame(
@@ -262,7 +263,7 @@ impl SearchStore {
              LIMIT 1",
         )
         .bind(frame_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         Ok(row.map(|row| EquivalentReuseText {
@@ -273,7 +274,7 @@ impl SearchStore {
     }
 
     pub(crate) async fn backfill_missing_projections(&self) -> Result<()> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let rows = sqlx::query(
             "SELECT processing_results.id, processing_results.job_id, \
                     processing_results.subject_type, processing_results.subject_id, \
@@ -405,7 +406,7 @@ impl SearchStore {
         let audio_offset = request.audio_offset.unwrap_or(0) as usize;
         let snapshot_document_id = match request.snapshot_document_id {
             Some(id) => id.max(0),
-            None => fetch_search_document_high_water_mark(&self.pool).await?,
+            None => fetch_search_document_high_water_mark(self.db.read()).await?,
         };
 
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
@@ -414,7 +415,7 @@ impl SearchStore {
             Vec::new()
         } else {
             fetch_grouped_frame_hits(
-                &self.pool,
+                self.db.read(),
                 &fts_query,
                 fts_is_searchable,
                 snapshot_document_id,
@@ -433,7 +434,7 @@ impl SearchStore {
             Vec::new()
         } else {
             fetch_grouped_audio_hits(
-                &self.pool,
+                self.db.read(),
                 &fts_query,
                 fts_is_searchable,
                 snapshot_document_id,
@@ -454,7 +455,7 @@ impl SearchStore {
             .take(audio_limit as usize)
             .cloned()
             .collect::<Vec<_>>();
-        align_audio_results(&self.pool, &mut audio).await?;
+        align_audio_results(self.db.read(), &mut audio).await?;
 
         Ok(SearchCaptureResponse {
             normalized_query,
@@ -515,7 +516,7 @@ impl SearchStore {
             ORDER BY group_ended_at DESC, identity_key \
             LIMIT 50",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows

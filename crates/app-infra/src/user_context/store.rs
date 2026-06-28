@@ -12,6 +12,8 @@
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
 use time::OffsetDateTime;
 
+use crate::db::CaptureDb;
+
 use capture_types::{
     Activity, ActivityCategory, ActivityEvidenceRef, AuthoredContext, Conclusion,
     ConclusionEvidenceRef, ConclusionStatus, ConfidenceSnapshot, DismissalState, EvidenceStance,
@@ -212,12 +214,12 @@ pub struct StoredDigest {
 /// derivation runs + Conclusions in this slice).
 #[derive(Clone)]
 pub struct UserContextStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl UserContextStore {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     // --- #93: Activities + evidence ---------------------------------------
@@ -227,7 +229,7 @@ impl UserContextStore {
     /// `activity_id`/`subject_type`/`subject_id`) is ignored.
     pub async fn insert_activity_with_evidence(&self, draft: NewActivity) -> Result<i64> {
         let created_at_ms = now_ms();
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         let activity_id = sqlx::query(
             "INSERT INTO user_context_activities \
@@ -276,7 +278,7 @@ impl UserContextStore {
         )
         .bind(limit)
         .bind(offset)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut activities = Vec::with_capacity(rows.len());
@@ -369,7 +371,7 @@ impl UserContextStore {
         query.push(" ORDER BY started_at_ms DESC, id DESC LIMIT ");
         query.push_bind(limit);
 
-        let rows = query.build().fetch_all(&self.pool).await?;
+        let rows = query.build().fetch_all(self.db.read()).await?;
 
         let mut activities = Vec::with_capacity(rows.len());
         for row in rows {
@@ -404,7 +406,7 @@ impl UserContextStore {
         )
         .bind(range_start_ms)
         .bind(range_end_ms)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows.into_iter().map(map_activity).collect())
@@ -418,7 +420,7 @@ impl UserContextStore {
              ORDER BY captured_at_ms ASC, id ASC",
         )
         .bind(activity_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows
@@ -434,7 +436,7 @@ impl UserContextStore {
     /// Total number of derived Activities.
     pub async fn count_activities(&self) -> Result<i64> {
         let row = sqlx::query("SELECT COUNT(*) AS count FROM user_context_activities")
-            .fetch_one(&self.pool)
+            .fetch_one(self.db.read())
             .await?;
         Ok(row.get("count"))
     }
@@ -476,7 +478,7 @@ impl UserContextStore {
         separated.push_bind_unseparated(now);
         builder.push(" WHERE id = ");
         builder.push_bind(id);
-        builder.build().execute(&self.pool).await?;
+        builder.build().execute(self.db.write()).await?;
         Ok(())
     }
 
@@ -495,7 +497,7 @@ impl UserContextStore {
              LIMIT ?1",
         )
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows
@@ -554,7 +556,7 @@ impl UserContextStore {
         .bind(run.gate_drops.below_formation_bar)
         .bind(run.gate_drops.resurface_blocked)
         .bind(created_at_ms)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?
         .last_insert_rowid();
         Ok(id)
@@ -575,7 +577,7 @@ impl UserContextStore {
              ORDER BY created_at_ms DESC, id DESC \
              LIMIT 1",
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         Ok(row.map(|row| {
@@ -608,7 +610,7 @@ impl UserContextStore {
         .bind(run_id)
         .bind(input_tokens)
         .bind(output_tokens)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -625,7 +627,7 @@ impl UserContextStore {
              ORDER BY window_end_ms DESC, id DESC \
              LIMIT 1",
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         Ok(row.map(|row| {
@@ -646,7 +648,7 @@ impl UserContextStore {
         )
         .bind(start_ms)
         .bind(end_ms)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         Ok(row.get::<i64, _>("found") != 0)
     }
@@ -666,7 +668,7 @@ impl UserContextStore {
              WHERE window_start_ms IS NOT NULL \
                AND kind IN ('activity', 'backfill')",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         // MIN over an empty/all-NULL set is SQL NULL → read as an Option column.
         Ok(row.get::<Option<i64>, _>("oldest"))
@@ -721,7 +723,7 @@ impl UserContextStore {
         .bind(max_failures)
         .bind(last_failed_at_or_before_ms)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows
@@ -747,12 +749,12 @@ impl UserContextStore {
         // MIN TEXT from each table independently, parse each to millis, and take
         // the smaller. Parse failures fall through to the other source.
         let frame_min: Option<String> = sqlx::query("SELECT MIN(captured_at) AS m FROM frames")
-            .fetch_one(&self.pool)
+            .fetch_one(self.db.read())
             .await?
             .get::<Option<String>, _>("m");
         let audio_min: Option<String> =
             sqlx::query("SELECT MIN(started_at) AS m FROM audio_segments")
-                .fetch_one(&self.pool)
+                .fetch_one(self.db.read())
                 .await?
                 .get::<Option<String>, _>("m");
 
@@ -788,13 +790,13 @@ impl UserContextStore {
         let frame_min: Option<String> =
             sqlx::query("SELECT MIN(captured_at) AS m FROM frames WHERE captured_at >= ?1")
                 .bind(&after_rfc3339)
-                .fetch_one(&self.pool)
+                .fetch_one(self.db.read())
                 .await?
                 .get::<Option<String>, _>("m");
         let audio_min: Option<String> =
             sqlx::query("SELECT MIN(started_at) AS m FROM audio_segments WHERE started_at >= ?1")
                 .bind(&after_rfc3339)
-                .fetch_one(&self.pool)
+                .fetch_one(self.db.read())
                 .await?
                 .get::<Option<String>, _>("m");
 
@@ -820,7 +822,7 @@ impl UserContextStore {
                 COUNT(*) AS run_count \
              FROM user_context_derivation_runs",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
 
         let input_tokens: i64 = row.get("input_tokens");
@@ -844,7 +846,7 @@ impl UserContextStore {
              ORDER BY created_at_ms DESC, id DESC \
              LIMIT 1",
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
         Ok(row.map(|row| row.get::<i64, _>("created_at_ms")))
     }
@@ -867,7 +869,7 @@ impl UserContextStore {
         let now = now_ms();
         // Formation path: does NOT pre-decay, so it must not touch the decay
         // anchor — the decay beat owns `last_decayed_at_ms` here (#H3).
-        Self::upsert_conclusion_in(&self.pool, &draft, draft.confidence, now, false).await
+        Self::upsert_conclusion_in(self.db.write(), &draft, draft.confidence, now, false).await
     }
 
     /// Atomic conclusion upsert against an arbitrary executor (the pool or an open
@@ -964,7 +966,7 @@ impl UserContextStore {
         evidence: Vec<NewConclusionEvidence>,
     ) -> Result<i64> {
         let now = now_ms();
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         // Read the existing row's confidence + decay anchor + pin inside the txn so
         // the ratchet is computed against a consistent snapshot. Absent → formation.
@@ -1032,7 +1034,7 @@ impl UserContextStore {
         evidence: Vec<NewConclusionEvidence>,
     ) -> Result<()> {
         let created_at_ms = now_ms();
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         sqlx::query("DELETE FROM user_context_conclusion_evidence WHERE conclusion_id = ?1")
             .bind(conclusion_id)
@@ -1068,7 +1070,7 @@ impl UserContextStore {
              LIMIT ?1",
         )
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut activities = Vec::with_capacity(rows.len());
@@ -1098,7 +1100,7 @@ impl UserContextStore {
              ORDER BY confidence DESC, updated_at_ms DESC, id DESC"
         };
 
-        let rows = sqlx::query(sql).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sql).fetch_all(self.db.read()).await?;
         self.hydrate_conclusions(rows).await
     }
 
@@ -1135,7 +1137,7 @@ impl UserContextStore {
         let rows = sqlx::query(&sql)
             .bind(start_ms)
             .bind(end_ms)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read())
             .await?;
         self.hydrate_conclusions(rows).await
     }
@@ -1151,7 +1153,7 @@ impl UserContextStore {
              ORDER BY confidence DESC, updated_at_ms DESC, id DESC",
         )
         .bind(subject)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         self.hydrate_conclusions(rows).await
     }
@@ -1161,7 +1163,7 @@ impl UserContextStore {
         let row = sqlx::query(
             "SELECT COUNT(*) AS count FROM user_context_conclusions WHERE status != 'dismissed'",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         Ok(row.get("count"))
     }
@@ -1175,7 +1177,7 @@ impl UserContextStore {
              WHERE id = ?1",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         match row {
@@ -1214,7 +1216,7 @@ impl UserContextStore {
              ORDER BY a.started_at_ms ASC, ce.id ASC",
         )
         .bind(conclusion_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows
@@ -1250,7 +1252,7 @@ impl UserContextStore {
         .bind(conclusion_id)
         .bind(confidence)
         .bind(at_ms)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -1268,7 +1270,7 @@ impl UserContextStore {
              ORDER BY snapshot_at_ms ASC, id ASC",
         )
         .bind(conclusion_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows
@@ -1307,7 +1309,7 @@ impl UserContextStore {
              )",
         )
         .bind(max_per_conclusion.max(0))
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(result.rows_affected())
     }
@@ -1334,7 +1336,7 @@ impl UserContextStore {
         .bind(status_to_str(status))
         .bind(last_decayed_at_ms)
         .bind(now)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -1356,7 +1358,7 @@ impl UserContextStore {
         .bind(id)
         .bind(status_to_str(status))
         .bind(now)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -1383,7 +1385,7 @@ impl UserContextStore {
              WHERE status IN ('visible', 'faded') AND COALESCE(pinned, 0) = 0 \
              ORDER BY last_supported_at_ms ASC, id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut decayable = Vec::with_capacity(rows.len());
@@ -1415,7 +1417,7 @@ impl UserContextStore {
         .bind(id)
         .bind(if pinned { 1_i64 } else { 0_i64 })
         .bind(now)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -1435,7 +1437,7 @@ impl UserContextStore {
     /// rows via FK.
     pub async fn dismiss_conclusion(&self, id: i64) -> Result<()> {
         let now = now_ms();
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         // Load the Conclusion's subject/statement; bail (no dismissal) if absent.
         let conclusion = sqlx::query(
@@ -1506,7 +1508,7 @@ impl UserContextStore {
              FROM user_context_dismissals \
              ORDER BY dismissed_at_ms DESC, id DESC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         Ok(rows.into_iter().map(map_dismissal).collect())
     }
@@ -1524,7 +1526,7 @@ impl UserContextStore {
              ORDER BY dismissed_at_ms DESC, id DESC",
         )
         .bind(subject)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         Ok(rows.into_iter().map(map_dismissal).collect())
     }
@@ -1543,7 +1545,7 @@ impl UserContextStore {
         )
         .bind(subject)
         .bind(statement)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -1567,7 +1569,7 @@ impl UserContextStore {
         .bind(text)
         .bind(topic)
         .bind(now_ms)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?
         .last_insert_rowid();
         Ok(id)
@@ -1591,7 +1593,7 @@ impl UserContextStore {
         .bind(text)
         .bind(topic)
         .bind(now_ms)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -1600,7 +1602,7 @@ impl UserContextStore {
     pub async fn delete_authored_context(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM user_context_authored WHERE id = ?1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         Ok(())
     }
@@ -1614,7 +1616,7 @@ impl UserContextStore {
              FROM user_context_authored \
              ORDER BY created_at_ms DESC, id DESC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         Ok(rows
             .into_iter()
@@ -1647,7 +1649,7 @@ impl UserContextStore {
         )
         .bind(range_kind)
         .bind(range_start_ms)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         Ok(row.map(|row| StoredDigest {
@@ -1684,7 +1686,7 @@ impl UserContextStore {
         )
         .bind(range_start_ms)
         .bind(range_end_ms)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows
@@ -1735,14 +1737,15 @@ impl UserContextStore {
         .bind(headline)
         .bind(input_fingerprint)
         .bind(generated_at_ms)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
 
-    /// The pool handle, for the capture-window reader (`capture_source.rs`).
+    /// The reader pool handle, for the capture-window reader
+    /// (`capture_source.rs`), which only runs `SELECT`s.
     pub(crate) fn pool(&self) -> &SqlitePool {
-        &self.pool
+        self.db.read()
     }
 
     // --- #97: Delete Recent Capture cascade + Wipe User Context ------------
@@ -1786,7 +1789,7 @@ impl UserContextStore {
             return Ok(UserContextCascadeSummary::default());
         }
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.write().begin().await?;
         let summary =
             cascade_derived_for_deleted_subjects_in(&mut tx, frame_ids, audio_ids).await?;
         tx.commit().await?;
@@ -1801,7 +1804,7 @@ impl UserContextStore {
     /// here. Deletes children before parents to stay correct regardless of FK
     /// enforcement.
     pub async fn wipe_all(&self) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.write().begin().await?;
         for table in [
             // Children first (leaf evidence / history), then parents, then the
             // FK-free dismissal + derivation-run + authored ledgers.
@@ -2332,7 +2335,7 @@ mod tests {
                 .await
                 .expect("create user_context table");
         }
-        UserContextStore::new(pool)
+        UserContextStore::new(CaptureDb::single(pool))
     }
 
     async fn seed_activity(store: &UserContextStore, title: &str, started_at_ms: i64) -> i64 {
@@ -2524,7 +2527,7 @@ mod tests {
                 .await
                 .expect("schema should apply");
         }
-        UserContextStore::new(pool)
+        UserContextStore::new(CaptureDb::single(pool))
     }
 
     #[test]
@@ -2773,7 +2776,7 @@ mod tests {
                      last_supported_at_ms, updated_at_ms, created_at_ms, last_decayed_at_ms) \
                  VALUES ('Rust', 'Learning Rust', 0.8, 'visible', 1000, 1000, 1000, 1000, NULL)",
             )
-            .execute(&store.pool)
+            .execute(store.db.write())
             .await
             .expect("seed conclusion");
 

@@ -141,7 +141,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        db::Database,
+        db::{CaptureDb, Database},
         processing::{
             NewFrame, OcrProcessorBackend, ProcessingJobDraft, ProcessingResultDraft,
             ProcessingSubject, AUDIO_TRANSCRIPTION_PROCESSOR,
@@ -293,7 +293,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let alpha = Arc::new(RecordingBackend::successful("alpha", "alpha result"));
             let beta = Arc::new(RecordingBackend::successful("beta", "beta result"));
             let runtime = ProcessingRuntime::new(
@@ -337,7 +337,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let alpha = Arc::new(RecordingBackend::successful("alpha", "alpha result"));
             let beta = Arc::new(RecordingBackend::successful("beta", "beta result"));
             let runtime = ProcessingRuntime::new(
@@ -393,7 +393,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
@@ -492,7 +492,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let blocked = Arc::new(RecordingBackend::successful("blocked", "blocked result"));
             let allowed = Arc::new(RecordingBackend::successful("allowed", "allowed result"));
             let runtime = ProcessingRuntime::new(
@@ -548,7 +548,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
@@ -602,7 +602,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
@@ -711,7 +711,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
@@ -788,7 +788,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register_arc(Arc::new(RecordingBackend::successful(
@@ -838,7 +838,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let backend = Arc::new(RecordingBackend::successful(
                 AUDIO_TRANSCRIPTION_PROCESSOR,
                 "recovered transcript",
@@ -916,7 +916,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
 
             let job = store
                 .enqueue_job(&ProcessingJobDraft::new(
@@ -963,7 +963,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
 
             let job = store
                 .enqueue_job(&ProcessingJobDraft::new(
@@ -1022,7 +1022,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new()
@@ -1121,7 +1121,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
 
             let job = store
                 .enqueue_job(&ProcessingJobDraft::new(

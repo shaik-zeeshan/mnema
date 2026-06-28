@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
 use time::{format_description::well_known::Rfc3339, Date, Duration, OffsetDateTime, UtcOffset};
 
+use crate::db::CaptureDb;
 use crate::{processing::ProcessingJobStatus, Result};
 
 const SQLITE_BIND_CHUNK_SIZE: usize = 500;
@@ -186,12 +187,12 @@ struct SegmentFilePath {
 
 #[derive(Clone)]
 pub struct CaptureRetentionStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl CaptureRetentionStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     pub async fn create_capture_session(&self, session: &NewCaptureSession) -> Result<()> {
@@ -222,7 +223,7 @@ impl CaptureRetentionStore {
         .bind(session.microphone_source_session_id.as_deref())
         .bind(session.system_audio_source_session_id.as_deref())
         .bind(session.segment_duration_seconds)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -241,7 +242,7 @@ impl CaptureRetentionStore {
         .bind(capture_session_id)
         .bind(stopped_at)
         .bind(status)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -274,7 +275,7 @@ impl CaptureRetentionStore {
             query.push(" OR system_audio_source_session_id = ");
             query.push_bind(source_session_id);
         }
-        Ok(query.build().execute(&self.pool).await?.rows_affected())
+        Ok(query.build().execute(self.db.write()).await?.rows_affected())
     }
 
     pub async fn upsert_capture_segment(
@@ -316,7 +317,7 @@ impl CaptureRetentionStore {
         .bind(&segment.started_at)
         .bind(&segment.ended_at)
         .bind(&segment.status)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         let row = sqlx::query(
@@ -329,7 +330,7 @@ impl CaptureRetentionStore {
         .bind(segment.source_kind.as_str())
         .bind(&segment.source_session_id)
         .bind(segment.segment_index)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.write())
         .await?;
         map_capture_segment(row)
     }
@@ -350,7 +351,7 @@ impl CaptureRetentionStore {
         .bind(source_kind.as_str())
         .bind(source_session_id)
         .bind(segment_index)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         row.map(map_capture_segment).transpose()
@@ -382,7 +383,7 @@ impl CaptureRetentionStore {
         )
         .bind(start_at)
         .bind(end_at)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter()
@@ -418,7 +419,7 @@ impl CaptureRetentionStore {
              LIMIT 1",
         )
         .bind(source_session_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.write())
         .await?
         else {
             return Ok(None);
@@ -489,7 +490,7 @@ impl CaptureRetentionStore {
         // string; conversations store `last_activity_at_ms` in unix millis.
         if let Some(cutoff_ms) = rfc3339_to_ms(&cutoff) {
             summary.deleted_conversations =
-                delete_conversations_older_than(&self.pool, cutoff_ms).await?;
+                delete_conversations_older_than(self.db.write(), cutoff_ms).await?;
         }
 
         if summary.eligible_capture_segments == 0
@@ -499,18 +500,18 @@ impl CaptureRetentionStore {
             return Ok(summary);
         }
 
-        let segment_ids = eligible_segment_ids(&self.pool, &cutoff, context).await?;
-        let orphan_frame_ids = orphan_frame_ids(&self.pool, &cutoff, context).await?;
-        let orphan_audio_ids = orphan_audio_segment_ids(&self.pool, &cutoff, context).await?;
+        let segment_ids = eligible_segment_ids(self.db.read(), &cutoff, context).await?;
+        let orphan_frame_ids = orphan_frame_ids(self.db.read(), &cutoff, context).await?;
+        let orphan_audio_ids = orphan_audio_segment_ids(self.db.read(), &cutoff, context).await?;
         if segment_ids.is_empty() && orphan_frame_ids.is_empty() && orphan_audio_ids.is_empty() {
             return Ok(summary);
         }
 
-        let mut file_paths = file_paths_for_segments(&self.pool, &segment_ids).await?;
-        file_paths.extend(file_paths_for_audio_segments(&self.pool, &segment_ids).await?);
-        file_paths.extend(file_paths_for_orphan_frames(&self.pool, &orphan_frame_ids).await?);
+        let mut file_paths = file_paths_for_segments(self.db.read(), &segment_ids).await?;
+        file_paths.extend(file_paths_for_audio_segments(self.db.read(), &segment_ids).await?);
+        file_paths.extend(file_paths_for_orphan_frames(self.db.read(), &orphan_frame_ids).await?);
         file_paths
-            .extend(file_paths_for_orphan_audio_segments(&self.pool, &orphan_audio_ids).await?);
+            .extend(file_paths_for_orphan_audio_segments(self.db.read(), &orphan_audio_ids).await?);
         file_paths.sort_by_key(|path| match path.path_kind.as_str() {
             "media_file" | "sidecar_file" => 0,
             "frame_dir" => 1,
@@ -522,7 +523,7 @@ impl CaptureRetentionStore {
             .filter(|path| path.capture_segment_id.is_some() && path.path_kind == "media_file")
             .map(|path| path.path.clone())
             .collect::<Vec<_>>();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.write().begin().await?;
         let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", &segment_ids).await?;
         frame_ids.extend(orphan_frame_ids);
         let mut audio_ids =
@@ -569,7 +570,7 @@ impl CaptureRetentionStore {
             )
             .bind(cleanup_run_id)
             .bind(summary.pending_file_tombstones)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         } else {
             summary.status = "completed".to_string();
@@ -590,7 +591,7 @@ impl CaptureRetentionStore {
              LIMIT 1",
         )
         .bind(policy.as_str())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
         let pending = self.pending_file_tombstone_count().await?;
         let Some(row) = row else {
@@ -630,7 +631,7 @@ impl CaptureRetentionStore {
              WHERE status IN ('pending', 'failed')
              ORDER BY id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.write())
         .await?;
         let mut resolved = 0_i64;
         for row in rows {
@@ -645,7 +646,7 @@ impl CaptureRetentionStore {
                          WHERE id = ?1",
                     )
                     .bind(id)
-                    .execute(&self.pool)
+                    .execute(self.db.write())
                     .await?;
                 }
                 Err(error) => {
@@ -657,7 +658,7 @@ impl CaptureRetentionStore {
                     )
                     .bind(id)
                     .bind(error)
-                    .execute(&self.pool)
+                    .execute(self.db.write())
                     .await?;
                 }
             }
@@ -671,13 +672,13 @@ impl CaptureRetentionStore {
         cutoff: String,
         context: &RetentionCleanupContext,
     ) -> Result<RetentionCleanupSummary> {
-        let segment_ids = eligible_segment_ids(&self.pool, &cutoff, context).await?;
+        let segment_ids = eligible_segment_ids(self.db.read(), &cutoff, context).await?;
         let mut summary = RetentionCleanupSummary {
             policy: policy.as_str().to_string(),
             cutoff_ended_before: Some(cutoff.clone()),
             eligible_capture_segments: segment_ids.len() as i64,
-            skipped_active_segments: count_active_skipped(&self.pool, context).await?,
-            skipped_running_jobs: count_running_blocked_segments(&self.pool, &cutoff, context)
+            skipped_active_segments: count_active_skipped(self.db.read(), context).await?,
+            skipped_running_jobs: count_running_blocked_segments(self.db.read(), &cutoff, context)
                 .await?,
             pending_file_tombstones: self.pending_file_tombstone_count().await?,
             status: "skipped".to_string(),
@@ -685,13 +686,13 @@ impl CaptureRetentionStore {
         };
         if !segment_ids.is_empty() {
             summary.deleted_frames =
-                count_by_capture_segments(&self.pool, "frames", &segment_ids).await?;
+                count_by_capture_segments(self.db.read(), "frames", &segment_ids).await?;
             summary.deleted_audio_segments =
-                count_by_capture_segments(&self.pool, "audio_segments", &segment_ids).await?;
+                count_by_capture_segments(self.db.read(), "audio_segments", &segment_ids).await?;
         }
         summary.deleted_frames +=
-            orphan_frame_ids(&self.pool, &cutoff, context).await?.len() as i64;
-        summary.deleted_audio_segments += orphan_audio_segment_ids(&self.pool, &cutoff, context)
+            orphan_frame_ids(self.db.read(), &cutoff, context).await?.len() as i64;
+        summary.deleted_audio_segments += orphan_audio_segment_ids(self.db.read(), &cutoff, context)
             .await?
             .len() as i64;
         // Conversations obey the same local-calendar cutoff and are deleted by
@@ -700,7 +701,7 @@ impl CaptureRetentionStore {
         // yields the same skip semantics as the run path.
         if let Some(cutoff_ms) = rfc3339_to_ms(&cutoff) {
             summary.deleted_conversations =
-                count_conversations_older_than(&self.pool, cutoff_ms).await?;
+                count_conversations_older_than(self.db.read(), cutoff_ms).await?;
         }
         Ok(summary)
     }
@@ -709,7 +710,7 @@ impl CaptureRetentionStore {
         Ok(sqlx::query(
             "SELECT COUNT(*) AS count FROM retention_file_tombstones WHERE status IN ('pending', 'failed')",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?
         .get("count"))
     }
@@ -732,7 +733,7 @@ impl CaptureRetentionStore {
         .bind(path)
         .bind(path_kind)
         .bind(last_error)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -1870,7 +1871,7 @@ mod tests {
             .await
             .expect("capture session should insert");
 
-            let store = CaptureRetentionStore::new(pool.clone());
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool.clone()));
             store
                 .upsert_screen_segment_for_source_session(
                     "screen-source-1",
@@ -1916,7 +1917,7 @@ mod tests {
                 .await
                 .expect("in-memory db should open");
             create_retention_cleanup_tables(&pool).await;
-            let store = CaptureRetentionStore::new(pool);
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
 
             store
                 .upsert_capture_segment(&NewCaptureSegment {
@@ -1991,7 +1992,7 @@ mod tests {
             .await
             .expect("linked frame should insert");
 
-            let store = CaptureRetentionStore::new(pool);
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
             let segments = store
                 .list_finalized_screen_segments_overlapping_window(
                     "2026-05-16T07:45:30Z",
@@ -2035,7 +2036,7 @@ mod tests {
             .await
             .expect("segments should insert");
 
-            let store = CaptureRetentionStore::new(pool);
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
             let segments = store
                 .list_finalized_screen_segments_overlapping_window(
                     "2026-05-16T07:45:30Z",
@@ -2085,7 +2086,7 @@ mod tests {
                 .await
                 .expect("processing result should insert");
 
-            let summary = CaptureRetentionStore::new(pool.clone())
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2160,7 +2161,7 @@ mod tests {
                 .await
                 .expect("enable foreign keys");
 
-            let summary = CaptureRetentionStore::new(pool.clone())
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup(
                     RetentionPolicy::Days7,
                     now,
@@ -2232,7 +2233,7 @@ mod tests {
             .await
             .expect("audio segments should insert");
 
-            let summary = CaptureRetentionStore::new(pool.clone())
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2276,7 +2277,7 @@ mod tests {
             .await
             .expect("orphan frame should insert");
 
-            CaptureRetentionStore::new(pool.clone())
+            CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup_with_mode(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2322,7 +2323,7 @@ mod tests {
             .await
             .expect("cleanup runs should insert");
 
-            let status = CaptureRetentionStore::new(pool)
+            let status = CaptureRetentionStore::new(CaptureDb::single(pool))
                 .latest_status(RetentionPolicy::Days7)
                 .await
                 .expect("latest status should query");
@@ -2418,7 +2419,7 @@ mod tests {
             .await
             .expect("processing jobs should insert");
 
-            let summary = CaptureRetentionStore::new(pool)
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool))
                 .preview_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2477,7 +2478,7 @@ mod tests {
             .await
             .expect("frame should insert");
 
-            let summary = CaptureRetentionStore::new(pool)
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool))
                 .preview_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2529,7 +2530,7 @@ mod tests {
             .await
             .expect("frames should insert");
 
-            let summary = CaptureRetentionStore::new(pool.clone())
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:06:30Z"),

@@ -7,7 +7,7 @@ use std::{
 
 use sqlx::migrate::Migrate;
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
     Row, SqlitePool,
 };
 
@@ -48,34 +48,130 @@ fn register_vec0_auto_extension() {
     });
 }
 
+/// A handle to the Encrypted Capture Index that carries both the single
+/// **Writer Connection** (`write`) and the multi-connection **Reader Pool**
+/// (`read`). Cheap to clone (the inner `SqlitePool`s are `Arc`-backed). Stores
+/// hold this instead of a bare `SqlitePool` and pick `write()`/`read()` per
+/// method. For a **Brokered Reader** both pools are `query_only` handles, so a
+/// write routed to `write()` correctly fails — that is the read-only guarantee.
+#[derive(Clone)]
+pub struct CaptureDb {
+    write: SqlitePool,
+    read: SqlitePool,
+}
+
+impl CaptureDb {
+    /// Owner-internal write path: the single Writer Connection.
+    pub fn write(&self) -> &SqlitePool {
+        &self.write
+    }
+    /// Read path: the Reader Pool (concurrent with the writer under WAL).
+    pub fn read(&self) -> &SqlitePool {
+        &self.read
+    }
+    /// Test/back-compat helper: use one pool for both roles. ONLY for tests.
+    pub fn single(pool: SqlitePool) -> Self {
+        Self {
+            write: pool.clone(),
+            read: pool,
+        }
+    }
+}
+
+impl From<SqlitePool> for CaptureDb {
+    fn from(pool: SqlitePool) -> Self {
+        Self::single(pool)
+    }
+}
+
 #[derive(Clone)]
 pub struct Database {
-    pool: SqlitePool,
+    write_pool: SqlitePool,
+    read_pool: SqlitePool,
     base_dir: PathBuf,
     database_path: PathBuf,
     migrations_ran: bool,
 }
 
 impl Database {
+    /// Owner path: sole writer and sole migrator. Builds the single Writer
+    /// Connection pool and the multi-connection Reader Pool, then runs the
+    /// migrator on the writer only.
     pub async fn initialize(base_dir: &Path) -> Result<Self> {
         let database_path = prepare_database_path(base_dir)?;
         let encryption =
             resolve_capture_index_database_key_for_current_process(base_dir, &database_path)?;
-        let pool = connect(&database_path, encryption).await?;
-        let migrations_ran = has_pending_migrations(&pool).await?;
 
-        MIGRATOR.run(&pool).await?;
+        let write_pool =
+            connect_pool(&database_path, encryption.clone(), PoolConfig::owner_writer()).await?;
+        let read_pool =
+            connect_pool(&database_path, encryption, PoolConfig::owner_reader()).await?;
+
+        let migrations_ran = has_pending_migrations(&write_pool).await?;
+
+        MIGRATOR.run(&write_pool).await?;
 
         Ok(Self {
-            pool,
+            write_pool,
+            read_pool,
             base_dir: base_dir.to_path_buf(),
             database_path,
             migrations_ran,
         })
     }
 
+    /// Brokered Reader path: opens a genuinely read-only handle for out-of-app
+    /// readers (the `mnema` CLI, Ask AI). Never runs the migrator and never sets
+    /// `journal_mode`; both pools are `query_only`. A WAL recovery read runs
+    /// before flipping `query_only=ON` so a `-wal` left by an uncleanly-exited
+    /// Owner is folded in.
+    pub async fn initialize_brokered_reader(base_dir: &Path) -> Result<Self> {
+        let database_path = prepare_database_path(base_dir)?;
+        let encryption =
+            resolve_capture_index_database_key_for_current_process(base_dir, &database_path)?;
+
+        // Observability: a non-empty `-wal` sidecar at open time implies the
+        // Owner exited uncleanly (it would otherwise have checkpointed and
+        // truncated the WAL on a clean close).
+        if wal_sidecar_is_non_empty(&database_path) {
+            capture_runtime::debug_log!(
+                "[app-infra] brokered reader opening with non-empty -wal (owner exited uncleanly?)"
+            );
+        }
+
+        let write_pool =
+            connect_pool(&database_path, encryption.clone(), PoolConfig::brokered_writer()).await?;
+        let read_pool =
+            connect_pool(&database_path, encryption, PoolConfig::brokered_reader()).await?;
+
+        Ok(Self {
+            write_pool,
+            read_pool,
+            base_dir: base_dir.to_path_buf(),
+            database_path,
+            migrations_ran: false,
+        })
+    }
+
+    /// A cheap-to-clone `CaptureDb` carrying both pools; stores hold this.
+    pub fn handle(&self) -> CaptureDb {
+        CaptureDb {
+            write: self.write_pool.clone(),
+            read: self.read_pool.clone(),
+        }
+    }
+
+    /// Back-compat accessor: returns the **write** pool (safe — it's the writer).
     pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+        self.write_pool()
+    }
+
+    pub fn write_pool(&self) -> &SqlitePool {
+        &self.write_pool
+    }
+
+    pub fn read_pool(&self) -> &SqlitePool {
+        &self.read_pool
     }
 
     pub fn database_path(&self) -> &Path {
@@ -91,6 +187,94 @@ impl Database {
     }
 }
 
+/// Pragma/pool configuration for one role of the Encrypted Capture Index.
+/// Folds Owner Writer/Reader and Brokered Writer/Reader into one builder so the
+/// pragmas live in exactly one place.
+struct PoolConfig {
+    max_connections: u32,
+    busy_timeout: Duration,
+    /// Whether to set `journal_mode=WAL`. Brokered readers must NOT touch
+    /// `journal_mode` (read-only handle), so this is false for them.
+    set_wal: bool,
+    /// `synchronous` pragma; only set on the Owner Writer. Left default
+    /// everywhere else so durability semantics are unchanged on read/brokered
+    /// paths.
+    synchronous: Option<SqliteSynchronous>,
+    /// `journal_size_limit` in bytes; only bounds the Owner Writer's `-wal`.
+    journal_size_limit: Option<u64>,
+    /// Apply `PRAGMA query_only=ON` in `after_connect` (after the cipher check).
+    query_only: bool,
+    create_if_missing: bool,
+    /// Run a harmless read in `after_connect` (after the cipher check, before
+    /// `query_only`) to force WAL recovery on a brokered open.
+    force_wal_recovery: bool,
+}
+
+impl PoolConfig {
+    fn owner_writer() -> Self {
+        Self {
+            max_connections: 1,
+            busy_timeout: Duration::from_secs(10),
+            set_wal: true,
+            synchronous: Some(SqliteSynchronous::Normal),
+            // 64 MiB cap on the WAL sidecar.
+            journal_size_limit: Some(67_108_864),
+            query_only: false,
+            create_if_missing: true,
+            force_wal_recovery: false,
+        }
+    }
+
+    fn owner_reader() -> Self {
+        Self {
+            max_connections: 4,
+            busy_timeout: Duration::from_secs(5),
+            set_wal: true,
+            synchronous: None,
+            journal_size_limit: None,
+            query_only: true,
+            create_if_missing: true,
+            force_wal_recovery: false,
+        }
+    }
+
+    fn brokered_writer() -> Self {
+        Self {
+            max_connections: 1,
+            busy_timeout: Duration::from_secs(10),
+            set_wal: false,
+            synchronous: None,
+            journal_size_limit: None,
+            query_only: true,
+            create_if_missing: false,
+            force_wal_recovery: true,
+        }
+    }
+
+    fn brokered_reader() -> Self {
+        Self {
+            max_connections: 4,
+            busy_timeout: Duration::from_secs(5),
+            set_wal: false,
+            synchronous: None,
+            journal_size_limit: None,
+            query_only: true,
+            create_if_missing: false,
+            force_wal_recovery: true,
+        }
+    }
+}
+
+/// The `-wal` sidecar next to `database_path` exists and is non-empty.
+fn wal_sidecar_is_non_empty(database_path: &Path) -> bool {
+    let mut wal_path = database_path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    let wal_path = PathBuf::from(wal_path);
+    fs::metadata(&wal_path)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+}
+
 fn prepare_database_path(base_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(base_dir)?;
 
@@ -100,40 +284,75 @@ fn prepare_database_path(base_dir: &Path) -> Result<PathBuf> {
     Ok(database_dir.join(DATABASE_FILE_NAME))
 }
 
-async fn connect(
+/// Build one pool of the Encrypted Capture Index for the given `role`'s pragmas.
+/// The SQLCipher key + `cipher_version` verification, the WAL-recovery read, and
+/// the `query_only` flip all run in `after_connect` in that order.
+async fn connect_pool(
     database_path: &Path,
     encryption: Option<CaptureIndexDatabaseKey>,
+    config: PoolConfig,
 ) -> Result<SqlitePool> {
     register_vec0_auto_extension();
 
     let mut options = SqliteConnectOptions::new()
         .filename(database_path)
-        .create_if_missing(true)
+        .create_if_missing(config.create_if_missing)
         .foreign_keys(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
+        .busy_timeout(config.busy_timeout);
 
-    let mut pool_options = SqlitePoolOptions::new().max_connections(4);
+    if config.set_wal {
+        options = options.journal_mode(SqliteJournalMode::Wal);
+    }
+    if let Some(synchronous) = config.synchronous {
+        options = options.synchronous(synchronous);
+    }
+    if let Some(limit) = config.journal_size_limit {
+        options = options.pragma("journal_size_limit", limit.to_string());
+    }
+
+    let has_encryption = encryption.is_some();
     if let Some(encryption) = encryption {
         options = options.pragma("key", encryption.sqlcipher_pragma_value());
-        pool_options = pool_options.after_connect(move |connection, _metadata| {
-            Box::pin(async move {
-                let row = sqlx::query("PRAGMA cipher_version")
-                    .fetch_optional(&mut *connection)
-                    .await?;
-                let cipher_version = row
-                    .and_then(|row| row.try_get::<String, _>(0).ok())
-                    .unwrap_or_default();
-                if cipher_version.trim().is_empty() {
-                    return Err(sqlx::Error::Protocol(
-                        "SQLCipher is not available; refusing to open encrypted capture index"
-                            .to_string(),
-                    ));
-                }
-                Ok(())
-            })
-        });
     }
+
+    let force_wal_recovery = config.force_wal_recovery;
+    let query_only = config.query_only;
+
+    let pool_options =
+        SqlitePoolOptions::new()
+            .max_connections(config.max_connections)
+            .after_connect(move |connection, _metadata| {
+                Box::pin(async move {
+                    if has_encryption {
+                        let row = sqlx::query("PRAGMA cipher_version")
+                            .fetch_optional(&mut *connection)
+                            .await?;
+                        let cipher_version = row
+                            .and_then(|row| row.try_get::<String, _>(0).ok())
+                            .unwrap_or_default();
+                        if cipher_version.trim().is_empty() {
+                            return Err(sqlx::Error::Protocol(
+                                "SQLCipher is not available; refusing to open encrypted capture index"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    // Force WAL recovery BEFORE flipping query_only: a brokered
+                    // reader must fold in a `-wal` left by an uncleanly-exited
+                    // Owner, and that recovery would be blocked under query_only.
+                    if force_wal_recovery {
+                        sqlx::query("SELECT count(*) FROM sqlite_master")
+                            .fetch_optional(&mut *connection)
+                            .await?;
+                    }
+                    if query_only {
+                        sqlx::query("PRAGMA query_only=ON")
+                            .execute(&mut *connection)
+                            .await?;
+                    }
+                    Ok(())
+                })
+            });
 
     let pool = pool_options.connect_with(options).await?;
 
@@ -208,6 +427,109 @@ mod tests {
             .connect_with(options)
             .await
             .expect("encrypted db should open")
+    }
+
+    /// A brokered reader is genuinely read-only: a write routed to the writer
+    /// pool fails because `query_only=ON`, while reads through the reader pool
+    /// succeed. Open an Owner first to create + migrate the DB, close it cleanly,
+    /// then open the brokered reader against it.
+    #[test]
+    fn brokered_reader_rejects_writes() {
+        block_on(async {
+            let dir = unique_test_dir("brokered-readonly");
+            let owner = Database::initialize(&dir).await.expect("owner init");
+            owner.write_pool().close().await;
+            owner.read_pool().close().await;
+            drop(owner);
+
+            let brokered = Database::initialize_brokered_reader(&dir)
+                .await
+                .expect("brokered init");
+
+            // A write through the writer pool fails under query_only=ON.
+            let write_result = sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at) \
+                 VALUES ('sess-x', '/frames/x.jpg', '2026-06-17T00:00:00Z')",
+            )
+            .execute(brokered.write_pool())
+            .await;
+            assert!(
+                write_result.is_err(),
+                "brokered writer pool must reject writes under query_only"
+            );
+
+            // Reads through the reader pool still work.
+            let frame_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                .fetch_one(brokered.read_pool())
+                .await
+                .expect("brokered read should succeed");
+            assert_eq!(frame_count, 0, "no frames were inserted");
+        });
+    }
+
+    /// Opening a brokered reader does NOT run the migrator: the
+    /// `_sqlx_migrations` table is untouched (no rows added) and `migrations_ran`
+    /// is false, while a `SELECT` against the existing schema still works.
+    #[test]
+    fn brokered_reader_does_not_run_migrator() {
+        block_on(async {
+            let dir = unique_test_dir("brokered-no-migrate");
+            let owner = Database::initialize(&dir).await.expect("owner init");
+            let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+                .fetch_one(owner.write_pool())
+                .await
+                .expect("count migrations before");
+            assert!(before > 0, "owner should have applied migrations");
+            owner.write_pool().close().await;
+            owner.read_pool().close().await;
+            drop(owner);
+
+            let brokered = Database::initialize_brokered_reader(&dir)
+                .await
+                .expect("brokered init");
+            assert!(
+                !brokered.migrations_ran(),
+                "brokered reader must report migrations_ran = false"
+            );
+
+            let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+                .fetch_one(brokered.read_pool())
+                .await
+                .expect("count migrations after");
+            assert_eq!(
+                after, before,
+                "brokered reader must not add migration rows"
+            );
+        });
+    }
+
+    /// A brokered reader opens and reads a cleanly-closed database, seeing rows
+    /// the Owner wrote before it exited.
+    #[test]
+    fn brokered_reader_reads_cleanly_closed_db() {
+        block_on(async {
+            let dir = unique_test_dir("brokered-clean-read");
+            let owner = Database::initialize(&dir).await.expect("owner init");
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at) \
+                 VALUES ('sess-1', '/frames/1.jpg', '2026-06-17T00:00:00Z')",
+            )
+            .execute(owner.write_pool())
+            .await
+            .expect("owner write");
+            owner.write_pool().close().await;
+            owner.read_pool().close().await;
+            drop(owner);
+
+            let brokered = Database::initialize_brokered_reader(&dir)
+                .await
+                .expect("brokered init");
+            let frame_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                .fetch_one(brokered.read_pool())
+                .await
+                .expect("brokered read should succeed");
+            assert_eq!(frame_count, 1, "brokered reader should see the owner's row");
+        });
     }
 
     /// A f32 embedding serialized as the little-endian byte BLOB that `vec0`
@@ -451,6 +773,241 @@ mod tests {
             assert_eq!(
                 after, 0,
                 "trigger should drop the vector on CASCADE-driven frame delete"
+            );
+        });
+    }
+
+    /// Headline concurrency regression: an Owner (single Writer Connection +
+    /// Reader Pool) plus two Brokered Readers all hammer the SAME on-disk
+    /// encrypted database concurrently — many writes through `write_pool()`,
+    /// many reads through `read_pool()`, and reads through each Brokered Reader —
+    /// and NO operation returns a `SQLITE_BUSY` / "database is locked" error.
+    /// This is the structural guarantee of the single-writer + read-only-broker
+    /// design (ADR 0041); it also clears the `write_pool` dead-code warning.
+    ///
+    /// Runs on a multi-thread runtime so the tasks are genuinely concurrent.
+    #[test]
+    fn concurrent_owner_writes_reads_and_brokered_reads_never_lock() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime should build");
+
+        runtime.block_on(async {
+            const ITERS: usize = 200;
+
+            let dir = unique_test_dir("concurrency");
+            let owner = Database::initialize(&dir).await.expect("owner init");
+
+            // Two Brokered Readers opened against the LIVE owner (the CLI / Ask AI
+            // shape: read-write OS handle made read-only via query_only).
+            let brokered_a = Database::initialize_brokered_reader(&dir)
+                .await
+                .expect("brokered reader a init");
+            let brokered_b = Database::initialize_brokered_reader(&dir)
+                .await
+                .expect("brokered reader b init");
+
+            let mut handles = Vec::new();
+
+            // Writers — all funnel through the single Writer Connection.
+            for writer in 0..3 {
+                let write_pool = owner.write_pool().clone();
+                handles.push(tokio::spawn(async move {
+                    let mut errors = Vec::new();
+                    for i in 0..ITERS {
+                        let result = sqlx::query(
+                            "INSERT INTO frames (session_id, file_path, captured_at) \
+                             VALUES (?, ?, '2026-06-17T00:00:00Z')",
+                        )
+                        .bind(format!("sess-{writer}"))
+                        .bind(format!("/frames/{writer}-{i}.jpg"))
+                        .execute(&write_pool)
+                        .await;
+                        if let Err(error) = result {
+                            errors.push(error.to_string());
+                        }
+                    }
+                    errors
+                }));
+            }
+
+            // Owner reads — through the Reader Pool, concurrent with the writer
+            // under WAL.
+            for _ in 0..3 {
+                let read_pool = owner.read_pool().clone();
+                handles.push(tokio::spawn(async move {
+                    let mut errors = Vec::new();
+                    for _ in 0..ITERS {
+                        let result = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM frames")
+                            .fetch_one(&read_pool)
+                            .await;
+                        if let Err(error) = result {
+                            errors.push(error.to_string());
+                        }
+                    }
+                    errors
+                }));
+            }
+
+            // Brokered reads — each Brokered Reader's own read-only pool.
+            for brokered in [&brokered_a, &brokered_b] {
+                let read_pool = brokered.read_pool().clone();
+                handles.push(tokio::spawn(async move {
+                    let mut errors = Vec::new();
+                    for _ in 0..ITERS {
+                        let result = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM frames")
+                            .fetch_one(&read_pool)
+                            .await;
+                        if let Err(error) = result {
+                            errors.push(error.to_string());
+                        }
+                    }
+                    errors
+                }));
+            }
+
+            let mut all_errors = Vec::new();
+            for handle in handles {
+                all_errors.extend(handle.await.expect("task should join"));
+            }
+
+            let lock_errors: Vec<&String> = all_errors
+                .iter()
+                .filter(|message| {
+                    let lower = message.to_lowercase();
+                    lower.contains("database is locked") || lower.contains("sqlite_busy")
+                })
+                .collect();
+            assert!(
+                lock_errors.is_empty(),
+                "no operation should hit a lock error, got: {lock_errors:?}"
+            );
+            // Stronger: nothing should error at all under the new design.
+            assert!(
+                all_errors.is_empty(),
+                "no concurrent operation should error, got: {all_errors:?}"
+            );
+        });
+    }
+
+    /// WAL concurrency: a read held open on the Reader Pool does NOT block a
+    /// write on the Writer Connection. Begin a read transaction and run a SELECT
+    /// to hold a read lock, then — while it is still open — issue a write on the
+    /// Writer Connection and assert it succeeds (no lock error), then finish the
+    /// read. Deterministic: no sleeps, no iteration counts.
+    #[test]
+    fn reader_does_not_block_writer() {
+        block_on(async {
+            let dir = unique_test_dir("reader-no-block-writer");
+            let owner = Database::initialize(&dir).await.expect("owner init");
+
+            // Hold a read open inside a transaction on the Reader Pool.
+            let mut read_tx = owner.read_pool().begin().await.expect("begin read tx");
+            let _held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                .fetch_one(&mut *read_tx)
+                .await
+                .expect("read inside held tx");
+
+            // While the read is in flight, a write on the Writer Connection must
+            // complete without a lock error.
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at) \
+                 VALUES ('sess-concurrent', '/frames/c.jpg', '2026-06-17T00:00:00Z')",
+            )
+            .execute(owner.write_pool())
+            .await
+            .expect("writer must not be blocked by the held reader");
+
+            // Finish the read.
+            read_tx.rollback().await.expect("rollback read tx");
+
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                .fetch_one(owner.read_pool())
+                .await
+                .expect("post-write read");
+            assert_eq!(count, 1, "the concurrent write should be visible");
+        });
+    }
+
+    /// Opening a Brokered Reader does NOT change `journal_mode`: the Owner put
+    /// the database into WAL, and the Brokered Reader (which never sets
+    /// `journal_mode`) still observes WAL rather than resetting it to the
+    /// `delete` default. Complements `brokered_reader_does_not_run_migrator`.
+    #[test]
+    fn brokered_reader_preserves_journal_mode() {
+        block_on(async {
+            let dir = unique_test_dir("brokered-journal-mode");
+            let owner = Database::initialize(&dir).await.expect("owner init");
+            let owner_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(owner.write_pool())
+                .await
+                .expect("owner journal_mode");
+            assert_eq!(
+                owner_mode.to_lowercase(),
+                "wal",
+                "owner should put the database into WAL"
+            );
+            owner.write_pool().close().await;
+            owner.read_pool().close().await;
+            drop(owner);
+
+            let brokered = Database::initialize_brokered_reader(&dir)
+                .await
+                .expect("brokered init");
+            let brokered_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(brokered.read_pool())
+                .await
+                .expect("brokered journal_mode");
+            assert_eq!(
+                brokered_mode.to_lowercase(),
+                "wal",
+                "brokered reader must not change journal_mode away from WAL"
+            );
+        });
+    }
+
+    /// A Brokered Reader reads correctly when the `-wal` sidecar is non-empty at
+    /// open time, exercising the forced-WAL-recovery-before-`query_only` path.
+    ///
+    /// NOTE on the crash case: a TRUE no-owner dirty `-wal` (Owner crashed,
+    /// nothing open) is not deterministically reproducible in-process, because
+    /// sqlx checkpoints the WAL on last-connection close — so we keep the Owner
+    /// open here (its uncheckpointed commit lives in the `-wal`) to guarantee a
+    /// non-empty sidecar. The crashed-Owner scenario is otherwise covered by the
+    /// brokered path's `force_wal_recovery` read, which runs before `query_only`
+    /// is flipped on precisely so a `-wal` left behind can be folded in; the
+    /// clean-close case is `brokered_reader_reads_cleanly_closed_db`.
+    #[test]
+    fn brokered_reader_reads_against_non_empty_wal() {
+        block_on(async {
+            let dir = unique_test_dir("brokered-nonempty-wal");
+            let owner = Database::initialize(&dir).await.expect("owner init");
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at) \
+                 VALUES ('sess-wal', '/frames/wal.jpg', '2026-06-17T00:00:00Z')",
+            )
+            .execute(owner.write_pool())
+            .await
+            .expect("owner write");
+
+            // The commit lives in the `-wal` (single small write, no checkpoint).
+            assert!(
+                wal_sidecar_is_non_empty(owner.database_path()),
+                "the uncheckpointed commit should leave a non-empty -wal"
+            );
+
+            let brokered = Database::initialize_brokered_reader(&dir)
+                .await
+                .expect("brokered init");
+            let frame_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                .fetch_one(brokered.read_pool())
+                .await
+                .expect("brokered read should succeed against a non-empty -wal");
+            assert_eq!(
+                frame_count, 1,
+                "brokered reader should fold in the -wal commit"
             );
         });
     }

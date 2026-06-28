@@ -318,7 +318,8 @@ impl AppInfra {
     /// actively processing would requeue legitimately-`running` jobs and cause
     /// duplicate processing.
     pub async fn initialize_read_only<P: AsRef<Path>>(base_dir: P) -> Result<Self> {
-        Self::initialize_fast_with_processing_registry(base_dir, default_processing_registry()).await
+        let database = db::Database::initialize_brokered_reader(base_dir.as_ref()).await?;
+        Self::build_from_database(database, default_processing_registry())
     }
 
     /// Fast initialization path: opens the database and constructs every store
@@ -336,16 +337,31 @@ impl AppInfra {
         processing_registry: ProcessorRegistry,
     ) -> Result<Self> {
         let database = db::Database::initialize(base_dir.as_ref()).await?;
-        let jobs = JobStore::new(database.pool().clone());
-        let audio_segments = AudioSegmentStore::new(database.pool().clone());
-        let frame_batches = FrameBatchStore::new(database.pool().clone());
-        let capture_retention = CaptureRetentionStore::new(database.pool().clone());
-        let processing = ProcessingStore::new(database.pool().clone());
-        let search = SearchStore::new(database.pool().clone());
-        let semantic_search = SemanticSearchStore::new(database.pool().clone());
-        let usage_charts = UsageChartsStore::new(database.pool().clone());
-        let user_context = UserContextStore::new(database.pool().clone());
-        let conversation = ConversationStore::new(database.pool().clone());
+        Self::build_from_database(database, processing_registry)
+    }
+
+    /// Construct every store and runtime from an already-opened [`db::Database`].
+    ///
+    /// Synchronous: store `::new` calls and runtime construction take no `await`.
+    /// Shared by the Owner path ([`Self::initialize_fast_with_processing_registry`],
+    /// which opens via [`db::Database::initialize`]) and the Brokered Reader path
+    /// ([`Self::initialize_read_only`], which opens via
+    /// [`db::Database::initialize_brokered_reader`]). Every store holds the
+    /// [`db::CaptureDb`] handle (write + read pools) via `database.handle()`.
+    fn build_from_database(
+        database: db::Database,
+        processing_registry: ProcessorRegistry,
+    ) -> Result<Self> {
+        let jobs = JobStore::new(database.handle().clone());
+        let audio_segments = AudioSegmentStore::new(database.handle().clone());
+        let frame_batches = FrameBatchStore::new(database.handle().clone());
+        let capture_retention = CaptureRetentionStore::new(database.handle().clone());
+        let processing = ProcessingStore::new(database.handle().clone());
+        let search = SearchStore::new(database.handle().clone());
+        let semantic_search = SemanticSearchStore::new(database.handle().clone());
+        let usage_charts = UsageChartsStore::new(database.handle().clone());
+        let user_context = UserContextStore::new(database.handle().clone());
+        let conversation = ConversationStore::new(database.handle().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
@@ -413,6 +429,10 @@ impl AppInfra {
         self.database.pool()
     }
 
+    pub fn read_pool(&self) -> &SqlitePool {
+        self.database.read_pool()
+    }
+
     pub fn base_dir(&self) -> &Path {
         self.database.base_dir()
     }
@@ -472,7 +492,7 @@ impl AppInfra {
                     ))",
         )
         .bind(frame_id)
-        .fetch_one(self.pool())
+        .fetch_one(self.read_pool())
         .await?;
         let count: i64 = sqlx::Row::get(&row, "count");
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
@@ -485,7 +505,7 @@ impl AppInfra {
              WHERE anchor_type = 'audio' AND audio_segment_id = ?1",
         )
         .bind(audio_segment_id)
-        .fetch_one(self.pool())
+        .fetch_one(self.read_pool())
         .await?;
         let count: i64 = sqlx::Row::get(&row, "count");
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
@@ -503,7 +523,7 @@ impl AppInfra {
              ORDER BY id DESC LIMIT 1",
         )
         .bind(source_session_id)
-        .fetch_optional(self.pool())
+        .fetch_optional(self.read_pool())
         .await?;
         Ok(row.map(|row| sqlx::Row::get(&row, "capture_session_id")))
     }
@@ -3082,7 +3102,7 @@ mod tests {
                 let database = Database::initialize(dir.path())
                     .await
                     .expect("database should initialize");
-                let jobs = JobStore::new(database.pool().clone());
+                let jobs = JobStore::new(database.handle().clone());
                 let job = jobs
                     .enqueue(&JobDescriptor::new("ocr"), Some("{\"documentId\":1}"))
                     .await

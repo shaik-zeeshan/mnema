@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use speaker_analysis::{
     PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisOutput,
 };
-use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, Transaction};
 
+use crate::db::CaptureDb;
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
 use super::secret_redaction_pipeline::SecretRedactionPipeline;
@@ -194,12 +195,12 @@ pub struct FocusedFrameWindow {
 
 #[derive(Clone)]
 pub struct ProcessingStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl ProcessingStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     fn workspace_like_pattern(workspace_prefix: &str) -> String {
@@ -212,11 +213,11 @@ impl ProcessingStore {
     }
 
     pub(crate) async fn begin_transaction(&self) -> Result<Transaction<'_, Sqlite>> {
-        Ok(self.pool.begin().await?)
+        Ok(self.db.write().begin().await?)
     }
 
     pub async fn insert_frame(&self, frame: &NewFrame) -> Result<Frame> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let frame_id = insert_frame_record_in_transaction(&mut transaction, frame).await?;
         let frame = get_frame_optional(&mut *transaction, frame_id)
             .await?
@@ -226,12 +227,12 @@ impl ProcessingStore {
     }
 
     pub async fn upsert_audio_segment(&self, segment: &NewAudioSegment) -> Result<AudioSegment> {
-        upsert_audio_segment_record(&self.pool, segment).await?;
-        get_audio_segment_by_unique_key(&self.pool, segment).await
+        upsert_audio_segment_record(self.db.write(), segment).await?;
+        get_audio_segment_by_unique_key(self.db.write(), segment).await
     }
 
     pub async fn get_audio_segment(&self, audio_segment_id: i64) -> Result<Option<AudioSegment>> {
-        get_audio_segment_optional(&self.pool, audio_segment_id).await
+        get_audio_segment_optional(self.db.read(), audio_segment_id).await
     }
 
     pub(crate) async fn insert_frame_in_transaction(
@@ -255,7 +256,7 @@ impl ProcessingStore {
 
     pub async fn enqueue_job(&self, draft: &ProcessingJobDraft) -> Result<ProcessingJob> {
         let job_id = insert_processing_job_record(
-            &self.pool,
+            self.db.write(),
             &draft.subject,
             &draft.processor,
             draft.payload_json.as_deref(),
@@ -392,7 +393,7 @@ impl ProcessingStore {
     }
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
-        get_frame_optional(&self.pool, frame_id).await
+        get_frame_optional(self.db.read(), frame_id).await
     }
 
     /// Load the metadata snapshots for many frame ids in ONE query, keyed by
@@ -422,7 +423,7 @@ impl ProcessingStore {
             separated.push_bind(*frame_id);
         }
         query.push(")");
-        let rows = query.build().fetch_all(&self.pool).await?;
+        let rows = query.build().fetch_all(self.db.read()).await?;
         for row in rows {
             let frame_id: i64 = row.get("frame_id");
             let json: Option<String> = row.try_get("metadata_snapshot_json").ok().flatten();
@@ -466,7 +467,7 @@ impl ProcessingStore {
             .bind(before_frame_id)
             .bind(equivalence_hint)
             .bind(like_pattern)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read())
             .await?
         } else {
             sqlx::query(
@@ -480,7 +481,7 @@ impl ProcessingStore {
             .bind(session_id)
             .bind(before_frame_id)
             .bind(equivalence_hint)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read())
             .await?
         };
 
@@ -606,7 +607,7 @@ impl ProcessingStore {
         )
         .bind(session_id)
         .bind(like_pattern)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_frame).collect()
@@ -637,7 +638,7 @@ impl ProcessingStore {
         ))
         .bind(super::FRAME_SUBJECT_TYPE)
         .bind(super::OCR_PROCESSOR)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut references = Vec::new();
@@ -736,7 +737,7 @@ impl ProcessingStore {
             (None, None) => {}
         };
 
-        let rows = query_builder.build().fetch_all(&self.pool).await?;
+        let rows = query_builder.build().fetch_all(self.db.read()).await?;
 
         rows.into_iter().map(map_frame).collect()
     }
@@ -754,7 +755,7 @@ impl ProcessingStore {
         )
         .bind(captured_at_start)
         .bind(captured_at_end)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_frame_summary).collect()
@@ -781,7 +782,7 @@ impl ProcessingStore {
         )
         .bind(frame_id)
         .bind(newer_limit as i64)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let older_rows = sqlx::query(
@@ -797,7 +798,7 @@ impl ProcessingStore {
         )
         .bind(frame_id)
         .bind(older_limit as i64)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut newer_frames = newer_rows
@@ -826,12 +827,12 @@ impl ProcessingStore {
             .ok_or(AppInfraError::FrameNotFound(frame_id))?;
         let has_newer = sqlx::query("SELECT 1 FROM frames WHERE id > ?1 LIMIT 1")
             .bind(head_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read())
             .await?
             .is_some();
         let has_older = sqlx::query("SELECT 1 FROM frames WHERE id < ?1 LIMIT 1")
             .bind(tail_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read())
             .await?
             .is_some();
 
@@ -861,14 +862,14 @@ impl ProcessingStore {
         )
         .bind(captured_at_start)
         .bind(captured_at_end)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         row.map(map_frame).transpose()
     }
 
     pub async fn get_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
-        get_processing_job_optional(&self.pool, job_id).await
+        get_processing_job_optional(self.db.read(), job_id).await
     }
 
     pub async fn list_jobs_for_subject(
@@ -885,7 +886,7 @@ impl ProcessingStore {
         )
         .bind(subject.subject_type())
         .bind(subject.subject_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_processing_job).collect()
@@ -904,7 +905,7 @@ impl ProcessingStore {
              ORDER BY id ASC",
         )
         .bind(processor)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_processing_job).collect()
@@ -916,7 +917,7 @@ impl ProcessingStore {
              WHERE processor = ?1 AND status IN ('queued', 'running')",
         )
         .bind(processor)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
 
         Ok(count)
@@ -940,7 +941,7 @@ impl ProcessingStore {
             )
             .bind(&frame.session_id)
             .bind(like_pattern)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read())
             .await?
         } else {
             sqlx::query(
@@ -950,7 +951,7 @@ impl ProcessingStore {
                  ORDER BY frame.id DESC LIMIT 1",
             )
             .bind(&frame.session_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read())
             .await?
         };
         let Some(row) = row else {
@@ -981,7 +982,7 @@ impl ProcessingStore {
              ORDER BY id ASC",
         )
         .bind(processor)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_processing_job).collect()
@@ -1002,7 +1003,7 @@ impl ProcessingStore {
         )
         .bind(processor)
         .bind(last_error)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         Ok(update.rows_affected())
@@ -1020,7 +1021,7 @@ impl ProcessingStore {
         )
         .bind(job_id)
         .bind(payload_json)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         if update.rows_affected() == 0 {
@@ -1036,7 +1037,7 @@ impl ProcessingStore {
         model_keys: &BTreeSet<String>,
         lock_token: &str,
     ) -> Result<ProcessingModelCleanupLock> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let mut acquired_model_keys = BTreeSet::new();
 
         for model_key in model_keys {
@@ -1075,7 +1076,7 @@ impl ProcessingStore {
         )
         .bind(&lock.processor)
         .bind(&lock.lock_token)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         Ok(delete.rows_affected())
@@ -1083,7 +1084,7 @@ impl ProcessingStore {
 
     pub async fn clear_model_cleanup_locks(&self) -> Result<u64> {
         let delete = sqlx::query("DELETE FROM processing_model_cleanup_locks")
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
 
         Ok(delete.rows_affected())
@@ -1105,7 +1106,7 @@ impl ProcessingStore {
              WHERE created_at <= datetime('now', printf('-%d seconds', ?1))",
         )
         .bind(stale_after_seconds)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         Ok(delete.rows_affected())
@@ -1165,7 +1166,7 @@ impl ProcessingStore {
             speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID,
         );
         loop {
-            let mut transaction = self.pool.begin().await?;
+            let mut transaction = self.db.write().begin().await?;
             let row = match (processor, excluded_processors.is_empty()) {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
@@ -1336,7 +1337,7 @@ impl ProcessingStore {
     }
 
     pub async fn claim_queued_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let Some(job) = get_processing_job_optional(&mut *transaction, job_id).await? else {
             transaction.commit().await?;
             return Ok(None);
@@ -1379,7 +1380,7 @@ impl ProcessingStore {
     }
 
     pub async fn mark_job_running(&self, job_id: i64) -> Result<ProcessingJob> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1446,7 +1447,7 @@ impl ProcessingStore {
     /// `failed` as a crash-loop backstop. Safe to run only when nothing is executing: at startup
     /// (workers spawn afterward) and at graceful shutdown (after workers are aborted and awaited).
     pub async fn reconcile_orphaned_running_jobs(&self) -> Result<ProcessingJobReclamationSummary> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         // Requeue orphaned running jobs that are still under the ceiling. `next_attempt_at` is
         // cleared so they are immediately eligible (abandonment is not a failure to back off from),
@@ -1495,7 +1496,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT id, file_path FROM frames WHERE equivalence_status IS NULL ORDER BY id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.write())
         .await?;
 
         let mut updated = 0_u64;
@@ -1544,7 +1545,7 @@ impl ProcessingStore {
                     .map(FrameEquivalenceStatus::as_str),
             )
             .bind(equivalence.error.as_deref())
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
 
             updated = updated.saturating_add(1);
@@ -1558,7 +1559,7 @@ impl ProcessingStore {
         job_id: i64,
         error_text: Option<&str>,
     ) -> Result<ProcessingJob> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1620,7 +1621,7 @@ impl ProcessingStore {
         &self,
         job_id: i64,
     ) -> Result<Option<ProcessingJob>> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1670,7 +1671,7 @@ impl ProcessingStore {
     ) -> Result<()> {
         sqlx::query("UPDATE processing_jobs SET next_attempt_at = NULL WHERE id = ?1")
             .bind(job_id)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         Ok(())
     }
@@ -1680,7 +1681,7 @@ impl ProcessingStore {
         job_id: i64,
         result: &ProcessingResultDraft,
     ) -> Result<ProcessingJobCompletion> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1900,7 +1901,7 @@ impl ProcessingStore {
              WHERE job_id = ?1",
         )
         .bind(job_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         row.map(map_processing_result).transpose()
@@ -1920,7 +1921,7 @@ impl ProcessingStore {
         )
         .bind(subject.subject_type())
         .bind(subject.subject_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_processing_result).collect()
@@ -1947,7 +1948,7 @@ impl ProcessingStore {
              ORDER BY speaker_turns.start_ms ASC, speaker_turns.end_ms ASC, speaker_turns.id ASC",
         )
         .bind(audio_segment_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_speaker_turn_view).collect()
@@ -1964,7 +1965,7 @@ impl ProcessingStore {
              GROUP BY person_profiles.id \
              ORDER BY person_profiles.display_name COLLATE NOCASE ASC, person_profiles.id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_person_profile).collect()
@@ -1985,7 +1986,7 @@ impl ProcessingStore {
             sqlx::query("INSERT INTO person_profiles (display_name, notes) VALUES (?1, ?2)")
                 .bind(display_name)
                 .bind(notes.map(str::trim).filter(|value| !value.is_empty()))
-                .execute(&self.pool)
+                .execute(self.db.write())
                 .await?;
         self.get_required_person_profile(result.last_insert_rowid())
             .await
@@ -1994,7 +1995,7 @@ impl ProcessingStore {
     pub async fn delete_person_profile(&self, person_id: i64) -> Result<()> {
         sqlx::query("DELETE FROM person_profiles WHERE id = ?1")
             .bind(person_id)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         Ok(())
     }
@@ -2014,7 +2015,7 @@ impl ProcessingStore {
              ORDER BY id ASC",
         )
         .bind(session_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         rows.into_iter().map(map_speaker_cluster_view).collect()
     }
@@ -2037,7 +2038,7 @@ impl ProcessingStore {
         )
         .bind(cluster_id)
         .bind(label)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         self.get_required_speaker_cluster(cluster_id).await
     }
@@ -2048,7 +2049,7 @@ impl ProcessingStore {
         person_id: i64,
         add_embedding: bool,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         if cluster
             .person_id
@@ -2096,7 +2097,7 @@ impl ProcessingStore {
         &self,
         cluster_id: i64,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         persist_speaker_recognition_rejection_for_cluster(
             &mut transaction,
@@ -2122,7 +2123,7 @@ impl ProcessingStore {
         cluster_id: i64,
         add_embedding: bool,
     ) -> Result<SpeakerClusterView> {
-        let cluster = get_speaker_cluster_row(&self.pool, cluster_id).await?;
+        let cluster = get_speaker_cluster_row(self.db.write(), cluster_id).await?;
         let Some(person_id) = cluster.recognition_person_id else {
             return Err(AppInfraError::SpeakerAnalysisEngine(
                 "speaker cluster has no recognition suggestion to confirm".to_string(),
@@ -2136,7 +2137,7 @@ impl ProcessingStore {
         &self,
         cluster_id: i64,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         persist_speaker_recognition_rejection_for_cluster(
             &mut transaction,
@@ -2168,7 +2169,7 @@ impl ProcessingStore {
                 "cannot merge a speaker cluster into itself".to_string(),
             ));
         }
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let source = get_speaker_cluster_row(&mut *transaction, source_cluster_id).await?;
         let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
         if source.session_id != target.session_id {
@@ -2204,7 +2205,7 @@ impl ProcessingStore {
         turn_id: i64,
         target_cluster_id: i64,
     ) -> Result<SpeakerTurnView> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let turn = fetch_required_speaker_turn(&mut *transaction, turn_id).await?;
         let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
         if turn.session_id != target.session_id {
@@ -2242,7 +2243,7 @@ impl ProcessingStore {
         )
         .bind(provider)
         .bind(model_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         rows.into_iter()
             .map(|row| {
@@ -2270,7 +2271,7 @@ impl ProcessingStore {
         )
         .bind(provider)
         .bind(model_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         rows.into_iter()
             .map(|row| {
@@ -2307,7 +2308,7 @@ impl ProcessingStore {
              GROUP BY person_profiles.id",
         )
         .bind(person_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         map_person_profile(row)
     }
@@ -2323,13 +2324,13 @@ impl ProcessingStore {
              WHERE id = ?1",
         )
         .bind(cluster_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         map_speaker_cluster_view(row)
     }
 
     async fn get_required_speaker_turn(&self, turn_id: i64) -> Result<SpeakerTurnView> {
-        fetch_required_speaker_turn(&self.pool, turn_id).await
+        fetch_required_speaker_turn(self.db.read(), turn_id).await
     }
 }
 
@@ -3136,7 +3137,7 @@ mod tests {
             .await
             .expect("in-memory db should open");
         MIGRATOR.run(&pool).await.expect("migrations should apply");
-        ProcessingStore::new(pool)
+        ProcessingStore::new(CaptureDb::single(pool))
     }
 
     /// FIX 3 (SQL claim path): the SQL-atomic claim in

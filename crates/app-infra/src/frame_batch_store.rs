@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, Transaction};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -10,6 +10,7 @@ pub use crate::hidden_segment_workspace::{
 };
 
 use crate::{
+    db::CaptureDb,
     hidden_segment_workspace::HiddenSegmentWorkspaceRepair,
     jobs::{BackgroundJob, BackgroundJobStatus, JobDescriptor, JobStore},
     processing::{Frame, ProcessingStore, FRAME_SUBJECT_TYPE, OCR_PROCESSOR},
@@ -117,15 +118,15 @@ pub(crate) struct SegmentWorkspaceFrameBatchReferences {
 
 #[derive(Clone)]
 pub struct FrameBatchStore {
-    pool: SqlitePool,
+    db: CaptureDb,
     jobs: JobStore,
 }
 
 impl FrameBatchStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
+    pub(crate) fn new(db: CaptureDb) -> Self {
         Self {
-            jobs: JobStore::new(pool.clone()),
-            pool,
+            jobs: JobStore::new(db.clone()),
+            db,
         }
     }
 
@@ -134,7 +135,7 @@ impl FrameBatchStore {
         session_id: &str,
         captured_at: &str,
     ) -> Result<FrameBatch> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let batch = self
             .upsert_open_batch_for_frame_in_transaction(&mut transaction, session_id, captured_at)
             .await?;
@@ -187,7 +188,7 @@ impl FrameBatchStore {
         batch_id: i64,
         captured_at: &str,
     ) -> Result<FrameBatch> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
 
         let batch = self
             .attach_frame_to_batch_in_transaction(&mut transaction, frame_id, batch_id, captured_at)
@@ -254,7 +255,7 @@ impl FrameBatchStore {
                )",
         )
         .bind(FRAME_BATCH_FINALIZE_JOB_KIND)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         sqlx::query(
@@ -270,13 +271,13 @@ impl FrameBatchStore {
                )",
         )
         .bind(FRAME_BATCH_FINALIZE_JOB_KIND)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         let rows = sqlx::query(
             "SELECT id FROM frame_batches WHERE status = 'closed' AND finalize_job_id IS NULL ORDER BY id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.write())
         .await?;
 
         let mut scheduled = 0;
@@ -297,7 +298,7 @@ impl FrameBatchStore {
         let rows = sqlx::query(
             "SELECT DISTINCT session_id FROM frame_batches WHERE status = 'open' ORDER BY session_id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.write())
         .await?;
 
         let mut scheduled = 0;
@@ -314,7 +315,7 @@ impl FrameBatchStore {
     }
 
     pub async fn get(&self, batch_id: i64) -> Result<Option<FrameBatch>> {
-        get_frame_batch_optional(&self.pool, batch_id).await
+        get_frame_batch_optional(self.db.read(), batch_id).await
     }
 
     pub async fn get_required(&self, batch_id: i64) -> Result<FrameBatch> {
@@ -335,7 +336,7 @@ impl FrameBatchStore {
                      ORDER BY id DESC",
                 )
                 .bind(session_id)
-                .fetch_all(&self.pool)
+                .fetch_all(self.db.read())
                 .await?
             }
             None => {
@@ -346,7 +347,7 @@ impl FrameBatchStore {
                      FROM frame_batches \
                      ORDER BY id DESC",
                 )
-                .fetch_all(&self.pool)
+                .fetch_all(self.db.read())
                 .await?
             }
         };
@@ -364,7 +365,7 @@ impl FrameBatchStore {
              ORDER BY id ASC",
         )
         .bind(batch_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_frame).collect()
@@ -389,7 +390,7 @@ impl FrameBatchStore {
         )
         .bind(workspace_prefix)
         .bind(workspace_path_prefix_upper_bound(workspace_prefix))
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut frame_count = 0_i64;
@@ -424,7 +425,7 @@ impl FrameBatchStore {
         &self,
         workspace_dir: &Path,
     ) -> Result<Option<SegmentWorkspaceCleanupDebugInfo>> {
-        HiddenSegmentWorkspaceRepair::new(self.clone(), ProcessingStore::new(self.pool.clone()))
+        HiddenSegmentWorkspaceRepair::new(self.clone(), ProcessingStore::new(self.db.clone()))
             .classify_hidden_segment_workspace(workspace_dir)
             .await
     }
@@ -445,7 +446,7 @@ impl FrameBatchStore {
         recordings_root: &Path,
         context: &crate::HiddenSegmentWorkspaceRepairContext,
     ) -> Result<HiddenSegmentWorkspaceRepairResult> {
-        HiddenSegmentWorkspaceRepair::new(self.clone(), ProcessingStore::new(self.pool.clone()))
+        HiddenSegmentWorkspaceRepair::new(self.clone(), ProcessingStore::new(self.db.clone()))
             .repair_hidden_segment_workspaces_with_context(recordings_root, context)
             .await
     }
@@ -455,7 +456,7 @@ impl FrameBatchStore {
         session_id: &str,
         active_batch_id: Option<i64>,
     ) -> Result<Vec<FrameBatch>> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let closed = self
             .close_completed_batches_for_session_in_transaction(
                 &mut transaction,
@@ -472,7 +473,7 @@ impl FrameBatchStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<FrameBatch>> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let closed = self
             .close_and_schedule_all_batches_for_session_in_transaction(&mut transaction, session_id)
             .await?;
@@ -536,7 +537,7 @@ impl FrameBatchStore {
         &self,
         batch_id: i64,
     ) -> Result<Option<BackgroundJob>> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.write().begin().await?;
         let job = self
             .enqueue_finalize_job_if_needed_in_transaction(&mut transaction, batch_id)
             .await?;
@@ -596,7 +597,7 @@ impl FrameBatchStore {
 
     pub async fn claim_next_finalize_job(&self) -> Result<Option<BackgroundJob>> {
         loop {
-            let mut transaction = self.pool.begin().await?;
+            let mut transaction = self.db.write().begin().await?;
             let row = sqlx::query(
                 "SELECT background_jobs.id FROM background_jobs \
                  INNER JOIN frame_batches ON frame_batches.finalize_job_id = background_jobs.id \
@@ -710,7 +711,7 @@ impl FrameBatchStore {
         )
         .bind(batch_id)
         .bind(finalized_output_path)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         self.get_required(batch_id).await
@@ -725,7 +726,7 @@ impl FrameBatchStore {
         )
         .bind(batch_id)
         .bind(error_text)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         self.get_required(batch_id).await
@@ -738,7 +739,7 @@ impl FrameBatchStore {
              WHERE id = ?1 AND status = 'running'",
         )
         .bind(job_id)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         self.jobs
@@ -774,7 +775,7 @@ impl FrameBatchStore {
 
         sqlx::query(&query)
             .bind(batch_id)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         self.get_required(batch_id).await
     }
@@ -792,7 +793,7 @@ impl FrameBatchStore {
         .bind(batch_id)
         .bind(FRAME_SUBJECT_TYPE)
         .bind(OCR_PROCESSOR)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?
         .get::<i64, _>("pending_count");
 
@@ -1074,8 +1075,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let batch = store
                 .upsert_open_batch_for_frame("session-b", "2026-04-12T10:01:00Z")
@@ -1145,8 +1146,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let batch = store
                 .upsert_open_batch_for_frame("session-retry", "2026-04-12T10:01:00Z")
@@ -1239,8 +1240,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let pending_batch = store
                 .upsert_open_batch_for_frame("session-ready", "2026-04-12T10:01:00Z")
@@ -1332,8 +1333,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
             let frames_dir = recordings_day_dir
@@ -1399,7 +1400,7 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let store = FrameBatchStore::new(pool.clone());
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let batch = store
                 .upsert_open_batch_for_frame("session-complete", "2026-04-12T10:01:00Z")
@@ -1434,8 +1435,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let batch = store
                 .upsert_open_batch_for_frame("session-null-path", "2026-04-12T10:01:00Z")
@@ -1498,8 +1499,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
             let frames_dir = recordings_day_dir
@@ -1575,7 +1576,7 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let store = FrameBatchStore::new(pool.clone());
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let batch = store
                 .upsert_open_batch_for_frame("session-null", "2026-04-12T10:01:00Z")
@@ -1618,8 +1619,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let batch = store
                 .upsert_open_batch_for_frame("session-retry", "2026-04-12T10:01:00Z")
@@ -1710,8 +1711,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             let batch = store
                 .upsert_open_batch_for_frame("session-active", "2026-04-12T10:01:00Z")
@@ -1781,8 +1782,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = FrameBatchStore::new(CaptureDb::single(pool.clone()));
 
             // `.x-segment-0001` is a strict textual prefix of `.x-segment-0001b`,
             // the exact case where a naive range bound could leak a sibling's
