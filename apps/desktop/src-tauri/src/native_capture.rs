@@ -3116,6 +3116,11 @@ pub fn start_native_capture(
     app_notifications_state: tauri::State<'_, AppNotificationsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    // [perf] This command runs on the main thread; `start_native_capture_inner`
+    // sets up the capture stream synchronously. Timing it separates capture-setup
+    // latency from the surrounding emit/status-bar work. Logged only when debug
+    // logging is enabled.
+    let started = std::time::Instant::now();
     let response = start_native_capture_inner(
         "command",
         request,
@@ -3125,8 +3130,13 @@ pub fn start_native_capture(
         app_notifications_state,
         app_handle.clone(),
     )?;
+    let setup_ms = started.elapsed().as_millis();
     emit_native_capture_session_changed(&app_handle, &response.session);
     crate::status_bar::refresh(&app_handle);
+    debug_log::log_info(format!(
+        "[perf] start_native_capture command {}ms (capture setup {setup_ms}ms)",
+        started.elapsed().as_millis()
+    ));
     Ok(response)
 }
 
@@ -3246,6 +3256,7 @@ pub async fn stop_native_capture(
     // ordering (the completion write finishes before we emit the change event).
     // The tray/relaunch/shortcut entry points keep calling the sync helper
     // directly so they still complete in-line.
+    let started = std::time::Instant::now();
     let handle = app_handle.clone();
     let response = tauri::async_runtime::spawn_blocking(move || {
         stop_native_capture_with_state(handle.state::<NativeCaptureState>(), &handle)
@@ -3255,7 +3266,15 @@ pub async fn stop_native_capture(
         code: "stop_native_capture_join".to_string(),
         message: format!("stop native capture task failed: {error}"),
     })??;
+    // [perf] `stop work` is the off-main-thread capture finalization + DB writes;
+    // the total adds the emit/status-bar work. Logged only when debug logging is
+    // enabled.
+    let stop_work_ms = started.elapsed().as_millis();
     emit_native_capture_session_changed(&app_handle, &response.session);
     crate::status_bar::refresh(&app_handle);
+    debug_log::log_info(format!(
+        "[perf] stop_native_capture command {}ms (stop work {stop_work_ms}ms)",
+        started.elapsed().as_millis()
+    ));
     Ok(response)
 }

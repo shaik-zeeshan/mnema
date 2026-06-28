@@ -399,14 +399,29 @@ impl AppInfra {
     /// cost real time, so the desktop app runs this off the window-open path.
     /// It must complete before processing workers are spawned.
     pub async fn run_startup_maintenance(&self) -> Result<()> {
+        // [perf] Timing each pass surfaces whether a long-running maintenance
+        // write (notably the projection backfill, one write transaction) holds
+        // the write lock long enough to stall interactive start/stop writes.
+        // Only logged when debug logging is enabled.
+        let maintenance_started = std::time::Instant::now();
         // Stale-only: this runs on the deferred-startup thread while model-deletion commands can be
         // live and holding a freshly acquired cleanup lock, so only clear locks old enough to be
         // orphaned by a prior crash (see `MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS`).
         self.processing
             .clear_stale_model_cleanup_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
             .await?;
+        let equivalence_started = std::time::Instant::now();
         self.processing.backfill_frame_equivalence().await?;
+        capture_runtime::debug_log!(
+            "[perf][maintenance] backfill_frame_equivalence {}ms",
+            equivalence_started.elapsed().as_millis()
+        );
+        let projections_started = std::time::Instant::now();
         self.search.backfill_missing_projections().await?;
+        capture_runtime::debug_log!(
+            "[perf][maintenance] backfill_missing_projections {}ms (single write transaction)",
+            projections_started.elapsed().as_millis()
+        );
         self.jobs.reconcile_orphaned_running_jobs().await?;
         let reclamation = self.processing.reconcile_orphaned_running_jobs().await?;
         if reclamation.requeued > 0 || reclamation.failed_on_ceiling > 0 {
@@ -422,6 +437,10 @@ impl AppInfra {
         self.frame_batches
             .reconcile_open_batches_without_active_capture()
             .await?;
+        capture_runtime::debug_log!(
+            "[perf][maintenance] run_startup_maintenance total {}ms",
+            maintenance_started.elapsed().as_millis()
+        );
         Ok(())
     }
 
