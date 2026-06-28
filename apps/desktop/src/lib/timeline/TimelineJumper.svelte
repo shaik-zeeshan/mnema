@@ -635,7 +635,7 @@
     text-transform: none;
     letter-spacing: 0.01em;
     font-weight: 400;
-    font-size: var(--text-base);
+    font-size: var(--text-xs);
   }
   .timeline__jump-trigger--open {
     border-color: var(--app-accent-border);

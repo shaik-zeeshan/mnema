@@ -7866,6 +7866,11 @@
     margin-left: auto;
   }
 
+  /* Align bar-2 control typography with the app titlebar (10px). */
+  .timeline__bar .btn--sm {
+    font-size: var(--text-xs);
+  }
+
   /* ── Recording control cluster ─────────────────────────────
      Recording status + start/stop now live in the app-wide title bar
      (see `routes/+layout.svelte`); the previous `.timeline__capture*`
