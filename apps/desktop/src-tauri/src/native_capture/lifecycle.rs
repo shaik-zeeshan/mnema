@@ -20,7 +20,7 @@ use super::segments::{
     pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
     pause_screen_for_inactivity_with_app_handle, pause_system_audio_for_inactivity_with_app_handle,
     plan_live_rotation_segment, reanchor_active_segment_timing,
-    recover_from_segment_finalize_error, recover_screen_capture_after_wake,
+    flush_frame_artifacts, recover_from_segment_finalize_error, recover_screen_capture_after_wake,
     resume_microphone_from_inactivity, resume_runtime_from_inactivity,
     resume_screen_from_inactivity, resume_system_audio_from_inactivity, start_capture_runtime,
     start_segment_with_current_privacy_filter, stop_active_sessions_after_failure,
@@ -306,6 +306,39 @@ impl RecordingLifecycle {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn handle_system_will_sleep(&mut self) -> bool {
+        // `NSWorkspaceWillSleep` fires *before* the machine sleeps, so the
+        // ScreenCaptureKit stream is still live. Stop the writer now so the tail
+        // segment's `.mov` is finalized with its closing `moov` atom — the
+        // `ActiveScreenCaptureSession` has no `Drop` that does this, so simply
+        // nulling it (as the teardown below does) leaves a truncated, unopenable
+        // file. The screen path stays in `current_segment_output_files` so wake
+        // recovery finalizes the now-complete tail; without the explicit stop that
+        // finalize fails and the whole last segment — plus its buffered OCR frames
+        // — is dropped. Flush those frame artifacts too, since the worker's input
+        // channel goes quiet once the session is torn down.
+        if self.runtime.is_running
+            && self
+                .runtime
+                .requested_sources
+                .as_ref()
+                .is_some_and(|sources| sources.screen)
+            && self.runtime.active_screen_session.is_some()
+        {
+            if let Err(error) = capture_screen::stop_screen_capture_session(
+                capture_screen::StopScreenCaptureSessionArgs {
+                    active_session: &mut self.runtime.active_screen_session,
+                    inactivity_tail_trim_seconds: 0,
+                },
+            ) {
+                super::debug_log::log(format!(
+                    "failed stopping live screen session for system sleep; tail segment may be unfinalizable: [{}] {}",
+                    error.code, error.message
+                ));
+            }
+            if let Some(tx) = self.runtime.frame_artifact_tx.as_ref() {
+                flush_frame_artifacts(tx);
+            }
+        }
         self.clear_screen_state_for_sleep_or_stop()
     }
 
