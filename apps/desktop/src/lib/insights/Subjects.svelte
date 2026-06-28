@@ -128,19 +128,27 @@
   // expand container is an interaction skeleton — Slice 3 fills its content.
   let expandedSubject = $state<string | null>(null);
 
-  // Per-tier paging: each tier shows at most TIER_PAGE rows until the reader
-  // opts into "Show more", which adds the tier's id to `expandedTiers`. Keeps a
-  // crowded tier (e.g. a big "Forming" pile) from dominating the surface while
-  // still being one click from the full list. Reassign the Set on change so the
-  // $state reacts (plain Sets aren't deep-proxied in Svelte 5).
+  // Per-tier paging: each tier shows TIER_PAGE rows at a time. `tierShown` maps a
+  // tier id to how many rows it currently reveals (absent → the default page).
+  // "Show 10 more" grows the count one page at a time rather than dumping the
+  // whole list, so a crowded tier (e.g. a big "Forming" pile) never floods the
+  // surface in a single click. Reassign the Map on change so the $state reacts
+  // (plain Maps aren't deep-proxied in Svelte 5).
   const TIER_PAGE = 10;
-  let expandedTiers = $state<Set<string>>(new Set());
+  let tierShown = $state<Map<string, number>>(new Map());
 
-  function toggleTier(id: string): void {
-    const next = new Set(expandedTiers);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    expandedTiers = next;
+  function shownCount(id: string): number {
+    return tierShown.get(id) ?? TIER_PAGE;
+  }
+  function showMoreTier(id: string): void {
+    const next = new Map(tierShown);
+    next.set(id, shownCount(id) + TIER_PAGE);
+    tierShown = next;
+  }
+  function collapseTier(id: string): void {
+    const next = new Map(tierShown);
+    next.delete(id);
+    tierShown = next;
   }
 
   // Per-subject real trajectory history, fetched lazily. Maps subject → (map of
@@ -1088,10 +1096,10 @@
   {:else}
     <!-- Tiered layout — one section per non-empty tier. -->
     {#each tiers as tier (tier.id)}
-      {@const tierOpen = expandedTiers.has(tier.id)}
-      {@const shown =
-        tierOpen ? tier.items : tier.items.slice(0, TIER_PAGE)}
+      {@const visible = shownCount(tier.id)}
+      {@const shown = tier.items.slice(0, visible)}
       {@const hidden = tier.items.length - shown.length}
+      {@const nextPage = Math.min(TIER_PAGE, hidden)}
       <section class="conv-tier" class:conv-tier--faded={tier.faded}>
         <div class="conv-tier-head">
           <span class="section-title">{tier.title}</span>
@@ -1103,18 +1111,21 @@
             {@render row(r)}
           {/each}
         </div>
-        {#if tier.items.length > TIER_PAGE}
+        {#if hidden > 0}
           <button
             type="button"
             class="conv-tier-more"
-            aria-expanded={tierOpen}
-            onclick={() => toggleTier(tier.id)}
+            onclick={() => showMoreTier(tier.id)}
           >
-            {#if tierOpen}
-              Show less
-            {:else}
-              Show {hidden} more
-            {/if}
+            Show {nextPage} more
+          </button>
+        {:else if visible > TIER_PAGE}
+          <button
+            type="button"
+            class="conv-tier-more"
+            onclick={() => collapseTier(tier.id)}
+          >
+            Show less
           </button>
         {/if}
       </section>
