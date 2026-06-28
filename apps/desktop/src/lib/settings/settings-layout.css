@@ -109,6 +109,10 @@
     border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
+  .settings-shell .rail-back:active {
+    background: var(--app-surface-active);
+    transform: translateY(0.5px);
+  }
   .settings-shell .rail-back svg {
     width: 13px;
     height: 13px;
@@ -184,7 +188,7 @@
 
   .settings-shell .nav-cat {
     margin: 0 0 5px 8px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -221,7 +225,7 @@
     stroke-linejoin: round;
   }
   .settings-shell .nav-item span {
-    font-size: 13px;
+    font-size: var(--text-md);
     font-weight: 500;
     line-height: 1;
     color: inherit;
@@ -237,6 +241,10 @@
     outline: none;
     border-color: var(--app-accent);
     box-shadow: var(--app-ring);
+  }
+  /* Momentary press cue so a click registers before a slow section switch. */
+  .settings-shell .nav-item:active {
+    background: var(--app-surface-active);
   }
 
   /* Active item — quiet neutral fill + a restrained Mnema cue: a 2px accent
@@ -335,6 +343,38 @@
     color: var(--app-text-muted);
     font-family: var(--app-font-mono, ui-monospace, monospace);
     white-space: nowrap;
+    transition: color 0.15s ease;
+  }
+
+  /* Raise footer salience on a state change so an edit near the bottom registers
+     as saved/saving rather than being acknowledged only by a far-off 6px dot.
+     The whole footer tints to the status color, and a "saved" change briefly
+     washes the footer background so it reads as a transient confirmation. */
+  .settings-shell .rail-foot--saving .rail-foot__label,
+  .settings-shell .rail-foot--ok .rail-foot__label {
+    color: var(--app-accent);
+  }
+  .settings-shell .rail-foot--blocked .rail-foot__label {
+    color: var(--app-warn-strong);
+  }
+  .settings-shell .rail-foot--error .rail-foot__label {
+    color: var(--app-danger-text);
+  }
+  .settings-shell .rail-foot--ok {
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--app-accent) 9%, transparent);
+    animation: rail-foot-flash 1.6s ease-out;
+  }
+
+  @keyframes rail-foot-flash {
+    0% { background: color-mix(in srgb, var(--app-accent) 20%, transparent); }
+    100% { background: color-mix(in srgb, var(--app-accent) 9%, transparent); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-shell .rail-foot--ok {
+      animation: none;
+    }
   }
 
   @keyframes status-pulse {

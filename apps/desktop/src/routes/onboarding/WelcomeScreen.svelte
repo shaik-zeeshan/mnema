@@ -66,14 +66,12 @@
             Use recommended defaults
           {/if}
         </button>
-        <!-- The old "Apply recommended defaults" read as if it might finish setup
-             or start recording. Spell out what it actually does: presets the
-             capture/processing options, then still drops into the permissions
-             step (nothing records until you grant access and finish). -->
+        <!-- One-line note: the recommended path is the lower-friction route, so it
+             shouldn't read heavier than "Begin setup". Spell out only what differs
+             — it presets sensible options — and reassure nothing records yet. -->
         <p class="welcome__accel-note">
-          Turns on screen recording, on-screen text search, and transcription with
-          sensible settings — then takes you to grant permissions. Nothing records
-          until you finish setup.
+          Presets capture, text search, and transcription — you still grant
+          permissions and finish before anything records.
         </p>
       </div>
       {#if c.errorMessage}
@@ -130,7 +128,7 @@
     margin: 12px auto 0;
     max-width: 44ch;
     padding: 10px 14px;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-danger);
     background: var(--app-danger-bg);
@@ -144,7 +142,7 @@
   .welcome__retry {
     flex: 0 0 auto;
     padding: 4px 12px;
-    font-size: 12px;
+    font-size: var(--text-base);
     border: 1px solid var(--app-danger-border);
     border-radius: 6px;
     color: var(--app-danger);

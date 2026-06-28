@@ -307,7 +307,7 @@
       <div class="prov-stack">
         <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
           <div>
-            <div class="model-status__title">AI {aiRuntimeStatus?.available ? "ready" : "unavailable"}</div>
+            <div class="model-status__title">{aiRuntimeStatus?.available ? "AI runtime is ready" : "AI runtime isn’t ready yet"}</div>
             <div class="model-status__meta">
               {#if aiRuntimeStatusLoading}
                 Checking providers…

@@ -932,7 +932,7 @@
     text-align: right;
   }
   .rank-trend {
-    font-size: 9px;
+    font-size: var(--text-xs);
     width: 11px;
     text-align: center;
     line-height: 1;
@@ -1149,7 +1149,7 @@
     position: absolute;
     left: 2px;
     bottom: 2px;
-    font-size: 7px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     padding: 0 3px;
     border-radius: 3px;
@@ -1214,7 +1214,7 @@
 
   .insp-subhead {
     padding: 9px 13px 5px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-subtle);

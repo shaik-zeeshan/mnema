@@ -641,6 +641,18 @@
   );
   const settingsReturnsToTimeline = $derived(isSettingsRoute && !settingsReturnsToInsights);
 
+  // The gear is a real toggle: opening Settings from a surface, then clicking
+  // the gear again returns to the surface it was opened from (Timeline or
+  // Insights) instead of being a no-op with no obvious exit.
+  function onSettingsButtonClick(): void {
+    if (isSettings) {
+      const returnsToInsights = normalizeAppPathname(getLastMainSurface()).startsWith("/insights");
+      goToSurface(returnsToInsights ? "insights" : "timeline");
+      return;
+    }
+    void openSettings();
+  }
+
   // Quick Recall has no in-app door otherwise — it is only summonable via the
   // global ⌥Space shortcut, which a new user can't discover. The titlebar
   // affordance asks Rust to toggle the Quick Recall panel (the same path the
@@ -971,9 +983,13 @@
             class:titlebar__record--resume={showResume}
             onclick={showResume ? resumeCapture : pauseCapture}
             disabled={pauseDisabled}
+            aria-busy={captureLoadingPause}
             title={pauseButtonTitle}
             aria-label={pauseButtonTitle}
           >
+            {#if captureLoadingPause}
+              <span class="titlebar__record-spinner" aria-hidden="true"></span>
+            {/if}
             <span>{captureLoadingPause ? (showResume ? "Resuming…" : "Pausing…") : showResume ? "Resume" : "Pause"}</span>
           </button>
           <button
@@ -981,10 +997,15 @@
             class="titlebar__record titlebar__record--stop"
             onclick={stopCapture}
             disabled={captureLoadingStop}
+            aria-busy={captureLoadingStop}
             title={`Stop recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Stop recording"
           >
-            <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
+            {#if captureLoadingStop}
+              <span class="titlebar__record-spinner" aria-hidden="true"></span>
+            {:else}
+              <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
+            {/if}
             <span>{captureLoadingStop ? "Stopping…" : "Stop"}</span>
           </button>
         {:else}
@@ -997,7 +1018,11 @@
             title={captureLoadingSettings ? "Preparing recording controls…" : `Start recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Start recording"
           >
-            <span class="titlebar__record-glyph" aria-hidden="true"></span>
+            {#if captureLoadingStart || captureLoadingSettings}
+              <span class="titlebar__record-spinner" aria-hidden="true"></span>
+            {:else}
+              <span class="titlebar__record-glyph" aria-hidden="true"></span>
+            {/if}
             <span>{captureLoadingStart ? "Starting…" : captureLoadingSettings ? "Loading…" : "Record"}</span>
           </button>
         {/if}
@@ -1221,126 +1246,132 @@
         <span class="sr-only" aria-live={notificationLiveTone} aria-atomic="true">
           {notificationSummary}
         </span>
-        {#if hasNotificationIndicator}
-          <div class="titlebar__notifications">
-            <button
-              bind:this={notificationsButtonEl}
-              type="button"
-              class="titlebar__settings titlebar__notifications-button"
-              aria-label={notificationsAriaLabel}
-              aria-expanded={notificationsOpen}
-              aria-controls="notification-popover"
-              title="Notifications"
-              onkeydown={onNotificationsButtonKeydown}
-              onpointerdown={() => { notificationsOpenedByKeyboard = false; }}
-              onclick={() => toggleNotifications(notificationsOpenedByKeyboard)}
+        <!-- Persistent bell slot: the button stays mounted with a quiet rest
+             state (no count dot) so the neighbouring gear/help/theme icons
+             don't shift when alerts arrive or clear. The count dot + popover
+             stay gated on a live indicator. -->
+        <div class="titlebar__notifications">
+          <button
+            bind:this={notificationsButtonEl}
+            type="button"
+            class="titlebar__settings titlebar__notifications-button"
+            class:active={notificationsOpen}
+            class:titlebar__notifications-button--quiet={!hasNotificationIndicator}
+            aria-label={notificationsAriaLabel}
+            aria-expanded={notificationsOpen}
+            aria-controls="notification-popover"
+            title={hasNotificationIndicator ? "Notifications" : "No notifications"}
+            onkeydown={onNotificationsButtonKeydown}
+            onpointerdown={() => { notificationsOpenedByKeyboard = false; }}
+            onclick={() => toggleNotifications(notificationsOpenedByKeyboard)}
+          >
+            <svg
+              class="titlebar__settings-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
             >
-              <svg
-                class="titlebar__settings-icon"
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
-                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-              </svg>
+              <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+            </svg>
+            {#if hasNotificationIndicator}
               <span
                 class="titlebar__notification-dot"
                 class:titlebar__notification-dot--warning={hasWarningNotification && !hasErrorNotification && !notificationLoadError}
                 class:titlebar__notification-dot--error={hasErrorNotification || notificationLoadError !== null}
                 aria-hidden="true"
               >{notificationCount > 0 ? notificationCount : "!"}</span>
-            </button>
-            {#if notificationsOpen}
-              <div
-                id="notification-popover"
-                class="notification-popover"
-                role="dialog"
-                aria-label="Notifications"
-                tabindex="-1"
-                bind:this={notificationsPopoverEl}
-                onkeydown={onNotificationsPopoverKeydown}
-              >
-                <div class="notification-popover__head">
-                  <span>Notifications</span>
-                  {#if hasNotifications}
-                    <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
-                      Clear all
-                    </button>
-                  {/if}
+            {/if}
+          </button>
+          {#if notificationsOpen}
+            <div
+              id="notification-popover"
+              class="notification-popover"
+              role="dialog"
+              aria-label="Notifications"
+              tabindex="-1"
+              bind:this={notificationsPopoverEl}
+              onkeydown={onNotificationsPopoverKeydown}
+            >
+              <div class="notification-popover__head">
+                <span>Notifications</span>
+                {#if hasNotifications}
+                  <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
+                    Clear all
+                  </button>
+                {/if}
+              </div>
+              {#if notificationActionError}
+                <div class="notification-popover__error" role="alert">
+                  <span class="notification-popover__error-text">{notificationActionError}</span>
+                  <button
+                    type="button"
+                    class="notification-popover__error-dismiss"
+                    onclick={dismissAppNotificationError}
+                  >
+                    Dismiss
+                  </button>
                 </div>
-                {#if notificationActionError}
-                  <div class="notification-popover__error" role="alert">
-                    <span class="notification-popover__error-text">{notificationActionError}</span>
-                    <button
-                      type="button"
-                      class="notification-popover__error-dismiss"
-                      onclick={dismissAppNotificationError}
-                    >
-                      Dismiss
-                    </button>
+              {/if}
+              <div class="notification-popover__list">
+                {#if notificationLoadError}
+                  <div class="notification-item notification-item--error" role="alert">
+                    <div class="notification-item__body">
+                      <span class="notification-item__title">Couldn't load notifications</span>
+                      <span class="notification-item__message">{notificationLoadError}</span>
+                      <button
+                        type="button"
+                        class="notification-item__action"
+                        onclick={() => void reloadAppNotifications()}
+                      >
+                        Try again
+                      </button>
+                    </div>
                   </div>
                 {/if}
-                <div class="notification-popover__list">
-                  {#if notificationLoadError}
-                    <div class="notification-item notification-item--error" role="alert">
-                      <div class="notification-item__body">
-                        <span class="notification-item__title">Couldn't load notifications</span>
-                        <span class="notification-item__message">{notificationLoadError}</span>
+                {#each appNotifications.items as notification (notification.id)}
+                  <div class="notification-item notification-item--{notification.severity}">
+                    <div class="notification-item__body">
+                      <span class="notification-item__title">{notification.title}</span>
+                      <span class="notification-item__message">{notification.message}</span>
+                      <time
+                        class="notification-item__time"
+                        datetime={new Date(notification.createdAtUnixMs).toISOString()}
+                        title={formatNotificationTimestamp(notification.createdAtUnixMs)}
+                      >{formatNotificationAge(notification.createdAtUnixMs)}</time>
+                      {#if notification.action?.type === "open_settings_tab"}
                         <button
                           type="button"
                           class="notification-item__action"
-                          onclick={() => void reloadAppNotifications()}
+                          onclick={() => void runNotificationAction(notification)}
                         >
-                          Try again
+                          {notificationActionLabel(notification)}
                         </button>
-                      </div>
+                      {/if}
                     </div>
-                  {/if}
-                  {#each appNotifications.items as notification (notification.id)}
-                    <div class="notification-item notification-item--{notification.severity}">
-                      <div class="notification-item__body">
-                        <span class="notification-item__title">{notification.title}</span>
-                        <span class="notification-item__message">{notification.message}</span>
-                        <time
-                          class="notification-item__time"
-                          datetime={new Date(notification.createdAtUnixMs).toISOString()}
-                          title={formatNotificationTimestamp(notification.createdAtUnixMs)}
-                        >{formatNotificationAge(notification.createdAtUnixMs)}</time>
-                        {#if notification.action?.type === "open_settings_tab"}
-                          <button
-                            type="button"
-                            class="notification-item__action"
-                            onclick={() => void runNotificationAction(notification)}
-                          >
-                            {notificationActionLabel(notification)}
-                          </button>
-                        {/if}
-                      </div>
-                      <button
-                        type="button"
-                        class="notification-item__clear"
-                        aria-label="Clear notification"
-                        onclick={() => void clearAppNotification(notification.id)}
-                      >
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-                          <path d="M2.5 2.5 9.5 9.5" />
-                          <path d="M9.5 2.5 2.5 9.5" />
-                        </svg>
-                      </button>
-                    </div>
-                  {/each}
-                </div>
+                    <button
+                      type="button"
+                      class="notification-item__clear"
+                      aria-label="Clear notification"
+                      onclick={() => void clearAppNotification(notification.id)}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+                        <path d="M2.5 2.5 9.5 9.5" />
+                        <path d="M9.5 2.5 2.5 9.5" />
+                      </svg>
+                    </button>
+                  </div>
+                {/each}
               </div>
-            {/if}
-          </div>
-        {/if}
+            </div>
+          {/if}
+        </div>
         {#if canShowShortcutsHelp}
           <button
             type="button"
@@ -1375,10 +1406,10 @@
           type="button"
           class="titlebar__settings"
           class:active={isSettings}
-          aria-label="Open settings"
+          aria-label={isSettings ? "Close settings" : "Open settings"}
           aria-current={isSettings ? "page" : undefined}
-          title={`Settings (${shortcutDisplay("openSettings")})`}
-          onclick={() => void openSettings()}
+          title={isSettings ? "Close settings" : `Settings (${shortcutDisplay("openSettings")})`}
+          onclick={onSettingsButtonClick}
         >
           <svg
             class="titlebar__settings-icon"
@@ -1702,6 +1733,11 @@
     --app-overlay-bg-strong: rgba(10, 10, 16, 0.82);
     --app-overlay-border: rgba(255, 255, 255, 0.06);
 
+    /* Recessed inner shadow for form-control insets (Input/Select/Combobox/
+       Stepper). Softens in the light theme below so near-white fields don't
+       carry a hard 25%-black inner shadow. */
+    --app-input-recess: rgba(0, 0, 0, 0.25);
+
     --app-ocr-box: rgba(120, 220, 160, 0.45);
     --app-ocr-box-hover: rgba(120, 220, 160, 0.95);
     --app-ocr-box-fill: rgba(120, 220, 160, 0.10);
@@ -1722,14 +1758,18 @@
     --chart-grey-4: #757589;
     --chart-grey-5: #9a9ab0;
 
-    --cat-creating: #3dffa0;
+    /* "Creating" and "Entertainment" are rotated off the exact --app-accent /
+       --app-danger values so a category color never reads as the semantic
+       accent/error signal (grass-green vs the neon accent; coral-orange vs the
+       rose danger red). */
+    --cat-creating: #5fe07a;
     --cat-communication: #c0b0ff;
     --cat-meetings: #ff9fd0;
     --cat-research: #60b0ff;
     --cat-learning: #4fd8c8;
     --cat-organizing: #b0c080;
     --cat-personal: #d6a14a;
-    --cat-entertainment: #ff6b7a;
+    --cat-entertainment: #ff7a4d;
 
     --focus-deep: #3dffa0;
     --focus-mid: #d6a14a;
@@ -1858,6 +1898,9 @@
     --app-overlay-bg-strong: rgba(255, 255, 255, 0.86);
     --app-overlay-border: rgba(20, 24, 32, 0.12);
 
+    /* Softer inset recess on near-white fields (0.25 → 0.08). */
+    --app-input-recess: rgba(0, 0, 0, 0.08);
+
     --app-ocr-box: rgba(31, 122, 74, 0.42);
     --app-ocr-box-hover: rgba(31, 122, 74, 0.88);
     --app-ocr-box-fill: transparent;
@@ -1878,14 +1921,16 @@
     --chart-grey-4: #6a6a74;
     --chart-grey-5: #46464e;
 
-    --cat-creating: #1f7a4a;
+    /* "Creating"/"Entertainment" rotated off the exact --app-accent /
+       --app-danger values (see dark block) so categories never read semantic. */
+    --cat-creating: #2f8a3f;
     --cat-communication: #5949b8;
     --cat-meetings: #c2407f;
     --cat-research: #2b78c5;
     --cat-learning: #1f8579;
     --cat-organizing: #6f7a2e;
     --cat-personal: #9a5a12;
-    --cat-entertainment: #c43a48;
+    --cat-entertainment: #c2542b;
 
     --focus-deep: #1f7a4a;
     --focus-mid: #9a5a12;
@@ -2131,6 +2176,15 @@
     background: var(--app-icon-bg-hover);
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
+  }
+  .surface-titlebar__close:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .surface-titlebar__close:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
   }
 
   .titlebar__group {
@@ -2716,6 +2770,29 @@
   .titlebar__record-glyph--square {
     border-radius: 1px;
   }
+  /* In-flight spinner for the highest-stakes async actions (record / stop /
+     pause) so the button reads "busy", not frozen, while the lifecycle call is
+     outstanding. Inherits the button's text color via currentColor. */
+  .titlebar__record-spinner {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    animation: titlebar-spin 0.7s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes titlebar-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .titlebar__record-spinner {
+      animation: none;
+    }
+  }
 
   /* ── Surface actions ──────────────────────────────────────── */
   .titlebar__settings {
@@ -2764,6 +2841,12 @@
   .titlebar__notifications {
     position: relative;
     display: inline-flex;
+  }
+  /* Quiet rest state: the bell is always mounted (so neighbours don't shift),
+     but when there's nothing to open it recedes to the dim icon tone. */
+  .titlebar__notifications-button--quiet {
+    color: var(--app-icon-fg);
+    opacity: 0.5;
   }
   .titlebar__notifications-button {
     position: relative;
@@ -3178,7 +3261,7 @@
     font-weight: 700;
     line-height: 1;
     text-align: center;
-    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+    box-shadow: inset 0 -1px 0 var(--app-overlay-border);
   }
 
   .shortcut-help__note {

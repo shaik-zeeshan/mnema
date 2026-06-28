@@ -91,7 +91,7 @@
   }
 
   .switch-description {
-    font-size: 10px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     letter-spacing: 0.03em;
   }
@@ -106,7 +106,8 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 999px;
     cursor: pointer;
-    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease,
+      transform 0.18s ease;
     flex-shrink: 0;
     padding: 0;
     outline: none;
@@ -119,7 +120,12 @@
 
   :global(.switch-track:focus-visible) {
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+  }
+
+  /* Momentary press cue before the state flips. */
+  :global(.switch-track:active:not([data-disabled])) {
+    transform: scale(0.96);
   }
 
   :global(.switch-track[data-state="checked"]) {

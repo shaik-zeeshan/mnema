@@ -12,11 +12,15 @@
         sit directly on the page. Used by the keybinding lists, whose rows
         already carry their own borders — the parent frame is redundant. */
     bare?: boolean;
+    /** Render the section title as a nested/child heading (smaller, lighter,
+        inset) so a group sitting under a parent section reads as its child,
+        not a fifth equal-weight sibling. Used by the shortcut category lists. */
+    nested?: boolean;
     /** The stack of <SettingRow>s. */
     children: Snippet;
   }
 
-  let { title, hint, id, actions, bare = false, children }: Props = $props();
+  let { title, hint, id, actions, bare = false, nested = false, children }: Props = $props();
 </script>
 
 <!-- `id` is the deeplink + scroll-spy anchor — it MUST stay on this outer
@@ -24,7 +28,7 @@
 <section class="setting-group" {id}>
   <header class="setting-group__header">
     <div class="setting-group__heading">
-      <span class="setting-group__title">{title}</span>
+      <span class="setting-group__title" class:setting-group__title--nested={nested}>{title}</span>
       {#if hint}
         <span class="setting-group__hint">{hint}</span>
       {/if}
@@ -74,6 +78,17 @@
     letter-spacing: 0.13em;
     text-transform: uppercase;
     color: var(--app-text-strong);
+  }
+
+  /* Nested/child section title: a parent section (e.g. "Keyboard Shortcuts")
+     owns the strong eyebrow; the category groups beneath it are its children,
+     so lighten + inset their titles to read one level down rather than as
+     equal-weight siblings. */
+  .setting-group__title--nested {
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--app-text-muted);
+    padding-left: 8px;
   }
 
   .setting-group__hint {

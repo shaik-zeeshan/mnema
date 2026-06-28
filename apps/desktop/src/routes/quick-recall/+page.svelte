@@ -4437,7 +4437,7 @@
                       <span class="quick-recall__dot" aria-hidden="true"></span>
                       Searching your captures…
                     </p>
-                  {:else if turn.phase === "thinking" && turn.liveActivity === null}
+                  {:else if turn.phase === "thinking" && turn.liveActivity === null && !reasoningIsLive(turn)}
                     <p class="quick-recall__state quick-recall__state--working">
                       <span class="quick-recall__dot" aria-hidden="true"></span>
                       Thinking…
@@ -5730,6 +5730,15 @@
 
   .quick-recall__field--ask {
     gap: 12px;
+  }
+
+  /* WKWebView focus idiom: the borderless ask input delegates its focus ring to
+     the bar it sits in, mirroring the follow-up composer. Scoped to the input
+     (not bare :focus-within) so the ring doesn't fire when the sibling Back/Stop
+     buttons — which carry their own focus chrome — take focus. */
+  .quick-recall__field--ask:has(.quick-recall__ask-input:focus) {
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .quick-recall__back {

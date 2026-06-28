@@ -235,7 +235,10 @@
               <div class="model-status__title">{selectedOcrModel.displayName}</div>
               <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
             </div>
-            <span class="model-status__pill">{selectedOcrModel.available ? "available" : "unavailable"}</span>
+            <span
+              class="model-status__pill"
+              class:model-status__pill--ok={selectedOcrModel.available}
+            >{selectedOcrModel.available ? "available" : "unavailable"}</span>
           </div>
           <p class="group-hint">{selectedOcrModel.description}</p>
           {#if selectedOcrModel.runtimeMessage}
@@ -271,7 +274,7 @@
                   </button>
                 </div>
               {:else}
-                <button type="button" class="btn btn--ghost" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available} aria-busy={startingOcrDownload}>
+                <button type="button" class="btn btn--primary" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available} aria-busy={startingOcrDownload}>
                   {#if startingOcrDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedOcrModel.download.byteSize)}){/if}
                 </button>
               {/if}

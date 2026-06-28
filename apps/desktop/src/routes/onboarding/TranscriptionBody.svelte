@@ -129,7 +129,11 @@
       <div class="model-top">
         <div class="model-id">
           {model.displayName}
-          <div class="meta">{controller.transcriptionStatusLabel(model)}{model.description ? ` · ${model.description}` : ""}</div>
+          <!-- Status lives in the pill only (mirrors SemanticSearchBody); the meta
+               line carries the model description, not a second copy of the status. -->
+          {#if model.description}
+            <div class="meta">{model.description}</div>
+          {/if}
         </div>
         <span class="pill {pillClass}">
           <span class="d"></span>{controller.transcriptionStatusLabel(model)}

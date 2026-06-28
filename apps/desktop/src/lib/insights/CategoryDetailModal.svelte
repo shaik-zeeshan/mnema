@@ -301,7 +301,7 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: rgba(0, 0, 0, 0.42);
+    background: var(--app-overlay-bg);
     backdrop-filter: blur(10px);
   }
   .cat-modal__panel {
@@ -313,7 +313,7 @@
     border-radius: 18px;
     /* Depth comes from the lighter raised surface, not a heavy drop shadow. */
     background: var(--app-surface-raised);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+    box-shadow: var(--app-shadow-popover);
   }
   .cat-modal__header {
     display: flex;
@@ -343,7 +343,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    font-size: var(--text-lg);
     line-height: 1;
     border: 1px solid var(--app-border);
     border-radius: 8px;

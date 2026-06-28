@@ -53,7 +53,7 @@
 <SettingGroup
   id="settings-section-semanticSearch"
   title="Semantic Search Model"
-  hint="Meaning-based search runs fully on-device — on the GPU where available, otherwise the CPU. Pick a supported model, then Mnema embeds your captures in the background. Nothing is downloaded until you choose a model. The model stays on as a background indexer — it keeps re-embedding new captures (ongoing CPU/GPU and battery while it catches up), and switching models re-indexes every existing capture."
+  hint="Meaning-based search runs fully on-device. Pick a supported model and Mnema embeds your captures in the background; nothing downloads until you choose one."
 >
   {#snippet actions()}
     <ReloadButton
@@ -67,13 +67,19 @@
   <SettingRow
     label="Enable semantic search"
     description="Fuse meaning-based results with keyword search. Inert until a model below is installed."
+    full
   >
-    {#snippet control()}
+    {#snippet aside()}
       <Switch
         ariaLabel="Enable semantic search"
         checked={rec.draftSemanticSearchEnabled}
         onCheckedChange={(value) => void setSemanticSearchEnabled(value)}
       />
+    {/snippet}
+    {#snippet control()}
+      <p class="group-hint group-hint--warn">
+        Stays on as a background indexer — ongoing CPU/GPU and battery while it catches up, and switching models re-indexes every existing capture.
+      </p>
     {/snippet}
   </SettingRow>
 

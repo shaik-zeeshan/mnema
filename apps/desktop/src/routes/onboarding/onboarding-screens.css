@@ -331,7 +331,9 @@
   height: 360px;
   border-color: var(--app-accent);
   opacity: 0.18;
-  animation-delay: 1.6s;
+  /* Static inner ring — only the outer ring pulses, so the backdrop reads calm
+     rather than two competing pulses. */
+  animation: none;
 }
 @keyframes ob-ring-pulse {
   0%, 100% { transform: translate(-50%, -50%) scale(0.92); opacity: 0.15; }
@@ -417,7 +419,9 @@
 .ob-screen .finale__rec {
   letter-spacing: 0.12em;
   box-shadow: 0 0 0 0 var(--app-accent-glow);
-  animation: ob-cta-glow 2.4s ease-in-out infinite;
+  /* Glow plays once on entrance, then settles. Hover re-glows via the shared
+     `.cta:hover` ring — no restless infinite loop. */
+  animation: ob-cta-glow 2.4s ease-in-out;
 }
 @keyframes ob-cta-glow {
   0%, 100% { box-shadow: 0 0 0 0 var(--app-accent-glow); }

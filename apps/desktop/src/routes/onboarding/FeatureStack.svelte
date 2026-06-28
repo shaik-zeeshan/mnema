@@ -190,7 +190,7 @@
     flex: 0 0 auto;
     margin: 0 24px 12px;
     padding: 10px 14px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--app-danger);
     background: var(--app-danger-bg);
@@ -228,8 +228,12 @@
     transition: color 0.15s ease;
   }
   .hint-jump:hover {
-    color: var(--app-warn);
+    color: var(--app-warn-strong);
     text-decoration: underline;
+  }
+  .hint-jump:active {
+    color: var(--app-warn-strong);
+    transform: translateY(1px);
   }
   .hint-jump:focus-visible {
     outline: none;

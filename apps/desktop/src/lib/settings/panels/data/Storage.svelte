@@ -145,7 +145,7 @@
             <div class="row-actions">
               <button
                 type="button"
-                class="btn btn--ghost btn--sm"
+                class="btn btn--primary btn--sm"
                 onclick={restartNow}
                 disabled={restarting}
                 aria-busy={restarting}
@@ -180,10 +180,13 @@
           </button>
         </div>
         {#if retentionCleanupSummary}
-          <p class="group-hint">
-            Latest cleanup: {retentionCleanupSummary.deletedCaptureSegments} segment(s), {retentionCleanupSummary.deletedFrames}
-            frame(s), {retentionCleanupSummary.deletedAudioSegments} audio segment(s).
-          </p>
+          <div class="cleanup-result" aria-live="polite">
+            <strong>Latest cleanup</strong>
+            <p>
+              {retentionCleanupSummary.deletedCaptureSegments} segment(s), {retentionCleanupSummary.deletedFrames}
+              frame(s), {retentionCleanupSummary.deletedAudioSegments} audio segment(s).
+            </p>
+          </div>
         {/if}
         {#if retentionCleanupError}
           <p class="error-text">{retentionCleanupError}</p>
@@ -213,8 +216,12 @@
   .path-field .text-input {
     flex: 1 1 auto;
     min-width: 0;
-    /* Read-only display: keep the recessed field look but signal non-editing. */
+    /* Read-only display: de-chrome the editable recess into a flat path/code
+       chip so the field doesn't invite typing. */
     cursor: default;
+    box-shadow: none;
+    background: var(--app-surface-subtle);
+    font-family: var(--app-font-mono);
   }
 
   .path-field .btn {

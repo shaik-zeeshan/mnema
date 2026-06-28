@@ -109,17 +109,20 @@
   // local-calendar.
   let anchor = $state<number>(Date.now());
 
-  // Local-calendar bounds [startMs, endMs) for the active range.
-  const range = $derived.by<{ startMs: number; endMs: number }>(() => {
-    if (rangeMode === "day") {
-      const start = startOfDay(anchor);
+  // Local-calendar bounds [startMs, endMs) for the window containing `anchorMs`.
+  function windowFor(
+    anchorMs: number,
+    mode: RangeMode,
+  ): { startMs: number; endMs: number } {
+    if (mode === "day") {
+      const start = startOfDay(anchorMs);
       const end = new Date(start);
       end.setDate(end.getDate() + 1);
       return { startMs: start, endMs: end.getTime() };
     }
-    if (rangeMode === "week") {
+    if (mode === "week") {
       // Week starts Monday (local).
-      const d = new Date(startOfDay(anchor));
+      const d = new Date(startOfDay(anchorMs));
       const dow = (d.getDay() + 6) % 7; // 0 = Monday
       d.setDate(d.getDate() - dow);
       const start = d.getTime();
@@ -128,18 +131,31 @@
       return { startMs: start, endMs: end.getTime() };
     }
     // month
-    const d = new Date(anchor);
+    const d = new Date(anchorMs);
     const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
     const end = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
     return { startMs: start, endMs: end };
-  });
+  }
+
+  // Move an anchor by one window unit (mirrors the stepper / range math).
+  function shiftAnchor(anchorMs: number, mode: RangeMode, dir: -1 | 1): number {
+    const d = new Date(anchorMs);
+    if (mode === "day") d.setDate(d.getDate() + dir);
+    else if (mode === "week") d.setDate(d.getDate() + dir * 7);
+    else d.setMonth(d.getMonth() + dir);
+    return d.getTime();
+  }
+
+  // Local-calendar bounds [startMs, endMs) for the active range.
+  const range = $derived(windowFor(anchor, rangeMode));
+  // The window immediately before the active one — the baseline the headline
+  // "tracked" figure is compared against for the period-over-period delta.
+  const prevWindow = $derived(
+    windowFor(shiftAnchor(anchor, rangeMode, -1), rangeMode),
+  );
 
   function stepRange(dir: -1 | 1): void {
-    const d = new Date(anchor);
-    if (rangeMode === "day") d.setDate(d.getDate() + dir);
-    else if (rangeMode === "week") d.setDate(d.getDate() + dir * 7);
-    else d.setMonth(d.getMonth() + dir);
-    anchor = d.getTime();
+    anchor = shiftAnchor(anchor, rangeMode, dir);
   }
 
   function setMode(mode: RangeMode): void {
@@ -215,6 +231,8 @@
 
   // ── Loaded data ────────────────────────────────────────────────────────
   let usage = $state<UsageCharts | null>(null);
+  // Previous-window usage, the baseline for the tracked-delta (see `loadPrev`).
+  let prevUsage = $state<UsageCharts | null>(null);
   let activities = $state<Activity[]>([]);
   let conclusions = $state<Conclusion[]>([]);
   // Narrative lede for the active range. `null` is the normal absent case
@@ -394,7 +412,7 @@
     // human-readable legend readout. Rounding to whole hours here would
     // collapse every category under ~30min to a 0-width sliver — a single
     // hour-scale category (e.g. creating) would then claim the whole bar.
-    const segments: {
+    const named: {
       label: string;
       value: number;
       colorVar: string;
@@ -403,13 +421,29 @@
     for (const c of CATEGORY_ORDER) {
       const v = totals.get(c);
       if (v && v > 0) {
-        segments.push({
+        named.push({
           label: categoryLabel(c),
           value: v,
           colorVar: CATEGORY_COLOR[c],
           display: humanizeMs(v),
         });
       }
+    }
+    // Cap the chart at the top categories by time and fold the rest into a
+    // single neutral "Other" bucket. Past ~5-6 distinct hues the segment→legend
+    // mapping stops being readable, so the long tail collapses into one grey.
+    named.sort((a, b) => b.value - a.value);
+    const TOP_CATEGORY_HUES = 5;
+    const segments = named.slice(0, TOP_CATEGORY_HUES);
+    const overflow = named.slice(TOP_CATEGORY_HUES);
+    if (overflow.length > 0) {
+      const otherMs = overflow.reduce((sum, s) => sum + s.value, 0);
+      segments.push({
+        label: "Other",
+        value: otherMs,
+        colorVar: "--chart-grey-4",
+        display: humanizeMs(otherMs),
+      });
     }
     const uncat = totals.get("__uncat__");
     if (uncat && uncat > 0) {
@@ -423,11 +457,13 @@
     return segments;
   });
 
-  // `categorySegments` is ordered by CATEGORY_ORDER for a stable bar layout,
-  // so its first element is NOT the busiest category. Rank by actual time
-  // (`value` is raw ms) to surface the real top category in the lede.
+  // Surface the busiest NAMED category in the lede. `categorySegments` already
+  // ranks by time, but skip the synthetic "Other" fold so the lede never reads
+  // a grey aggregate bucket as a real top category.
   const topCategory = $derived(
-    [...categorySegments].sort((a, b) => b.value - a.value)[0],
+    [...categorySegments]
+      .filter((s) => s.label !== "Other")
+      .sort((a, b) => b.value - a.value)[0],
   );
 
   // ── ENGINE TILE 3: focus heatmap (day rows × time-of-day slots) ───────
@@ -547,6 +583,26 @@
       sparkMax,
       sparkLabel,
     };
+  });
+
+  // Period-over-period delta for the headline "tracked" figure. Compares the
+  // active window's total active time against the matched slice of the previous
+  // window (see `loadPrev` — an in-progress period compares pace-vs-pace, a
+  // finished period full-vs-full). Hidden when there's no prior baseline to
+  // divide by (oldest period, or a window with no captured activity).
+  const trackedDelta = $derived.by<{
+    pct: number;
+    dir: "up" | "down" | "steady";
+  } | null>(() => {
+    if (!usage || !prevUsage) return null;
+    const cur = (usage.timePerApp ?? []).reduce((acc, a) => acc + a.activeMs, 0);
+    const prev = (prevUsage.timePerApp ?? []).reduce(
+      (acc, a) => acc + a.activeMs,
+      0,
+    );
+    if (prev <= 0) return null;
+    const pct = Math.round(((cur - prev) / prev) * 100);
+    return { pct, dir: pct > 0 ? "up" : pct < 0 ? "down" : "steady" };
   });
 
   // ── Conclusion deltas (engine tier) ───────────────────────────────────
@@ -714,6 +770,32 @@
     }
   }
 
+  // Baseline fetch for the tracked-delta. Reuses get_usage_charts on the
+  // previous window, truncated to the active window's elapsed fraction so an
+  // in-progress period compares like-for-like (a finished period reads the full
+  // previous window). Its own token guards stale overlapping responses; on
+  // error (or no prior data) the delta simply hides via `prevUsage = null`.
+  let prevRequestToken = 0;
+  async function loadPrev(): Promise<void> {
+    const token = ++prevRequestToken;
+    const pw = prevWindow;
+    const now = Date.now();
+    const compareEnd =
+      now >= range.endMs
+        ? pw.endMs
+        : Math.min(pw.startMs + Math.max(0, now - range.startMs), pw.endMs);
+    try {
+      const next = await invoke<UsageCharts>("get_usage_charts", {
+        startMs: pw.startMs,
+        endMs: compareEnd,
+      });
+      if (token !== prevRequestToken) return; // range moved on — stale
+      prevUsage = next;
+    } catch {
+      if (token === prevRequestToken) prevUsage = null;
+    }
+  }
+
   // Fetch the activities for the active range. Passing `startMs`/`endMs` makes
   // the backend return EVERY activity overlapping the selected period in one
   // call (overlap-bounded, not recency-capped) — so navigating to a past
@@ -853,7 +935,7 @@
 
   async function reloadAll(): Promise<void> {
     await loadStatus();
-    await Promise.all([loadFree(), loadEngine(), loadDigest()]);
+    await Promise.all([loadFree(), loadPrev(), loadEngine(), loadDigest()]);
   }
 
   // Re-query when the range changes (mode or step). Mark the range-scoped data
@@ -879,6 +961,7 @@
       // open over different (possibly empty) content.
       expandedDeltaRows = new Set();
       void loadFree();
+      void loadPrev();
       void loadEngine();
       scheduleDigestLoad();
     });
@@ -1198,7 +1281,26 @@
           </div>
         {:else}
           <div class="lede-stat">
-            <span class="lede-stat-n">{summary.totalLabel}</span>
+            <span class="lede-stat-figure">
+              <span class="lede-stat-n">{summary.totalLabel}</span>
+              {#if trackedDelta}
+                <span
+                  class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
+                  title="{Math.abs(trackedDelta.pct)}% {trackedDelta.dir ===
+                  'down'
+                    ? 'less'
+                    : 'more'} than the same span of last {rangeMode}"
+                >
+                  <span class="lede-stat-delta-arrow" aria-hidden="true"
+                    >{trackedDelta.dir === "up"
+                      ? "↑"
+                      : trackedDelta.dir === "down"
+                        ? "↓"
+                        : "→"}</span
+                  >{Math.abs(trackedDelta.pct)}%</span
+                >
+              {/if}
+            </span>
             <span class="lede-stat-cap">tracked</span>
           </div>
           <div class="lede-stat">
@@ -1282,7 +1384,26 @@
           </div>
         {:else}
           <div class="lede-stat">
-            <span class="lede-stat-n">{summary.totalLabel}</span>
+            <span class="lede-stat-figure">
+              <span class="lede-stat-n">{summary.totalLabel}</span>
+              {#if trackedDelta}
+                <span
+                  class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
+                  title="{Math.abs(trackedDelta.pct)}% {trackedDelta.dir ===
+                  'down'
+                    ? 'less'
+                    : 'more'} than the same span of last {rangeMode}"
+                >
+                  <span class="lede-stat-delta-arrow" aria-hidden="true"
+                    >{trackedDelta.dir === "up"
+                      ? "↑"
+                      : trackedDelta.dir === "down"
+                        ? "↓"
+                        : "→"}</span
+                  >{Math.abs(trackedDelta.pct)}%</span
+                >
+              {/if}
+            </span>
             <span class="lede-stat-cap">tracked</span>
           </div>
           <div class="lede-stat">
@@ -1903,7 +2024,8 @@
   }
   .ov-header h1 {
     margin: 0;
-    font-size: 18px;
+    font-size: var(--text-xl);
+    line-height: 1.2;
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--app-text-strong);
@@ -2033,9 +2155,6 @@
     min-width: 0;
     overflow: hidden;
     transition: border-color 0.12s ease;
-  }
-  .exhibit:hover {
-    border-color: var(--app-border-hover);
   }
   /* The whole card is the trigger when its detail modal is openable. */
   .exhibit--clickable {
@@ -2458,6 +2577,14 @@
     gap: 4px;
     min-width: 0;
   }
+  /* Figure row: the headline number with its delta riding alongside on a shared
+     baseline, so the "tracked" cell stays the same height as its siblings and
+     all captions line up across the footer. */
+  .lede-stat-figure {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+  }
   .lede-stat-n {
     font-size: var(--text-lg);
     line-height: 1.1;
@@ -2486,6 +2613,31 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-muted);
+  }
+  /* Period-over-period delta — only the delta carries colour (the figure stays
+     neutral). Direction colours mirror the Subjects rank-trend convention:
+     accent for up, QUIET muted for down (the saturated --app-danger token stays
+     reserved for destructive/contradiction states — more screen time is not an
+     error), subtle for flat. */
+  .lede-stat-delta {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-muted);
+  }
+  .lede-stat-delta-arrow {
+    line-height: 1;
+  }
+  .lede-stat-delta--up {
+    color: var(--app-accent);
+  }
+  .lede-stat-delta--down {
+    color: var(--app-text-muted);
+  }
+  .lede-stat-delta--steady {
+    color: var(--app-text-subtle);
   }
   /* The per-day sparkbar rides the stats footer as a final cell, pushed to the
      right so the figures read first. Reuses the shared .sparkbar primitive. */

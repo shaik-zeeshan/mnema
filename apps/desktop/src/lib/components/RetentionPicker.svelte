@@ -130,7 +130,7 @@
     background: var(--app-surface);
     color: var(--app-text-muted);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 540;
     line-height: 1;
     letter-spacing: 0.01em;

@@ -117,16 +117,21 @@
     padding: 0;
     cursor: pointer;
     outline: none;
-    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.15s;
   }
 
-  :global(.checkbox-box:hover) {
+  :global(.checkbox-box:hover:not([data-disabled])) {
     border-color: var(--app-border-hover);
   }
 
   :global(.checkbox-box:focus-visible) {
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+  }
+
+  /* Momentary press cue before the state flips. */
+  :global(.checkbox-box:active:not([data-disabled])) {
+    transform: scale(0.92);
   }
 
   :global(.checkbox-box[data-state="checked"]),
@@ -136,8 +141,8 @@
     box-shadow: 0 0 8px var(--app-accent-glow);
   }
 
-  :global(.checkbox-box[data-state="checked"]:hover),
-  :global(.checkbox-box[data-state="indeterminate"]:hover) {
+  :global(.checkbox-box[data-state="checked"]:hover:not([data-disabled])),
+  :global(.checkbox-box[data-state="indeterminate"]:hover:not([data-disabled])) {
     border-color: var(--app-accent);
   }
 
@@ -182,6 +187,9 @@
     .checkbox-check,
     .checkbox-dash {
       animation: none;
+    }
+    :global(.checkbox-box) {
+      transition: none;
     }
   }
 

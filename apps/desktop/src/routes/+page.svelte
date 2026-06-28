@@ -7343,7 +7343,11 @@
         onclick={closeAudioDrawer}
         bind:this={audioDrawerCloseEl}
         aria-label="Close audio player"
-      >×</button>
+      >
+        <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+          <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
+        </svg>
+      </button>
     </div>
     {#if selectedAudioMediaLoading}
       <div class="audio-drawer__status" role="status" aria-live="polite" aria-busy="true">
@@ -8055,8 +8059,10 @@
     border-radius: 4px;
     width: 24px;
     height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--app-text-muted);
-    font-size: 16px;
     line-height: 1;
     cursor: pointer;
     transition:
@@ -8101,10 +8107,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: color-mix(in srgb, var(--app-danger-strong) 10%, transparent);
-    border: 1px solid var(--app-danger-border);
+    background: color-mix(in srgb, var(--app-record-glyph-start) 10%, transparent);
+    border: 1px solid var(--app-status-running-border);
     border-radius: 50%;
-    color: var(--app-danger);
+    color: var(--app-status-running-fg);
     cursor: pointer;
     transition:
       background 0.12s,
@@ -8114,13 +8120,13 @@
   }
 
   .audio-drawer__play:hover {
-    background: color-mix(in srgb, var(--app-danger-strong) 18%, transparent);
-    border-color: var(--app-danger-strong);
+    background: color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
+    border-color: var(--app-record-glyph-start);
   }
 
   .audio-drawer__play:focus-visible {
     outline: none;
-    border-color: var(--app-danger-strong);
+    border-color: var(--app-record-glyph-start);
     box-shadow: var(--app-ring-danger);
   }
 
@@ -8155,7 +8161,7 @@
     margin: 0;
     background: transparent;
     cursor: pointer;
-    color: var(--app-danger);
+    color: var(--app-status-running-fg);
   }
 
   .audio-drawer__scrub:disabled {
@@ -8168,8 +8174,8 @@
     border-radius: 2px;
     background: linear-gradient(
       to right,
-      var(--app-danger-strong) 0%,
-      var(--app-danger-strong) var(--audio-progress, 0%),
+      var(--app-record-glyph-start) 0%,
+      var(--app-record-glyph-start) var(--audio-progress, 0%),
       var(--app-surface-hover) var(--audio-progress, 0%),
       var(--app-surface-hover) 100%
     );
@@ -8184,7 +8190,7 @@
   .audio-drawer__scrub::-moz-range-progress {
     height: 4px;
     border-radius: 2px;
-    background: var(--app-danger-strong);
+    background: var(--app-record-glyph-start);
   }
 
   .audio-drawer__scrub::-webkit-slider-thumb {
@@ -8193,10 +8199,10 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--app-danger);
+    background: var(--app-status-running-fg);
     border: 2px solid var(--app-surface-raised);
     margin-top: -3px;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 0%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-record-glyph-start) 0%, transparent);
     transition:
       transform 0.12s,
       box-shadow 0.12s;
@@ -8206,9 +8212,9 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--app-danger);
+    background: var(--app-status-running-fg);
     border: 2px solid var(--app-surface-raised);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 0%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-record-glyph-start) 0%, transparent);
     transition:
       transform 0.12s,
       box-shadow 0.12s;
@@ -8217,13 +8223,13 @@
   .audio-drawer__scrub:hover::-webkit-slider-thumb,
   .audio-drawer__scrub:focus-visible::-webkit-slider-thumb {
     transform: scale(1.15);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-danger-strong) 18%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
   }
 
   .audio-drawer__scrub:hover::-moz-range-thumb,
   .audio-drawer__scrub:focus-visible::-moz-range-thumb {
     transform: scale(1.15);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-danger-strong) 18%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
   }
 
   .audio-drawer__scrub:focus-visible {
@@ -8533,7 +8539,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 8px;
     background: var(--app-surface-raised);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+    box-shadow: var(--app-shadow-popover);
   }
 
   .audio-drawer__speaker-chip {
@@ -8744,6 +8750,14 @@
     outline: none;
   }
 
+  /* Reject is a benign-decline, not an affirmative — keep its hover warn-tinted
+     rather than adopting the accent-green confirm treatment. */
+  .audio-drawer__speaker-tool--reject:hover:not(:disabled),
+  .audio-drawer__speaker-tool--reject:focus-visible:not(:disabled) {
+    border-color: var(--app-warn-border);
+    color: var(--app-warn);
+  }
+
   .audio-drawer__speaker-tool:disabled {
     opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
@@ -8852,6 +8866,15 @@
     background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface-raised));
     color: var(--app-text);
     outline: none;
+  }
+
+  /* Reject is a benign-decline, not an affirmative — keep its hover warn-tinted
+     rather than adopting the confirm action's accent-green. */
+  .audio-drawer__speaker-action-button--reject:hover:not(:disabled),
+  .audio-drawer__speaker-action-button--reject:focus-visible:not(:disabled) {
+    border-color: var(--app-warn-border);
+    background: color-mix(in srgb, var(--app-warn) 12%, var(--app-surface-raised));
+    color: var(--app-warn);
   }
 
   .audio-drawer__speaker-action-button:disabled {
@@ -9623,7 +9646,7 @@
   .timeline__ocr-btn--running {
     color: var(--app-warn);
     border-color: var(--app-warn-border);
-    background: rgba(214, 161, 74, 0.06);
+    background: color-mix(in srgb, var(--app-warn) 6%, transparent);
   }
   .timeline__ocr-btn--running .timeline__ocr-glyph {
     color: var(--app-warn);
@@ -10187,7 +10210,7 @@
     filter: brightness(1.15);
     box-shadow:
       0 0 0 0.5px rgba(0, 0, 0, 0.55),
-      0 0 0 1px rgba(255, 255, 255, 0.3);
+      0 0 0 1px var(--app-border-hover);
   }
 
   .timeline-rail__audio-bar:focus-visible {
@@ -10201,8 +10224,8 @@
   .timeline-rail__audio-bar--selected {
     box-shadow:
       0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      0 0 0 1.5px var(--app-danger-strong),
-      0 0 8px color-mix(in srgb, var(--app-danger-strong) 45%, transparent);
+      0 0 0 1.5px var(--app-record-glyph-start),
+      0 0 8px color-mix(in srgb, var(--app-record-glyph-start) 45%, transparent);
     z-index: 1;
   }
 
@@ -10270,8 +10293,8 @@
   :global(.timeline-rail__slot--active.timeline-rail__slot--major) .timeline-rail__tick {
     width: 2px;
     height: 22px;
-    background: var(--app-danger-strong);
-    box-shadow: 0 0 6px color-mix(in srgb, var(--app-danger-strong) 70%, transparent);
+    background: var(--app-record-glyph-start);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--app-record-glyph-start) 70%, transparent);
   }
 
   .timeline-rail--placeholder {

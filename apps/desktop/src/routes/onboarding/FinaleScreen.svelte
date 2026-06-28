@@ -104,7 +104,7 @@
     margin: 4px auto 0;
     max-width: 40ch;
     padding: 10px 14px;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-danger);
     background: var(--app-danger-bg);
@@ -118,7 +118,7 @@
   .finale__hint {
     margin: 8px auto 0;
     max-width: 40ch;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text-muted);
   }

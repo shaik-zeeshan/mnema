@@ -124,7 +124,10 @@
               <div class="model-status__title">{selectedSpeakerModel.displayName}</div>
               <div class="model-status__meta">{speakerStatusLabel(selectedSpeakerModel)}</div>
             </div>
-            <span class="model-status__pill">{selectedSpeakerModel.available ? "available" : "unavailable"}</span>
+            <span
+              class="model-status__pill"
+              class:model-status__pill--ok={selectedSpeakerModel.available}
+            >{selectedSpeakerModel.available ? "available" : "unavailable"}</span>
           </div>
           <p class="group-hint">{selectedSpeakerModel.description}</p>
           {#if selectedSpeakerModel.installPath}
@@ -157,7 +160,7 @@
               </div>
             {:else}
               <div class="debug-log-actions">
-                <button type="button" class="btn btn--ghost" onclick={startSelectedSpeakerModelDownload} disabled={startingSpeakerDownload || selectedSpeakerModel.available} aria-busy={startingSpeakerDownload}>
+                <button type="button" class="btn btn--primary" onclick={startSelectedSpeakerModelDownload} disabled={startingSpeakerDownload || selectedSpeakerModel.available} aria-busy={startingSpeakerDownload}>
                   {#if startingSpeakerDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedSpeakerModel.download.byteSize)}){/if}
                 </button>
                 <button type="button" class="btn btn--danger" onclick={deleteSelectedSpeakerModel} disabled={deletingSpeakerModel || selectedSpeakerDownloadRunning || !selectedSpeakerModel.available} aria-busy={deletingSpeakerModel}>

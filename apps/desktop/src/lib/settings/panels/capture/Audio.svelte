@@ -5,6 +5,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconClear from "~icons/lucide/x";
 
@@ -26,7 +27,7 @@
   {#if loadingMicState}
     <SettingRow label="Microphone" description="Microphone state is loading." divider={false}>
       {#snippet control()}
-        <p class="loading-text">Loading microphone state…</p>
+        <p class="loading-text"><ButtonSpinner />Loading microphone state…</p>
       {/snippet}
     </SettingRow>
   {:else if micState}
@@ -111,23 +112,25 @@
       </SettingRow>
     {/if}
 
-    <SettingRow
-      label="On Disconnect"
-      description="What to do when the chosen microphone disconnects."
-      full
-      divider={!!audio.micError}
-    >
-      {#snippet control()}
-        <Segmented
-          bind:value={audio.draftDisconnectPolicy}
-          ariaLabel="On disconnect policy"
-          options={[
-            { value: "fallback_to_default", label: "Fallback to Default" },
-            { value: "wait_for_same_device", label: "Wait for Same Device" },
-          ]}
-        />
-      {/snippet}
-    </SettingRow>
+    {#if audio.draftPreferenceMode === "specific_device"}
+      <SettingRow
+        label="On Disconnect"
+        description="What to do when the chosen microphone disconnects."
+        full
+        divider={!!audio.micError}
+      >
+        {#snippet control()}
+          <Segmented
+            bind:value={audio.draftDisconnectPolicy}
+            ariaLabel="On disconnect policy"
+            options={[
+              { value: "fallback_to_default", label: "Fallback to Default" },
+              { value: "wait_for_same_device", label: "Wait for Same Device" },
+            ]}
+          />
+        {/snippet}
+      </SettingRow>
+    {/if}
 
     {#if audio.micError}
       <SettingRow label="Error" warn full divider={false}>

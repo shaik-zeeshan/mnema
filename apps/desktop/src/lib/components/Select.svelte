@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Select as BitsSelect } from "bits-ui";
+  import IconSpinner from "~icons/lucide/loader-circle";
   import { pinAncestorScrollOnOpen } from "./pin-scroll-on-open";
   import { shouldOpenUpward } from "./popover-direction";
 
@@ -79,6 +80,7 @@
 <div
   class="select-wrapper"
   class:select-wrapper--disabled={disabled}
+  class:select-wrapper--busy={loading && !disabled}
   class:select-wrapper--up={openUp}
   bind:this={wrapperEl}
 >
@@ -95,7 +97,7 @@
     value={value ?? ""}
     onValueChange={handleValueChange}
     onOpenChange={handleOpenChange}
-    {disabled}
+    disabled={disabled || loading}
   >
     <BitsSelect.Trigger
       class={warn ? "select-trigger select-trigger--warn" : "select-trigger"}
@@ -105,9 +107,13 @@
       <span class={selectedLabel ? "select-trigger-text" : "select-trigger-text select-trigger-text--placeholder"}>
         {selectedLabel ?? placeholder}
       </span>
-      <svg class="select-chevron" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="m6 9 6 6 6-6" />
-      </svg>
+      {#if loading}
+        <span class="select-spinner" aria-hidden="true"><IconSpinner /></span>
+      {:else}
+        <svg class="select-chevron" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      {/if}
     </BitsSelect.Trigger>
     <!-- Render inline (no body portal). bits-ui defaults to portaling the
          content to <body>; across Settings' inner `.settings-scroll` container
@@ -185,6 +191,15 @@
     pointer-events: none;
   }
 
+  /* In-flight (e.g. an async ActionSelect pick): locked like disabled but dimmed
+     less, so it reads as "working" rather than "unavailable". The trigger shows
+     a spinner in place of the chevron. */
+  .select-wrapper--busy {
+    opacity: var(--app-busy-opacity);
+    pointer-events: none;
+    cursor: progress;
+  }
+
   .select-label {
     font-size: 10px;
     font-weight: 700;
@@ -204,7 +219,7 @@
     border-radius: 8px;
     cursor: pointer;
     outline: none;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
     transition: border-color 0.15s, box-shadow 0.15s;
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 12px;
@@ -222,7 +237,7 @@
 
   :global(.select-trigger:focus-visible) {
     border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
     outline: none;
   }
 
@@ -236,7 +251,7 @@
 
   :global(.select-trigger--warn:focus-visible) {
     border-color: var(--app-warn-strong);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
       0 0 0 3px color-mix(in srgb, var(--app-warn) 18%, transparent);
   }
 
@@ -268,6 +283,28 @@
   :global(.select-trigger[data-state="open"]) .select-chevron {
     transform: rotate(180deg);
     stroke: var(--app-accent);
+  }
+
+  /* Busy spinner shown on the closed trigger while a pick is in flight. Rotate
+     the wrapper span (not the <svg>): WKWebView doesn't reliably spin an <svg>
+     around its own center. Mirrors ButtonSpinner. */
+  .select-spinner {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--app-text-muted);
+    animation: select-spinner-spin 0.7s linear infinite;
+  }
+
+  .select-spinner :global(svg) {
+    width: 14px;
+    height: 14px;
+    stroke-width: 2;
+  }
+
+  @keyframes select-spinner-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   :global(.select-content) {
@@ -331,7 +368,7 @@
     padding: 14px 10px;
     text-align: center;
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     font-style: italic;
     color: var(--app-text-subtle);
   }
@@ -341,6 +378,9 @@
     .select-chevron,
     :global(.select-item) {
       transition: none;
+    }
+    .select-spinner {
+      animation: none;
     }
   }
 </style>

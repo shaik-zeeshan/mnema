@@ -46,6 +46,21 @@
   const keyboard = c.keyboard;
   const audio = c.audio;
 
+  // The single auto-save status that drives the footer dot + label. Hoisted to a
+  // derived so the footer element can carry a matching status modifier class
+  // (raising salience on a change instead of leaning on the 6px dot alone).
+  const footStatus = $derived<"error" | "blocked" | "saving" | "ok" | "idle">(
+    rec.recError || keyboard.keyboardBindingsError || audio.micError
+      ? "error"
+      : c.recSaveBlocked || audio.micApplyBlocked
+        ? "blocked"
+        : c.savingRecSettings || keyboard.savingKeyboardBindings || audio.savingMicSettings
+          ? "saving"
+          : rec.recSaved || keyboard.keyboardBindingsSaved || audio.micSaved
+            ? "ok"
+            : "idle",
+  );
+
   // Slice 4: the search field narrows the nav as you type. The (pure) filter
   // helper lives in `rail-filter.ts`; here we only bind state + render.
   let searchQuery = $state("");
@@ -241,17 +256,24 @@
   </nav>
 
   <!-- Pinned footer: live auto-save status (relocated from the old rail head). -->
-  <div class="rail-foot" aria-live="polite">
-    {#if rec.recError || keyboard.keyboardBindingsError || audio.micError}
+  <div
+    class="rail-foot"
+    class:rail-foot--error={footStatus === "error"}
+    class:rail-foot--blocked={footStatus === "blocked"}
+    class:rail-foot--saving={footStatus === "saving"}
+    class:rail-foot--ok={footStatus === "ok"}
+    aria-live="polite"
+  >
+    {#if footStatus === "error"}
       <span class="rail-foot__dot rail-foot__dot--error"></span>
       <span class="rail-foot__label">save failed</span>
-    {:else if c.recSaveBlocked || audio.micApplyBlocked}
+    {:else if footStatus === "blocked"}
       <span class="rail-foot__dot rail-foot__dot--blocked"></span>
       <span class="rail-foot__label">resolve issues</span>
-    {:else if c.savingRecSettings || keyboard.savingKeyboardBindings || audio.savingMicSettings}
+    {:else if footStatus === "saving"}
       <span class="rail-foot__dot rail-foot__dot--saving"></span>
       <span class="rail-foot__label">saving</span>
-    {:else if rec.recSaved || keyboard.keyboardBindingsSaved || audio.micSaved}
+    {:else if footStatus === "ok"}
       <span class="rail-foot__dot rail-foot__dot--ok"></span>
       <span class="rail-foot__label">saved</span>
     {:else}

@@ -70,7 +70,7 @@
     bind:value
     {options}
     {placeholder}
-    disabled={disabled || busy}
+    {disabled}
     loading={busy}
     {ariaLabel}
     onValueChange={handleChange}

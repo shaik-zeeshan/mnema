@@ -262,7 +262,7 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: rgba(0, 0, 0, 0.42);
+    background: var(--app-overlay-bg);
     backdrop-filter: blur(10px);
   }
   .focus-modal__panel {
@@ -274,7 +274,7 @@
     border-radius: 18px;
     /* Depth comes from the lighter raised surface, not a heavy drop shadow. */
     background: var(--app-surface-raised);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+    box-shadow: var(--app-shadow-popover);
   }
   .focus-modal__header {
     display: flex;

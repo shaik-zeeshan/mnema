@@ -267,7 +267,7 @@
     display: flex;
     align-items: baseline;
     gap: 8px;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text);
   }
@@ -301,7 +301,7 @@
     margin-bottom: 2px;
   }
   .prov-name {
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 540;
     color: var(--app-text-strong);
     min-width: 0;
@@ -311,7 +311,7 @@
   }
   .prov-tag {
     flex: 0 0 auto;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -328,14 +328,14 @@
   }
   .prov-saved {
     flex: 0 0 auto;
-    font-size: 10px;
+    font-size: var(--text-xs);
     color: var(--app-accent);
   }
   .prov-remove {
     margin-left: auto;
   }
   .prov-label {
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -360,7 +360,7 @@
     width: 100%;
   }
   .prov-hint {
-    font-size: 10px;
+    font-size: var(--text-xs);
     line-height: 1.5;
     color: var(--app-text-subtle);
     margin: 0;

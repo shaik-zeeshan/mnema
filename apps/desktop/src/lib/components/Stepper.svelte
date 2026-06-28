@@ -173,7 +173,7 @@
   .step-btn:focus-visible {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .step-btn:disabled {
@@ -202,7 +202,7 @@
     font-size: 12px;
     text-align: center;
     outline: none;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
     transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
   }
 
@@ -219,7 +219,7 @@
   .num-input:focus {
     border-color: var(--app-accent);
     background: var(--app-surface-raised);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
   }
 
   .num-input--invalid {
@@ -228,7 +228,7 @@
 
   .num-input--invalid:focus {
     border-color: var(--app-danger);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
       0 0 0 3px color-mix(in srgb, var(--app-danger) 30%, transparent);
   }
 

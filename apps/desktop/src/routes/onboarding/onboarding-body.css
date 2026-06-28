@@ -467,11 +467,16 @@
   cursor: pointer;
   white-space: nowrap;
   transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease,
-    box-shadow 0.15s ease;
+    box-shadow 0.15s ease, transform 0.08s ease;
 }
 .onboarding-shell .btn:hover:not(:disabled) {
   border-color: var(--app-border-hover);
   color: var(--app-text-strong);
+}
+/* Press feedback mirroring `.cta:active` — the shared `.btn` family (download /
+   cancel / grant / browse / retry) otherwise gave no tactile cue on click. */
+.onboarding-shell .btn:active:not(:disabled) {
+  transform: translateY(1px);
 }
 .onboarding-shell .btn:focus-visible {
   outline: none;

@@ -56,15 +56,16 @@
           <div class="privacy-disclosure">
             <p>CLI Access lets local tools request time-bounded access to searchable Mnema text, including screen text, audio transcripts, and timeline results.</p>
             <p>CLI output does not include media paths, raw database rows, app/window titles, browser URLs, or deep-link URLs.</p>
-            {#if mnemaCliStatus}
-              <p>
-                CLI: {mnemaCliStatus.installed ? `mnema installed at ${mnemaCliStatus.installPath}` : `mnema not installed at ${mnemaCliStatus.installPath}`}
-              </p>
-              {#if mnemaCliStatus.installed && !mnemaCliStatus.installDirInPath}
-                <p>{mnemaCliStatus.installDir} is not in PATH for this app session.</p>
-              {/if}
-            {/if}
           </div>
+          {#if mnemaCliStatus}
+            {#if !mnemaCliStatus.installed}
+              <p class="group-hint group-hint--warn">mnema is not installed at {mnemaCliStatus.installPath} — install the CLI before local tools can request access.</p>
+            {:else if !mnemaCliStatus.installDirInPath}
+              <p class="group-hint group-hint--warn">mnema is installed at {mnemaCliStatus.installPath}, but {mnemaCliStatus.installDir} is not in PATH for this app session.</p>
+            {:else}
+              <p class="group-hint">mnema installed at {mnemaCliStatus.installPath}.</p>
+            {/if}
+          {/if}
           <div class="row-actions">
             <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} aria-busy={mnemaCliInstalling} onclick={installMnemaCli}>
               {#if mnemaCliInstalling}<ButtonSpinner />Installing…{:else}{mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}{/if}
@@ -100,7 +101,7 @@
                     </span>
                   </div>
                   <button
-                    class="btn btn--ghost btn--sm"
+                    class="btn btn--danger btn--sm"
                     type="button"
                     disabled={brokerGrantSaving || status !== "active"}
                     aria-busy={brokerGrantSaving && status === "active"}

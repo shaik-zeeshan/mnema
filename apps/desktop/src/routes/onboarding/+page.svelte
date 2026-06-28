@@ -33,6 +33,12 @@
   // what remains. Purely presentational — derived from the existing phase state.
   const phaseStep = $derived(c.phase === "welcome" ? 1 : c.phase === "configure" ? 2 : 3);
 
+  // Intra-step progress for the otherwise-undifferentiated Configure dot: the
+  // accordion is many rows, so surface "X of Y ready" — every row minus those
+  // still flagged for attention. Derived from existing controller state.
+  const configureTotal = FEATURES.length;
+  const configureReady = $derived(Math.max(0, configureTotal - c.attentionCount));
+
   // Spoken step announcement for the polite live region below: a phase change is a
   // full content swap (welcome hero ↔ accordion ↔ finale crest), so without an
   // announcement a screen-reader user only hears silence after activating the CTA.
@@ -127,6 +133,9 @@
       >
         <span class="ob-progress__dot" aria-hidden="true"></span>
         <span class="ob-progress__label">Configure</span>
+        {#if phaseStep === 2}
+          <span class="ob-progress__count">{configureReady} of {configureTotal} ready</span>
+        {/if}
       </li>
       <li
         class="ob-progress__step"
@@ -310,5 +319,15 @@
     background: var(--app-accent);
     border-color: var(--app-accent);
     box-shadow: 0 0 0 3px var(--app-accent-bg);
+  }
+  /* Intra-step "X of Y ready" tally on the active Configure step — the accordion
+     is many rows, so the single dot otherwise hid all progress. Kept quiet
+     (muted, tabular) so it reads as a sub-signifier, not a second label. */
+  .ob-progress__count {
+    font-size: var(--text-xs);
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    color: var(--app-text-muted);
+    font-variant-numeric: tabular-nums;
   }
 </style>

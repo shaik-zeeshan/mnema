@@ -84,7 +84,7 @@
     onclick={onselect}
   >
     <div class="search-card__thumb">
-      <svg class="search-card__thumb-glyph" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" aria-hidden="true">
+      <svg class="search-card__thumb-glyph" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
         <rect x="1.5" y="2" width="11" height="8" rx="1.5" />
         <path d="M4 12h6" />
         <path d="M7 10v2" />

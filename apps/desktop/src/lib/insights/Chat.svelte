@@ -1542,7 +1542,7 @@
     background: var(--app-surface-raised);
     color: var(--app-accent-strong);
     cursor: pointer;
-    box-shadow: var(--app-shadow-pop, 0 4px 14px rgba(0, 0, 0, 0.35));
+    box-shadow: var(--app-shadow-popover, 0 4px 14px rgba(0, 0, 0, 0.35));
     transition:
       border-color 0.12s ease,
       background 0.12s ease;

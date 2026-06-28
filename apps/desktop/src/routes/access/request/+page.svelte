@@ -280,6 +280,16 @@
     }
   }
 
+  // Weaker provenances (inferred / none) carry less trust than an explicitly
+  // declared identity, so their chip is warn-tinted rather than neutral — the
+  // chip then reads its trust at a glance, not just by its text. "explicit"
+  // stays neutral (never greened — the identity is still unverifiable).
+  function identitySourceWarn(source: string) {
+    // Inferred, plus every source that falls through to "No identity provided"
+    // (none / unknown). "explicit" and "env" stay neutral.
+    return source !== "explicit" && source !== "env";
+  }
+
   function friendlyError(err: unknown) {
     if (typeof err === "string") return err;
     if (err instanceof Error && err.message) return err.message;
@@ -405,7 +415,11 @@
             <span class="requester__label" title={pendingRequest.client.label}
               >{pendingRequest.client.label}</span
             >
-            <span class="requester__source">{identitySourceLabel(pendingRequest.client.source)}</span>
+            <span
+              class="requester__source"
+              class:requester__source--warn={identitySourceWarn(pendingRequest.client.source)}
+              >{identitySourceLabel(pendingRequest.client.source)}</span
+            >
           </div>
           <p class="trust-note">
             <span class="trust-note__icon" aria-hidden="true">
@@ -676,7 +690,7 @@
   .requester__label {
     min-width: 0;
     color: var(--app-text-strong);
-    font-size: 14px;
+    font-size: var(--text-md);
     font-weight: 700;
     letter-spacing: 0.01em;
     line-height: 1.25;
@@ -694,6 +708,16 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     white-space: nowrap;
+  }
+
+  /* Lower-trust provenances (inferred / none) are warn-tinted so the chip
+     signals its weaker identity at a glance, not by text alone. "explicit" /
+     "env" keep the neutral treatment — never greened, since even a declared
+     identity stays unverifiable. */
+  .requester__source--warn {
+    border-color: var(--app-warn-border);
+    background: var(--app-warn-bg);
+    color: var(--app-warn);
   }
 
   .requester__trigger {

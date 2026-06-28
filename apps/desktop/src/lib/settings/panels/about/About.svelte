@@ -70,36 +70,38 @@
 </script>
 
 <SettingGroup id="settings-section-about" title="About" hint="Version, build details, and the projects Mnema is built on.">
-  <SettingRow label="Mnema" description="Your memory, on rewind. Mnema records your screen so you can scrub back to anything you've seen: searchable, local, and yours." full>
-    {#snippet control()}
-      <div class="about-identity">
-        <div class="about-id__mark">
-          {#if appUpdateStatus?.app.version}
-            <span class="about-id__version">v{appUpdateStatus.app.version}</span>
-          {:else}
-            <span class="about-id__version about-id__version--pending">checking…</span>
-          {/if}
-          <span class="badge badge--neutral badge--sm about-id__channel">
-            {updateChannelLabel(appUpdateStatus?.channel)} channel
-          </span>
-        </div>
-        <dl class="about-meta">
-          <div class="about-meta__row">
-            <dt>Platform</dt>
-            <dd>{platformLabel(appUpdateStatus)}</dd>
-          </div>
-          <div class="about-meta__row">
-            <dt>Identifier</dt>
-            <dd>{appUpdateStatus?.app.identifier ?? "Unknown"}</dd>
-          </div>
-          <div class="about-meta__row">
-            <dt>License</dt>
-            <dd>MIT</dd>
-          </div>
-        </dl>
+  <!-- Identity hero: the product name leads as the visual anchor of the panel
+       (a dedicated block, not a plain action-row label rendered at 13px/550). -->
+  <div class="about-hero">
+    <div class="about-hero__head">
+      <span class="about-hero__name">Mnema</span>
+      <div class="about-id__mark">
+        {#if appUpdateStatus?.app.version}
+          <span class="about-id__version">v{appUpdateStatus.app.version}</span>
+        {:else}
+          <span class="about-id__version about-id__version--pending">checking…</span>
+        {/if}
+        <span class="badge badge--neutral badge--sm about-id__channel">
+          {updateChannelLabel(appUpdateStatus?.channel)} channel
+        </span>
       </div>
-    {/snippet}
-  </SettingRow>
+    </div>
+    <p class="about-hero__tagline">Your memory, on rewind. Mnema records your screen so you can scrub back to anything you've seen: searchable, local, and yours.</p>
+    <dl class="about-meta">
+      <div class="about-meta__row">
+        <dt>Platform</dt>
+        <dd>{platformLabel(appUpdateStatus)}</dd>
+      </div>
+      <div class="about-meta__row">
+        <dt>Identifier</dt>
+        <dd>{appUpdateStatus?.app.identifier ?? "Unknown"}</dd>
+      </div>
+      <div class="about-meta__row">
+        <dt>License</dt>
+        <dd>MIT</dd>
+      </div>
+    </dl>
+  </div>
 
   <SettingRow label="Links" description="Browse the source or read what changed in each release.">
     {#snippet control()}
@@ -297,12 +299,50 @@
 </SettingGroup>
 
 <style>
-  /* Identity block laid into a full-width row's control slot. */
-  .about-identity {
+  /* Identity hero: a dedicated block (not a SettingRow) so the product name can
+     anchor the panel. Rows supply the card's own padding, so the hero replicates
+     it (16px 20px) and draws the same inset hairline beneath itself that a
+     following `.setting-row` would have drawn above. */
+  .about-hero {
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    width: 100%;
+    gap: 10px;
+    padding: 18px 20px;
+  }
+
+  .about-hero::after {
+    content: "";
+    position: absolute;
+    left: 20px;
+    right: 20px;
+    bottom: 0;
+    height: 1px;
+    background: var(--app-border);
+    pointer-events: none;
+  }
+
+  .about-hero__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 12px;
+  }
+
+  .about-hero__name {
+    font-size: var(--text-xl);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    line-height: 1.1;
+    color: var(--app-text-strong);
+  }
+
+  .about-hero__tagline {
+    margin: 0;
+    max-width: 52ch;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    color: var(--app-text-muted);
   }
 
   /* The check-for-updates action sits beside the state badge in the

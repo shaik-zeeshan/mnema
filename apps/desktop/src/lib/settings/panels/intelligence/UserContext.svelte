@@ -94,7 +94,10 @@
               {/if}
             </div>
           </div>
-          <span class="model-status__pill">
+          <span
+            class="model-status__pill"
+            class:model-status__pill--ok={userContextStatus?.engineAvailable}
+          >
             {userContextStatus?.engineAvailable ? "active" : "paused"}
           </span>
         </div>
