@@ -436,6 +436,17 @@ impl AppInfra {
         self.database.read_pool()
     }
 
+    /// Begin a write transaction with `BEGIN IMMEDIATE` on the Writer Pool
+    /// (mirrors [`Database::begin_write`] / [`CaptureDb::begin_write`]). Out-of-crate
+    /// consumers performing a read-modify-write on the Writer Pool must start here
+    /// rather than `pool().begin()` (deferred `BEGIN`) so the writer-writer upgrade
+    /// deadlock ADR 0041 eliminates cannot reappear.
+    pub async fn begin_write(
+        &self,
+    ) -> std::result::Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
+        self.database.begin_write().await
+    }
+
     pub fn base_dir(&self) -> &Path {
         self.database.base_dir()
     }

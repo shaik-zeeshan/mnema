@@ -3704,9 +3704,11 @@ async fn delete_recent_capture_rows(
     started_at: &str,
     ended_at: &str,
 ) -> Result<DeleteRecentCaptureDeletion, String> {
+    // Read-modify-write on the multi-connection Writer Pool: begin with
+    // `BEGIN IMMEDIATE` (via `begin_write`) so the read→write upgrade can't
+    // deadlock two writers, the pattern ADR 0041 standardized everywhere else.
     let mut tx = infra
-        .pool()
-        .begin()
+        .begin_write()
         .await
         .map_err(|error| format!("failed to begin delete transaction: {error}"))?;
 
