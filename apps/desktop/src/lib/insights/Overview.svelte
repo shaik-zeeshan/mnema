@@ -49,8 +49,11 @@
     humanizeHours,
     startOfDay,
     startOfHour,
+    windowFor,
+    shiftAnchor,
     buildActivityThreads,
     type ActivityThread,
+    type RangeMode,
   } from "$lib/insights/activity-helpers";
   import CategoryDetailModal from "$lib/insights/CategoryDetailModal.svelte";
   import AppDetailModal from "$lib/insights/AppDetailModal.svelte";
@@ -102,49 +105,11 @@
   }
 
   // ── Date range ─────────────────────────────────────────────────────────
-  type RangeMode = "day" | "week" | "month";
   let rangeMode = $state<RangeMode>("week");
   // `anchor` is a millis timestamp inside the currently-selected window; the
   // stepper moves it by one unit, the mode picks the window size. Bounds are
   // local-calendar.
   let anchor = $state<number>(Date.now());
-
-  // Local-calendar bounds [startMs, endMs) for the window containing `anchorMs`.
-  function windowFor(
-    anchorMs: number,
-    mode: RangeMode,
-  ): { startMs: number; endMs: number } {
-    if (mode === "day") {
-      const start = startOfDay(anchorMs);
-      const end = new Date(start);
-      end.setDate(end.getDate() + 1);
-      return { startMs: start, endMs: end.getTime() };
-    }
-    if (mode === "week") {
-      // Week starts Monday (local).
-      const d = new Date(startOfDay(anchorMs));
-      const dow = (d.getDay() + 6) % 7; // 0 = Monday
-      d.setDate(d.getDate() - dow);
-      const start = d.getTime();
-      const end = new Date(start);
-      end.setDate(end.getDate() + 7);
-      return { startMs: start, endMs: end.getTime() };
-    }
-    // month
-    const d = new Date(anchorMs);
-    const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
-    const end = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
-    return { startMs: start, endMs: end };
-  }
-
-  // Move an anchor by one window unit (mirrors the stepper / range math).
-  function shiftAnchor(anchorMs: number, mode: RangeMode, dir: -1 | 1): number {
-    const d = new Date(anchorMs);
-    if (mode === "day") d.setDate(d.getDate() + dir);
-    else if (mode === "week") d.setDate(d.getDate() + dir * 7);
-    else d.setMonth(d.getMonth() + dir);
-    return d.getTime();
-  }
 
   // Local-calendar bounds [startMs, endMs) for the active range.
   const range = $derived(windowFor(anchor, rangeMode));
