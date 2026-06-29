@@ -16,6 +16,7 @@
   const brokerGrants = $derived(cliAccess.brokerGrants);
   const brokerGrantLoading = $derived(cliAccess.brokerGrantLoading);
   const brokerGrantSaving = $derived(cliAccess.brokerGrantSaving);
+  const isGrantRevoking = (id: string) => cliAccess.isGrantRevoking(id);
   const brokerGrantError = $derived(cliAccess.brokerGrantError);
   const mnemaCliStatus = $derived(cliAccess.mnemaCliStatus);
   const mnemaCliLoading = $derived(cliAccess.mnemaCliLoading);
@@ -103,11 +104,11 @@
                   <button
                     class="btn btn--danger btn--sm"
                     type="button"
-                    disabled={brokerGrantSaving || status !== "active"}
-                    aria-busy={brokerGrantSaving && status === "active"}
+                    disabled={isGrantRevoking(grant.id) || status !== "active"}
+                    aria-busy={isGrantRevoking(grant.id)}
                     onclick={() => revokeAgentBrokerGrant(grant.id)}
                   >
-                    {#if brokerGrantSaving && status === "active"}<ButtonSpinner />Revoking…{:else}Revoke{/if}
+                    {#if isGrantRevoking(grant.id)}<ButtonSpinner />Revoking…{:else}Revoke{/if}
                   </button>
                 </li>
               {/each}
