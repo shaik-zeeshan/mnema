@@ -181,7 +181,9 @@ impl Database {
         }
     }
 
-    /// Back-compat accessor: returns the **write** pool (safe — it's the writer).
+    /// Back-compat / test-only accessor returning the writer pool. Do not call
+    /// from new code: use `read()` / `write()` / `begin_write()` (or `read_pool()`
+    /// / `write_pool()`). Retained only so existing tests can share a single pool.
     pub fn pool(&self) -> &SqlitePool {
         self.write_pool()
     }

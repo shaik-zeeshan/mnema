@@ -1586,7 +1586,7 @@ async fn broker_frame_timeline(
     );
     query.push_bind(limit as i64);
 
-    let rows = query.build().fetch_all(infra.pool()).await?;
+    let rows = query.build().fetch_all(infra.read_pool()).await?;
 
     // Read-time URL guard: load the representative (landing) frames' metadata
     // snapshots in a SINGLE batched query (keyed by frame id), NOT one sequential
