@@ -38,7 +38,6 @@ import {
   customBitrateBlocked as customBitrateBlockedFn,
   parseCustomDimension,
 } from "./recording-validation";
-import { errorText, formatBytes } from "./format";
 import { createCliAccessStore } from "./cli-access.svelte";
 import { createGeckoUrlAccessStore } from "./gecko-url-access.svelte";
 import { createLogsStore } from "./logs.svelte";
@@ -50,7 +49,7 @@ import { createModelStatusStore } from "./model-status.svelte";
 import { createAudioStore } from "./audio.svelte";
 import { createKeyboardStore } from "./keyboard.svelte";
 import { createProcessingModelsView } from "./controller-processing.svelte";
-import { semanticSearchTierLabel } from "./models-format";
+import { createSemanticSearchView } from "./controller-semantic-search.svelte";
 import {
   AI_PROVIDER_KINDS,
   CLOUD_AI_PROVIDER_KINDS,
@@ -72,7 +71,6 @@ import type {
   AiEngineRef,
   BrowserUrlMode,
   SemanticSearchModelStatus,
-  SemanticSearchModelDownloadProgress,
 } from "$lib/types";
 
 export type RetentionCleanupSummary = {
@@ -88,16 +86,6 @@ export type RetentionCleanupSummary = {
   skippedActiveSegments: number;
   pendingFileTombstones: number;
 };
-
-interface SemanticSearchPickedView {
-  modelId: string;
-  provider: string | null;
-  displayName: string;
-  description: string;
-  metaLine: string;
-  available: boolean;
-  approxDownloadBytes: number | null;
-}
 
 export class SettingsController {
   // Re-exported so markup/components can reference these constants verbatim.
@@ -199,9 +187,6 @@ export class SettingsController {
   // provider can't be added mid-clear and race a same-kind id re-add (ADR 0035)
   // into a false "key in keychain" probe.
   aiProviderRemoving = $state(false);
-
-  // Semantic-search picked model (page picker draft).
-  semanticSearchPickedModelId = $state<string | null>(null);
 
   // Access prompt + section ref (focus deeplink target).
   brokerAuthorizationPromptVisible = $state(false);
@@ -494,175 +479,22 @@ export class SettingsController {
     this.models.startSemanticSearchModelDownload(model);
   cancelSemanticSearchModelDownload = () => this.models.cancelSemanticSearchModelDownload();
 
-  // Seed the page picker from the persisted (sticky) selection, but ONLY while
-  // the picker has not been touched (`semanticSearchPickedModelId === null`), so
-  // a live user edit is never clobbered. Idempotent — safe to call from every
-  // path that might learn the persisted selection (status load, download
-  // progress, or a post-settings-load re-seed that fixes the init race where the
-  // picker status resolved before recording settings).
-  reseedSemanticSearchPickedModel() {
-    if (this.semanticSearchPickedModelId === null && this.rec.semanticSearchSelectedModelId !== null) {
-      this.semanticSearchPickedModelId = this.rec.semanticSearchSelectedModelId;
-    }
-  }
+  // ─── Semantic-search picker ─────────────────────────────────────────────────
+  // Split into SemanticSearchView to keep this file under the 800-line cap.
+  // Members are re-exposed below so panel markup stays flat + verbatim.
+  semanticSearch = createSemanticSearchView(this.rec, this.models);
 
-  async loadSemanticSearchModelStatus() {
-    await this.models.loadSemanticSearchModelStatus();
-    this.reseedSemanticSearchPickedModel();
-  }
-
-  async handleSemanticSearchDownloadProgress(progress: SemanticSearchModelDownloadProgress) {
-    await this.models.handleSemanticSearchDownloadProgress(progress);
-    this.reseedSemanticSearchPickedModel();
-  }
-
-  async chooseSemanticSearchModel(model: SemanticSearchModelStatus) {
-    // In-flight re-entry guard (mirrors `saveRecordingDomain`'s `savingRecDomains`
-    // gate). The confirm() dialog below awaits, so without this a second invocation
-    // while a `select_semantic_search_model` invoke is in flight would stack a
-    // second clear/reindex. Correctness must not depend solely on the UI `disabled`.
-    if (this.models.semanticSearchReindexing) return;
-    if (!this.rec.recordingSettingsLoaded) await this.rec.loadRecordingSettings();
-    if (this.rec.semanticSearchSelectedModelId === model.modelId) return;
-
-    // Arm the in-flight guard BEFORE the (awaited) confirm dialog — same as
-    // `saveRecordingDomain` arms `savingRecDomains[domain]` before its retention
-    // preview + confirm. The earlier check at the top is checked while the flag is
-    // still false through the whole dialog, so two rapid selections could both pass
-    // and stack two clear/reindex passes. Setting it here closes that window; the
-    // single `finally` below always clears it on every early-return path (including
-    // the cancel path).
-    this.models.semanticSearchReindexing = true;
-    try {
-      const isFirstSelection = this.rec.semanticSearchSelectedModelId === null;
-      if (!isFirstSelection) {
-        const confirmed = await confirm(
-          `Switching to “${model.displayName}” re-indexes every recording: all existing meaning vectors are cleared and re-derived under the new model in the background. Your captures are not changed.`,
-          {
-            title: "Re-index for new search model?",
-            kind: "warning",
-            okLabel: "Switch & Re-index",
-            cancelLabel: "Keep Current Model",
-          },
-        );
-        if (!confirmed) return;
-      }
-
-      this.models.semanticSearchModelError = null;
-      this.models.semanticSearchReindexMessage = null;
-      try {
-        const cleared = await invoke<number>("select_semantic_search_model", {
-          modelId: model.modelId,
-        });
-        this.rec.semanticSearchSelectedModelId = model.modelId;
-        if (!isFirstSelection) {
-          this.models.semanticSearchReindexMessage =
-            cleared > 0
-              ? `Cleared ${cleared} vector${cleared === 1 ? "" : "s"}; re-indexing in the background.`
-              : "Re-index started in the background.";
-        }
-        await this.loadSemanticSearchModelStatus();
-      } catch (err) {
-        this.models.semanticSearchModelError = errorText(err);
-      }
-    } finally {
-      this.models.semanticSearchReindexing = false;
-    }
-  }
-
-  async setSemanticSearchEnabled(enabled: boolean) {
-    this.models.semanticSearchModelError = null;
-    try {
-      await invoke<RecordingSettingsDomainUpdateResponse>("update_semantic_search_settings", {
-        request: { enabled },
-      });
-      this.rec.draftSemanticSearchEnabled = enabled;
-    } catch (err) {
-      this.models.semanticSearchModelError = errorText(err);
-      this.rec.draftSemanticSearchEnabled = !enabled;
-    }
-  }
-
-  // ─── Semantic-search picker derivations ─────────────────────────────────────
-  semanticSearchGuidedModels = $derived(
-    (this.models.semanticSearchModelStatus?.models ?? []).filter((m) => m.tier !== "custom"),
-  );
-  semanticSearchProvider = $derived(
-    (this.models.semanticSearchModelStatus?.models ?? [])[0]?.provider ?? null,
-  );
-  semanticSearchGuidedModelIds = $derived(
-    new Set(this.semanticSearchGuidedModels.map((m) => m.modelId)),
-  );
-  semanticSearchCustomOptions = $derived(
-    this.models.semanticSearchSupportedModels.filter(
-      (m) => !this.semanticSearchGuidedModelIds.has(m.modelId),
-    ),
-  );
-  semanticSearchModelOptions = $derived([
-    ...this.semanticSearchGuidedModels.map((m) => ({
-      value: m.modelId,
-      label: `${m.displayName} · ${m.dimension}d${m.tier === "multilingual" ? " · multilingual" : ""} · recommended`,
-    })),
-    ...this.semanticSearchCustomOptions.map((m) => ({
-      value: m.modelId,
-      label: `${m.displayName} — ${m.dimension}d${m.multilingual ? " · multilingual" : ""}`,
-    })),
-  ]);
-
-  semanticSearchPickedModel = $derived.by((): SemanticSearchPickedView | null => {
-    const id = this.semanticSearchPickedModelId;
-    if (!id) return null;
-    const live = (this.models.semanticSearchModelStatus?.models ?? []).find((m) => m.modelId === id);
-    if (live) {
-      return {
-        modelId: live.modelId,
-        provider: live.provider,
-        displayName: live.displayName,
-        description: live.description,
-        metaLine: `${semanticSearchTierLabel(live.tier)} · ${formatBytes(live.approxDownloadBytes)} on disk · ${live.dimension}-dim · runs on-device${live.licenseLabel ? ` · ${live.licenseLabel}` : ""}`,
-        available: live.available,
-        approxDownloadBytes: live.approxDownloadBytes,
-      };
-    }
-    const catalog = this.models.semanticSearchSupportedModels.find((m) => m.modelId === id);
-    if (catalog) {
-      const size =
-        catalog.approxDownloadBytes != null
-          ? `${formatBytes(catalog.approxDownloadBytes)} on disk · `
-          : "";
-      return {
-        modelId: catalog.modelId,
-        provider: this.semanticSearchProvider,
-        displayName: catalog.displayName,
-        description: catalog.description,
-        metaLine: `${semanticSearchTierLabel("custom")} · ${size}${catalog.dimension}-dim · runs on-device${catalog.multilingual ? " · multilingual" : ""}`,
-        available: false,
-        approxDownloadBytes: catalog.approxDownloadBytes,
-      };
-    }
-    return null;
-  });
-
-  semanticSearchPickedProgress = $derived.by(() => {
-    const id = this.semanticSearchPickedModelId;
-    const p = this.models.semanticSearchDownloadProgress;
-    return id && p && p.modelId === id ? p : null;
-  });
-
-  async startSemanticSearchPickedDownload(model: SemanticSearchPickedView) {
-    if (!model.provider) return;
-    await this.startSemanticSearchModelDownload({
-      provider: model.provider,
-      modelId: model.modelId,
-    } as SemanticSearchModelStatus);
-  }
-
-  async chooseSemanticSearchPickedModel(model: SemanticSearchPickedView) {
-    await this.chooseSemanticSearchModel({
-      modelId: model.modelId,
-      displayName: model.displayName,
-    } as SemanticSearchModelStatus);
-  }
+  get semanticSearchPickedModelId() { return this.semanticSearch.semanticSearchPickedModelId; }
+  set semanticSearchPickedModelId(value: string | null) { this.semanticSearch.semanticSearchPickedModelId = value; }
+  get reseedSemanticSearchPickedModel() { return this.semanticSearch.reseedSemanticSearchPickedModel; }
+  get loadSemanticSearchModelStatus() { return this.semanticSearch.loadSemanticSearchModelStatus; }
+  get handleSemanticSearchDownloadProgress() { return this.semanticSearch.handleSemanticSearchDownloadProgress; }
+  get setSemanticSearchEnabled() { return this.semanticSearch.setSemanticSearchEnabled; }
+  get startSemanticSearchPickedDownload() { return this.semanticSearch.startSemanticSearchPickedDownload; }
+  get chooseSemanticSearchPickedModel() { return this.semanticSearch.chooseSemanticSearchPickedModel; }
+  get semanticSearchModelOptions() { return this.semanticSearch.semanticSearchModelOptions; }
+  get semanticSearchPickedModel() { return this.semanticSearch.semanticSearchPickedModel; }
+  get semanticSearchPickedProgress() { return this.semanticSearch.semanticSearchPickedProgress; }
 
   // ─── Recording-domain save + retention ──────────────────────────────────────
   async saveRecordingDomain(domain: AutosaveRecordingDomain) {
