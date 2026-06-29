@@ -605,6 +605,10 @@
   // a failed first turn re-starts and a failed follow-up re-follows-up.
   async function retryTurn(turn: ChatTurn): Promise<void> {
     if (streaming || !askAvailable) return;
+    // Only the trailing turn can be retried: send() re-derives turnIndex from
+    // turns.length, so dropping a non-trailing turn would orphan the stream and
+    // collide turnIndexes. Mid-thread errors keep their message but no Retry.
+    if (turn.turnIndex !== turns.length - 1) return;
     const question = turn.question;
     turns = turns.filter((t) => t.turnIndex !== turn.turnIndex);
     composerInput = question;
@@ -1162,16 +1166,21 @@
                     </p>
                     <!-- Re-issue the same question. The composer is also restored
                          with the question, so this and a manual edit-and-resend
-                         both work. -->
-                    <button
-                      type="button"
-                      class="turn-retry"
-                      disabled={streaming || !askAvailable}
-                      onclick={() => void retryTurn(turn)}
-                    >
-                      <span class="turn-retry-ico" aria-hidden="true">↻</span>
-                      Retry
-                    </button>
+                         both work. Retry is gated to the TRAILING turn: send()
+                         re-derives turnIndex from turns.length, so retrying a
+                         mid-thread error would collide turnIndexes and orphan
+                         the stream. -->
+                    {#if ti === turns.length - 1}
+                      <button
+                        type="button"
+                        class="turn-retry"
+                        disabled={streaming || !askAvailable}
+                        onclick={() => void retryTurn(turn)}
+                      >
+                        <span class="turn-retry-ico" aria-hidden="true">↻</span>
+                        Retry
+                      </button>
+                    {/if}
                   </div>
                 {:else}
                   <!-- Thinking disclosure: the model's reasoning, ABOVE the
