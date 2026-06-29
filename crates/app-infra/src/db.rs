@@ -1128,4 +1128,102 @@ mod tests {
             );
         });
     }
+
+    /// Sentinel env var that re-purposes this very test binary as the crashing
+    /// Owner child of `brokered_reader_recovers_crashed_owner_dirty_wal`: when it
+    /// is set, the re-exec'd test acts as the Owner, commits a row, and aborts.
+    #[cfg(unix)]
+    const WAL_CRASH_HELPER_ENV: &str = "MNEMA_WAL_CRASH_HELPER";
+
+    /// The real crashed-Owner recovery path: an Owner process commits a row, then
+    /// dies via `abort()` WITHOUT closing its pool, leaving a dirty `-wal` with NO
+    /// live owner — the exact post-crash state that
+    /// `initialize_brokered_reader`'s `force_wal_recovery` read (run *before*
+    /// flipping `query_only=ON`) exists to fold back in. This is the cross-process
+    /// scenario `brokered_reader_reads_against_non_empty_wal` can only approximate
+    /// in-process (it must keep the Owner alive to hold a non-empty `-wal`).
+    ///
+    /// The test re-execs *itself* (`--exact <this test>`) as the crashing Owner:
+    /// the child branch (sentinel env set) commits + aborts; the parent branch
+    /// (env unset) spawns it, waits for the SIGABRT, then opens the brokered
+    /// reader and asserts the committed row survives. Unix-only because the
+    /// not-flaky guarantee keys off asserting termination-by-signal.
+    #[cfg(unix)]
+    #[test]
+    fn brokered_reader_recovers_crashed_owner_dirty_wal() {
+        // Child role: re-exec'd by the parent below with the sentinel set. Acts as
+        // the Owner that crashes mid-life so the `-wal` is left dirty, no owner.
+        if let Ok(dir) = std::env::var(WAL_CRASH_HELPER_ENV) {
+            block_on(async {
+                let owner = Database::initialize(Path::new(&dir))
+                    .await
+                    .expect("crash-helper owner init");
+                sqlx::query(
+                    "INSERT INTO frames (session_id, file_path, captured_at) \
+                     VALUES ('sess-crash', '/frames/crash.jpg', '2026-06-17T00:00:00Z')",
+                )
+                .execute(owner.write_pool())
+                .await
+                .expect("crash-helper owner write");
+                // Crash with the pool still OPEN: the committed row lives in the
+                // uncheckpointed `-wal`, and no clean close (which would checkpoint
+                // + truncate it) ever runs. `abort()` raises SIGABRT immediately,
+                // so no destructor folds the WAL back into the main DB.
+                std::process::abort();
+            });
+            unreachable!("crash-helper child must abort before block_on returns");
+        }
+
+        // Parent role.
+        use std::os::unix::process::ExitStatusExt;
+
+        let dir = unique_test_dir("brokered-crash-wal");
+        let exe = std::env::current_exe().expect("current test exe");
+        let status = std::process::Command::new(exe)
+            .args([
+                "db::tests::brokered_reader_recovers_crashed_owner_dirty_wal",
+                "--exact",
+                "--test-threads=1",
+            ])
+            .env(WAL_CRASH_HELPER_ENV, &dir)
+            .status()
+            .expect("spawn crashing-owner child");
+
+        // The child must have died by signal (SIGABRT = 6), never exited cleanly:
+        // a clean exit would mean it closed/checkpointed its pool, which would
+        // have truncated the `-wal` and defeated the dirty-WAL scenario.
+        assert!(
+            status.code().is_none(),
+            "crashing-owner child should be killed by a signal, not exit with a code: {status:?}"
+        );
+        assert_eq!(
+            status.signal(),
+            Some(6),
+            "crashing-owner child should terminate via SIGABRT"
+        );
+
+        // The crash left a dirty `-wal` with no live owner.
+        let database_path = prepare_database_path(&dir).expect("database path");
+        assert!(
+            wal_sidecar_is_non_empty(&database_path),
+            "the crashed owner should leave a non-empty -wal"
+        );
+
+        // The brokered reader's force-WAL-recovery-before-`query_only` path must
+        // fold in the crashed Owner's committed row.
+        block_on(async {
+            let brokered = Database::initialize_brokered_reader(&dir)
+                .await
+                .expect("brokered init against crashed-owner dirty -wal");
+            let frame_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM frames WHERE session_id = 'sess-crash'")
+                    .fetch_one(brokered.read_pool())
+                    .await
+                    .expect("brokered read should succeed against a crashed-owner -wal");
+            assert_eq!(
+                frame_count, 1,
+                "brokered reader must recover the crashed owner's committed row"
+            );
+        });
+    }
 }
