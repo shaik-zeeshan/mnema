@@ -487,9 +487,14 @@ fn dedupe_dismissed(dismissals: Vec<DismissalState>) -> Vec<DismissedView> {
     let mut seen = std::collections::HashSet::new();
     let mut views = Vec::new();
     for dismissal in dismissals {
+        // ASCII-only folding to match SQLite `COLLATE NOCASE` — the identity used
+        // by the conclusions unique index, the resurface gate, and `undismiss`.
+        // Full Unicode `to_lowercase` over-folds (e.g. É == é), collapsing two
+        // distinct vetoes that `undismiss` can only delete one casing at a time,
+        // leaving a stale, un-restorable suppression behind.
         let key = (
-            dismissal.subject.to_lowercase(),
-            dismissal.statement.to_lowercase(),
+            dismissal.subject.to_ascii_lowercase(),
+            dismissal.statement.to_ascii_lowercase(),
         );
         if seen.insert(key) {
             views.push(DismissedView {
@@ -796,5 +801,28 @@ mod tests {
 
         assert_eq!(views.len(), 1, "case variants are the same belief");
         assert_eq!(views[0].dismissed_at_ms, 200);
+    }
+
+    #[test]
+    fn dedupe_dismissed_folds_only_ascii_case_to_match_undismiss_nocase() {
+        // `undismiss` and the resurface gate match beliefs with SQLite
+        // `COLLATE NOCASE`, which folds ONLY ASCII A–Z. Two dismissals differing
+        // solely by a non-ASCII case (É vs é) are DISTINCT veto rows that
+        // `undismiss(subject, statement)` deletes one casing at a time, so dedupe
+        // must keep them separate — collapsing them leaves a stale, un-restorable
+        // suppression after the single archive row is restored. (Regression: the
+        // dedupe key previously used full-Unicode `to_lowercase`, over-folding.)
+        let input = vec![
+            dismissal("CAFÉ", "Likes CAFÉ", 200),
+            dismissal("café", "Likes café", 100),
+        ];
+
+        let views = dedupe_dismissed(input);
+
+        assert_eq!(
+            views.len(),
+            2,
+            "non-ASCII case variants are distinct vetoes under NOCASE"
+        );
     }
 }
