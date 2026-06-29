@@ -114,8 +114,11 @@
     durationLabelForSeconds(pendingRequest?.minimumDurationSeconds ?? 0),
   );
 
-  const expiryLabel = $derived.by(() => {
-    const endsAt = new Date(Date.now() + durationSeconds[selectedDuration] * 1000);
+  // Format the expiry timestamp for a grant that starts at `baseMs` and lasts
+  // `selectedDuration`. Shared by the live label and the approve-time receipt so
+  // both read the same wording off the same clock.
+  function formatExpiry(baseMs: number) {
+    const endsAt = new Date(baseMs + durationSeconds[selectedDuration] * 1000);
     return endsAt.toLocaleString(undefined, {
       weekday: "short",
       month: "short",
@@ -123,7 +126,12 @@
       hour: "numeric",
       minute: "2-digit",
     });
-  });
+  }
+
+  // Reference the `now` ticker so the displayed expiry tracks elapsed dwell time
+  // rather than freezing at load (it would otherwise under-report by however long
+  // the dialog sat open).
+  const expiryLabel = $derived(formatExpiry(now));
 
   // How long this request has been waiting. The hard timeout is CLI-side (~120s),
   // so this is an honesty cue, not a countdown — if the tool stops waiting the
@@ -220,15 +228,17 @@
   }
 
   async function approveAccess() {
-    if (!pendingRequest) return;
+    if (!pendingRequest || approving) return;
     error = null;
     approving = true;
     // Snapshot the consent terms now: the receipt must keep naming them even as
-    // the backend clears the pending request and tears the window down.
+    // the backend clears the pending request and tears the window down. Expiry is
+    // computed off a FRESH clock at approve time so the receipt reflects what was
+    // actually granted, not a stale load-time estimate.
     const receipt = {
       tool: pendingRequest.client.label,
       scopeProse: scopeProse[selectedScope],
-      expiryLabel,
+      expiryLabel: formatExpiry(Date.now()),
     };
     startActionWatchdog(() => (approving = false));
     try {
@@ -240,8 +250,11 @@
       });
       // The backend resolves Ok only on a real grant. Show the positive receipt
       // and stand the watchdog down so a slow teardown can't report failure.
+      // Clear any prior action error before flipping to granted so a stale/
+      // watchdog-set error can never render over the success receipt.
       clearActionWatchdog();
       approving = false;
+      error = null;
       granted = receipt;
       // The Deny anchor that held focus is gone; follow focus into the receipt's
       // Close button so keyboard users aren't dropped onto <body>.
@@ -493,7 +506,7 @@
         </fieldset>
       {/if}
 
-      {#if error}
+      {#if error && !granted}
         <div class="inline-error" role="alert">
           <span class="inline-error__icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
