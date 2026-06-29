@@ -559,6 +559,7 @@
     return () => {
       destroyed = true;
       c.autosaveEngine.cancelAll();
+      c.cancelPendingSaveRetries();
       stopMicListeners();
       unlistenRecordingSettingsChanged?.();
       unlistenRecordingSettingsDomainChanged?.();

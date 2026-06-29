@@ -179,6 +179,13 @@ export class SettingsController {
   lastFailedSaveDomain = $state<AutosaveRecordingDomain | null>(null);
   recSaveFailureCount = $state<Record<string, number>>({});
   recSaveBackoffUntil = $state<Record<string, number>>({});
+  // One-shot backoff re-tick timers, tracked per domain so teardown can cancel
+  // them — an orphaned timer would re-arm saves (and tick the engine) on a
+  // detached controller after Settings closes.
+  private recSaveRetryTimers = new Map<
+    AutosaveRecordingDomain,
+    ReturnType<typeof setTimeout>
+  >();
   // The domain whose save most recently succeeded — drives a near-the-control
   // "Saved" micro-affordance (the rail footer status is remote from the edit).
   recSavedDomain = $state<AutosaveRecordingDomain | null>(null);
@@ -780,12 +787,25 @@ export class SettingsController {
     this.recSaveFailureCount = { ...this.recSaveFailureCount, [domain]: failures };
     const delay = Math.min(30_000, 500 * 2 ** (failures - 1));
     this.recSaveBackoffUntil = { ...this.recSaveBackoffUntil, [domain]: Date.now() + delay };
-    setTimeout(() => this.autosaveEngine.tick(), delay + 50);
+    const existing = this.recSaveRetryTimers.get(domain);
+    if (existing) clearTimeout(existing);
+    this.recSaveRetryTimers.set(
+      domain,
+      setTimeout(() => {
+        this.recSaveRetryTimers.delete(domain);
+        this.autosaveEngine.tick();
+      }, delay + 50),
+    );
   }
 
   // Clear the failure bookkeeping for a domain (on a successful save, a manual
   // retry, or a dismiss-and-reconcile).
   private clearSaveFailure(domain: AutosaveRecordingDomain) {
+    const timer = this.recSaveRetryTimers.get(domain);
+    if (timer) {
+      clearTimeout(timer);
+      this.recSaveRetryTimers.delete(domain);
+    }
     if (this.lastFailedSaveDomain === domain) this.lastFailedSaveDomain = null;
     if (this.recSaveFailureCount[domain]) {
       this.recSaveFailureCount = { ...this.recSaveFailureCount, [domain]: 0 };
@@ -793,6 +813,14 @@ export class SettingsController {
     if (this.recSaveBackoffUntil[domain]) {
       this.recSaveBackoffUntil = { ...this.recSaveBackoffUntil, [domain]: 0 };
     }
+  }
+
+  // Cancel any pending backoff re-tick timers. Called on teardown so a failed
+  // save's backoff cannot fire on a detached controller (re-arming saves /
+  // ticking the engine) after Settings closes.
+  cancelPendingSaveRetries(): void {
+    for (const timer of this.recSaveRetryTimers.values()) clearTimeout(timer);
+    this.recSaveRetryTimers.clear();
   }
 
   // Re-run the last failed domain save immediately (the user pressed Retry).
