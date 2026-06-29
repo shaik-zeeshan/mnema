@@ -1,11 +1,12 @@
-use sqlx::{sqlite::SqliteRow, Row};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
-use super::projection::timestamp_plus_ms;
+use super::projection::{normalized_source_session_id, timestamp_plus_ms};
 use super::retrieval::{AudioHit, FrameHit};
 use super::{AudioSearchResult, FrameSearchResult};
 use crate::captured_frame_equivalence::CapturedFrameEquivalenceScope;
-use crate::processing::Frame;
-use crate::{AudioSegment, AudioSegmentSourceKind, Result};
+use crate::processing::{map_frame_for_search, Frame};
+use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, Result};
 
 const AUDIO_GROUP_GAP_MS: u64 = 2_000;
 
@@ -295,4 +296,143 @@ pub(super) fn map_audio_segment_for_search(row: SqliteRow) -> Result<AudioSegmen
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
+}
+
+const AUDIO_FRAME_ALIGNMENT_WINDOW_SECONDS: i64 = 10;
+
+pub(super) async fn align_audio_results(
+    pool: &SqlitePool,
+    results: &mut [AudioSearchResult],
+) -> Result<()> {
+    for result in results {
+        let mut candidate_session_ids = Vec::new();
+        if let Some(screen_source_session_id) =
+            screen_source_session_id_for_audio_alignment(pool, &result.audio_segment).await?
+        {
+            candidate_session_ids.push(screen_source_session_id);
+        }
+        if !candidate_session_ids
+            .iter()
+            .any(|session_id| session_id == &result.audio_segment.source_session_id)
+        {
+            candidate_session_ids.push(result.audio_segment.source_session_id.clone());
+        }
+
+        result.aligned_frame = None;
+        for session_id in candidate_session_ids {
+            if let Some(frame) =
+                find_aligned_frame(pool, &session_id, &result.absolute_start_at).await?
+            {
+                result.aligned_frame = Some(frame);
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn screen_source_session_id_for_audio_alignment(
+    pool: &SqlitePool,
+    segment: &AudioSegment,
+) -> Result<Option<String>> {
+    if let Some(capture_segment_id) = segment.capture_segment_id {
+        let row = sqlx::query(
+            "SELECT capture_sessions.screen_source_session_id \
+             FROM capture_segments \
+             JOIN capture_sessions ON capture_sessions.capture_session_id = capture_segments.capture_session_id \
+             WHERE capture_segments.id = ?1 \
+             ORDER BY capture_sessions.id DESC LIMIT 1",
+        )
+        .bind(capture_segment_id)
+        .fetch_optional(pool)
+        .await?;
+        if let Some(session_id) =
+            row.and_then(|row| normalized_source_session_id(row.get("screen_source_session_id")))
+        {
+            return Ok(Some(session_id));
+        }
+    }
+
+    let source_column = match segment.source_kind {
+        AudioSegmentSourceKind::Microphone => "microphone_source_session_id",
+        AudioSegmentSourceKind::SystemAudio => "system_audio_source_session_id",
+    };
+    let query = format!(
+        "SELECT screen_source_session_id \
+         FROM capture_sessions \
+         WHERE {source_column} = ?1 \
+         ORDER BY id DESC LIMIT 1",
+    );
+    let row = sqlx::query(&query)
+        .bind(&segment.source_session_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.and_then(|row| normalized_source_session_id(row.get("screen_source_session_id"))))
+}
+
+async fn find_aligned_frame(
+    pool: &SqlitePool,
+    session_id: &str,
+    absolute_start_at: &str,
+) -> Result<Option<Frame>> {
+    let target = OffsetDateTime::parse(absolute_start_at, &Rfc3339).map_err(|error| {
+        AppInfraError::FrameBatchFinalize(format!(
+            "invalid search timestamp '{absolute_start_at}': {error}"
+        ))
+    })?;
+    let before_start = target
+        .checked_sub(Duration::seconds(AUDIO_FRAME_ALIGNMENT_WINDOW_SECONDS))
+        .ok_or_else(|| {
+            AppInfraError::FrameBatchFinalize("search alignment timestamp overflow".to_string())
+        })?
+        .format(&Rfc3339)
+        .map_err(|error| {
+            AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}"))
+        })?;
+    let after_end = target
+        .checked_add(Duration::seconds(AUDIO_FRAME_ALIGNMENT_WINDOW_SECONDS))
+        .ok_or_else(|| {
+            AppInfraError::FrameBatchFinalize("search alignment timestamp overflow".to_string())
+        })?
+        .format(&Rfc3339)
+        .map_err(|error| {
+            AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}"))
+        })?;
+
+    let before = sqlx::query(
+        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
+         FROM frames \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE session_id = ?1 AND captured_at >= ?2 AND captured_at <= ?3 \
+         ORDER BY captured_at DESC, frames.id DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .bind(before_start)
+    .bind(absolute_start_at)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(row) = before {
+        return map_frame_for_search(row).map(Some);
+    }
+
+    let after = sqlx::query(
+        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
+         FROM frames \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE session_id = ?1 AND captured_at > ?2 AND captured_at <= ?3 \
+         ORDER BY captured_at ASC, frames.id ASC LIMIT 1",
+    )
+    .bind(session_id)
+    .bind(absolute_start_at)
+    .bind(after_end)
+    .fetch_optional(pool)
+    .await?;
+
+    after.map(map_frame_for_search).transpose()
 }

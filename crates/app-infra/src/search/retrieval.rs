@@ -1,8 +1,14 @@
-use sqlx::{QueryBuilder, Sqlite};
+use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqlitePool};
 
+use super::grouping::{
+    group_audio_hits, group_frame_hits, map_audio_hit, map_audio_segment_for_search,
+};
 use super::types::{NormalizedAppRefinement, NormalizedSearchRefinements};
-use super::{MAX_HIT_FETCH_LIMIT, MEANING_SNIPPET_CHAR_BUDGET};
-use crate::processing::Frame;
+use super::{
+    AudioSearchResult, FrameSearchResult, MAX_HIT_FETCH_LIMIT, MEANING_SNIPPET_CHAR_BUDGET,
+    SEMANTIC_KNN_LIMIT,
+};
+use crate::processing::{map_frame_for_search, Frame};
 use crate::{AudioSegment, AudioSegmentSourceKind, Result};
 
 const DEFAULT_GROUP_LIMIT: u32 = 5;
@@ -336,4 +342,460 @@ pub(super) fn rrf_fuse_audio_hits(
         |hit| hit.anchor_id,
         |hit, rank| hit.rank = rank,
     )
+}
+
+pub(super) async fn fetch_search_document_high_water_mark(pool: &SqlitePool) -> Result<i64> {
+    let row =
+        sqlx::query("SELECT COALESCE(MAX(id), 0) AS snapshot_document_id FROM search_documents")
+            .fetch_one(pool)
+            .await?;
+    Ok(row.get("snapshot_document_id"))
+}
+
+async fn fetch_frame_hits(
+    pool: &SqlitePool,
+    fts_query: &str,
+    snapshot_document_id: i64,
+    hit_offset: i64,
+    hit_limit: i64,
+    refinements: &NormalizedSearchRefinements,
+) -> Result<Vec<FrameHit>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT search_documents.id AS document_id, \
+                search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
+                search_documents.text_source_kind, \
+                CASE \
+                    WHEN instr(snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12), '<mark>') > 0 \
+                    THEN snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12) \
+                    ELSE snippet(search_documents_fts, 1, '<mark>', '</mark>', '...', 12) \
+                END AS snippet, \
+                bm25(search_documents_fts, 5.0, 1.0) AS rank, \
+                frames.id, frames.session_id, frames.file_path, frames.captured_at, frames.width, frames.height, \
+                frames.equivalence_hint, frames.equivalence_proof, frames.equivalence_version, \
+                frames.equivalence_status, frames.equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'frame' \
+                      AND (\
+                        (search_documents.text_source_kind = 'equivalent_reuse' \
+                         AND search_documents.processing_result_id IS NOT NULL \
+                         AND secret_redactions.processing_result_id = search_documents.processing_result_id) \
+                        OR ((search_documents.text_source_kind != 'equivalent_reuse' \
+                             OR search_documents.processing_result_id IS NULL) \
+                            AND secret_redactions.frame_id = frames.id)\
+                      )\
+                ), 0) AS secret_redaction_count \
+         FROM search_documents_fts \
+         JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+         JOIN frames ON frames.id = search_documents.frame_id \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE search_documents_fts MATCH ",
+    );
+    query.push_bind(fts_query);
+    query.push(
+        " \
+           AND search_documents.anchor_type = 'frame' \
+           AND search_documents.id <= ",
+    );
+    query.push_bind(snapshot_document_id);
+    push_search_refinement_predicates(&mut query, refinements);
+    query.push(
+        " ORDER BY rank ASC, search_documents.absolute_start_at DESC, search_documents.id DESC LIMIT ",
+    );
+    query.push_bind(hit_limit);
+    query.push(" OFFSET ");
+    query.push_bind(hit_offset);
+
+    let rows = query.build().fetch_all(pool).await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(FrameHit {
+                anchor_id: row.get("document_id"),
+                group_key: row.get("group_key"),
+                app_bundle_id: row.get("app_bundle_id"),
+                app_name: row.get("app_name"),
+                window_title: row.get("window_title"),
+                text_source_kind: row.get("text_source_kind"),
+                snippet: row.get("snippet"),
+                rank: row.get("rank"),
+                secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
+                    .unwrap_or(u32::MAX),
+                // A `MATCH` hit is by definition a **Text Search** match, never
+                // meaning-only.
+                found_by_meaning: false,
+                frame: map_frame_for_search(row)?,
+            })
+        })
+        .collect()
+}
+
+pub(super) async fn fetch_grouped_frame_hits(
+    pool: &SqlitePool,
+    fts_query: &str,
+    fts_is_searchable: bool,
+    snapshot_document_id: i64,
+    offset: usize,
+    limit: u32,
+    refinements: &NormalizedSearchRefinements,
+    query_embedding: Option<&[f32]>,
+) -> Result<Vec<FrameSearchResult>> {
+    // **Hybrid Search**: when a query vector is present, fetch the meaning-tier
+    // candidates once (a bounded top-k `vec0` KNN) and RRF-fuse them into the
+    // **Text Search** list *before* grouping/pagination. With no vector the
+    // fused list is just the FTS list, so keyword-only behavior is unchanged.
+    let semantic_hits = match query_embedding {
+        Some(embedding) => degrade_to_keyword_only(
+            "frame",
+            fetch_semantic_frame_hits(pool, embedding, snapshot_document_id, refinements).await,
+        ),
+        None => Vec::new(),
+    };
+
+    // A meaning-only query (no FTS-searchable body) skips the **Text Search**
+    // loop entirely — an empty `MATCH` would error — and groups the semantic-only
+    // fused list. `fts_is_searchable` is false only when there is a usable query
+    // vector (the empty-everything case short-circuits earlier in `search_capture`).
+    if !fts_is_searchable {
+        let fused = rrf_fuse_frame_hits(&[], &semantic_hits);
+        return Ok(group_frame_hits(&fused));
+    }
+
+    let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
+    let mut hit_limit = hit_fetch_limit(offset, limit);
+    let mut hit_offset = 0_i64;
+    let mut text_hits = Vec::new();
+    loop {
+        let hits = fetch_frame_hits(
+            pool,
+            fts_query,
+            snapshot_document_id,
+            hit_offset,
+            hit_limit,
+            refinements,
+        )
+        .await?;
+        let hit_count = hits.len() as i64;
+        text_hits.extend(hits);
+        let fused = rrf_fuse_frame_hits(&text_hits, &semantic_hits);
+        let groups = group_frame_hits(&fused);
+        // Only **Text Search**-derived groups count toward the pagination
+        // termination: the semantic snapshot is fetched whole up front, so the
+        // meaning-only groups are already all present and never grow across
+        // pages. Counting them toward `needed_groups` could stop the **Text
+        // Search** loop a page early, starving a later text hit of its keyword
+        // RRF contribution (it would rank ~1 low on its semantic term alone).
+        // Drain text until enough text groups exist, exactly as the audio path
+        // drains its snapshot before fusing.
+        let text_group_count = groups
+            .iter()
+            .filter(|group| !group.found_by_meaning)
+            .count();
+        if text_group_count >= needed_groups || hit_count < hit_limit {
+            return Ok(groups);
+        }
+        hit_offset = hit_offset.saturating_add(hit_count);
+        hit_limit = MAX_HIT_FETCH_LIMIT;
+    }
+}
+
+async fn fetch_audio_hits(
+    pool: &SqlitePool,
+    fts_query: &str,
+    snapshot_document_id: i64,
+    hit_offset: i64,
+    hit_limit: i64,
+    refinements: &NormalizedSearchRefinements,
+) -> Result<Vec<AudioHit>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT search_documents.id AS document_id, search_documents.group_key, \
+                search_documents.span_start_ms, search_documents.span_end_ms, \
+                search_documents.absolute_start_at, search_documents.absolute_end_at, \
+                CASE \
+                    WHEN instr(snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12), '<mark>') > 0 \
+                    THEN snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12) \
+                    ELSE snippet(search_documents_fts, 1, '<mark>', '</mark>', '...', 12) \
+                END AS snippet, \
+                bm25(search_documents_fts, 5.0, 1.0) AS rank, \
+                audio_segments.id, audio_segments.source_kind, audio_segments.source_session_id, \
+                audio_segments.segment_index, audio_segments.file_path, audio_segments.started_at, \
+                audio_segments.ended_at, audio_segments.capture_segment_id, audio_segments.created_at, audio_segments.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'audio' \
+                      AND secret_redactions.audio_segment_id = audio_segments.id\
+                ), 0) AS secret_redaction_count \
+         FROM search_documents_fts \
+         JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+         JOIN audio_segments ON audio_segments.id = search_documents.audio_segment_id \
+         WHERE search_documents_fts MATCH ",
+    );
+    query.push_bind(fts_query);
+    query.push(
+        " \
+           AND search_documents.anchor_type = 'audio' \
+           AND search_documents.id <= ",
+    );
+    query.push_bind(snapshot_document_id);
+    push_search_refinement_predicates(&mut query, refinements);
+    query.push(
+        " ORDER BY rank ASC, search_documents.absolute_start_at DESC, search_documents.id DESC LIMIT ",
+    );
+    query.push_bind(hit_limit);
+    query.push(" OFFSET ");
+    query.push_bind(hit_offset);
+
+    let rows = query.build().fetch_all(pool).await?;
+
+    rows.into_iter().map(map_audio_hit).collect()
+}
+
+pub(super) async fn fetch_grouped_audio_hits(
+    pool: &SqlitePool,
+    fts_query: &str,
+    fts_is_searchable: bool,
+    snapshot_document_id: i64,
+    refinements: &NormalizedSearchRefinements,
+    query_embedding: Option<&[f32]>,
+) -> Result<Vec<AudioSearchResult>> {
+    let semantic_hits = match query_embedding {
+        Some(embedding) => degrade_to_keyword_only(
+            "audio",
+            fetch_semantic_audio_hits(pool, embedding, snapshot_document_id, refinements).await,
+        ),
+        None => Vec::new(),
+    };
+
+    // A meaning-only query (no FTS-searchable body) skips the **Text Search**
+    // loop entirely — an empty `MATCH` would error — and groups the semantic-only
+    // fused list, exactly as the frame path does.
+    if !fts_is_searchable {
+        let fused = rrf_fuse_audio_hits(&[], &semantic_hits);
+        return group_audio_hits(&fused);
+    }
+
+    // Audio grouping is transitive by time adjacency, so a lower-ranked hit can
+    // bridge two higher-ranked groups. Drain the snapshot before paginating.
+    let mut hit_offset = 0_i64;
+    let mut text_hits = Vec::new();
+    loop {
+        let hits = fetch_audio_hits(
+            pool,
+            fts_query,
+            snapshot_document_id,
+            hit_offset,
+            MAX_HIT_FETCH_LIMIT,
+            refinements,
+        )
+        .await?;
+        let hit_count = hits.len() as i64;
+        text_hits.extend(hits);
+        if hit_count < MAX_HIT_FETCH_LIMIT {
+            // RRF-fuse before grouping, exactly as the frame path does.
+            let fused = rrf_fuse_audio_hits(&text_hits, &semantic_hits);
+            return group_audio_hits(&fused);
+        }
+        hit_offset = hit_offset.saturating_add(hit_count);
+    }
+}
+
+/// Fetch the meaning-tier **Search Result Anchor**s for a frame query. The
+/// `vec0` KNN, blob serialization, and the live-dimension gate live in the store
+/// seam ([`crate::semantic_search::knn_in_scope_anchors`]); this function passes
+/// the in-scope rowid sub-select as the `push_scope` closure (so a refined query
+/// never drops an in-scope meaning match a post-filter would have lost — ADR
+/// 0036, filter-then-rank), then plainly hydrates the returned **Semantic
+/// Candidate Set** into `FrameHit`s with no vec0/KNN/blob of its own, re-imposing
+/// the candidate order before RRF. Each hit is `found_by_meaning` with a leading
+/// `body_text` excerpt for its snippet.
+async fn fetch_semantic_frame_hits(
+    pool: &SqlitePool,
+    query_embedding: &[f32],
+    snapshot_document_id: i64,
+    refinements: &NormalizedSearchRefinements,
+) -> Result<Vec<FrameHit>> {
+    let candidate_set = crate::semantic_search::knn_in_scope_anchors(
+        pool,
+        query_embedding,
+        SEMANTIC_KNN_LIMIT,
+        |query| push_in_scope_anchor_rowids(query, "frame", snapshot_document_id, refinements),
+    )
+    .await?;
+    if candidate_set.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Plain hydration — a `search_documents JOIN frames` projection with no
+    // vec0/KNN/blob — of the candidate anchors. The candidate set is the single
+    // source of order (re-imposed below); the `IN (…)` set returns rows arbitrarily.
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT search_documents.id AS document_id, \
+                search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
+                search_documents.text_source_kind, search_documents.body_text AS body_text, \
+                frames.id, frames.session_id, frames.file_path, frames.captured_at, frames.width, frames.height, \
+                frames.equivalence_hint, frames.equivalence_proof, frames.equivalence_version, \
+                frames.equivalence_status, frames.equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'frame' \
+                      AND (\
+                        (search_documents.text_source_kind = 'equivalent_reuse' \
+                         AND search_documents.processing_result_id IS NOT NULL \
+                         AND secret_redactions.processing_result_id = search_documents.processing_result_id) \
+                        OR ((search_documents.text_source_kind != 'equivalent_reuse' \
+                             OR search_documents.processing_result_id IS NULL) \
+                            AND secret_redactions.frame_id = frames.id)\
+                      )\
+                ), 0) AS secret_redaction_count \
+         FROM search_documents \
+         JOIN frames ON frames.id = search_documents.frame_id \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE search_documents.id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for anchor_id in &candidate_set {
+        separated.push_bind(*anchor_id);
+    }
+    query.push(")");
+
+    let rows = query.build().fetch_all(pool).await?;
+
+    let mut hits = Vec::with_capacity(rows.len());
+    for row in rows {
+        let body_text: String = row.get("body_text");
+        hits.push(FrameHit {
+            anchor_id: row.get("document_id"),
+            group_key: row.get("group_key"),
+            app_bundle_id: row.get("app_bundle_id"),
+            app_name: row.get("app_name"),
+            window_title: row.get("window_title"),
+            text_source_kind: row.get("text_source_kind"),
+            snippet: meaning_snippet(&body_text),
+            // Placeholder; RRF overwrites `rank` for every fused hit.
+            rank: f64::INFINITY,
+            secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
+                .unwrap_or(u32::MAX),
+            found_by_meaning: true,
+            frame: map_frame_for_search(row)?,
+        });
+    }
+    Ok(order_by_candidate_set(hits, &candidate_set, |hit| {
+        hit.anchor_id
+    }))
+}
+
+/// Fetch the meaning-tier **Search Result Anchor**s for an audio query — the
+/// audio counterpart of [`fetch_semantic_frame_hits`]. The KNN/blob/dimension
+/// gate live in the same store seam; this passes the audio in-scope rowid
+/// sub-select and plainly hydrates the **Semantic Candidate Set** with a
+/// `search_documents JOIN audio_segments` projection, re-imposing candidate order.
+async fn fetch_semantic_audio_hits(
+    pool: &SqlitePool,
+    query_embedding: &[f32],
+    snapshot_document_id: i64,
+    refinements: &NormalizedSearchRefinements,
+) -> Result<Vec<AudioHit>> {
+    let candidate_set = crate::semantic_search::knn_in_scope_anchors(
+        pool,
+        query_embedding,
+        SEMANTIC_KNN_LIMIT,
+        |query| push_in_scope_anchor_rowids(query, "audio", snapshot_document_id, refinements),
+    )
+    .await?;
+    if candidate_set.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Plain hydration — `search_documents JOIN audio_segments`, no vec0/KNN/blob.
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT search_documents.id AS document_id, search_documents.group_key, \
+                search_documents.span_start_ms, search_documents.span_end_ms, \
+                search_documents.absolute_start_at, search_documents.absolute_end_at, \
+                search_documents.body_text AS body_text, \
+                audio_segments.id, audio_segments.source_kind, audio_segments.source_session_id, \
+                audio_segments.segment_index, audio_segments.file_path, audio_segments.started_at, \
+                audio_segments.ended_at, audio_segments.capture_segment_id, audio_segments.created_at, audio_segments.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'audio' \
+                      AND secret_redactions.audio_segment_id = audio_segments.id\
+                ), 0) AS secret_redaction_count \
+         FROM search_documents \
+         JOIN audio_segments ON audio_segments.id = search_documents.audio_segment_id \
+         WHERE search_documents.id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for anchor_id in &candidate_set {
+        separated.push_bind(*anchor_id);
+    }
+    query.push(")");
+
+    let rows = query.build().fetch_all(pool).await?;
+
+    // Build each `AudioHit` field-by-field, mirroring `fetch_semantic_frame_hits`.
+    // The semantic hydration does NOT project `snippet`/`rank` columns (the
+    // meaning tier has no FTS term to highlight and no BM25 score), so routing
+    // through `map_audio_hit` — which `row.get("snippet")`/`row.get("rank")` —
+    // would panic with `ColumnNotFound` on the first row (sqlx `Row::get` =
+    // `try_get().unwrap()`).
+    let mut hits = Vec::with_capacity(rows.len());
+    for row in rows {
+        let body_text: String = row.get("body_text");
+        let source_kind =
+            AudioSegmentSourceKind::from_str(row.get::<String, _>("source_kind").as_str());
+        let audio_segment = AudioSegment {
+            id: row.get("id"),
+            source_kind: source_kind.clone(),
+            source_session_id: row.get("source_session_id"),
+            segment_index: row.get("segment_index"),
+            file_path: row.get("file_path"),
+            started_at: row.get("started_at"),
+            ended_at: row.get("ended_at"),
+            capture_segment_id: row.get("capture_segment_id"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        };
+        hits.push(AudioHit {
+            anchor_id: row.get("document_id"),
+            audio_segment,
+            source_kind,
+            span_start_ms: row
+                .get::<Option<i64>, _>("span_start_ms")
+                .unwrap_or(0)
+                .max(0) as u64,
+            span_end_ms: row.get::<Option<i64>, _>("span_end_ms").unwrap_or(0).max(0) as u64,
+            snippet: meaning_snippet(&body_text),
+            // Placeholder; RRF overwrites `rank` for every fused hit.
+            rank: f64::INFINITY,
+            secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
+                .unwrap_or(u32::MAX),
+            found_by_meaning: true,
+        });
+    }
+    Ok(order_by_candidate_set(hits, &candidate_set, |hit| {
+        hit.anchor_id
+    }))
+}
+
+pub(super) async fn get_audio_segment_for_search<'e, E>(
+    executor: E,
+    audio_segment_id: i64,
+) -> Result<Option<AudioSegment>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, \
+                capture_segment_id, created_at, updated_at \
+         FROM audio_segments WHERE id = ?1",
+    )
+    .bind(audio_segment_id)
+    .fetch_optional(executor)
+    .await?;
+
+    row.map(map_audio_segment_for_search).transpose()
 }
