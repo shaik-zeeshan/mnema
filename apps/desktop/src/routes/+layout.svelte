@@ -1240,11 +1240,16 @@
 
     <div class="titlebar__group titlebar__group--right">
       {#if showMainTitlebar}
-        <!-- Persistent live region: announces a new/cleared alert (assertive
-             when an error is present) even while the bell popover is closed. The
-             count badge itself stays aria-hidden decoration. -->
-        <span class="sr-only" aria-live={notificationLiveTone} aria-atomic="true">
-          {notificationSummary}
+        <!-- Persistent live regions: announce a new/cleared alert even while the
+             bell popover is closed. Two always-mounted regions (one polite, one
+             assertive) so the summary routes into the matching politeness — some
+             screen readers don't re-register an attribute-only aria-live change
+             on a mounted node. The count badge itself stays aria-hidden. -->
+        <span class="sr-only" aria-live="polite" aria-atomic="true">
+          {notificationLiveTone === "polite" ? notificationSummary : ""}
+        </span>
+        <span class="sr-only" aria-live="assertive" aria-atomic="true">
+          {notificationLiveTone === "assertive" ? notificationSummary : ""}
         </span>
         <!-- Persistent bell slot: the button stays mounted with a quiet rest
              state (no count dot) so the neighbouring gear/help/theme icons
