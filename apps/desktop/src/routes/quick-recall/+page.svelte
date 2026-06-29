@@ -1409,7 +1409,15 @@
     } catch {
       return;
     }
-    if (snapshot === null || askConversationId !== conversationId) return;
+    if (askConversationId !== conversationId) return;
+    if (snapshot === null) {
+      // No live turn: the conversation is fully finalized. A persisted
+      // "streaming" last turn may have left `askStreaming = true` during
+      // hydrate (finalize-race); clear it so the follow-up composer isn't
+      // left permanently disabled.
+      askStreaming = false;
+      return;
+    }
     const turn = askTurns.find((t) => t.turnIndex === snapshot.view.turnIndex);
     if (!turn) return;
     adoptView(turn, snapshot.view, snapshot.version);
@@ -1827,43 +1835,41 @@
     if (!turn || text.length === 0) {
       return;
     }
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // Clipboard write rejected: flash the button red so the failure isn't
-      // silent, reusing the same per-turn flash-timer machinery as success.
-      turn.copyFailed = true;
-      const existingFail = askCopiedTimers.get(turnIndex);
-      if (existingFail !== undefined) {
-        clearTimeout(existingFail);
+    // Arm a single per-turn flash timer that resets BOTH flash flags. The
+    // success and failure flashes share one timer keyed by turnIndex, so a
+    // fail-then-success (or vice versa) within the flash window must clear the
+    // other flag too — otherwise the surviving flag leaves the button stuck on
+    // the wrong state.
+    const armFlashReset = () => {
+      const existing = askCopiedTimers.get(turnIndex);
+      if (existing !== undefined) {
+        clearTimeout(existing);
       }
       askCopiedTimers.set(
         turnIndex,
         setTimeout(() => {
           const t = askTurns[turnIndex];
           if (t) {
+            t.copied = false;
             t.copyFailed = false;
           }
           askCopiedTimers.delete(turnIndex);
         }, 1500),
       );
+    };
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard write rejected: flash the button red so the failure isn't
+      // silent, reusing the same per-turn flash-timer machinery as success.
+      turn.copyFailed = true;
+      turn.copied = false;
+      armFlashReset();
       return;
     }
     turn.copied = true;
-    const existing = askCopiedTimers.get(turnIndex);
-    if (existing !== undefined) {
-      clearTimeout(existing);
-    }
-    askCopiedTimers.set(
-      turnIndex,
-      setTimeout(() => {
-        const t = askTurns[turnIndex];
-        if (t) {
-          t.copied = false;
-        }
-        askCopiedTimers.delete(turnIndex);
-      }, 1500),
-    );
+    turn.copyFailed = false;
+    armFlashReset();
   }
 
   function toggleTurnSummary(turn: AskTurn): void {
@@ -1923,6 +1929,29 @@
   // the unseeded ask input). A guard keeps Enter inert while a turn streams (the
   // composer is disabled then anyway, but a stray keydown shouldn't submit).
   function handleFollowupKeydown(event: KeyboardEvent): void {
+    // Keep the footer-advertised ⌃C copy working even though focus parks on the
+    // composer (a sibling of the answer area that owns handleAnswerAreaKeydown)
+    // after an answer settles. Only act when the textarea has no active text
+    // selection, so a normal "select-then-copy" inside the composer still runs
+    // native copy.
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      (event.key === "c" || event.key === "C")
+    ) {
+      const el = event.currentTarget as HTMLTextAreaElement;
+      const hasComposerSelection = el.selectionStart !== el.selectionEnd;
+      const last = askTurns[askTurns.length - 1];
+      if (
+        !hasComposerSelection &&
+        last &&
+        last.phase === "done" &&
+        turnAnswerText(last).length > 0
+      ) {
+        event.preventDefault();
+        void copyTurnAnswer(askTurns.length - 1);
+      }
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (!askStreaming) {
