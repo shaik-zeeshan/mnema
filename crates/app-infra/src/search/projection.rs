@@ -213,6 +213,24 @@ pub(crate) async fn project_processing_result_direct_in_transaction(
         if let Some(frame) =
             get_frame_for_search_in_transaction(transaction, result.subject_id).await?
         {
+            // Atomically clear the completing frame's OWN stale `equivalent_reuse`
+            // doc here, in the same transaction as the fresh `direct` insert. The
+            // expensive candidate fan-out stays deferred off-lock, but this single
+            // indexed per-frame delete must stay atomic: the
+            // `delete_projection_for_subject_processor` above only matches reuse
+            // docs whose `processing_result_id` points at an OCR result, so a reuse
+            // doc orphaned to a NULL `processing_result_id` (by a source-result
+            // delete, ON DELETE SET NULL) survives it. Without this, a crash
+            // between this commit and the off-lock fan-out leaves the frame
+            // carrying both a fresh `direct` doc and a stale orphaned
+            // `equivalent_reuse` doc — a duplicate no backfill reconciles. The
+            // off-lock fan-out re-runs this delete idempotently, so it is a no-op
+            // there.
+            super::equivalent_reuse::delete_equivalent_reuse_projection_for_frame(
+                transaction,
+                frame.id,
+            )
+            .await?;
             if let Some(text) = ocr_result_text(result) {
                 insert_direct_frame_ocr_document(transaction, &frame, result, text).await?;
             }

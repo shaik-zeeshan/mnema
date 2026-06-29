@@ -395,7 +395,7 @@ async fn project_equivalent_reuse_document_for_frame(
     .await
 }
 
-async fn delete_equivalent_reuse_projection_for_frame(
+pub(super) async fn delete_equivalent_reuse_projection_for_frame(
     transaction: &mut Transaction<'_, Sqlite>,
     frame_id: i64,
 ) -> Result<()> {
@@ -418,6 +418,159 @@ mod tests {
     use crate::search::test_support::*;
     use crate::search::SearchCaptureRequest;
     use crate::{AppInfra, NewFrame, ProcessingJobDraft, ProcessingResultDraft};
+
+    #[test]
+    fn direct_projection_in_transaction_clears_completing_frames_own_orphaned_reuse_doc() {
+        // The completion path splits projection into a cheap in-transaction
+        // `direct` insert plus an OFF-LOCK fan-out that owns the per-frame reuse
+        // cleanup. If the off-lock half never runs (crash / permanent error
+        // between the completion commit and the fan-out), the completing frame is
+        // left with BOTH a fresh `direct` doc AND its stale `equivalent_reuse` doc
+        // orphaned to a NULL `processing_result_id` (by a source-result delete,
+        // ON DELETE SET NULL). No startup backfill reconciles that — the reuse
+        // backfill only ADDS docs for frames missing both. So the in-transaction
+        // direct projection must clear the frame's own reuse doc atomically.
+        run_async_test(async {
+            let dir = test_dir("direct-intx-orphan-leak");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-intx-orphan".to_string()),
+                proof: Some(vec![41; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+
+            // Source frame S, OCR'd; equivalent frame F borrows S's text into a
+            // real `equivalent_reuse` doc.
+            let source = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/intx-orphan-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("source frame should capture");
+            let source_job = source.job.expect("source frame should enqueue OCR");
+            let source_job_id = source_job.id;
+            complete_job(
+                &infra,
+                source_job,
+                ProcessingResultDraft::new().with_result_text("stale orphan text"),
+            )
+            .await;
+
+            let target = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/intx-orphan-target.jpg",
+                        "2026-05-17T10:00:01Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("target frame should capture");
+            assert!(target.job.is_none());
+
+            // Delete S's processing_result: the FK cascade NULLs F's reuse doc's
+            // `processing_result_id`, leaving F with a stale, *orphaned* reuse doc.
+            sqlx::query("DELETE FROM processing_results WHERE job_id = ?1")
+                .bind(source_job_id)
+                .execute(infra.pool())
+                .await
+                .expect("source result delete should orphan reuse search");
+            let orphan_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse' \
+                   AND processing_result_id IS NULL",
+            )
+            .bind(target.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("orphan count should load");
+            assert_eq!(orphan_count, 1, "F starts with one orphaned reuse doc");
+
+            // F gets its OWN fresh OCR result; run ONLY the in-transaction direct
+            // projection and drop the deferred fan-out unrun — simulating a crash
+            // after the completion commit but before the off-lock cleanup.
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(target.frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (?1, 'frame', ?2, 'ocr', 'fresh direct text')",
+            )
+            .bind(job.id)
+            .bind(target.frame.id)
+            .execute(infra.pool())
+            .await
+            .expect("processing result should insert");
+            let result_id: i64 =
+                sqlx::query_scalar("SELECT id FROM processing_results WHERE job_id = ?1")
+                    .bind(job.id)
+                    .fetch_one(infra.pool())
+                    .await
+                    .expect("result id should load");
+
+            let result = crate::ProcessingResult {
+                id: result_id,
+                job_id: job.id,
+                subject_type: "frame".to_string(),
+                subject_id: target.frame.id,
+                processor: "ocr".to_string(),
+                result_text: Some("fresh direct text".to_string()),
+                structured_payload_json: None,
+                processor_version: None,
+                redaction_detector_version: None,
+                redaction_checked_at: None,
+                created_at: "2026-05-17T10:00:02Z".to_string(),
+            };
+
+            let mut tx = infra.pool().begin().await.expect("write tx should begin");
+            let deferred =
+                crate::search::project_processing_result_direct_in_transaction(&mut tx, &result)
+                    .await
+                    .expect("direct projection should succeed");
+            tx.commit().await.expect("commit should succeed");
+            drop(deferred);
+
+            let direct_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'direct'",
+            )
+            .bind(target.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("direct count should load");
+            assert_eq!(direct_count, 1, "the fresh direct doc is projected in-transaction");
+
+            // The completing frame's own stale orphaned reuse doc MUST be gone:
+            // the off-lock fan-out cannot be relied on for it (a crash before it
+            // runs leaves an unreconciled duplicate that surfaces stale OCR text).
+            let stale_reuse_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse'",
+            )
+            .bind(target.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("reuse count should load");
+            assert_eq!(
+                stale_reuse_count, 0,
+                "the in-transaction direct projection must atomically clear the completing \
+                 frame's own stale orphaned equivalent_reuse doc"
+            );
+        });
+    }
 
     #[test]
     fn startup_backfills_missing_equivalent_reuse_projection_when_direct_projection_exists() {
