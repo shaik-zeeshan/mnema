@@ -1,0 +1,6 @@
+{
+  "projectId": "05ce6fb9-32b3-456c-913c-b4a7aa364981",
+  "shape": "tokens-only",
+  "readmeHeader": ".design-sync/conventions.md",
+  "note": "Svelte 5 + Tauri app, not a React component library. Components cannot be rendered by Claude Design's React runtime, so only the design-token + base-CSS layer is synced. Token source of truth: apps/desktop/src/routes/+layout.svelte (:root dark + [data-theme=light]). Off-script layout (no _ds_bundle.js / components), so no _ds_sync.json anchor — re-syncs re-extract and re-upload."
+}
