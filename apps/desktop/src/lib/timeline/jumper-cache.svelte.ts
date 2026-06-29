@@ -113,16 +113,23 @@ export function createJumperCache(): JumperCache {
       for (const k of Array.from(next.keys())) {
         if (k.startsWith(`${key}-`)) next.delete(k);
       }
+      const touched = new Set<DateKey>();
       for (const s of summaries) {
         const k = localDateKeyFromTs(s.capturedAt);
         const arr = next.get(k);
         if (arr) arr.push(s);
         else next.set(k, [s]);
+        touched.add(k);
       }
       // Ascending by capture time within each day so minute buckets resolve
-      // their "latest in bucket" by simple last-write-wins.
-      for (const arr of next.values()) {
-        arr.sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
+      // their "latest in bucket" by simple last-write-wins. Sort ONLY the days
+      // we just rebuilt for this month — every other month's arrays are already
+      // sorted and untouched, so re-sorting all of them would burn O(N log N)
+      // across the whole loaded history on each stale-while-revalidate tick
+      // (the head poll revalidates the visible month every 1.5s while the
+      // picker is open during active capture).
+      for (const k of touched) {
+        next.get(k)?.sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
       }
       summariesByDate = next;
       if (!loadedMonths.has(key)) {
