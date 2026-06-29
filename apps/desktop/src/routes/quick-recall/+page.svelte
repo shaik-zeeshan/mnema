@@ -1978,7 +1978,12 @@
   // attempt (mirroring a normal follow-up) rather than rebuilding the thread the
   // way retryAsk does for a turn-1 failure.
   async function retryFollowupTurn(turn: AskTurn): Promise<void> {
-    if (askStreaming || askConversationId === null) {
+    // Guard on the *continuable* id, not askConversationId: a Stop nulls
+    // askConversationId and parks the thread under stoppedConversationId, but the
+    // empty-answer "Try asking again" Retry is still offered. submitFollowup()
+    // re-adopts the stopped thread, so keying off askConversationId here makes
+    // Retry a dead click on a stopped-empty follow-up turn.
+    if (askStreaming || askContinuableConversationId === null) {
       return;
     }
     followupInput = turn.question;
