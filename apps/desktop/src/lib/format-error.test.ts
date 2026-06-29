@@ -44,10 +44,26 @@ describe("humanizeError", () => {
     expect(humanizeError({}, "Couldn't load.")).toBe("Couldn't load.");
   });
 
+  it("falls back instead of leaking raw JSON-encoded strings with no readable message", () => {
+    expect(humanizeError('{"a":1,"b":2}')).toBe(GENERIC_ERROR_MESSAGE);
+    expect(humanizeError('[{"a":1,"b":2}]')).toBe(GENERIC_ERROR_MESSAGE);
+  });
+
   it("truncates very long messages", () => {
     const long = "x".repeat(500);
     const out = humanizeError(long);
     expect(out.length).toBeLessThanOrEqual(300);
     expect(out.endsWith("…")).toBe(true);
+  });
+
+  it("truncates by code point without splitting surrogate-pair emoji", () => {
+    const long = "x".repeat(298) + "😀😀";
+    const out = humanizeError(long);
+    expect(out.endsWith("…")).toBe(true);
+    // No lone surrogate at the cut: a round-trip through code points is stable
+    // and the replacement char (U+FFFD) never appears.
+    expect([...out].join("")).toBe(out);
+    expect(out.includes("�")).toBe(false);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(out)).toBe(false);
   });
 });

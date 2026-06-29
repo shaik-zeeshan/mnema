@@ -58,8 +58,9 @@ function fromString(value: string, depth: number): string {
     (trimmed.startsWith("[") && trimmed.endsWith("]"));
   if (looksJson) {
     try {
-      const inner = extract(JSON.parse(trimmed), depth + 1);
-      if (inner) return inner;
+      // Valid JSON: surface the inner message, or "" so we land on the generic
+      // fallback — never leak the raw JSON text when nothing readable is found.
+      return extract(JSON.parse(trimmed), depth + 1);
     } catch {
       // Not actually JSON — fall through and use the raw string.
     }
@@ -108,6 +109,8 @@ function tidy(message: string): string {
   m = m.replace(/^error\s*[:\-]\s*/i, "").trim();
   if (!m) return "";
   m = m.charAt(0).toUpperCase() + m.slice(1);
-  if (m.length > MAX_LENGTH) m = `${m.slice(0, MAX_LENGTH - 1).trimEnd()}…`;
+  // Truncate by code point (not UTF-16 code unit) so a surrogate-pair emoji at
+  // the cut isn't split into a lone surrogate.
+  if (m.length > MAX_LENGTH) m = [...m].slice(0, MAX_LENGTH - 1).join("").trimEnd() + "…";
   return m;
 }
