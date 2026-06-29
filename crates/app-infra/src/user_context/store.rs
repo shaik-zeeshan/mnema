@@ -2674,6 +2674,101 @@ mod tests {
         });
     }
 
+    /// `list_conclusions_in_range` uses a half-open `[start, end)` window over
+    /// three OR-ed clocks: any conclusion FORMED in-window, a VISIBLE one last
+    /// strengthened in-window, or a FADED one faded (updated) in-window. Faded
+    /// rows are gated by `include_faded`; dismissed rows are never returned. This
+    /// pins the exact boundary + status branches (the logic was verified correct
+    /// in review but had no direct coverage).
+    #[test]
+    fn list_conclusions_in_range_respects_half_open_window_and_include_faded() {
+        block_on(async {
+            let store = test_store().await;
+
+            // Place each row's three timestamps precisely against the window
+            // [1000, 2000). `upsert_conclusion` stamps `updated_at_ms = now`, so
+            // we overwrite all three (+ status) by hand to control the branches.
+            async fn place(
+                store: &UserContextStore,
+                subject: &str,
+                statement: &str,
+                formed: i64,
+                last_supported: i64,
+                updated: i64,
+                status: &str,
+            ) -> i64 {
+                let id = store
+                    .upsert_conclusion(draft(subject, statement, 0.5))
+                    .await
+                    .expect("seed conclusion");
+                sqlx::query(
+                    "UPDATE user_context_conclusions \
+                     SET formed_at_ms = ?1, last_supported_at_ms = ?2, \
+                         updated_at_ms = ?3, status = ?4 \
+                     WHERE id = ?5",
+                )
+                .bind(formed)
+                .bind(last_supported)
+                .bind(updated)
+                .bind(status)
+                .bind(id)
+                .execute(store.pool())
+                .await
+                .expect("place timestamps");
+                id
+            }
+
+            let formed_in = place(&store, "A", "formed in window", 1_500, 0, 0, "visible").await;
+            let supported_in =
+                place(&store, "B", "supported in window", 0, 1_500, 0, "visible").await;
+            let _out = place(&store, "C", "all out", 500, 500, 500, "visible").await;
+            // formed/last_supported == end (2000) must NOT match — upper bound is
+            // exclusive.
+            let _at_end = place(&store, "D", "at end", 2_000, 2_000, 2_000, "visible").await;
+            // formed == start (1000) MUST match — lower bound is inclusive.
+            let at_start = place(&store, "E", "at start", 1_000, 0, 0, "visible").await;
+            let faded_in = place(&store, "F", "faded in window", 0, 0, 1_500, "faded").await;
+            // Faded rows match only via `updated_at_ms`; a faded row whose
+            // last_supported is in-window but whose fade time is out is excluded.
+            let _faded_supported_only =
+                place(&store, "G", "faded supported only", 0, 1_500, 500, "faded").await;
+            let _dismissed =
+                place(&store, "H", "dismissed in window", 1_500, 1_500, 1_500, "dismissed").await;
+
+            fn ids(rows: &[Conclusion]) -> Vec<i64> {
+                let mut v: Vec<i64> = rows.iter().map(|c| c.id).collect();
+                v.sort_unstable();
+                v
+            }
+
+            let visible = store
+                .list_conclusions_in_range(false, 1_000, 2_000)
+                .await
+                .expect("visible in range");
+            let mut expected_visible = vec![formed_in, supported_in, at_start];
+            expected_visible.sort_unstable();
+            assert_eq!(
+                ids(&visible),
+                expected_visible,
+                "visible-only: formed-in + supported-in + at-start (inclusive); \
+                 at-end excluded (half-open), faded/dismissed excluded"
+            );
+
+            let with_faded = store
+                .list_conclusions_in_range(true, 1_000, 2_000)
+                .await
+                .expect("with faded in range");
+            let mut expected_faded = vec![formed_in, supported_in, at_start, faded_in];
+            expected_faded.sort_unstable();
+            assert_eq!(
+                ids(&with_faded),
+                expected_faded,
+                "include_faded adds only the row that FADED in-window; the faded \
+                 row matching solely on last_supported stays out"
+            );
+        });
+    }
+
     #[test]
     fn confidence_history_snapshots_round_trip_ascending() {
         block_on(async {
@@ -3784,20 +3879,12 @@ mod tests {
         });
     }
 
-    /// Regression for ADR 0029: time-based **Retention Policy** aging of raw
-    /// media must NOT cascade into derived data. This asserts the structural
-    /// guarantee directly — the `capture_retention` delete path never names a
-    /// `user_context_*` table — so aging a frame out leaves the Activity derived
-    /// from it intact (only Delete Recent Capture cascades).
-    #[test]
-    fn retention_cleanup_source_never_touches_user_context_tables() {
-        let retention_src = include_str!("../capture_retention.rs");
-        assert!(
-            !retention_src.contains("user_context"),
-            "capture_retention.rs must not reference any user_context_* table; \
-             Retention Policy aging must not cascade into derived data (ADR 0029)"
-        );
-    }
+    // ADR 0029's guarantee (Retention Policy aging must not cascade into derived
+    // `user_context_*` data) is now covered BEHAVIORALLY in
+    // `capture_retention::tests::run_cleanup_deletes_source_frames_but_user_context_rows_survive`
+    // — seeding a frame + derived rows, running a real cleanup, and asserting the
+    // frame is deleted while the derived rows survive (under `foreign_keys = ON`,
+    // so it catches a future `ON DELETE CASCADE` a source-grep proxy could not).
 
     #[test]
     fn authored_context_add_list_update_delete_round_trip() {

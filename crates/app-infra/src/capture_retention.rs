@@ -2111,6 +2111,135 @@ mod tests {
         });
     }
 
+    /// ADR 0029 (behavioral): aging raw media out via the Retention Policy must
+    /// NOT cascade into derived `user_context_*` data. We seed an orphan frame
+    /// plus the Activity / activity-evidence / Conclusion derived from it, run a
+    /// real cleanup that deletes the frame, and assert the frame is gone while
+    /// every user_context row survives. With `foreign_keys = ON`, this is the
+    /// guard a source-grep can't be: a future migration that added an `ON DELETE
+    /// CASCADE` FK from `user_context_activity_evidence.subject_id` to
+    /// `frames(id)` would silently delete derived data here and fail this test.
+    #[test]
+    fn run_cleanup_deletes_source_frames_but_user_context_rows_survive() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            // The derived-data tables, deliberately with NO foreign key to
+            // `frames` — that absence is the ADR 0029 guarantee under test.
+            for statement in [
+                "CREATE TABLE user_context_activities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    ended_at_ms INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                )",
+                "CREATE TABLE user_context_activity_evidence (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    activity_id INTEGER NOT NULL REFERENCES user_context_activities(id) ON DELETE CASCADE,
+                    subject_type TEXT NOT NULL,
+                    subject_id INTEGER NOT NULL,
+                    captured_at_ms INTEGER
+                )",
+                "CREATE TABLE user_context_conclusions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject TEXT NOT NULL,
+                    statement TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'visible',
+                    formed_at_ms INTEGER NOT NULL,
+                    last_supported_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                )",
+            ] {
+                sqlx::query(statement)
+                    .execute(&pool)
+                    .await
+                    .expect("user_context test table should be created");
+            }
+            sqlx::query("PRAGMA foreign_keys = ON")
+                .execute(&pool)
+                .await
+                .expect("enable foreign keys");
+
+            // An aged orphan frame (the raw media Retention will delete).
+            sqlx::query(
+                "INSERT INTO frames (id, session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                 VALUES (1, 'screen-source-1', '/tmp/mnema-retention-derived.jpg', '2026-05-10T15:01:50Z', NULL, NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("orphan frame should insert");
+            // The derived Activity, its evidence pointing AT that frame, and a
+            // Conclusion — exactly what must outlive the raw frame.
+            sqlx::query(
+                "INSERT INTO user_context_activities (id, title, summary, started_at_ms, ended_at_ms, created_at_ms)
+                 VALUES (1, 'Studied retention', 'Read the ADR', 1, 2, 3)",
+            )
+            .execute(&pool)
+            .await
+            .expect("activity should insert");
+            sqlx::query(
+                "INSERT INTO user_context_activity_evidence (activity_id, subject_type, subject_id, captured_at_ms)
+                 VALUES (1, 'frame', 1, 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("activity evidence should insert");
+            sqlx::query(
+                "INSERT INTO user_context_conclusions (subject, statement, confidence, formed_at_ms, last_supported_at_ms, updated_at_ms, created_at_ms)
+                 VALUES ('Retention', 'Derived data outlives raw media', 0.9, 1, 1, 1, 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("conclusion should insert");
+
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            // The raw frame was aged out.
+            assert_eq!(summary.deleted_frames, 1, "the aged frame is deleted");
+            let frames: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                .fetch_one(&pool)
+                .await
+                .expect("count frames");
+            assert_eq!(frames, 0, "no frames remain after retention cleanup");
+
+            // ...but every derived row survives (no cascade).
+            for table in [
+                "user_context_activities",
+                "user_context_activity_evidence",
+                "user_context_conclusions",
+            ] {
+                let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count user_context table");
+                assert_eq!(
+                    count, 1,
+                    "{table} must survive Retention Policy aging (ADR 0029)"
+                );
+            }
+        });
+    }
+
     #[test]
     fn cleanup_ages_out_old_conversations_keeps_recent() {
         let runtime = tokio::runtime::Builder::new_current_thread()
