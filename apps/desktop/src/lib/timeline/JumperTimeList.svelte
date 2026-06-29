@@ -1,10 +1,8 @@
 <script lang="ts" module>
-  export type HourBucket = {
-    label: string;
-    hour: number;
-    disabled: boolean;
-    count: number;
-  };
+  // `HourBucket` now lives with the rune-free time helpers so it can be shared
+  // with the unit-tested bucket builder; re-exported here to keep this pane's
+  // public type surface stable for existing importers.
+  export type { HourBucket } from "./jumper-time";
 </script>
 
 <script lang="ts">
@@ -13,6 +11,8 @@
   // frame count + a NEUTRAL density fill scaled to volume (spec §12.5 — never
   // accent, so it never collides with preview/here/active/hover). The committed
   // hour shows the accent LEFT BAR (§12.3), echoing the playhead.
+  import type { HourBucket } from "./jumper-time";
+
   interface Props {
     hasSelection: boolean;
     loading: boolean;

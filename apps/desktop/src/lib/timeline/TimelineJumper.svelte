@@ -30,8 +30,15 @@
   import IconCalendar from "~icons/lucide/calendar";
   import type { FrameDto, FrameRangeRequest } from "$lib/types/app-infra";
   import { createJumperCache } from "./jumper-cache.svelte";
+  import {
+    type HourBucket,
+    buildHourBuckets,
+    dayRange,
+    formatHourLabel,
+    hourRange,
+  } from "./jumper-time";
   import JumperCalendar from "./JumperCalendar.svelte";
-  import JumperTimeList, { type HourBucket } from "./JumperTimeList.svelte";
+  import JumperTimeList from "./JumperTimeList.svelte";
 
   interface Props {
     /** The timeline's current active frame ("you are here"). */
@@ -85,12 +92,6 @@
   function todayLocal(): CalendarDate {
     const d = new Date();
     return new CalendarDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-  }
-
-  function formatHourLabel(hour: number): string {
-    const period = hour < 12 ? "AM" : "PM";
-    const display = hour % 12 === 0 ? 12 : hour % 12;
-    return `${display}:00 ${period}`;
   }
 
   function prefersReducedMotion(): boolean {
@@ -148,33 +149,13 @@
   const timeBuckets = $derived.by<HourBucket[]>(() => {
     const d = pickerSelectedDate;
     if (!d) return [];
-    const now = new Date();
-    const isToday =
-      d.year === now.getFullYear() &&
-      d.month === now.getMonth() + 1 &&
-      d.day === now.getDate();
-    const lastHour = isToday ? now.getHours() : 23;
     const monthLoaded = cache.monthLoaded(d);
-    const counts = new Map<number, number>();
-    if (monthLoaded) {
-      const daySummaries = cache.daySummaries(d);
-      if (daySummaries) {
-        for (const s of daySummaries) {
-          const dt = parseCapturedAt(s.capturedAt);
-          if (!isNaN(dt.getTime())) {
-            const h = dt.getHours();
-            counts.set(h, (counts.get(h) ?? 0) + 1);
-          }
-        }
-      }
-    }
-    const out: HourBucket[] = [];
-    for (let h = 0; h <= lastHour; h++) {
-      const count = counts.get(h) ?? 0;
-      const disabled = monthLoaded && count === 0;
-      out.push({ label: formatHourLabel(h), hour: h, disabled, count });
-    }
-    return out;
+    return buildHourBuckets(
+      d,
+      new Date(),
+      monthLoaded,
+      monthLoaded ? cache.daySummaries(d) : undefined,
+    );
   });
   const maxBucketCount = $derived(
     Math.max(1, ...timeBuckets.map((b) => b.count)),
@@ -260,8 +241,7 @@
   async function commitDateLatest(): Promise<void> {
     const d = pickerSelectedDate;
     if (!d) return;
-    const start = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
-    const end = new Date(d.year, d.month - 1, d.day, 23, 59, 59, 999);
+    const { start, end } = dayRange(d);
     await resolveAndCommit(start, end);
   }
 
@@ -269,10 +249,7 @@
     const d = pickerSelectedDate;
     if (!d) return;
     commitFlashHour = hour;
-    const start = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
-    // "Latest at or before the end of the picked hour" — backend treats the
-    // range as inclusive, so we extend to :59:59.999 of that hour.
-    const end = new Date(d.year, d.month - 1, d.day, hour, 59, 59, 999);
+    const { start, end } = hourRange(d, hour);
     await resolveAndCommit(start, end);
   }
 
