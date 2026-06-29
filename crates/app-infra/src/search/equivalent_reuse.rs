@@ -1,3 +1,4 @@
+use super::grouping::frame_search_group_key;
 use super::*;
 
 /// The second half of an OCR result's **Search Index Projection**, still owed once
