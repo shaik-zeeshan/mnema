@@ -1529,7 +1529,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT id, file_path FROM frames WHERE equivalence_status IS NULL ORDER BY id ASC",
         )
-        .fetch_all(self.db.write())
+        .fetch_all(self.db.read())
         .await?;
 
         let mut updated = 0_u64;
@@ -2170,7 +2170,7 @@ impl ProcessingStore {
         cluster_id: i64,
         add_embedding: bool,
     ) -> Result<SpeakerClusterView> {
-        let cluster = get_speaker_cluster_row(self.db.write(), cluster_id).await?;
+        let cluster = get_speaker_cluster_row(self.db.read(), cluster_id).await?;
         let Some(person_id) = cluster.recognition_person_id else {
             return Err(AppInfraError::SpeakerAnalysisEngine(
                 "speaker cluster has no recognition suggestion to confirm".to_string(),

@@ -631,7 +631,7 @@ impl CaptureRetentionStore {
              WHERE status IN ('pending', 'failed')
              ORDER BY id ASC",
         )
-        .fetch_all(self.db.write())
+        .fetch_all(self.db.read())
         .await?;
         let mut resolved = 0_i64;
         for row in rows {

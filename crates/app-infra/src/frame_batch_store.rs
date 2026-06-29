@@ -298,7 +298,7 @@ impl FrameBatchStore {
         let rows = sqlx::query(
             "SELECT DISTINCT session_id FROM frame_batches WHERE status = 'open' ORDER BY session_id ASC",
         )
-        .fetch_all(self.db.write())
+        .fetch_all(self.db.read())
         .await?;
 
         let mut scheduled = 0;
