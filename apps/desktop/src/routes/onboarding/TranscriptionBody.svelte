@@ -2,7 +2,7 @@
   import type { OnboardingController } from "./onboarding.svelte";
   import type { AudioTranscriptionMemoryMode } from "$lib/types";
   import Segmented from "$lib/components/Segmented.svelte";
-  import Slider from "$lib/components/Slider.svelte";
+  import Stepper from "$lib/components/Stepper.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import AdvancedReveal from "./AdvancedReveal.svelte";
   import { formatBytes } from "./onboarding-mapping";
@@ -242,29 +242,50 @@
 
   <div class="group">
     <AdvancedReveal>
+      <!-- Stepper (not Slider) here mirrors Settings' Transcription.svelte so the
+           same value snaps identically across onboarding and Settings (matching
+           min/max/step). -->
       {#if controller.draftTranscriptionMemoryMode === "balanced"}
-        <div class="slider-block">
-          <Slider
-            bind:value={controller.draftTranscriptionIdleUnloadSeconds}
-            min={0}
-            max={1800}
-            step={30}
-            label="Idle unload"
-            formatValue={(v) => (v === 0 ? "off" : v >= 60 ? `${Math.floor(v / 60)}m${v % 60 ? ` ${v % 60}s` : ""}` : `${v}s`)}
-          />
-          <span class="kbd-hint">Unload the model after this much idle time to free memory.</span>
+        <div class="ctl stack-field">
+          <div class="ctl-label">
+            <div class="name">Idle unload</div>
+          </div>
+          <div class="ctl-field">
+            <Stepper
+              id="onboarding-transcription-idle-unload"
+              bind:value={
+                () => String(controller.draftTranscriptionIdleUnloadSeconds),
+                (v) => { controller.draftTranscriptionIdleUnloadSeconds = parseInt(v, 10) || 0; }
+              }
+              min={0}
+              max={1800}
+              step={30}
+              unit="s"
+              ariaLabel="idle unload seconds"
+            />
+            <span class="kbd-hint">Unload the model after this much idle time to free memory.</span>
+          </div>
         </div>
       {/if}
-      <div class="slider-block">
-        <Slider
-          bind:value={controller.draftTranscriptionChunkSeconds}
-          min={0}
-          max={300}
-          step={5}
-          label="Chunk duration"
-          formatValue={(v) => (v === 0 ? "off" : `${v}s`)}
-        />
-        <span class="kbd-hint">Chunking caps peak activation memory; 0 disables chunking.</span>
+      <div class="ctl stack-field">
+        <div class="ctl-label">
+          <div class="name">Chunk duration</div>
+        </div>
+        <div class="ctl-field">
+          <Stepper
+            id="onboarding-transcription-chunk-seconds"
+            bind:value={
+              () => String(controller.draftTranscriptionChunkSeconds),
+              (v) => { controller.draftTranscriptionChunkSeconds = parseInt(v, 10) || 0; }
+            }
+            min={0}
+            max={300}
+            step={15}
+            unit="s"
+            ariaLabel="chunk seconds"
+          />
+          <span class="kbd-hint">Chunking caps peak activation memory; 0 disables chunking.</span>
+        </div>
       </div>
     </AdvancedReveal>
   </div>
