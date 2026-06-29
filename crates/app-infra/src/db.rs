@@ -222,6 +222,10 @@ impl Database {
 /// pragmas live in exactly one place.
 struct PoolConfig {
     max_connections: u32,
+    /// Pool `acquire` timeout. `None` keeps sqlx's default (30s). Overridable so
+    /// the saturation regression (a held connection starving acquirers) is
+    /// observable in a test in <30s rather than wall-clock-blocking the suite.
+    acquire_timeout: Option<Duration>,
     busy_timeout: Duration,
     /// Whether to set `journal_mode=WAL`. Brokered readers must NOT touch
     /// `journal_mode` (read-only handle), so this is false for them.
@@ -251,6 +255,7 @@ impl PoolConfig {
             // upgrade deadlock is prevented by `BEGIN IMMEDIATE`, not by a single
             // connection.
             max_connections: 4,
+            acquire_timeout: None,
             busy_timeout: Duration::from_secs(10),
             set_wal: true,
             synchronous: Some(SqliteSynchronous::Normal),
@@ -265,6 +270,7 @@ impl PoolConfig {
     fn owner_reader() -> Self {
         Self {
             max_connections: 4,
+            acquire_timeout: None,
             busy_timeout: Duration::from_secs(5),
             set_wal: true,
             synchronous: None,
@@ -278,6 +284,7 @@ impl PoolConfig {
     fn brokered_writer() -> Self {
         Self {
             max_connections: 1,
+            acquire_timeout: None,
             busy_timeout: Duration::from_secs(10),
             set_wal: false,
             synchronous: None,
@@ -291,6 +298,7 @@ impl PoolConfig {
     fn brokered_reader() -> Self {
         Self {
             max_connections: 4,
+            acquire_timeout: None,
             busy_timeout: Duration::from_secs(5),
             set_wal: false,
             synchronous: None,
@@ -355,9 +363,12 @@ async fn connect_pool(
     let force_wal_recovery = config.force_wal_recovery;
     let query_only = config.query_only;
 
+    let mut pool_options = SqlitePoolOptions::new().max_connections(config.max_connections);
+    if let Some(acquire_timeout) = config.acquire_timeout {
+        pool_options = pool_options.acquire_timeout(acquire_timeout);
+    }
     let pool_options =
-        SqlitePoolOptions::new()
-            .max_connections(config.max_connections)
+        pool_options
             .after_connect(move |connection, _metadata| {
                 Box::pin(async move {
                     if has_encryption {
@@ -1006,6 +1017,131 @@ mod tests {
                 .await
                 .expect("count frames");
             assert_eq!(total, (TASKS * ITERS) as i64, "all inserts should commit");
+        });
+    }
+
+    /// Drive the acquire-saturation scenario against a writer pool of the given
+    /// `max_connections`: a 1s `acquire_timeout`, one connection held ~2s, and
+    /// `2 * max_connections` concurrent single-statement writers. Returns each
+    /// writer's error (if any) plus the committed row count.
+    ///
+    /// The holder takes a pooled connection via a *read* transaction — it does
+    /// NOT take the write lock, so this isolates the **pool-acquire** dimension
+    /// (the lever ADR 0041's amendment moved from 1→4 connections) from the
+    /// `BEGIN`-vs-`BEGIN IMMEDIATE` write-lock deadlock that
+    /// `concurrent_read_modify_write_transactions_never_lock_or_timeout` covers.
+    async fn run_acquire_saturation(max_connections: u32) -> (Vec<String>, i64) {
+        let dir = unique_test_dir(&format!("acquire-sat-{max_connections}"));
+        let database_path = prepare_database_path(&dir).expect("db path");
+        let pool = connect_pool(
+            &database_path,
+            None,
+            PoolConfig {
+                max_connections,
+                acquire_timeout: Some(Duration::from_secs(1)),
+                ..PoolConfig::owner_writer()
+            },
+        )
+        .await
+        .expect("writer pool should open");
+        sqlx::query("CREATE TABLE IF NOT EXISTS sat (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)")
+            .execute(&pool)
+            .await
+            .expect("create table");
+
+        // Hold one pooled connection for ~2s (longer than the 1s acquire
+        // timeout). A read tx holds the connection without the write lock.
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let holder_pool = pool.clone();
+        let holder = tokio::spawn(async move {
+            let mut tx = holder_pool.begin().await.expect("holder begin");
+            let _n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sat")
+                .fetch_one(&mut *tx)
+                .await
+                .expect("holder read");
+            acquired_tx.send(()).expect("signal holder acquired");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            tx.commit().await.expect("holder commit");
+        });
+        acquired_rx.await.expect("holder should acquire its connection");
+
+        // Now fire 2 * max_connections single-statement writers at the pool.
+        let writer_count = (max_connections * 2) as usize;
+        let mut writers = Vec::new();
+        for i in 0..writer_count {
+            let writer_pool = pool.clone();
+            writers.push(tokio::spawn(async move {
+                sqlx::query("INSERT INTO sat (v) VALUES (?)")
+                    .bind(format!("w-{i}"))
+                    .execute(&writer_pool)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }));
+        }
+        let mut errors = Vec::new();
+        for writer in writers {
+            if let Err(message) = writer.await.expect("writer task should join") {
+                errors.push(message);
+            }
+        }
+        holder.await.expect("holder task should join");
+
+        let committed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sat")
+            .fetch_one(&pool)
+            .await
+            .expect("count committed rows");
+        (errors, committed)
+    }
+
+    /// Writer-Pool saturation guard (ADR 0041 amendment). One connection held
+    /// for ~2s must NOT starve concurrent writers on a multi-connection pool:
+    /// every writer still acquires a connection and commits within the 1s
+    /// acquire timeout. The single-connection witness documents the regression
+    /// the amendment fixed — there, the held connection starves every acquirer
+    /// and they surface `pool timed out`. (The named
+    /// `concurrent_read_modify_write_transactions_never_lock_or_timeout` guard
+    /// passes even at `max_connections=1`, so it does NOT catch this; this one
+    /// does.)
+    #[test]
+    fn held_writer_does_not_starve_concurrent_writers_on_acquire() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime should build");
+
+        runtime.block_on(async {
+            // Fix: owner_writer's 4 connections absorb the held one; all 8
+            // writers acquire and commit, none time out on acquire.
+            let (errors, committed) = run_acquire_saturation(4).await;
+            let timed_out: Vec<&String> = errors
+                .iter()
+                .filter(|message| message.to_lowercase().contains("pool timed out"))
+                .collect();
+            assert!(
+                timed_out.is_empty(),
+                "a multi-connection writer pool must not starve acquirers under a \
+                 held connection, got: {timed_out:?}"
+            );
+            assert!(
+                errors.is_empty(),
+                "every concurrent writer should commit cleanly, got: {errors:?}"
+            );
+            assert_eq!(committed, 8, "all 8 single-statement writers committed");
+
+            // Regression witness: a single-connection writer pool starves — the
+            // held connection blocks every writer's acquire past the 1s timeout.
+            let (errors_single, _committed_single) = run_acquire_saturation(1).await;
+            let timed_out_single: Vec<&String> = errors_single
+                .iter()
+                .filter(|message| message.to_lowercase().contains("pool timed out"))
+                .collect();
+            assert!(
+                !timed_out_single.is_empty(),
+                "a single-connection writer pool must surface 'pool timed out' \
+                 when one connection is held; got errors: {errors_single:?}"
+            );
         });
     }
 
