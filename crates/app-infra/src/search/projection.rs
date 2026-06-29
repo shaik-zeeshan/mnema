@@ -30,34 +30,44 @@ async fn delete_projection_for_subject_processor(
     transaction: &mut Transaction<'_, Sqlite>,
     subject_type: &str,
     subject_id: i64,
-    _processor: &str,
+    processor: &str,
 ) -> Result<()> {
-    // Seek the per-anchor index (`search_documents_frame_idx` /
-    // `search_documents_audio_idx`) on a single column instead of the old
-    // cross-column `OR` + `processing_result_id IN (SELECT … WHERE processor = ?)`
-    // subquery, which forced a full scan of the (now multi-million-row)
-    // search_documents table — a ~3s writer-lock hold per OCR completion.
+    // Clear only the documents *this processor* previously projected for the
+    // anchor, before re-projecting its fresh result. Scoping by `processor` is a
+    // correctness requirement, not tidiness: an audio segment accumulates more
+    // than one processor's result chain, so a completion for a *different*
+    // processor (e.g. `speaker_analysis`, which projects no search documents of
+    // its own) must NOT wipe the transcription's `direct` docs — doing so silently
+    // drops the segment's searchable transcript until the next restart backfill.
     //
-    // Equivalent row set: every search document for a frame is OCR-sourced (its
-    // own `direct` doc plus any borrowed `equivalent_reuse` doc), and every doc
-    // for an audio segment is transcription-sourced, so scoping by the anchor id
-    // matches exactly what the processor subquery selected.
+    // The anchor-id predicate still seeks the per-anchor index
+    // (`search_documents_frame_idx` / `search_documents_audio_idx`); the
+    // `processing_result_id IN (… WHERE processor = ?)` subquery then narrows that
+    // small per-anchor row set to this processor's documents (for a frame, both
+    // its own `direct` doc and any borrowed `equivalent_reuse` doc are
+    // OCR-sourced, so OCR scoping still matches the whole frame set).
     match subject_type {
         FRAME_SUBJECT_TYPE => {
             sqlx::query(
                 "DELETE FROM search_documents \
-                 WHERE anchor_type = 'frame' AND frame_id = ?1",
+                 WHERE anchor_type = 'frame' AND frame_id = ?1 \
+                   AND processing_result_id IN \
+                       (SELECT id FROM processing_results WHERE processor = ?2)",
             )
             .bind(subject_id)
+            .bind(processor)
             .execute(&mut **transaction)
             .await?;
         }
         AUDIO_SEGMENT_SUBJECT_TYPE => {
             sqlx::query(
                 "DELETE FROM search_documents \
-                 WHERE anchor_type = 'audio' AND audio_segment_id = ?1",
+                 WHERE anchor_type = 'audio' AND audio_segment_id = ?1 \
+                   AND processing_result_id IN \
+                       (SELECT id FROM processing_results WHERE processor = ?2)",
             )
             .bind(subject_id)
+            .bind(processor)
             .execute(&mut **transaction)
             .await?;
         }
@@ -1163,6 +1173,112 @@ mod tests {
                 .await
                 .expect("search should succeed");
 
+            assert!(response.frames.is_empty());
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(response.audio[0].span_start_ms, 1_000);
+            assert_eq!(response.audio[0].span_end_ms, 2_500);
+        });
+    }
+
+    #[test]
+    fn speaker_analysis_completion_keeps_transcript_search_documents() {
+        run_async_test(async {
+            let dir = test_dir("audio-speaker-analysis-keeps-transcript");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-audio-speaker-analysis.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_500,
+                    text: "diarized search target phrase".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let transcription_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                transcription_job,
+                ProcessingResultDraft::new()
+                    .with_result_text("diarized search target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            // The transcription projected its `direct` audio search document(s).
+            let direct_count = || async {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM search_documents \
+                     WHERE audio_segment_id = ?1 AND anchor_type = 'audio' \
+                       AND text_source_kind = 'direct'",
+                )
+                .bind(segment.id)
+                .fetch_one(infra.pool())
+                .await
+                .expect("direct doc count should load")
+            };
+            assert_eq!(
+                direct_count().await,
+                1,
+                "transcription projects one direct audio document"
+            );
+
+            // Completing a `speaker_analysis` job for the SAME audio segment must
+            // NOT wipe the transcription's `direct` documents: it projects no
+            // search documents of its own, so its completion is an index no-op.
+            // The pre-fix unscoped delete dropped every audio doc for the segment
+            // and re-projected nothing, silently losing the searchable transcript.
+            let speaker_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_speaker_analysis(
+                    segment.id,
+                ))
+                .await
+                .expect("speaker analysis job should enqueue");
+            complete_job(&infra, speaker_job, ProcessingResultDraft::new()).await;
+
+            assert_eq!(
+                direct_count().await,
+                1,
+                "speaker_analysis completion must preserve the transcript's search documents"
+            );
+
+            // The transcript is still searchable after diarization completes.
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "target".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
             assert!(response.frames.is_empty());
             assert_eq!(response.audio.len(), 1);
             assert_eq!(response.audio[0].span_start_ms, 1_000);
