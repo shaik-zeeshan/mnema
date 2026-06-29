@@ -241,6 +241,77 @@ impl SemanticSearchStore {
         }
     }
 
+    /// Batched counterpart to [`store_vector_if_dimension_matches`]: stores a whole
+    /// sweep batch in **one** write transaction (one writer-lock acquisition for the
+    /// batch instead of one per anchor), returning a per-anchor `stored` flag
+    /// aligned to `pairs`. Each `true`/`false` carries the exact same meaning as the
+    /// single-anchor call — `true` stored, `false` skipped (dimension mismatch, no
+    /// table, or the `direct` anchor vanished mid-embed so the row-conditioned
+    /// INSERT affected nothing). Reducing the lock-acquisition rate is the point:
+    /// the per-anchor version made the background sweep grab the writer lock once
+    /// per vector, churning contention with foreground capture writes.
+    ///
+    /// All-or-nothing on a real DB failure: a genuine `Err` rolls the batch back, so
+    /// the caller retries the whole batch (transient). The live dimension is read
+    /// once up front; the same single-dimension-authority invariant as
+    /// [`store_vector_if_dimension_matches`] applies (a wrong-length vector is
+    /// skipped, never inserted).
+    pub async fn store_vectors_if_dimension_matches(
+        &self,
+        pairs: &[(i64, Vec<f32>)],
+    ) -> Result<Vec<bool>> {
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Non-finite guard (defensive; mirrors `store_vector`). A NaN/inf component
+        // would poison KNN ordering, so refuse the batch rather than store it.
+        for (anchor_id, vector) in pairs {
+            if vector.iter().any(|component| !component.is_finite()) {
+                return Err(crate::AppInfraError::InvalidSearchRequest(format!(
+                    "refusing to store a non-finite Semantic Search Vector for anchor {anchor_id} \
+                     (a NaN/inf component would poison KNN ordering)"
+                )));
+            }
+        }
+        // No live table → every anchor is a skip (awaiting re-index), no write needed.
+        let Some(dimension) = self.live_vector_dimension().await? else {
+            return Ok(vec![false; pairs.len()]);
+        };
+        let mut tx = self.db.begin_write().await?;
+        let mut outcomes = Vec::with_capacity(pairs.len());
+        for (anchor_id, vector) in pairs {
+            // Length mismatch with the live column: skip (not an error), exactly as
+            // the single-anchor gate does, so a mid-switch vector idles instead of
+            // being rejected by vec0.
+            if vector.len() != dimension {
+                outcomes.push(false);
+                continue;
+            }
+            let blob = vector_to_le_bytes(vector);
+            // DELETE-then-INSERT upsert (vec0 0.1.9 rejects same-rowid re-insert), the
+            // INSERT row-conditioned on the `direct` anchor still existing so a delete
+            // racing the store leaves no orphan.
+            sqlx::query("DELETE FROM search_document_vectors WHERE rowid = ?1")
+                .bind(anchor_id)
+                .execute(&mut *tx)
+                .await?;
+            let result = sqlx::query(
+                "INSERT INTO search_document_vectors (rowid, embedding) \
+                 SELECT search_documents.id, ?2 \
+                 FROM search_documents \
+                 WHERE search_documents.id = ?1 \
+                   AND search_documents.text_source_kind = 'direct'",
+            )
+            .bind(anchor_id)
+            .bind(blob)
+            .execute(&mut *tx)
+            .await?;
+            outcomes.push(result.rows_affected() > 0);
+        }
+        tx.commit().await?;
+        Ok(outcomes)
+    }
+
     /// The **live `vec0` column dimension** of `search_document_vectors` — the
     /// single source of truth for the active vector width, read straight from the
     /// table definition rather than inferred from the (separately persisted)
@@ -996,6 +1067,46 @@ mod tests {
             assert!(stored, "the matching-dimension vector is stored");
             assert!(!store
                 .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
+        });
+    }
+
+    #[test]
+    fn store_vectors_batch_stores_matching_and_skips_wrong_dimension_in_one_call() {
+        run_async_test(async {
+            let dir = test_dir("store-batch-mixed");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+            seed_frame_with_text(&infra, "2026-05-17T10:00:01Z", "bravo").await;
+
+            let store = infra.semantic_search();
+            let missing = store.anchors_missing_vector(10).await.expect("query");
+            assert_eq!(missing.len(), 2, "two anchors await a vector");
+
+            // One correctly-sized (768) vector and one wrong-dimension (1024) vector
+            // in a single batched call: the matching one stores, the mismatch is
+            // skipped (not an error, not stored), and the per-anchor outcomes line up
+            // with the input order.
+            let outcomes = store
+                .store_vectors_if_dimension_matches(&[
+                    (missing[0].anchor_id, unit_vector(768, 0.5)),
+                    (missing[1].anchor_id, unit_vector(1024, 0.5)),
+                ])
+                .await
+                .expect("a dimension mismatch is a skip, not a fatal error");
+            assert_eq!(outcomes, vec![true, false], "stored, then skipped");
+
+            // The stored anchor leaves the missing set; the skipped one stays for a
+            // later re-embed once dimensions agree.
+            assert!(!store
+                .anchor_still_missing_vector(missing[0].anchor_id)
+                .await
+                .expect("recheck"));
+            assert!(store
+                .anchor_still_missing_vector(missing[1].anchor_id)
                 .await
                 .expect("recheck"));
         });

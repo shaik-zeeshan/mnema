@@ -1166,7 +1166,13 @@ impl ProcessingStore {
             speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID,
         );
         loop {
-            let mut transaction = self.db.begin_write().await?;
+            // Scan for the next eligible job on the Reader Pool so the costly
+            // claim SELECT (json parsing + the cleanup-lock NOT EXISTS) does not
+            // run under the writer lock. The claim UPDATE below re-validates both
+            // `status='queued'` and the same cleanup-lock condition atomically,
+            // so a job claimed by another worker or newly locked for model
+            // deletion between the scan and the write loses (`rows_affected == 0`)
+            // and we re-scan. Read and claim share the predicate, so no spin.
             let row = match (processor, excluded_processors.is_empty()) {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
@@ -1204,7 +1210,7 @@ impl ProcessingStore {
                 )
                 .bind(processor)
                 .bind(&speaker_analysis_model_key)
-                .fetch_optional(&mut *transaction)
+                .fetch_optional(self.db.read())
                 .await?,
                 (None, false) => {
                     let mut query = sqlx::QueryBuilder::new(
@@ -1261,7 +1267,7 @@ impl ProcessingStore {
                          ORDER BY pj.id ASC \
                          LIMIT 1",
                     );
-                    query.build().fetch_optional(&mut *transaction).await?
+                    query.build().fetch_optional(self.db.read()).await?
                 }
                 (None, true) => sqlx::query(
                     "SELECT \
@@ -1297,16 +1303,20 @@ impl ProcessingStore {
                      LIMIT 1",
                 )
                 .bind(&speaker_analysis_model_key)
-                .fetch_optional(&mut *transaction)
+                .fetch_optional(self.db.read())
                 .await?,
             };
 
             let job_id = row.map(map_processing_job).transpose()?.map(|job| job.id);
             let Some(job_id) = job_id else {
-                transaction.commit().await?;
                 return Ok(None);
             };
 
+            let mut transaction = self.db.begin_write().await?;
+            // Re-validate atomically: claim only if the job is still queued AND its
+            // model is not locked for deletion. The cleanup-lock NOT EXISTS mirrors
+            // the scan predicate (with `pj` bound to the row under update), so a
+            // lock acquired between scan and claim correctly blocks the claim.
             let update = sqlx::query(
                 "UPDATE processing_jobs \
                  SET status = 'running', \
@@ -1315,9 +1325,32 @@ impl ProcessingStore {
                      started_at = CURRENT_TIMESTAMP, \
                      finished_at = NULL, \
                      updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = ?1 AND status = 'queued'",
+                 WHERE id = ?1 AND status = 'queued' \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                     WHERE lock.processor = processing_jobs.processor \
+                       AND lock.model_key = CASE \
+                         WHEN processing_jobs.processor = 'speaker_analysis' \
+                          AND processing_jobs.payload_json IS NOT NULL \
+                          AND json_valid(processing_jobs.payload_json) \
+                         THEN ?2 \
+                         WHEN processing_jobs.processor IN ('ocr', 'audio_transcription') \
+                          AND processing_jobs.payload_json IS NOT NULL \
+                          AND json_valid(processing_jobs.payload_json) \
+                         THEN CASE \
+                           WHEN json_type(processing_jobs.payload_json, '$.provider') = 'text' \
+                            AND json_type(processing_jobs.payload_json, '$.modelId') = 'text' \
+                            AND NULLIF(TRIM(json_extract(processing_jobs.payload_json, '$.provider')), '') IS NOT NULL \
+                            AND NULLIF(TRIM(json_extract(processing_jobs.payload_json, '$.modelId')), '') IS NOT NULL \
+                           THEN TRIM(json_extract(processing_jobs.payload_json, '$.provider')) || '/' || TRIM(json_extract(processing_jobs.payload_json, '$.modelId')) \
+                           ELSE NULL \
+                         END \
+                         ELSE NULL \
+                       END \
+                   )",
             )
             .bind(job_id)
+            .bind(&speaker_analysis_model_key)
             .execute(&mut *transaction)
             .await?;
 
@@ -1881,10 +1914,24 @@ impl ProcessingStore {
         {
             refresh_speaker_turn_transcript_texts(&mut transaction, job.subject_id).await?;
         }
-        crate::search::project_processing_result_in_transaction(&mut transaction, &stored_result)
-            .await?;
+        // Direct projection only — O(1), stays atomic with the job/result write.
+        // It hands back the equivalence-reuse fan-out as a `#[must_use]` obligation
+        // so this completion path cannot forget the off-lock second half.
+        let deferred_reuse = crate::search::project_processing_result_direct_in_transaction(
+            &mut transaction,
+            &stored_result,
+        )
+        .await?;
 
         transaction.commit().await?;
+
+        // Equivalence-reuse fan-out: one FTS insert of the full OCR text per
+        // visually-equivalent frame. Running it off-lock in batched short
+        // transactions (lock released between chunks) keeps it from holding the
+        // single writer lock and stalling interactive capture start/stop. It still
+        // completes before we return, so callers observe the same final state; a
+        // crash mid-fan-out is reconciled by the startup equivalence-reuse backfill.
+        deferred_reuse.run(&self.db, &stored_result).await?;
 
         Ok(ProcessingJobCompletion {
             job: completed_job,

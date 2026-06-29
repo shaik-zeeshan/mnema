@@ -56,30 +56,6 @@ fn register_vec0_auto_extension() {
 /// several connections without reintroducing the deadlock.
 const BEGIN_IMMEDIATE: &str = "BEGIN IMMEDIATE";
 
-/// Diagnostic threshold: a `begin_write` that takes at least this long to acquire
-/// a writer connection plus the `BEGIN IMMEDIATE` write lock is logged as a write
-/// contention signal. Only emitted when debug logging is enabled; the timing
-/// itself is free.
-const SLOW_WRITE_BEGIN: Duration = Duration::from_millis(150);
-
-/// Begin a `BEGIN IMMEDIATE` write transaction on `pool`, logging when the
-/// acquire+lock wait crosses [`SLOW_WRITE_BEGIN`] so write-lock contention is
-/// observable in the debug log without changing behavior.
-async fn begin_write_timed(
-    pool: &SqlitePool,
-) -> std::result::Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
-    let start = std::time::Instant::now();
-    let result = pool.begin_with(BEGIN_IMMEDIATE).await;
-    let waited = start.elapsed();
-    if waited >= SLOW_WRITE_BEGIN {
-        capture_runtime::debug_log!(
-            "[perf][capture-index] slow write-tx begin: {}ms waited for writer connection + BEGIN IMMEDIATE lock",
-            waited.as_millis()
-        );
-    }
-    result
-}
-
 /// A handle to the Encrypted Capture Index that carries both the **Writer Pool**
 /// (`write`) and the **Reader Pool** (`read`). Cheap to clone (the inner
 /// `SqlitePool`s are `Arc`-backed). Stores hold this instead of a bare
@@ -111,7 +87,7 @@ impl CaptureDb {
     pub async fn begin_write(
         &self,
     ) -> std::result::Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
-        begin_write_timed(&self.write).await
+        self.write.begin_with(BEGIN_IMMEDIATE).await
     }
     /// Test/back-compat helper: use one pool for both roles. ONLY for tests.
     pub fn single(pool: SqlitePool) -> Self {
@@ -215,7 +191,7 @@ impl Database {
     pub async fn begin_write(
         &self,
     ) -> std::result::Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
-        begin_write_timed(&self.write_pool).await
+        self.write_pool.begin_with(BEGIN_IMMEDIATE).await
     }
 
     pub fn write_pool(&self) -> &SqlitePool {

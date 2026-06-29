@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use audio_transcription::TranscriptionMetadata;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
@@ -24,6 +26,11 @@ const AUDIO_FRAME_ALIGNMENT_WINDOW_SECONDS: i64 = 10;
 /// hits so the top of each list dominates the fused order without one list's
 /// long tail swamping the other's head. `1 / (k + rank)` per list, summed.
 const RRF_K: f64 = 60.0;
+
+/// Rows projected per write transaction in the startup search backfills. Bounds
+/// how long any one backfill commit holds the writer lock so interactive
+/// start/stop writes are not blocked behind the whole backlog.
+const PROJECTION_COMMIT_BATCH: usize = 200;
 
 /// How many nearest **Semantic Search Vector**s the `vec0` KNN returns per query.
 /// This is the meaning-tier candidate budget that RRF fuses with the **Text
@@ -274,7 +281,12 @@ impl SearchStore {
     }
 
     pub(crate) async fn backfill_missing_projections(&self) -> Result<()> {
-        let mut transaction = self.db.begin_write().await?;
+        // Commit projections in batches so the writer lock is released between
+        // chunks instead of being held across the whole (potentially large)
+        // backlog. A single `BEGIN IMMEDIATE` over every un-indexed row would
+        // block interactive start/stop writes for the backfill's full duration —
+        // the startup-freeze regression this guards against. The candidate scan
+        // runs on the Reader Pool so no write lock is held while reading.
         let rows = sqlx::query(
             "SELECT processing_results.id, processing_results.job_id, \
                     processing_results.subject_type, processing_results.subject_id, \
@@ -301,21 +313,29 @@ impl SearchStore {
         .bind(OCR_PROCESSOR)
         .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
         .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
-        .fetch_all(&mut *transaction)
+        .fetch_all(self.db.read())
         .await?;
 
-        for row in rows {
-            project_processing_result_in_transaction(
-                &mut transaction,
-                &map_processing_result_for_search(row)?,
-            )
-            .await?;
-        }
-        backfill_missing_equivalent_reuse_projections(&mut transaction).await?;
-        backfill_missing_app_bundle_id_projection(&mut transaction).await?;
-        backfill_missing_app_name_search_key_projection(&mut transaction).await?;
+        let results = rows
+            .into_iter()
+            .map(map_processing_result_for_search)
+            .collect::<Result<Vec<_>>>()?;
 
-        transaction.commit().await?;
+        commit_in_batches(&self.db, &results, |transaction, result| {
+            Box::pin(project_processing_result_in_transaction(
+                transaction,
+                result,
+            ))
+        })
+        .await?;
+
+        // The equivalence / app-id backfills are O(all-rows) loops (a costly
+        // nested-EXISTS scan plus per-row UPDATEs); each self-manages a read-pool
+        // scan + batched commits so none holds the writer lock across its whole
+        // backlog. (Sharing one transaction here once held the lock ~11s.)
+        backfill_missing_equivalent_reuse_projections(&self.db).await?;
+        backfill_missing_app_bundle_id_projection(&self.db).await?;
+        backfill_missing_app_name_search_key_projection(&self.db).await?;
         Ok(())
     }
 
@@ -753,26 +773,77 @@ async fn delete_projection_for_subject_processor(
     transaction: &mut Transaction<'_, Sqlite>,
     subject_type: &str,
     subject_id: i64,
-    processor: &str,
+    _processor: &str,
 ) -> Result<()> {
-    sqlx::query(
-        "DELETE FROM search_documents \
-         WHERE anchor_type = CASE WHEN ?1 = 'frame' THEN 'frame' ELSE 'audio' END \
-           AND ((?1 = 'frame' AND frame_id = ?2) OR (?1 = 'audio_segment' AND audio_segment_id = ?2))\
-           AND processing_result_id IN (SELECT id FROM processing_results WHERE processor = ?3)",
-    )
-    .bind(subject_type)
-    .bind(subject_id)
-    .bind(processor)
-    .execute(&mut **transaction)
-    .await?;
+    // Seek the per-anchor index (`search_documents_frame_idx` /
+    // `search_documents_audio_idx`) on a single column instead of the old
+    // cross-column `OR` + `processing_result_id IN (SELECT … WHERE processor = ?)`
+    // subquery, which forced a full scan of the (now multi-million-row)
+    // search_documents table — a ~3s writer-lock hold per OCR completion.
+    //
+    // Equivalent row set: every search document for a frame is OCR-sourced (its
+    // own `direct` doc plus any borrowed `equivalent_reuse` doc), and every doc
+    // for an audio segment is transcription-sourced, so scoping by the anchor id
+    // matches exactly what the processor subquery selected.
+    match subject_type {
+        FRAME_SUBJECT_TYPE => {
+            sqlx::query(
+                "DELETE FROM search_documents \
+                 WHERE anchor_type = 'frame' AND frame_id = ?1",
+            )
+            .bind(subject_id)
+            .execute(&mut **transaction)
+            .await?;
+        }
+        AUDIO_SEGMENT_SUBJECT_TYPE => {
+            sqlx::query(
+                "DELETE FROM search_documents \
+                 WHERE anchor_type = 'audio' AND audio_segment_id = ?1",
+            )
+            .bind(subject_id)
+            .execute(&mut **transaction)
+            .await?;
+        }
+        _ => {}
+    }
 
     Ok(())
 }
 
-async fn backfill_missing_equivalent_reuse_projections(
-    transaction: &mut Transaction<'_, Sqlite>,
-) -> Result<()> {
+/// Apply `project` to every item in `items`, committing in
+/// [`PROJECTION_COMMIT_BATCH`]-sized chunks so the **Writer Pool** lock is released
+/// between batches instead of being held across the whole (potentially large)
+/// backlog. A single `BEGIN IMMEDIATE` over every item would block interactive
+/// start/stop writes for the run's full duration — the start/stop-stall regression
+/// every backfill and the off-lock reuse fan-out share. Concentrating the chunked
+/// commit here means the lock-hold bound lives in one tested place rather than
+/// being re-derived (and risked) at each call site. Callers must have produced
+/// `items` from a **Reader Pool** scan, so no writer lock is held while reading.
+///
+/// `project` returns a boxed `Send` future rather than an `AsyncFnMut`: the
+/// off-lock reuse fan-out borrows the OCR `&str` into its per-item future, and an
+/// `AsyncFnMut` closure that captures a borrowed reference produces a future rustc
+/// cannot prove `Send`, which the spawned completion worker requires.
+async fn commit_in_batches<T, F>(db: &CaptureDb, items: &[T], mut project: F) -> Result<()>
+where
+    F: for<'a> FnMut(
+        &'a mut Transaction<'static, Sqlite>,
+        &'a T,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>,
+{
+    for chunk in items.chunks(PROJECTION_COMMIT_BATCH) {
+        let mut transaction = db.begin_write().await?;
+        for item in chunk {
+            project(&mut transaction, item).await?;
+        }
+        transaction.commit().await?;
+    }
+    Ok(())
+}
+
+async fn backfill_missing_equivalent_reuse_projections(db: &CaptureDb) -> Result<()> {
+    // Scan candidates on the Reader Pool so the costly nested-EXISTS query does
+    // not run under the writer lock, then project in batched write transactions.
     let rows = sqlx::query(
         "SELECT processing_results.id, processing_results.job_id, \
                 processing_results.subject_type, processing_results.subject_id, \
@@ -816,23 +887,28 @@ async fn backfill_missing_equivalent_reuse_projections(
     )
     .bind(FRAME_SUBJECT_TYPE)
     .bind(OCR_PROCESSOR)
-    .fetch_all(&mut **transaction)
+    .fetch_all(db.read())
     .await?;
 
-    for row in rows {
-        project_missing_equivalent_reuse_documents_for_processing_result(
-            transaction,
-            &map_processing_result_for_search(row)?,
+    let results = rows
+        .into_iter()
+        .map(map_processing_result_for_search)
+        .collect::<Result<Vec<_>>>()?;
+
+    commit_in_batches(db, &results, |transaction, result| {
+        Box::pin(
+            project_missing_equivalent_reuse_documents_for_processing_result(transaction, result),
         )
-        .await?;
-    }
+    })
+    .await?;
 
     Ok(())
 }
 
-async fn backfill_missing_app_bundle_id_projection(
-    transaction: &mut Transaction<'_, Sqlite>,
-) -> Result<()> {
+async fn backfill_missing_app_bundle_id_projection(db: &CaptureDb) -> Result<()> {
+    // Scan on the Reader Pool, resolve each bundle id in Rust, then apply the
+    // UPDATEs in batched write transactions (an empty string marks "resolved, no
+    // bundle id" so the row is not rescanned next startup).
     let rows = sqlx::query(
         "SELECT search_documents.id, frame_metadata_snapshots.snapshot_json \
          FROM search_documents \
@@ -841,9 +917,10 @@ async fn backfill_missing_app_bundle_id_projection(
          WHERE search_documents.anchor_type = 'frame' \
            AND search_documents.app_bundle_id IS NULL",
     )
-    .fetch_all(&mut **transaction)
+    .fetch_all(db.read())
     .await?;
 
+    let mut updates: Vec<(i64, String)> = Vec::with_capacity(rows.len());
     for row in rows {
         let bundle_id = row
             .get::<Option<String>, _>("snapshot_json")
@@ -855,34 +932,37 @@ async fn backfill_missing_app_bundle_id_projection(
             .and_then(|bundle_id| {
                 normalize_app_bundle_id_for_search(&bundle_id).map(str::to_string)
             });
-        if let Some(bundle_id) = bundle_id {
+        updates.push((row.get::<i64, _>("id"), bundle_id.unwrap_or_default()));
+    }
+
+    commit_in_batches(db, &updates, |transaction, item| {
+        let (id, bundle_id) = item;
+        Box::pin(async move {
             sqlx::query("UPDATE search_documents SET app_bundle_id = ?1 WHERE id = ?2")
                 .bind(bundle_id)
-                .bind(row.get::<i64, _>("id"))
+                .bind(id)
                 .execute(&mut **transaction)
                 .await?;
-        } else {
-            sqlx::query("UPDATE search_documents SET app_bundle_id = '' WHERE id = ?1")
-                .bind(row.get::<i64, _>("id"))
-                .execute(&mut **transaction)
-                .await?;
-        }
-    }
+            Ok(())
+        })
+    })
+    .await?;
 
     Ok(())
 }
 
-async fn backfill_missing_app_name_search_key_projection(
-    transaction: &mut Transaction<'_, Sqlite>,
-) -> Result<()> {
+async fn backfill_missing_app_name_search_key_projection(db: &CaptureDb) -> Result<()> {
+    // Scan on the Reader Pool, derive each search key in Rust, then apply the
+    // UPDATEs in batched write transactions.
     let rows = sqlx::query(
         "SELECT id, app_name \
          FROM search_documents \
          WHERE app_name_search_key IS NULL",
     )
-    .fetch_all(&mut **transaction)
+    .fetch_all(db.read())
     .await?;
 
+    let mut updates: Vec<(i64, String)> = Vec::with_capacity(rows.len());
     for row in rows {
         let id: i64 = row.get("id");
         let search_key = row
@@ -890,12 +970,21 @@ async fn backfill_missing_app_name_search_key_projection(
             .as_deref()
             .and_then(normalize_app_name_for_search)
             .unwrap_or_default();
-        sqlx::query("UPDATE search_documents SET app_name_search_key = ?1 WHERE id = ?2")
-            .bind(search_key)
-            .bind(id)
-            .execute(&mut **transaction)
-            .await?;
+        updates.push((id, search_key));
     }
+
+    commit_in_batches(db, &updates, |transaction, item| {
+        let (id, search_key) = item;
+        Box::pin(async move {
+            sqlx::query("UPDATE search_documents SET app_name_search_key = ?1 WHERE id = ?2")
+                .bind(search_key)
+                .bind(id)
+                .execute(&mut **transaction)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
 
     Ok(())
 }
@@ -910,26 +999,25 @@ fn normalize_app_name_for_search(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_lowercase())
 }
 
-async fn project_frame_ocr_result(
-    transaction: &mut Transaction<'_, Sqlite>,
-    result: &ProcessingResult,
-) -> Result<()> {
-    let Some(frame) = get_frame_for_search_in_transaction(transaction, result.subject_id).await?
-    else {
-        return Ok(());
-    };
-
-    delete_equivalent_reuse_projections_for_source_result(transaction, result, &frame).await?;
-
-    let Some(text) = result
+/// The trimmed, non-empty OCR text for a result, or `None` when there is nothing
+/// to project (so callers uniformly skip empty OCR without re-deriving the rule).
+fn ocr_result_text(result: &ProcessingResult) -> Option<&str> {
+    result
         .result_text
         .as_deref()
         .map(str::trim)
         .filter(|text| !text.is_empty())
-    else {
-        return Ok(());
-    };
+}
 
+/// Insert the single `direct` search document for a freshly-OCR'd frame. This is
+/// O(1) — one row + one FTS row — and is the only projection cheap enough to stay
+/// inside the job-completion writer transaction.
+async fn insert_direct_frame_ocr_document(
+    transaction: &mut Transaction<'_, Sqlite>,
+    frame: &Frame,
+    result: &ProcessingResult,
+    text: &str,
+) -> Result<()> {
     let (app_bundle_id, app_name, window_title) = frame
         .metadata_snapshot
         .as_ref()
@@ -942,7 +1030,7 @@ async fn project_frame_ocr_result(
         })
         .unwrap_or((None, None, None));
 
-    let group_key = frame_search_group_key(&frame);
+    let group_key = frame_search_group_key(frame);
     let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
     let app_name_search_key = app_name.as_deref().and_then(normalize_app_name_for_search);
 
@@ -969,9 +1057,157 @@ async fn project_frame_ocr_result(
             context_text: &context_text,
         },
     )
-    .await?;
+    .await
+}
+
+async fn project_frame_ocr_result(
+    transaction: &mut Transaction<'_, Sqlite>,
+    result: &ProcessingResult,
+) -> Result<()> {
+    let Some(frame) = get_frame_for_search_in_transaction(transaction, result.subject_id).await?
+    else {
+        return Ok(());
+    };
+
+    delete_equivalent_reuse_projections_for_source_result(transaction, &frame).await?;
+
+    let Some(text) = ocr_result_text(result) else {
+        return Ok(());
+    };
+
+    insert_direct_frame_ocr_document(transaction, &frame, result, text).await?;
 
     project_equivalent_reuse_documents_for_source_frame(transaction, &frame, result.id, text).await
+}
+
+/// The second half of an OCR result's **Search Index Projection**, still owed once
+/// the completion transaction commits: the equivalence-reuse fan-out, run off the
+/// writer lock by [`DeferredEquivalentReuse::run`].
+///
+/// [`project_processing_result_direct_in_transaction`] hands this back so the split
+/// projection is one protocol a completion path cannot half-apply — taking the
+/// cheap `direct` document obliges you to the fan-out, and `#[must_use]` flags
+/// dropping the obligation on the floor (which would silently lose reused text until
+/// the next startup backfill reconciled it). A non-OCR result still carries an
+/// obligation, whose `run` is a no-op, so every completion path stays uniform.
+#[must_use = "the equivalence-reuse fan-out must run (DeferredEquivalentReuse::run) \
+              after the completion transaction commits"]
+pub(crate) struct DeferredEquivalentReuse {
+    _private: (),
+}
+
+impl DeferredEquivalentReuse {
+    /// Run the deferred equivalence-reuse fan-out off the completion writer lock.
+    /// Call this AFTER committing the transaction that carried the `direct`
+    /// projection, passing the same result that was projected. A no-op for non-OCR
+    /// results (audio transcription has no fan-out).
+    pub(crate) async fn run(self, db: &CaptureDb, result: &ProcessingResult) -> Result<()> {
+        project_equivalent_reuse_for_ocr_result_off_lock(db, result).await
+    }
+}
+
+/// Project a processing result writing only the cheap, O(1) `direct` document — no
+/// equivalence-reuse fan-out. `complete_job` uses this so its writer-lock hold
+/// stays in the low-millisecond range; the returned [`DeferredEquivalentReuse`]
+/// obliges the caller to run the expensive fan-out off-lock right after the commit.
+pub(crate) async fn project_processing_result_direct_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    result: &ProcessingResult,
+) -> Result<DeferredEquivalentReuse> {
+    delete_projection_for_subject_processor(
+        transaction,
+        &result.subject_type,
+        result.subject_id,
+        &result.processor,
+    )
+    .await?;
+
+    if result.processor == OCR_PROCESSOR && result.subject_type == FRAME_SUBJECT_TYPE {
+        if let Some(frame) =
+            get_frame_for_search_in_transaction(transaction, result.subject_id).await?
+        {
+            if let Some(text) = ocr_result_text(result) {
+                insert_direct_frame_ocr_document(transaction, &frame, result, text).await?;
+            }
+        }
+    } else if result.processor == AUDIO_TRANSCRIPTION_PROCESSOR
+        && result.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+    {
+        // Audio transcription has no equivalence-reuse fan-out, so its full
+        // projection is already cheap enough to stay in the completion transaction.
+        project_audio_transcription_result(transaction, result).await?;
+    }
+
+    Ok(DeferredEquivalentReuse { _private: () })
+}
+
+/// Fan the OCR text of `result` out onto every visually-equivalent frame, off the
+/// completion writer lock. The candidate scan runs on the Reader Pool and the
+/// inserts commit in [`PROJECTION_COMMIT_BATCH`] chunks so the writer lock is
+/// released between batches instead of held for the whole (per-frame FTS) fan-out
+/// — the multi-second hold that used to stall interactive capture start/stop. The
+/// produced documents are derived data already reconciled by
+/// [`backfill_missing_equivalent_reuse_projections`], so doing this after the
+/// commit (rather than inside it) is crash-safe.
+pub(crate) async fn project_equivalent_reuse_for_ocr_result_off_lock(
+    db: &CaptureDb,
+    result: &ProcessingResult,
+) -> Result<()> {
+    if result.processor != OCR_PROCESSOR || result.subject_type != FRAME_SUBJECT_TYPE {
+        return Ok(());
+    }
+
+    // Read the source frame + equivalence candidates on the Reader Pool so no
+    // writer lock is held while scanning.
+    let mut read_tx = db.read().begin().await?;
+    let Some(source_frame) =
+        get_frame_for_search_in_transaction(&mut read_tx, result.subject_id).await?
+    else {
+        return Ok(());
+    };
+    let candidates = equivalent_reuse_candidate_frames(&mut read_tx, &source_frame).await?;
+    drop(read_tx);
+
+    // Clear any stale reuse documents for this source first (covers re-projection
+    // when the OCR text changed or became empty). Short, indexed deletes.
+    {
+        let mut transaction = db.begin_write().await?;
+        delete_equivalent_reuse_projections_for_source_result(&mut transaction, &source_frame)
+            .await?;
+        transaction.commit().await?;
+    }
+
+    let Some(text) = ocr_result_text(result) else {
+        return Ok(());
+    };
+    // Own the per-fan-out data so each item future borrows only its `'a`
+    // transaction + frame, never this enclosing scope. A `for<'a>` batch closure
+    // that captured the borrowed `text`/`result` would force them to outlive every
+    // possible `'a` (including `'static`) and fail to type-check.
+    let result_id = result.id;
+    let text = text.to_string();
+
+    commit_in_batches(db, &candidates, |transaction, frame| {
+        let text = text.clone();
+        Box::pin(async move {
+            // Re-validate against the live row inside the write tx: a candidate
+            // that gained its own direct projection since the read snapshot must
+            // not be overwritten with reused text.
+            if frame_has_projection(&mut *transaction, frame.id, "direct").await? {
+                return Ok(());
+            }
+            project_equivalent_reuse_document_for_frame(
+                &mut *transaction,
+                frame,
+                Some(result_id),
+                &text,
+            )
+            .await
+        })
+    })
+    .await?;
+
+    Ok(())
 }
 
 async fn project_missing_equivalent_reuse_documents_for_processing_result(
@@ -1003,23 +1239,19 @@ async fn project_missing_equivalent_reuse_documents_for_processing_result(
 
 async fn delete_equivalent_reuse_projections_for_source_result(
     transaction: &mut Transaction<'_, Sqlite>,
-    result: &ProcessingResult,
     source_frame: &Frame,
 ) -> Result<()> {
-    sqlx::query(
-        "DELETE FROM search_documents \
-         WHERE text_source_kind = 'equivalent_reuse' \
-           AND processing_result_id IN (\
-                SELECT id FROM processing_results \
-                WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3\
-           )",
-    )
-    .bind(&result.subject_type)
-    .bind(result.subject_id)
-    .bind(&result.processor)
-    .execute(&mut **transaction)
-    .await?;
-
+    // Clear stale reuse documents per equivalent frame, seeking
+    // `search_documents_frame_idx` (frame_id) — proven sub-millisecond. This
+    // covers every current target, including ones whose `processing_result_id`
+    // was set NULL when their source result was deleted (the orphaned-reuse
+    // reprojection case). We deliberately do NOT also run a bulk delete keyed on
+    // `processing_result_id`: that form full-scanned the multi-million-row
+    // search_documents table on every OCR completion (~2.5s of writer-lock hold
+    // even when it matched zero rows), and it is redundant here — current targets
+    // are all covered below, and a frame that has dropped out of the equivalence
+    // set is independently cleared by `delete_projection_for_subject_processor`
+    // once it gains its own direct projection.
     for frame in equivalent_reuse_candidate_frames(transaction, source_frame).await? {
         sqlx::query(
             "DELETE FROM search_documents \

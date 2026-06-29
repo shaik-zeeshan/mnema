@@ -860,6 +860,11 @@ async fn run_sweep_pass(
     let mut embed_failures = 0u64;
     let mut quarantined = 0u64;
     let mut dimension_skips = 0u64;
+    // Vectors that passed the per-anchor re-check, deferred so the whole batch is
+    // written in ONE transaction after the loop (one writer-lock acquisition for the
+    // batch instead of one per anchor — the churn that starved capture/finalize
+    // writes and inflated stop latency).
+    let mut to_store: Vec<(i64, Vec<f32>)> = Vec::new();
     for (anchor_id, result) in embedded {
         match result {
             Ok(vector) => {
@@ -878,30 +883,14 @@ async fn run_sweep_pass(
                     // batch every 30s forever. Startup reconciliation rebuilds the
                     // stuck table so the dimensions agree again and the skipped
                     // anchors re-embed.
-                    Ok(true) => match infra
-                        .semantic_search()
-                        .store_vector_if_dimension_matches(anchor_id, &vector)
-                        .await
-                    {
-                        Ok(true) => {
-                            stored += 1;
-                            // A clean store clears any prior failure streak.
-                            state.clear_anchor_failures(anchor_id);
-                        }
-                        Ok(false) => {
-                            // Either a dimension mismatch (awaiting re-index) or the
-                            // anchor vanished between the re-check and the atomic
-                            // store. Neither is a poison-pill, so do not count it
-                            // toward quarantine.
-                            dimension_skips += 1;
-                        }
-                        Err(error) => {
-                            transient_errors += 1;
-                            crate::native_capture::debug_log::log_error(format!(
-                                "semantic index backfill failed to store vector for anchor {anchor_id}: {error}"
-                            ));
-                        }
-                    },
+                    Ok(true) => {
+                        // Defer the write: collect this anchor's vector and store the
+                        // whole batch in one transaction after the loop (see
+                        // `to_store`). The atomic row-conditioned INSERT remains the
+                        // correctness boundary; this re-check was always just an
+                        // early-out, so deferring the store does not weaken it.
+                        to_store.push((anchor_id, vector));
+                    }
                     Ok(false) => {
                         // The anchor was deleted or reprocessed mid-embed; skip it
                         // (the new anchor, if any, is picked up next pass). Clear any
@@ -957,6 +946,38 @@ async fn run_sweep_pass(
                         "semantic index backfill failed to embed anchor {anchor_id} (failure {failures}/{MAX_CONSECUTIVE_ANCHOR_FAILURES}): {error}"
                     ));
                 }
+            }
+        }
+    }
+
+    // Single-transaction write of every vector that passed its re-check. Folds the
+    // per-anchor outcomes back into the same counters the per-anchor store updated:
+    // `true` = stored (clear the failure streak), `false` = skipped (dimension
+    // mismatch or the anchor vanished mid-embed — not a poison pill).
+    if !to_store.is_empty() {
+        match infra
+            .semantic_search()
+            .store_vectors_if_dimension_matches(&to_store)
+            .await
+        {
+            Ok(outcomes) => {
+                for ((anchor_id, _), was_stored) in to_store.iter().zip(outcomes) {
+                    if was_stored {
+                        stored += 1;
+                        state.clear_anchor_failures(*anchor_id);
+                    } else {
+                        dimension_skips += 1;
+                    }
+                }
+            }
+            Err(error) => {
+                // A real DB failure rolled the whole batch back: every anchor in it
+                // retries (transient), matching the single-store `Err` arm.
+                transient_errors += to_store.len() as u64;
+                crate::native_capture::debug_log::log_error(format!(
+                    "semantic index backfill failed to store {} vector(s) in batch: {error}",
+                    to_store.len()
+                ));
             }
         }
     }

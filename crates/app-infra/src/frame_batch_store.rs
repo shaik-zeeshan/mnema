@@ -597,7 +597,14 @@ impl FrameBatchStore {
 
     pub async fn claim_next_finalize_job(&self) -> Result<Option<BackgroundJob>> {
         loop {
-            let mut transaction = self.db.begin_write().await?;
+            // Find a candidate on the Reader Pool so the eligibility scan (the
+            // correlated NOT EXISTS over still-pending OCR jobs) does not run
+            // under the writer lock. The claim UPDATE below re-validates the same
+            // `status='queued'` + NOT EXISTS condition atomically, so a job that
+            // another worker claimed or that became ineligible between the scan
+            // and the write simply loses (`rows_affected == 0`) and we re-scan.
+            // The read and claim share the same predicate, so this cannot spin:
+            // any disagreement reflects a state change the next scan sees.
             let row = sqlx::query(
                 "SELECT background_jobs.id FROM background_jobs \
                  INNER JOIN frame_batches ON frame_batches.finalize_job_id = background_jobs.id \
@@ -615,23 +622,34 @@ impl FrameBatchStore {
             .bind(FRAME_BATCH_FINALIZE_JOB_KIND)
             .bind(FRAME_SUBJECT_TYPE)
             .bind(OCR_PROCESSOR)
-            .fetch_optional(&mut *transaction)
+            .fetch_optional(self.db.read())
             .await?;
 
             let Some(row) = row else {
-                transaction.commit().await?;
                 return Ok(None);
             };
 
             let job_id = row.get::<i64, _>("id");
+            let mut transaction = self.db.begin_write().await?;
             let update = sqlx::query(
                 "UPDATE background_jobs \
                  SET status = 'running', attempt_count = attempt_count + 1, last_error = NULL, \
                      result_json = NULL, started_at = CURRENT_TIMESTAMP, finished_at = NULL, \
                      updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = ?1 AND status = 'queued'",
+                 WHERE id = ?1 AND status = 'queued' \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM processing_jobs jobs \
+                       INNER JOIN frames ON frames.id = jobs.subject_id \
+                       INNER JOIN frame_batches ON frame_batches.id = frames.frame_batch_id \
+                       WHERE frame_batches.finalize_job_id = background_jobs.id \
+                         AND jobs.subject_type = ?2 \
+                         AND jobs.processor = ?3 \
+                         AND jobs.status NOT IN ('completed', 'failed') \
+                   )",
             )
             .bind(job_id)
+            .bind(FRAME_SUBJECT_TYPE)
+            .bind(OCR_PROCESSOR)
             .execute(&mut *transaction)
             .await?;
 
