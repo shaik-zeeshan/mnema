@@ -625,3 +625,793 @@ pub(super) fn search_context_text(
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::search::test_support::*;
+    use crate::search::SearchCaptureRequest;
+    use crate::{
+        AppInfra, AudioSegmentSourceKind, NewAudioSegment, NewFrame, ProcessingJobDraft,
+        ProcessingResultDraft,
+    };
+    use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
+
+    #[test]
+    fn search_projects_completed_ocr_and_groups_equivalent_frames() {
+        run_async_test(async {
+            let dir = test_dir("ocr-groups");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let first = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-frame-a.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(crate::FrameEquivalence {
+                        hint: Some("same-screen".to_string()),
+                        proof: Some(vec![0; 1024]),
+                        version: Some(1),
+                        status: Some(crate::FrameEquivalenceStatus::Ready),
+                        error: None,
+                    }),
+                )
+                .await
+                .expect("first frame should insert");
+            let second = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-frame-b.jpg",
+                        "2026-05-17T10:00:02Z",
+                    )
+                    .with_equivalence(crate::FrameEquivalence {
+                        hint: Some("same-screen".to_string()),
+                        proof: Some(vec![0; 1024]),
+                        version: Some(1),
+                        status: Some(crate::FrameEquivalenceStatus::Ready),
+                        error: None,
+                    }),
+                )
+                .await
+                .expect("second frame should insert");
+
+            for frame in [&first, &second] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new()
+                        .with_result_text("quarterly roadmap search target"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "roadmap".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].match_count, 2);
+            assert_eq!(response.frames[0].representative_frame.id, second.id);
+            assert!(response.audio.is_empty());
+        });
+    }
+
+    #[test]
+    fn startup_backfills_search_projection_for_existing_latest_results() {
+        run_async_test(async {
+            let dir = test_dir("startup-backfill");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-startup-backfill.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+
+            for text in ["old upgraded text", "fresh upgraded text"] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text(text),
+                )
+                .await;
+            }
+
+            sqlx::query("DELETE FROM search_documents")
+                .execute(infra.pool())
+                .await
+                .expect("search documents should delete");
+            drop(infra);
+
+            let reopened = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should reopen");
+            let stale = reopened
+                .search_capture(SearchCaptureRequest {
+                    query: "old".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("stale search should succeed");
+            assert!(stale.frames.is_empty());
+
+            let fresh = reopened
+                .search_capture(SearchCaptureRequest {
+                    query: "fresh".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("fresh search should succeed");
+            assert_eq!(fresh.frames.len(), 1);
+            assert_eq!(fresh.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn fast_initialize_defers_search_projection_backfill_until_maintenance_runs() {
+        run_async_test(async {
+            let dir = test_dir("fast-init-defers-backfill");
+
+            // Seed a frame + OCR result (projected on write), then delete the
+            // projection so the index needs the startup repair to be searchable.
+            let frame_id;
+            {
+                let infra = AppInfra::initialize(&dir)
+                    .await
+                    .expect("infra should initialize");
+                let frame = infra
+                    .insert_frame(&NewFrame::new(
+                        "screen-session",
+                        "/tmp/fast-init-defers-backfill.jpg",
+                        "2026-05-17T10:00:00Z",
+                    ))
+                    .await
+                    .expect("frame should insert");
+                frame_id = frame.id;
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("deferred backfill text"),
+                )
+                .await;
+                sqlx::query("DELETE FROM search_documents")
+                    .execute(infra.pool())
+                    .await
+                    .expect("search documents should delete");
+            }
+
+            let search_request = || SearchCaptureRequest {
+                query: "deferred".to_string(),
+                frame_limit: Some(5),
+                frame_offset: None,
+                audio_limit: Some(0),
+                audio_offset: None,
+                snapshot_document_id: None,
+                refinements: None,
+                query_embedding: None,
+            };
+
+            // The fast init path opens the index but must NOT run the projection
+            // backfill — that is what keeps the expensive scans off the
+            // window-open critical path — so the missing projection stays missing.
+            let infra = AppInfra::initialize_fast_with_processing_registry(
+                &dir,
+                crate::default_processing_registry(),
+            )
+            .await
+            .expect("fast infra should initialize");
+            let before = infra
+                .search_capture(search_request())
+                .await
+                .expect("search before maintenance should succeed");
+            assert!(
+                before.frames.is_empty(),
+                "fast init should defer the search projection backfill"
+            );
+
+            // Running startup maintenance repairs the missing projection.
+            infra
+                .run_startup_maintenance()
+                .await
+                .expect("startup maintenance should run");
+            let after = infra
+                .search_capture(search_request())
+                .await
+                .expect("search after maintenance should succeed");
+            assert_eq!(after.frames.len(), 1);
+            assert_eq!(after.frames[0].representative_frame.id, frame_id);
+        });
+    }
+
+    #[test]
+    fn startup_backfill_does_not_double_project_multi_span_audio_result() {
+        run_async_test(async {
+            let dir = test_dir("backfill-audio-multi-span");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // A single audio transcription result with two segments projects two
+            // `direct` search_documents (one per span) for the same
+            // processing_result. This is the exact case where the
+            // backfill LEFT JOIN would row-multiply if its `IS NULL` anti-join
+            // guard regressed to an inner join, so it must be re-projected once.
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/backfill-audio-multi-span.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![
+                    TranscriptionSegment {
+                        start_ms: 1_000,
+                        end_ms: 2_500,
+                        text: "deferred backfill alpha".to_string(),
+                        confidence: None,
+                    },
+                    TranscriptionSegment {
+                        start_ms: 3_000,
+                        end_ms: 4_500,
+                        text: "deferred backfill beta".to_string(),
+                        confidence: None,
+                    },
+                ],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("deferred backfill alpha deferred backfill beta")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            // Two `direct` docs were projected on write.
+            let direct_count = || async {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM search_documents \
+                     WHERE audio_segment_id = ?1 AND text_source_kind = 'direct'",
+                )
+                .bind(segment.id)
+                .fetch_one(infra.pool())
+                .await
+                .expect("direct doc count should load")
+            };
+            assert_eq!(
+                direct_count().await,
+                2,
+                "write path projects two direct docs"
+            );
+
+            // Drop the projection so the startup backfill must repair it.
+            sqlx::query("DELETE FROM search_documents")
+                .execute(infra.pool())
+                .await
+                .expect("search documents should delete");
+            assert_eq!(direct_count().await, 0);
+
+            // Backfill must re-project the multi-span result exactly once: two
+            // direct docs total, not four.
+            infra
+                .run_startup_maintenance()
+                .await
+                .expect("startup maintenance should run");
+            assert_eq!(
+                direct_count().await,
+                2,
+                "anti-join must re-project the multi-span audio result exactly once"
+            );
+
+            // Re-running the backfill while both direct docs already exist must be
+            // a no-op for this result: the anti-join must NOT re-select an
+            // already-projected multi-span result and append a second copy of its
+            // spans (which an inner join / dropped `IS NULL` guard would do).
+            infra
+                .run_startup_maintenance()
+                .await
+                .expect("repeat startup maintenance should run");
+            assert_eq!(
+                direct_count().await,
+                2,
+                "anti-join must not double-project an already-projected multi-span result"
+            );
+
+            // Search returns the single grouped audio result, not N duplicates.
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "deferred".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+            assert!(response.frames.is_empty());
+            assert_eq!(
+                response.audio.len(),
+                1,
+                "the grouped audio result must not be duplicated by the backfill"
+            );
+        });
+    }
+
+    #[test]
+    fn startup_backfill_marks_frames_without_app_bundle_id_as_checked() {
+        run_async_test(async {
+            let dir = test_dir("startup-backfill-empty-app-bundle");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-empty-app-bundle.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: None,
+                            app_name: Some("Notes".to_string()),
+                            window_title: Some("Planning".to_string()),
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("frame should insert");
+            let frame_without_metadata = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-no-metadata.jpg",
+                    "2026-05-17T10:00:01Z",
+                ))
+                .await
+                .expect("frame without metadata should insert");
+            for frame_id in [frame.id, frame_without_metadata.id] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame_id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("empty bundle target"),
+                )
+                .await;
+            }
+            let inserted_null_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) \
+                   AND (app_bundle_id IS NULL OR app_name_search_key IS NULL)",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("inserted null count should load");
+            let inserted_checked_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) \
+                   AND app_bundle_id = '' \
+                   AND app_name_search_key IS NOT NULL",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("inserted checked count should load");
+
+            assert_eq!(inserted_null_count, 0);
+            assert_eq!(inserted_checked_count, 2);
+            drop(infra);
+
+            let reopened = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should reopen");
+            let null_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) AND app_bundle_id IS NULL",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("null count should load");
+            let checked_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) AND app_bundle_id = ''",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("checked count should load");
+
+            assert_eq!(null_count, 0);
+            assert_eq!(checked_count, 2);
+        });
+    }
+
+    #[test]
+    fn search_projects_transcript_segments_and_sanitizes_plain_query() {
+        run_async_test(async {
+            let dir = test_dir("audio-segments");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_500,
+                    text: "search target phrase".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("search target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "\"target\"".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(response.frames.is_empty());
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(response.audio[0].span_start_ms, 1_000);
+            assert_eq!(response.audio[0].span_end_ms, 2_500);
+        });
+    }
+
+    #[test]
+    fn search_projects_untimed_transcript_fallback_over_full_audio_segment() {
+        run_async_test(async {
+            let dir = test_dir("audio-untimed-fallback");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-audio-untimed.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: Vec::new(),
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("untimed search target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "untimed".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(response.audio[0].span_start_ms, 0);
+            assert_eq!(response.audio[0].span_end_ms, 20_000);
+            assert_eq!(response.audio[0].absolute_start_at, "2026-05-17T10:00:00Z");
+            assert_eq!(response.audio[0].absolute_end_at, "2026-05-17T10:00:20Z");
+        });
+    }
+
+    #[test]
+    fn search_indexes_frame_context_terms() {
+        run_async_test(async {
+            let dir = test_dir("frame-context");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-frame-context.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some("com.example.Linear".to_string()),
+                            app_name: Some("Linear".to_string()),
+                            window_title: Some("Roadmap Grooming".to_string()),
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("ordinary body text"),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "roadmap".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, frame.id);
+            assert_eq!(
+                response.frames[0].app_bundle_id.as_deref(),
+                Some("com.example.Linear")
+            );
+            assert_eq!(response.frames[0].app_name.as_deref(), Some("Linear"));
+            assert_eq!(
+                response.frames[0].window_title.as_deref(),
+                Some("Roadmap Grooming")
+            );
+        });
+    }
+
+    #[test]
+    fn cascaded_search_document_deletes_remove_fts_rows() {
+        run_async_test(async {
+            let dir = test_dir("fts-cascade");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-fts-cascade.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            let job_id = job.id;
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("cascade target phrase"),
+            )
+            .await;
+
+            let count_before: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents_fts WHERE search_documents_fts MATCH 'cascade'",
+            )
+            .fetch_one(infra.pool())
+            .await
+            .expect("fts count should query");
+            assert_eq!(count_before, 1);
+
+            sqlx::query("DELETE FROM processing_results WHERE job_id = ?1")
+                .bind(job_id)
+                .execute(infra.pool())
+                .await
+                .expect("processing result delete should cascade");
+
+            let count_after: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents_fts WHERE search_documents_fts MATCH 'cascade'",
+            )
+            .fetch_one(infra.pool())
+            .await
+            .expect("fts count should query");
+            assert_eq!(count_after, 0);
+        });
+    }
+
+    #[test]
+    fn replacing_search_projection_keeps_fts_delete_trigger_idempotent() {
+        run_async_test(async {
+            let dir = test_dir("fts-replace");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-fts-replace.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+
+            for text in ["first target phrase", "second target phrase"] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text(text),
+                )
+                .await;
+            }
+
+            let first = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "first".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+            let second = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "second".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(first.frames.is_empty());
+            assert_eq!(second.frames.len(), 1);
+        });
+    }
+}
