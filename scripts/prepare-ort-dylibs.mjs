@@ -35,49 +35,82 @@
 //   1. $MNEMA_ORT_DYLIB_DIR  — a directory already containing onnxruntime.dll
 //      (+ optional provider DLLs). Operator/CI override; zero network.
 //   2. $MNEMA_ORT_REDIST_ZIP — a local Microsoft ONNX Runtime Windows-x64 redist
-//      .zip (e.g. onnxruntime-win-x64-1.24.x.zip, or the `-gpu-` variant for the
-//      Slice 2 provider DLLs). Extracted with bsdtar (`tar -xf`, present on
-//      Win10+); whichever of the three DLLs it contains are copied.
-//   3. The in-repo `apps/desktop/src-tauri/resources/windows/` dir — its committed
-//      `onnxruntime.dll` is MIT ONNX Runtime 1.24.4 (minor 24 >= 24, satisfies the
-//      `ort` gate) plus `onnxruntime_providers_shared.dll`. Zero-config default so
-//      a plain `bun run tauri build` works on this repo today.
-//   4. None found -> hard error with instructions (better a build-time failure
-//      than shipping a bundle with no `onnxruntime.dll`, which would crash on the
-//      first transcription/diarization).
+//      .zip (e.g. onnxruntime-win-x64-gpu-1.24.x.zip). Extracted with bsdtar
+//      (`tar -xf`, present on Win10+); whichever of the three DLLs it contains
+//      are copied. Use this for offline/air-gapped builds or a warmed CI cache.
+//   3. AUTO-DOWNLOAD (zero-config default): fetch the pinned, sha256-verified
+//      `onnxruntime-win-x64-gpu-<ver>.zip` from Microsoft's GitHub releases and
+//      cache it under `target/ort-cache/` (gitignored). This is the `-gpu-` build,
+//      so it ships ALL THREE DLLs — including the 263 MB CUDA execution provider —
+//      which is exactly what `tauri.windows.conf.json` -> `bundle.resources` now
+//      declares. The pin (URL + sha256) lives in a constant below, coupled to the
+//      `ort = =2.0.0-rc.12` / ONNX Runtime 1.24.x requirement; bump them together.
 //
-// Slice 1 stages CPU-only (`onnxruntime.dll`, and `onnxruntime_providers_shared.dll`
-// if present). The CUDA provider DLL (`onnxruntime_providers_cuda.dll`) only
-// exists once Slice 2 enables `ort/cuda`; this script copies it too whenever the
-// chosen source contains it, so Slice 2 just needs a GPU-capable source.
+// There is intentionally NO in-repo committed-DLL fallback. A committed CPU-only
+// `onnxruntime.dll` was a rebuild footgun: with no env override it reverted the
+// staged runtime to CPU while a stale GPU `onnxruntime_providers_cuda.dll` lingered
+// in `resources/ort/` (version mismatch -> load crash), and it could not satisfy
+// the now-3-DLL bundle. Committing the 263 MB CUDA provider instead is a non-starter
+// (git bloat). Auto-download keeps the staged set internally consistent, GPU-capable,
+// and reproducible without committing any binary.
+//
+// This stages all three DLLs the source contains: `onnxruntime.dll` (the runtime
+// `ort` loads via ORT_DYLIB_PATH), `onnxruntime_providers_shared.dll`, and
+// `onnxruntime_providers_cuda.dll` (the GPU execution provider, loaded from the
+// same dir when CUDA is selected at runtime).
 //
 // Usage: node scripts/prepare-ort-dylibs.mjs [debug|release]
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   copyFileSync,
+  createReadStream,
+  createWriteStream,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, basename } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 // The three ONNX Runtime DLLs that travel with the binary, version-locked to the
 // `ort` pin. `onnxruntime.dll` is the runtime ort loads via ORT_DYLIB_PATH; the
-// provider DLLs sit in the SAME dir so ONNX Runtime finds them (CUDA in Slice 2).
+// provider DLLs sit in the SAME dir so ONNX Runtime finds them (the CUDA provider
+// is what enables GPU execution).
 const ORT_DLL_NAMES = [
   "onnxruntime.dll",
   "onnxruntime_providers_shared.dll",
   "onnxruntime_providers_cuda.dll",
 ];
 // The bundler only requires this one to exist (the providers are optional and
-// only present in a GPU-capable source / Slice 2).
+// only present in a GPU-capable source).
 const REQUIRED_DLL = "onnxruntime.dll";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pinned GPU ONNX Runtime redistributable (the auto-download default source).
+// ─────────────────────────────────────────────────────────────────────────────
+// Coupled to `ort = =2.0.0-rc.12` (which targets ONNX Runtime 1.24.x and rejects
+// any loaded runtime with MINOR < 24). This is the `-gpu-` build: it carries the
+// CUDA execution provider alongside the base runtime, so a default build is
+// GPU-capable and the staged DLL set is internally version-consistent.
+//
+// To bump the pin, change VERSION + SHA256 + SIZE together (the URL is derived):
+// download the new asset and recompute, e.g. `certutil -hashfile <zip> SHA256`
+// on Windows or `sha256sum <zip>`.
+const ORT_GPU_VERSION = "1.24.4";
+const ORT_GPU_ZIP_NAME = `onnxruntime-win-x64-gpu-${ORT_GPU_VERSION}.zip`;
+const ORT_GPU_ZIP_URL = `https://github.com/microsoft/onnxruntime/releases/download/v${ORT_GPU_VERSION}/${ORT_GPU_ZIP_NAME}`;
+const ORT_GPU_ZIP_SHA256 =
+  "ef3337a0b8184eb8beec310f7c83bd50376b3eefc43aab84ac8e452f6987df0a";
+const ORT_GPU_ZIP_SIZE = 280958859; // bytes (~268 MB); cheap pre-hash sanity check.
 
 function fail(message, code = 1) {
   console.error(`prepare-ort-dylibs: ${message}`);
@@ -134,8 +167,110 @@ function copyIfChanged(src, dest) {
   return true;
 }
 
+// Streaming sha256 of a file (the GPU zip is ~268 MB — don't slurp it into RAM).
+function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("error", reject);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+// True iff `zipPath` exists and matches the pinned size AND sha256. The size
+// check is a cheap guard so a half-written / wrong file skips the hash entirely.
+async function verifiedZip(zipPath) {
+  if (!existsSync(zipPath)) {
+    return false;
+  }
+  const size = statSync(zipPath).size;
+  if (size !== ORT_GPU_ZIP_SIZE) {
+    console.log(
+      `prepare-ort-dylibs: '${zipPath}' size ${size} != expected ${ORT_GPU_ZIP_SIZE}`,
+    );
+    return false;
+  }
+  const actual = await sha256File(zipPath);
+  if (actual !== ORT_GPU_ZIP_SHA256) {
+    console.log(
+      `prepare-ort-dylibs: '${zipPath}' sha256 ${actual} != expected ${ORT_GPU_ZIP_SHA256}`,
+    );
+    return false;
+  }
+  return true;
+}
+
+// Stream a URL to disk via global fetch (Bun/Node 18+), following redirects
+// (GitHub release assets 302 to a storage CDN).
+async function downloadFile(url, destPath) {
+  const response = await fetch(url, { redirect: "follow" });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  }
+  if (!response.body) {
+    throw new Error("empty response body");
+  }
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(destPath));
+}
+
+// Zero-config default source: provision the pinned GPU ONNX Runtime ourselves.
+// Reuses a verified cached zip when present; otherwise downloads + verifies once
+// into `target/ort-cache/` (gitignored), then extracts the DLLs to a temp dir
+// the caller cleans up. Fails loudly on download error or sha256 mismatch rather
+// than ever staging an unverified runtime.
+async function resolveViaAutoDownload() {
+  const cacheDir = join(repoRoot, "target", "ort-cache");
+  mkdirSync(cacheDir, { recursive: true });
+  const cachedZip = join(cacheDir, ORT_GPU_ZIP_NAME);
+
+  if (await verifiedZip(cachedZip)) {
+    console.log(`prepare-ort-dylibs: using cached GPU ORT redist '${cachedZip}'`);
+  } else {
+    rmSync(cachedZip, { force: true });
+    console.log(
+      `prepare-ort-dylibs: downloading pinned GPU ORT redist (~268 MB, one-time;\n` +
+        `  cached in target/ort-cache/): ${ORT_GPU_ZIP_URL}`,
+    );
+    const tmpZip = `${cachedZip}.${process.pid}.partial`;
+    try {
+      await downloadFile(ORT_GPU_ZIP_URL, tmpZip);
+    } catch (error) {
+      rmSync(tmpZip, { force: true });
+      fail(
+        `failed to download GPU ORT redist from ${ORT_GPU_ZIP_URL}: ${error.message}\n` +
+          `(set MNEMA_ORT_REDIST_ZIP or MNEMA_ORT_DYLIB_DIR to build offline).`,
+      );
+    }
+    if (!(await verifiedZip(tmpZip))) {
+      rmSync(tmpZip, { force: true });
+      fail(
+        `downloaded GPU ORT redist failed verification (size/sha256 mismatch vs the\n` +
+          `pin in this script). Refusing to stage an unverified runtime; if the pin was\n` +
+          `just bumped, recompute ORT_GPU_ZIP_SHA256/SIZE for the new asset.`,
+      );
+    }
+    renameSync(tmpZip, cachedZip);
+    console.log(`prepare-ort-dylibs: downloaded + verified -> '${cachedZip}'`);
+  }
+
+  const extractDir = mkdtempSync(join(tmpdir(), "mnema-ort-gpu-"));
+  // bsdtar (Windows 10+ `tar.exe`) reads .zip natively.
+  const result = spawnSync("tar", ["-xf", cachedZip, "-C", extractDir], {
+    stdio: "inherit",
+  });
+  if (result.status !== 0) {
+    rmSync(extractDir, { recursive: true, force: true });
+    fail(
+      `failed to extract '${cachedZip}' with tar (need bsdtar / Win10+)`,
+      result.status ?? 1,
+    );
+  }
+  return { dlls: collectDlls(extractDir), cleanup: extractDir };
+}
+
 // Resolve the DLL set from the configured source (see precedence in the header).
-function resolveSourceDlls() {
+async function resolveSourceDlls() {
   const dirOverride = process.env.MNEMA_ORT_DYLIB_DIR;
   if (dirOverride) {
     if (!existsSync(join(dirOverride, REQUIRED_DLL))) {
@@ -168,26 +303,8 @@ function resolveSourceDlls() {
     return { dlls: collectDlls(extractDir), cleanup: extractDir };
   }
 
-  // Zero-config default: the in-repo committed MIT ONNX Runtime DLLs.
-  const inRepo = join(srcTauriDir, "resources", "windows");
-  if (existsSync(join(inRepo, REQUIRED_DLL))) {
-    console.log(`prepare-ort-dylibs: sourcing DLLs from in-repo '${inRepo}'`);
-    return { dlls: collectDlls(inRepo), cleanup: null };
-  }
-
-  fail(
-    [
-      `could not locate ${REQUIRED_DLL}. Provide a version-locked (ONNX Runtime >= 1.24)`,
-      "MIT onnxruntime.dll via one of:",
-      "  - set MNEMA_ORT_DYLIB_DIR to a dir containing the ORT DLLs, OR",
-      "  - set MNEMA_ORT_REDIST_ZIP to a Microsoft ONNX Runtime win-x64 .zip",
-      "    (download onnxruntime-win-x64-<ver>.zip — or the -gpu- variant for the",
-      "     CUDA provider DLLs — from",
-      "     https://github.com/microsoft/onnxruntime/releases for a 1.24.x tag), OR",
-      `  - restore apps/desktop/src-tauri/resources/windows/${REQUIRED_DLL}.`,
-    ].join("\n"),
-  );
-  return { dlls: new Map(), cleanup: null }; // unreachable; keeps the type obvious
+  // Zero-config default: auto-download the pinned, sha256-verified GPU redist.
+  return resolveViaAutoDownload();
 }
 
 // Best-effort: also drop the DLLs next to the non-bundled dev/run exe so
@@ -217,7 +334,7 @@ function copyNextToProfileExe(stagedFiles) {
   }
 }
 
-const { dlls, cleanup } = resolveSourceDlls();
+const { dlls, cleanup } = await resolveSourceDlls();
 try {
   if (!dlls.has(REQUIRED_DLL)) {
     fail(`source did not contain ${REQUIRED_DLL}`);
@@ -226,7 +343,7 @@ try {
   for (const name of ORT_DLL_NAMES) {
     const src = dlls.get(name);
     if (!src) {
-      continue; // provider DLLs are optional (absent until Slice 2's GPU source)
+      continue; // provider DLLs optional (a CPU-only env-override source lacks them)
     }
     const dest = join(stagingDir, name);
     const changed = copyIfChanged(src, dest);
