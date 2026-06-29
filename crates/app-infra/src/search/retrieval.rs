@@ -799,3 +799,1038 @@ where
 
     row.map(map_audio_segment_for_search).transpose()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::projection::{insert_search_document, timestamp_plus_ms, NewSearchDocument};
+    use crate::search::test_support::*;
+    use crate::search::{
+        SearchAppRefinement, SearchAppRefinementKind, SearchCaptureRefinements,
+        SearchCaptureRequest,
+    };
+    use crate::{AppInfra, NewAudioSegment, NewFrame, ProcessingJobDraft, ProcessingResultDraft};
+    use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
+
+    #[test]
+    fn search_ranks_body_matches_ahead_of_context_matches() {
+        run_async_test(async {
+            let dir = test_dir("body-context-rank");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let context_match = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-context-rank-a.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some("com.example.Roadmap".to_string()),
+                            app_name: Some("Roadmap".to_string()),
+                            window_title: None,
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("context frame should insert");
+            let body_match = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-context-rank-b.jpg",
+                        "2026-05-17T10:00:01Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some("com.example.Notes".to_string()),
+                            app_name: Some("Notes".to_string()),
+                            window_title: None,
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("body frame should insert");
+
+            let context_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(context_match.id))
+                .await
+                .expect("context job should enqueue");
+            complete_job(
+                &infra,
+                context_job,
+                ProcessingResultDraft::new().with_result_text("ordinary body text"),
+            )
+            .await;
+            let body_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(body_match.id))
+                .await
+                .expect("body job should enqueue");
+            complete_job(
+                &infra,
+                body_job,
+                ProcessingResultDraft::new().with_result_text("roadmap appears in captured text"),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "roadmap".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 2);
+            assert_eq!(response.frames[0].representative_frame.id, body_match.id);
+            assert_eq!(response.frames[1].representative_frame.id, context_match.id);
+        });
+    }
+
+    #[test]
+    fn search_preserves_short_symbol_qualified_terms() {
+        run_async_test(async {
+            let dir = test_dir("short-symbol-query");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-short-symbol.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("C# compiler notes"),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "C#".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn search_has_more_uses_grouped_frame_results() {
+        run_async_test(async {
+            let dir = test_dir("grouped-has-more");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-screen".to_string()),
+                proof: Some(vec![11; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            for index in 0..260 {
+                let frame = infra
+                    .insert_frame(
+                        &NewFrame::new(
+                            "screen-session",
+                            &format!("/tmp/search-grouped-has-more-{index}.jpg"),
+                            &format!("2026-05-17T10:{:02}:{:02}Z", index / 60, index % 60),
+                        )
+                        .with_equivalence(equivalence.clone()),
+                    )
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("collapsed target phrase"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "collapsed".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: Some(0),
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert!(!response.has_more_frames);
+        });
+    }
+
+    #[test]
+    fn search_has_more_uses_grouped_audio_results() {
+        run_async_test(async {
+            let dir = test_dir("grouped-audio-has-more");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-grouped-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:05:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let spans = (0..260)
+                .map(|index| TranscriptionSegment {
+                    start_ms: index * 1_000,
+                    end_ms: index * 1_000 + 500,
+                    text: "collapsed audio target".to_string(),
+                    confidence: None,
+                })
+                .collect::<Vec<_>>();
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: spans,
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("collapsed audio target")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "collapsed".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: Some(0),
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert!(!response.has_more_audio);
+        });
+    }
+
+    #[test]
+    fn frame_search_paginates_beyond_hit_fetch_batch_cap() {
+        run_async_test(async {
+            let dir = test_dir("frame-beyond-hit-cap");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let mut transaction = infra.pool().begin().await.expect("tx should begin");
+            for index in 0..5_006_u64 {
+                let captured_at = timestamp_plus_ms("2026-05-17T10:00:00Z", index * 1_000)
+                    .expect("timestamp should format");
+                let insert = sqlx::query(
+                    "INSERT INTO frames (session_id, file_path, captured_at) VALUES (?1, ?2, ?3)",
+                )
+                .bind("screen-session")
+                .bind(format!("/tmp/search-deep-frame-{index}.jpg"))
+                .bind(&captured_at)
+                .execute(&mut *transaction)
+                .await
+                .expect("frame should insert");
+                let frame_id = insert.last_insert_rowid();
+                insert_search_document(
+                    &mut transaction,
+                    NewSearchDocument {
+                        anchor_type: "frame",
+                        frame_id: Some(frame_id),
+                        audio_segment_id: None,
+                        processing_result_id: None,
+                        span_start_ms: None,
+                        span_end_ms: None,
+                        absolute_start_at: &captured_at,
+                        absolute_end_at: &captured_at,
+                        source_kind: None,
+                        session_id: "screen-session",
+                        app_bundle_id: None,
+                        app_name: None,
+                        app_name_search_key: None,
+                        window_title: None,
+                        group_key: &format!("frame:{frame_id}"),
+                        text_source_kind: "direct",
+                        body_text: "deepframe target",
+                        context_text: "",
+                    },
+                )
+                .await
+                .expect("search document should insert");
+            }
+            transaction.commit().await.expect("tx should commit");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "deepframe".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: Some(5_000),
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 5);
+            assert!(response.has_more_frames);
+        });
+    }
+
+    #[test]
+    fn audio_search_paginates_beyond_hit_fetch_batch_cap() {
+        run_async_test(async {
+            let dir = test_dir("audio-beyond-hit-cap");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-deep-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T14:15:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let mut transaction = infra.pool().begin().await.expect("tx should begin");
+            for index in 0..5_006_u64 {
+                let start_ms = index * 3_000;
+                let end_ms = start_ms + 500;
+                let absolute_start_at = timestamp_plus_ms(&segment.started_at, start_ms)
+                    .expect("start timestamp should format");
+                let absolute_end_at = timestamp_plus_ms(&segment.started_at, end_ms)
+                    .expect("end timestamp should format");
+                insert_search_document(
+                    &mut transaction,
+                    NewSearchDocument {
+                        anchor_type: "audio",
+                        frame_id: None,
+                        audio_segment_id: Some(segment.id),
+                        processing_result_id: None,
+                        span_start_ms: Some(start_ms as i64),
+                        span_end_ms: Some(end_ms as i64),
+                        absolute_start_at: &absolute_start_at,
+                        absolute_end_at: &absolute_end_at,
+                        source_kind: Some(segment.source_kind.as_str()),
+                        session_id: &segment.source_session_id,
+                        app_bundle_id: None,
+                        app_name: None,
+                        app_name_search_key: None,
+                        window_title: None,
+                        group_key: &format!("audio:{}:{index}", segment.id),
+                        text_source_kind: "direct",
+                        body_text: "deepaudio target",
+                        context_text: "",
+                    },
+                )
+                .await
+                .expect("search document should insert");
+            }
+            transaction.commit().await.expect("tx should commit");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "deepaudio".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: Some(5_000),
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 5);
+            assert!(response.has_more_audio);
+        });
+    }
+
+    #[test]
+    fn grouped_audio_search_drains_lower_ranked_bridge_hits_before_paging() {
+        run_async_test(async {
+            let dir = test_dir("audio-bridge-drain");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-bridged-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:30:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let mut transaction = infra.pool().begin().await.expect("tx should begin");
+
+            for (start_ms, end_ms, body_text, context_text) in [
+                (1_000_u64, 1_500_u64, "bridgeword bridgeword bridgeword", ""),
+                (6_000_u64, 6_500_u64, "bridgeword bridgeword bridgeword", ""),
+                (3_500_u64, 4_000_u64, "lower relevance bridge", "bridgeword"),
+            ] {
+                let absolute_start_at = timestamp_plus_ms(&segment.started_at, start_ms)
+                    .expect("start timestamp should format");
+                let absolute_end_at = timestamp_plus_ms(&segment.started_at, end_ms)
+                    .expect("end timestamp should format");
+                insert_search_document(
+                    &mut transaction,
+                    NewSearchDocument {
+                        anchor_type: "audio",
+                        frame_id: None,
+                        audio_segment_id: Some(segment.id),
+                        processing_result_id: None,
+                        span_start_ms: Some(start_ms as i64),
+                        span_end_ms: Some(end_ms as i64),
+                        absolute_start_at: &absolute_start_at,
+                        absolute_end_at: &absolute_end_at,
+                        source_kind: Some(segment.source_kind.as_str()),
+                        session_id: &segment.source_session_id,
+                        app_bundle_id: None,
+                        app_name: None,
+                        app_name_search_key: None,
+                        window_title: None,
+                        group_key: &format!("audio:{}:{start_ms}", segment.id),
+                        text_source_kind: "direct",
+                        body_text,
+                        context_text,
+                    },
+                )
+                .await
+                .expect("bridged search document should insert");
+            }
+
+            for index in 0..248_u64 {
+                let start_ms = 60_000 + index * 3_000;
+                let end_ms = start_ms + 500;
+                let absolute_start_at = timestamp_plus_ms(&segment.started_at, start_ms)
+                    .expect("start timestamp should format");
+                let absolute_end_at = timestamp_plus_ms(&segment.started_at, end_ms)
+                    .expect("end timestamp should format");
+                insert_search_document(
+                    &mut transaction,
+                    NewSearchDocument {
+                        anchor_type: "audio",
+                        frame_id: None,
+                        audio_segment_id: Some(segment.id),
+                        processing_result_id: None,
+                        span_start_ms: Some(start_ms as i64),
+                        span_end_ms: Some(end_ms as i64),
+                        absolute_start_at: &absolute_start_at,
+                        absolute_end_at: &absolute_end_at,
+                        source_kind: Some(segment.source_kind.as_str()),
+                        session_id: &segment.source_session_id,
+                        app_bundle_id: None,
+                        app_name: None,
+                        app_name_search_key: None,
+                        window_title: None,
+                        group_key: &format!("audio:{}:filler-{index}", segment.id),
+                        text_source_kind: "direct",
+                        body_text: "bridgeword",
+                        context_text: "",
+                    },
+                )
+                .await
+                .expect("filler search document should insert");
+            }
+            transaction.commit().await.expect("tx should commit");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "bridgeword".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(2),
+                    audio_offset: Some(0),
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 2);
+            assert_eq!(response.audio[0].span_start_ms, 1_000);
+            assert_eq!(response.audio[0].span_end_ms, 6_500);
+            assert_eq!(response.audio[0].match_count, 3);
+            assert!(response.has_more_audio);
+        });
+    }
+
+    #[test]
+    fn search_pagination_uses_snapshot_document_high_water_mark() {
+        run_async_test(async {
+            let dir = test_dir("pagination-snapshot");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            for (path, captured_at) in [
+                ("/tmp/search-page-a.jpg", "2026-05-17T10:00:00Z"),
+                ("/tmp/search-page-b.jpg", "2026-05-17T10:00:01Z"),
+            ] {
+                let frame = infra
+                    .insert_frame(&NewFrame::new("screen-session", path, captured_at))
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("snapshot target phrase"),
+                )
+                .await;
+            }
+
+            let first_page = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "snapshot".to_string(),
+                    frame_limit: Some(1),
+                    frame_offset: Some(0),
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("first page search should succeed");
+            let first_frame_id = first_page.frames[0].representative_frame.id;
+
+            let newer_frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-page-c.jpg",
+                    "2026-05-17T10:00:02Z",
+                ))
+                .await
+                .expect("newer frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(newer_frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("snapshot target phrase"),
+            )
+            .await;
+
+            let second_page = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "snapshot".to_string(),
+                    frame_limit: Some(1),
+                    frame_offset: Some(1),
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: Some(first_page.snapshot_document_id),
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("second page search should succeed");
+
+            assert_eq!(second_page.frames.len(), 1);
+            assert_ne!(
+                second_page.frames[0].representative_frame.id,
+                first_frame_id
+            );
+            assert_ne!(
+                second_page.frames[0].representative_frame.id,
+                newer_frame.id
+            );
+        });
+    }
+
+    #[test]
+    fn meaning_snippet_collapses_whitespace_and_bounds_length() {
+        let short = meaning_snippet("  hello   world  ");
+        assert_eq!(short, "hello world", "whitespace collapses, no truncation");
+
+        let long_word = "lorem ".repeat(60);
+        let bounded = meaning_snippet(&long_word);
+        assert!(
+            bounded.chars().count() <= MEANING_SNIPPET_CHAR_BUDGET + 1,
+            "excerpt is char-bounded (+1 for the ellipsis)"
+        );
+        assert!(
+            bounded.ends_with('…'),
+            "a truncated excerpt ends with an ellipsis"
+        );
+    }
+
+    #[test]
+    fn rrf_fuses_rank_only_and_dedups_anchors_keeping_the_text_row() {
+        // A: text-only (FTS rank 0). B: in both lists. C: semantic-only.
+        let text = vec![
+            frame_hit_for_fusion(1, "alpha snippet", false),
+            frame_hit_for_fusion(2, "<mark>bravo</mark> keyword", false),
+        ];
+        let semantic = vec![
+            frame_hit_for_fusion(2, "bravo meaning excerpt", true),
+            frame_hit_for_fusion(3, "charlie meaning excerpt", true),
+        ];
+
+        let fused = rrf_fuse_frame_hits(&text, &semantic);
+
+        // Three distinct anchors after dedup, none duplicated.
+        let ids: Vec<i64> = fused.iter().map(|hit| hit.anchor_id).collect();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&1) && ids.contains(&2) && ids.contains(&3));
+
+        // Anchor 2 surfaced in both lists, so it keeps the Text Search row (the
+        // highlighted snippet), not the meaning excerpt.
+        let anchor_two = fused.iter().find(|hit| hit.anchor_id == 2).unwrap();
+        assert!(!anchor_two.found_by_meaning);
+        assert_eq!(anchor_two.snippet, "<mark>bravo</mark> keyword");
+
+        // RRF is rank-only: anchor 2 (in both lists, both near the head) outscores
+        // the single-list anchors, and the fused `rank` is negated so lower wins.
+        let rank_two = anchor_two.rank;
+        let rank_one = fused.iter().find(|hit| hit.anchor_id == 1).unwrap().rank;
+        let rank_three = fused.iter().find(|hit| hit.anchor_id == 3).unwrap().rank;
+        assert!(rank_two < rank_one && rank_two < rank_three);
+    }
+
+    #[test]
+    fn meaning_only_hit_is_fused_with_keyword_hits_and_tagged_found_by_meaning() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-meaning-fused");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // One anchor contains the literal keyword; one is only related by
+            // meaning (no shared term). Both get a vector.
+            let keyword_id =
+                seed_frame_anchor(&infra, "2026-05-17T10:00:00Z", "quarterly budget keyword").await;
+            let meaning_id =
+                seed_frame_anchor(&infra, "2026-05-17T10:05:00Z", "fiscal spending plan").await;
+            infra
+                .semantic_search()
+                .store_vector(keyword_id, &seeded_vector(1))
+                .await
+                .expect("keyword vector stores");
+            infra
+                .semantic_search()
+                .store_vector(meaning_id, &seeded_vector(2))
+                .await
+                .expect("meaning vector stores");
+
+            // The query vector is closest to the meaning anchor; the FTS term
+            // "keyword" only matches the keyword anchor.
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(seeded_vector(2)),
+                })
+                .await
+                .expect("search should succeed");
+
+            // Both surface: the keyword hit via Text Search, the related anchor
+            // via Semantic Search — fused into one list.
+            let frame_ids: Vec<i64> = response
+                .frames
+                .iter()
+                .map(|frame| frame.representative_frame.id)
+                .collect();
+            assert_eq!(response.frames.len(), 2, "keyword + meaning hits fuse");
+
+            // The keyword anchor matched a term, so it is NOT tagged found_by_meaning.
+            let keyword_result = response
+                .frames
+                .iter()
+                .find(|frame| frame.snippet.contains("keyword"))
+                .expect("keyword hit present");
+            assert!(!keyword_result.found_by_meaning);
+
+            // The meaning-only anchor carries a leading body_text excerpt tagged
+            // found_by_meaning (no FTS <mark> to highlight).
+            let meaning_result = response
+                .frames
+                .iter()
+                .find(|frame| frame.found_by_meaning)
+                .expect("a meaning-only hit is present");
+            assert!(meaning_result.snippet.contains("fiscal spending plan"));
+            assert!(!meaning_result.snippet.contains("<mark>"));
+            assert!(frame_ids
+                .iter()
+                .any(|&id| id == keyword_result.thumbnail_frame_id));
+        });
+    }
+
+    #[test]
+    fn meaning_only_audio_hit_is_fused_and_tagged_found_by_meaning() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-audio-meaning");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // One audio anchor contains the literal keyword; one is only related
+            // by meaning (no shared term). Both get a vector.
+            let keyword_id = seed_audio_anchor(
+                &infra,
+                "2026-05-17T10:00:00Z",
+                "2026-05-17T10:00:02Z",
+                "quarterly budget keyword",
+            )
+            .await;
+            let meaning_id = seed_audio_anchor(
+                &infra,
+                "2026-05-17T10:05:00Z",
+                "2026-05-17T10:05:02Z",
+                "fiscal spending plan",
+            )
+            .await;
+            infra
+                .semantic_search()
+                .store_vector(keyword_id, &seeded_vector(1))
+                .await
+                .expect("keyword vector stores");
+            infra
+                .semantic_search()
+                .store_vector(meaning_id, &seeded_vector(2))
+                .await
+                .expect("meaning vector stores");
+
+            // The query vector is closest to the meaning anchor; the FTS term
+            // "keyword" only matches the keyword anchor. With `audio_limit > 0`
+            // this drives `fetch_semantic_audio_hits` — the C1 panic path.
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(10),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(seeded_vector(2)),
+                })
+                .await
+                .expect("search should succeed without panicking");
+
+            // Both surface: the keyword hit via Text Search, the related anchor
+            // via Semantic Search — fused into one audio list.
+            assert_eq!(response.audio.len(), 2, "keyword + meaning audio hits fuse");
+
+            // The keyword anchor matched a term, so it is NOT found_by_meaning.
+            let keyword_result = response
+                .audio
+                .iter()
+                .find(|audio| audio.snippet.contains("keyword"))
+                .expect("keyword audio hit present");
+            assert!(!keyword_result.found_by_meaning);
+
+            // The meaning-only anchor carries a leading body_text excerpt tagged
+            // found_by_meaning (no FTS <mark> to highlight).
+            let meaning_result = response
+                .audio
+                .iter()
+                .find(|audio| audio.found_by_meaning)
+                .expect("a meaning-only audio hit is present");
+            assert!(meaning_result.snippet.contains("fiscal spending plan"));
+            assert!(!meaning_result.snippet.contains("<mark>"));
+        });
+    }
+
+    #[test]
+    fn a_dimension_mismatched_query_degrades_to_keyword_only_not_an_error() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-degrade-keyword");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // A keyword anchor with a correctly-sized stored vector (the live table
+            // is float[768]).
+            let keyword_id =
+                seed_frame_anchor(&infra, "2026-05-17T10:00:00Z", "quarterly budget keyword").await;
+            infra
+                .semantic_search()
+                .store_vector(keyword_id, &seeded_vector(1))
+                .await
+                .expect("keyword vector stores");
+
+            // The query embedding is the WRONG width for the live table (4 dims vs
+            // 768) — exactly the shape an embedder reloaded at a new model emits
+            // before the table is rebuilt, or permanently after a failed rebuild.
+            // The live-dimension guard skips the KNN, and the degrade wrapper fuses
+            // an empty semantic list, so the search stays keyword-only.
+            let wrong_dimension_query = vec![1.0_f32, 0.0, 0.0, 0.0];
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(wrong_dimension_query),
+                })
+                .await
+                .expect("a dimension mismatch degrades to keyword-only, never an Err");
+
+            // The keyword hit still surfaces (degrade, not fail), and nothing is
+            // tagged found_by_meaning because the semantic path was skipped.
+            assert_eq!(response.frames.len(), 1, "the keyword hit still returns");
+            assert!(response.frames[0].snippet.contains("keyword"));
+            assert!(
+                !response.frames.iter().any(|frame| frame.found_by_meaning),
+                "no meaning hits when the semantic fetch is skipped"
+            );
+        });
+    }
+
+    #[test]
+    fn refined_semantic_query_pre_filters_to_the_refinement_scope() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-prefilter");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // The whole point of this test is to distinguish a PRE-filter (rowid IN
+            // scope, applied inside the KNN) from a naive post-filter (rank the top-k
+            // first, drop out-of-scope rows second). With only a couple of anchors,
+            // a post-filter would also pass — the in-scope answer fits inside the
+            // top-`k` window either way. So we crowd the KNN window past
+            // `SEMANTIC_KNN_LIMIT` with out-of-scope anchors that sit *exactly* on
+            // the query vector (L2 distance 0, nearer than anything else). A
+            // post-filter's top-`k` would then be entirely out-of-scope rows and the
+            // in-scope answer would never survive the post-drop. Only the pre-filter
+            // — which excludes those rows before ranking — keeps the in-scope anchor.
+            let out_of_scope_count = (SEMANTIC_KNN_LIMIT as usize) + 5;
+
+            // Seed the in-scope answer first, at a vector slightly off the query
+            // (distance √2). Under a correct pre-filter it is the *only* candidate;
+            // under a post-filter it is rank `out_of_scope_count + 1` and falls
+            // outside the top-`k`, so it would be lost. Its OCR text deliberately
+            // does NOT contain the FTS query term ("meaning"), so it can only surface
+            // via the semantic tier — otherwise FTS would mask a post-filter bug by
+            // matching it on keyword regardless of the KNN.
+            let in_scope_id = seed_frame_anchor_with_app(
+                &infra,
+                "2026-05-17T10:00:00Z",
+                "kept by the refinement scope",
+                "com.example.Keep",
+                "Keep",
+            )
+            .await;
+            infra
+                .semantic_search()
+                .store_vector(in_scope_id, &seeded_vector(6))
+                .await
+                .expect("in-scope vector stores");
+
+            // Seed > SEMANTIC_KNN_LIMIT out-of-scope anchors, every one of them sitting
+            // on the query vector (seed 5, distance 0) so they fully occupy the
+            // KNN's top-`k` window. A post-filter would rank these ahead of the
+            // in-scope anchor and then discard them all, returning nothing in scope.
+            for offset in 0..out_of_scope_count {
+                let captured_at = format!("2026-05-17T11:{:02}:{:02}Z", offset / 60, offset % 60);
+                let out_scope_id = seed_frame_anchor_with_app(
+                    &infra,
+                    &captured_at,
+                    "dropped by scope",
+                    "com.example.Drop",
+                    "Drop",
+                )
+                .await;
+                infra
+                    .semantic_search()
+                    .store_vector(out_scope_id, &seeded_vector(5))
+                    .await
+                    .expect("out-of-scope vector stores");
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "meaning".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: None,
+                        apps: vec![SearchAppRefinement {
+                            kind: SearchAppRefinementKind::BundleId,
+                            value: "com.example.Keep".to_string(),
+                            display_name: "Keep".to_string(),
+                        }],
+                        window_title: None,
+                        audio_sources: Vec::new(),
+                        screen_source: false,
+                    }),
+                    // Query vector exactly on every out-of-scope anchor's vector, so
+                    // a post-filter's top-`k` is all out-of-scope rows.
+                    query_embedding: Some(seeded_vector(5)),
+                })
+                .await
+                .expect("search should succeed");
+
+            // The in-scope anchor survives — it can only be present if the scope was
+            // applied as a PRE-filter, since a post-filter's top-`k` window was
+            // entirely consumed by the out-of-scope anchors crowding the query vector.
+            let ids: Vec<i64> = response
+                .frames
+                .iter()
+                .map(|frame| frame.representative_frame.id)
+                .collect();
+            assert!(
+                !ids.is_empty(),
+                "the in-scope meaning answer survives even though > SEMANTIC_KNN_LIMIT \
+                 out-of-scope anchors crowd the query vector — only a pre-filter keeps it"
+            );
+            for frame in &response.frames {
+                assert_eq!(
+                    frame.app_bundle_id.as_deref(),
+                    Some("com.example.Keep"),
+                    "no out-of-scope anchor leaks past the pre-filter"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn no_vectors_degrades_to_keyword_only_with_no_regression() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-keyword-only");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            seed_frame_anchor(&infra, "2026-05-17T10:00:00Z", "alpha keyword document").await;
+            seed_frame_anchor(&infra, "2026-05-17T10:05:00Z", "unrelated meaning text").await;
+
+            // No vectors backfilled, no query embedding: pure Text Search.
+            let baseline = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            // Exactly the keyword anchor, no found_by_meaning tagging anywhere.
+            assert_eq!(baseline.frames.len(), 1);
+            assert!(baseline.frames[0].snippet.contains("keyword"));
+            assert!(!baseline.frames[0].found_by_meaning);
+
+            // A query embedding present but NO vectors stored: the KNN returns
+            // nothing, so the result is identical to the keyword-only baseline.
+            let with_embedding = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(seeded_vector(9)),
+                })
+                .await
+                .expect("search should succeed");
+            assert_eq!(with_embedding.frames.len(), 1);
+            assert!(!with_embedding.frames[0].found_by_meaning);
+            assert_eq!(
+                with_embedding.frames[0].representative_frame.id,
+                baseline.frames[0].representative_frame.id,
+                "no vectors => identical to keyword-only ranking"
+            );
+        });
+    }
+}

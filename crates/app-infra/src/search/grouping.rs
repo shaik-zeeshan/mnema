@@ -436,3 +436,614 @@ async fn find_aligned_frame(
 
     after.map(map_frame_for_search).transpose()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::test_support::*;
+    use crate::search::SearchCaptureRequest;
+    use crate::{
+        AppInfra, NewAudioSegment, NewCaptureSession, NewFrame, ProcessingJobDraft,
+        ProcessingResultDraft,
+    };
+    use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
+
+    #[test]
+    fn audio_search_alignment_uses_mapped_screen_source_session() {
+        run_async_test(async {
+            let dir = test_dir("audio-screen-alignment");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            infra
+                .capture_retention()
+                .create_capture_session(&NewCaptureSession {
+                    capture_session_id: "capture-session".to_string(),
+                    started_at: "2026-05-17T10:00:00Z".to_string(),
+                    requested_screen: true,
+                    requested_microphone: true,
+                    requested_system_audio: false,
+                    screen_source_session_id: Some("screen-session".to_string()),
+                    microphone_source_session_id: Some("mic-session".to_string()),
+                    system_audio_source_session_id: None,
+                    segment_duration_seconds: 300,
+                })
+                .await
+                .expect("capture session should insert");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-aligned-screen.jpg",
+                    "2026-05-17T10:00:01Z",
+                ))
+                .await
+                .expect("screen frame should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-aligned-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_000,
+                    text: "aligned audio target".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("aligned audio target")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "aligned".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(
+                response.audio[0]
+                    .aligned_frame
+                    .as_ref()
+                    .map(|frame| frame.id),
+                Some(frame.id)
+            );
+        });
+    }
+
+    #[test]
+    fn audio_hits_group_chronologically_before_rank_ordering() {
+        let segment = AudioSegment {
+            id: 7,
+            source_kind: AudioSegmentSourceKind::Microphone,
+            source_session_id: "mic-session".to_string(),
+            segment_index: 1,
+            file_path: "/tmp/audio.m4a".to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: "2026-05-17T10:00:20Z".to_string(),
+            capture_segment_id: None,
+            created_at: "2026-05-17T10:00:00Z".to_string(),
+            updated_at: "2026-05-17T10:00:00Z".to_string(),
+        };
+        let hit = |span_start_ms, span_end_ms, rank| AudioHit {
+            anchor_id: span_start_ms as i64,
+            audio_segment: segment.clone(),
+            source_kind: AudioSegmentSourceKind::Microphone,
+            span_start_ms,
+            span_end_ms,
+            snippet: format!("hit {span_start_ms}"),
+            rank,
+            secret_redaction_count: 0,
+            found_by_meaning: false,
+        };
+
+        let hits = vec![
+            hit(4_000, 4_500, -10.0),
+            hit(1_000, 1_500, -1.0),
+            hit(2_200, 2_500, -5.0),
+        ];
+        let groups = group_audio_hits(&hits).expect("grouping should succeed");
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].span_start_ms, 1_000);
+        assert_eq!(groups[0].span_end_ms, 4_500);
+        assert_eq!(groups[0].match_count, 3);
+    }
+
+    #[test]
+    fn audio_groups_preserve_best_relevance_before_recency() {
+        let segment = AudioSegment {
+            id: 7,
+            source_kind: AudioSegmentSourceKind::Microphone,
+            source_session_id: "mic-session".to_string(),
+            segment_index: 1,
+            file_path: "/tmp/audio.m4a".to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: "2026-05-17T10:00:20Z".to_string(),
+            capture_segment_id: None,
+            created_at: "2026-05-17T10:00:00Z".to_string(),
+            updated_at: "2026-05-17T10:00:00Z".to_string(),
+        };
+        let hit = |span_start_ms, rank| AudioHit {
+            anchor_id: span_start_ms as i64,
+            audio_segment: segment.clone(),
+            source_kind: AudioSegmentSourceKind::Microphone,
+            span_start_ms,
+            span_end_ms: span_start_ms + 500,
+            snippet: format!("hit {span_start_ms}"),
+            rank,
+            secret_redaction_count: 0,
+            found_by_meaning: false,
+        };
+
+        let hits = vec![hit(10_000, -1.0), hit(1_000, -10.0)];
+        let groups = group_audio_hits(&hits).expect("grouping should succeed");
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].span_start_ms, 1_000);
+        assert_eq!(groups[1].span_start_ms, 10_000);
+    }
+
+    #[test]
+    fn frame_groups_preserve_best_relevance_before_recency() {
+        let frame = |id: i64, captured_at: &str| Frame {
+            id,
+            session_id: "screen-session".to_string(),
+            file_path: format!("/tmp/relevance-{id}.jpg"),
+            captured_at: captured_at.to_string(),
+            width: None,
+            height: None,
+            equivalence: crate::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            metadata_snapshot: None,
+            created_at: captured_at.to_string(),
+            updated_at: captured_at.to_string(),
+        };
+        let hit = |id, captured_at, rank| FrameHit {
+            anchor_id: id,
+            group_key: format!("frame:{id}"),
+            frame: frame(id, captured_at),
+            snippet: format!("hit {id}"),
+            rank,
+            app_bundle_id: None,
+            app_name: None,
+            window_title: None,
+            text_source_kind: "direct".to_string(),
+            secret_redaction_count: 0,
+            found_by_meaning: false,
+        };
+
+        let hits = vec![
+            hit(1, "2026-05-17T10:00:00Z", -10.0),
+            hit(2, "2026-05-17T10:10:00Z", -1.0),
+        ];
+        let groups = group_frame_hits(&hits);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].representative_frame.id, 1);
+        assert_eq!(groups[1].representative_frame.id, 2);
+    }
+
+    #[test]
+    fn frame_group_carries_representative_browser_url_read_time() {
+        // Read-time proof: `group_frame_hits` lifts `browser_url` from the
+        // SAME representative frame's metadata snapshot whose id becomes the
+        // result (and opaque) id — no index column, so any historical frame
+        // with a snapshot browser_url is covered for free.
+        let frame_with_url = |id: i64, captured_at: &str, browser_url: Option<&str>| Frame {
+            id,
+            session_id: "screen-session".to_string(),
+            file_path: format!("/tmp/url-{id}.jpg"),
+            captured_at: captured_at.to_string(),
+            width: None,
+            height: None,
+            equivalence: crate::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            metadata_snapshot: browser_url.map(|url| capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.google.Chrome".to_string()),
+                app_name: Some("Google Chrome".to_string()),
+                window_title: Some("Tab".to_string()),
+                window_id: None,
+                browser_url: Some(url.to_string()),
+                display_id: Some(1),
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            }),
+            created_at: captured_at.to_string(),
+            updated_at: captured_at.to_string(),
+        };
+        let hit = |id, captured_at, browser_url| FrameHit {
+            anchor_id: id,
+            group_key: format!("frame:{id}"),
+            frame: frame_with_url(id, captured_at, browser_url),
+            snippet: format!("hit {id}"),
+            rank: -1.0,
+            app_bundle_id: None,
+            app_name: None,
+            window_title: None,
+            text_source_kind: "direct".to_string(),
+            secret_redaction_count: 0,
+            found_by_meaning: false,
+        };
+
+        // With no equivalence proof, each distinct frame is its own group; the
+        // representative IS the single hit, so its snapshot browser_url surfaces
+        // raw on the result (the broker boundary guards it, not search).
+        let groups = group_frame_hits(&[
+            hit(
+                1,
+                "2026-05-17T10:10:00Z",
+                Some("https://github.com/owner/repo/commit/9fceb02d8f1c"),
+            ),
+            // A frame with no snapshot browser_url -> result browser_url is None.
+            hit(2, "2026-05-17T10:00:00Z", None),
+        ]);
+        let by_id = |id: i64| {
+            groups
+                .iter()
+                .find(|group| group.representative_frame.id == id)
+                .expect("group should exist")
+        };
+        assert_eq!(
+            by_id(1).browser_url.as_deref(),
+            Some("https://github.com/owner/repo/commit/9fceb02d8f1c"),
+            "browser_url comes from the representative frame's snapshot, raw"
+        );
+        assert_eq!(by_id(2).browser_url, None);
+    }
+
+    #[test]
+    fn audio_search_aligns_to_near_earlier_frame() {
+        run_async_test(async {
+            let dir = test_dir("audio-alignment-near-earlier");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "shared-session",
+                    "/tmp/alignment-near-frame.jpg",
+                    "2026-05-17T10:00:56Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "shared-session",
+                    1,
+                    "/tmp/search-audio-alignment-near.m4a",
+                    "2026-05-17T10:01:00Z",
+                    "2026-05-17T10:01:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_500,
+                    text: "alignment target phrase".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("alignment target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "alignment".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(
+                response.audio[0]
+                    .aligned_frame
+                    .as_ref()
+                    .map(|frame| frame.id),
+                Some(frame.id)
+            );
+        });
+    }
+
+    #[test]
+    fn audio_search_does_not_align_stale_earlier_frame() {
+        run_async_test(async {
+            let dir = test_dir("audio-alignment-stale-earlier");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            infra
+                .insert_frame(&NewFrame::new(
+                    "shared-session",
+                    "/tmp/alignment-frame.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "shared-session",
+                    1,
+                    "/tmp/search-audio-alignment.m4a",
+                    "2026-05-17T10:01:00Z",
+                    "2026-05-17T10:01:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_500,
+                    text: "alignment target phrase".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("alignment target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "alignment".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(
+                response.audio[0]
+                    .aligned_frame
+                    .as_ref()
+                    .map(|frame| frame.id),
+                None
+            );
+        });
+    }
+
+    #[test]
+    fn frame_search_does_not_group_same_hint_with_different_proofs() {
+        run_async_test(async {
+            let dir = test_dir("frame-proof-grouping");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            for (path, proof) in [
+                ("/tmp/search-proof-a.jpg", vec![0; 1024]),
+                ("/tmp/search-proof-b.jpg", vec![255; 1024]),
+            ] {
+                let frame = infra
+                    .insert_frame(
+                        &NewFrame::new("screen-session", path, "2026-05-17T10:00:00Z")
+                            .with_equivalence(crate::FrameEquivalence {
+                                hint: Some("same-hint".to_string()),
+                                proof: Some(proof),
+                                version: Some(1),
+                                status: Some(crate::FrameEquivalenceStatus::Ready),
+                                error: None,
+                            }),
+                    )
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("proof target phrase"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "proof".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 2);
+            let mut group_keys = response
+                .frames
+                .iter()
+                .map(|frame| frame.group_key.as_str())
+                .collect::<Vec<_>>();
+            group_keys.sort_unstable();
+            group_keys.dedup();
+            assert_eq!(group_keys.len(), 2);
+            assert_eq!(
+                response
+                    .frames
+                    .iter()
+                    .map(|frame| frame.match_count)
+                    .collect::<Vec<_>>(),
+                vec![1, 1]
+            );
+        });
+    }
+
+    #[test]
+    fn frame_search_does_not_group_equivalent_proofs_across_hidden_workspaces() {
+        run_async_test(async {
+            let dir = test_dir("frame-hidden-workspace-grouping");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-hidden-proof".to_string()),
+                proof: Some(vec![31; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+
+            for (index, segment) in ["0001", "0002"].into_iter().enumerate() {
+                let frame_path = dir
+                    .join(format!(
+                        "recordings/2026/05/17/.screen-session-segment-{segment}/frames/frame-1.jpg"
+                    ))
+                    .to_string_lossy()
+                    .to_string();
+                let frame = infra
+                    .insert_frame(
+                        &NewFrame::new(
+                            "screen-session",
+                            &frame_path,
+                            &format!("2026-05-17T10:00:0{index}Z"),
+                        )
+                        .with_equivalence(equivalence.clone()),
+                    )
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("hidden scope phrase"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "hidden".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 2);
+            let mut group_keys = response
+                .frames
+                .iter()
+                .map(|frame| frame.group_key.as_str())
+                .collect::<Vec<_>>();
+            group_keys.sort_unstable();
+            group_keys.dedup();
+            assert_eq!(group_keys.len(), 2);
+            assert_eq!(
+                response
+                    .frames
+                    .iter()
+                    .map(|frame| frame.match_count)
+                    .collect::<Vec<_>>(),
+                vec![1, 1]
+            );
+        });
+    }
+}
