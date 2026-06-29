@@ -685,7 +685,7 @@
     background: var(--app-surface);
     border: 1px solid var(--app-border-strong);
     border-radius: 6px;
-    box-shadow: 0 10px 32px -8px rgba(0, 0, 0, 0.55);
+    box-shadow: var(--app-shadow-popover);
     color: var(--app-text);
   }
   .timeline__picker-head {

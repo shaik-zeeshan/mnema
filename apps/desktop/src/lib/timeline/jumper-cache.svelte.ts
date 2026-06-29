@@ -64,6 +64,11 @@ export function createJumperCache(): JumperCache {
   let summariesByDate = $state<Map<DateKey, FrameSummaryDto[]>>(new Map());
   let loadedMonths = $state<Set<MonthKey>>(new Set());
   let staleMonths = $state<Set<MonthKey>>(new Set());
+  // Per-month invalidation epoch. Bumped by every invalidation (even for a month
+  // already stale) so a fetch in flight can detect that frames landed mid-flight
+  // — `load()` captures the epoch before its first await and, on success, keeps
+  // the month stale if the epoch advanced so a fresh fetch re-runs.
+  let monthEpochs = $state<Map<MonthKey, number>>(new Map());
   // In-flight month fetches. Dedupes concurrent revalidations triggered by the
   // picker effect, manual refresh, and head poll all racing the same month.
   const monthsInFlight = new Set<MonthKey>();
@@ -79,6 +84,11 @@ export function createJumperCache(): JumperCache {
     // the one that swaps the data in.
     if (monthsInFlight.has(key)) return;
     monthsInFlight.add(key);
+    // Snapshot the month's invalidation epoch before the first await. If frames
+    // for this month arrive mid-flight, invalidateMonths* bumps the epoch; on
+    // success we compare and keep the month stale so it revalidates (the
+    // in-flight response predates those frames).
+    const startEpoch = monthEpochs.get(key) ?? 0;
     // Only show the spinner when there's nothing to render yet. Stale
     // revalidations happen quietly.
     const isFirstLoad = !loadedMonths.has(key);
@@ -120,7 +130,16 @@ export function createJumperCache(): JumperCache {
         nextMonths.add(key);
         loadedMonths = nextMonths;
       }
-      if (staleMonths.has(key)) {
+      // Re-evaluate staleness against the epoch captured at fetch start. If it
+      // advanced, frames landed while this fetch was in flight — keep the month
+      // stale (reassigning to re-trigger the load effect) so a fresh fetch runs
+      // once monthsInFlight clears below. Otherwise clear the stale flag.
+      const epochAdvanced = (monthEpochs.get(key) ?? 0) !== startEpoch;
+      if (epochAdvanced) {
+        const nextStale = new Set(staleMonths);
+        nextStale.add(key);
+        staleMonths = nextStale;
+      } else if (staleMonths.has(key)) {
         const nextStale = new Set(staleMonths);
         nextStale.delete(key);
         staleMonths = nextStale;
@@ -151,22 +170,31 @@ export function createJumperCache(): JumperCache {
       affectedMonths.add(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
     }
     if (affectedMonths.size === 0) return;
-    let changed = false;
-    const next = new Set(staleMonths);
+    // Bump each affected month's epoch unconditionally — even one already stale
+    // — so an in-flight fetch notices frames arrived mid-flight and re-runs.
+    // Mark stale so the load effect picks the month up.
+    const nextEpochs = new Map(monthEpochs);
+    const nextStale = new Set(staleMonths);
     for (const m of affectedMonths) {
-      if (!next.has(m)) {
-        next.add(m);
-        changed = true;
-      }
+      nextEpochs.set(m, (nextEpochs.get(m) ?? 0) + 1);
+      nextStale.add(m);
     }
-    if (changed) staleMonths = next;
+    monthEpochs = nextEpochs;
+    staleMonths = nextStale;
   }
 
   function invalidateAllLoadedMonths(): void {
     if (loadedMonths.size === 0) return;
-    const next = new Set(staleMonths);
-    for (const month of loadedMonths) next.add(month);
-    staleMonths = next;
+    // Same epoch bump as invalidateMonthsForFrames so a month being fetched
+    // right now is re-fetched rather than left displaying pre-invalidation rows.
+    const nextEpochs = new Map(monthEpochs);
+    const nextStale = new Set(staleMonths);
+    for (const month of loadedMonths) {
+      nextEpochs.set(month, (nextEpochs.get(month) ?? 0) + 1);
+      nextStale.add(month);
+    }
+    monthEpochs = nextEpochs;
+    staleMonths = nextStale;
   }
 
   return {
