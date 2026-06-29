@@ -1035,6 +1035,14 @@
     pendingDismiss = next;
   }
 
+  // Belt-and-braces: clear any pending dismiss-undo timers on unmount so a
+  // queued `commitDismiss` can't fire (and invoke) after the component is gone
+  // — same class as the autosave-timer leak fixed elsewhere this branch. Only
+  // the teardown reads `pendingDismiss`, so this effect never re-runs.
+  $effect(() => () => {
+    for (const timer of pendingDismiss.values()) clearTimeout(timer);
+  });
+
   function undoDismiss(c: Conclusion): void {
     const timer = pendingDismiss.get(c.id);
     if (timer !== undefined) clearTimeout(timer);
