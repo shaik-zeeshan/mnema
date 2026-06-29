@@ -3845,6 +3845,20 @@ where
         return Ok(false);
     }
 
+    // A display-reconfiguration callback fires for *any* display change
+    // (resolution/SetMode, monitor connect/Add, set-main), not only a wake, and
+    // `NSWorkspaceDidWake` fires alongside it — so this path can be entered while
+    // the screen is still capturing normally. Recovering an already-live session
+    // would tear it down and rotate the segment (a spurious mid-recording boundary
+    // and a brief capture gap), and a second wake callback would re-rotate the
+    // segment the first just started. If the screen session is already live there
+    // is nothing to recover — this is the `!session_is_live` idempotency the wake
+    // callbacks document but never enforced on this path (the legitimate
+    // post-sleep path clears `active_screen_session`, so it still proceeds).
+    if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
+        return Ok(false);
+    }
+
     let Some(screen_planner) = screen_planner_for_runtime(runtime).cloned() else {
         return Err(CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
