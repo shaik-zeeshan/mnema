@@ -10,7 +10,7 @@ use super::output::{
 #[cfg(target_os = "macos")]
 use super::privacy;
 use super::settings::compute_effective_screen_bitrate_bps;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::disk_space;
 use capture_microphone as microphone_capture;
 use capture_runtime::{
@@ -25,13 +25,13 @@ use capture_types::{
 #[cfg(target_os = "macos")]
 use capture_vad::MicrophoneVadRuntime;
 use std::path::Path;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::time::Instant;
 use tauri::Manager;
 use time::format_description::well_known::Rfc3339;
@@ -51,13 +51,14 @@ use super::runtime::{
 #[cfg(target_os = "macos")]
 use super::runtime::{
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
-    screen_planner_for_runtime, should_recover_from_segment_finalize_error,
+    should_recover_from_segment_finalize_error,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use super::runtime::screen_planner_for_runtime;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use super::runtime::{CaptureSuspension, CaptureSuspensionKind};
 #[cfg(target_os = "macos")]
-use super::runtime::{
-    privacy_suspended_sources_for_runtime_state, CaptureSuspension, CaptureSuspensionKind,
-    CaptureSuspensionStatus,
-};
+use super::runtime::{privacy_suspended_sources_for_runtime_state, CaptureSuspensionStatus};
 use super::NativeCaptureState;
 
 // Keep frame artifact persistence off the capture callback thread while bounding
@@ -77,23 +78,23 @@ const DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL: Duration = Duration::from_secs(2);
 // throttle recovery attempts to this cadence. Disk recovers far more slowly than
 // a display waking, so re-probing every ~10s (vs the 2s display cadence) is plenty
 // responsive without spinning `statvfs` on every 1s poll.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const LOW_DISK_RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
 // Stable id for the low-disk suspension warning notification, pushed when a
 // Low-Disk Suspension is entered and cleared on resume.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const LOW_DISK_NOTIFICATION_ID: &str = "capture_low_disk";
 // Stable id for the disk-full graceful-stop ERROR notification, pushed when free
 // space drops below the critical floor and the session stops to protect the
 // app's own storage (ADR 0040). Distinct from the suspend warning so the two can
 // coexist in the cleared-on-resume vs persistent-stop lifecycles.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const DISK_FULL_STOPPED_NOTIFICATION_ID: &str = "capture_disk_full_stopped";
 // The exact user-facing graceful-stop message (ADR 0040 surfacing).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const DISK_FULL_STOPPED_MESSAGE: &str = "Recording stopped — disk full.";
 // The graceful-stop notification title.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const DISK_FULL_STOPPED_TITLE: &str = "Recording stopped — disk full";
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -854,11 +855,16 @@ fn capture_session_options(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivacySuspensionRecoveryOutcome {
     NotSuspended,
     RetryPending,
+    // A privacy-filter suspension that exhausts its retry budget escalates to a
+    // manual restart. macOS-only: Windows has no privacy-filter/display suspension
+    // (only `LowDisk`, which never escalates), so the shared low-disk recovery never
+    // returns this — gated off Windows to keep the variant from reading as dead code.
+    #[cfg(target_os = "macos")]
     RestartRequired,
     Recovered,
 }
@@ -933,7 +939,7 @@ fn active_sources_for_runtime_pause_state(
 /// The next-segment size estimate derived from a running runtime's stored screen
 /// bitrate, segment duration, and requested audio sources. Mirrors the preflight
 /// estimate so the rotation boundary reserves the same amount the preflight did.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn next_segment_estimate_for_runtime(runtime: &NativeCaptureRuntime) -> u64 {
     let bitrate_bps = runtime.effective_screen_bitrate_bps.unwrap_or(0) as u64;
     let (microphone, system_audio) = runtime
@@ -960,7 +966,7 @@ fn next_segment_estimate_for_runtime(runtime: &NativeCaptureRuntime) -> u64 {
 /// measured (no existing ancestor to stat, or the probe errored) — best-effort
 /// semantics, so the caller must not act on `None`. A `Some(decision)` reflects
 /// the measured reading against the next-segment estimate.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn low_disk_decision_at_boundary(
     runtime: &NativeCaptureRuntime,
 ) -> Option<disk_space::LowDiskDecision> {
@@ -973,7 +979,7 @@ pub(super) fn low_disk_decision_at_boundary(
 /// The recordings root the runtime is writing into, recovered from any source
 /// planner (screen/mic/system-audio all share the same recordings root). Used to
 /// probe free space at rotation/recovery time.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn recordings_root_for_runtime(runtime: &NativeCaptureRuntime) -> Option<PathBuf> {
     screen_planner_for_runtime(runtime)
         .or(runtime.microphone_planner.as_ref())
@@ -985,7 +991,7 @@ fn recordings_root_for_runtime(runtime: &NativeCaptureRuntime) -> Option<PathBuf
 /// segment before any file is opened. Best-effort: an unmeasurable reading
 /// (`None`) never blocks the start; only a measured shortfall below the pause
 /// threshold refuses with `insufficient_disk_space`.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn preflight_disk_space_check(
     recordings_root: &Path,
     effective_screen_bitrate_bps: Option<u32>,
@@ -1025,7 +1031,7 @@ pub(super) fn preflight_disk_space_check(
 /// The outcome of a boundary low-disk check: whether the caller should skip
 /// opening the next segment, and if so whether the session has been ended (a
 /// graceful stop, so the loop must stop) or merely suspended (recovery resumes).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LowDiskBoundaryOutcome {
     /// Free space is sufficient (or unmeasurable): open the next segment.
@@ -1049,7 +1055,7 @@ pub(super) enum LowDiskBoundaryOutcome {
 /// - `Critical` (free below the reserve floor): the app's own storage is at risk,
 ///   so stop gracefully (commit the healthy current segment, end the session) and
 ///   return `Stopped`.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn maybe_suspend_for_low_disk_at_boundary(
     app_handle: &tauri::AppHandle,
     runtime: &mut NativeCaptureRuntime,
@@ -1107,7 +1113,7 @@ pub(super) fn maybe_suspend_for_low_disk_at_boundary(
 
 /// Re-measure the raw free bytes at the recordings root for the boundary stop
 /// log. `None` when unmeasurable (the caller substitutes the floor for the log).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn low_disk_free_at_boundary(runtime: &NativeCaptureRuntime) -> Option<u64> {
     let recordings_root = recordings_root_for_runtime(runtime)?;
     disk_space::measure_free_space(&recordings_root, runtime.free_space_probe())
@@ -1449,6 +1455,334 @@ fn finalize_live_microphone_continuation_on_stop(
     runtime.microphone_recording_file = None;
 }
 
+/// Windows all-source low-disk suspend (ADR 0041). Same name/signature as the
+/// macOS [`suspend_screen_system_audio_capture`] so the shared
+/// [`maybe_suspend_for_low_disk_at_boundary`] resolves the right one per platform,
+/// but the body diverges on two Windows specifics:
+///
+/// - **LowDisk lives entirely in `capture_suspension`, never `inactivity`** (ADR
+///   0041 decision 2): the screen is stopped via `stop_screen_capture_session`
+///   *without* `mark_windows_*_paused`, and the mic / system-audio families are
+///   stopped+detached without touching their inactivity flags. This is why it does
+///   not reuse `pause_*_for_inactivity_with_app_handle` (those set inactivity
+///   flags); it reuses only the lower-level finalize/detach + commit primitives.
+/// - **The independent system-audio WASAPI client must be detached** (ADR 0041
+///   decision 3): on Windows system audio is its own `active_system_audio_session`
+///   (ADR 0022), not folded into the screen backend, so it is stopped and detached
+///   via `stop_and_detach_windows_audio_session` — otherwise the loopback client
+///   keeps writing to the full disk, defeating the all-source guarantee.
+///
+/// The healthy in-flight segment is committed (finalize -> validate -> append ->
+/// persist, mirroring the stop path) *before* the sessions are detached, so up to
+/// ~5 min of already-recorded audio/screen is not lost. Recovery (next slice)
+/// recreates every source via `start_windows_active_segment`.
+#[cfg(target_os = "windows")]
+pub(super) fn suspend_screen_system_audio_capture(
+    app_handle: Option<&tauri::AppHandle>,
+    runtime: &mut NativeCaptureRuntime,
+    error: &CaptureErrorResponse,
+    kind: CaptureSuspensionKind,
+) -> Result<(), CaptureErrorResponse> {
+    let mut current_segment_output_files = runtime.current_segment_output_files.clone();
+    let recording_file = runtime.recording_file.clone();
+    let microphone_recording_file = runtime.microphone_recording_file.clone();
+    let system_audio_recording_file = runtime.system_audio_recording_file.clone();
+    let requested_sources = runtime.requested_sources.clone();
+
+    // Thread each finalized audio source's probed duration through to the persist
+    // call so a non-final `.m4a` keeps its real duration (mirrors the stop path's
+    // `stop_known_durations`).
+    let mut suspend_known_durations: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+
+    // Finalize the in-flight microphone segment for commit, then detach. LowDisk is
+    // the only kind that stops the microphone (every source writes to the same full
+    // volume), and recovery recreates it via `start_windows_active_segment`, so the
+    // session must be released rather than kept attached for an in-place resume.
+    if let Some(session) = runtime.active_microphone_session.as_mut() {
+        match session.stop_returning_finalization() {
+            Ok(finalization) => {
+                if let (Some(file), Some(ms)) =
+                    (finalization.output_file.as_deref(), finalization.duration_ms)
+                {
+                    suspend_known_durations.insert(file.to_string(), ms);
+                }
+                apply_windows_microphone_output_finalization(
+                    current_segment_output_files.as_mut(),
+                    &finalization,
+                );
+            }
+            Err(stop_error) => {
+                super::debug_log::log(format!(
+                    "failed to finalize Windows microphone capture while suspending for low disk; continuing suspend: [{}] {}",
+                    stop_error.code, stop_error.message
+                ));
+            }
+        }
+    }
+    stop_and_detach_windows_audio_session(&mut runtime.active_microphone_session);
+
+    // The independent system-audio WASAPI render-loopback client (ADR 0041 decision
+    // 3): finalize its healthy segment for commit, then stop+detach it via the same
+    // leaf the SystemSuspend path uses so it stops writing to the full disk.
+    if let Some(session) = runtime.active_system_audio_session.as_mut() {
+        match session.stop_returning_finalization() {
+            Ok(finalization) => {
+                if let (Some(file), Some(ms)) =
+                    (finalization.output_file.as_deref(), finalization.duration_ms)
+                {
+                    suspend_known_durations.insert(file.to_string(), ms);
+                }
+                apply_windows_system_audio_output_finalization(
+                    current_segment_output_files.as_mut(),
+                    &finalization,
+                );
+            }
+            Err(stop_error) => {
+                super::debug_log::log(format!(
+                    "failed to finalize Windows system-audio capture while suspending for low disk; continuing suspend: [{}] {}",
+                    stop_error.code, stop_error.message
+                ));
+            }
+        }
+    }
+    stop_and_detach_windows_audio_session(&mut runtime.active_system_audio_session);
+
+    // Stop the screen session WITHOUT marking `inactivity.screen_paused` (ADR 0041
+    // decision 2). A preserve-worthy backend stop error aborts the suspend so the
+    // boundary caller can keep the runtime intact and retry, mirroring macOS.
+    //
+    // ORDERING NOTE: the audio stop/commit/detach above intentionally runs BEFORE
+    // this screen stop, which is the reverse of macOS (whose screen-first order
+    // aborts on a preserve-worthy stop error before touching the mic). That is safe
+    // here ONLY because `should_preserve_runtime_on_stop_error` is unconditionally
+    // `false` on Windows (`crates/capture-screen/src/lib.rs` ~`#[cfg(not(macos))]`),
+    // so the `return Err` below is unreachable today and an aborted suspend can never
+    // happen after the audio has been detached. If Windows ever returns a
+    // preserve-worthy screen-stop error, this screen stop (and its early-return
+    // abort) MUST move ABOVE the audio stop/commit/detach — otherwise an aborted
+    // suspend would orphan the just-detached audio sessions with `capture_suspension`
+    // still unset (mirroring the macOS screen-first order).
+    if let Err(stop_error) =
+        capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+            active_session: &mut runtime.active_screen_session,
+            inactivity_tail_trim_seconds: 0,
+        })
+    {
+        if capture_screen::should_preserve_runtime_on_stop_error(&stop_error) {
+            return Err(stop_error);
+        }
+        super::debug_log::log(format!(
+            "Windows screen capture stop reported an issue while suspending for low disk (tolerated): [{}] {}",
+            stop_error.code, stop_error.message
+        ));
+    }
+
+    if let Some(tx) = runtime.frame_artifact_tx.as_ref() {
+        flush_frame_artifacts(tx);
+    }
+
+    // Validate produced outputs (drop unusable ones), append the healthy segment to
+    // the committed list, and persist its audio segment rows — exactly as the stop
+    // path does, so the in-flight segment is not orphaned.
+    if let Err(finalize_error) = finalize_capture_outputs(
+        current_segment_output_files.as_mut(),
+        recording_file.as_deref(),
+        microphone_recording_file.as_deref(),
+        system_audio_recording_file.as_deref(),
+        requested_sources.as_ref(),
+    ) {
+        super::debug_log::log(format!(
+            "Windows capture output finalization reported an issue while suspending for low disk: [{}] {}",
+            finalize_error.code, finalize_error.message
+        ));
+    }
+    append_committed_outputs(runtime, current_segment_output_files.as_ref());
+    persist_committed_audio_segments(
+        app_handle,
+        runtime.source_sessions.as_ref(),
+        runtime.segment_schedule.as_ref(),
+        runtime.current_segment_index,
+        current_segment_output_files.as_ref(),
+        &suspend_known_durations,
+    );
+    warm_scrub_previews_for_committed_screen_outputs(
+        app_handle,
+        current_segment_output_files.as_ref(),
+    );
+
+    // Clear the in-flight segment refs and enter the suspension. `current_segment_sources`
+    // is refreshed from the (untouched) inactivity flags — LowDisk owns no inactivity
+    // state of its own.
+    runtime.recording_file = None;
+    runtime.microphone_recording_file = None;
+    runtime.system_audio_recording_file = None;
+    runtime.current_segment_output_files = None;
+    runtime.capture_suspension = Some(CaptureSuspension::with_kind(kind, error));
+    refresh_windows_current_segment_sources(runtime);
+
+    // Notify on entering a Low-Disk Suspension (unlike the silent transient-liveness
+    // cases): low disk only heals once the user frees space.
+    if kind == CaptureSuspensionKind::LowDisk {
+        if let Some(app_handle) = app_handle {
+            super::push_warning_app_notification(
+                app_handle,
+                LOW_DISK_NOTIFICATION_ID,
+                "Capture paused — low disk space",
+                "Capture paused — low disk space. Free up space and recording resumes automatically.",
+                None,
+                now_unix_ms(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Windows graceful stop when free space has fallen below the critical reserve
+/// floor (ADR 0040 "Graceful stop is spatial"; ADR 0041 decision 1). Same
+/// signature as the macOS [`graceful_stop_for_low_disk`].
+///
+/// `commit_current_segment` controls whether the healthy in-flight segment is
+/// clean-finalized first: a boundary/recovery stop has one to commit (only the
+/// *next* file can't be opened), whereas a mid-segment write-failure stop already
+/// discarded its partial and passes `false`. The commit mirrors the Windows stop
+/// path (finalize -> validate -> append -> persist) across screen + microphone +
+/// the independent system-audio client.
+///
+/// Ends via [`mark_runtime_session_stopped`] (the Windows stop teardown), which
+/// detaches every source and clears the suspension slot, then replaces the
+/// (cleared-on-resume) low-disk warning with the persistent `error`-severity
+/// "Recording stopped — disk full." notification.
+#[cfg(target_os = "windows")]
+pub(super) fn graceful_stop_for_low_disk(
+    app_handle: Option<&tauri::AppHandle>,
+    runtime: &mut NativeCaptureRuntime,
+    free_bytes: u64,
+    commit_current_segment: bool,
+) {
+    if commit_current_segment {
+        let mut current_segment_output_files = runtime.current_segment_output_files.clone();
+        let recording_file = runtime.recording_file.clone();
+        let microphone_recording_file = runtime.microphone_recording_file.clone();
+        let system_audio_recording_file = runtime.system_audio_recording_file.clone();
+        let requested_sources = runtime.requested_sources.clone();
+        let mut stop_known_durations: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+
+        if let Some(session) = runtime.active_microphone_session.as_mut() {
+            match session.stop_returning_finalization() {
+                Ok(finalization) => {
+                    if let (Some(file), Some(ms)) =
+                        (finalization.output_file.as_deref(), finalization.duration_ms)
+                    {
+                        stop_known_durations.insert(file.to_string(), ms);
+                    }
+                    apply_windows_microphone_output_finalization(
+                        current_segment_output_files.as_mut(),
+                        &finalization,
+                    );
+                }
+                Err(error) => super::debug_log::log(format!(
+                    "failed to finalize Windows microphone capture during low-disk graceful stop; continuing stop: [{}] {}",
+                    error.code, error.message
+                )),
+            }
+        }
+        runtime.active_microphone_session = None;
+
+        if let Some(session) = runtime.active_system_audio_session.as_mut() {
+            match session.stop_returning_finalization() {
+                Ok(finalization) => {
+                    if let (Some(file), Some(ms)) =
+                        (finalization.output_file.as_deref(), finalization.duration_ms)
+                    {
+                        stop_known_durations.insert(file.to_string(), ms);
+                    }
+                    apply_windows_system_audio_output_finalization(
+                        current_segment_output_files.as_mut(),
+                        &finalization,
+                    );
+                }
+                Err(error) => super::debug_log::log(format!(
+                    "failed to finalize Windows system-audio capture during low-disk graceful stop; continuing stop: [{}] {}",
+                    error.code, error.message
+                )),
+            }
+        }
+        runtime.active_system_audio_session = None;
+
+        if let Err(error) =
+            capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+                active_session: &mut runtime.active_screen_session,
+                inactivity_tail_trim_seconds: 0,
+            })
+        {
+            super::debug_log::log(format!(
+                "failed stopping Windows screen session during low-disk graceful stop; continuing: [{}] {}",
+                error.code, error.message
+            ));
+        }
+
+        if let Some(tx) = runtime.frame_artifact_tx.as_ref() {
+            flush_frame_artifacts(tx);
+        }
+
+        if let Err(error) = finalize_capture_outputs(
+            current_segment_output_files.as_mut(),
+            recording_file.as_deref(),
+            microphone_recording_file.as_deref(),
+            system_audio_recording_file.as_deref(),
+            requested_sources.as_ref(),
+        ) {
+            super::debug_log::log(format!(
+                "Windows capture output finalization reported an issue during low-disk graceful stop: [{}] {}",
+                error.code, error.message
+            ));
+        }
+        append_committed_outputs(runtime, current_segment_output_files.as_ref());
+        persist_committed_audio_segments(
+            app_handle,
+            runtime.source_sessions.as_ref(),
+            runtime.segment_schedule.as_ref(),
+            runtime.current_segment_index,
+            current_segment_output_files.as_ref(),
+            &stop_known_durations,
+        );
+        warm_scrub_previews_for_committed_screen_outputs(
+            app_handle,
+            current_segment_output_files.as_ref(),
+        );
+    }
+
+    // Stop every remaining live source so no writer keeps a file open as we end.
+    stop_active_sessions_after_failure(runtime);
+
+    // End the session: detaches all sources, clears the suspension slot, and returns
+    // the controller to Idle (the Windows stop teardown).
+    super::runtime::mark_runtime_session_stopped(runtime);
+
+    if let Some(app_handle) = app_handle {
+        // Replace the (transient, cleared-on-resume) low-disk warning with the
+        // persistent graceful-stop error: capture has stopped, not paused.
+        super::clear_app_notification_by_id(app_handle, LOW_DISK_NOTIFICATION_ID);
+        super::push_error_app_notification(
+            app_handle,
+            DISK_FULL_STOPPED_NOTIFICATION_ID,
+            DISK_FULL_STOPPED_TITLE,
+            DISK_FULL_STOPPED_MESSAGE,
+            None,
+            now_unix_ms(),
+        );
+    }
+
+    super::debug_log::log(format!(
+        "capture stopped: recordings volume free space fell below the critical reserve floor; ending session to protect app storage ({} free, floor {})",
+        disk_space::human_bytes(free_bytes),
+        disk_space::human_bytes(disk_space::critical_threshold_bytes()),
+    ));
+}
+
 /// Best-effort discard of a mid-segment partial that failed to write because the
 /// disk filled (ADR 0040 "Mid-segment disk-full → no corrupt segment"). There is
 /// no temp-file-then-atomic-rename, so the writer leaves a corrupt/partial file at
@@ -1459,7 +1793,7 @@ fn finalize_live_microphone_continuation_on_stop(
 /// Returns `false` to signal "no segment row committed" so a caller can treat the
 /// rotation's `previous_segment_committed` flag uniformly. Pure I/O over the paths
 /// it is given, so it is unit-testable without a real full disk.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn discard_partial_segment_on_disk_full(
     output_files: Option<&CaptureOutputFiles>,
     recording_file: Option<&str>,
@@ -1518,7 +1852,7 @@ pub(super) fn discard_partial_segment_on_disk_full(
 /// Best-effort: an unmeasurable probe returns `None` so an unrelated write
 /// failure on a healthy-but-unstatable volume still falls back to existing
 /// behavior and is never forced into a stop.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn classify_write_failure_disk_full(
     runtime: &NativeCaptureRuntime,
 ) -> Option<(disk_space::LowDiskDecision, u64)> {
@@ -1536,7 +1870,7 @@ pub(super) fn classify_write_failure_disk_full(
 }
 
 /// What a mid-segment writer failure resolved to once free space was re-probed.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WriteFailureDiskFullOutcome {
     /// The failure did not coincide with low free space (healthy or unmeasurable
@@ -1661,6 +1995,134 @@ fn enter_low_disk_suspension_after_partial_discard(
         None,
         now_unix_ms(),
     );
+}
+
+/// Windows mid-segment disk-full backstop (ADR 0040 "Mid-segment disk-full → no
+/// corrupt segment"; ADR 0041 "MF ordering"). Same contract as the macOS
+/// [`handle_mid_segment_write_failure_for_low_disk`], but the stop/discard order is
+/// **reversed**: on Windows the Media Foundation / WASAPI sink holds the segment's
+/// output-file handle open until the session is stopped, so the sessions must be
+/// stopped FIRST to release the handle, and only THEN can the partial be deleted at
+/// its final path (macOS has no such lock, so it discards first). If a file is still
+/// locked when discarded — e.g. a backend that defers its handle release — the
+/// retention tombstone + `retry_pending_file_tombstones` is the existing backstop
+/// (covered by `cleanup_records_tombstone_when_media_file_is_locked_then_retry_succeeds`
+/// in `capture_retention.rs`); no parallel tombstone path is built here.
+///
+/// Takes `Option<&tauri::AppHandle>` (unlike the macOS `&tauri::AppHandle`) so the
+/// notification path no-ops with `None` and the handler is unit-testable, matching
+/// the sibling Windows low-disk entries `suspend_screen_system_audio_capture` and
+/// `graceful_stop_for_low_disk`. The lifecycle tick passes `Some(app_handle)`.
+#[cfg(target_os = "windows")]
+pub(super) fn handle_mid_segment_write_failure_for_low_disk(
+    app_handle: Option<&tauri::AppHandle>,
+    runtime: &mut NativeCaptureRuntime,
+    output_files: Option<&CaptureOutputFiles>,
+    recording_file: Option<&str>,
+    microphone_recording_file: Option<&str>,
+    system_audio_recording_file: Option<&str>,
+) -> WriteFailureDiskFullOutcome {
+    let Some((decision, free)) = classify_write_failure_disk_full(runtime) else {
+        // Healthy or unmeasurable disk: not a disk-full failure — leave the
+        // existing failure behavior intact.
+        return WriteFailureDiskFullOutcome::NotDiskFull;
+    };
+
+    // Windows ordering (ADR 0041 "MF ordering"): stop every live source FIRST so the
+    // Media Foundation / WASAPI sink releases the segment's output-file handle, THEN
+    // discard the partial at its final path(s) — the reverse of the macOS order.
+    // Discarding while the handle is still held would hit a sharing violation and
+    // leave the corrupt file behind (caught only by the retention tombstone retry).
+    stop_active_sessions_after_failure(runtime);
+    let _committed = discard_partial_segment_on_disk_full(
+        output_files,
+        recording_file,
+        microphone_recording_file,
+        system_audio_recording_file,
+    );
+
+    match decision {
+        // Below the reserve floor: stop gracefully. The partial was already
+        // discarded, so do not re-commit a current segment.
+        disk_space::LowDiskDecision::Critical => {
+            graceful_stop_for_low_disk(app_handle, runtime, free, false);
+            super::debug_log::log(format!(
+                "mid-segment disk-full below the reserve floor; discarded the partial and stopped gracefully ({} free)",
+                disk_space::human_bytes(free)
+            ));
+            WriteFailureDiskFullOutcome::Stopped
+        }
+        // At/above the floor: discard the partial and enter the Low-Disk
+        // Suspension so recovery resumes once free space returns.
+        disk_space::LowDiskDecision::Pause => {
+            enter_low_disk_suspension_after_partial_discard(app_handle, runtime);
+            super::debug_log::log(format!(
+                "mid-segment disk-full; discarded the partial and suspended all sources until free space recovers ({} free)",
+                disk_space::human_bytes(free)
+            ));
+            WriteFailureDiskFullOutcome::Suspended
+        }
+        disk_space::LowDiskDecision::Sufficient => {
+            // Unreachable: classify_write_failure_disk_full returns None for
+            // Sufficient. Kept total for safety — fall back to existing behavior.
+            WriteFailureDiskFullOutcome::NotDiskFull
+        }
+    }
+}
+
+/// Windows variant of [`enter_low_disk_suspension_after_partial_discard`]. The
+/// mid-segment partial has already been discarded and every source already stopped
+/// (the Windows handler stops before discarding to release the MF/WASAPI handle), so
+/// this only clears the in-flight refs, masks the current sources, sets the LowDisk
+/// suspension, and pushes the low-disk warning. Unlike
+/// [`suspend_screen_system_audio_capture`], it does NOT try to commit the in-flight
+/// (failed) segment — its writers are broken and its partial was deleted. Recovery
+/// (`resume_all_sources_after_low_disk`) starts a fresh segment, so no live segment
+/// state is needed to resume.
+#[cfg(target_os = "windows")]
+fn enter_low_disk_suspension_after_partial_discard(
+    app_handle: Option<&tauri::AppHandle>,
+    runtime: &mut NativeCaptureRuntime,
+) {
+    runtime.active_microphone_session = None;
+    runtime.active_system_audio_session = None;
+    runtime.microphone_recording_file = None;
+    runtime.recording_file = None;
+    runtime.system_audio_recording_file = None;
+    runtime.current_segment_output_files = None;
+
+    let estimate = next_segment_estimate_for_runtime(runtime);
+    let pause_threshold = disk_space::pause_threshold_bytes(estimate);
+    let error = CaptureErrorResponse {
+        code: LOW_DISK_NOTIFICATION_ID.to_string(),
+        message: format!(
+            "Capture paused: recordings volume filled mid-segment (need ~{} to open the next segment).",
+            disk_space::human_bytes(pause_threshold)
+        ),
+    };
+    runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+        CaptureSuspensionKind::LowDisk,
+        &error,
+    ));
+    // `current_segment_sources_for_runtime` masks ALL sources to `None` while a
+    // Low-Disk Suspension holds them (it reads `capture_suspension.is_some()`), so the
+    // stored `current_segment_sources` is refreshed from the (untouched) inactivity
+    // flags exactly as the boundary suspend does — LowDisk owns no inactivity state of
+    // its own.
+    refresh_windows_current_segment_sources(runtime);
+
+    // Notify on entering a Low-Disk Suspension (unlike the silent transient-liveness
+    // cases): low disk only heals once the user frees space.
+    if let Some(app_handle) = app_handle {
+        super::push_warning_app_notification(
+            app_handle,
+            LOW_DISK_NOTIFICATION_ID,
+            "Capture paused — low disk space",
+            "Capture paused — low disk space. Free up space and recording resumes automatically.",
+            None,
+            now_unix_ms(),
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1822,7 +2284,7 @@ fn attempt_privacy_suspension_recovery(
 /// the injected probe — the testable resume-decision seam mirroring the gate in
 /// [`attempt_low_disk_recovery`] (which inlines the same `disk_space` primitives
 /// because it also needs the measured free bytes for classify + logging).
-#[cfg(all(target_os = "macos", test))]
+#[cfg(all(any(target_os = "macos", target_os = "windows"), test))]
 pub(super) fn low_disk_can_resume(runtime: &NativeCaptureRuntime) -> Option<bool> {
     let recordings_root = recordings_root_for_runtime(runtime)?;
     let free = disk_space::measure_free_space(&recordings_root, runtime.free_space_probe())?;
@@ -1834,7 +2296,15 @@ pub(super) fn low_disk_can_resume(runtime: &NativeCaptureRuntime) -> Option<bool
 /// free space and, once it has recovered to the resume threshold, restarts a
 /// fresh segment across all suspended sources — including the microphone, which
 /// only LowDisk stops. Otherwise it stays suspended and keeps retrying.
-#[cfg(target_os = "macos")]
+///
+/// Platform-neutral: every primitive it touches (`recordings_root_for_runtime`,
+/// the `disk_space` thresholds, `graceful_stop_for_low_disk`,
+/// `resume_all_sources_after_low_disk`, `clear_app_notification_by_id`) has a
+/// Windows version with the same name/signature, so the body is shared. On Windows
+/// the segment loop calls this directly (there is no privacy-filter/display
+/// suspension dispatcher to route through — DPMS/lock/sleep ride the inactivity
+/// path), while on macOS it is reached via `attempt_privacy_suspension_recovery`.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn attempt_low_disk_recovery(
     app_handle: &tauri::AppHandle,
     runtime: &mut NativeCaptureRuntime,
@@ -2035,6 +2505,73 @@ fn resume_all_sources_after_low_disk(
     }
 
     Ok(())
+}
+
+/// The sources a Windows low-disk recovery should recreate. The three
+/// `!is_*_paused()` guards (here folded into the canonical
+/// [`active_sources_for_inactivity_paused_state`], which also encodes Windows'
+/// source independence) are the LowDisk↔inactivity precedence hand-off (ADR 0041
+/// decision 2): a screen independently paused for DPMS/lock/sleep is NOT restarted
+/// here — that hold is owned by the inactivity store and resumes via its own
+/// display-present/display-on path — while the microphone and the *independent*
+/// system-audio WASAPI client (ADR 0022) resume regardless of the screen's DPMS
+/// state. Returns an all-false set when requested sources are missing (recovery
+/// then recreates nothing and the caller clears the marker, handing any still-held
+/// source off to the inactivity driver). Extracted so the selection is unit-testable
+/// without the real `AppHandle` + WGC/WASAPI backend the restart needs.
+#[cfg(target_os = "windows")]
+pub(super) fn low_disk_recover_sources(runtime: &NativeCaptureRuntime) -> CaptureSources {
+    let Some(requested_sources) = runtime.requested_sources.as_ref() else {
+        return CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: false,
+        };
+    };
+    active_sources_for_inactivity_paused_state(
+        requested_sources,
+        runtime.inactivity.is_screen_paused(),
+        runtime.inactivity.is_microphone_paused(),
+        runtime.inactivity.is_system_audio_paused(),
+    )
+    .unwrap_or(CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: false,
+    })
+}
+
+/// Windows recovery restart for a [`CaptureSuspensionKind::LowDisk`] suspension.
+/// Same name/signature as the macOS [`resume_all_sources_after_low_disk`] so the
+/// shared [`attempt_low_disk_recovery`] resolves the right one per platform.
+///
+/// Recreates every source the low-disk suspend detached — screen, microphone, and
+/// the independent system-audio WASAPI render-loopback client (ADR 0041 decision 3,
+/// ADR 0022) — via [`start_windows_active_segment`], the same recreate primitive the
+/// system-suspend/inactivity Windows resumes use (it opens the new segment, swaps in
+/// the fresh sessions, and reanchors timing itself). The `recover_sources` selection
+/// honors the DPMS/lock precedence hand-off (see [`low_disk_recover_sources`]); the
+/// caller clears `capture_suspension` only on `Ok`, and leaves it suspended on `Err`
+/// so the ~10 s re-probe retries.
+#[cfg(target_os = "windows")]
+fn resume_all_sources_after_low_disk(
+    app_handle: &tauri::AppHandle,
+    runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    if runtime.requested_sources.is_none() {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Requested sources missing while recovering low-disk suspension".to_string(),
+        });
+    }
+
+    let recover_sources = low_disk_recover_sources(runtime);
+    start_windows_active_segment(
+        Some(app_handle),
+        runtime,
+        &recover_sources,
+        "recovering low-disk suspension",
+    )
 }
 
 fn spawn_frame_artifact_worker(
@@ -3033,12 +3570,28 @@ pub(super) fn resume_screen_from_inactivity(
         microphone: false,
         system_audio: false,
     });
-    start_windows_active_segment(
-        app_handle,
-        runtime,
-        &resume_sources,
-        "resuming Windows screen from inactivity",
-    )?;
+    // Two-store precedence guard (ADR 0041 decision 2): this is the single site
+    // where a Windows screen session is restarted after a transient-liveness pause
+    // (DPMS/lock/sleep/display-loss) clears — the DPMS display-on, the WTS unlock,
+    // and the throttled display-present probe all route their restart through here.
+    // While the low-disk capture-suspension store still holds the screen (the
+    // recordings volume is too full to open a segment), a display waking must NOT
+    // reopen the segment onto a still-full disk. The inactivity screen-pause marker
+    // is still cleared below — its own condition (display present / unlocked) has
+    // lifted — so that low-disk recovery, once free space returns, observes
+    // `!is_screen_paused()` and performs the deferred restart. That hand-off (each
+    // store clears its own marker, the last hold to clear restarts) is what keeps
+    // the two stores from mutually deferring forever. The detached screen is safe
+    // in the meantime because the rotation tick masks all sources to `None` whenever
+    // `capture_suspension` is set.
+    if !runtime.is_low_disk_suspended() {
+        start_windows_active_segment(
+            app_handle,
+            runtime,
+            &resume_sources,
+            "resuming Windows screen from inactivity",
+        )?;
+    }
     runtime.inactivity.set_family_paused_states(
         false,
         runtime.inactivity.microphone_paused,
@@ -6533,6 +7086,14 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
     let worker_control = control.clone();
 
     thread::spawn(move || {
+        // Low-disk recovery rides its own ~10s throttle (ADR 0041 consequences):
+        // disk recovers far more slowly than a display wakes, so it is a separate
+        // re-probe branch on this loop rather than the 2s transient-liveness
+        // display-present cadence. Seeded one interval in the past so the first
+        // suspended tick probes immediately.
+        let mut last_low_disk_recovery_attempt = Instant::now()
+            .checked_sub(LOW_DISK_RECOVERY_INTERVAL)
+            .unwrap_or_else(Instant::now);
         loop {
             let sleep_duration = {
                 let capture_state = app_handle.state::<NativeCaptureState>();
@@ -6572,6 +7133,29 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
 
             if !runtime.runtime().is_running || worker_control.stop.load(Ordering::Relaxed) {
                 break;
+            }
+
+            // Low-disk recovery branch: re-probe free space on its own throttle and,
+            // once it climbs back above the resume threshold, recreate every
+            // suspended source (incl. the microphone and the independent system-audio
+            // client). Windows has no privacy-filter/display-unavailable suspension
+            // (DPMS/lock/sleep ride the inactivity path), so this calls
+            // `attempt_low_disk_recovery` directly rather than a privacy dispatcher.
+            if runtime.runtime().is_low_disk_suspended()
+                && last_low_disk_recovery_attempt.elapsed() >= LOW_DISK_RECOVERY_INTERVAL
+            {
+                last_low_disk_recovery_attempt = Instant::now();
+                match attempt_low_disk_recovery(&app_handle, runtime.runtime_mut()) {
+                    PrivacySuspensionRecoveryOutcome::Recovered => {
+                        super::debug_log::log(
+                            "low-disk capture recovered; restarted all sources after suspension",
+                        );
+                    }
+                    // LowDisk never escalates, so `RestartRequired` (macOS-only,
+                    // privacy-filter) is not a variant here; the rest just keep waiting.
+                    PrivacySuspensionRecoveryOutcome::RetryPending
+                    | PrivacySuspensionRecoveryOutcome::NotSuspended => {}
+                }
             }
 
             match runtime.tick_inactivity(&app_handle) {
@@ -7121,6 +7705,19 @@ pub(super) fn start_capture_runtime(
                 SegmentSchedule::new(Duration::from_secs(settings.segment_duration_seconds));
             let capture_clock = CaptureClock::start_now();
             let effective_screen_bitrate_bps = compute_effective_screen_bitrate_bps(settings);
+
+            // Low-disk preflight (ADR 0040): refuse to start on a volume too full
+            // to safely hold even the first segment, before any file is opened.
+            // Best-effort — an unmeasurable reading never blocks the start; only a
+            // measured shortfall below the pause threshold refuses here.
+            preflight_disk_space_check(
+                &recordings_root,
+                effective_screen_bitrate_bps,
+                &sources,
+                settings.segment_duration_seconds,
+                runtime.free_space_probe(),
+            )?;
+
             let initial_inactivity = super::inactivity::InactivityState::from_recording_settings(
                 settings,
                 now_monotonic_marker_ms(),

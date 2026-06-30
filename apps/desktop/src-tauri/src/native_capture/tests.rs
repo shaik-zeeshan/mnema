@@ -41,8 +41,9 @@ use super::runtime::{
 #[cfg(target_os = "macos")]
 use super::runtime::{
     microphone_backend_active_for_runtime, system_audio_writer_active_for_runtime,
-    CaptureSuspension, CaptureSuspensionKind,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use super::runtime::{CaptureSuspension, CaptureSuspensionKind};
 #[cfg(target_os = "macos")]
 use super::segments::{
     apply_microphone_output_finalization, audio_duration_time_to_ms,
@@ -5420,6 +5421,12 @@ struct WindowsTestAudioSession {
     remove_on_stop: bool,
     stopped_tx: Option<std::sync::mpsc::Sender<String>>,
     fail_rotate: bool,
+    /// A delete-denying handle (`share_mode(0)`) held on `output_file` until the
+    /// session is stopped — the unit-test stand-in for the Media Foundation /
+    /// WASAPI sink keeping the segment file un-deletable until the session stops
+    /// (ADR 0041 "MF ordering"). Released on `stop_returning_finalization`, so the
+    /// mid-segment handler's discard succeeds only if it stopped the session first.
+    delete_lock: Option<std::fs::File>,
 }
 
 #[cfg(target_os = "windows")]
@@ -5431,6 +5438,7 @@ impl WindowsTestAudioSession {
             remove_on_stop: false,
             stopped_tx: None,
             fail_rotate: false,
+            delete_lock: None,
         })
     }
 
@@ -5444,6 +5452,7 @@ impl WindowsTestAudioSession {
             remove_on_stop: true,
             stopped_tx: Some(stopped_tx),
             fail_rotate: false,
+            delete_lock: None,
         })
     }
 
@@ -5456,6 +5465,33 @@ impl WindowsTestAudioSession {
             remove_on_stop: false,
             stopped_tx: None,
             fail_rotate: true,
+            delete_lock: None,
+        })
+    }
+
+    /// A session that holds a delete-denying handle on its (already-existing) output
+    /// file until stopped, modeling the Windows MF/WASAPI sink that keeps the segment
+    /// file un-deletable mid-segment. The mid-segment handler's discard only succeeds
+    /// once `stop_returning_finalization` drops this handle (ADR 0041 "MF ordering").
+    fn boxed_holding_delete_lock(
+        output_file: String,
+    ) -> Box<dyn microphone_capture::AudioCaptureSession> {
+        use std::os::windows::fs::OpenOptionsExt;
+        // share_mode(0): deny read/write/DELETE sharing — the strongest stand-in for
+        // a handle the OS will not let `remove_file` delete (mirrors the retention
+        // test `cleanup_records_tombstone_when_media_file_is_locked_then_retry_succeeds`).
+        let delete_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&output_file)
+            .expect("the partial output file must exist so the mock can hold a delete lock");
+        Box::new(Self {
+            output_file,
+            live: true,
+            remove_on_stop: false,
+            stopped_tx: None,
+            fail_rotate: false,
+            delete_lock: Some(delete_lock),
         })
     }
 }
@@ -5488,6 +5524,11 @@ impl microphone_capture::AudioCaptureSession for WindowsTestAudioSession {
         &mut self,
     ) -> Result<microphone_capture::MicrophoneOutputFinalization, CaptureErrorResponse> {
         self.live = false;
+        // Release the held delete lock, mirroring the MF/WASAPI sink releasing its
+        // output-file handle on stop. After this drop the file is deletable, so a
+        // discard that runs AFTER stop succeeds (proves the handler's stop-before-
+        // discard ordering).
+        self.delete_lock = None;
         if self.remove_on_stop {
             let _ = fs::remove_file(&self.output_file);
         }
@@ -12191,6 +12232,837 @@ mod low_disk {
             matches!(critical_decision, Some((disk_space::LowDiskDecision::Critical, _))),
             "free below the reserve floor must classify the failure as Critical \
              (got {critical_decision:?})"
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod low_disk_windows {
+    use super::*;
+    use crate::native_capture::disk_space;
+
+    thread_local! {
+        static SCRIPTED_FREE_BYTES: std::cell::RefCell<Vec<u64>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Load a scripted free-space sequence (consumed front-to-back). The probe
+    /// repeats the final value after the sequence is drained so callers that probe
+    /// more often than they scripted still get a stable reading.
+    fn script_free_bytes(sequence: &[u64]) {
+        SCRIPTED_FREE_BYTES.with(|cell| {
+            // Reverse so we can cheaply `pop` from the back in call order.
+            *cell.borrow_mut() = sequence.iter().rev().copied().collect();
+        });
+    }
+
+    /// A [`disk_space::FreeSpaceProbe`] that returns the next scripted reading.
+    /// Ignores the probed path (the scripted sequence is what drives the test).
+    fn scripted_probe(_path: &std::path::Path) -> std::io::Result<u64> {
+        SCRIPTED_FREE_BYTES.with(|cell| {
+            let mut queue = cell.borrow_mut();
+            if queue.len() > 1 {
+                Ok(queue.pop().expect("queue is non-empty"))
+            } else {
+                // Repeat the last scripted value indefinitely.
+                queue
+                    .last()
+                    .copied()
+                    .ok_or_else(|| std::io::Error::other("no scripted free-space reading"))
+            }
+        })
+    }
+
+    /// A probe that always errors — exercises the best-effort "unmeasurable never
+    /// blocks / never suspends" path.
+    fn erroring_probe(_path: &std::path::Path) -> std::io::Result<u64> {
+        Err(std::io::Error::other("disk probe unavailable"))
+    }
+
+    const SEGMENT_SECONDS: u64 = 300;
+    const SCREEN_BITRATE_BPS: u32 = 8_000_000;
+
+    // --- Preflight (a) ---
+
+    #[test]
+    fn preflight_refuses_below_pause_threshold() {
+        let estimate = disk_space::next_segment_estimate_bytes(
+            SCREEN_BITRATE_BPS as u64,
+            disk_space::audio_bytes_per_sec_for_sources(true, false),
+            SEGMENT_SECONDS,
+        );
+        let pause = disk_space::pause_threshold_bytes(estimate);
+        script_free_bytes(&[pause - 1]);
+
+        let sources = CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        };
+        let result = super::super::segments::preflight_disk_space_check(
+            &std::env::temp_dir(),
+            Some(SCREEN_BITRATE_BPS),
+            &sources,
+            SEGMENT_SECONDS,
+            scripted_probe,
+        );
+        let error = result.expect_err("preflight must refuse below the pause threshold");
+        assert_eq!(error.code, "insufficient_disk_space");
+    }
+
+    #[test]
+    fn preflight_proceeds_at_or_above_pause_threshold() {
+        let estimate = disk_space::next_segment_estimate_bytes(
+            SCREEN_BITRATE_BPS as u64,
+            disk_space::audio_bytes_per_sec_for_sources(true, false),
+            SEGMENT_SECONDS,
+        );
+        let pause = disk_space::pause_threshold_bytes(estimate);
+        let sources = CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        };
+
+        // Exactly at the threshold proceeds (the refusal is strict `<`).
+        script_free_bytes(&[pause]);
+        super::super::segments::preflight_disk_space_check(
+            &std::env::temp_dir(),
+            Some(SCREEN_BITRATE_BPS),
+            &sources,
+            SEGMENT_SECONDS,
+            scripted_probe,
+        )
+        .expect("preflight must proceed at the pause threshold");
+
+        // Comfortably above proceeds too.
+        script_free_bytes(&[pause + 10 * 1024 * 1024 * 1024]);
+        super::super::segments::preflight_disk_space_check(
+            &std::env::temp_dir(),
+            Some(SCREEN_BITRATE_BPS),
+            &sources,
+            SEGMENT_SECONDS,
+            scripted_probe,
+        )
+        .expect("preflight must proceed above the pause threshold");
+    }
+
+    #[test]
+    fn preflight_does_not_block_when_unmeasurable() {
+        let sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        };
+        // An erroring probe -> unmeasurable -> must NOT block the start.
+        super::super::segments::preflight_disk_space_check(
+            &std::env::temp_dir(),
+            Some(SCREEN_BITRATE_BPS),
+            &sources,
+            SEGMENT_SECONDS,
+            erroring_probe,
+        )
+        .expect("an unmeasurable probe must never block the start");
+    }
+
+    // --- Boundary suspend / graceful stop (slice 3a) ---
+
+    /// The next-segment estimate matching the all-source fixture below (8 Mbps
+    /// screen + mic + system audio over 300s). Used to derive the pause/resume
+    /// thresholds for the boundary-classification assertions.
+    fn fixture_estimate() -> u64 {
+        disk_space::next_segment_estimate_bytes(
+            SCREEN_BITRATE_BPS as u64,
+            disk_space::audio_bytes_per_sec_for_sources(true, true),
+            SEGMENT_SECONDS,
+        )
+    }
+
+    /// A running screen+mic+system-audio Windows runtime with live mock sessions
+    /// (screen + the two independent WASAPI audio clients) and an in-flight segment,
+    /// rooted at the system temp dir so `measure_free_space`'s nearest-existing-
+    /// ancestor walk reaches a real, statable path. Drives the all-source low-disk
+    /// suspend / graceful-stop transitions.
+    fn running_low_disk_windows_runtime(mic_path: &str, sys_path: &str) -> NativeCaptureRuntime {
+        let root = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut current = super::super::segments::empty_output_files();
+        super::super::output::set_current_microphone_output_file(&mut current, mic_path.to_string());
+        super::super::output::set_current_system_audio_output_file(&mut current, sys_path.to_string());
+        NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            }),
+            current_segment_index: 1,
+            screen_frame_rate: 30,
+            screen_resolution: ScreenResolution::default(),
+            effective_screen_bitrate_bps: Some(SCREEN_BITRATE_BPS),
+            segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(
+                SEGMENT_SECONDS,
+            ))),
+            segment_planner: Some(SegmentPlanner::with_date_prefix(
+                root,
+                "native-session-low-disk-windows",
+                "2026/06/25",
+            )),
+            free_space_probe: Some(scripted_probe),
+            active_screen_session: Some(WindowsTestScreenSession::boxed()),
+            active_microphone_session: Some(WindowsTestAudioSession::boxed(mic_path.to_string())),
+            active_system_audio_session: Some(WindowsTestAudioSession::boxed(sys_path.to_string())),
+            microphone_recording_file: Some(mic_path.to_string()),
+            system_audio_recording_file: Some(sys_path.to_string()),
+            current_segment_output_files: Some(current),
+            output_files: Some(super::super::segments::empty_output_files()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn boundary_below_pause_suspends_all_windows_sources_without_inactivity_flags() {
+        // ADR 0041 decisions 2 & 3: a rotation-boundary low-disk Pause must suspend
+        // ALL THREE Windows sources — screen + microphone + the independent
+        // system-audio WASAPI client — into `capture_suspension` (kind LowDisk),
+        // detaching every audio session (not orphaning the loopback client), while
+        // leaving the inactivity store untouched (LowDisk is not an inactivity pause).
+        //
+        // The boundary entry `maybe_suspend_for_low_disk_at_boundary` requires a
+        // `&tauri::AppHandle` the unit harness cannot construct, so this exercises
+        // the seam it composes: the `Pause` classification + the suspend entry it
+        // dispatches to (with no app handle, so the warning notification no-ops).
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        let mut runtime = running_low_disk_windows_runtime(&mic, &sys);
+
+        // Free below the pause threshold but at/above the reserve floor classifies
+        // Pause at the boundary (the arm that drives the suspend).
+        let pause = disk_space::pause_threshold_bytes(fixture_estimate());
+        script_free_bytes(&[pause - 1]);
+        assert_eq!(
+            super::super::segments::low_disk_decision_at_boundary(&runtime),
+            Some(disk_space::LowDiskDecision::Pause),
+            "free below pause but above the floor must classify Pause at the boundary"
+        );
+
+        super::super::segments::suspend_screen_system_audio_capture(
+            None,
+            &mut runtime,
+            &CaptureErrorResponse {
+                code: "capture_low_disk".to_string(),
+                message: "low disk".to_string(),
+            },
+            CaptureSuspensionKind::LowDisk,
+        )
+        .expect("the Windows low-disk suspend should succeed with live mock sessions");
+
+        // The independent system-audio WASAPI client is detached, NOT orphaned (ADR
+        // 0041 decision 3) — and so is the microphone.
+        assert!(
+            runtime.active_system_audio_session.is_none(),
+            "LowDisk must stop+detach the independent system-audio WASAPI session"
+        );
+        assert!(
+            runtime.active_microphone_session.is_none(),
+            "LowDisk must stop+detach the microphone session"
+        );
+        // The screen session is stopped (no longer live).
+        assert!(
+            !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
+            "LowDisk must stop the screen session"
+        );
+
+        // The suspension rides `capture_suspension` as kind LowDisk and surfaces
+        // `is_low_disk_suspended`.
+        assert_eq!(
+            runtime
+                .capture_suspension
+                .as_ref()
+                .map(|suspension| suspension.kind),
+            Some(CaptureSuspensionKind::LowDisk),
+            "LowDisk must be recorded in capture_suspension"
+        );
+        assert!(
+            session_from_runtime(&runtime).is_low_disk_suspended,
+            "a LowDisk suspension must surface is_low_disk_suspended"
+        );
+
+        // ADR 0041 decision 2: LowDisk owns no inactivity state — the per-family
+        // inactivity flags are untouched (DPMS/lock/sleep alone own those).
+        assert!(
+            !runtime.inactivity.screen_paused,
+            "LowDisk must NOT set inactivity.screen_paused"
+        );
+        assert!(
+            !runtime.inactivity.microphone_paused,
+            "LowDisk must NOT set inactivity.microphone_paused"
+        );
+        assert!(
+            !runtime.inactivity.system_audio_paused,
+            "LowDisk must NOT set inactivity.system_audio_paused"
+        );
+    }
+
+    #[test]
+    fn boundary_below_floor_drives_windows_graceful_stop() {
+        // Free strictly below the reserve floor classifies Critical at the boundary,
+        // which drives a graceful stop (the `Stopped` outcome) rather than a
+        // suspension: the session ends and every source is detached. As above, the
+        // AppHandle-bearing boundary entry is harness-blocked, so this drives the
+        // Critical classification + the graceful-stop seam it composes directly.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        let mut runtime = running_low_disk_windows_runtime(&mic, &sys);
+        runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+            CaptureSuspensionKind::LowDisk,
+            &CaptureErrorResponse {
+                code: "capture_low_disk".to_string(),
+                message: "low disk".to_string(),
+            },
+        ));
+
+        script_free_bytes(&[disk_space::RESERVE_FLOOR_BYTES - 1]);
+        assert_eq!(
+            super::super::segments::low_disk_decision_at_boundary(&runtime),
+            Some(disk_space::LowDiskDecision::Critical),
+            "free below the reserve floor must classify Critical at the boundary"
+        );
+
+        super::super::segments::graceful_stop_for_low_disk(
+            None,
+            &mut runtime,
+            disk_space::RESERVE_FLOOR_BYTES - 1,
+            true,
+        );
+
+        assert!(
+            !runtime.is_running,
+            "a below-floor graceful stop must end the session"
+        );
+        assert!(
+            runtime.capture_suspension.is_none(),
+            "graceful stop must clear the suspension slot"
+        );
+        assert!(
+            runtime.active_microphone_session.is_none()
+                && runtime.active_system_audio_session.is_none()
+                && runtime.active_screen_session.is_none(),
+            "graceful stop must detach every source"
+        );
+    }
+
+    #[test]
+    fn graceful_stop_below_floor_overrides_dpms_asleep_screen() {
+        // ADR 0041 decision 2 ("Critical-floor graceful stop is absolute"): when the
+        // monitor is DPMS-asleep the screen is inactivity-paused as
+        // `TransientLiveness { DisplayAsleep }` while the microphone + system audio
+        // keep recording (DPMS never suspends the audio families on Windows). If free
+        // space then crosses the reserve floor, the critical-floor graceful stop must
+        // fire REGARDLESS of the DPMS-asleep screen — app-storage safety wins over a
+        // display that may still be asleep — ending the session and detaching every
+        // source.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        let mut runtime = running_low_disk_windows_runtime(&mic, &sys);
+
+        // Park the screen in a DPMS-asleep transient-liveness pause; the audio
+        // families stay active and attached.
+        super::super::segments::pause_screen_for_transient_liveness(
+            &mut runtime,
+            super::super::inactivity::TransientLivenessTrigger::DisplayAsleep,
+        )
+        .expect("DPMS-asleep screen pause should succeed");
+        assert!(
+            runtime.inactivity.screen_paused,
+            "the screen must be inactivity-paused as DPMS-asleep before the stop"
+        );
+        assert!(
+            runtime.active_microphone_session.is_some()
+                && runtime.active_system_audio_session.is_some(),
+            "the audio families must keep recording through the DPMS-asleep screen"
+        );
+
+        // Free below the reserve floor classifies Critical at the boundary even while
+        // the screen is DPMS-paused.
+        script_free_bytes(&[disk_space::RESERVE_FLOOR_BYTES - 1]);
+        assert_eq!(
+            super::super::segments::low_disk_decision_at_boundary(&runtime),
+            Some(disk_space::LowDiskDecision::Critical),
+            "free below the reserve floor must classify Critical regardless of DPMS state"
+        );
+
+        // The boundary entry needs a real `&tauri::AppHandle`, so drive the
+        // graceful-stop seam its Critical arm composes directly.
+        super::super::segments::graceful_stop_for_low_disk(
+            None,
+            &mut runtime,
+            disk_space::RESERVE_FLOOR_BYTES - 1,
+            true,
+        );
+
+        assert!(
+            !runtime.is_running,
+            "the critical-floor graceful stop must end the session even while DPMS-asleep"
+        );
+        assert!(
+            runtime.capture_suspension.is_none(),
+            "graceful stop must clear the suspension slot"
+        );
+        assert!(
+            runtime.active_microphone_session.is_none()
+                && runtime.active_system_audio_session.is_none()
+                && runtime.active_screen_session.is_none(),
+            "graceful stop must detach every source regardless of the DPMS-asleep screen"
+        );
+    }
+
+    // NB on the "warning fires once" check: `push_warning_app_notification` requires
+    // a real `&tauri::AppHandle` the unit harness cannot construct, so the suspend
+    // entry above is driven with `None` (the notification path no-ops). The
+    // observable suspension state (`capture_suspension` kind LowDisk +
+    // `is_low_disk_suspended`) is asserted instead; the notification id/text is
+    // covered by the shared constant `LOW_DISK_NOTIFICATION_ID`.
+
+    // --- Resume / recovery / two-store precedence (slice 3b) ---
+
+    /// A Windows runtime already in a Low-Disk Suspension: the slice-3a all-source
+    /// suspend has run, so every audio session is detached (`None`), the screen
+    /// session is stopped, `capture_suspension` is `Some(LowDisk)`, and the
+    /// inactivity store is untouched (LowDisk owns no inactivity flags).
+    fn suspended_low_disk_windows_runtime(mic_path: &str, sys_path: &str) -> NativeCaptureRuntime {
+        let mut runtime = running_low_disk_windows_runtime(mic_path, sys_path);
+        super::super::segments::suspend_screen_system_audio_capture(
+            None,
+            &mut runtime,
+            &CaptureErrorResponse {
+                code: "capture_low_disk".to_string(),
+                message: "low disk".to_string(),
+            },
+            CaptureSuspensionKind::LowDisk,
+        )
+        .expect("the Windows low-disk suspend should succeed with live mock sessions");
+        runtime
+    }
+
+    #[test]
+    fn resume_selects_all_sources_including_system_audio() {
+        // From a LowDisk-suspended runtime with NO inactivity hold, recovery must
+        // select ALL THREE sources to recreate — including a fresh independent
+        // system-audio WASAPI client (ADR 0041 decision 3), which the suspend
+        // detached (asserted None below). Once free space climbs back to the resume
+        // threshold the recovery driver proceeds; below it, hysteresis keeps it
+        // suspended.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        let runtime = suspended_low_disk_windows_runtime(&mic, &sys);
+
+        // Suspended precondition: the independent system-audio client (and the mic)
+        // are detached, not orphaned.
+        assert!(
+            runtime.active_system_audio_session.is_none(),
+            "the system-audio WASAPI session is detached while suspended (recreated on resume)"
+        );
+        assert!(
+            runtime.active_microphone_session.is_none(),
+            "the microphone session is detached while suspended (recreated on resume)"
+        );
+
+        // Recover-source selection: with no inactivity pause, all three sources are
+        // selected to be recreated.
+        assert_eq!(
+            super::super::segments::low_disk_recover_sources(&runtime),
+            CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            },
+            "low-disk recovery must recreate screen + microphone + the independent system audio"
+        );
+
+        // Hysteresis gate the recovery driver consults through the runtime probe
+        // seam: at/above the resume threshold it resumes; merely clearing the pause
+        // threshold does not (one estimate of headroom prevents flapping).
+        let estimate = fixture_estimate();
+        script_free_bytes(&[disk_space::resume_threshold_bytes(estimate)]);
+        assert_eq!(
+            super::super::segments::low_disk_can_resume(&runtime),
+            Some(true),
+            "free at the resume threshold must let recovery proceed"
+        );
+        script_free_bytes(&[disk_space::pause_threshold_bytes(estimate)]);
+        assert_eq!(
+            super::super::segments::low_disk_can_resume(&runtime),
+            Some(false),
+            "free that only cleared the pause threshold stays suspended (hysteresis)"
+        );
+
+        // SEAM: the actual recreation — `resume_all_sources_after_low_disk` ->
+        // `start_windows_active_segment` producing a fresh `active_system_audio_session`
+        // (`is_some()`) and `attempt_low_disk_recovery` then clearing
+        // `capture_suspension` + the warning notification — needs a real
+        // `&tauri::AppHandle` and the live WGC/WASAPI backend the unit harness cannot
+        // construct, so that final restart is covered by the on-device HW smoke. The
+        // recover-source selection and the resume gate that drive it are asserted here.
+    }
+
+    #[test]
+    fn recovery_while_screen_dpms_paused_keeps_screen_down_resumes_audio() {
+        // Precedence ordering (a): free space recovers while the screen is
+        // independently DPMS-paused (TransientLiveness { DisplayAsleep }). Low-disk
+        // recovery must NOT restart the screen (that hold is the inactivity store's,
+        // resumed via the display-on path), while the microphone and the independent
+        // system-audio client resume regardless of the screen's DPMS state.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        let mut runtime = suspended_low_disk_windows_runtime(&mic, &sys);
+        runtime.inactivity.set_family_paused_states_with_reason(
+            true,
+            false,
+            false,
+            ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayAsleep,
+            },
+        );
+
+        let recover = super::super::segments::low_disk_recover_sources(&runtime);
+        assert!(
+            !recover.screen,
+            "a DPMS-asleep screen must NOT be restarted by low-disk recovery (the inactivity store owns it)"
+        );
+        assert!(
+            recover.microphone,
+            "the microphone resumes independently of the DPMS screen"
+        );
+        assert!(
+            recover.system_audio,
+            "the independent system-audio client resumes independently of the DPMS screen"
+        );
+    }
+
+    #[test]
+    fn screen_resume_guard_defers_restart_while_low_disk_suspended() {
+        // Precedence ordering (b) + no deadlock: a display waking routes its restart
+        // through `resume_screen_from_inactivity`. While the low-disk store still
+        // holds the screen, the `!is_low_disk_suspended()` guard must DEFER the actual
+        // restart (no segment reopened onto a still-full disk) yet still clear the
+        // DPMS marker so low-disk recovery performs the eventual restart — the
+        // both-holds-clear hand-off (neither store defers forever).
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        let mut runtime = suspended_low_disk_windows_runtime(&mic, &sys);
+        runtime.inactivity.set_family_paused_states_with_reason(
+            true,
+            false,
+            false,
+            ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayAsleep,
+            },
+        );
+        // Model the detached screen the low-disk suspend left behind.
+        runtime.active_screen_session = None;
+        assert!(
+            runtime.is_low_disk_suspended(),
+            "precondition: the low-disk hold is active"
+        );
+
+        // The guarded resume succeeds as a no-op restart (the real WGC start is
+        // skipped, so this is safe to drive in the unit harness with `None`).
+        resume_screen_from_inactivity(&mut runtime, None)
+            .expect("the guarded screen resume must succeed as a deferred (no-op) restart");
+
+        assert!(
+            runtime.active_screen_session.is_none(),
+            "the screen must NOT be reopened onto a still-full disk while low-disk-suspended"
+        );
+        assert!(
+            !runtime.inactivity.is_screen_paused(),
+            "the DPMS marker is handed off (cleared) so low-disk recovery owns the deferred restart"
+        );
+
+        // No deadlock: with the DPMS marker handed off, low-disk recovery now selects
+        // the screen, and once the low-disk hold clears the screen-resume guard opens.
+        assert!(
+            super::super::segments::low_disk_recover_sources(&runtime).screen,
+            "with the DPMS marker cleared, low-disk recovery now owns the screen restart"
+        );
+        runtime.capture_suspension = None;
+        assert!(
+            !runtime.is_low_disk_suspended(),
+            "after free space recovers the screen-resume guard no longer blocks the restart"
+        );
+    }
+
+    #[test]
+    fn current_segment_sources_masked_to_none_while_low_disk_suspended() {
+        // Masking: while a Low-Disk Suspension holds every detached source, the
+        // rotation tick must compute NO active sources (and so `SkipRotation`
+        // cleanly) rather than try to rotate detached sessions. The boundary check
+        // itself returns `Proceed` while already suspended, so this masking is what
+        // makes the tick skip.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        let runtime = suspended_low_disk_windows_runtime(&mic, &sys);
+
+        assert!(
+            runtime.capture_suspension.is_some(),
+            "precondition: a Low-Disk Suspension is active"
+        );
+        assert_eq!(
+            current_segment_sources_for_runtime(&runtime),
+            None,
+            "a Low-Disk Suspension masks all sources to None so the rotation tick SkipRotations"
+        );
+    }
+
+    // --- Mid-segment disk-full backstop (slice 5) ---
+    //
+    // `handle_mid_segment_write_failure_for_low_disk` takes `Option<&tauri::AppHandle>`
+    // (the harness cannot construct a real one), so these drive it with `None`: the
+    // warning notification no-ops while every other observable transition runs. The
+    // still-locked-file retry path is NOT re-tested here — it is covered by
+    // `cleanup_records_tombstone_when_media_file_is_locked_then_retry_succeeds` in
+    // `capture_retention.rs`.
+
+    /// Like [`running_low_disk_windows_runtime`] but the microphone + system-audio
+    /// mock sessions each hold a delete-denying handle on their (already-existing)
+    /// output file — the unit-test stand-in for the Media Foundation / WASAPI sink
+    /// that keeps the segment file un-deletable until the session is stopped. The
+    /// handle is released on `stop`, so the mid-segment handler's discard succeeds
+    /// only if it stopped the sessions FIRST (ADR 0041 "MF ordering").
+    fn running_low_disk_windows_runtime_with_held_files(
+        mic_path: &str,
+        sys_path: &str,
+    ) -> NativeCaptureRuntime {
+        let mut runtime = running_low_disk_windows_runtime(mic_path, sys_path);
+        runtime.active_microphone_session =
+            Some(WindowsTestAudioSession::boxed_holding_delete_lock(mic_path.to_string()));
+        runtime.active_system_audio_session =
+            Some(WindowsTestAudioSession::boxed_holding_delete_lock(sys_path.to_string()));
+        runtime
+    }
+
+    #[test]
+    fn mid_segment_fill_at_pause_discards_partial_after_stop_then_suspends() {
+        // ADR 0040 mid-segment backstop + ADR 0041 "MF ordering": a writer failure
+        // while free is below the pause threshold (but at/above the reserve floor)
+        // must STOP the sessions first (releasing the MF/WASAPI file handle), THEN
+        // discard the partial at its final path, commit NO segment row, and drop into
+        // a LowDisk suspension.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        // Real partial files at the final paths — what the failing writer leaves behind.
+        fs::write(&mic, b"partial-mic").expect("mic partial should be written");
+        fs::write(&sys, b"partial-sys").expect("sys partial should be written");
+
+        let mut runtime = running_low_disk_windows_runtime_with_held_files(&mic, &sys);
+        let output_files = runtime.current_segment_output_files.clone();
+        let recording_file = runtime.recording_file.clone();
+        let microphone_recording_file = runtime.microphone_recording_file.clone();
+        let system_audio_recording_file = runtime.system_audio_recording_file.clone();
+
+        // Self-check: the held lock genuinely blocks deletion, so the post-handler
+        // deletion below is a real stop-before-discard proof (not a lock that never
+        // engaged). The file survives the failed delete (sharing violation).
+        assert!(
+            fs::remove_file(&mic).is_err(),
+            "precondition: the held delete-lock must block deletion while the session is live"
+        );
+        assert!(
+            std::path::Path::new(&mic).exists(),
+            "precondition: the still-locked partial survives the failed delete"
+        );
+
+        // Free below the pause threshold but at/above the reserve floor -> Pause -> Suspend.
+        let pause = disk_space::pause_threshold_bytes(fixture_estimate());
+        script_free_bytes(&[pause - 1]);
+
+        let outcome = super::super::segments::handle_mid_segment_write_failure_for_low_disk(
+            None,
+            &mut runtime,
+            output_files.as_ref(),
+            recording_file.as_deref(),
+            microphone_recording_file.as_deref(),
+            system_audio_recording_file.as_deref(),
+        );
+
+        assert_eq!(
+            outcome,
+            super::super::segments::WriteFailureDiskFullOutcome::Suspended,
+            "a mid-segment fill at/above the floor must discard the partial and suspend"
+        );
+
+        // Stop-before-discard ordering proof: each mock held a delete-denying lock on
+        // its partial until stopped. The files are GONE, which is only possible if the
+        // handler stopped the sessions (releasing the lock) BEFORE discarding — a
+        // discard-first order would have hit a sharing violation and left them behind.
+        assert!(
+            !std::path::Path::new(&mic).exists(),
+            "the mic partial must be deleted at its final path (stop ran before discard)"
+        );
+        assert!(
+            !std::path::Path::new(&sys).exists(),
+            "the system-audio partial must be deleted at its final path (stop ran before discard)"
+        );
+
+        // The suspension rides capture_suspension as kind LowDisk.
+        assert_eq!(
+            runtime.capture_suspension.as_ref().map(|suspension| suspension.kind),
+            Some(CaptureSuspensionKind::LowDisk),
+            "a mid-segment fill at/above the floor must enter a LowDisk suspension"
+        );
+        assert!(
+            session_from_runtime(&runtime).is_low_disk_suspended,
+            "the mid-segment suspension must surface is_low_disk_suspended"
+        );
+
+        // Every source detached so no broken writer keeps a file open.
+        assert!(runtime.active_microphone_session.is_none());
+        assert!(runtime.active_system_audio_session.is_none());
+        assert!(
+            !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
+            "the screen session must be stopped"
+        );
+
+        // NO segment row committed for the discarded partial: the in-flight refs are
+        // cleared and the masked sources read None (so the tick SkipRotations cleanly).
+        assert!(
+            runtime.current_segment_output_files.is_none(),
+            "the in-flight segment refs must be cleared (no row committed for the partial)"
+        );
+        assert!(runtime.recording_file.is_none());
+        assert!(runtime.microphone_recording_file.is_none());
+        assert!(runtime.system_audio_recording_file.is_none());
+        assert_eq!(
+            current_segment_sources_for_runtime(&runtime),
+            None,
+            "a LowDisk suspension masks all sources to None (no segment to rotate/commit)"
+        );
+
+        // ADR 0041 decision 2: LowDisk owns no inactivity state.
+        assert!(!runtime.inactivity.screen_paused);
+        assert!(!runtime.inactivity.microphone_paused);
+        assert!(!runtime.inactivity.system_audio_paused);
+    }
+
+    #[test]
+    fn mid_segment_fill_below_floor_discards_partial_then_stops_gracefully() {
+        // Below the reserve floor the app's own storage is at risk, so a mid-segment
+        // fill discards the partial (after stopping to release the handle) and stops
+        // the session gracefully rather than suspending.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        fs::write(&mic, b"partial-mic").expect("mic partial should be written");
+        fs::write(&sys, b"partial-sys").expect("sys partial should be written");
+
+        let mut runtime = running_low_disk_windows_runtime_with_held_files(&mic, &sys);
+        let output_files = runtime.current_segment_output_files.clone();
+        let recording_file = runtime.recording_file.clone();
+        let microphone_recording_file = runtime.microphone_recording_file.clone();
+        let system_audio_recording_file = runtime.system_audio_recording_file.clone();
+
+        // Free strictly below the reserve floor -> Critical -> graceful stop.
+        script_free_bytes(&[disk_space::RESERVE_FLOOR_BYTES - 1]);
+
+        let outcome = super::super::segments::handle_mid_segment_write_failure_for_low_disk(
+            None,
+            &mut runtime,
+            output_files.as_ref(),
+            recording_file.as_deref(),
+            microphone_recording_file.as_deref(),
+            system_audio_recording_file.as_deref(),
+        );
+
+        assert_eq!(
+            outcome,
+            super::super::segments::WriteFailureDiskFullOutcome::Stopped,
+            "a mid-segment fill below the reserve floor must discard the partial and stop gracefully"
+        );
+
+        // The partial is still discarded (stop released the lock before discard).
+        assert!(
+            !std::path::Path::new(&mic).exists(),
+            "the mic partial must be deleted even on the below-floor stop path"
+        );
+        assert!(
+            !std::path::Path::new(&sys).exists(),
+            "the system-audio partial must be deleted even on the below-floor stop path"
+        );
+
+        assert!(!runtime.is_running, "the below-floor graceful stop must end the session");
+        assert!(
+            runtime.capture_suspension.is_none(),
+            "graceful stop must clear the suspension slot (capture stopped, not paused)"
+        );
+        assert!(
+            runtime.active_microphone_session.is_none()
+                && runtime.active_system_audio_session.is_none()
+                && runtime.active_screen_session.is_none(),
+            "graceful stop must detach every source"
+        );
+    }
+
+    #[test]
+    fn mid_segment_failure_on_healthy_disk_returns_not_disk_full_and_does_nothing() {
+        // A writer failure on a HEALTHY disk must preserve the EXISTING fatal-failure
+        // behavior: the handler returns NotDiskFull and does nothing (no suspension, no
+        // discard, sessions intact) so the caller falls through to its generic failure
+        // handling. If this inverted, every unrelated write failure would be swallowed.
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let mic = temp.path().join("segment-0001-mic.m4a").to_string_lossy().into_owned();
+        let sys = temp.path().join("segment-0001-sys.m4a").to_string_lossy().into_owned();
+        fs::write(&mic, b"partial-mic").expect("mic partial should be written");
+        fs::write(&sys, b"partial-sys").expect("sys partial should be written");
+
+        // No held lock needed: the discard must not run at all on a healthy disk.
+        let mut runtime = running_low_disk_windows_runtime(&mic, &sys);
+        let output_files = runtime.current_segment_output_files.clone();
+        let recording_file = runtime.recording_file.clone();
+        let microphone_recording_file = runtime.microphone_recording_file.clone();
+        let system_audio_recording_file = runtime.system_audio_recording_file.clone();
+
+        // Free comfortably above the resume threshold -> Sufficient -> NotDiskFull.
+        let resume = disk_space::resume_threshold_bytes(fixture_estimate());
+        script_free_bytes(&[resume + 1]);
+
+        let outcome = super::super::segments::handle_mid_segment_write_failure_for_low_disk(
+            None,
+            &mut runtime,
+            output_files.as_ref(),
+            recording_file.as_deref(),
+            microphone_recording_file.as_deref(),
+            system_audio_recording_file.as_deref(),
+        );
+
+        assert_eq!(
+            outcome,
+            super::super::segments::WriteFailureDiskFullOutcome::NotDiskFull,
+            "a write failure on a healthy disk must not be treated as disk-full"
+        );
+        assert!(
+            runtime.capture_suspension.is_none(),
+            "a healthy-disk failure must NOT enter a suspension"
+        );
+        assert!(
+            std::path::Path::new(&mic).exists() && std::path::Path::new(&sys).exists(),
+            "a healthy-disk failure must NOT discard the partials"
+        );
+        assert!(
+            runtime.active_microphone_session.is_some()
+                && runtime.active_system_audio_session.is_some(),
+            "a healthy-disk failure must leave the sessions intact for the caller's existing handling"
+        );
+        assert!(
+            runtime.current_segment_output_files.is_some(),
+            "the in-flight segment refs must be preserved on the healthy-disk path"
         );
     }
 }

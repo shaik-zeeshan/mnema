@@ -18,10 +18,10 @@ use super::inactivity::InactivityState;
 use super::segments::FrameArtifactMessage;
 use capture_vad::MicrophoneVadRuntime;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) const MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS: u8 = 3;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CaptureSuspensionStatus {
     Retryable,
@@ -31,7 +31,7 @@ pub(crate) enum CaptureSuspensionStatus {
 /// Why screen/system-audio capture was suspended. Both kinds drive the same
 /// recovery loop — restart a fresh screen segment once it's possible again — but
 /// they retry on different terms.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CaptureSuspensionKind {
     /// A privacy content-filter apply failed. The failure is likely persistent,
@@ -53,7 +53,7 @@ pub(crate) enum CaptureSuspensionKind {
 /// trying to recover from. Despite the name it now covers both privacy-filter
 /// failures and transient display-unavailable conditions (see
 /// [`CaptureSuspensionKind`]); `kind` selects the retry policy.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CaptureSuspension {
     pub kind: CaptureSuspensionKind,
@@ -64,7 +64,7 @@ pub(crate) struct CaptureSuspension {
     pub status: CaptureSuspensionStatus,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl CaptureSuspension {
     pub fn with_kind(kind: CaptureSuspensionKind, error: &CaptureErrorResponse) -> Self {
         let reason = match kind {
@@ -171,7 +171,7 @@ pub struct NativeCaptureRuntime {
     /// by the system-audio slice; remains `None` for the microphone slice.
     #[cfg(target_os = "windows")]
     pub active_system_audio_session: Option<Box<dyn microphone_capture::AudioCaptureSession>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub capture_suspension: Option<CaptureSuspension>,
     /// Injectable free-space probe used by the low-disk preflight, the rotation
     /// boundary check, and the suspension recovery driver. `None` means "use the
@@ -180,11 +180,11 @@ pub struct NativeCaptureRuntime {
     /// suspend/resume logic is exercisable without a real full disk. Kept as an
     /// `Option` so the struct keeps deriving `Default` (a bare `fn` pointer does
     /// not implement `Default`).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub free_space_probe: Option<super::disk_space::FreeSpaceProbe>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl NativeCaptureRuntime {
     /// Resolve the effective free-space probe: the injected one if a test set it,
     /// otherwise the production default. Kept here so the `None`-means-default
@@ -192,6 +192,19 @@ impl NativeCaptureRuntime {
     pub(super) fn free_space_probe(&self) -> super::disk_space::FreeSpaceProbe {
         self.free_space_probe
             .unwrap_or(super::disk_space::default_free_space_probe)
+    }
+
+    /// True when the capture-suspension store is holding the session specifically
+    /// for low disk (ADR 0040/0041). On Windows `LowDisk` is the *only*
+    /// `capture_suspension` kind — DPMS/lock/sleep ride the separate inactivity
+    /// store — so this doubles as "the low-disk store currently holds the screen".
+    /// Used by the rotation suspension masking and the transient-liveness
+    /// screen-resume precedence guard so a display waking onto a still-full disk
+    /// does not reopen a screen segment.
+    pub(super) fn is_low_disk_suspended(&self) -> bool {
+        self.capture_suspension
+            .as_ref()
+            .is_some_and(|suspension| suspension.kind == CaptureSuspensionKind::LowDisk)
     }
 }
 
@@ -294,12 +307,9 @@ pub(super) fn prefixed_capture_id(prefix: &str) -> Result<String, CaptureErrorRe
 }
 
 pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession {
-    #[cfg(target_os = "macos")]
-    let is_low_disk_suspended = runtime
-        .capture_suspension
-        .as_ref()
-        .is_some_and(|s| s.kind == CaptureSuspensionKind::LowDisk);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let is_low_disk_suspended = runtime.is_low_disk_suspended();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let is_low_disk_suspended = false;
 
     NativeCaptureSession {
@@ -443,6 +453,7 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
         runtime.active_system_audio_session = None;
+        runtime.capture_suspension = None;
     }
 
     runtime.runtime_controller = RuntimeController::default();
@@ -521,6 +532,7 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
         runtime.active_system_audio_session = None;
+        runtime.capture_suspension = None;
     }
 
     if let Ok(state) = runtime
@@ -591,6 +603,7 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
         runtime.active_system_audio_session = None;
+        runtime.capture_suspension = None;
     }
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
@@ -867,6 +880,19 @@ pub(super) fn current_segment_sources_for_runtime(
         );
     }
 
+    // Windows masks ALL sources while a Low-Disk Suspension holds them (ADR 0041):
+    // the boundary suspend detached screen + microphone + the independent
+    // system-audio WASAPI client, so the rotation tick must compute no active
+    // sources and `SkipRotation` cleanly instead of trying to rotate detached
+    // sessions. `LowDisk` is the only Windows `capture_suspension` kind (DPMS/lock/
+    // sleep ride the inactivity store), so `is_some()` is exactly a low-disk hold —
+    // including the window where a DPMS resume has cleared `screen_paused` but the
+    // actual restart is still deferred to low-disk recovery.
+    #[cfg(target_os = "windows")]
+    if runtime.capture_suspension.is_some() {
+        return None;
+    }
+
     if let Some(sources) = runtime.current_segment_sources.clone() {
         return has_any_capture_sources(&sources).then_some(sources);
     }
@@ -933,12 +959,12 @@ pub(super) fn should_rotate_segment(
 #[cfg(test)]
 mod tests {
     use super::source_session_suffix;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     use super::{
         CaptureSuspensionKind, CaptureSuspension, CaptureSuspensionStatus,
         MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS,
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     use capture_types::CaptureErrorResponse;
 
     #[test]
@@ -972,7 +998,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn capture_suspension_requires_restart_after_bounded_failures() {
         let error = CaptureErrorResponse {
@@ -995,7 +1021,7 @@ mod tests {
         assert_eq!(suspension.reason, "privacy_recovery_restart_required");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn display_unavailable_suspension_never_stops_retrying() {
         let error = CaptureErrorResponse {
@@ -1017,7 +1043,7 @@ mod tests {
         assert_eq!(suspension.status, CaptureSuspensionStatus::Retryable);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn low_disk_suspension_never_stops_retrying() {
         let error = CaptureErrorResponse {
@@ -1037,5 +1063,45 @@ mod tests {
 
         assert!(suspension.can_retry());
         assert_eq!(suspension.status, CaptureSuspensionStatus::Retryable);
+    }
+}
+
+#[cfg(all(target_os = "windows", test))]
+mod windows_low_disk_tests {
+    use super::*;
+    use capture_types::CaptureErrorResponse;
+
+    #[test]
+    fn low_disk_suspension_flag_and_default_free_space_probe() {
+        let error = CaptureErrorResponse {
+            code: "capture_low_disk".to_string(),
+            message: "insufficient disk space".to_string(),
+        };
+
+        let mut runtime = NativeCaptureRuntime::default();
+        runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+            CaptureSuspensionKind::LowDisk,
+            &error,
+        ));
+        assert!(
+            session_from_runtime(&runtime).is_low_disk_suspended,
+            "a LowDisk suspension should surface is_low_disk_suspended on Windows"
+        );
+
+        runtime.capture_suspension = None;
+        assert!(
+            !session_from_runtime(&runtime).is_low_disk_suspended,
+            "no suspension should report not low-disk-suspended"
+        );
+
+        // With the field unset, the accessor resolves to the production default
+        // probe (the `None`-means-default convention).
+        let probe = runtime.free_space_probe();
+        let default_probe: super::super::disk_space::FreeSpaceProbe =
+            super::super::disk_space::default_free_space_probe;
+        assert_eq!(
+            probe as usize, default_probe as usize,
+            "an unset free_space_probe should resolve to the default probe"
+        );
     }
 }
