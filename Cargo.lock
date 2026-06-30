@@ -227,6 +227,7 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "secret-redaction",
+ "security-framework",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -238,6 +239,7 @@ dependencies = [
  "time",
  "tokio",
  "url",
+ "zstd",
 ]
 
 [[package]]

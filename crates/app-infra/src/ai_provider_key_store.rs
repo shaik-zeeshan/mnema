@@ -1,9 +1,6 @@
 #[cfg(test)]
 use std::path::PathBuf;
 
-#[cfg(target_os = "macos")]
-use std::process::Command;
-
 use crate::error::{AppInfraError, Result};
 
 const KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.ai-runtime";
@@ -162,102 +159,44 @@ pub fn has_ai_provider_key(provider: &str) -> Result<bool> {
     AiProviderKeyStore::new(PlatformKeychainAiProviderKeyStoreAdapter).has(provider)
 }
 
+// errSecItemNotFound: the keychain has no entry for this service/account.
+// Treated as "absent", not an error, on every read/delete path.
+#[cfg(target_os = "macos")]
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+// Use the Keychain Services API directly rather than shelling out to
+// `/usr/bin/security`: the CLI's interactive `-w` prompt reads from `/dev/tty`
+// when one is present (dev launched from a terminal), so a piped stdin is
+// ignored and `add-generic-password` hangs forever. The API also adds THIS app
+// to the item's ACL, so reads don't depend on a separate binary's trust grant.
 #[cfg(target_os = "macos")]
 fn load_platform_key(provider: &str) -> Result<Option<String>> {
-    let lookup = Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            provider,
-            "-w",
-        ])
-        .output()?;
-    if !lookup.status.success() {
-        return Ok(None);
+    match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, provider) {
+        Ok(bytes) => {
+            let key = String::from_utf8_lossy(&bytes).trim().to_string();
+            Ok((!key.is_empty()).then_some(key))
+        }
+        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+        Err(error) => Err(AppInfraError::AiProviderKeyStore(error.to_string())),
     }
-
-    let key = String::from_utf8_lossy(&lookup.stdout).trim().to_string();
-    if key.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(key))
 }
 
 #[cfg(target_os = "macos")]
 fn store_platform_key(provider: &str, key: &str) -> Result<()> {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    // `-w` with no value keeps the secret off the subprocess argv (visible to
-    // same-user `ps`), but it does NOT take a single value from stdin: `security`
-    // runs an interactive "password" + "retype password" confirmation prompt and
-    // reads BOTH from stdin. Feeding the key once leaves the retype empty, which
-    // `security` resolves by silently storing an EMPTY password while still
-    // exiting 0 — so the key must be written twice and the store verified.
-    let mut child = Command::new("security")
-        .args([
-            "add-generic-password",
-            "-U",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            provider,
-            "-w",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .expect("stdin was requested via Stdio::piped");
-        // Password line, then the retype confirmation line.
-        writeln!(stdin, "{key}")?;
-        writeln!(stdin, "{key}")?;
-    }
-
-    let add = child.wait_with_output()?;
-    if !add.status.success() {
-        return Err(AppInfraError::AiProviderKeyStore(
-            String::from_utf8_lossy(&add.stderr).trim().to_string(),
-        ));
-    }
-
-    // `security` reports success even when the prompts left it storing an empty
-    // value, so confirm the key actually round-trips before declaring success.
-    match load_platform_key(provider)? {
-        Some(stored) if stored == key.trim() => Ok(()),
-        _ => Err(AppInfraError::AiProviderKeyStore(
-            "keychain reported success but did not store the provider key".to_string(),
-        )),
-    }
+    // `set_generic_password` creates or updates the entry, writing exactly these
+    // bytes — no empty-store hazard, so no round-trip verification needed.
+    security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, provider, key.as_bytes())
+        .map_err(|error| AppInfraError::AiProviderKeyStore(error.to_string()))
 }
 
 #[cfg(target_os = "macos")]
 fn delete_platform_key(provider: &str) -> Result<()> {
-    let delete = Command::new("security")
-        .args([
-            "delete-generic-password",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            provider,
-        ])
-        .output()?;
-    if !delete.status.success() {
-        let stderr = String::from_utf8_lossy(&delete.stderr);
-        // A missing entry is not an error: deleting an absent key is a no-op.
-        if stderr.contains("could not be found") {
-            return Ok(());
-        }
-        return Err(AppInfraError::AiProviderKeyStore(stderr.trim().to_string()));
+    match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, provider) {
+        Ok(()) => Ok(()),
+        // Deleting an absent key is a no-op.
+        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
+        Err(error) => Err(AppInfraError::AiProviderKeyStore(error.to_string())),
     }
-    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
