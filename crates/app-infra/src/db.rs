@@ -580,9 +580,9 @@ mod tests {
         });
     }
 
-    /// A f32 embedding serialized as the little-endian byte BLOB that `vec0`
-    /// expects for a `float[N]` column — the one canonical serializer, shared
-    /// with the worker store and query path.
+    /// A f32 embedding serialized as the little-endian byte BLOB fed to
+    /// `vec_quantize_int8(?, 'unit')` (which the int8[N] column stores) — the one
+    /// canonical serializer, shared with the worker store and query path.
     fn embedding_blob(values: &[f32]) -> Vec<u8> {
         crate::semantic_search::vector_to_le_bytes(values)
     }
@@ -705,13 +705,13 @@ mod tests {
                 values[0] = -1.0;
                 embedding_blob(&values)
             };
-            sqlx::query("INSERT INTO search_document_vectors (rowid, embedding) VALUES (?, ?)")
+            sqlx::query("INSERT INTO search_document_vectors (rowid, embedding) VALUES (?, vec_quantize_int8(?, 'unit'))")
                 .bind(1_i64)
                 .bind(&near)
                 .execute(&pool)
                 .await
                 .expect("insert near vector");
-            sqlx::query("INSERT INTO search_document_vectors (rowid, embedding) VALUES (?, ?)")
+            sqlx::query("INSERT INTO search_document_vectors (rowid, embedding) VALUES (?, vec_quantize_int8(?, 'unit'))")
                 .bind(2_i64)
                 .bind(&far)
                 .execute(&pool)
@@ -722,7 +722,7 @@ mod tests {
             let query_vec = embedding_blob(&vec![1.0_f32; 768]);
             let nearest: i64 = sqlx::query_scalar(
                 "SELECT rowid FROM search_document_vectors \
-                 WHERE embedding MATCH ? ORDER BY distance LIMIT 1",
+                 WHERE embedding MATCH vec_quantize_int8(?, 'unit') ORDER BY distance LIMIT 1",
             )
             .bind(&query_vec)
             .fetch_one(&pool)
@@ -781,7 +781,7 @@ mod tests {
             .expect("project anchor into fts");
 
             // Its Semantic Search Vector.
-            sqlx::query("INSERT INTO search_document_vectors (rowid, embedding) VALUES (?, ?)")
+            sqlx::query("INSERT INTO search_document_vectors (rowid, embedding) VALUES (?, vec_quantize_int8(?, 'unit'))")
                 .bind(anchor_id)
                 .bind(embedding_blob(&vec![0.5_f32; 768]))
                 .execute(&pool)

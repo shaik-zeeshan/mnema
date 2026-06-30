@@ -178,7 +178,7 @@ impl SemanticSearchStore {
             .await?;
         let result = sqlx::query(
             "INSERT INTO search_document_vectors (rowid, embedding) \
-             SELECT search_documents.id, ?2 \
+             SELECT search_documents.id, vec_quantize_int8(?2, 'unit') \
              FROM search_documents \
              WHERE search_documents.id = ?1 \
                AND search_documents.text_source_kind = 'direct'",
@@ -297,7 +297,7 @@ impl SemanticSearchStore {
                 .await?;
             let result = sqlx::query(
                 "INSERT INTO search_document_vectors (rowid, embedding) \
-                 SELECT search_documents.id, ?2 \
+                 SELECT search_documents.id, vec_quantize_int8(?2, 'unit') \
                  FROM search_documents \
                  WHERE search_documents.id = ?1 \
                    AND search_documents.text_source_kind = 'direct'",
@@ -403,8 +403,11 @@ impl SemanticSearchStore {
             .execute(&mut *tx)
             .await?;
         // `dimension` is a usize from the in-tree model catalog, never user input.
+        // int8 (not float) matches the migration: the write/query paths quantize
+        // via `vec_quantize_int8(?, 'unit')`, so a recreate must keep the same dtype
+        // or the quantized blobs would not match a float column.
         sqlx::query(&format!(
-            "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding float[{dimension}])"
+            "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding int8[{dimension}])"
         ))
         .execute(&mut *tx)
         .await?;
@@ -497,9 +500,14 @@ where
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_document_vectors.rowid \
          FROM search_document_vectors \
-         WHERE search_document_vectors.embedding MATCH ",
+         WHERE search_document_vectors.embedding MATCH vec_quantize_int8(",
     );
     query.push_bind(vector_to_le_bytes(query_embedding));
+    // Quantize the query vector to int8 the same way stored vectors are, so the
+    // KNN compares like with like against the int8[] column. The embedder
+    // guarantees unit vectors, so 'unit' (input range [-1,1]) is the right scale
+    // and unit-vector L2 ordering ≡ cosine ordering — rank is preserved.
+    query.push(", 'unit')");
     query.push(" AND k = ");
     query.push_bind(k);
     query.push(" AND search_document_vectors.rowid IN (");
@@ -528,16 +536,17 @@ pub(crate) async fn live_vector_dimension(pool: &SqlitePool) -> Result<Option<us
     Ok(sql.as_deref().and_then(parse_vec0_dimension))
 }
 
-/// Parse the declared dimension `N` out of a `vec0(embedding float[N])` table
+/// Parse the declared dimension `N` out of a `vec0(embedding int8[N])` table
 /// DDL (`sqlite_master.sql`). The whole feature keys its dimension authority off
 /// this — the recreate writes exactly this shape (see
 /// [`SemanticSearchStore::recreate_vectors_table`]), so the parse is the inverse
 /// of that format. Returns `None` on any shape it does not recognize, so an
 /// unexpected DDL degrades to "no usable dimension" rather than a wrong guess.
 fn parse_vec0_dimension(sql: &str) -> Option<usize> {
-    // Tolerate arbitrary whitespace/casing around the `float[N]` declaration.
+    // Parse the `[N]` after the dtype, dtype-agnostic (int8 today, float in
+    // legacy DDL) — the only bracket in the vec0 column declaration.
     let lowered = sql.to_ascii_lowercase();
-    let open = lowered.find("float[")? + "float[".len();
+    let open = lowered.find('[')? + 1;
     let close = lowered[open..].find(']')? + open;
     lowered[open..close].trim().parse::<usize>().ok()
 }
@@ -1181,6 +1190,14 @@ mod tests {
 
     #[test]
     fn parse_vec0_dimension_extracts_the_declared_width() {
+        // The live (int8) DDL the migration + recreate now emit.
+        assert_eq!(
+            super::parse_vec0_dimension(
+                "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding int8[768])"
+            ),
+            Some(768)
+        );
+        // Legacy float DDL still parses (dtype-agnostic bracket parse).
         assert_eq!(
             super::parse_vec0_dimension(
                 "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding float[768])"
@@ -1477,6 +1494,80 @@ mod tests {
             assert_eq!(
                 store.count_anchors_missing_vector().await.expect("count"),
                 1
+            );
+        });
+    }
+
+    /// A unit vector at angle `theta` in the (e0, e1) plane: `cos²+sin² = 1`, so
+    /// it is exactly unit-length and within the [-1,1] range `vec_quantize_int8(_,
+    /// 'unit')` assumes. Dot product between two such vectors is `cos(Δθ)`, so a
+    /// spread of distinct angles gives an unambiguous, well-separated f32 ranking.
+    fn angled_unit_vector(dim: usize, theta: f32) -> Vec<f32> {
+        let mut v = vec![0.0_f32; dim];
+        v[0] = theta.cos();
+        v[1] = theta.sin();
+        v
+    }
+
+    fn dot(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| x * y).sum()
+    }
+
+    #[test]
+    fn int8_quantized_knn_preserves_the_f32_ranking_order_for_unit_vectors() {
+        run_async_test(async {
+            let dir = test_dir("int8-ranking-parity");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // Five direct anchors, each given a distinct unit vector spread across
+            // angles 0.0, 0.3, 0.6, 0.9, 1.2 rad in the (e0, e1) plane.
+            for i in 0..5 {
+                seed_frame_with_text(&infra, &format!("2026-05-17T10:0{i}:00Z"), &format!("doc {i}"))
+                    .await;
+            }
+            let store = infra.semantic_search();
+            let mut anchors = store.anchors_missing_vector(10).await.expect("query");
+            anchors.sort_by_key(|a| a.anchor_id);
+
+            let dim = 768;
+            let vectors: Vec<Vec<f32>> = (0..anchors.len())
+                .map(|i| angled_unit_vector(dim, i as f32 * 0.3))
+                .collect();
+            for (anchor, v) in anchors.iter().zip(&vectors) {
+                store
+                    .store_vector(anchor.anchor_id, v)
+                    .await
+                    .expect("vector stores (quantized to int8 on write)");
+            }
+
+            // Query at 0.65 rad: off every stored angle, so the f32 cosine ranking
+            // is strict and well-separated (no ties for int8 quantization to flip).
+            let query = angled_unit_vector(dim, 0.65);
+
+            // Ground truth: anchors ordered by DESCENDING f32 cosine (== dot, unit).
+            let mut expected: Vec<i64> = anchors.iter().map(|a| a.anchor_id).collect();
+            expected.sort_by(|&a, &b| {
+                let ia = anchors.iter().position(|x| x.anchor_id == a).unwrap();
+                let ib = anchors.iter().position(|x| x.anchor_id == b).unwrap();
+                dot(&query, &vectors[ib])
+                    .partial_cmp(&dot(&query, &vectors[ia]))
+                    .unwrap()
+            });
+
+            // The int8-quantized KNN (column, stored vectors, AND query vector all
+            // int8) must return the SAME top-k ORDER as the f32 cosine ranking.
+            // Rank stability is the contract — distances differ, order does not.
+            let candidates =
+                super::knn_in_scope_anchors(infra.pool(), &query, 200, |q| {
+                    push_direct_scope(q, None)
+                })
+                .await
+                .expect("knn succeeds");
+            assert_eq!(
+                candidates, expected,
+                "int8 KNN order matches the f32 cosine order for unit vectors"
             );
         });
     }
