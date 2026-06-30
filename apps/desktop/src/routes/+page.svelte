@@ -694,8 +694,11 @@
   const activeExactPreviewLoadMs = $derived(
     timelineActive ? previewLoadMsCache.get(timelineActive.id) ?? null : null,
   );
-  const activeScrubPreviewLoadMs = $derived(
-    timelineActive ? scrubPreviewLoadMsCache.get(timelineActive.id) ?? null : null,
+  // Scrub previews display via the interval cache (`scrubPreviewIntervalForFrame`),
+  // which records no per-frame JS load-ms — so report readiness, not a timing that
+  // can never populate. ponytail: the per-frame scrubPreview*Cache maps are dead.
+  const activeScrubPreviewReady = $derived(
+    timelineActive ? scrubPreviewIntervalForFrame(timelineActive) != null : false,
   );
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
   let lastPreviewReuseFrameId = $state<number | null>(null);
@@ -6983,7 +6986,7 @@
         <div class="timeline__overlay-row">
           <span class="timeline__overlay-key">fetch</span>
           <span class="timeline__overlay-val timeline__overlay-truncate">
-            exact {activeExactPreviewLoadMs == null ? "—" : `${activeExactPreviewLoadMs.toFixed(1)}ms`} scrub {activeScrubPreviewLoadMs == null ? "—" : `${activeScrubPreviewLoadMs.toFixed(1)}ms`}
+            exact {activeExactPreviewLoadMs == null ? "—" : `${activeExactPreviewLoadMs.toFixed(1)}ms`} scrub {activeScrubPreviewReady ? "ready" : "none"}
           </span>
         </div>
         {#if timelineActive.equivalenceHint}
