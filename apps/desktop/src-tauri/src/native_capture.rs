@@ -1408,6 +1408,49 @@ pub(crate) fn handle_windows_system_resume_from_app_handle(app_handle: &tauri::A
     }
 }
 
+/// Forward a decoded console display-power change (`GUID_CONSOLE_DISPLAY_STATE`) to
+/// the capture lifecycle (Stream 3 — DPMS-off sleep policy, ADR 0023). Mirrors the
+/// suspend/resume twins above: lock `NativeCaptureState`, dispatch to the lifecycle
+/// display-off (pause) / display-on (guarded resume) handler, and on a changed
+/// session emit the update + refresh the status bar.
+///
+/// `display_on == false` means the console display slept (pause for `DisplayAsleep`);
+/// `true` means it woke (guarded resume — only when the pause reason is `DisplayAsleep`
+/// and the session is not locked or suspended).
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_display_power_changed_from_app_handle(
+    app_handle: &tauri::AppHandle,
+    display_on: bool,
+) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows display power change",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => {
+            if display_on {
+                lifecycle.handle_windows_display_awake(app_handle)
+            } else {
+                lifecycle.handle_windows_display_asleep()
+            }
+        }
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows display power change",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
 
 #[cfg(target_os = "macos")]
 fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {

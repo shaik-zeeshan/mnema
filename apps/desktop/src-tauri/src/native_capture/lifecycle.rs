@@ -58,6 +58,16 @@ use capture_vad::MicrophoneVadFallbackNotice;
 #[derive(Debug, Default)]
 pub(crate) struct RecordingLifecycle {
     runtime: NativeCaptureRuntime,
+    /// In-process workstation-lock signal, maintained from the `WTS_SESSION_LOCK` /
+    /// `WTS_SESSION_UNLOCK` handlers (ADR 0023). Read by the `DisplayAsleep` guarded
+    /// resume so a display-on while the session is still locked never resumes
+    /// capture — the `sleep-then-lock` overlap leaves the single `screen_pause_reason`
+    /// as `DisplayAsleep` (the already-paused screen makes the lock pause a no-op), so
+    /// the lock fact has to be tracked out-of-band rather than inferred from the
+    /// reason. This reuses the existing `SessionLock` notification rather than issuing
+    /// a fresh Win32 lock query at display-on time; it is not multi-reason stacking.
+    #[cfg(target_os = "windows")]
+    session_locked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +168,12 @@ impl RecordingLifecycle {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn handle_windows_session_lock(&mut self) -> Option<NativeCaptureSession> {
+        // Record the workstation-lock fact regardless of whether the screen pause
+        // below proceeds: in the `sleep-then-lock` ordering the screen is already
+        // paused for `DisplayAsleep`, so the pause itself no-ops, but the
+        // `DisplayAsleep` guarded resume still has to know the session is locked.
+        self.session_locked = true;
+
         if !self.runtime.is_running
             || self.runtime.user_capture_paused
             || self.runtime.inactivity.is_screen_paused()
@@ -207,6 +223,12 @@ impl RecordingLifecycle {
         &mut self,
         app_handle: &tauri::AppHandle,
     ) -> Option<NativeCaptureSession> {
+        // The workstation is unlocked again; clear the lock signal so a subsequent
+        // `DisplayAsleep` display-on can resume. Done before the screen-resume gate so
+        // the flag tracks OS lock state even when this unlock cannot itself resume the
+        // screen (e.g. the screen is paused for `DisplayAsleep`, not `SessionLock`).
+        self.session_locked = false;
+
         if !self.windows_session_unlock_can_resume_screen() {
             return None;
         }
@@ -226,6 +248,113 @@ impl RecordingLifecycle {
                 );
             super::debug_log::log(format!(
                 "windows session-unlock screen resume failed; leaving screen suspended: [{}] {}",
+                error.code, error.message
+            ));
+            return None;
+        }
+
+        Some(session_from_runtime(&self.runtime))
+    }
+
+    /// Pause screen capture because the console display went to sleep (DPMS off,
+    /// `GUID_CONSOLE_DISPLAY_STATE` → off; ADR 0023). Mirrors
+    /// [`handle_windows_session_lock`]: a screen-only transient-liveness pause that
+    /// keeps the session alive. No-ops when capture is not running, is user-paused,
+    /// the screen is already paused (so an existing `SessionLock` / `SystemSuspend` /
+    /// `DisplayUnavailable` reason is never downgraded to `DisplayAsleep`), or the
+    /// screen is not a requested source.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn handle_windows_display_asleep(&mut self) -> Option<NativeCaptureSession> {
+        if !self.runtime.is_running
+            || self.runtime.user_capture_paused
+            || self.runtime.inactivity.is_screen_paused()
+            || !self
+                .runtime
+                .requested_sources
+                .as_ref()
+                .is_some_and(|sources| sources.screen)
+        {
+            return None;
+        }
+
+        if let Err(error) = pause_screen_for_transient_liveness(
+            &mut self.runtime,
+            super::inactivity::TransientLivenessTrigger::DisplayAsleep,
+        ) {
+            super::debug_log::log(format!(
+                "windows display-asleep screen suspension reported an issue: [{}] {}",
+                error.code, error.message
+            ));
+        }
+
+        if matches!(
+            self.runtime.inactivity.screen_pause_reason(),
+            Some(super::inactivity::ScreenPauseReason::TransientLiveness {
+                trigger: super::inactivity::TransientLivenessTrigger::DisplayAsleep,
+            })
+        ) {
+            Some(session_from_runtime(&self.runtime))
+        } else {
+            None
+        }
+    }
+
+    /// Whether a console display-on (`GUID_CONSOLE_DISPLAY_STATE` → on) should resume
+    /// screen capture *now* (ADR 0023). The `DisplayAsleep` resume is event-driven —
+    /// the throttled display-present probe cannot observe DPMS — and is guarded so a
+    /// display-on never resumes capture while the session is otherwise unavailable.
+    /// Resumes only when ALL hold:
+    /// 1. the single screen pause reason is `TransientLiveness { DisplayAsleep }`
+    ///    (so a `SessionLock` / `SystemSuspend` / `DisplayUnavailable` pause, which
+    ///    own their own resume paths, is never resumed here — the lock-then-sleep
+    ///    ordering keeps the reason `SessionLock` and falls out here), AND
+    /// 2. the session is not locked (the out-of-band `session_locked` signal, set by
+    ///    the existing `WTS_SESSION_LOCK`/`UNLOCK` handlers — needed because the
+    ///    sleep-then-lock ordering leaves the reason as `DisplayAsleep`), AND
+    /// 3. the system is not suspend-paused (`is_system_suspend_paused`).
+    ///
+    /// When the guard fails the display-on is a no-op and capture stays paused;
+    /// whatever later clears the lock/suspend resumes via its own existing path.
+    #[cfg(target_os = "windows")]
+    fn windows_display_awake_can_resume_screen(&self) -> bool {
+        matches!(
+            self.runtime.inactivity.screen_pause_reason(),
+            Some(super::inactivity::ScreenPauseReason::TransientLiveness {
+                trigger: super::inactivity::TransientLivenessTrigger::DisplayAsleep,
+            })
+        ) && !self.session_locked
+            && !self.runtime.inactivity.is_system_suspend_paused()
+    }
+
+    /// Resume screen capture because the console display woke (DPMS on; ADR 0023),
+    /// gated by [`windows_display_awake_can_resume_screen`]. Mirrors
+    /// [`handle_windows_session_unlock`]: on a resume failure the screen is left
+    /// suspended with its `DisplayAsleep` reason intact (never fail the session on a
+    /// transient condition) and `None` is returned.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn handle_windows_display_awake(
+        &mut self,
+        app_handle: &tauri::AppHandle,
+    ) -> Option<NativeCaptureSession> {
+        if !self.windows_display_awake_can_resume_screen() {
+            return None;
+        }
+
+        if let Err(error) = resume_screen_from_inactivity(&mut self.runtime, Some(app_handle)) {
+            let microphone_paused = self.runtime.inactivity.microphone_paused;
+            let system_audio_paused = self.runtime.inactivity.system_audio_paused;
+            self.runtime
+                .inactivity
+                .set_family_paused_states_with_reason(
+                    true,
+                    microphone_paused,
+                    system_audio_paused,
+                    super::inactivity::ScreenPauseReason::TransientLiveness {
+                        trigger: super::inactivity::TransientLivenessTrigger::DisplayAsleep,
+                    },
+                );
+            super::debug_log::log(format!(
+                "windows display-on screen resume failed; leaving screen suspended: [{}] {}",
                 error.code, error.message
             ));
             return None;
@@ -2270,6 +2399,12 @@ mod tests {
         }
     }
 
+    fn display_asleep_pause_reason() -> ScreenPauseReason {
+        ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::DisplayAsleep,
+        }
+    }
+
     fn screen_only_inactivity_state() -> InactivityState {
         InactivityState {
             enabled: true,
@@ -2445,6 +2580,148 @@ mod tests {
         assert_eq!(
             lifecycle.runtime.inactivity.screen_pause_reason(),
             Some(transient_pause_reason())
+        );
+    }
+
+    // Slice 8: a console display-off (DPMS) pauses the screen as a transient-liveness
+    // suspension recording `TransientLiveness { DisplayAsleep }`, and the resume gate
+    // accepts it (display-on can resume an unlocked, unsuspended DisplayAsleep pause).
+    #[test]
+    fn windows_display_off_pauses_screen_for_display_asleep() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+
+        let session = lifecycle
+            .handle_windows_display_asleep()
+            .expect("display-off should pause requested screen capture");
+
+        assert!(session.is_running);
+        assert!(session.is_inactivity_paused);
+        assert!(lifecycle.runtime.active_screen_session.is_none());
+        assert!(lifecycle.runtime.inactivity.is_screen_paused());
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(display_asleep_pause_reason())
+        );
+        assert!(lifecycle.windows_display_awake_can_resume_screen());
+    }
+
+    // Slice 8 guarded resume — sleep-then-lock ordering (the hazard). Display sleeps
+    // first (DisplayAsleep pause), then the workstation locks while already paused, so
+    // the single reason stays DisplayAsleep but the out-of-band lock signal is set. A
+    // display-on must NOT resume capture while the session is still locked.
+    #[test]
+    fn windows_display_asleep_then_session_lock_blocks_display_on_resume() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+
+        lifecycle
+            .handle_windows_display_asleep()
+            .expect("display-off should pause for DisplayAsleep");
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(display_asleep_pause_reason())
+        );
+        assert!(
+            lifecycle.windows_display_awake_can_resume_screen(),
+            "before the lock, an unlocked DisplayAsleep pause is resumable"
+        );
+
+        // The workstation locks. The screen is already paused, so the lock pause
+        // no-ops on the single reason — but the lock signal is still recorded.
+        assert!(lifecycle.handle_windows_session_lock().is_none());
+        assert!(lifecycle.session_locked);
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(display_asleep_pause_reason()),
+            "the single-reason model keeps DisplayAsleep; the lock is tracked out-of-band"
+        );
+
+        // A display-on while locked must NOT resume: capture stays paused.
+        assert!(
+            !lifecycle.windows_display_awake_can_resume_screen(),
+            "display-on must not resume capture while the session is locked (sleep-then-lock)"
+        );
+        assert!(lifecycle.runtime.inactivity.is_screen_paused());
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(display_asleep_pause_reason())
+        );
+    }
+
+    // Slice 8 guarded resume — lock-then-sleep ordering. The workstation locks first
+    // (SessionLock pause), then the display sleeps while already paused, so the
+    // DisplayAsleep pause no-ops and must not downgrade the SessionLock reason. A
+    // display-on must NOT spuriously resume: the reason is SessionLock (not
+    // DisplayAsleep) and the session is still locked. SessionLock resumes exclusively
+    // via WTS unlock.
+    #[test]
+    fn windows_session_lock_then_display_asleep_blocks_display_on_resume() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+
+        lifecycle
+            .handle_windows_session_lock()
+            .expect("session lock should pause requested screen capture");
+        assert!(lifecycle.session_locked);
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(session_lock_pause_reason())
+        );
+
+        // The display then sleeps while the screen is already paused for SessionLock.
+        assert!(lifecycle.handle_windows_display_asleep().is_none());
+        assert_eq!(
+            lifecycle.runtime.inactivity.screen_pause_reason(),
+            Some(session_lock_pause_reason()),
+            "DisplayAsleep must not overwrite an existing SessionLock pause reason"
+        );
+
+        // A display-on must NOT resume a SessionLock pause.
+        assert!(
+            !lifecycle.windows_display_awake_can_resume_screen(),
+            "display-on must not resume a SessionLock pause (lock-then-sleep)"
+        );
+        assert!(lifecycle.runtime.inactivity.is_screen_paused());
+    }
+
+    // Slice 8: the guarded-resume predicate is gated on lock AND suspend state, both
+    // read from existing in-process signals (never a fresh query). Clearing the lock
+    // (as a WTS unlock does) restores resumability while the reason is still
+    // DisplayAsleep; a concurrent system-suspend independently blocks it.
+    #[test]
+    fn windows_display_awake_predicate_requires_unlocked_and_unsuspended() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: true,
+            pending_stop_error: None,
+        });
+        lifecycle
+            .handle_windows_display_asleep()
+            .expect("display-off should pause for DisplayAsleep");
+        assert!(lifecycle.windows_display_awake_can_resume_screen());
+
+        // Locked blocks the resume; clearing the lock restores it (reason unchanged).
+        lifecycle.session_locked = true;
+        assert!(!lifecycle.windows_display_awake_can_resume_screen());
+        lifecycle.session_locked = false;
+        assert!(lifecycle.windows_display_awake_can_resume_screen());
+
+        // A concurrent system-suspend pause independently blocks the resume.
+        lifecycle.runtime.inactivity.system_suspend_paused_sources = Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        });
+        assert!(lifecycle.runtime.inactivity.is_system_suspend_paused());
+        assert!(
+            !lifecycle.windows_display_awake_can_resume_screen(),
+            "display-on must not resume while system-suspend paused"
         );
     }
 

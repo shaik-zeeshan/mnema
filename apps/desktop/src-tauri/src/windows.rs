@@ -16,6 +16,8 @@ use crate::native_capture;
 #[cfg(target_os = "windows")]
 use std::panic::{catch_unwind, AssertUnwindSafe};
 #[cfg(target_os = "windows")]
+use windows_sys::core::GUID;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     System::RemoteDesktop::{
@@ -24,9 +26,10 @@ use windows_sys::Win32::{
     UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
-            PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
-            PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, WM_NCDESTROY, WM_POWERBROADCAST,
-            WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+            DEVICE_NOTIFY_WINDOW_HANDLE, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
+            PBT_APMRESUMESTANDBY, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE,
+            WM_NCDESTROY, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK,
+            WTS_SESSION_UNLOCK,
         },
     },
 };
@@ -36,22 +39,227 @@ static WINDOWS_SESSION_NOTIFICATION_HWND: Mutex<Option<isize>> = Mutex::new(None
 #[cfg(target_os = "windows")]
 const WINDOWS_SESSION_NOTIFICATION_SUBCLASS_ID: usize = 1;
 
+// ── Console display-state power notifications (Stream 3 — DPMS-off sleep) ──────
+//
+// `RegisterPowerSettingNotification`, `UnregisterPowerSettingNotification`,
+// `POWERBROADCAST_SETTING`, and `GUID_CONSOLE_DISPLAY_STATE` live behind
+// windows-sys' `Win32_System_Power` / `Win32_System_SystemServices` features,
+// which this crate does not enable. Rather than widen the dependency's feature
+// set (and to keep this slice contained to `windows.rs`), declare the minimal FFI
+// surface locally. Both functions are exported by user32.dll — exactly how
+// windows-sys itself links them.
+
+/// `GUID_CONSOLE_DISPLAY_STATE` (`6fe69556-704a-47a0-8f24-c28d936fda47`).
+///
+/// The modern console display-state power setting: it reflects the *overall*
+/// console display, so one sleeping monitor among several awake ones still reads
+/// "on" — unlike the deprecated per-monitor `GUID_MONITOR_POWER_ON`.
+#[cfg(target_os = "windows")]
+const GUID_CONSOLE_DISPLAY_STATE: GUID =
+    GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
+
+/// Mirror of windows-sys' `POWERBROADCAST_SETTING`: the payload behind `lparam`
+/// for a `PBT_POWERSETTINGCHANGE` message. `data` is a trailing variable-length
+/// byte array (`[u8; 1]` here, matching windows-sys); for
+/// `GUID_CONSOLE_DISPLAY_STATE` the first byte is the display-state value.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct PowerBroadcastSetting {
+    power_setting: GUID,
+    data_length: u32,
+    data: [u8; 1],
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+extern "system" {
+    fn RegisterPowerSettingNotification(
+        hrecipient: *mut std::ffi::c_void,
+        powersettingguid: *const GUID,
+        flags: u32,
+    ) -> isize;
+    fn UnregisterPowerSettingNotification(handle: isize) -> i32;
+}
+
+/// `GUID` has no `PartialEq`, so compare the two power-setting GUIDs field-by-field.
+#[cfg(target_os = "windows")]
+fn guids_equal(a: &GUID, b: &GUID) -> bool {
+    a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
+}
+
+/// The decoded `GUID_CONSOLE_DISPLAY_STATE` value.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConsoleDisplayState {
+    Off,
+    On,
+    Dimmed,
+}
+
+/// Pure decode of a `GUID_CONSOLE_DISPLAY_STATE` `POWERBROADCAST_SETTING.Data`
+/// byte: `0` = display off, `1` = display on, `2` = display dimmed. Any other
+/// value is unknown and yields `None`, so the caller drops it rather than guessing
+/// a capture transition. Kept free of any HWND / Win32 handle so it is unit
+/// testable in isolation.
+#[cfg(target_os = "windows")]
+fn decode_console_display_state(data: u32) -> Option<ConsoleDisplayState> {
+    match data {
+        0 => Some(ConsoleDisplayState::Off),
+        1 => Some(ConsoleDisplayState::On),
+        2 => Some(ConsoleDisplayState::Dimmed),
+        _ => None,
+    }
+}
+
+/// Live `HPOWERNOTIFY` (an `isize` handle) for the console display-state
+/// registration, so teardown can `UnregisterPowerSettingNotification` it. Sits
+/// beside `WINDOWS_SESSION_NOTIFICATION_HWND`; both are owned by the same Main
+/// window HWND.
+#[cfg(target_os = "windows")]
+static WINDOWS_DISPLAY_POWER_NOTIFY: Mutex<Option<isize>> = Mutex::new(None);
+
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WindowsPowerBroadcastEvent {
     Suspend,
     Resume,
+    /// A `GUID_CONSOLE_DISPLAY_STATE` transition decoded from a
+    /// `PBT_POWERSETTINGCHANGE`. Forwarded to the lifecycle as display on/off;
+    /// `Dimmed` is decoded but treated as a no-op (the display is still drawable).
+    DisplayPowerChanged(ConsoleDisplayState),
 }
 
+/// Decode a `WM_POWERBROADCAST` message into a capture-relevant power event.
+///
+/// `wparam` is the broadcast type. APM suspend/resume is fully described by
+/// `wparam`; for `PBT_POWERSETTINGCHANGE` the payload is a `POWERBROADCAST_SETTING`
+/// behind `lparam`, so that arm dereferences `lparam` (null-checked) and, when the
+/// setting is `GUID_CONSOLE_DISPLAY_STATE`, delegates the raw display byte → enum
+/// mapping to the pure [`decode_console_display_state`].
+///
+/// # Safety
+/// For `PBT_POWERSETTINGCHANGE`, `lparam` must be null or a valid pointer to a
+/// `POWERBROADCAST_SETTING` (as the window procedure delivers it). Every other
+/// `wparam` ignores `lparam`, so a `0`/null `lparam` is always sound.
 #[cfg(target_os = "windows")]
-fn windows_power_broadcast_event(wparam: WPARAM) -> Option<WindowsPowerBroadcastEvent> {
+unsafe fn windows_power_broadcast_event(
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<WindowsPowerBroadcastEvent> {
     match wparam as u32 {
         PBT_APMSUSPEND => Some(WindowsPowerBroadcastEvent::Suspend),
         PBT_APMRESUMEAUTOMATIC
         | PBT_APMRESUMECRITICAL
         | PBT_APMRESUMESTANDBY
         | PBT_APMRESUMESUSPEND => Some(WindowsPowerBroadcastEvent::Resume),
+        PBT_POWERSETTINGCHANGE => {
+            // SAFETY: per the function contract `lparam` is null or a valid
+            // `POWERBROADCAST_SETTING`; `as_ref()` null-checks before deref.
+            let setting = (lparam as *const PowerBroadcastSetting).as_ref()?;
+            if !guids_equal(&setting.power_setting, &GUID_CONSOLE_DISPLAY_STATE)
+                || setting.data_length < 1
+            {
+                return None;
+            }
+            decode_console_display_state(setting.data[0] as u32)
+                .map(WindowsPowerBroadcastEvent::DisplayPowerChanged)
+        }
         _ => None,
+    }
+}
+
+/// SLICE 8 INTEGRATION POINT (Stream 3 — DPMS-off sleep policy).
+///
+/// Forward a decoded console-display power change to the capture lifecycle. This
+/// mirrors how `WindowsPowerBroadcastEvent::{Suspend,Resume}` reach the lifecycle
+/// through `crate::native_capture::handle_windows_system_{suspend,resume}_from_app_handle`
+/// (native_capture.rs:1364 / :1389), each of which locks `NativeCaptureState` and
+/// calls a `lifecycle.handle_windows_system_*` method, then emits the changed
+/// session + refreshes the status bar.
+///
+/// `display_on == false` means the console display slept (pause); `true` means it
+/// woke (guarded resume). `Dimmed` is dropped here — the display is still
+/// drawable, so it is not a capture transition.
+///
+/// Slice 8 wires the lifecycle side and turns the body below into a one-line
+/// forward:
+///   1. Add `TransientLivenessTrigger::DisplayAsleep` (native_capture/inactivity.rs),
+///      alongside `DisplayUnavailable` / `SessionLock` / `SystemSuspend`.
+///   2. Add the lifecycle handlers (native_capture/lifecycle.rs):
+///        - display-off → pause via
+///          `pause_screen_for_transient_liveness(.., TransientLivenessTrigger::DisplayAsleep)`
+///        - display-on  → guarded resume: resume only when the current pause
+///          reason is `DisplayAsleep` AND the session is not locked AND not
+///          suspended (the resume is event-driven; the poll probe cannot observe
+///          DPMS).
+///   3. Add the forwarder in native_capture.rs that locks `NativeCaptureState`
+///      and dispatches — mirror the suspend/resume forwarders exactly:
+///        `pub(crate) fn handle_windows_display_power_changed_from_app_handle(
+///             app_handle: &tauri::AppHandle, display_on: bool)`
+///   4. Replace the body below with the single call:
+///        `crate::native_capture::handle_windows_display_power_changed_from_app_handle(app_handle, display_on);`
+#[cfg(target_os = "windows")]
+fn forward_windows_display_power_change(app_handle: &tauri::AppHandle, state: ConsoleDisplayState) {
+    let display_on = match state {
+        ConsoleDisplayState::On => true,
+        ConsoleDisplayState::Off => false,
+        // A dimmed display is still drawable, so it is not a capture transition.
+        ConsoleDisplayState::Dimmed => return,
+    };
+
+    crate::native_capture::handle_windows_display_power_changed_from_app_handle(
+        app_handle, display_on,
+    );
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows_display_power_notifications(hwnd: HWND) {
+    let mut stored = match WINDOWS_DISPLAY_POWER_NOTIFY.lock() {
+        Ok(stored) => stored,
+        Err(_) => {
+            crate::native_capture::debug_log::log_warn(
+                "Windows display power notification state poisoned; skipping registration",
+            );
+            return;
+        }
+    };
+
+    // Drop any handle left over from a prior HWND before registering on the new
+    // one, so we never leak an `HPOWERNOTIFY`.
+    if let Some(previous) = stored.take() {
+        unsafe {
+            unregister_windows_display_power_notifications(previous);
+        }
+    }
+
+    let handle = unsafe {
+        RegisterPowerSettingNotification(
+            hwnd as *mut std::ffi::c_void,
+            &GUID_CONSOLE_DISPLAY_STATE,
+            DEVICE_NOTIFY_WINDOW_HANDLE,
+        )
+    };
+    if handle == 0 {
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to register Windows console display-state power notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+        return;
+    }
+
+    *stored = Some(handle);
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn unregister_windows_display_power_notifications(handle: isize) {
+    if handle == 0 {
+        return;
+    }
+    if UnregisterPowerSettingNotification(handle) == 0 {
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to unregister Windows display power notifications: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 }
 
@@ -492,6 +700,14 @@ fn register_windows_session_notifications(window: &WebviewWindow) {
         return;
     }
 
+    // Register for console display-state power notifications on the same HWND so
+    // the subclass proc receives WM_POWERBROADCAST / PBT_POWERSETTINGCHANGE for
+    // GUID_CONSOLE_DISPLAY_STATE (Stream 3 — DPMS-off sleep policy). Done only
+    // after the subclass is installed, since the subclass proc is what decodes
+    // these messages. A failure here is logged but non-fatal: sleep/wake +
+    // lock/unlock notifications are already live.
+    register_windows_display_power_notifications(hwnd);
+
     *registered_hwnd = Some(raw_hwnd);
 }
 
@@ -525,7 +741,7 @@ unsafe extern "system" fn windows_session_notification_subclass_proc(
         // AppHandle is cloned before being moved into the thread; the
         // catch_unwind guard is preserved inside the worker so a panicking
         // handler never tears down the process.
-        if let Some(event) = windows_power_broadcast_event(wparam) {
+        if let Some(event) = windows_power_broadcast_event(wparam, lparam) {
             let app_handle = (*(app_handle_ptr as *const tauri::AppHandle)).clone();
             std::thread::spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| match event {
@@ -538,6 +754,9 @@ unsafe extern "system" fn windows_session_notification_subclass_proc(
                         crate::native_capture::handle_windows_system_resume_from_app_handle(
                             &app_handle,
                         );
+                    }
+                    WindowsPowerBroadcastEvent::DisplayPowerChanged(state) => {
+                        forward_windows_display_power_change(&app_handle, state);
                     }
                 }));
                 if result.is_err() {
@@ -581,6 +800,17 @@ unsafe extern "system" fn windows_session_notification_subclass_proc(
 
     if msg == WM_NCDESTROY {
         unregister_windows_session_notifications(hwnd);
+        // Tear down the console display-state power registration alongside the
+        // session notifications (Stream 3 — DPMS-off sleep policy).
+        if let Ok(mut display_notify) = WINDOWS_DISPLAY_POWER_NOTIFY.lock() {
+            if let Some(handle) = display_notify.take() {
+                unregister_windows_display_power_notifications(handle);
+            }
+        } else {
+            crate::native_capture::debug_log::log_warn(
+                "Windows display power notification state poisoned while clearing registration",
+            );
+        }
         if let Ok(mut registered_hwnd) = WINDOWS_SESSION_NOTIFICATION_HWND.lock() {
             if registered_hwnd.is_some_and(|registered| registered == hwnd as isize) {
                 *registered_hwnd = None;
@@ -1695,19 +1925,25 @@ mod tests {
         OpenSettingsTabPayload, PendingOpenSettingsState,
     };
     #[cfg(target_os = "windows")]
-    use super::{windows_power_broadcast_event, WindowsPowerBroadcastEvent};
+    use super::{
+        decode_console_display_state, windows_power_broadcast_event, ConsoleDisplayState,
+        PowerBroadcastSetting, WindowsPowerBroadcastEvent, GUID_CONSOLE_DISPLAY_STATE,
+    };
+    #[cfg(target_os = "windows")]
+    use windows_sys::core::GUID;
     #[cfg(target_os = "windows")]
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         PBT_APMBATTERYLOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
-        PBT_APMRESUMESUSPEND, PBT_APMSUSPEND,
+        PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE,
     };
 
-
+    // Suspend/resume ignore `lparam`, so a null (`0`) `lparam` keeps these decode
+    // assertions pure; only the `PBT_POWERSETTINGCHANGE` arm reads `lparam`.
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_power_broadcast_suspend_maps_to_system_suspend() {
         assert_eq!(
-            windows_power_broadcast_event(PBT_APMSUSPEND as usize),
+            unsafe { windows_power_broadcast_event(PBT_APMSUSPEND as usize, 0) },
             Some(WindowsPowerBroadcastEvent::Suspend)
         );
     }
@@ -1722,7 +1958,7 @@ mod tests {
             PBT_APMRESUMESUSPEND,
         ] {
             assert_eq!(
-                windows_power_broadcast_event(event as usize),
+                unsafe { windows_power_broadcast_event(event as usize, 0) },
                 Some(WindowsPowerBroadcastEvent::Resume)
             );
         }
@@ -1732,9 +1968,89 @@ mod tests {
     #[test]
     fn windows_power_broadcast_ignores_unrelated_power_events() {
         assert_eq!(
-            windows_power_broadcast_event(PBT_APMBATTERYLOW as usize),
+            unsafe { windows_power_broadcast_event(PBT_APMBATTERYLOW as usize, 0) },
             None
         );
+    }
+
+    // PBT-decode → display on/off mapping (the pure core the plan requires).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn decode_console_display_state_maps_known_bytes() {
+        assert_eq!(
+            decode_console_display_state(0),
+            Some(ConsoleDisplayState::Off)
+        );
+        assert_eq!(decode_console_display_state(1), Some(ConsoleDisplayState::On));
+        assert_eq!(
+            decode_console_display_state(2),
+            Some(ConsoleDisplayState::Dimmed)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn decode_console_display_state_rejects_unexpected_bytes() {
+        assert_eq!(decode_console_display_state(3), None);
+        assert_eq!(decode_console_display_state(255), None);
+        assert_eq!(decode_console_display_state(u32::MAX), None);
+    }
+
+    // The `PBT_POWERSETTINGCHANGE` arm reads the `POWERBROADCAST_SETTING` behind
+    // `lparam`: it must match the console-display GUID and decode the state byte.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_decodes_console_display_transitions() {
+        for (byte, expected) in [
+            (0u8, ConsoleDisplayState::Off),
+            (1, ConsoleDisplayState::On),
+            (2, ConsoleDisplayState::Dimmed),
+        ] {
+            let setting = PowerBroadcastSetting {
+                power_setting: GUID_CONSOLE_DISPLAY_STATE,
+                data_length: 1,
+                data: [byte],
+            };
+            let event = unsafe {
+                windows_power_broadcast_event(
+                    PBT_POWERSETTINGCHANGE as usize,
+                    &setting as *const PowerBroadcastSetting as isize,
+                )
+            };
+            assert_eq!(
+                event,
+                Some(WindowsPowerBroadcastEvent::DisplayPowerChanged(expected))
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_ignores_power_setting_change_with_null_payload() {
+        assert_eq!(
+            unsafe { windows_power_broadcast_event(PBT_POWERSETTINGCHANGE as usize, 0) },
+            None
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_ignores_other_power_setting_guids() {
+        // A non-console-display power setting (arbitrary GUID) must not be decoded
+        // as a display transition.
+        let other = GUID::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0001);
+        let setting = PowerBroadcastSetting {
+            power_setting: other,
+            data_length: 1,
+            data: [1],
+        };
+        let event = unsafe {
+            windows_power_broadcast_event(
+                PBT_POWERSETTINGCHANGE as usize,
+                &setting as *const PowerBroadcastSetting as isize,
+            )
+        };
+        assert_eq!(event, None);
     }
 
     #[test]

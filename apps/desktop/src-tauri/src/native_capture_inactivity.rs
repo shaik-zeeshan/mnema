@@ -57,8 +57,11 @@ const TRANSIENT_LIVENESS_RECOVERY_INTERVAL_MS: u64 = 2_000;
 
 /// Why a `TransientLiveness` screen pause was entered (ADR 0023). `DisplayUnavailable`
 /// is wired by the WGC liveness path; `SystemSuspend` is wired through
-/// `WM_POWERBROADCAST`. `SessionLock` remains defined for the follow-up slice that
-/// wires `WTSRegisterSessionNotification`.
+/// `WM_POWERBROADCAST`. `SessionLock` is wired through `WTSRegisterSessionNotification`.
+/// `DisplayAsleep` is wired through the `GUID_CONSOLE_DISPLAY_STATE` power-setting
+/// notification (DPMS off); unlike the others it resumes purely event-driven (on the
+/// display-on notification) because the poll probe `windows_display_present()` cannot
+/// observe a DPMS-off display — the monitors stay attached while asleep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransientLivenessTrigger {
     // Wired through WM_POWERBROADCAST.
@@ -71,6 +74,11 @@ pub(crate) enum TransientLivenessTrigger {
     // screen session reports `GraphicsCaptureItem.Closed` / stops being live.
     #[allow(dead_code)]
     DisplayUnavailable,
+    // Wired through GUID_CONSOLE_DISPLAY_STATE (console display DPMS off). Resume is
+    // event-driven on the display-on notification; the throttled display-present
+    // probe is NOT used for this trigger (it cannot observe DPMS).
+    #[allow(dead_code)]
+    DisplayAsleep,
 }
 
 /// Discriminator recording why the screen is currently paused (ADR 0023). The
