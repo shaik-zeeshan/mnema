@@ -10,6 +10,13 @@ use crate::{processing::ProcessingJobStatus, Result};
 
 const SQLITE_BIND_CHUNK_SIZE: usize = 500;
 
+/// Capture segments deleted per write transaction during a retention sweep.
+/// Bounds how long the single writer lock is held: the whole-sweep cascade (each
+/// row cascading FTS5 + vec0 triggers) used to run in one transaction and starve
+/// every other writer past `busy_timeout`. ponytail: small batch keeps each
+/// lock-hold short; shrink toward 1 if a single batch ever stalls.
+const RETENTION_SEGMENT_BATCH_SIZE: usize = 4;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum RetentionPolicy {
@@ -523,39 +530,39 @@ impl CaptureRetentionStore {
             .filter(|path| path.capture_segment_id.is_some() && path.path_kind == "media_file")
             .map(|path| path.path.clone())
             .collect::<Vec<_>>();
-        let mut tx = self.db.begin_write().await?;
-        let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", &segment_ids).await?;
-        frame_ids.extend(orphan_frame_ids);
-        let mut audio_ids =
-            ids_for_capture_segments(&mut tx, "audio_segments", &segment_ids).await?;
-        audio_ids.extend(orphan_audio_ids);
-        let frame_batch_ids = frame_batch_ids_deletable_with_frames(&mut tx, &frame_ids).await?;
-        let background_job_ids =
-            background_job_ids_for_frame_batches(&mut tx, &frame_batch_ids).await?;
-        let job_ids = processing_job_ids_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
-        delete_search_documents_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
-        summary.deleted_processing_results =
-            delete_by_job_ids(&mut tx, "processing_results", &job_ids).await?;
-        summary.deleted_processing_jobs = delete_processing_jobs(&mut tx, &job_ids).await?;
-        delete_speaker_rows_for_audio_segments(&mut tx, &audio_ids).await?;
-        let deleted_frame_ids = frame_ids.clone();
-        let deleted_audio_segment_ids = audio_ids.clone();
-        summary.deleted_frames = delete_by_ids(&mut tx, "frames", &frame_ids).await?;
-        cleanup_unreferenced_frame_metadata_snapshots(&mut tx).await?;
-        summary.deleted_frame_ids = deleted_frame_ids;
-        summary.deleted_frame_batches =
-            delete_by_ids(&mut tx, "frame_batches", &frame_batch_ids).await?;
-        summary.deleted_background_jobs =
-            delete_by_ids(&mut tx, "background_jobs", &background_job_ids).await?;
-        summary.deleted_audio_segments =
-            delete_by_ids(&mut tx, "audio_segments", &audio_ids).await?;
-        summary.deleted_audio_segment_ids = deleted_audio_segment_ids;
-        summary.deleted_capture_segments =
-            delete_by_ids(&mut tx, "capture_segments", &segment_ids).await?;
         summary.deleted_capture_segment_media_paths = deleted_capture_segment_media_paths;
-        let cleanup_run_id =
-            insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;
-        tx.commit().await?;
+
+        // Per-batch write transactions instead of one sweep-wide tx: a
+        // multi-thousand-row cascade (each row firing FTS5 + vec0 delete
+        // triggers) in a single transaction held the one writer lock far longer
+        // than busy_timeout and starved every other writer — the frame-batch and
+        // semantic-backfill workers and UI invokes — into "database is locked"
+        // plus an unresponsive window. Each batch stays atomic (raw rows + their
+        // derived cascade commit together), so the privacy guarantee holds
+        // per-segment instead of per-sweep. plan_cleanup pre-set deleted_frames /
+        // deleted_audio_segments as estimates; zero them so the per-batch
+        // accumulation below counts actuals (the rest default to 0/empty).
+        summary.deleted_frames = 0;
+        summary.deleted_audio_segments = 0;
+        for segment_chunk in segment_ids.chunks(RETENTION_SEGMENT_BATCH_SIZE) {
+            self.delete_eligible_batch(segment_chunk, &[], &[], &mut summary)
+                .await?;
+        }
+        // Orphan frames/audio belong to no still-deletable segment; clear them in
+        // their own batch (still atomic, still short-locked).
+        if !orphan_frame_ids.is_empty() || !orphan_audio_ids.is_empty() {
+            self.delete_eligible_batch(&[], &orphan_frame_ids, &orphan_audio_ids, &mut summary)
+                .await?;
+        }
+        // Run record is best-effort bookkeeping after the durable deletes (file
+        // tombstoning below keys off its id); a crash here only loses one
+        // latest_status row, never leaves raw-gone-dossier-left.
+        let cleanup_run_id = {
+            let mut tx = self.db.begin_write().await?;
+            let id = insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;
+            tx.commit().await?;
+            id
+        };
         let file_delete_errors = self
             .delete_segment_files_and_tombstone(cleanup_run_id, &file_paths, context)
             .await?;
@@ -576,6 +583,50 @@ impl CaptureRetentionStore {
             summary.status = "completed".to_string();
         }
         Ok(summary)
+    }
+
+    /// Delete one batch of eligible capture segments (and/or orphan frame/audio
+    /// rows) plus their entire derived cascade in ONE short write transaction,
+    /// accumulating counts into `summary`. The cross-batch frame-batch delete is
+    /// safe because `frame_batch_ids_deletable_with_frames` re-checks live
+    /// `frames` state inside each tx: a batch split across batches is deleted by
+    /// whichever batch removes its last frame (earlier batches' frames are
+    /// already committed-gone), so no batch row leaks.
+    async fn delete_eligible_batch(
+        &self,
+        segment_ids: &[i64],
+        orphan_frame_ids: &[i64],
+        orphan_audio_ids: &[i64],
+        summary: &mut RetentionCleanupSummary,
+    ) -> Result<()> {
+        let mut tx = self.db.begin_write().await?;
+        let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", segment_ids).await?;
+        frame_ids.extend_from_slice(orphan_frame_ids);
+        let mut audio_ids = ids_for_capture_segments(&mut tx, "audio_segments", segment_ids).await?;
+        audio_ids.extend_from_slice(orphan_audio_ids);
+        let frame_batch_ids = frame_batch_ids_deletable_with_frames(&mut tx, &frame_ids).await?;
+        let background_job_ids =
+            background_job_ids_for_frame_batches(&mut tx, &frame_batch_ids).await?;
+        let job_ids = processing_job_ids_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
+        delete_search_documents_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
+        summary.deleted_processing_results +=
+            delete_by_job_ids(&mut tx, "processing_results", &job_ids).await?;
+        summary.deleted_processing_jobs += delete_processing_jobs(&mut tx, &job_ids).await?;
+        delete_speaker_rows_for_audio_segments(&mut tx, &audio_ids).await?;
+        summary.deleted_frames += delete_by_ids(&mut tx, "frames", &frame_ids).await?;
+        cleanup_unreferenced_frame_metadata_snapshots(&mut tx).await?;
+        summary.deleted_frame_ids.extend(frame_ids);
+        summary.deleted_frame_batches +=
+            delete_by_ids(&mut tx, "frame_batches", &frame_batch_ids).await?;
+        summary.deleted_background_jobs +=
+            delete_by_ids(&mut tx, "background_jobs", &background_job_ids).await?;
+        summary.deleted_audio_segments +=
+            delete_by_ids(&mut tx, "audio_segments", &audio_ids).await?;
+        summary.deleted_audio_segment_ids.extend(audio_ids);
+        summary.deleted_capture_segments +=
+            delete_by_ids(&mut tx, "capture_segments", segment_ids).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn latest_status(&self, policy: RetentionPolicy) -> Result<RetentionCleanupSummary> {
@@ -2107,6 +2158,71 @@ mod tests {
                     .expect("count should query")
                     .get("count");
                 assert_eq!(count, 0, "{table} should be empty after cleanup");
+            }
+        });
+    }
+
+    /// A sweep spanning more capture segments than `RETENTION_SEGMENT_BATCH_SIZE`
+    /// still deletes every eligible segment + frame — exercising the per-batch
+    /// chunk loop (>1 write transaction) that keeps each writer-lock hold short.
+    #[test]
+    fn cleanup_deletes_segments_across_multiple_batches() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+
+            // More segments than one batch → at least two write transactions.
+            let segment_count = RETENTION_SEGMENT_BATCH_SIZE as i64 + 2;
+            for id in 1..=segment_count {
+                sqlx::query(
+                    "INSERT INTO capture_segments (
+                        id, capture_session_id, source_kind, source_session_id, segment_index,
+                        media_file_path, started_at, ended_at, status
+                     ) VALUES (?1, 'capture-1', 'screen', 'screen-source-1', ?1,
+                        '/tmp/mnema-multibatch-missing.mov',
+                        '2026-05-10T15:00:00Z', '2026-05-10T15:05:00Z', 'completed')",
+                )
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("capture segment should insert");
+                sqlx::query(
+                    "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                     VALUES ('screen-source-1', '/tmp/mnema-multibatch-frame.jpg', '2026-05-10T15:01:50Z', ?1, NULL)",
+                )
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("frame should insert");
+            }
+
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.deleted_capture_segments, segment_count);
+            assert_eq!(summary.deleted_frames, segment_count);
+            assert_eq!(summary.deleted_frame_ids.len() as i64, segment_count);
+            for table in ["capture_segments", "frames"] {
+                let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count should query");
+                assert_eq!(count, 0, "{table} should be empty after a multi-batch cleanup");
             }
         });
     }
