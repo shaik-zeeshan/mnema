@@ -898,6 +898,57 @@ impl CaptureStream {
     }
 }
 
+/// Run the shared VAD speech boundary trim over a just-closed segment `.m4a`.
+///
+/// Mirrors the macOS `finalize_microphone_output_context` ->
+/// `finalize_microphone_vad_boundary_trim` discipline: the trim needs a distinct
+/// input and output file (`trim_audio_file_to_m4a` cannot trim a file onto itself).
+/// On macOS the writer wrote into a sibling temp *source* file and the trim wrote the
+/// real output; here the WASAPI sink already produced the full (live-tail-trimmed)
+/// clip at `closed_path` (the rotation planner's expected output path), so we first
+/// stage it into the same sibling temp source and then let the shared finalize
+/// tighten it back onto `closed_path`. The shared path drains the recorded
+/// boundaries, trims to `first_start - padding .. last_end + padding` when they are
+/// valid, plain-moves the staged source back into place when they are
+/// missing/invalid, and discards when no speech was detected. A staging failure keeps
+/// the full clip at its original path and drains the boundaries to avoid a
+/// cross-segment leak.
+///
+/// Free function (not a `CaptureEngine` method) so it is exercisable without live
+/// WASAPI: it depends only on `closed_path` and the shared finalize state.
+pub(crate) fn finalize_windows_segment_boundary_trim(
+    closed_path: String,
+) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+    let source_path = crate::microphone_vad_temp_source_file(&closed_path);
+    if let Err(error) = std::fs::rename(&closed_path, &source_path) {
+        let _ = crate::take_microphone_vad_speech_boundaries();
+        capture_runtime::debug_log!(
+            "[capture-microphone] failed to stage microphone source for boundary trim; keeping full clip path={closed_path}: {error}"
+        );
+        return Ok(MicrophoneOutputFinalization {
+            source_file: Some(closed_path.clone()),
+            output_file: Some(closed_path),
+            speech_detected: false,
+            trim_start_offset_ms: 0,
+            discard_reason: None,
+            duration_ms: None,
+        });
+    }
+
+    let mut context = crate::MicrophoneOutputContext {
+        source_output_file: Some(source_path),
+        output_file: Some(closed_path),
+        boundary_trim_enabled: true,
+        // Windows has no AVFoundation double-trim coordination, so the trim is never
+        // pre-disabled (see `finalize_microphone_vad_boundary_trim`).
+        boundary_trim_disabled: false,
+        first_speech_start_secs: None,
+        last_speech_end_secs: None,
+        detected_vad_speech: false,
+    };
+    crate::finalize_microphone_vad_boundary_trim(&mut context)
+}
+
 impl CaptureEngine {
     fn new(
         output_path: &Path,
@@ -1263,7 +1314,16 @@ impl CaptureEngine {
             None
         };
 
+        let boundary_trim_enabled = self.boundary_trim_enabled();
+
         if had_frames {
+            // Layer the cross-platform VAD speech boundary trim on top of the live
+            // tail-holdback-trimmed clip, matching the macOS finalize. The sink wrote
+            // the full (already tail-trimmed) clip to `closed_path`; the boundary trim
+            // then tightens it to the spoken sub-range.
+            if boundary_trim_enabled {
+                return finalize_windows_segment_boundary_trim(closed_path);
+            }
             Ok(MicrophoneOutputFinalization {
                 source_file: Some(closed_path.clone()),
                 output_file: Some(closed_path),
@@ -1273,6 +1333,12 @@ impl CaptureEngine {
                 duration_ms,
             })
         } else {
+            // No `.m4a` was produced, so there is nothing to trim. Still drain the
+            // recorded boundaries (mirroring the macOS empty-output path) so they can
+            // never leak into the next segment's trim window.
+            if boundary_trim_enabled {
+                let _ = crate::take_microphone_vad_speech_boundaries();
+            }
             Ok(MicrophoneOutputFinalization {
                 source_file: Some(closed_path),
                 output_file: None,
@@ -1282,6 +1348,19 @@ impl CaptureEngine {
                 duration_ms: None,
             })
         }
+    }
+
+    /// Whether this engine's segment finalize should apply the VAD speech boundary
+    /// trim. Mirrors the macOS `boundary_trim_enabled = matches!(tail_activity_mode,
+    /// VadSpeech)`, additionally gated on the microphone source: only microphone
+    /// capture feeds the shared VAD speech boundaries, so a system-audio loopback
+    /// session must never trim by them.
+    fn boundary_trim_enabled(&self) -> bool {
+        self.records_microphone_activity
+            && matches!(
+                self.tail_activity_mode,
+                MicrophoneInactivityTailTrimActivityMode::VadSpeech
+            )
     }
 
     /// Finalize the current segment and begin a fresh one at `output_path`. A

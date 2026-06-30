@@ -2320,17 +2320,19 @@ mod windows_aac_m4a {
 
     use super::{audio_activity_level_is_meaningful, AudioTailSampleBuffer};
     use capture_types::CaptureErrorResponse;
-    use windows::core::PCWSTR;
+    use windows::core::{GUID, PCWSTR};
     use windows::Win32::Media::MediaFoundation::{
         IMFMediaBuffer, IMFSample, IMFSinkWriter, IMFSourceReader, MFAudioFormat_AAC,
-        MFAudioFormat_PCM, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-        MFCreateSinkWriterFromURL, MFCreateSourceReaderFromURL, MFMediaType_Audio, MFShutdown,
-        MFStartup, MFSTARTUP_FULL, MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION,
+        MFAudioFormat_Float, MFAudioFormat_PCM, MFCreateMediaType, MFCreateMemoryBuffer,
+        MFCreateSample, MFCreateSinkWriterFromURL, MFCreateSourceReaderFromURL, MFMediaType_Audio,
+        MFShutdown, MFStartup, MFSTARTUP_FULL, MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION,
         MF_MT_AAC_PAYLOAD_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
         MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS,
         MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_PD_DURATION,
-        MF_SOURCE_READER_MEDIASOURCE, MF_VERSION,
+        MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_MEDIASOURCE, MF_VERSION,
     };
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Variant::VT_I8;
 
     /// One AAC stream muxed into a `.m4a` via `IMFSinkWriter`.
     ///
@@ -2806,12 +2808,353 @@ mod windows_aac_m4a {
             message: format!("{context}: {error}"),
         }
     }
+
+    /// `ENDOFSTREAM` bit of the `ReadSample` stream-flags out-parameter
+    /// (`MF_SOURCE_READERF_ENDOFSTREAM`); the `windows` crate surfaces the flags as
+    /// a raw `u32` without this named constant.
+    const MF_SOURCE_READER_FLAG_ENDOFSTREAM: u32 = 0x2;
+    /// `CURRENTMEDIATYPECHANGED` bit of the `ReadSample` stream-flags out-parameter
+    /// (`MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED`); set when the decoded output
+    /// type changed mid-stream, so a cached channel count must be re-read.
+    const MF_SOURCE_READER_FLAG_CURRENTMEDIATYPECHANGED: u32 = 0x20;
+    /// Defensive bound on the run of flag-only `ReadSample` callbacks that carry no
+    /// buffer, so a truncated/malformed source that never reports end-of-stream
+    /// fails fast during trim instead of spinning a core forever.
+    const MAX_CONSECUTIVE_EMPTY_READS: u32 = 1024;
+
+    /// Trim `input` to the `[start_secs, end_secs]` range and re-encode the result
+    /// as AAC/m4a at `output`, preserving the source's native channel count and
+    /// sample rate so a trimmed clip is byte-format identical to an untrimmed one.
+    ///
+    /// Windows twin of the macOS [`crate::trim_audio_file_to_m4a`] (same signature),
+    /// so the shared microphone finalize call site is platform-neutral. It runs
+    /// entirely on Media Foundation — an MF Source Reader decodes the source `.m4a`
+    /// to IEEE-float PCM (preserving the native rate/channels), and the
+    /// [`WindowsAacM4aSinkWriter`] re-encodes the windowed sub-range to AAC — so it
+    /// works inside the packaged desktop app with no external `ffmpeg` on `PATH`.
+    ///
+    /// The sub-range is selected by **presentation timestamp**, not by an
+    /// exact-sample seek: MF seeks land on AAC frame boundaries, so we seek to (or
+    /// before) the start and window each decoded sample to the requested absolute
+    /// frame range. That absorbs AAC encoder-delay/priming tolerance and stays
+    /// correct even when the seek is approximate or unsupported (it then decodes
+    /// from the head and the windowing still selects exactly the requested frames).
+    pub fn trim_audio_file_to_m4a(
+        input: &str,
+        output: &str,
+        start_secs: f64,
+        end_secs: f64,
+    ) -> Result<(), CaptureErrorResponse> {
+        if !start_secs.is_finite() || !end_secs.is_finite() || end_secs < start_secs {
+            return Err(CaptureErrorResponse {
+                code: "invalid_audio_trim_range".to_string(),
+                message: "Invalid audio trim range".to_string(),
+            });
+        }
+
+        let _ = std::fs::remove_file(output);
+
+        let input_url: Vec<u16> = Path::new(input)
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let output_path = Path::new(output);
+
+        let result = unsafe {
+            // Reference-counted MFStartup balanced by the MFShutdown below — the
+            // same defensive pattern the duration probes use. The sink writer's
+            // `create`/`finalize` deliberately do not touch MFStartup/MFShutdown, so
+            // this scope owns the Media Foundation platform lifetime for the whole
+            // trim (decode + re-encode + finalize).
+            if MFStartup(MF_VERSION, MFSTARTUP_FULL).is_err() {
+                return Err(CaptureErrorResponse {
+                    code: "audio_trim_failed".to_string(),
+                    message: "MFStartup failed for audio trim".to_string(),
+                });
+            }
+            let r = trim_with_source_reader(&input_url, output_path, start_secs, end_secs);
+            MFShutdown().ok();
+            r
+        };
+        if let Err(error) = result {
+            // Never leave a partially written artifact behind, mirroring the macOS
+            // validate-and-remove failure path.
+            let _ = std::fs::remove_file(output);
+            return Err(error);
+        }
+
+        // Validate the finalized output exactly as the macOS twin does: an output
+        // with no decodable audio (e.g. an empty requested range) is removed and
+        // reported rather than left as a bogus zero-duration `.m4a`.
+        if !windows_audio_file_has_positive_duration(output) {
+            let _ = std::fs::remove_file(output);
+            return Err(CaptureErrorResponse {
+                code: "audio_trim_failed".to_string(),
+                message: "Trimmed audio output contains no audio frames".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Decode `input_url` with an MF Source Reader and re-encode the
+    /// `[start_secs, end_secs]` sub-range to AAC at `output_path` via
+    /// [`WindowsAacM4aSinkWriter`], matching the sink to the source's native
+    /// rate/channels. Assumes the caller holds an active `MFStartup`.
+    unsafe fn trim_with_source_reader(
+        input_url: &[u16],
+        output_path: &Path,
+        start_secs: f64,
+        end_secs: f64,
+    ) -> Result<(), CaptureErrorResponse> {
+        let reader: IMFSourceReader = MFCreateSourceReaderFromURL(PCWSTR(input_url.as_ptr()), None)
+            .map_err(|e| trim_error("MFCreateSourceReaderFromURL (trim) failed", &e))?;
+
+        let stream_index = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
+
+        // Ask MF to decode to uncompressed IEEE-float PCM, leaving rate/channels
+        // unset so the source's native layout is preserved; read both back so the
+        // sink can mirror them. (Same negotiation the media-decode MF seam uses.)
+        let output_type = MFCreateMediaType()
+            .map_err(|e| trim_error("MFCreateMediaType (trim Float) failed", &e))?;
+        output_type
+            .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)
+            .map_err(|e| trim_error("set trim output major type failed", &e))?;
+        output_type
+            .SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float)
+            .map_err(|e| trim_error("set trim output subtype failed", &e))?;
+        reader
+            .SetCurrentMediaType(stream_index, None, &output_type)
+            .map_err(|e| trim_error("SetCurrentMediaType (trim Float) failed", &e))?;
+
+        let actual_type = reader
+            .GetCurrentMediaType(stream_index)
+            .map_err(|e| trim_error("GetCurrentMediaType (trim) failed", &e))?;
+        let sample_rate_hz = actual_type
+            .GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND)
+            .map_err(|e| trim_error("GetUINT32(trim samples per second) failed", &e))?;
+        let mut channels = actual_type
+            .GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS)
+            .map_err(|e| trim_error("GetUINT32(trim num channels) failed", &e))?;
+        if sample_rate_hz == 0 || channels == 0 {
+            return Err(CaptureErrorResponse {
+                code: "audio_trim_failed".to_string(),
+                message: "Source audio reported zero sample rate or channels for trim".to_string(),
+            });
+        }
+
+        let sample_rate = sample_rate_hz as f64;
+        let start_frame = (start_secs * sample_rate).round().max(0.0) as i64;
+        let end_frame = ((end_secs * sample_rate).round().max(0.0) as i64).max(start_frame);
+
+        // Match the sink to the source's native rate + channel count so the trimmed
+        // `.m4a` is byte-format identical to an untrimmed mic clip (mono stays mono,
+        // stereo stays stereo).
+        let mut sink =
+            WindowsAacM4aSinkWriter::create(output_path, sample_rate_hz, channels as u16)
+                .map_err(as_trim_failure)?;
+
+        // Seek to (or before) the start; MF lands on an AAC frame boundary, so the
+        // forward decode below windows each delivered sample by its presentation
+        // timestamp.
+        let _ = reader.SetCurrentPosition(
+            &GUID::zeroed(),
+            &i8_propvariant(
+                (start_secs * super::WINDOWS_MF_TICKS_PER_SECOND as f64)
+                    .round()
+                    .max(0.0) as i64,
+            ),
+        );
+
+        let mut written_frames: i64 = 0;
+        let mut consecutive_empty_reads: u32 = 0;
+        loop {
+            let mut stream_flags: u32 = 0;
+            let mut timestamp_100ns: i64 = 0;
+            let mut sample = None;
+            reader
+                .ReadSample(
+                    stream_index,
+                    0,
+                    None,
+                    Some(&mut stream_flags),
+                    Some(&mut timestamp_100ns),
+                    Some(&mut sample),
+                )
+                .map_err(|e| trim_error("ReadSample (trim) failed", &e))?;
+
+            if (stream_flags & MF_SOURCE_READER_FLAG_ENDOFSTREAM) != 0 {
+                break;
+            }
+            if (stream_flags & MF_SOURCE_READER_FLAG_CURRENTMEDIATYPECHANGED) != 0 {
+                let changed = reader
+                    .GetCurrentMediaType(stream_index)
+                    .map_err(|e| trim_error("GetCurrentMediaType (trim change) failed", &e))?;
+                let new_channels = changed.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS).map_err(|e| {
+                    trim_error("GetUINT32(trim channels, after change) failed", &e)
+                })?;
+                // The sink is fixed to the channel count chosen at create; a real
+                // layout change would desync it, so fail rather than emit a
+                // mislabeled file. (Uniform mic `.m4a` never changes mid-stream.)
+                if new_channels != channels {
+                    return Err(CaptureErrorResponse {
+                        code: "audio_trim_failed".to_string(),
+                        message: format!(
+                            "Source channel layout changed mid-trim ({channels} -> {new_channels}); sink is fixed-format"
+                        ),
+                    });
+                }
+                channels = new_channels;
+            }
+
+            let Some(sample) = sample else {
+                consecutive_empty_reads += 1;
+                if consecutive_empty_reads >= MAX_CONSECUTIVE_EMPTY_READS {
+                    return Err(CaptureErrorResponse {
+                        code: "audio_trim_failed".to_string(),
+                        message: "Media Foundation returned too many empty reads without end-of-stream during trim".to_string(),
+                    });
+                }
+                continue;
+            };
+            consecutive_empty_reads = 0;
+
+            let sample_first_frame = (timestamp_100ns as f64
+                / super::WINDOWS_MF_TICKS_PER_SECOND as f64
+                * sample_rate)
+                .round() as i64;
+            // The sample starts past the requested range: nothing more to copy.
+            if sample_first_frame >= end_frame {
+                break;
+            }
+
+            if let Some((pcm, frames_copied)) = windowed_s16_from_sample(
+                &sample,
+                sample_first_frame,
+                start_frame,
+                end_frame,
+                channels as usize,
+            )? {
+                // Rebase the trimmed clip to a zero origin so the output timeline
+                // starts at 0 like an untrimmed segment.
+                let sample_time_100ns = (written_frames as f64 / sample_rate
+                    * super::WINDOWS_MF_TICKS_PER_SECOND as f64)
+                    .round() as i64;
+                let duration_100ns = (frames_copied as f64 / sample_rate
+                    * super::WINDOWS_MF_TICKS_PER_SECOND as f64)
+                    .round() as i64;
+                sink.append_pcm_s16(&pcm, sample_time_100ns, duration_100ns)
+                    .map_err(as_trim_failure)?;
+                written_frames += frames_copied as i64;
+            }
+        }
+
+        if written_frames == 0 || !sink.has_written_samples() {
+            return Err(CaptureErrorResponse {
+                code: "audio_trim_failed".to_string(),
+                message: "Audio trim range selected no audio frames".to_string(),
+            });
+        }
+        sink.finalize().map_err(as_trim_failure)?;
+        Ok(())
+    }
+
+    /// Window one decoded IEEE-float sample to the `[start_frame, end_frame)`
+    /// absolute-frame range and convert the overlap to interleaved 16-bit LE PCM
+    /// (the format [`WindowsAacM4aSinkWriter::append_pcm_s16`] expects). Returns the
+    /// PCM bytes and the number of frames copied, or `None` when the sample lies
+    /// entirely outside the requested range.
+    unsafe fn windowed_s16_from_sample(
+        sample: &IMFSample,
+        sample_first_frame: i64,
+        start_frame: i64,
+        end_frame: i64,
+        channels: usize,
+    ) -> Result<Option<(Vec<u8>, usize)>, CaptureErrorResponse> {
+        let buffer = sample
+            .ConvertToContiguousBuffer()
+            .map_err(|e| trim_error("ConvertToContiguousBuffer (trim) failed", &e))?;
+
+        let mut data_ptr: *mut u8 = std::ptr::null_mut();
+        let mut current_len: u32 = 0;
+        buffer
+            .Lock(&mut data_ptr, None, Some(&mut current_len))
+            .map_err(|e| trim_error("IMFMediaBuffer.Lock (trim) failed", &e))?;
+
+        let frame_stride = channels * std::mem::size_of::<f32>();
+        let mut windowed: Option<(Vec<u8>, usize)> = None;
+        if frame_stride > 0 && (current_len as usize) >= frame_stride && !data_ptr.is_null() {
+            let byte_len = current_len as usize;
+            let total_frames = (byte_len / frame_stride) as i64;
+            let sample_end_frame = sample_first_frame + total_frames;
+            let copy_from = start_frame.max(sample_first_frame);
+            let copy_to = end_frame.min(sample_end_frame);
+            if copy_to > copy_from {
+                let frames_to_copy = (copy_to - copy_from) as usize;
+                let frame_offset = (copy_from - sample_first_frame) as usize;
+                // Byte-wise `f32::from_le_bytes` rather than reinterpreting the
+                // locked region as `*const f32`: MF does not guarantee 4-byte
+                // alignment of the pointer, so an aligned cast would be UB.
+                let bytes = std::slice::from_raw_parts(data_ptr, byte_len);
+                let mut pcm = Vec::with_capacity(frames_to_copy * channels * 2);
+                for frame in 0..frames_to_copy {
+                    let base = (frame_offset + frame) * frame_stride;
+                    for channel in 0..channels {
+                        let offset = base + channel * 4;
+                        let value = f32::from_le_bytes([
+                            bytes[offset],
+                            bytes[offset + 1],
+                            bytes[offset + 2],
+                            bytes[offset + 3],
+                        ]);
+                        let scaled = (value.clamp(-1.0, 1.0) * 32767.0).round();
+                        pcm.extend_from_slice(&(scaled as i16).to_le_bytes());
+                    }
+                }
+                windowed = Some((pcm, frames_to_copy));
+            }
+        }
+
+        buffer
+            .Unlock()
+            .map_err(|e| trim_error("IMFMediaBuffer.Unlock (trim) failed", &e))?;
+        Ok(windowed)
+    }
+
+    /// Build a `VT_I8` PROPVARIANT carrying a 100ns tick count for
+    /// `IMFSourceReader::SetCurrentPosition` (`GUID_NULL` time format => 100ns
+    /// units).
+    unsafe fn i8_propvariant(ticks_100ns: i64) -> PROPVARIANT {
+        let mut variant = PROPVARIANT::default();
+        let inner = &mut variant.Anonymous.Anonymous;
+        inner.vt = VT_I8;
+        inner.Anonymous.hVal = ticks_100ns;
+        variant
+    }
+
+    fn trim_error(context: &str, error: &windows::core::Error) -> CaptureErrorResponse {
+        CaptureErrorResponse {
+            code: "audio_trim_failed".to_string(),
+            message: format!("{context}: {error}"),
+        }
+    }
+
+    /// Re-stamp a [`WindowsAacM4aSinkWriter`] error as an `audio_trim_failed` so the
+    /// trim presents the same error contract (`invalid_audio_trim_range` /
+    /// `audio_trim_failed`) as the macOS twin.
+    fn as_trim_failure(error: CaptureErrorResponse) -> CaptureErrorResponse {
+        CaptureErrorResponse {
+            code: "audio_trim_failed".to_string(),
+            message: error.message,
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
 pub use windows_aac_m4a::{
-    windows_audio_file_duration_ms, windows_audio_file_has_positive_duration,
-    WindowsAacM4aSinkWriter, WindowsAudioTailHoldbackSink,
+    trim_audio_file_to_m4a, windows_audio_file_duration_ms,
+    windows_audio_file_has_positive_duration, WindowsAacM4aSinkWriter, WindowsAudioTailHoldbackSink,
 };
 
 /// Runtime coverage for the F02 zero-sample finalize guard on the REAL
@@ -2830,11 +3173,17 @@ pub use windows_aac_m4a::{
 #[cfg(all(test, target_os = "windows"))]
 mod windows_aac_m4a_finalize_tests {
     use crate::{
+        trim_audio_file_to_m4a, windows_audio_file_duration_ms,
         windows_audio_file_has_positive_duration, WindowsAacM4aSinkWriter,
         WindowsAudioTailHoldbackSink,
     };
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use windows::core::PCWSTR;
     use windows::Win32::Media::MediaFoundation::{
-        MFShutdown, MFStartup, MFSTARTUP_FULL, MF_VERSION,
+        IMFSourceReader, MFAudioFormat_Float, MFCreateMediaType, MFCreateSourceReaderFromURL,
+        MFMediaType_Audio, MFShutdown, MFStartup, MFSTARTUP_FULL, MF_MT_AUDIO_NUM_CHANNELS,
+        MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_VERSION,
     };
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
@@ -2944,5 +3293,132 @@ mod windows_aac_m4a_finalize_tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Generate a self-contained source `.m4a` of `duration_secs` at `channels`
+    /// channels by driving the production AAC sink writer directly — no external
+    /// tools — so the trim fixtures are reproducible on any runner that has the
+    /// in-box AAC encoder. Writes a quiet sine tone (interleaved across channels)
+    /// so the file carries real, decodable audio.
+    fn write_tone_m4a(path: &Path, channels: u16, duration_secs: f64) {
+        let mut writer = WindowsAacM4aSinkWriter::create(path, SAMPLE_RATE_HZ, channels)
+            .expect("create source AAC sink writer");
+
+        let total_frames = (duration_secs * SAMPLE_RATE_HZ as f64).round() as u64;
+        let chunk_frames = u64::from(SAMPLE_RATE_HZ / 10); // 100ms chunks
+        let mut frame: u64 = 0;
+        while frame < total_frames {
+            let frames = chunk_frames.min(total_frames - frame);
+            let mut pcm = Vec::with_capacity(frames as usize * channels as usize * 2);
+            for f in 0..frames {
+                let n = (frame + f) as f32;
+                let value = ((n * 0.05).sin() * 0.2 * 32767.0) as i16;
+                for _ in 0..channels {
+                    pcm.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            let sample_time_100ns =
+                (frame as f64 / SAMPLE_RATE_HZ as f64 * MF_TICKS_PER_SECOND as f64).round() as i64;
+            let duration_100ns = (frames as f64 / SAMPLE_RATE_HZ as f64
+                * MF_TICKS_PER_SECOND as f64)
+                .round() as i64;
+            writer
+                .append_pcm_s16(&pcm, sample_time_100ns, duration_100ns)
+                .expect("append source tone chunk");
+            frame += frames;
+        }
+        writer.finalize().expect("finalize source tone .m4a");
+    }
+
+    /// Read back the channel count an MF Source Reader negotiates for `path` (the
+    /// native channel layout of the encoded audio), used to assert the trim keeps a
+    /// mono source mono and a stereo source stereo. Assumes the test's `MfPlatform`
+    /// startup is live.
+    fn decoded_channel_count(path: &Path) -> u32 {
+        let url: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let reader: IMFSourceReader =
+                MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), None).expect("open source reader");
+            let stream_index = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
+            let output_type = MFCreateMediaType().expect("create media type");
+            output_type
+                .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)
+                .expect("set major type");
+            output_type
+                .SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float)
+                .expect("set subtype");
+            reader
+                .SetCurrentMediaType(stream_index, None, &output_type)
+                .expect("negotiate Float output");
+            let actual = reader
+                .GetCurrentMediaType(stream_index)
+                .expect("read negotiated type");
+            actual
+                .GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS)
+                .expect("read channel count")
+        }
+    }
+
+    /// Shared body for the mono + stereo trim cases: generate a 2s source at
+    /// `channels`, trim it to the `[0.5, 1.0]s` sub-range via the production
+    /// Media-Foundation re-encode trim, and assert (a) the trimmed `.m4a` covers the
+    /// requested sub-range within AAC encoder-delay/frame tolerance and is clearly
+    /// shorter than the source, and (b) the trim preserves the source channel count.
+    fn assert_trim_preserves_channels_and_subrange(channels: u16, label: &str) {
+        let _mf = MfPlatform::startup();
+        let source = temp_path(&format!("trim-src-{label}"));
+        let trimmed = temp_path(&format!("trim-out-{label}"));
+
+        write_tone_m4a(&source, channels, 2.0);
+        let source_str = source.to_string_lossy().to_string();
+        let trimmed_str = trimmed.to_string_lossy().to_string();
+
+        trim_audio_file_to_m4a(&source_str, &trimmed_str, 0.5, 1.0)
+            .expect("MF re-encode trim should succeed without external tools");
+
+        // Sub-range coverage: the ~0.5s request lands well inside the AAC
+        // encoder-delay/frame tolerance window and is clearly shorter than 2s.
+        let trimmed_ms = windows_audio_file_duration_ms(&trimmed_str)
+            .expect("trimmed .m4a should report a positive duration");
+        let source_ms = windows_audio_file_duration_ms(&source_str)
+            .expect("source .m4a should report a positive duration");
+        assert!(
+            (200..=1200).contains(&trimmed_ms),
+            "expected ~0.5s ({label}) trimmed audio, got {trimmed_ms}ms"
+        );
+        assert!(
+            trimmed_ms + 300 < source_ms,
+            "trim must shorten the audio ({label}): trimmed {trimmed_ms}ms vs source {source_ms}ms"
+        );
+
+        // Native-format preservation: a mono source stays mono, a stereo source
+        // stays stereo, so a trimmed clip is channel-identical to an untrimmed one.
+        assert_eq!(
+            decoded_channel_count(&source),
+            u32::from(channels),
+            "source fixture channel count ({label})"
+        );
+        assert_eq!(
+            decoded_channel_count(&trimmed),
+            u32::from(channels),
+            "trimmed output must preserve the source channel count ({label})"
+        );
+
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&trimmed);
+    }
+
+    #[test]
+    fn trim_preserves_mono_source_channel_count_and_subrange() {
+        assert_trim_preserves_channels_and_subrange(1, "mono");
+    }
+
+    #[test]
+    fn trim_preserves_stereo_source_channel_count_and_subrange() {
+        assert_trim_preserves_channels_and_subrange(2, "stereo");
     }
 }
