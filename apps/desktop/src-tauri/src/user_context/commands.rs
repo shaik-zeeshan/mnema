@@ -334,6 +334,8 @@ pub async fn user_context_run_derivation_now(
     let distillation = run_conclusion_distillation(
         &engine,
         infra.user_context(),
+        &app_handle,
+        infra.subject_vectors(),
         provider_label,
         model_label,
     )
@@ -469,11 +471,25 @@ pub async fn user_context_dismiss_conclusion(
     infra: tauri::State<'_, AppInfraState>,
     id: i64,
 ) -> Result<(), String> {
-    infra
+    let dismissed_subject = infra
         .user_context()
         .dismiss_conclusion(id)
         .await
         .map_err(|e| e.to_string())?;
+    // Lazy re-embed (slice 4): dismissing a Conclusion can change which row is the
+    // Subject's canonical statement, so the embedding text the Subject Vector
+    // worker derives may have changed. Mark the Subject's vector stale (NULL it) so
+    // the backfill worker re-claims and re-embeds it. Best-effort: a failure here
+    // never blocks the dismissal (the worker also refills genuinely-missing
+    // vectors, the load-bearing mechanism). NULL-ing is pure storage, not embedding
+    // work, so app-infra stays embedding-free.
+    if let Some(subject) = dismissed_subject {
+        if let Err(error) = infra.subject_vectors().mark_subject_vector_stale(&subject).await {
+            crate::native_capture::debug_log::log_warn(format!(
+                "failed to mark subject vector stale after dismissing a conclusion for '{subject}': {error}"
+            ));
+        }
+    }
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     Ok(())
 }

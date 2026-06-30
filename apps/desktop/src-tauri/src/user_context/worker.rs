@@ -870,10 +870,12 @@ impl WorkerCadence {
 pub(crate) async fn run_conclusion_distillation(
     engine: &ai_engine::EngineConfig,
     store: &UserContextStore,
+    app_handle: &tauri::AppHandle,
+    subject_vectors: &app_infra::SubjectVectorStore,
     provider_label: Option<String>,
     model_label: Option<String>,
 ) -> Option<derivation::ConclusionDistillationOutcome> {
-    match derivation::distill_conclusions(engine, store).await {
+    match derivation::distill_conclusions(engine, store, app_handle, subject_vectors).await {
         Ok(outcome) => {
             let _ = store
                 .insert_derivation_run(NewDerivationRun {
@@ -1241,6 +1243,8 @@ async fn worker_tick(
         let changed = run_conclusion_distillation(
             &engine,
             infra.user_context(),
+            app_handle,
+            infra.subject_vectors(),
             provider_label.clone(),
             model_label.clone(),
         )

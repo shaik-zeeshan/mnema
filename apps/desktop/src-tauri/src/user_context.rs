@@ -31,4 +31,6 @@
 pub mod commands;
 pub mod derivation;
 pub mod digest;
+pub mod subject_candidates;
+pub mod subject_vector_worker;
 pub mod worker;

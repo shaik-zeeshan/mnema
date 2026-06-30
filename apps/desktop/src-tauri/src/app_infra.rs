@@ -1910,6 +1910,19 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    // Subject Vector Backfill sweep-loop (slice 4): embeds every distinct,
+    // non-dismissed User-Context Subject into the `user_context_subject_vectors`
+    // table so slice 5's pre-retrieval candidate selection has vectors to KNN
+    // against. Shares the one installed Semantic Search Model with the search
+    // backfill above; inert (silent idle-poll) until a model is installed, then
+    // self-starts retroactively. Spawned here on the deferred-startup seam, never
+    // on the capture hot path.
+    crate::user_context::subject_vector_worker::spawn_user_context_subject_vector_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
     spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
 }
 
