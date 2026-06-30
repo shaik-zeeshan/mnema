@@ -141,6 +141,22 @@ jobs:
       - name: Stub third-party licenses resource
         run: Set-Content -Path apps/desktop/THIRD_PARTY_LICENSES.md -Value 'Placeholder for compile-check only; real file is generated at release.'
 
+      # tauri.windows.conf.json bundles three ONNX Runtime DLLs from
+      # resources/ort/ — gitignored build outputs that scripts/prepare-ort-dylibs.mjs
+      # stages at build time (a ~268 MB GPU redist auto-download). Under
+      # `ort/load-dynamic` (=> ort-sys disable-linking) those DLLs are NEVER linked;
+      # ort loads onnxruntime.dll at runtime via libloading. The Tauri build script
+      # only validates that each declared bundle resource *exists*, and this job
+      # neither bundles nor runs ORT inference (its tests are capture/pipeline only),
+      # so stub empty placeholders to satisfy the check without the heavy download.
+      - name: Stub ONNX Runtime DLL resources
+        run: |
+          $ort = 'apps/desktop/src-tauri/resources/ort'
+          New-Item -ItemType Directory -Force $ort | Out-Null
+          foreach ($dll in 'onnxruntime.dll','onnxruntime_providers_shared.dll','onnxruntime_providers_cuda.dll') {
+            Set-Content -Path "$ort/$dll" -Value 'Placeholder for compile-check only; real DLL is staged at release by scripts/prepare-ort-dylibs.mjs.'
+          }
+
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
 
