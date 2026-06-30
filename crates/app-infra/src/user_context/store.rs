@@ -982,6 +982,11 @@ impl UserContextStore {
         .fetch_optional(&mut *transaction)
         .await?;
 
+        // The prior stored confidence (None on formation), captured before the
+        // row is consumed by the match — the up-step guard for the history
+        // snapshot below compares the reinforced value against it.
+        let previous_confidence = existing.as_ref().map(|row| row.get::<f64, _>("confidence"));
+
         let confidence = match existing {
             Some(row) => super::confidence::reinforce(
                 row.get::<f64, _>("confidence"),
@@ -1001,6 +1006,35 @@ impl UserContextStore {
         // for them too.
         let conclusion_id =
             Self::upsert_conclusion_in(&mut *transaction, &draft, confidence, now, true).await?;
+
+        // Snapshot the new confidence into the Confidence History trajectory when
+        // (and only when) it moved UP — formation seeds the trajectory's first
+        // point, and a reinforcement that ratchets the value higher records the
+        // rise. WITHOUT this, the only writer of history was the decay beat, whose
+        // values are non-increasing, so the Subject "warming" tier (which needs a
+        // positive slope in `list_confidence_history`) was unreachable. The decay
+        // beat owns the DOWN direction; snapshotting only up-steps here keeps the
+        // trajectory honest and avoids a no-op row per unchanged/contradicted
+        // reinforcement. This INSERT shares the conclusion upsert's transaction so
+        // the rise and the stored confidence commit (or roll back) atomically.
+        // Bound: the decay beat's `prune_confidence_history` centrally caps history
+        // per Conclusion, so the up-step path needs no separate prune.
+        let moved_up = match previous_confidence {
+            Some(prev) => confidence > prev,
+            None => true,
+        };
+        if moved_up {
+            sqlx::query(
+                "INSERT INTO user_context_confidence_history \
+                    (conclusion_id, confidence, snapshot_at_ms) \
+                 VALUES (?1, ?2, ?3)",
+            )
+            .bind(conclusion_id)
+            .bind(confidence)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
+        }
 
         // Replace the full evidence set (delete then re-insert) in the SAME txn.
         sqlx::query("DELETE FROM user_context_conclusion_evidence WHERE conclusion_id = ?1")
@@ -2787,6 +2821,122 @@ mod tests {
         let times: Vec<i64> = history.iter().map(|s| s.snapshot_at_ms).collect();
         assert_eq!(times, vec![1_000, 2_000, 3_000], "ascending snapshot_at_ms");
         assert_eq!(history[0].confidence, 0.40);
+        });
+    }
+
+    /// Regression for the always-0 "warming" count: the reinforcement/formation
+    /// persist path must snapshot the confidence into `user_context_confidence_history`
+    /// when it moves UP, so the Subjects "warming" tier (which needs a positive
+    /// slope across `list_confidence_history`) becomes reachable. Before the fix the
+    /// only history writer was the decay beat (non-increasing values), so no
+    /// trajectory could ever rise.
+    #[test]
+    fn reinforce_up_step_snapshots_positive_slope_into_history() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
+            let b = seed_activity(&store, "rust async", 3_000).await;
+            let c = seed_activity(&store, "rust traits", 4_000).await;
+            let d = seed_activity(&store, "rust macros", 5_000).await;
+
+            // Formation (two supports → 0.54): seeds the trajectory's first point.
+            let id = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("form");
+
+            // Reinforce with MORE support (four → 0.78): confidence ratchets UP, so
+            // the persist path records the rise as a new history snapshot.
+            store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    4,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("reinforce");
+
+            let history = store.list_confidence_history(id).await.expect("history");
+            assert!(
+                history.len() >= 2,
+                "formation seeds a point and the up-step reinforcement adds another; got {}",
+                history.len()
+            );
+            let first = history.first().expect("first").confidence;
+            let last = history.last().expect("last").confidence;
+            assert!(
+                last > first,
+                "an up-step reinforcement must make the trajectory representable as a \
+                 positive slope (warming): first {first}, last {last}"
+            );
+        });
+    }
+
+    /// The snapshot guard is up-only: a reinforcement that does NOT raise confidence
+    /// (fewer supports than the existing value already justifies — the ratchet holds
+    /// rather than dropping) must NOT append a row. The decay beat owns the DOWN
+    /// direction; the up-step path must not spam a no-op snapshot.
+    #[test]
+    fn non_raising_reinforce_does_not_snapshot() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
+            let b = seed_activity(&store, "rust async", 3_000).await;
+            let c = seed_activity(&store, "rust traits", 4_000).await;
+            let d = seed_activity(&store, "rust macros", 5_000).await;
+
+            // Formation with four supports → 0.78 (one seeded history point).
+            let id = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    4,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("form");
+            assert_eq!(store.list_confidence_history(id).await.expect("h").len(), 1);
+
+            // Reinforce with FEWER supports (two → would justify only 0.54): the
+            // ratchet holds at 0.78 (never resets down), so confidence is unchanged
+            // and no new snapshot is appended.
+            store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("reinforce");
+
+            assert_eq!(
+                store.list_confidence_history(id).await.expect("h").len(),
+                1,
+                "a non-raising reinforcement must not append a history snapshot"
+            );
         });
     }
 
