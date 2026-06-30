@@ -120,6 +120,7 @@ enum SweepPass {
 /// Mutable, in-memory worker state that outlives a single pass: the loaded
 /// embedder plus the bounded-retry quarantine counters. All deliberately
 /// non-persistent — see [`MAX_CONSECUTIVE_SUBJECT_FAILURES`].
+#[derive(Default)]
 struct SweepState {
     /// The loaded **Semantic Search Model**, reused across passes. `None` until the
     /// first pass that needs it with an installed model.
@@ -149,18 +150,6 @@ struct SweepState {
 }
 
 impl SweepState {
-    fn new() -> Self {
-        Self {
-            embedder: None,
-            logged_no_model: false,
-            subject_failures: HashMap::new(),
-            consecutive_load_failures: 0,
-            load_failed_latch: None,
-            consecutive_idles: 0,
-            last_selection: None,
-        }
-    }
-
     /// Fold a subject to its quarantine-map key. ASCII-only to match SQLite
     /// `COLLATE NOCASE` (full Unicode `to_lowercase` would over-fold).
     fn quarantine_key(subject: &str) -> String {
@@ -234,14 +223,6 @@ impl SweepState {
     }
 }
 
-/// Distinguishes a `load_embedder` failure from a successful-load-but-embed
-/// failure inside the one `spawn_blocking`: an `Err(LoadError)` means the model
-/// never loaded (→ load-failure accounting), while an `Ok` carries per-subject
-/// embed results (→ per-subject quarantine handling).
-struct LoadError {
-    error: String,
-}
-
 /// Spawn the **Subject Vector Backfill** worker. Mirrors
 /// [`crate::semantic_search_worker::spawn_semantic_index_backfill_worker`]: tracks
 /// the handle for graceful shutdown and selects between an idle sleep and the
@@ -264,7 +245,7 @@ pub fn spawn_user_context_subject_vector_worker(
 
     let handle = tauri::async_runtime::spawn(async move {
         let infra = Arc::clone(&infra);
-        let mut state = SweepState::new();
+        let mut state = SweepState::default();
 
         loop {
             if *shutdown_rx.borrow() {
@@ -443,7 +424,7 @@ async fn run_sweep_pass(
             Some(loaded) => loaded,
             None => match load_embedder(&app_data_dir_for_task, &descriptor_for_task) {
                 Ok(loaded) => loaded,
-                Err(error) => return Err(LoadError { error }),
+                Err(error) => return Err(error),
             },
         };
         let out: Vec<(String, std::result::Result<Vec<f32>, String>)> = texts_for_task
@@ -488,7 +469,7 @@ async fn run_sweep_pass(
             state.load_failed_latch = None;
             pair
         }
-        Err(LoadError { error }) => {
+        Err(error) => {
             state.consecutive_load_failures = state.consecutive_load_failures.saturating_add(1);
             crate::native_capture::debug_log::log_error(format!(
                 "subject vector backfill failed to load model '{}/{}' (consecutive load failures: {}): {error}",
@@ -509,7 +490,7 @@ async fn run_sweep_pass(
     // Restore the embedder for the next pass.
     state.embedder = Some(loaded);
 
-    let now = now_ms();
+    let now = super::worker::now_ms();
     let mut stored = 0u64;
     let mut embed_failures = 0u64;
     let mut quarantined = 0u64;
@@ -625,15 +606,6 @@ fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
     }
 }
 
-/// Current wall-clock time in Unix epoch milliseconds (the `embedded_at_ms` stamp).
-fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,7 +623,7 @@ mod tests {
 
     #[test]
     fn subject_is_quarantined_only_after_n_consecutive_failures_case_insensitively() {
-        let mut state = SweepState::new();
+        let mut state = SweepState::default();
         assert!(!state.is_subject_quarantined("Rust"));
 
         for expected in 1..MAX_CONSECUTIVE_SUBJECT_FAILURES {
@@ -669,7 +641,7 @@ mod tests {
 
     #[test]
     fn a_clean_store_resets_a_subject_failure_streak() {
-        let mut state = SweepState::new();
+        let mut state = SweepState::default();
         state.record_subject_failure("Tokio");
         state.record_subject_failure("Tokio");
         state.clear_subject_failures("tokio");
@@ -682,7 +654,7 @@ mod tests {
 
     #[test]
     fn switching_models_clears_the_quarantine_map_and_load_latch() {
-        let mut state = SweepState::new();
+        let mut state = SweepState::default();
         let provider = "mnema";
         // Prime the previous selection and quarantine a subject under model A.
         state.reconcile_selection(provider, "model-a");
@@ -708,7 +680,7 @@ mod tests {
 
     #[test]
     fn load_latch_only_matches_the_failed_selection() {
-        let mut state = SweepState::new();
+        let mut state = SweepState::default();
         assert!(!state.load_latch_matches("mnema", "model-a"));
         state.load_failed_latch = Some(("mnema".to_string(), "model-a".to_string()));
         assert!(state.load_latch_matches("mnema", "model-a"));
@@ -717,7 +689,7 @@ mod tests {
 
     #[test]
     fn idle_decay_releases_the_embedder_after_the_grace_period() {
-        let mut state = SweepState::new();
+        let mut state = SweepState::default();
         // Pretend an embedder is loaded by giving the streak a head start; the release
         // only fires when `embedder.is_some()`, so with no embedder it never fires.
         for _ in 0..(IDLE_PASSES_BEFORE_EMBEDDER_DROP + 2) {

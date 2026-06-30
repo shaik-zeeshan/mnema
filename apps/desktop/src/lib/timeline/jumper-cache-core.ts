@@ -49,7 +49,11 @@ export function monthKeyOf(d: { year: number; month: number }): MonthKey {
 
 function localDateKeyFromTs(ts: string): DateKey {
   const d = parseCapturedAt(ts);
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  return dateKeyOf({
+    year: d.getFullYear(),
+    month: d.getMonth() + 1,
+    day: d.getDate(),
+  });
 }
 
 /** Fetches one calendar month's frame summaries (UTC ISO bounds). */
@@ -177,7 +181,9 @@ export class JumperCacheCore {
     for (const f of frames) {
       const d = parseCapturedAt(f.capturedAt);
       if (isNaN(d.getTime())) continue;
-      affectedMonths.add(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
+      affectedMonths.add(
+        monthKeyOf({ year: d.getFullYear(), month: d.getMonth() + 1 }),
+      );
     }
     if (affectedMonths.size === 0) return;
     // Bump each affected month's epoch unconditionally — even one already stale

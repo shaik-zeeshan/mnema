@@ -28,10 +28,6 @@ let loadError = $state<string | null>(null);
 // the dismissal did not stick. Cleared on the next successful mutation.
 let actionError = $state<string | null>(null);
 
-function serializeError(err: unknown): string {
-	return humanizeError(err);
-}
-
 export const appNotifications = {
 	get items(): AppNotification[] {
 		return notifications;
@@ -66,7 +62,7 @@ export async function reloadAppNotifications(): Promise<void> {
 	} catch (err) {
 		// Keep any list we already have and retain a recoverable error state so
 		// the bell can offer a retry rather than vanishing.
-		loadError = serializeError(err);
+		loadError = humanizeError(err);
 	}
 }
 
@@ -94,7 +90,7 @@ export async function clearAppNotification(id: string): Promise<boolean> {
 		actionError = null;
 		return true;
 	} catch (err) {
-		actionError = serializeError(err);
+		actionError = humanizeError(err);
 		return false;
 	}
 }
@@ -105,7 +101,7 @@ export async function clearAppNotifications(): Promise<boolean> {
 		actionError = null;
 		return true;
 	} catch (err) {
-		actionError = serializeError(err);
+		actionError = humanizeError(err);
 		return false;
 	}
 }

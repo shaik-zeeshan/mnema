@@ -23,7 +23,12 @@
   // commit to the parent via `onJump` (which wraps `get_latest_frame_in_range`
   // → `get_timeline_window_around_frame`).
   import { tick } from "svelte";
-  import { CalendarDate, type DateValue } from "@internationalized/date";
+  import {
+    CalendarDate,
+    getLocalTimeZone,
+    today,
+    type DateValue,
+  } from "@internationalized/date";
   import { invoke } from "@tauri-apps/api/core";
   import { parseCapturedAt } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
@@ -34,7 +39,6 @@
     type HourBucket,
     buildHourBuckets,
     dayRange,
-    formatHourLabel,
     hourRange,
   } from "./jumper-time";
   import JumperCalendar from "./JumperCalendar.svelte";
@@ -75,7 +79,7 @@
 
   // The previewed day (preview-on-select; does NOT move the timeline).
   let pickerSelectedDate = $state<DateValue | undefined>(undefined);
-  let pickerPlaceholder = $state<DateValue>(todayLocal());
+  let pickerPlaceholder = $state<DateValue>(today(getLocalTimeZone()));
   // Commit/jump error (distinct from the cache's month-load error). Either may
   // populate the footer strip.
   let commitError = $state<string | null>(null);
@@ -88,11 +92,6 @@
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const displayError = $derived(commitError ?? cache.error);
-
-  function todayLocal(): CalendarDate {
-    const d = new Date();
-    return new CalendarDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-  }
 
   function prefersReducedMotion(): boolean {
     return (
@@ -118,24 +117,24 @@
     return isNaN(d.getTime()) ? null : d;
   });
 
-  function isCommittedDate(date: { year: number; month: number; day: number }): boolean {
-    const m = committedMoment;
-    if (!m) return false;
+  function sameLocalDay(
+    d: { year: number; month: number; day: number },
+    m: Date,
+  ): boolean {
     return (
-      date.year === m.getFullYear() &&
-      date.month === m.getMonth() + 1 &&
-      date.day === m.getDate()
+      d.year === m.getFullYear() &&
+      d.month === m.getMonth() + 1 &&
+      d.day === m.getDate()
     );
+  }
+
+  function isCommittedDate(date: { year: number; month: number; day: number }): boolean {
+    return committedMoment ? sameLocalDay(date, committedMoment) : false;
   }
 
   const previewingCommittedDay = $derived.by<boolean>(() => {
     const m = committedMoment;
-    if (!m || !pickerSelectedDate) return false;
-    return (
-      pickerSelectedDate.year === m.getFullYear() &&
-      pickerSelectedDate.month === m.getMonth() + 1 &&
-      pickerSelectedDate.day === m.getDate()
-    );
+    return !!(m && pickerSelectedDate && sameLocalDay(pickerSelectedDate, m));
   });
 
   function isHereHour(hour: number): boolean {

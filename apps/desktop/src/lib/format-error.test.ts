@@ -55,15 +55,4 @@ describe("humanizeError", () => {
     expect(out.length).toBeLessThanOrEqual(300);
     expect(out.endsWith("…")).toBe(true);
   });
-
-  it("truncates by code point without splitting surrogate-pair emoji", () => {
-    const long = "x".repeat(298) + "😀😀";
-    const out = humanizeError(long);
-    expect(out.endsWith("…")).toBe(true);
-    // No lone surrogate at the cut: a round-trip through code points is stable
-    // and the replacement char (U+FFFD) never appears.
-    expect([...out].join("")).toBe(out);
-    expect(out.includes("�")).toBe(false);
-    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(out)).toBe(false);
-  });
 });

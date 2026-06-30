@@ -14,16 +14,7 @@ const MAX_LENGTH = 300;
 const MAX_DEPTH = 6;
 
 // Keys Rust/JS errors commonly carry the human message under, in priority order.
-const MESSAGE_KEYS = [
-  "message",
-  "error",
-  "reason",
-  "detail",
-  "details",
-  "description",
-  "msg",
-  "cause",
-] as const;
+const MESSAGE_KEYS = ["message", "error", "reason", "detail"] as const;
 
 // Normalize an unknown thrown value into a friendly, single-line message.
 // Pass a custom `fallback` for surfaces that want something more specific than
@@ -109,8 +100,6 @@ function tidy(message: string): string {
   m = m.replace(/^error\s*[:\-]\s*/i, "").trim();
   if (!m) return "";
   m = m.charAt(0).toUpperCase() + m.slice(1);
-  // Truncate by code point (not UTF-16 code unit) so a surrogate-pair emoji at
-  // the cut isn't split into a lone surrogate.
-  if (m.length > MAX_LENGTH) m = [...m].slice(0, MAX_LENGTH - 1).join("").trimEnd() + "…";
+  if (m.length > MAX_LENGTH) m = m.slice(0, MAX_LENGTH - 1) + "…";
   return m;
 }

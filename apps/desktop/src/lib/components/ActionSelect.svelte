@@ -23,12 +23,6 @@
      * dispatching, expressed on the shared Select primitive.
      */
     onpick: (value: string) => void | Promise<void>;
-    /**
-     * Notified when an async `onpick` rejects. Without it the control would
-     * silently reset to the placeholder on failure, leaving no trace the action
-     * failed; pass a handler to surface it (toast, debug strip, etc.).
-     */
-    onError?: (error: unknown) => void;
   }
 
   let {
@@ -38,7 +32,6 @@
     ariaLabel,
     compact = false,
     onpick,
-    onError,
   }: Props = $props();
 
   // Never holds a persistent selection — it returns to the placeholder once the
@@ -56,8 +49,7 @@
       await onpick(next);
     } catch (error) {
       // Surface the rejection instead of swallowing it on the silent reset.
-      if (onError) onError(error);
-      else console.error("ActionSelect onpick failed", error);
+      console.error("ActionSelect onpick failed", error);
     } finally {
       busy = false;
       value = null;
