@@ -968,17 +968,25 @@ impl UserContextStore {
         let now = now_ms();
         let mut transaction = self.db.begin_write().await?;
 
-        // Read the existing row's confidence + decay anchor + pin inside the txn so
-        // the ratchet is computed against a consistent snapshot. Absent → formation.
+        // Reinforcement matches by SUBJECT ONLY (approach B), not the old
+        // `(subject, statement)` pair: a second observation of the same Subject
+        // with a differently-worded distillation must REINFORCE the existing
+        // Conclusion, not insert a near-duplicate row that splits the Subject's
+        // trajectory (warming/dedup). Read the CANONICAL row's id + confidence +
+        // decay anchor + pin inside the txn so the ratchet is computed against a
+        // consistent snapshot. Canonical = highest confidence, ties broken by
+        // lowest id (`confidence DESC, id ASC`). Dismissal deletes the row, so
+        // `status != 'dismissed'` admits visible + faded candidates (a faded row
+        // is reinforceable back into the dossier). Absent → formation.
         let existing = sqlx::query(
-            "SELECT confidence, COALESCE(last_decayed_at_ms, last_supported_at_ms) AS decay_anchor_ms, \
+            "SELECT id, confidence, \
+                    COALESCE(last_decayed_at_ms, last_supported_at_ms) AS decay_anchor_ms, \
                     COALESCE(pinned, 0) AS pinned \
              FROM user_context_conclusions \
-             WHERE subject = ?1 COLLATE NOCASE AND statement = ?2 COLLATE NOCASE \
-             ORDER BY id ASC LIMIT 1",
+             WHERE subject = ?1 COLLATE NOCASE AND status != 'dismissed' \
+             ORDER BY confidence DESC, id ASC LIMIT 1",
         )
         .bind(&draft.subject)
-        .bind(&draft.statement)
         .fetch_optional(&mut *transaction)
         .await?;
 
@@ -987,25 +995,60 @@ impl UserContextStore {
         // snapshot below compares the reinforced value against it.
         let previous_confidence = existing.as_ref().map(|row| row.get::<f64, _>("confidence"));
 
-        let confidence = match existing {
-            Some(row) => super::confidence::reinforce(
-                row.get::<f64, _>("confidence"),
-                row.get::<i64, _>("decay_anchor_ms"),
-                now,
-                support_count,
-                contradict_count,
-                row.get::<i64, _>("pinned") != 0,
-            ),
-            None => super::confidence::initial_confidence(support_count, contradict_count),
+        let (conclusion_id, confidence) = match existing {
+            // Reinforce the CANONICAL row in place, keyed by its id. Bump
+            // confidence + advance anchors but FREEZE its `statement` text: the
+            // draft's (possibly reworded) statement is intentionally NOT written,
+            // both to dodge the `UNIQUE(subject, statement)` index (migration 0037,
+            // a kept safety net) and to keep each row's trajectory clean.
+            // `reinforce` already accounted silence up to `now`, so advance the
+            // decay anchor to `now` (`last_decayed_at_ms = ?4`) — else the next
+            // decay beat re-decays the [stale anchor, now] window this write
+            // already consumed (#H3). Visibility is re-derived from the new
+            // confidence (mirrors `confidence::status_for`) so a re-supported faded
+            // row returns to the dossier, and `last_supported_at_ms` only moves
+            // FORWARD (`MAX`).
+            Some(row) => {
+                let canonical_id = row.get::<i64, _>("id");
+                let confidence = super::confidence::reinforce(
+                    row.get::<f64, _>("confidence"),
+                    row.get::<i64, _>("decay_anchor_ms"),
+                    now,
+                    support_count,
+                    contradict_count,
+                    row.get::<i64, _>("pinned") != 0,
+                );
+                sqlx::query(
+                    "UPDATE user_context_conclusions SET \
+                        confidence = ?2, \
+                        last_supported_at_ms = MAX(last_supported_at_ms, ?3), \
+                        updated_at_ms = ?4, \
+                        last_decayed_at_ms = ?4, \
+                        status = CASE WHEN ?2 < 0.15 AND COALESCE(pinned, 0) = 0 \
+                                      THEN 'faded' ELSE 'visible' END \
+                     WHERE id = ?1",
+                )
+                .bind(canonical_id)
+                .bind(confidence)
+                .bind(draft.last_supported_at_ms)
+                .bind(now)
+                .execute(&mut *transaction)
+                .await?;
+                (canonical_id, confidence)
+            }
+            // Genuinely new Subject → form a fresh row at the formation value. The
+            // ON CONFLICT path in `upsert_conclusion_in` cannot fire here (no row
+            // for this Subject exists), so this is a plain insert; `stamp_decayed =
+            // true` is still correct (a brand-new row has no silence to re-count).
+            None => {
+                let confidence =
+                    super::confidence::initial_confidence(support_count, contradict_count);
+                let id =
+                    Self::upsert_conclusion_in(&mut *transaction, &draft, confidence, now, true)
+                        .await?;
+                (id, confidence)
+            }
         };
-
-        // Reinforce path: `reinforce`/formation already accounted silence up to
-        // `now`, so advance the decay anchor to `now` — else the next decay beat
-        // re-decays the [stale anchor, now] window this write already consumed
-        // (#H3). Brand-new rows have no silence to re-count, so this is correct
-        // for them too.
-        let conclusion_id =
-            Self::upsert_conclusion_in(&mut *transaction, &draft, confidence, now, true).await?;
 
         // Snapshot the new confidence into the Confidence History trajectory when
         // (and only when) it moved UP — formation seeds the trajectory's first
@@ -1190,6 +1233,102 @@ impl UserContextStore {
         .fetch_all(self.db.read())
         .await?;
         self.hydrate_conclusions(rows).await
+    }
+
+    /// The canonical statement for `subject`: the single highest-confidence
+    /// non-dismissed Conclusion (ties broken by lowest id), or `None` when the
+    /// Subject has no visible/faded Conclusion. This is the same canonical rule
+    /// used elsewhere (highest confidence, ties → lowest id) but returns only the
+    /// statement text, with no evidence hydration — it powers the Subject Vector
+    /// backfill worker's "statement enrichment" (a terse handle like "Apple" is
+    /// embedded alongside its representative statement so the vector carries
+    /// context). Kept deliberately lightweight (a single indexed row, no
+    /// `hydrate_conclusions`) since the worker calls it once per Subject.
+    pub async fn canonical_statement_for_subject(
+        &self,
+        subject: &str,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT statement FROM user_context_conclusions \
+             WHERE subject = ?1 COLLATE NOCASE AND status != 'dismissed' \
+             ORDER BY confidence DESC, id ASC \
+             LIMIT 1",
+        )
+        .bind(subject)
+        .fetch_optional(self.db.read())
+        .await?;
+        Ok(row.map(|row| row.get::<String, _>("statement")))
+    }
+
+    /// Distinct non-dismissed **Subject** handles, newest-supported first, capped
+    /// at `limit`. Powers the Conclusion-distillation "KNOWN SUBJECTS" fallback
+    /// (Mode 2, no Semantic Search model): the candidate handle set the engine is
+    /// told to reuse verbatim so a reworded belief reinforces the canonical Subject
+    /// row instead of splitting it into a near-duplicate.
+    ///
+    /// Subjects are deduped CASE-INSENSITIVELY (matching the Conclusions NOCASE
+    /// dedup) and ordered by each Subject's most recent `last_supported_at_ms`, so
+    /// the handles the user has touched most recently lead. This stays a plain
+    /// recency SQL read — the embedding-driven Mode 1 candidate selection lives in
+    /// the desktop layer, keeping app-infra embedding-free.
+    pub async fn list_subject_handles_by_recency(&self, limit: i64) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT subject FROM user_context_conclusions \
+             WHERE status != 'dismissed' \
+             GROUP BY subject COLLATE NOCASE \
+             ORDER BY MAX(last_supported_at_ms) DESC, subject ASC \
+             LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(self.db.read())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("subject"))
+            .collect())
+    }
+
+    /// Subject handles whose NAME or conclusion statements lexically overlap
+    /// `query` (the recent Activity text), most-relevant first, capped at `limit`.
+    ///
+    /// The MODEL-FREE candidate leg for distillation's KNOWN SUBJECTS block: it
+    /// catches a reworded duplicate that shares words with an existing Subject
+    /// ("Marvel Rivals / gaming" ↔ "Marvel Rivals gaming videos") with no embedding
+    /// model and no embedding-backfill lag — the gap the semantic (Mode 1) leg
+    /// cannot cover for a just-created Subject whose vector is not embedded yet.
+    /// Subjects are deduped CASE-INSENSITIVELY and scanned in FULL (not capped to
+    /// the recent window), so an OLD duplicate is still reachable; the ranking
+    /// preserves recency order on score ties (the SQL orders newest-first). Returns
+    /// empty when `query` has no usable tokens. Stays a plain SQL read plus the pure
+    /// [`crate::lexical`] ranker — no embeddings, keeping app-infra embedding-free.
+    pub async fn list_subject_handles_by_lexical_overlap(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT subject, COALESCE(GROUP_CONCAT(statement, ' '), '') AS statements \
+             FROM user_context_conclusions \
+             WHERE status != 'dismissed' \
+             GROUP BY subject COLLATE NOCASE \
+             ORDER BY MAX(last_supported_at_ms) DESC, subject ASC",
+        )
+        .fetch_all(self.db.read())
+        .await?;
+        let candidates: Vec<(String, String)> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("subject"),
+                    row.get::<String, _>("statements"),
+                )
+            })
+            .collect();
+        Ok(crate::lexical::rank_handles_by_overlap(
+            query,
+            &candidates,
+            limit.max(0) as usize,
+        ))
     }
 
     /// Number of non-dismissed Conclusions (the status-surface count).
@@ -1469,7 +1608,12 @@ impl UserContextStore {
     /// support-stance evidence — the baseline the resurface bar is measured
     /// against. Deleting the Conclusion cascades its evidence + confidence-history
     /// rows via FK.
-    pub async fn dismiss_conclusion(&self, id: i64) -> Result<()> {
+    /// Returns the dismissed Conclusion's `subject` (`Some`) when a row was
+    /// actually removed, or `None` when `id` matched no Conclusion. The desktop
+    /// layer uses the returned subject to mark that Subject's vector stale
+    /// (lazy re-embed): dismissing a Conclusion can change which row is canonical,
+    /// so the embedding text the Subject Vector worker derives may have changed.
+    pub async fn dismiss_conclusion(&self, id: i64) -> Result<Option<String>> {
         let now = now_ms();
         let mut transaction = self.db.begin_write().await?;
 
@@ -1482,7 +1626,7 @@ impl UserContextStore {
         .await?;
         let Some(conclusion) = conclusion else {
             transaction.commit().await?;
-            return Ok(());
+            return Ok(None);
         };
         let subject: String = conclusion.get("subject");
         let statement: String = conclusion.get("statement");
@@ -1530,7 +1674,7 @@ impl UserContextStore {
             .await?;
 
         transaction.commit().await?;
-        Ok(())
+        Ok(Some(subject))
     }
 
     /// Every recorded **Dismissal State**, newest first. Fed to the derivation
@@ -2886,6 +3030,134 @@ mod tests {
         });
     }
 
+    /// `list_subject_handles_by_recency` returns distinct non-dismissed Subjects
+    /// newest-supported first, excludes dismissed ones, and honours the limit.
+    #[test]
+    fn list_subject_handles_by_recency_orders_excludes_dismissed_and_limits() {
+        block_on(async {
+            let store = test_store().await;
+            let seed = |subject: &str, last_supported_at_ms: i64| NewConclusion {
+                subject: subject.to_string(),
+                statement: format!("belief about {subject}"),
+                confidence: 0.6,
+                formed_at_ms: last_supported_at_ms,
+                last_supported_at_ms,
+            };
+
+            // Three subjects supported at increasing times → newest-supported first.
+            store.upsert_conclusion(seed("Apple", 1_000)).await.expect("apple");
+            store.upsert_conclusion(seed("Rust", 3_000)).await.expect("rust");
+            store.upsert_conclusion(seed("Vim", 2_000)).await.expect("vim");
+
+            let handles = store
+                .list_subject_handles_by_recency(10)
+                .await
+                .expect("recency");
+            assert_eq!(
+                handles,
+                vec!["Rust".to_string(), "Vim".to_string(), "Apple".to_string()],
+                "ordered by most-recent last_supported_at_ms first"
+            );
+
+            // The limit caps the returned set (still newest-first).
+            let limited = store
+                .list_subject_handles_by_recency(2)
+                .await
+                .expect("limited");
+            assert_eq!(limited, vec!["Rust".to_string(), "Vim".to_string()]);
+
+            // A dismissed-status Subject is excluded.
+            let coffee = store.upsert_conclusion(seed("Coffee", 9_000)).await.expect("coffee");
+            sqlx::query("UPDATE user_context_conclusions SET status = 'dismissed' WHERE id = ?1")
+                .bind(coffee)
+                .execute(store.pool())
+                .await
+                .expect("dismiss coffee");
+            let after_dismiss = store
+                .list_subject_handles_by_recency(10)
+                .await
+                .expect("after dismiss");
+            assert!(
+                !after_dismiss.iter().any(|s| s == "Coffee"),
+                "a dismissed Subject must not appear: {after_dismiss:?}"
+            );
+            assert_eq!(after_dismiss.len(), 3, "the other three remain");
+        });
+    }
+
+    /// `list_subject_handles_by_lexical_overlap` surfaces a reworded duplicate that
+    /// shares words with the recent Activity text (the model-free dedup leg),
+    /// excludes dismissed Subjects, and returns empty for a query with no usable
+    /// tokens.
+    #[test]
+    fn list_subject_handles_by_lexical_overlap_finds_reworded_duplicate() {
+        block_on(async {
+            let store = test_store().await;
+            let seed = |subject: &str, statement: &str, ts: i64| NewConclusion {
+                subject: subject.to_string(),
+                statement: statement.to_string(),
+                confidence: 0.6,
+                formed_at_ms: ts,
+                last_supported_at_ms: ts,
+            };
+            store
+                .upsert_conclusion(seed(
+                    "Marvel Rivals / gaming",
+                    "Engages with gaming content on YouTube",
+                    1_000,
+                ))
+                .await
+                .expect("marvel");
+            store
+                .upsert_conclusion(seed(
+                    "async communication",
+                    "Prefers Slack over meetings",
+                    2_000,
+                ))
+                .await
+                .expect("async");
+
+            // A window about watching Marvel Rivals videos surfaces the existing
+            // Marvel handle on shared name tokens, not the unrelated subject.
+            let hits = store
+                .list_subject_handles_by_lexical_overlap(
+                    "Watching Marvel Rivals gaming videos on YouTube",
+                    20,
+                )
+                .await
+                .expect("lexical");
+            assert_eq!(hits.first().map(String::as_str), Some("Marvel Rivals / gaming"));
+            assert!(!hits.iter().any(|s| s == "async communication"));
+
+            // No usable tokens → no lexical candidates (caller falls back to recency
+            // + semantic only).
+            let empty = store
+                .list_subject_handles_by_lexical_overlap("the and a", 20)
+                .await
+                .expect("empty query");
+            assert!(empty.is_empty());
+
+            // A dismissed Subject is never a lexical candidate.
+            let dismissed = store
+                .upsert_conclusion(seed("Marvel cinematic films", "Watches Marvel movies", 3_000))
+                .await
+                .expect("films");
+            sqlx::query("UPDATE user_context_conclusions SET status = 'dismissed' WHERE id = ?1")
+                .bind(dismissed)
+                .execute(store.pool())
+                .await
+                .expect("dismiss films");
+            let after = store
+                .list_subject_handles_by_lexical_overlap("Marvel movies and films", 20)
+                .await
+                .expect("after dismiss");
+            assert!(
+                !after.iter().any(|s| s == "Marvel cinematic films"),
+                "a dismissed Subject must not be a lexical candidate: {after:?}"
+            );
+        });
+    }
+
     /// The snapshot guard is up-only: a reinforcement that does NOT raise confidence
     /// (fewer supports than the existing value already justifies — the ratchet holds
     /// rather than dropping) must NOT append a row. The decay beat owns the DOWN
@@ -2936,6 +3208,226 @@ mod tests {
                 store.list_confidence_history(id).await.expect("h").len(),
                 1,
                 "a non-raising reinforcement must not append a history snapshot"
+            );
+        });
+    }
+
+    /// Approach B: a second observation of an EXISTING Subject whose distillation
+    /// is worded differently must REINFORCE the canonical row (not insert a near
+    /// duplicate that splits the Subject's trajectory). Row count stays at one, the
+    /// canonical confidence ratchets up, and the canonical `statement` is FROZEN
+    /// (the reworded draft statement is intentionally not written).
+    #[test]
+    fn reinforce_matches_by_subject_not_statement() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
+            let b = seed_activity(&store, "rust async", 3_000).await;
+            let c = seed_activity(&store, "rust traits", 4_000).await;
+            let d = seed_activity(&store, "rust macros", 5_000).await;
+
+            // Formation: subject "Rust", statement "Learning Rust", 2 supports → 0.54.
+            let id = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("form");
+            let formed = store.get_conclusion(id).await.expect("get").expect("row");
+
+            // Second observation of the SAME subject with a DIFFERENT statement and
+            // more support (4 → 0.78). This must reinforce the canonical row, not insert.
+            let reinforced_id = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Rust ownership is tricky", 0.0),
+                    4,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("reinforce");
+
+            assert_eq!(reinforced_id, id, "subject-only match reinforces the same row");
+
+            let rows = store
+                .list_conclusions_for_subject("Rust")
+                .await
+                .expect("subject rows");
+            assert_eq!(rows.len(), 1, "differently-worded re-observation must NOT insert a new row");
+
+            let after = store.get_conclusion(id).await.expect("get").expect("row");
+            assert!(
+                after.confidence > formed.confidence,
+                "canonical confidence must ratchet up: {} -> {}",
+                formed.confidence,
+                after.confidence
+            );
+            assert_eq!(
+                after.statement, "Learning Rust",
+                "canonical statement is frozen on reinforce (reworded draft is ignored)"
+            );
+        });
+    }
+
+    /// Canonical = highest confidence. When a Subject has multiple non-dismissed
+    /// rows, reinforcement routes to the highest-confidence one; the others are
+    /// left untouched.
+    #[test]
+    fn canonical_reinforce_picks_highest_confidence() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
+            let b = seed_activity(&store, "rust async", 3_000).await;
+            let c = seed_activity(&store, "rust traits", 4_000).await;
+            let d = seed_activity(&store, "rust macros", 5_000).await;
+
+            // Two rows for the same Subject, different statements + confidences.
+            let low = store
+                .upsert_conclusion(draft("Rust", "Low-confidence take", 0.30))
+                .await
+                .expect("low");
+            let high = store
+                .upsert_conclusion(draft("Rust", "High-confidence take", 0.70))
+                .await
+                .expect("high");
+            let low_before = store.get_conclusion(low).await.expect("g").expect("r").confidence;
+
+            // Reinforce by subject with 4 supports (newly_justified 0.78).
+            let reinforced_id = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Yet another wording", 0.0),
+                    4,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("reinforce");
+
+            assert_eq!(reinforced_id, high, "the highest-confidence row is canonical");
+            let high_after = store.get_conclusion(high).await.expect("g").expect("r").confidence;
+            assert!(high_after > 0.70, "canonical row's confidence ratcheted up: {high_after}");
+
+            let low_after = store.get_conclusion(low).await.expect("g").expect("r").confidence;
+            assert_eq!(low_after, low_before, "the non-canonical row is untouched");
+        });
+    }
+
+    /// Canonical tie-break = lowest id. Two rows with equal confidence: the
+    /// earlier-inserted (lowest id) one is canonical and receives the reinforcement.
+    #[test]
+    fn canonical_reinforce_tie_broken_by_lowest_id() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
+            let b = seed_activity(&store, "rust async", 3_000).await;
+            let c = seed_activity(&store, "rust traits", 4_000).await;
+            let d = seed_activity(&store, "rust macros", 5_000).await;
+
+            // Two rows for the same Subject with EQUAL confidence.
+            let first = store
+                .upsert_conclusion(draft("Rust", "First wording", 0.50))
+                .await
+                .expect("first");
+            let second = store
+                .upsert_conclusion(draft("Rust", "Second wording", 0.50))
+                .await
+                .expect("second");
+            assert!(first < second, "first row has the lower id");
+            let second_before = store
+                .get_conclusion(second)
+                .await
+                .expect("g")
+                .expect("r")
+                .confidence;
+
+            let reinforced_id = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Third wording", 0.0),
+                    4,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("reinforce");
+
+            assert_eq!(reinforced_id, first, "ties break to the lowest id");
+            let second_after = store
+                .get_conclusion(second)
+                .await
+                .expect("g")
+                .expect("r")
+                .confidence;
+            assert_eq!(second_after, second_before, "the tie loser is untouched");
+        });
+    }
+
+    /// A genuinely new Subject (no existing non-dismissed row) still forms a fresh
+    /// row rather than reinforcing some unrelated Subject.
+    #[test]
+    fn new_subject_inserts_new_row() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
+            let b = seed_activity(&store, "rust async", 3_000).await;
+
+            // Form one Subject.
+            store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("form rust");
+
+            // A different Subject must insert, not reinforce Rust.
+            let other = store
+                .upsert_conclusion_with_evidence(
+                    draft("Apple", "Likes Apple", 0.0),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                    ],
+                )
+                .await
+                .expect("form apple");
+
+            assert_eq!(store.count_conclusions().await.expect("count"), 2, "two distinct subjects");
+            assert_eq!(
+                store.list_conclusions_for_subject("Apple").await.expect("apple").len(),
+                1,
+                "the new subject has exactly one row"
+            );
+            assert_eq!(
+                store.get_conclusion(other).await.expect("g").expect("r").subject,
+                "Apple"
             );
         });
     }

@@ -13,6 +13,7 @@ mod frame_batch_runtime;
 mod frame_batch_store;
 mod hidden_segment_workspace;
 pub mod jobs;
+mod lexical;
 mod ocr_budget;
 pub mod processing;
 pub mod retry_policy;
@@ -103,6 +104,7 @@ pub use user_context::{
     NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
     UserContextCascadeSummary, UserContextStore,
 };
+pub use user_context::SubjectVectorStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSegmentTranscriptionAdmission {
@@ -282,6 +284,7 @@ pub struct AppInfra {
     semantic_search: SemanticSearchStore,
     usage_charts: UsageChartsStore,
     user_context: UserContextStore,
+    subject_vectors: SubjectVectorStore,
     conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
@@ -361,6 +364,7 @@ impl AppInfra {
         let semantic_search = SemanticSearchStore::new(database.handle().clone());
         let usage_charts = UsageChartsStore::new(database.handle().clone());
         let user_context = UserContextStore::new(database.handle().clone());
+        let subject_vectors = SubjectVectorStore::new(database.handle().clone());
         let conversation = ConversationStore::new(database.handle().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
@@ -380,6 +384,7 @@ impl AppInfra {
             semantic_search,
             usage_charts,
             user_context,
+            subject_vectors,
             conversation,
             captured_frame_equivalence,
             captured_frame_pipeline,
@@ -472,6 +477,15 @@ impl AppInfra {
 
     pub fn user_context(&self) -> &user_context::UserContextStore {
         &self.user_context
+    }
+
+    /// The **Subject Vector** store seam (migration `0043`): embedding-free
+    /// persistence of one vector per distinct User-Context Subject, plus the
+    /// brute-force cosine k-NN. The embedding model work lives in the desktop
+    /// layer (`semantic-search` crate); this exposes only the BLOB storage / KNN
+    /// the Subject Vector backfill worker and slice-5 candidate selection need.
+    pub fn subject_vectors(&self) -> &user_context::SubjectVectorStore {
+        &self.subject_vectors
     }
 
     pub fn conversation(&self) -> &conversation::ConversationStore {
