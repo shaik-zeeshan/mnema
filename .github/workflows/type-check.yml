@@ -130,6 +130,17 @@ jobs:
         # real sidecar for the Tauri externalBin resource instead of a placeholder.
         run: bun scripts/prepare-mnema-cli-sidecar.mjs debug --locked
 
+      # tauri.conf.json bundles apps/desktop/THIRD_PARTY_LICENSES.md, a
+      # gitignored build output generated only at release time
+      # (scripts/generate-third-party-licenses.sh). The Tauri build script
+      # validates that every declared bundle resource exists even under
+      # `cargo check`/`cargo build`, so stub a placeholder here to keep the
+      # compile check fast (no cargo-about install / dep-graph resolve needed).
+      # The Windows runner's default shell is pwsh, so use Set-Content rather
+      # than the macOS job's printf.
+      - name: Stub third-party licenses resource
+        run: Set-Content -Path apps/desktop/THIRD_PARTY_LICENSES.md -Value 'Placeholder for compile-check only; real file is generated at release.'
+
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
 
