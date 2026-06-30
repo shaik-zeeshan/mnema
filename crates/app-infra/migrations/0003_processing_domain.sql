@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS processing_results (
     subject_id INTEGER NOT NULL,
     processor TEXT NOT NULL CHECK (LENGTH(TRIM(processor)) > 0),
     result_text TEXT,
-    structured_payload_json TEXT,
+    -- OCR rows store a zstd-compressed JSON blob (geometry compression); every
+    -- other processor stores plain JSON text. Decode keys off `processor`.
+    structured_payload_json BLOB,
     processor_version TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (job_id)

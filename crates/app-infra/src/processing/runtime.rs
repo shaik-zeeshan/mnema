@@ -485,6 +485,105 @@ mod tests {
         });
     }
 
+    /// Money path for geometry compression: messy OCR coordinates serialize → round
+    /// to 3 decimals → zstd → store in the BLOB column → decompress on read → parse.
+    /// Asserts coords are rounded and observation count / text survive the round-trip.
+    #[test]
+    fn ocr_geometry_is_rounded_and_zstd_round_trips_through_blob_column() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-runtime-geometry-compression");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
+                    response: MockOcrResponse::Success(OcrOutput::new(
+                        "alpha\nbeta",
+                        OcrStructuredPayload::new(
+                            ocr::APPLE_VISION_PROVIDER_ID,
+                            None,
+                            vec![
+                                OcrObservation::new(
+                                    "alpha",
+                                    0.987_654,
+                                    OcrBoundingBox::new(
+                                        0.123_456_789,
+                                        0.234_567_891,
+                                        0.345_678_912,
+                                        0.456_789_123,
+                                    ),
+                                ),
+                                OcrObservation::new(
+                                    "beta",
+                                    0.111_999,
+                                    OcrBoundingBox::new(0.9999, 0.0001, 0.5005, 0.2225),
+                                ),
+                            ],
+                        ),
+                    )),
+                })),
+            );
+
+            let frame = store
+                .insert_frame(&NewFrame::new(
+                    "session-geometry",
+                    "/tmp/frame-geometry.png",
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            store
+                .enqueue_job(
+                    &ProcessingJobDraft::for_frame_ocr(frame.id)
+                        .with_payload_json("{\"language\":\"eng\"}"),
+                )
+                .await
+                .expect("job should persist");
+
+            let outcome = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should process queued job")
+                .expect("queued job should exist");
+            let ProcessingJobRunOutcome::Completed(completion) = outcome else {
+                panic!("expected completed outcome");
+            };
+
+            // Re-read from the BLOB column to exercise the full decompress boundary.
+            let stored = store
+                .get_result_for_job(completion.job.id)
+                .await
+                .expect("result should be readable")
+                .expect("result should exist");
+            let payload: serde_json::Value = serde_json::from_str(
+                stored
+                    .structured_payload_json
+                    .as_deref()
+                    .expect("structured payload should persist"),
+            )
+            .expect("decompressed payload should parse");
+
+            let observations = payload["observations"]
+                .as_array()
+                .expect("observations array");
+            assert_eq!(observations.len(), 2);
+            assert_eq!(observations[0]["text"], "alpha");
+            assert_eq!(observations[1]["text"], "beta");
+
+            // Every coordinate + confidence is rounded to 3 decimals.
+            let bbox = &observations[0]["boundingBox"];
+            assert_eq!(bbox["x"].as_f64().unwrap(), 0.123);
+            assert_eq!(bbox["y"].as_f64().unwrap(), 0.235);
+            assert_eq!(bbox["width"].as_f64().unwrap(), 0.346);
+            assert_eq!(bbox["height"].as_f64().unwrap(), 0.457);
+            assert_eq!(observations[0]["confidence"].as_f64().unwrap(), 0.988);
+            assert_eq!(observations[1]["boundingBox"]["x"].as_f64().unwrap(), 1.0);
+            assert_eq!(observations[1]["boundingBox"]["height"].as_f64().unwrap(), 0.223);
+        });
+    }
+
     #[test]
     fn runtime_can_skip_excluded_processors_without_starving_later_work() {
         run_async_test(async {

@@ -473,7 +473,9 @@ pub(super) fn map_processing_result_for_search(row: SqliteRow) -> Result<Process
         subject_id: row.get("subject_id"),
         processor: row.get("processor"),
         result_text: row.get("result_text"),
-        structured_payload_json: row.get("structured_payload_json"),
+        // OCR rows store a zstd-compressed BLOB here; inflate to the JSON string the
+        // rest of the pipeline expects. Same decode boundary as `map_processing_result`.
+        structured_payload_json: crate::processing::structured_payload_json_from_row(&row)?,
         processor_version: row.get("processor_version"),
         redaction_detector_version: row.get("redaction_detector_version"),
         redaction_checked_at: row.get("redaction_checked_at"),

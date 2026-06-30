@@ -1745,7 +1745,17 @@ impl ProcessingStore {
             result,
         )?;
 
-        let result_insert = sqlx::query(
+        let draft = result_persistence_plan.draft();
+        let structured_payload_json = draft.structured_payload_json.as_deref();
+        // OCR geometry is zstd-compressed into the BLOB column (geometry compression);
+        // every other processor keeps plain JSON text. `structured_payload_json_from_row`
+        // mirrors this split off the `processor` column on the read path.
+        let ocr_payload_blob = if job.processor == OCR_PROCESSOR {
+            compress_ocr_structured_payload(structured_payload_json)?
+        } else {
+            None
+        };
+        let result_query = sqlx::query(
             "INSERT INTO processing_results (\
                 job_id, subject_type, subject_id, processor, result_text, structured_payload_json, processor_version, \
                 redaction_detector_version, redaction_checked_at\
@@ -1755,17 +1765,17 @@ impl ProcessingStore {
         .bind(&job.subject_type)
         .bind(job.subject_id)
         .bind(&job.processor)
-        .bind(result_persistence_plan.draft().result_text.as_deref())
-        .bind(
-            result_persistence_plan
-                .draft()
-                .structured_payload_json
-                .as_deref(),
-        )
-        .bind(result_persistence_plan.draft().processor_version.as_deref())
-        .bind(result_persistence_plan.redaction_detector_version())
-        .execute(&mut *transaction)
-        .await?;
+        .bind(draft.result_text.as_deref());
+        let result_query = if job.processor == OCR_PROCESSOR {
+            result_query.bind(ocr_payload_blob)
+        } else {
+            result_query.bind(structured_payload_json)
+        };
+        let result_insert = result_query
+            .bind(draft.processor_version.as_deref())
+            .bind(result_persistence_plan.redaction_detector_version())
+            .execute(&mut *transaction)
+            .await?;
 
         let update = sqlx::query(
             "UPDATE processing_jobs \
@@ -3712,6 +3722,37 @@ fn speaker_analysis_model_key_for_job(job: &ProcessingJob) -> Result<Option<Stri
         .map(|model_id| model_key(&payload.provider, model_id)))
 }
 
+/// zstd level for OCR geometry payloads. Default level; tune only if measured.
+const OCR_PAYLOAD_ZSTD_LEVEL: i32 = 3;
+
+/// Compress an OCR structured-payload JSON string for storage in the BLOB column.
+/// Only OCR rows are compressed (geometry compression); the read path decodes the
+/// same rows via `structured_payload_json_from_row`.
+fn compress_ocr_structured_payload(payload_json: Option<&str>) -> Result<Option<Vec<u8>>> {
+    payload_json
+        .map(|json| zstd::encode_all(json.as_bytes(), OCR_PAYLOAD_ZSTD_LEVEL).map_err(Into::into))
+        .transpose()
+}
+
+/// Read `structured_payload_json` as a JSON string. OCR rows hold a zstd-compressed
+/// BLOB and are inflated here; every other processor stores plain JSON text. Keying
+/// off `processor` is deterministic (no magic-byte sniff) and matches the write path.
+pub(crate) fn structured_payload_json_from_row(row: &SqliteRow) -> Result<Option<String>> {
+    let processor: String = row.get("processor");
+    if processor == OCR_PROCESSOR {
+        row.get::<Option<Vec<u8>>, _>("structured_payload_json")
+            .map(|blob| {
+                let json = zstd::decode_all(blob.as_slice())?;
+                String::from_utf8(json).map_err(|error| {
+                    AppInfraError::OcrEngine(format!("structured payload utf8 decode: {error}"))
+                })
+            })
+            .transpose()
+    } else {
+        Ok(row.get("structured_payload_json"))
+    }
+}
+
 fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {
     Ok(ProcessingResult {
         id: row.get("id"),
@@ -3720,7 +3761,7 @@ fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {
         subject_id: row.get("subject_id"),
         processor: row.get("processor"),
         result_text: row.get("result_text"),
-        structured_payload_json: row.get("structured_payload_json"),
+        structured_payload_json: structured_payload_json_from_row(&row)?,
         processor_version: row.get("processor_version"),
         redaction_detector_version: row.get("redaction_detector_version"),
         redaction_checked_at: row.get("redaction_checked_at"),
