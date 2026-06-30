@@ -86,6 +86,12 @@ jobs:
   windows-check:
     name: Windows compile check
     runs-on: windows-latest
+    # Bound the job well under GitHub's 6h default so a pathological native
+    # link (the mnema test binary statically links whisper.cpp/candle/ort/
+    # Tesseract; debug-info link can OOM-thrash on the 16 GB runner) fails fast
+    # and visibly instead of burning hours. A cold full build + tests fits
+    # comfortably under this; see the dependency-debug strip in /Cargo.toml.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
