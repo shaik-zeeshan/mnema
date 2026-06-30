@@ -52,10 +52,13 @@ import {
   defaultOcrLanguageForProvider,
   defaultOcrModelIdForProvider,
   defaultTranscriptionModelIdForProvider,
-  isSelectableOcrProvider,
   parsePositiveInteger,
   serializeError,
 } from "./onboarding-mapping";
+import {
+  firstSelectableOcrProvider,
+  isSelectableOcrProvider,
+} from "$lib/settings/state/models-format";
 import {
   buildSettingsRequestFrom,
   finaleBlockReasonFor,
@@ -118,7 +121,10 @@ export class OnboardingController {
   draftSystemAudioActivitySensitivity = $state(50);
   // Optional feature — starts OFF; the user opts in via its accordion toggle.
   draftOcrEnabled = $state(false);
-  draftOcrProvider = $state<OcrProvider>("apple_vision");
+  // Neutral cross-platform-runnable seed (mirrors recording.svelte.ts). The real
+  // provider is resolved against the backend OCR status by `syncDrafts` on load;
+  // this seed is only the pre-load placeholder and is never platform-locked.
+  draftOcrProvider = $state<OcrProvider>("tesseract");
   draftOcrModelId = $state<string | null>(null);
   draftOcrLanguage = $state("");
   draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
@@ -223,7 +229,10 @@ export class OnboardingController {
     }
     this.draftCaptureScreen = true;
     this.draftOcrEnabled = true;
-    this.chooseOcrProvider("apple_vision");
+    // The recommended OCR provider is the platform default the backend reports
+    // first (macOS → apple_vision, Windows → tesseract); never a hardcoded
+    // platform-locked provider. Falls back to tesseract before the status loads.
+    this.chooseOcrProvider(firstSelectableOcrProvider(this.ocrModelStatus) ?? "tesseract");
     this.draftTranscriptionEnabled = true;
     // Mirror `toggleFeature("transcribe")`'s ON-branch: bind the master to the
     // currently-enabled audio sources, so a source enabled BEFORE this runs
@@ -514,7 +523,7 @@ export class OnboardingController {
 
   // ── Provider / model selection helpers (used by Slice 4 bodies) ──────────
   chooseOcrProvider(value: string): void {
-    if (!isSelectableOcrProvider(value)) return;
+    if (!isSelectableOcrProvider(value, this.ocrModelStatus)) return;
     this.draftOcrProvider = value;
     this.draftOcrModelId = this.ocrStore.preferredOcrModelIdForProvider(
       this.draftOcrProvider,

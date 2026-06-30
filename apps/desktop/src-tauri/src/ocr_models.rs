@@ -472,11 +472,25 @@ fn build_ocr_model_status_response(
     })
 }
 
+/// Whether an OCR provider should be listed as selectable on this desktop OS.
+///
+/// "Selectable" is deliberately distinct from "available": a provider whose
+/// model has not been downloaded yet (e.g. Tesseract) stays selectable so the
+/// user can trigger its download. Only providers that are *platform-locked and
+/// can never run here* are dropped from the list — the platform knowledge lives
+/// in `ocr::provider_runtime_available` (which gates Apple Vision behind
+/// `cfg!(target_os = "macos")`).
 fn is_desktop_selectable_ocr_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        ocr::APPLE_VISION_PROVIDER_ID | ocr::TESSERACT_PROVIDER_ID
-    )
+    match provider {
+        // Tesseract runs on every desktop OS; keep it selectable even when its
+        // model is not downloaded yet.
+        ocr::TESSERACT_PROVIDER_ID => true,
+        // Apple Vision is platform-locked: selectable only where its runtime is
+        // actually available (macOS), so the status response omits it elsewhere.
+        ocr::APPLE_VISION_PROVIDER_ID => provider_runtime_available(provider),
+        // Everything else (e.g. PaddleOCR) stays non-selectable.
+        _ => false,
+    }
 }
 
 fn claim_model_download(
@@ -1059,7 +1073,12 @@ mod tests {
     fn status_response_includes_only_desktop_selectable_ocr_providers() {
         let temp = tempfile::tempdir().expect("tempdir");
         let response = build_ocr_model_status_response(temp.path()).expect("status response");
+        // Apple Vision is platform-locked: present only where its runtime can run.
+        #[cfg(target_os = "macos")]
         assert!(find_model(&response, ocr::APPLE_VISION_PROVIDER_ID, None).is_some());
+        #[cfg(not(target_os = "macos"))]
+        assert!(find_model(&response, ocr::APPLE_VISION_PROVIDER_ID, None).is_none());
+        // Tesseract stays listed even without a downloaded model.
         assert!(find_model(
             &response,
             ocr::TESSERACT_PROVIDER_ID,
@@ -1072,6 +1091,32 @@ mod tests {
             Some(ocr::DEFAULT_PADDLE_OCR_MODEL_ID),
         )
         .is_none());
+    }
+
+    #[test]
+    fn is_desktop_selectable_ocr_provider_gates_platform_locked_apple_vision() {
+        // Tesseract stays selectable even with no downloaded model
+        // ("selectable" != "available").
+        assert!(is_desktop_selectable_ocr_provider(
+            ocr::TESSERACT_PROVIDER_ID
+        ));
+        // PaddleOCR is never user-selectable.
+        assert!(!is_desktop_selectable_ocr_provider(
+            ocr::PADDLE_OCR_PROVIDER_ID
+        ));
+        // Apple Vision is selectable only where its runtime is available.
+        assert_eq!(
+            is_desktop_selectable_ocr_provider(ocr::APPLE_VISION_PROVIDER_ID),
+            provider_runtime_available(ocr::APPLE_VISION_PROVIDER_ID)
+        );
+        #[cfg(target_os = "macos")]
+        assert!(is_desktop_selectable_ocr_provider(
+            ocr::APPLE_VISION_PROVIDER_ID
+        ));
+        #[cfg(not(target_os = "macos"))]
+        assert!(!is_desktop_selectable_ocr_provider(
+            ocr::APPLE_VISION_PROVIDER_ID
+        ));
     }
 
     #[test]

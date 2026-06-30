@@ -115,9 +115,7 @@
         value={rec.draftTranscriptionProvider}
         onValueChange={chooseTranscriptionProvider}
         options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : [
-          { value: "local_whisper", label: "Local Whisper", description: "Model status is loading" },
-          { value: "apple_speech_on_device", label: "Apple Speech (on-device)", description: "Model status is loading" },
-          { value: "parakeet", label: "Parakeet", description: "Model status is loading" },
+          { value: rec.draftTranscriptionProvider, label: "Loading providers…", description: "Model status is loading" },
         ]}
       />
     {/snippet}

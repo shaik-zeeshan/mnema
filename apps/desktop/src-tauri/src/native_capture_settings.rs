@@ -507,7 +507,33 @@ fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticS
     }
 }
 
+/// Map a persisted [`OcrProvider`] to its stable provider-id string so the
+/// settings path can ask [`ocr::provider_runtime_available`]. Reuses the
+/// `ocr::*_PROVIDER_ID` constants (the same ids `ocr::OcrProviderKind::as_str`
+/// emits) rather than hardcoding strings.
+fn ocr_provider_runtime_id(provider: OcrProvider) -> &'static str {
+    match provider {
+        OcrProvider::AppleVision => ocr::APPLE_VISION_PROVIDER_ID,
+        OcrProvider::Tesseract => ocr::TESSERACT_PROVIDER_ID,
+        OcrProvider::PaddleOcr => ocr::PADDLE_OCR_PROVIDER_ID,
+    }
+}
+
 fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureErrorResponse> {
+    // Runtime-availability guard (the durable fix for OCR defaults across OSes):
+    // any persisted provider that cannot actually run on this OS — Apple Vision
+    // on Windows/Linux, the legacy PaddleOCR option where it is not built, or any
+    // future mismatch — is silently coerced to the platform default. That default
+    // (`default_ocr_settings()`) is guaranteed runnable here because its provider
+    // comes from `default_ocr_provider()`'s `cfg`-seeded default (Apple Vision on
+    // macOS, Tesseract elsewhere). A provider that IS runtime-runnable falls
+    // through unchanged into the provider-specific match below.
+    if !ocr::provider_runtime_available(ocr_provider_runtime_id(value.provider)) {
+        let mut settings = default_ocr_settings();
+        settings.enabled = value.enabled;
+        return Ok(settings);
+    }
+
     let model_id = value
         .model_id
         .as_deref()
@@ -588,9 +614,12 @@ fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureError
             )
         }
         OcrProvider::PaddleOcr => {
-            // PaddleOCR remains available in the OCR crate for existing queued jobs and
-            // direct provider tests, but it is no longer a user-selectable recording
-            // setting. Normalize legacy persisted settings back to the supported default.
+            // Reached only when PaddleOCR IS runtime-available on this build (e.g.
+            // the `paddle-rs`-enabled non-Windows target); the runtime guard above
+            // already coerces it where it cannot run. PaddleOCR remains available
+            // in the OCR crate for existing queued jobs and direct provider tests,
+            // but it is no longer a user-selectable recording setting, so legacy
+            // persisted settings are still normalized back to the supported default.
             let mut settings = default_ocr_settings();
             settings.enabled = value.enabled;
             return Ok(settings);
@@ -2560,6 +2589,83 @@ mod tests {
         .expect("legacy PaddleOCR settings should normalize");
 
         assert_eq!(settings.ocr, default_ocr_settings());
+    }
+
+    // The platform default provider must always be runtime-runnable, otherwise the
+    // coercion guard would hand back an unusable provider. (On this Windows host
+    // that default is Tesseract; on macOS it is Apple Vision.)
+    #[test]
+    fn default_ocr_settings_provider_is_runtime_available() {
+        assert!(
+            ocr::provider_runtime_available(ocr_provider_runtime_id(
+                default_ocr_settings().provider
+            )),
+            "default OCR provider must be runnable on this OS"
+        );
+    }
+
+    // A provider that can actually run on this OS passes the guard untouched and
+    // keeps its provider through the provider-specific match arms.
+    #[test]
+    fn validate_ocr_settings_passes_through_runnable_provider() {
+        let value = default_ocr_settings();
+        let provider = value.provider;
+        assert!(ocr::provider_runtime_available(ocr_provider_runtime_id(
+            provider
+        )));
+
+        let normalized =
+            validate_ocr_settings(value).expect("runnable default provider should validate");
+
+        assert_eq!(normalized.provider, provider);
+    }
+
+    // Apple Vision can never run off macOS, so a persisted Apple-Vision selection
+    // is silently coerced to the runnable platform default (Tesseract here),
+    // preserving `enabled`. This assertion executes on the Windows host.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn validate_ocr_settings_coerces_apple_vision_when_not_runnable() {
+        let mut value = default_ocr_settings();
+        value.provider = OcrProvider::AppleVision;
+        value.enabled = false;
+
+        let normalized =
+            validate_ocr_settings(value).expect("apple vision should coerce off macOS");
+
+        assert_ne!(normalized.provider, OcrProvider::AppleVision);
+        assert!(
+            ocr::provider_runtime_available(ocr_provider_runtime_id(normalized.provider)),
+            "coerced provider must be runtime-available, got {:?}",
+            normalized.provider
+        );
+        let mut expected = default_ocr_settings();
+        expected.enabled = false;
+        assert_eq!(normalized, expected);
+    }
+
+    // On the Windows build PaddleOCR is not compiled (`paddle-rs` is off), so a
+    // legacy persisted PaddleOCR selection hits the runtime guard and is coerced
+    // to the runnable default.
+    #[cfg(windows)]
+    #[test]
+    fn validate_ocr_settings_coerces_legacy_paddle_ocr_when_not_runnable() {
+        assert!(
+            !ocr::provider_runtime_available(ocr::PADDLE_OCR_PROVIDER_ID),
+            "precondition: PaddleOCR is not runnable on the Windows build"
+        );
+
+        let mut value = default_ocr_settings();
+        value.provider = OcrProvider::PaddleOcr;
+        value.model_id = Some(ocr::DEFAULT_PADDLE_OCR_MODEL_ID.to_string());
+        value.language = Some(ocr::DEFAULT_PADDLE_OCR_LANGUAGE.to_string());
+
+        let normalized = validate_ocr_settings(value).expect("legacy PaddleOCR should coerce");
+
+        assert_eq!(normalized, default_ocr_settings());
+        assert!(ocr::provider_runtime_available(ocr_provider_runtime_id(
+            normalized.provider
+        )));
     }
 
     #[test]

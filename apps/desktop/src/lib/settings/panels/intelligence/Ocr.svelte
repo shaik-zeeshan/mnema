@@ -78,8 +78,7 @@
         onValueChange={chooseOcrProvider}
         disabled={!rec.draftOcrEnabled}
         options={ocrProviderOptions.length > 0 ? ocrProviderOptions : [
-          { value: "apple_vision", label: "Apple Vision", description: "Model status is loading" },
-          { value: "tesseract", label: "Tesseract", description: "Model status is loading" },
+          { value: rec.draftOcrProvider, label: "Loading providers…", description: "Model status is loading" },
         ]}
       />
     {/snippet}

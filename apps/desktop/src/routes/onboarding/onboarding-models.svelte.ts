@@ -25,10 +25,12 @@ import type {
   SpeakerAnalysisModelStatus,
   SpeakerAnalysisModelStatusResponse,
 } from "$lib/types";
-import { semanticSearchTierLabel } from "$lib/settings/state/models-format";
+import {
+  isSelectableOcrProvider as isSelectableOcrProviderInStatus,
+  semanticSearchTierLabel,
+} from "$lib/settings/state/models-format";
 import {
   formatBytes,
-  isSelectableOcrProvider,
   ocrStatusLabel,
   serializeError,
   speakerPresetKey,
@@ -179,7 +181,12 @@ export function createOcrModelStore(access: OcrModelStoreAccess) {
       const defaultModel = providerStatus.models.find((model) => model.modelId === defaultModelId);
       return defaultModel?.modelId ?? providerStatus.models[0]?.modelId ?? defaultModelId;
     },
-    isSelectableOcrProvider,
+    // Selectability is whatever the live OCR status response lists — the backend
+    // omits platform-locked providers (Apple Vision on Windows), so this trusts
+    // the response rather than a hardcoded set. Bound to this store's live
+    // `ocrModelStatus` so the predicate stays status-aware for callers.
+    isSelectableOcrProvider: (value: string | null | undefined): value is OcrProvider =>
+      isSelectableOcrProviderInStatus(value, ocrModelStatus),
   };
 }
 

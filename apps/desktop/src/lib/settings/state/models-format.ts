@@ -4,10 +4,63 @@
 import type {
   AppleSpeechOnDeviceAvailabilityStatus,
   AudioTranscriptionModelStatus,
+  AudioTranscriptionModelStatusResponse,
+  AudioTranscriptionProvider,
   OcrModelStatus,
+  OcrModelStatusResponse,
+  OcrProvider,
   SemanticSearchModelDownloadProgress,
   SpeakerAnalysisModelStatus,
 } from "$lib/types";
+
+// ─── Capability-driven selectable-provider sets ───────────────────────────────
+// The authoritative "selectable" set for a provider menu is exactly the set of
+// provider ids present in the backend status response. Platform knowledge lives
+// in Rust: on Windows the backend OMITS platform-locked providers (Apple Vision,
+// Apple Speech) from `providers[]`; on macOS it includes them. The frontend
+// therefore NEVER hardcodes a provider list or a platform `if` — it trusts the
+// response. The backend returns providers BTreeMap-sorted, so the first entry is
+// the platform default (macOS → `apple_vision`, Windows → `tesseract`).
+
+export function selectableOcrProviders(
+  status: OcrModelStatusResponse | null | undefined,
+): OcrProvider[] {
+  return status?.providers.map((provider) => provider.provider) ?? [];
+}
+
+export function isSelectableOcrProvider(
+  value: string | null | undefined,
+  status: OcrModelStatusResponse | null | undefined,
+): value is OcrProvider {
+  return selectableOcrProviders(status).includes(value as OcrProvider);
+}
+
+export function firstSelectableOcrProvider(
+  status: OcrModelStatusResponse | null | undefined,
+): OcrProvider | null {
+  return selectableOcrProviders(status)[0] ?? null;
+}
+
+export function selectableAudioTranscriptionProviders(
+  status: AudioTranscriptionModelStatusResponse | null | undefined,
+): AudioTranscriptionProvider[] {
+  return status?.providers.map((provider) => provider.provider) ?? [];
+}
+
+export function isSelectableAudioTranscriptionProvider(
+  value: string | null | undefined,
+  status: AudioTranscriptionModelStatusResponse | null | undefined,
+): value is AudioTranscriptionProvider {
+  return selectableAudioTranscriptionProviders(status).includes(
+    value as AudioTranscriptionProvider,
+  );
+}
+
+export function firstSelectableAudioTranscriptionProvider(
+  status: AudioTranscriptionModelStatusResponse | null | undefined,
+): AudioTranscriptionProvider | null {
+  return selectableAudioTranscriptionProviders(status)[0] ?? null;
+}
 
 export function ocrStatusLabel(model: OcrModelStatus): string {
   if (model.available) return "Available";

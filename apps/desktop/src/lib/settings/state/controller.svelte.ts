@@ -114,6 +114,10 @@ export class SettingsController {
     refreshAiProviderKeyPresence: () => void this.aiRuntime.refreshAiProviderKeyPresence(),
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),
     gates: () => ({ resolutionSupportPendingForNonOriginal: this.resolutionSupportPendingForNonOriginal }),
+    // The OCR default resolves to the first backend-selectable provider; feed the
+    // recording store the live model-status response (lazy — `this.models` is
+    // initialized just below, and these closures only run after mount).
+    ocrModelStatus: () => this.models.ocrModelStatus,
     // Re-seed the semantic-search picker once settings land — closes the init
     // race where the picker status resolved before recording settings, leaving
     // the picker blank while a model is actually persisted. Dirty-guarded.
