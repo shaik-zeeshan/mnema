@@ -633,7 +633,8 @@ async fn fetch_semantic_frame_hits(
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_documents.id AS document_id, \
                 search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
-                search_documents.text_source_kind, search_documents.body_text AS body_text, \
+                search_documents.text_source_kind, \
+                COALESCE(search_documents.body_text, canonical.body_text) AS body_text, \
                 frames.id, frames.session_id, frames.file_path, frames.captured_at, frames.width, frames.height, \
                 frames.equivalence_hint, frames.equivalence_proof, frames.equivalence_version, \
                 frames.equivalence_status, frames.equivalence_error, \
@@ -653,6 +654,7 @@ async fn fetch_semantic_frame_hits(
                 ), 0) AS secret_redaction_count \
          FROM search_documents \
          JOIN frames ON frames.id = search_documents.frame_id \
+         LEFT JOIN search_documents AS canonical ON canonical.id = search_documents.canonical_search_document_id \
          LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
          WHERE search_documents.id IN (",
     );
@@ -1117,7 +1119,8 @@ mod tests {
                         window_title: None,
                         group_key: &format!("frame:{frame_id}"),
                         text_source_kind: "direct",
-                        body_text: "deepframe target",
+                        body_text: Some("deepframe target"),
+                        canonical_search_document_id: None,
                         context_text: "",
                     },
                 )
@@ -1190,7 +1193,8 @@ mod tests {
                         window_title: None,
                         group_key: &format!("audio:{}:{index}", segment.id),
                         text_source_kind: "direct",
-                        body_text: "deepaudio target",
+                        body_text: Some("deepaudio target"),
+                        canonical_search_document_id: None,
                         context_text: "",
                     },
                 )
@@ -1266,7 +1270,8 @@ mod tests {
                         window_title: None,
                         group_key: &format!("audio:{}:{start_ms}", segment.id),
                         text_source_kind: "direct",
-                        body_text,
+                        body_text: Some(body_text),
+                        canonical_search_document_id: None,
                         context_text,
                     },
                 )
@@ -1300,7 +1305,8 @@ mod tests {
                         window_title: None,
                         group_key: &format!("audio:{}:filler-{index}", segment.id),
                         text_source_kind: "direct",
-                        body_text: "bridgeword",
+                        body_text: Some("bridgeword"),
+                        canonical_search_document_id: None,
                         context_text: "",
                     },
                 )

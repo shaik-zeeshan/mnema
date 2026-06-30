@@ -52,7 +52,14 @@ pub(crate) async fn project_equivalent_reuse_for_ocr_result_off_lock(
         return Ok(());
     };
     let candidates = equivalent_reuse_candidate_frames(&mut read_tx, &source_frame).await?;
+    // The canonical row reuse documents borrow their text from: the source
+    // frame's `direct` projection, committed by the completion transaction before
+    // this off-lock fan-out runs. If it is missing there is nothing to borrow.
+    let canonical_id = frame_direct_search_document_id(&mut read_tx, source_frame.id).await?;
     drop(read_tx);
+    let Some(canonical_id) = canonical_id else {
+        return Ok(());
+    };
 
     // Clear any stale reuse documents for this source first (covers re-projection
     // when the OCR text changed or became empty). Short, indexed deletes.
@@ -63,22 +70,16 @@ pub(crate) async fn project_equivalent_reuse_for_ocr_result_off_lock(
         transaction.commit().await?;
     }
 
-    let Some(text) = ocr_result_text(result) else {
+    if ocr_result_text(result).is_none() {
         return Ok(());
-    };
-    // Own the per-fan-out data so each item future borrows only its `'a`
-    // transaction + frame, never this enclosing scope. A `for<'a>` batch closure
-    // that captured the borrowed `text`/`result` would force them to outlive every
-    // possible `'a` (including `'static`) and fail to type-check.
+    }
     let result_id = result.id;
-    let text = text.to_string();
 
     commit_in_batches(db, &candidates, |transaction, frame| {
-        let text = text.clone();
         Box::pin(async move {
             // Re-validate against the live row inside the write tx: a candidate
             // that gained its own direct projection since the read snapshot must
-            // not be overwritten with reused text.
+            // not be overwritten with a reused document.
             if frame_has_projection(&mut *transaction, frame.id, "direct").await? {
                 return Ok(());
             }
@@ -86,7 +87,7 @@ pub(crate) async fn project_equivalent_reuse_for_ocr_result_off_lock(
                 &mut *transaction,
                 frame,
                 Some(result_id),
-                &text,
+                canonical_id,
             )
             .await
         })
@@ -105,22 +106,11 @@ pub(super) async fn project_missing_equivalent_reuse_documents_for_processing_re
         return Ok(());
     };
 
-    let Some(text) = result
-        .result_text
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    else {
+    if ocr_result_text(result).is_none() {
         return Ok(());
-    };
+    }
 
-    project_missing_equivalent_reuse_documents_for_source_frame(
-        transaction,
-        &frame,
-        result.id,
-        text,
-    )
-    .await
+    project_missing_equivalent_reuse_documents_for_source_frame(transaction, &frame, result.id).await
 }
 
 pub(super) async fn delete_equivalent_reuse_projections_for_source_result(
@@ -160,21 +150,27 @@ pub(crate) async fn project_equivalent_frame_reuse_in_transaction(
     frame: &Frame,
     related_frame_id: i64,
 ) -> Result<()> {
-    let Some(source_doc) = sqlx::query(
-        "SELECT search_documents.processing_result_id, \
-                COALESCE(processing_results.result_text, search_documents.body_text) AS source_text \
-         FROM search_documents \
-         LEFT JOIN processing_results ON processing_results.id = search_documents.processing_result_id \
-         WHERE search_documents.anchor_type = 'frame' \
-           AND search_documents.frame_id = ?1 \
+    // Resolve the canonical `direct` document for the related frame: if the
+    // related frame is itself a reuse document, follow its own
+    // `canonical_search_document_id`; otherwise it is the canonical. The new reuse
+    // document borrows its text from there and inherits the canonical's
+    // `processing_result_id` (so redaction lookups still resolve the source).
+    let Some(canonical_doc) = sqlx::query(
+        "SELECT canonical.id AS canonical_id, \
+                canonical.processing_result_id AS processing_result_id \
+         FROM search_documents AS related \
+         JOIN search_documents AS canonical \
+           ON canonical.id = COALESCE(related.canonical_search_document_id, related.id) \
+         WHERE related.anchor_type = 'frame' \
+           AND related.frame_id = ?1 \
            AND (\
-                search_documents.processing_result_id IS NULL \
-                OR search_documents.processing_result_id IN (\
+                related.processing_result_id IS NULL \
+                OR related.processing_result_id IN (\
                     SELECT id FROM processing_results \
                     WHERE subject_type = 'frame' AND processor = ?2\
                 )\
            ) \
-         ORDER BY search_documents.id DESC LIMIT 1",
+         ORDER BY related.id DESC LIMIT 1",
     )
     .bind(related_frame_id)
     .bind(OCR_PROCESSOR)
@@ -187,8 +183,8 @@ pub(crate) async fn project_equivalent_frame_reuse_in_transaction(
     project_equivalent_reuse_document_for_frame(
         transaction,
         frame,
-        source_doc.get("processing_result_id"),
-        source_doc.get::<String, _>("source_text").trim(),
+        canonical_doc.get("processing_result_id"),
+        canonical_doc.get("canonical_id"),
     )
     .await
 }
@@ -197,8 +193,12 @@ pub(super) async fn project_equivalent_reuse_documents_for_source_frame(
     transaction: &mut Transaction<'_, Sqlite>,
     source_frame: &Frame,
     processing_result_id: i64,
-    text: &str,
 ) -> Result<()> {
+    let Some(canonical_id) =
+        frame_direct_search_document_id(transaction, source_frame.id).await?
+    else {
+        return Ok(());
+    };
     let frames = equivalent_reuse_candidate_frames(transaction, source_frame).await?;
 
     for frame in frames {
@@ -209,7 +209,7 @@ pub(super) async fn project_equivalent_reuse_documents_for_source_frame(
             transaction,
             &frame,
             Some(processing_result_id),
-            text,
+            canonical_id,
         )
         .await?;
     }
@@ -221,8 +221,12 @@ async fn project_missing_equivalent_reuse_documents_for_source_frame(
     transaction: &mut Transaction<'_, Sqlite>,
     source_frame: &Frame,
     processing_result_id: i64,
-    text: &str,
 ) -> Result<()> {
+    let Some(canonical_id) =
+        frame_direct_search_document_id(transaction, source_frame.id).await?
+    else {
+        return Ok(());
+    };
     let frames = equivalent_reuse_candidate_frames(transaction, source_frame).await?;
 
     for frame in frames {
@@ -235,7 +239,7 @@ async fn project_missing_equivalent_reuse_documents_for_source_frame(
             transaction,
             &frame,
             Some(processing_result_id),
-            text,
+            canonical_id,
         )
         .await?;
     }
@@ -346,11 +350,32 @@ fn equivalent_reuse_scope_allows_source(target_frame: &Frame, source_frame: &Fra
     }
 }
 
+/// The `search_documents.id` of a frame's `direct` projection, if it has one.
+/// This is the canonical row an `equivalent_reuse` document borrows its text
+/// from (`canonical_search_document_id`).
+async fn frame_direct_search_document_id(
+    transaction: &mut Transaction<'_, Sqlite>,
+    frame_id: i64,
+) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM search_documents \
+         WHERE anchor_type = 'frame' AND frame_id = ?1 AND text_source_kind = 'direct' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(frame_id)
+    .fetch_optional(&mut **transaction)
+    .await?)
+}
+
+/// Project an `equivalent_reuse` document for `frame`. The row stores NULL
+/// `body_text` and borrows the canonical `direct` row's text through
+/// `canonical_search_document_id` (visually-identical frames share one copy
+/// instead of duplicating it), so it is also kept out of the FTS index.
 async fn project_equivalent_reuse_document_for_frame(
     transaction: &mut Transaction<'_, Sqlite>,
     frame: &Frame,
     processing_result_id: Option<i64>,
-    text: &str,
+    canonical_search_document_id: i64,
 ) -> Result<()> {
     let (app_bundle_id, app_name, window_title) = frame
         .metadata_snapshot
@@ -388,7 +413,8 @@ async fn project_equivalent_reuse_document_for_frame(
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "equivalent_reuse",
-            body_text: text,
+            body_text: None,
+            canonical_search_document_id: Some(canonical_search_document_id),
             context_text: &context_text,
         },
     )
@@ -423,13 +449,12 @@ mod tests {
     fn direct_projection_in_transaction_clears_completing_frames_own_orphaned_reuse_doc() {
         // The completion path splits projection into a cheap in-transaction
         // `direct` insert plus an OFF-LOCK fan-out that owns the per-frame reuse
-        // cleanup. If the off-lock half never runs (crash / permanent error
-        // between the completion commit and the fan-out), the completing frame is
-        // left with BOTH a fresh `direct` doc AND its stale `equivalent_reuse` doc
-        // orphaned to a NULL `processing_result_id` (by a source-result delete,
-        // ON DELETE SET NULL). No startup backfill reconciles that — the reuse
-        // backfill only ADDS docs for frames missing both. So the in-transaction
-        // direct projection must clear the frame's own reuse doc atomically.
+        // cleanup. Under text dedup a reuse doc borrows the canonical `direct`
+        // row's text via `canonical_search_document_id` (ON DELETE CASCADE), so
+        // deleting the source's processing_result — which drops the orphaned source
+        // `direct` doc — cascades the borrowed reuse doc away (no stale orphan can
+        // survive). The in-transaction direct projection must then still leave the
+        // completing frame with exactly one `direct` doc and no reuse doc.
         run_async_test(async {
             let dir = test_dir("direct-intx-orphan-leak");
             let infra = AppInfra::initialize(&dir)
@@ -480,23 +505,27 @@ mod tests {
                 .expect("target frame should capture");
             assert!(target.job.is_none());
 
-            // Delete S's processing_result: the FK cascade NULLs F's reuse doc's
-            // `processing_result_id`, leaving F with a stale, *orphaned* reuse doc.
+            // Delete S's processing_result: ON DELETE SET NULL orphans S's own
+            // `direct` doc, the orphan trigger drops it, and the canonical-FK
+            // cascade removes F's borrowed reuse doc in lockstep — so F is left
+            // with NO reuse doc at all.
             sqlx::query("DELETE FROM processing_results WHERE job_id = ?1")
                 .bind(source_job_id)
                 .execute(infra.pool())
                 .await
-                .expect("source result delete should orphan reuse search");
+                .expect("source result delete should cascade reuse search away");
             let orphan_count: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM search_documents \
-                 WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse' \
-                   AND processing_result_id IS NULL",
+                 WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse'",
             )
             .bind(target.frame.id)
             .fetch_one(infra.pool())
             .await
             .expect("orphan count should load");
-            assert_eq!(orphan_count, 1, "F starts with one orphaned reuse doc");
+            assert_eq!(
+                orphan_count, 0,
+                "deleting the source result cascades F's borrowed reuse doc away"
+            );
 
             // F gets its OWN fresh OCR result; run ONLY the in-transaction direct
             // projection and drop the deferred fan-out unrun — simulating a crash
@@ -643,6 +672,26 @@ mod tests {
             let reopened = AppInfra::initialize(&dir)
                 .await
                 .expect("infra should reopen");
+
+            // The startup backfill re-creates `second`'s reuse doc, now a deduped
+            // row: NULL body_text borrowing `first`'s `direct` doc via the
+            // canonical FK.
+            let reuse_doc: (Option<String>, Option<i64>) = sqlx::query_as(
+                "SELECT body_text, canonical_search_document_id FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse'",
+            )
+            .bind(second.frame.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("backfilled reuse doc should exist");
+            assert!(reuse_doc.0.is_none(), "reuse doc stores NULL body_text");
+            assert!(
+                reuse_doc.1.is_some(),
+                "reuse doc points at the canonical direct doc"
+            );
+
+            // Keyword search matches the canonical frame only — the reuse row is
+            // not in FTS, so `first` (the `direct` anchor) is the single hit.
             let response = reopened
                 .search_capture(SearchCaptureRequest {
                     query: "historical".to_string(),
@@ -658,9 +707,9 @@ mod tests {
                 .expect("search should succeed");
 
             assert_eq!(response.frames.len(), 1);
-            assert_eq!(response.frames[0].match_count, 2);
-            assert_eq!(response.frames[0].representative_frame.id, second.frame.id);
-            assert_eq!(response.frames[0].text_source_kind, "equivalent_reuse");
+            assert_eq!(response.frames[0].match_count, 1);
+            assert_eq!(response.frames[0].representative_frame.id, first.frame.id);
+            assert_eq!(response.frames[0].text_source_kind, "direct");
         });
     }
 
@@ -724,6 +773,20 @@ mod tests {
                 Some(crate::OcrAdmissionReason::SkippedEquivalentFrame)
             );
 
+            // The OCR-skipped duplicate still gets a deduped reuse doc (NULL
+            // body_text + canonical FK), but it is not in FTS — so keyword search
+            // surfaces only the canonical `direct` frame.
+            let reuse_doc_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse' \
+                   AND body_text IS NULL AND canonical_search_document_id IS NOT NULL",
+            )
+            .bind(second.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("reuse doc count should load");
+            assert_eq!(reuse_doc_count, 1);
+
             let response = infra
                 .search_capture(SearchCaptureRequest {
                     query: "coverage".to_string(),
@@ -739,9 +802,9 @@ mod tests {
                 .expect("search should succeed");
 
             assert_eq!(response.frames.len(), 1);
-            assert_eq!(response.frames[0].match_count, 2);
-            assert_eq!(response.frames[0].representative_frame.id, second.frame.id);
-            assert_eq!(response.frames[0].text_source_kind, "equivalent_reuse");
+            assert_eq!(response.frames[0].match_count, 1);
+            assert_eq!(response.frames[0].representative_frame.id, first.frame.id);
+            assert_eq!(response.frames[0].text_source_kind, "direct");
         });
     }
 
@@ -821,9 +884,22 @@ mod tests {
                 .await
                 .expect("search should succeed");
 
+            // The two duplicates (second, third) get deduped reuse docs that
+            // borrow `first`'s text but are not in FTS, so keyword search returns
+            // only the canonical `first` frame.
             assert_eq!(response.frames.len(), 1);
-            assert_eq!(response.frames[0].match_count, 3);
-            assert_eq!(response.frames[0].representative_frame.id, third.frame.id);
+            assert_eq!(response.frames[0].match_count, 1);
+            assert_eq!(response.frames[0].representative_frame.id, first.frame.id);
+            let reuse_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) AND text_source_kind = 'equivalent_reuse'",
+            )
+            .bind(second.frame.id)
+            .bind(third.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("reuse count should load");
+            assert_eq!(reuse_count, 2, "both duplicates carry a deduped reuse doc");
         });
     }
 
@@ -921,9 +997,11 @@ mod tests {
                 })
                 .await
                 .expect("fresh search should succeed");
+            // Re-OCR reprojects `first`'s `direct` text and re-borrows it onto
+            // `second`'s deduped reuse doc; only the canonical `first` is in FTS.
             assert_eq!(fresh.frames.len(), 1);
-            assert_eq!(fresh.frames[0].match_count, 2);
-            assert_eq!(fresh.frames[0].representative_frame.id, second.frame.id);
+            assert_eq!(fresh.frames[0].match_count, 1);
+            assert_eq!(fresh.frames[0].representative_frame.id, first.frame.id);
         });
     }
 
@@ -1031,8 +1109,11 @@ mod tests {
                 })
                 .await
                 .expect("fresh search should succeed");
+            // `second` now owns the `direct` text; `first` borrows it through a
+            // deduped reuse doc that is not in FTS, so the canonical `second` is
+            // the single keyword hit.
             assert_eq!(fresh.frames.len(), 1);
-            assert_eq!(fresh.frames[0].match_count, 2);
+            assert_eq!(fresh.frames[0].match_count, 1);
             assert_eq!(fresh.frames[0].representative_frame.id, second.frame.id);
         });
     }
@@ -1205,6 +1286,11 @@ mod tests {
                 first.frame.id
             );
 
+            // Dedup tradeoff: the duplicate's deduped reuse doc is not in FTS, so
+            // its OWN distinct context (`TargetOnlyApp`) is no longer independently
+            // keyword-searchable — only the canonical frame is indexed. (In
+            // practice, visually-identical frames share the same app/window, so
+            // this only loses recall on synthetic divergent metadata like here.)
             let target_context = infra
                 .search_capture(SearchCaptureRequest {
                     query: "TargetOnlyApp".to_string(),
@@ -1218,12 +1304,22 @@ mod tests {
                 })
                 .await
                 .expect("target context search should succeed");
-            assert_eq!(target_context.frames.len(), 1);
-            assert_eq!(target_context.frames[0].match_count, 1);
-            assert_eq!(
-                target_context.frames[0].representative_frame.id,
-                second.frame.id
-            );
+            assert!(target_context.frames.is_empty());
+
+            // The reuse doc still borrows the SOURCE frame's raw OCR text, now via
+            // the canonical FK rather than a copy.
+            let borrowed_text: String = sqlx::query_scalar(
+                "SELECT canonical.body_text \
+                 FROM search_documents AS reuse \
+                 JOIN search_documents AS canonical \
+                   ON canonical.id = reuse.canonical_search_document_id \
+                 WHERE reuse.frame_id = ?1 AND reuse.text_source_kind = 'equivalent_reuse'",
+            )
+            .bind(second.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("borrowed canonical text should load");
+            assert_eq!(borrowed_text, "shared body target");
         });
     }
 
@@ -1306,15 +1402,14 @@ mod tests {
                 })
                 .await
                 .expect("search should succeed");
-            let reuse = response
-                .frames
-                .iter()
-                .find(|result| result.text_source_kind == "equivalent_reuse")
-                .expect("equivalent reuse result should exist");
-
-            assert_eq!(reuse.representative_frame.id, target.frame.id);
-            assert_eq!(reuse.secret_redaction_count, 1);
-            assert!(reuse.has_secret_redactions);
+            // Keyword search surfaces the canonical `direct` source frame (the
+            // deduped reuse frame is not in FTS), which reports its own redaction.
+            assert_eq!(response.frames.len(), 1);
+            let result = &response.frames[0];
+            assert_eq!(result.text_source_kind, "direct");
+            assert_eq!(result.representative_frame.id, source.frame.id);
+            assert_eq!(result.secret_redaction_count, 1);
+            assert!(result.has_secret_redactions);
         });
     }
 
@@ -1388,7 +1483,14 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_reuse_search_survives_source_result_delete() {
+    fn equivalent_reuse_cascades_away_on_source_result_delete() {
+        // Under text dedup the reuse doc owns no text of its own — it borrows the
+        // canonical `direct` row via `canonical_search_document_id` (ON DELETE
+        // CASCADE). Deleting the source's processing_result drops the orphaned
+        // source `direct` doc, and the cascade removes the borrowing reuse doc with
+        // it, so the cluster stops surfacing. (Pre-dedup the reuse doc carried its
+        // own text copy and survived; that resilience is traded for the storage
+        // win — there is no live text to keep once the source `direct` doc is gone.)
         run_async_test(async {
             let dir = test_dir("reuse-source-delete");
             let infra = AppInfra::initialize(&dir)
@@ -1440,7 +1542,19 @@ mod tests {
                 .bind(source_job_id)
                 .execute(infra.pool())
                 .await
-                .expect("source processing result delete should not remove reuse search");
+                .expect("source processing result delete should cascade reuse search away");
+
+            // The reuse doc cascaded away with its canonical `direct` doc: no
+            // search_documents rows remain for either frame.
+            let remaining: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents WHERE frame_id IN (?1, ?2)",
+            )
+            .bind(first.frame.id)
+            .bind(second.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("remaining doc count should load");
+            assert_eq!(remaining, 0);
 
             let response = infra
                 .search_capture(SearchCaptureRequest {
@@ -1456,9 +1570,233 @@ mod tests {
                 .await
                 .expect("search should succeed");
 
+            assert!(response.frames.is_empty());
+        });
+    }
+
+    /// Capture an OCR'd source frame plus a visually-equivalent duplicate, return
+    /// `(source, duplicate, source_direct_doc_id, duplicate_reuse_doc_id)`.
+    async fn seed_source_and_duplicate(
+        infra: &AppInfra,
+        tag: u8,
+        text: &str,
+    ) -> (crate::Frame, crate::Frame, i64, i64) {
+        let equivalence = crate::FrameEquivalence {
+            hint: Some(format!("same-dedup-{tag}")),
+            proof: Some(vec![tag; 1024]),
+            version: Some(1),
+            status: Some(crate::FrameEquivalenceStatus::Ready),
+            error: None,
+        };
+        let source = infra
+            .capture_frame(
+                &NewFrame::new(
+                    "screen-session",
+                    &format!("/tmp/dedup-source-{tag}.jpg"),
+                    "2026-05-17T10:00:00Z",
+                )
+                .with_equivalence(equivalence.clone()),
+                None,
+            )
+            .await
+            .expect("source frame should capture");
+        complete_job(
+            infra,
+            source.job.expect("source frame should enqueue OCR"),
+            ProcessingResultDraft::new().with_result_text(text),
+        )
+        .await;
+        let duplicate = infra
+            .capture_frame(
+                &NewFrame::new(
+                    "screen-session",
+                    &format!("/tmp/dedup-dup-{tag}.jpg"),
+                    "2026-05-17T10:00:01Z",
+                )
+                .with_equivalence(equivalence),
+                None,
+            )
+            .await
+            .expect("duplicate frame should capture");
+        assert!(duplicate.job.is_none(), "duplicate frame skips OCR");
+
+        let direct_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM search_documents WHERE frame_id = ?1 AND text_source_kind = 'direct'",
+        )
+        .bind(source.frame.id)
+        .fetch_one(infra.pool())
+        .await
+        .expect("source direct doc should exist");
+        let reuse_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM search_documents \
+             WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse'",
+        )
+        .bind(duplicate.frame.id)
+        .fetch_one(infra.pool())
+        .await
+        .expect("duplicate reuse doc should exist");
+
+        (source.frame, duplicate.frame, direct_id, reuse_id)
+    }
+
+    #[test]
+    fn equivalent_reuse_stores_null_text_and_borrows_canonical() {
+        run_async_test(async {
+            let dir = test_dir("dedup-storage");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let (source, _dup, direct_id, reuse_id) =
+                seed_source_and_duplicate(&infra, 57, "dedup target alpha").await;
+
+            // The reuse row stores NULL body_text and points at the canonical
+            // `direct` row.
+            let (body_text, canonical): (Option<String>, Option<i64>) = sqlx::query_as(
+                "SELECT body_text, canonical_search_document_id FROM search_documents WHERE id = ?1",
+            )
+            .bind(reuse_id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("reuse row should load");
+            assert!(body_text.is_none(), "reuse row stores NULL body_text");
+            assert_eq!(canonical, Some(direct_id), "reuse row borrows the canonical");
+
+            // The reuse row resolves its text through the canonical FK (the same
+            // COALESCE/JOIN the semantic read uses).
+            let resolved: String = sqlx::query_scalar(
+                "SELECT COALESCE(reuse.body_text, canonical.body_text) \
+                 FROM search_documents AS reuse \
+                 LEFT JOIN search_documents AS canonical \
+                   ON canonical.id = reuse.canonical_search_document_id \
+                 WHERE reuse.id = ?1",
+            )
+            .bind(reuse_id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("resolved text should load");
+            assert_eq!(resolved, "dedup target alpha");
+
+            // Keyword search matches the canonical frame only.
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "alpha".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("search should succeed");
             assert_eq!(response.frames.len(), 1);
-            assert_eq!(response.frames[0].representative_frame.id, second.frame.id);
-            assert_eq!(response.frames[0].text_source_kind, "equivalent_reuse");
+            assert_eq!(response.frames[0].match_count, 1);
+            assert_eq!(response.frames[0].representative_frame.id, source.id);
+
+            // No FTS row exists for the reuse anchor (only the canonical matched).
+            let fts_rowids: Vec<i64> = sqlx::query_scalar(
+                "SELECT rowid FROM search_documents_fts WHERE search_documents_fts MATCH 'alpha'",
+            )
+            .fetch_all(infra.pool())
+            .await
+            .expect("fts rowids should load");
+            assert!(fts_rowids.contains(&direct_id), "canonical is indexed in FTS");
+            assert!(
+                !fts_rowids.contains(&reuse_id),
+                "the reuse anchor has no FTS row"
+            );
+
+            // No vector exists for the reuse anchor (only `direct` anchors embed).
+            let reuse_vectors: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_document_vectors WHERE rowid = ?1",
+            )
+            .bind(reuse_id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("reuse vector count should load");
+            assert_eq!(reuse_vectors, 0);
+        });
+    }
+
+    #[test]
+    fn semantic_read_resolves_reuse_text_from_canonical() {
+        run_async_test(async {
+            let dir = test_dir("dedup-semantic-read");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let (_source, duplicate, _direct_id, reuse_id) =
+                seed_source_and_duplicate(&infra, 58, "semantic dedup target").await;
+
+            // Force a vector onto the reuse anchor (production never embeds reuse
+            // rows — Slice 2) so the semantic read path actually hydrates a reuse
+            // row and must resolve its text through the canonical FK.
+            let blob: Vec<u8> = seeded_vector(2)
+                .iter()
+                .flat_map(|component| component.to_le_bytes())
+                .collect();
+            sqlx::query(
+                "INSERT INTO search_document_vectors (rowid, embedding) \
+                 VALUES (?1, vec_quantize_int8(?2, 'unit'))",
+            )
+            .bind(reuse_id)
+            .bind(blob)
+            .execute(infra.pool())
+            .await
+            .expect("forced reuse vector should insert");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "unrelated".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(seeded_vector(2)),
+                })
+                .await
+                .expect("hybrid search should succeed");
+
+            // The reuse frame surfaces by meaning and its snippet carries the
+            // canonical row's text (COALESCEd through the FK), not an empty body.
+            let reuse_hit = response
+                .frames
+                .iter()
+                .find(|frame| frame.representative_frame.id == duplicate.id)
+                .expect("reuse frame should surface semantically");
+            assert!(reuse_hit.found_by_meaning);
+            assert!(
+                reuse_hit.snippet.contains("semantic dedup target"),
+                "snippet resolves the canonical text, was: {:?}",
+                reuse_hit.snippet
+            );
+        });
+    }
+
+    #[test]
+    fn no_reuse_row_violates_the_dedup_invariant() {
+        run_async_test(async {
+            let dir = test_dir("dedup-invariant");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            // Exercise the live, off-lock and chained reuse paths.
+            seed_source_and_duplicate(&infra, 59, "invariant target one").await;
+            let _ = seed_source_and_duplicate(&infra, 60, "invariant target two").await;
+
+            let violations: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE text_source_kind = 'equivalent_reuse' \
+                   AND body_text IS NOT NULL \
+                   AND canonical_search_document_id IS NULL",
+            )
+            .fetch_one(infra.pool())
+            .await
+            .expect("violation count should load");
+            assert_eq!(violations, 0);
         });
     }
 }

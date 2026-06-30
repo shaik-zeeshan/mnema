@@ -166,7 +166,8 @@ async fn insert_direct_frame_ocr_document(
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "direct",
-            body_text: text,
+            body_text: Some(text),
+            canonical_search_document_id: None,
             context_text: &context_text,
         },
     )
@@ -190,7 +191,7 @@ async fn project_frame_ocr_result(
 
     insert_direct_frame_ocr_document(transaction, &frame, result, text).await?;
 
-    project_equivalent_reuse_documents_for_source_frame(transaction, &frame, result.id, text).await
+    project_equivalent_reuse_documents_for_source_frame(transaction, &frame, result.id).await
 }
 
 /// Project a processing result writing only the cheap, O(1) `direct` document — no
@@ -293,7 +294,8 @@ async fn project_audio_transcription_result(
                 window_title: None,
                 group_key: &group_key,
                 text_source_kind: "direct",
-                body_text: span_text,
+                body_text: Some(span_text),
+                canonical_search_document_id: None,
                 context_text: &context_text,
             },
         )
@@ -320,7 +322,10 @@ pub(super) struct NewSearchDocument<'a> {
     pub(super) window_title: Option<&'a str>,
     pub(super) group_key: &'a str,
     pub(super) text_source_kind: &'a str,
-    pub(super) body_text: &'a str,
+    /// `None` for an `equivalent_reuse` row — it borrows the canonical `direct`
+    /// row's text via `canonical_search_document_id` instead of copying it.
+    pub(super) body_text: Option<&'a str>,
+    pub(super) canonical_search_document_id: Option<i64>,
     pub(super) context_text: &'a str,
 }
 
@@ -332,8 +337,8 @@ pub(super) async fn insert_search_document(
         "INSERT INTO search_documents (\
             anchor_type, frame_id, audio_segment_id, processing_result_id, span_start_ms, span_end_ms, \
             absolute_start_at, absolute_end_at, source_kind, session_id, app_bundle_id, app_name, app_name_search_key, window_title, \
-            group_key, text_source_kind, body_text, context_text\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            group_key, text_source_kind, body_text, canonical_search_document_id, context_text\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
     )
     .bind(doc.anchor_type)
     .bind(doc.frame_id)
@@ -356,19 +361,26 @@ pub(super) async fn insert_search_document(
     .bind(doc.group_key)
     .bind(doc.text_source_kind)
     .bind(doc.body_text)
+    .bind(doc.canonical_search_document_id)
     .bind(doc.context_text)
     .execute(&mut **transaction)
     .await?;
     let rowid = insert.last_insert_rowid();
 
-    sqlx::query(
-        "INSERT INTO search_documents_fts(rowid, body_text, context_text) VALUES (?1, ?2, ?3)",
-    )
-    .bind(rowid)
-    .bind(doc.body_text)
-    .bind(doc.context_text)
-    .execute(&mut **transaction)
-    .await?;
+    // `equivalent_reuse` rows are not indexed in FTS: their text is a duplicate of
+    // the canonical `direct` row, which is already indexed, so keyword search
+    // matches the canonical frame and the reuse copy stays out of the index. The
+    // delete trigger (migration 0016) is guarded to match.
+    if let Some(body_text) = doc.body_text {
+        sqlx::query(
+            "INSERT INTO search_documents_fts(rowid, body_text, context_text) VALUES (?1, ?2, ?3)",
+        )
+        .bind(rowid)
+        .bind(body_text)
+        .bind(doc.context_text)
+        .execute(&mut **transaction)
+        .await?;
+    }
 
     Ok(())
 }
