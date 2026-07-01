@@ -37,7 +37,8 @@ import type {
   VideoBitratePreset,
 } from "$lib/types";
 import type { FeatureId, FeatureLockContext } from "./feature-model";
-import { FEATURES, featureLockReason as lockReasonFor } from "./feature-model";
+import { featureLockReason as lockReasonFor, platformFeatures } from "./feature-model";
+import { detectKeyboardPlatform } from "$lib/keyboard";
 import {
   createOcrModelStore,
   createSemanticSearchModelStore,
@@ -88,6 +89,12 @@ import {
 // Permission types live in `onboarding-attention` (shared by the lifecycle +
 // listener helpers); re-exported here so body components keep their import site.
 export type { PermissionKey, PermissionValue } from "./onboarding-attention";
+
+// The features actually shown this session — drops the macOS-only App-Privacy-
+// Exclusion "privacy" step off Windows (ADR 0025), mirroring `+page.svelte`'s
+// render list so on/attention counts never include a hidden feature. Computed
+// once — the platform can't change mid-session.
+const visibleFeatures = platformFeatures(detectKeyboardPlatform());
 
 export class OnboardingController {
   // ── Draft fields (same names/types/defaults as the legacy page) ───────────
@@ -711,8 +718,8 @@ export class OnboardingController {
   }
 
   // ── Footer / CTA deriveds ────────────────────────────────────────────────
-  onCount = $derived(FEATURES.filter((feature) => this.isEnabled(feature.id)).length);
-  attentionCount = $derived(FEATURES.filter((feature) => this.featureAttention(feature.id)).length);
+  onCount = $derived(visibleFeatures.filter((feature) => this.isEnabled(feature.id)).length);
+  attentionCount = $derived(visibleFeatures.filter((feature) => this.featureAttention(feature.id)).length);
 
   // The configure→finale CTA ("Review & finish"): block leaving configure while
   // anything needs attention OR a selected custom resolution/bitrate is invalid
@@ -765,7 +772,7 @@ export class OnboardingController {
 
   // Surfaced reason the finale CTAs are dead for an attention regression (not an in-flight op). Helper owns gate + copy.
   finaleBlockReason = $derived(finaleBlockReasonFor(this.phase === "done" && !this.loading && !this.saving && !this.completing,
-    FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name)));
+    visibleFeatures.filter((f) => this.featureAttention(f.id)).map((f) => f.name)));
 
   // ── Settings round-trip (VERBATIM from the legacy page) ──────────────────
   // The two transforms are factored into `onboarding-settings-sync` (operating
