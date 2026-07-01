@@ -334,6 +334,18 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
     void resolveAppIcons(controller.filteredCandidates.map((candidate) => candidate.bundleId));
   });
 
+  // ponytail: candidate list is otherwise mount-only, so newly-seen apps never
+  // surface until reload. Window focus is the cheap "user came back, refresh"
+  // signal for this main-window-only surface; timeline_data_changed if capture-live freshness matters.
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const onFocus = () => {
+      void loadPrivacyAppCandidates();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  });
+
   $effect(() => {
     if (!host.enableExistingUserPrompt) return;
     const promptId = state.recommendations?.promptId;

@@ -3656,6 +3656,11 @@
           // hidden, so re-probe model status on focus too — otherwise the hint
           // keeps showing keyword-only long after a model is installed.
           void loadSemanticSearchModelInstalled();
+          // The captured-app set grows as new apps are seen after launch, but the
+          // session cache pins the launch-time set — so apps first captured this
+          // session never show in `app:` completion. Invalidate on focus; the lazy
+          // loader (kicked by the `app:` derivation) repopulates on the next use.
+          searchableApps = null;
           // Re-summon hydration: if an ask thread is armed but its in-memory
           // transcript was cleared, reload it from the store so a finished (or
           // still-streaming) answer reappears. Background completion is

@@ -637,8 +637,12 @@
       atTop: untrack(() => atTop),
     });
     if (action === "ignore") {
-      // Set unchanged — drop the staged copy. Trajectories stay frozen until an
-      // apply (see live-arc note); a no-op here avoids reflow.
+      // Membership + display order unchanged — but the per-row FIGURES may have
+      // moved (confidence values, trajectory/sparkline points). Refresh them in
+      // place: applyConclusions swaps the data and reloads trajectories without
+      // touching ordering, `expandedSubject`, or the pill, so no row reorders,
+      // appears, or disappears — only the numbers/sparklines catch up.
+      applyConclusions(next);
       return;
     }
     if (action === "apply") {

@@ -28,6 +28,10 @@ export interface AiRuntimeStoreDeps {
   isCloudProviderKind: (kind: string) => boolean;
   // Human label for a provider instance id (resolved against the draft list).
   labelForProvider: (id: string) => string;
+  // Re-check Ask AI availability after a key save/clear so its readiness pill
+  // reflects the fresh runtime state without a manual Refresh. Lives in a
+  // sibling store — injected, mirroring the closure contract above.
+  loadAskAiAvailability: () => void;
 }
 
 export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
@@ -169,6 +173,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       resetTestResult();
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
+      deps.loadAskAiAvailability();
     } catch (error) {
       aiProviderKeyErrors = {
         ...aiProviderKeyErrors,
@@ -221,6 +226,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       resetTestResult();
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
+      deps.loadAskAiAvailability();
     } catch (error) {
       aiProviderKeyErrors = {
         ...aiProviderKeyErrors,

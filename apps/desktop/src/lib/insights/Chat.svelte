@@ -895,8 +895,36 @@
   // re-hydrates if the turn already finalized); stale/duplicate is ignored.
   async function handleUpdateEvent(event: AskAiUpdateEvent): Promise<void> {
     if (event.conversationId !== activeConversationId) return;
-    const turn = turns.find((t) => t.turnIndex === event.turnIndex);
-    if (!turn) return; // send() appends the in-flight turn locally; nothing else expected.
+    let turn = turns.find((t) => t.turnIndex === event.turnIndex);
+    if (!turn) {
+      // No local turn for this index: a turn was started on this SAME open
+      // conversation from another window (e.g. Quick Recall). Hydrate the missing
+      // turn from the authoritative live snapshot — the exact reattach path
+      // `adoptLiveSnapshot` uses — insert it in order, then fall through so the
+      // version contract below applies this and subsequent ops. A null / mismatched
+      // snapshot means there is nothing to attach to, so we drop as before.
+      const conversationId = event.conversationId;
+      let snapshot: TurnSnapshot | null;
+      try {
+        snapshot = await invoke<TurnSnapshot | null>("ask_ai_snapshot", {
+          request: { conversationId },
+        });
+      } catch {
+        return;
+      }
+      if (activeConversationId !== conversationId) return;
+      if (snapshot === null || snapshot.view.turnIndex !== event.turnIndex) return;
+      const hydrated = makeTurn(
+        snapshot.view.turnIndex,
+        snapshot.view.question,
+        normalizePhase(snapshot.view.phase),
+      );
+      turns = [...turns, hydrated].sort((a, b) => a.turnIndex - b.turnIndex);
+      turn = turns.find((t) => t.turnIndex === event.turnIndex);
+      if (!turn) return;
+      adoptView(turn, snapshot.view, snapshot.version);
+      reconcileComposer(turn);
+    }
 
     if (event.version === turn.version + 1) {
       applyUpdate(turn, event.update);

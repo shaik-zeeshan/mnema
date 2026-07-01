@@ -2059,6 +2059,24 @@
     }
   }
 
+  // If a segment was selected before its transcription/diarization job existed,
+  // the load lands on "missing"/"empty" with no poll armed and stays there
+  // forever. When the job is finally enqueued/completed, audio_segments_changed
+  // fires — re-run the load (which re-checks speaker analysis) for the
+  // still-selected segment so it recovers. Reuse the current generation so the
+  // selection $effect's cleanup stays authoritative over any poll this arms.
+  function reloadSelectedAudioTranscriptIfPending(): void {
+    const id = selectedAudioSegmentId;
+    if (id == null) return;
+    if (
+      selectedAudioTranscriptStatus !== "missing" &&
+      selectedAudioTranscriptStatus !== "empty"
+    ) {
+      return;
+    }
+    void loadSelectedAudioSegmentTranscript(id, selectedAudioTranscriptGeneration);
+  }
+
   const selectedAudioSpeakerRetryVisible = $derived(
     selectedAudioTranscriptStatus === "success" &&
       selectedAudioSpeakerTurnsError != null &&
@@ -6478,6 +6496,7 @@
 
     listen("audio_segments_changed", () => {
       scheduleAudioSegmentsRefresh();
+      reloadSelectedAudioTranscriptIfPending();
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenAudioSegmentsChanged = fn;
