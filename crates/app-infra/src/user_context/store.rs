@@ -1991,6 +1991,10 @@ impl UserContextStore {
             "user_context_confidence_history",
             "user_context_activities",
             "user_context_conclusions",
+            // Subject Vectors are derived User Context (subject text + embedding):
+            // cleared by Wipe, never cascaded by Retention (ADR 0029). No FK to
+            // conclusions, so it must be wiped explicitly.
+            "user_context_subject_vectors",
             "user_context_dismissals",
             "user_context_derivation_runs",
             "user_context_authored",
@@ -2123,6 +2127,25 @@ pub async fn cascade_derived_for_deleted_subjects_in(
     .execute(&mut *conn)
     .await?
     .rows_affected() as i64;
+
+    // 5. Purge Subject Vectors orphaned by step 4. Un-forming a Subject's last
+    //    non-dismissed Conclusion leaves its vector (embedding NON-NULL, current
+    //    model) keyed to a Subject with no live Conclusion, yet `subject_vector_knn`
+    //    filters only on `embedding IS NOT NULL AND embedded_model = ?` — so the
+    //    orphan keeps ranking and re-surfaces the deleted Subject into the
+    //    distillation KNOWN SUBJECTS reuse block (and `list_subjects_needing_embedding`,
+    //    which needs a live Conclusion, can never re-embed or drop it). `subject` is
+    //    COLLATE NOCASE, so the `NOT IN` folds case in lockstep with the store's
+    //    Subject keying; conclusion `subject` is NOT NULL, so the subquery yields no
+    //    NULLs that would defeat `NOT IN`. Wipe clears the whole table and Dismiss
+    //    NULLs one row — this closes the Delete Recent Capture gap.
+    sqlx::query(
+        "DELETE FROM user_context_subject_vectors \
+         WHERE subject NOT IN (\
+             SELECT subject FROM user_context_conclusions WHERE status != 'dismissed')",
+    )
+    .execute(&mut *conn)
+    .await?;
 
     Ok(UserContextCascadeSummary {
         deleted_activities,
@@ -2497,6 +2520,13 @@ mod tests {
             )",
             "CREATE UNIQUE INDEX user_context_digests_range_idx
                 ON user_context_digests (range_kind, range_start_ms)",
+            // Mirrors migrations 0043 + 0044 (Subject Vectors).
+            "CREATE TABLE user_context_subject_vectors (
+                subject TEXT PRIMARY KEY COLLATE NOCASE,
+                embedding BLOB,
+                embedded_at_ms INTEGER,
+                embedded_model TEXT
+            )",
             // Minimal raw-capture tables so `earliest_capture_at_ms` (#98) can be
             // tested. Only the timestamp columns it reads are modeled.
             "CREATE TABLE frames (
@@ -4036,6 +4066,70 @@ mod tests {
         });
     }
 
+    // Regression: Delete Recent Capture un-forms a Subject's last Conclusion
+    // (step 4 of the cascade) but the Subject Vectors table has no FK to
+    // conclusions, so the vector is orphaned — embedding NON-NULL under the active
+    // model, yet keyed to a Subject with no live Conclusion. `subject_vector_knn`
+    // filters only on `embedding IS NOT NULL AND embedded_model = ?`, so the orphan
+    // keeps ranking and re-surfaces the deleted Subject into the distillation
+    // KNOWN SUBJECTS reuse block. Wipe clears the whole table and Dismiss NULLs one
+    // row, but the capture cascade must purge orphaned vectors too.
+    #[test]
+    fn delete_recent_capture_cascade_purges_orphaned_subject_vectors() {
+        block_on(async {
+            let store = test_store().await;
+
+            // Subject "Marvel Rivals" is grounded ONLY by an activity on frame 10
+            // and carries a freshly embedded Subject Vector under the active model.
+            let activity =
+                seed_activity_with_subject(&store, "Played Marvel Rivals", 100, "frame", 10).await;
+            let conclusion = store
+                .upsert_conclusion(draft("Marvel Rivals", "Plays Marvel Rivals", 0.7))
+                .await
+                .expect("conclusion");
+            store
+                .replace_conclusion_evidence(
+                    conclusion,
+                    vec![NewConclusionEvidence {
+                        activity_id: activity,
+                        stance: EvidenceStance::Support,
+                    }],
+                )
+                .await
+                .expect("evidence");
+            sqlx::query(
+                "INSERT INTO user_context_subject_vectors \
+                     (subject, embedding, embedded_at_ms, embedded_model) \
+                 VALUES ('Marvel Rivals', x'0000803f', 1000, 'mnema/nomic')",
+            )
+            .execute(store.pool())
+            .await
+            .expect("seed subject vector");
+
+            // Delete Recent Capture removes frame 10 → the sole grounding is gone,
+            // so the Conclusion un-forms (formation bar).
+            let summary = store
+                .delete_derived_for_capture_subjects(&[10], &[])
+                .await
+                .expect("cascade");
+            assert_eq!(summary.deleted_conclusions, 1, "the sole grounding was deleted");
+            assert!(store.get_conclusion(conclusion).await.expect("get").is_none());
+
+            // With no non-dismissed Conclusion keying it, the vector must not
+            // survive as an orphan that would still rank in `subject_vector_knn`.
+            let orphans: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM user_context_subject_vectors v \
+                 WHERE v.embedding IS NOT NULL \
+                   AND v.subject NOT IN (\
+                       SELECT subject FROM user_context_conclusions WHERE status != 'dismissed')",
+            )
+            .fetch_one(store.pool())
+            .await
+            .expect("count orphaned vectors");
+            assert_eq!(orphans, 0, "cascade must purge orphaned Subject Vectors");
+        });
+    }
+
     #[test]
     fn delete_derived_for_capture_subjects_is_noop_for_empty_ids() {
         block_on(async {
@@ -4518,6 +4612,36 @@ mod tests {
                     .expect("count table");
             assert_eq!(count, 0, "{table} should be empty after wipe");
         }
+        });
+    }
+
+    // Regression: ADR 0029 says the Subject Vectors table is derived User Context
+    // and MUST be cleared by Wipe User Context (never cascaded by Retention). The
+    // table has no FK to conclusions, so deleting conclusions does not cascade to
+    // it — wipe_all must DELETE it explicitly or subject text + embeddings survive
+    // an explicit wipe (privacy leak + orphaned KNN reuse candidates).
+    #[test]
+    fn wipe_all_clears_subject_vectors_table() {
+        block_on(async {
+            let store = test_store().await;
+            // CaptureDb::single => read pool == write pool, so pool() writes too.
+            sqlx::query(
+                "INSERT INTO user_context_subject_vectors \
+                     (subject, embedding, embedded_at_ms, embedded_model) \
+                 VALUES ('Apple', x'0000803f', 1000, 'mnema/nomic')",
+            )
+            .execute(store.pool())
+            .await
+            .expect("seed subject vector");
+
+            store.wipe_all().await.expect("wipe");
+
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM user_context_subject_vectors")
+                    .fetch_one(store.pool())
+                    .await
+                    .expect("count subject vectors");
+            assert_eq!(count, 0, "subject vectors must be cleared by Wipe User Context");
         });
     }
 
