@@ -38,6 +38,10 @@
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import Sparkline from "$lib/insights/charts/Sparkline.svelte";
+  import IconTrendUp from "~icons/lucide/trending-up";
+  import IconTrendDown from "~icons/lucide/trending-down";
+  import IconTrendFlat from "~icons/lucide/minus";
   import { humanizeError } from "$lib/format-error";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
@@ -711,21 +715,53 @@
           </div>
 
           <div class="insp-subhead">Confidence history</div>
-          <div class="conf-hist">
-            {#if selectedTrajectory && selectedTrajectory.history.length > 0}
-              {#each selectedTrajectory.history as h, i (i)}
-                <div class="ch-row">
-                  <span class="ch-date">{fmtMonth(h.snapshotAtMs)}</span>
-                  <div class="ch-track">
-                    <div class="ch-fill" style="width:{pct(h.confidence)}%;"></div>
-                  </div>
-                  <span class="ch-val">{pct(h.confidence)}</span>
+          {#if selectedTrajectory && selectedTrajectory.history.length > 0}
+            {@const hist = selectedTrajectory.history}
+            {@const first = hist[0]}
+            {@const last = hist[hist.length - 1]}
+            {@const delta = pct(last.confidence) - pct(first.confidence)}
+            <div class="conf-hist">
+              <div class="ch-hero">
+                <span class="ch-now">{pct(last.confidence)}</span>
+                <span
+                  class="ch-delta"
+                  class:up={delta > 0}
+                  class:down={delta < 0}
+                >
+                  {#if delta > 0}
+                    <IconTrendUp />
+                  {:else if delta < 0}
+                    <IconTrendDown />
+                  {:else}
+                    <IconTrendFlat />
+                  {/if}
+                  {#if delta !== 0}<span>{Math.abs(delta)}</span>{/if}
+                </span>
+              </div>
+              {#if hist.length > 1}
+                <div class="ch-spark">
+                  <Sparkline
+                    series={[
+                      {
+                        colorVar: "--app-accent",
+                        points: hist.map((h) => h.confidence),
+                      },
+                    ]}
+                    label={`Confidence trend, ${delta > 0 ? "rising" : delta < 0 ? "falling" : "steady"}, over ${hist.length} snapshots`}
+                  />
                 </div>
-              {/each}
-            {:else}
-              <p class="ev-empty">No history snapshots yet.</p>
-            {/if}
-          </div>
+                <div class="ch-range">
+                  <span>{fmtMonth(first.snapshotAtMs)}</span>
+                  <span>{hist.length} snapshots</span>
+                  <span>{fmtMonth(last.snapshotAtMs)}</span>
+                </div>
+              {/if}
+            </div>
+          {:else}
+            <p class="ev-empty" style="padding: 2px 13px 14px;">
+              No history snapshots yet.
+            </p>
+          {/if}
         {:else}
           <div class="insp-head">
             <span class="ih-title">Evidence</span>
@@ -1223,34 +1259,50 @@
   .conf-hist {
     padding: 2px 13px 14px;
   }
-  .ch-row {
-    display: grid;
-    grid-template-columns: 30px 1fr 30px;
-    align-items: center;
+  .ch-hero {
+    display: flex;
+    align-items: baseline;
     gap: 8px;
-    padding: 2px 0;
-    font-size: 10.5px;
-    color: var(--app-text-muted);
   }
-  .ch-date {
-    color: var(--app-text-subtle);
-  }
-  .ch-track {
-    height: 5px;
-    border-radius: 999px;
-    background: var(--app-surface-hover);
-    overflow: hidden;
-    border: 1px solid var(--app-border);
-  }
-  .ch-fill {
-    height: 100%;
-    background: var(--app-accent);
-    border-radius: 999px;
-  }
-  .ch-val {
-    text-align: right;
+  .ch-now {
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1;
     color: var(--app-text);
     font-variant-numeric: tabular-nums;
+  }
+  .ch-delta {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    color: var(--app-text-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  .ch-delta :global(svg) {
+    width: 13px;
+    height: 13px;
+  }
+  .ch-delta.up {
+    color: var(--app-accent);
+  }
+  .ch-delta.down {
+    color: var(--app-danger);
+  }
+  .ch-spark {
+    margin-top: 8px;
+  }
+  /* Sparkline caps its own width at 140px; let it fill the inspector column. */
+  .ch-spark :global(.sparkline) {
+    max-width: none;
+    height: 44px;
+  }
+  .ch-range {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--app-text-subtle);
   }
 
   /* ---- Loading skeleton helpers ---- */
