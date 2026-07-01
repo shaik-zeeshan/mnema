@@ -209,6 +209,11 @@ export function createSemanticSearchView(rec: RecordingStore, models: ModelStatu
     } as SemanticSearchModelStatus);
   }
 
+  async function deleteSemanticSearchPickedModel(model: SemanticSearchPickedView) {
+    if (!model.provider) return;
+    await models.deleteSemanticSearchModel(model.provider, model.modelId, model.displayName);
+  }
+
   return {
     get semanticSearchPickedModelId() {
       return semanticSearchPickedModelId;
@@ -223,6 +228,7 @@ export function createSemanticSearchView(rec: RecordingStore, models: ModelStatu
     setSemanticSearchEnabled,
     startSemanticSearchPickedDownload,
     chooseSemanticSearchPickedModel,
+    deleteSemanticSearchPickedModel,
     get semanticSearchModelOptions() {
       return semanticSearchModelOptions;
     },

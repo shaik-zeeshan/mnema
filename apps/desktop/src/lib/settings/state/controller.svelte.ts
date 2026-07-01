@@ -492,6 +492,7 @@ export class SettingsController {
   get setSemanticSearchEnabled() { return this.semanticSearch.setSemanticSearchEnabled; }
   get startSemanticSearchPickedDownload() { return this.semanticSearch.startSemanticSearchPickedDownload; }
   get chooseSemanticSearchPickedModel() { return this.semanticSearch.chooseSemanticSearchPickedModel; }
+  get deleteSemanticSearchPickedModel() { return this.semanticSearch.deleteSemanticSearchPickedModel; }
   get semanticSearchModelOptions() { return this.semanticSearch.semanticSearchModelOptions; }
   get semanticSearchPickedModel() { return this.semanticSearch.semanticSearchPickedModel; }
   get semanticSearchPickedProgress() { return this.semanticSearch.semanticSearchPickedProgress; }

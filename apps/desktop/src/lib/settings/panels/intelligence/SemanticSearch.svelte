@@ -27,6 +27,7 @@
   const semanticSearchDownloadError = $derived(models.semanticSearchDownloadError);
   const startingSemanticSearchDownload = $derived(models.startingSemanticSearchDownload);
   const cancellingSemanticSearchDownload = $derived(models.cancellingSemanticSearchDownload);
+  const deletingSemanticSearchModel = $derived(models.deletingSemanticSearchModel);
   const semanticSearchReindexing = $derived(models.semanticSearchReindexing);
   const semanticSearchReindexMessage = $derived(models.semanticSearchReindexMessage);
 
@@ -48,6 +49,9 @@
   const chooseSemanticSearchPickedModel = (
     model: Parameters<typeof c.chooseSemanticSearchPickedModel>[0],
   ) => c.chooseSemanticSearchPickedModel(model);
+  const deleteSemanticSearchPickedModel = (
+    model: Parameters<typeof c.deleteSemanticSearchPickedModel>[0],
+  ) => c.deleteSemanticSearchPickedModel(model);
 </script>
 
 <SettingGroup
@@ -197,6 +201,16 @@
                       aria-busy={semanticSearchReindexing}
                     >
                       {#if semanticSearchReindexing}<ButtonSpinner />Re-indexing{:else}Use this model{/if}
+                    </button>
+                    <!-- Installed but not active = unused: allow reclaiming its disk. -->
+                    <button
+                      type="button"
+                      class="btn btn--ghost btn--sm"
+                      onclick={() => void deleteSemanticSearchPickedModel(picked)}
+                      disabled={deletingSemanticSearchModel}
+                      aria-busy={deletingSemanticSearchModel}
+                    >
+                      {#if deletingSemanticSearchModel}<ButtonSpinner />Deleting{:else}Delete{/if}
                     </button>
                   {/if}
                   {#if !installed && !downloading}

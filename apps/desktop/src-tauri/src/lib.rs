@@ -494,6 +494,7 @@ pub fn run() {
             semantic_search_models::start_semantic_search_model_download,
             semantic_search_models::cancel_semantic_search_model_download,
             semantic_search_models::select_semantic_search_model,
+            semantic_search_models::delete_semantic_search_model,
             native_capture::update_semantic_search_settings,
             speaker_analysis_models::get_speaker_analysis_model_status,
             speaker_analysis_models::start_speaker_analysis_model_download,
