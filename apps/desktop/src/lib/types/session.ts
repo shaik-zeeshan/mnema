@@ -9,6 +9,8 @@ export interface SupportedSources {
 export interface CaptureSupport {
 	platform: string;
 	nativeCaptureSupported: boolean;
+	supportsNonOriginalResolution: boolean;
+	systemAudioRequiresScreen: boolean;
 	supportedSources: SupportedSources;
 }
 

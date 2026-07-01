@@ -131,6 +131,7 @@ pub fn add_privacy_excluded_app(
     })
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn add_or_enable_privacy_excluded_app_from_app_handle(
     app_handle: tauri::AppHandle,
     bundle_id: String,

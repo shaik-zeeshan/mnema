@@ -1051,6 +1051,14 @@ mod tests {
         }
     }
 
+    /// Visible-segment file name for the current platform's container
+    /// (`.mov` on macOS, `.mp4` on Windows). Artifact cleanup keys off the
+    /// sibling the resolver derives, so fixtures must use the matching
+    /// extension on whichever platform CI runs.
+    fn visible_segment_file_name(stem: &str) -> String {
+        format!("{stem}.{}", capture_runtime::screen_segment_extension())
+    }
+
     fn run_async_test(test: impl std::future::Future<Output = ()>) {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1341,7 +1349,7 @@ mod tests {
                 .join("frames");
             fs::create_dir_all(&frames_dir).expect("frames directory should be created");
             fs::write(
-                recordings_day_dir.join("session-cleanup-segment-0001.mov"),
+                recordings_day_dir.join(visible_segment_file_name("session-cleanup-segment-0001")),
                 b"fake mov",
             )
             .expect("visible segment should be written");
@@ -1507,7 +1515,7 @@ mod tests {
                 .join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should be created");
             fs::write(
-                recordings_day_dir.join("session-ordering-segment-0001.mov"),
+                recordings_day_dir.join(visible_segment_file_name("session-ordering-segment-0001")),
                 b"fake mov",
             )
             .expect("visible segment should be written");

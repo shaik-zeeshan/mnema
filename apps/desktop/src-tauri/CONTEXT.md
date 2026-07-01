@@ -11,8 +11,16 @@ Background work that materializes generated **Scrub Preview** cache artifacts fo
 _Avoid_: scrub-time extraction, exact frame preview generation, thumbnail pipeline
 
 **Recording Lifecycle**:
-The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. Screen and system audio share the screen capture backend, while microphone runs as a separate native session.
+The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. On macOS, screen and system audio share the screen capture backend while microphone runs as a separate native session; on Windows, microphone and system audio are each independent native audio sessions decoupled from screen capture.
 _Avoid_: capture runtime, recorder service, session manager
+
+**Runtime Capture**:
+The capture-side half of the recording pipeline: the **Recording Lifecycle** producing finalized **Capture Segment** and **Audio Segment** artifacts, including pause/resume, transient liveness recovery, segment rotation, and inactivity tail handling.
+_Avoid_: recording pipeline (that includes processing), media processing, capture runtime
+
+**Media Processing Seam**:
+The platform primitives that consume finalized capture artifacts after commit: audio decode to mono PCM, video decode/frame extraction, and artifact validation. Distinct from **Runtime Capture** — a gap here blocks downstream pipelines (transcription, speaker analysis, previews) but does not change what capture produces.
+_Avoid_: runtime capture, capture writers (the crate also holds writer-side capture code)
 
 **Capture Suspension**:
 A transient-liveness suspension of capture that the **Recording Lifecycle** keeps trying to recover from on its own, distinct from inactivity pause; its kind (privacy-filter apply failure, display unavailable, or **Low-Disk Suspension**) selects the suspended source scope and the retry policy.
@@ -78,6 +86,7 @@ _Avoid_: app-infra inference, dossier service, ai-runtime-in-storage
 - A timeline interval with a usable frame index but no indexed screen position is unavailable for **Scrub Preview** without treating the whole frame index as missing.
 - The generated **Scrub Preview** cache defaults to a 512 MB budget and 7-day last-access window, pruned by segment cache directory rather than individual preview file.
 - Generated **Scrub Preview** cache policy is separate from exact frame preview cache policy.
+- Exact frame preview image format is a platform rendition detail (WebP-preferred on macOS, JPEG on Windows); consumers read the MIME type from the preview result rather than assuming a format.
 - Existing exact preview cache TTL settings do not control generated **Scrub Preview** disk cache lifetime.
 - **Scrub Preview Generation** runs outside the active scrub interaction path; timeline navigation may request availability, but missing generated **Scrub Preview** values are materialized in background work.
 - **Scrub Preview Generation** uses a single coalescing worker where the newest visible timeline window takes priority over stale queued preview intervals.
@@ -103,12 +112,18 @@ _Avoid_: app-infra inference, dossier service, ai-runtime-in-storage
 - **Hidden Segment Workspace** cleanup does not wait on **Scrub Preview Generation**; existing frame artifacts are used opportunistically but the finalized segment recording remains the regeneration source.
 - A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
 - A **Recording Lifecycle** applies **App Privacy Exclusion** through the **Live Privacy Filter** when screen capture is requested.
+- Whether system audio requires screen capture is a platform capability, not a fixed rule: macOS couples system audio to the screen backend, while Windows treats system audio as an independent source. See [ADR 0022](../../../docs/adr/0022-system-audio-is-an-independent-source-on-windows.md).
+- On Windows, screen loss from system suspend, session lock, or monitor/display change is a transient liveness condition the **Recording Lifecycle** recovers from by reusing the inactivity pause/resume mechanism with a pause-reason discriminator, not by ending the session. See [ADR 0023](../../../docs/adr/0023-windows-transient-capture-recovery-reuses-inactivity-pause.md).
 - Metadata-derived website, title, private-browser, and per-window decisions must not feed the **Live Privacy Filter**.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** may raise a **Capture Suspension** when it cannot safely keep writing; the kind selects scope and retry policy, and the segment loop owns one throttled recovery driver shared across kinds ([ADR 0021](../../../docs/adr/0021-recover-from-display-unavailable-as-transient-liveness.md), [ADR 0040](../../../docs/adr/0040-low-disk-safety-is-a-transient-liveness-capture-suspension-kind.md)).
 - A **Low-Disk Suspension** stops screen, system audio, and microphone together because all sources write to the same recordings volume, is entered at segment-open boundaries (never a continuous poll), and auto-resumes once free space rises above the resume threshold; if free space drops below the reserve floor the **Recording Lifecycle** stops the session gracefully instead of waiting ([ADR 0040](../../../docs/adr/0040-low-disk-safety-is-a-transient-liveness-capture-suspension-kind.md)).
+- On Windows a **Low-Disk Suspension** rides the **Capture Suspension** store while DPMS/lock/sleep keep riding the inactivity path; the two are independent holds on the screen, which restarts only when both clear, while the microphone (owned solely by low disk) resumes on free-space recovery alone, and a below-reserve-floor stop overrides any display-asleep state ([ADR 0041](../../../docs/adr/0041-windows-low-disk-rides-capture-suspension-not-the-inactivity-path.md)).
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
+- A **Media Processing Seam** implementation lives in a dedicated processing crate; processing crates depend on the seam crate and never on capture crates, and capture crates do not grow processing-seam decoders.
+- A committed **Audio Segment** never contains the inactivity idle tail: the tail is withheld at the audio writer and discarded on an inactivity stop (boundary refined by peak-level or VAD speech activity), on every platform — trimming is not a post-finalization file operation.
 - A **Recording Lifecycle** creates one **Capture Session** for a user recording and **Capture Segment** rows only for produced artifacts.
+- A finalized screen **Capture Segment** commits together with its frame index on every platform; an index-less segment is a degraded recovery case (exact-preview fallback, never scrub-eligible), not a normal platform outcome.
 - **App Update** installation is gated outside the **Recording Lifecycle** and waits for the active **Capture Session** to end rather than stopping or pausing capture itself.
 - The **App Update Service** owns update policy and exposes app-specific commands/events to Svelte rather than exposing generic updater plugin behavior as product logic.
 - The **App Update Service** selects the update feed endpoint at runtime from the user's selected update channel.
@@ -158,3 +173,4 @@ _Avoid_: app-infra inference, dossier service, ai-runtime-in-storage
 ## Flagged Ambiguities
 
 - "audio activity" previously referred to both raw probe output and inactivity-policy state; resolved: raw probe output is an **Audio Activity Sample**, while policy-facing threshold-qualified state is an **Audio Activity Decision**.
+- "runtime capture" previously referred to both producing capture artifacts and processing them; resolved: artifact production is **Runtime Capture**, while decode/extraction/validation of committed artifacts is a **Media Processing Seam**.

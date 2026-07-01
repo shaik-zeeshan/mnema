@@ -38,5 +38,43 @@ whisper-rs = { version = "0.16", optional = true, features = ["metal"] }
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 whisper-rs = { version = "0.16", optional = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+media-decode = { path = "../media-decode" }
+# Windows-only: switch ONNX Runtime to dynamic loading (`ort/load-dynamic`).
+#
+# WHY this lives here and is Windows-target-only:
+# - The base `ort` entry in `[dependencies]` (above) keeps its default
+#   `download-binaries` feature, which on macOS statically links a downloaded
+#   `onnxruntime` into the binary (zero runtime DLL, hardened-runtime friendly).
+#   We must NOT disturb that — macOS parakeet stays static. So the flip is scoped
+#   to `cfg(target_os = "windows")`; macOS never sees `load-dynamic`.
+# - Cargo UNIFIES features across every dependency edge that points at the same
+#   crate version, so on Windows the single `ort = 2.0.0-rc.12` node ends up with
+#   `default-features ∪ {load-dynamic}`. Critically, speakrs depends on the SAME
+#   `ort` 2.0.0-rc.12 node (verified in the workspace `Cargo.lock`: one `[[package]]
+#   name = "ort"` shared by `audio-transcription` and `speakrs`), so this one line
+#   flips the WHOLE Windows `mnema.exe` to dynamic ORT — parakeet AND speakrs — in
+#   lockstep. That is exactly what #137 needs: CUDA's provider DLLs require
+#   `load-dynamic`, and we want a single ONNX Runtime instance for the process.
+# - `load-dynamic` implies `ort-sys/disable-linking`, which makes the `ort-sys`
+#   build script early-return: it neither links nor downloads any `onnxruntime`
+#   binary. The DLL is therefore supplied by US at runtime via `ORT_DYLIB_PATH`
+#   pointing at the bundled, version-locked `onnxruntime.dll` shipped next to the
+#   exe (see `apps/desktop/src-tauri/scripts`/`tauri.windows.conf.json` staging and
+#   `src/ort_dylib.rs`). `ort` requires the loaded runtime's MINOR version to be
+#   >= 24 (it targets ONNX Runtime 1.24.x), so the shipped DLL is version-locked
+#   to this exact `=2.0.0-rc.12` pin and must be bumped together with it.
+# - `optional = true` MATCHES the base entry so ORT stays gated behind the
+#   `parakeet-onnx` feature (`dep:ort`); this entry only adds a feature, it does
+#   not change when `ort` is compiled. Keep the version pin byte-identical to the
+#   base entry or Cargo resolves two nodes and the unification above breaks.
+# - `download-binaries` is still unioned on (it's a default of the base entry and
+#   features can't be un-set per-edge), but it is inert under `disable-linking`:
+#   the build script returns before any download/link runs. Its build-deps still
+#   compile, which is a tolerated, tiny build-time cost; on Windows its `tls-native`
+#   resolves to SChannel (no OpenSSL), so it introduces no native-TLS toolchain
+#   requirement.
+ort = { version = "=2.0.0-rc.12", optional = true, features = ["load-dynamic"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt"] }

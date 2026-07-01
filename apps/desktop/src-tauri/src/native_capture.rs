@@ -22,6 +22,10 @@ pub(crate) mod settings;
 pub(crate) mod system_idle;
 #[cfg(test)]
 mod tests;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_inactivity_smoke;
+pub(crate) mod windows_smoke_invariants;
+pub(crate) mod windows_transient_liveness_smoke;
 
 use capture_microphone as microphone_capture;
 use capture_types::{
@@ -56,7 +60,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
-use tauri::{path::BaseDirectory, Emitter, Manager};
+#[cfg(target_os = "macos")]
+use tauri::path::BaseDirectory;
+use tauri::{Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
 pub(crate) use debug_log::install_panic_hook;
@@ -84,7 +90,7 @@ pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationG
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
-pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<()>>);
+pub struct SystemWakeNotifierState;
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
@@ -92,7 +98,7 @@ pub struct MetadataNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGua
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
-pub struct MetadataNotifierState(std::sync::Mutex<Vec<()>>);
+pub struct MetadataNotifierState;
 
 #[cfg(target_os = "macos")]
 impl MetadataNotifierState {
@@ -101,13 +107,7 @@ impl MetadataNotifierState {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-impl MetadataNotifierState {
-    pub(crate) fn replace(&self, guards: Vec<()>) {
-        *self.0.lock().expect("metadata notifier state poisoned") = guards;
-    }
-}
-
+#[cfg(target_os = "macos")]
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 #[cfg(target_os = "macos")]
 // ScreenCaptureKit can report no displays for several seconds after macOS
@@ -125,6 +125,7 @@ const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcripti
 const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
+#[cfg(target_os = "macos")]
 const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
@@ -143,6 +144,7 @@ const APP_ICON_RENDER_POINT_SIZE: u32 = 128;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppNotificationAction {
     OpenSettingsTab { tab: String },
+    OpenCapturePrivacySettings { kind: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -431,6 +433,7 @@ fn running_privacy_app_candidates() -> Vec<PrivacyAppCandidate> {
     candidates
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn mark_running_privacy_app_candidates(
     candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
     running_bundle_ids: &BTreeSet<String>,
@@ -442,6 +445,7 @@ fn mark_running_privacy_app_candidates(
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn merge_running_privacy_app_candidates(
     candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
     running_candidates: impl IntoIterator<Item = PrivacyAppCandidate>,
@@ -824,6 +828,7 @@ fn browser_url_metadata_source(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
 }
@@ -873,6 +878,7 @@ fn push_app_notification(
     emit_app_notifications_changed(app_handle, &notifications);
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn push_privacy_recovery_restart_required_notification(app_handle: &tauri::AppHandle) {
     let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
         debug_log::log_warn(
@@ -1306,6 +1312,146 @@ pub fn maybe_push_ocr_unavailable_startup_warning(app_handle: &tauri::AppHandle)
     );
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_session_lock_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn("native capture state unavailable while handling Windows session lock");
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_session_lock(),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows session lock",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_session_unlock_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows session unlock",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_session_unlock(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows session unlock",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_system_suspend_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows system suspend",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_system_suspend(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows system suspend",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_system_resume_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn("native capture state unavailable while handling Windows system resume");
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_system_resume(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows system resume",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+/// Forward a decoded console display-power change (`GUID_CONSOLE_DISPLAY_STATE`) to
+/// the capture lifecycle (Stream 3 — DPMS-off sleep policy, ADR 0023). Mirrors the
+/// suspend/resume twins above: lock `NativeCaptureState`, dispatch to the lifecycle
+/// display-off (pause) / display-on (guarded resume) handler, and on a changed
+/// session emit the update + refresh the status bar.
+///
+/// `display_on == false` means the console display slept (pause for `DisplayAsleep`);
+/// `true` means it woke (guarded resume — only when the pause reason is `DisplayAsleep`
+/// and the session is not locked or suspended).
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_display_power_changed_from_app_handle(
+    app_handle: &tauri::AppHandle,
+    display_on: bool,
+) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows display power change",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => {
+            if display_on {
+                lifecycle.handle_windows_display_awake(app_handle)
+            } else {
+                lifecycle.handle_windows_display_asleep()
+            }
+        }
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows display power change",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+
 #[cfg(target_os = "macos")]
 fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<NativeCaptureState>();
@@ -1511,6 +1657,8 @@ pub fn start_system_wake_notifier(_app_handle: tauri::AppHandle) {}
 struct CaptureSupportSnapshot {
     platform: String,
     native_capture_supported: bool,
+    supports_non_original_resolution: bool,
+    system_audio_requires_screen: bool,
     supported_sources: CaptureSources,
 }
 
@@ -1796,6 +1944,8 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
     let snapshot = CaptureSupportSnapshot {
         platform: response.platform.clone(),
         native_capture_supported: response.native_capture_supported,
+        supports_non_original_resolution: response.supports_non_original_resolution,
+        system_audio_requires_screen: response.system_audio_requires_screen,
         supported_sources: response.supported_sources.clone(),
     };
     let mut last_snapshot = capture_support_log_snapshot_state()
@@ -1809,9 +1959,11 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
     *last_snapshot = Some(snapshot.clone());
 
     debug_log::log(format!(
-        "observed native capture support (platform='{}', native_supported={}, supported_sources={})",
+        "observed native capture support (platform='{}', native_supported={}, non_original_resolution={}, system_audio_requires_screen={}, supported_sources={})",
         snapshot.platform,
         snapshot.native_capture_supported,
+        snapshot.supports_non_original_resolution,
+        snapshot.system_audio_requires_screen,
         format_capture_source_flags(&snapshot.supported_sources)
     ));
 }
@@ -2163,6 +2315,22 @@ fn start_native_capture_inner(
                 error.code,
                 error.message
             ));
+            if error.code == "microphone_access_denied" {
+                push_app_notification(
+                    &app_handle,
+                    app_notifications_state.inner(),
+                    AppNotification {
+                        id: "microphone-access-denied".to_string(),
+                        severity: "warning".to_string(),
+                        title: "Microphone access blocked".to_string(),
+                        message: error.message.clone(),
+                        created_at_unix_ms: runtime::now_unix_ms(),
+                        action: Some(AppNotificationAction::OpenCapturePrivacySettings {
+                            kind: "microphone".to_string(),
+                        }),
+                    },
+                );
+            }
             return Err(error);
         }
     };
@@ -2213,24 +2381,77 @@ fn start_native_capture_inner(
         session: started_session,
     })
 }
+fn system_audio_requires_screen_for_platform(platform: &str) -> bool {
+    match platform {
+        "windows" => false,
+        "macos" => true,
+        _ => true,
+    }
+}
 
-#[tauri::command]
-pub fn get_capture_support() -> CaptureSupportResponse {
-    let screen_support = capture_screen::support_for_current_platform();
+fn capture_support_response_from_observed_platform(
+    screen_support: capture_screen::ScreenCaptureSupport,
+    microphone_permission_state: CapturePermissionState,
+    windows_system_audio_supported: bool,
+) -> CaptureSupportResponse {
     let microphone_supported = !matches!(
-        microphone_capture::microphone_permission_state(),
+        microphone_permission_state,
         CapturePermissionState::Unsupported
     );
+    let system_audio_supported = if screen_support.platform == "windows" {
+        windows_system_audio_supported
+    } else {
+        screen_support.system_audio
+    };
 
-    let response = CaptureSupportResponse {
-        platform: screen_support.platform,
-        native_capture_supported: screen_support.native_capture_supported,
+    CaptureSupportResponse {
+        platform: screen_support.platform.clone(),
+        native_capture_supported: screen_support.native_capture_supported
+            || microphone_supported
+            || system_audio_supported,
+        supports_non_original_resolution: screen_support.non_original_resolution,
+        system_audio_requires_screen: system_audio_requires_screen_for_platform(
+            &screen_support.platform,
+        ),
         supported_sources: CaptureSources {
             screen: screen_support.screen,
             microphone: microphone_supported,
-            system_audio: screen_support.system_audio,
+            system_audio: system_audio_supported,
         },
-    };
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_system_audio_supported_without_prompt() -> bool {
+    microphone_capture::system_audio_loopback_capture_supported()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_audio_supported_without_prompt() -> bool {
+    false
+}
+
+/// System-audio permission state for the capture-permissions surface. On Windows
+/// this reflects WASAPI loopback-endpoint availability (no per-app prompt); on
+/// every other platform it defers to the screen-capture permission, which owns
+/// system audio there.
+#[cfg(target_os = "windows")]
+fn windows_system_audio_permission_state() -> CapturePermissionState {
+    microphone_capture::system_audio_loopback_permission_state()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_audio_permission_state() -> CapturePermissionState {
+    capture_screen::system_audio_permission_state()
+}
+
+#[tauri::command]
+pub fn get_capture_support() -> CaptureSupportResponse {
+    let response = capture_support_response_from_observed_platform(
+        capture_screen::support_for_current_platform(),
+        microphone_capture::microphone_permission_state(),
+        windows_system_audio_supported_without_prompt(),
+    );
 
     log_capture_support_if_changed(&response);
     response
@@ -2238,17 +2459,22 @@ pub fn get_capture_support() -> CaptureSupportResponse {
 
 #[tauri::command]
 pub fn get_capture_permissions(
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     state: tauri::State<'_, NativeCaptureState>,
 ) -> CapturePermissionsResponse {
     #[cfg(target_os = "macos")]
-    recover_screen_capture_after_possible_missed_wake(app_handle);
+    recover_screen_capture_after_possible_missed_wake(_app_handle);
 
     let runtime = state.lock().expect("native capture state poisoned");
     let permissions = CapturePermissions {
         screen: capture_screen::screen_permission_state(),
         microphone: microphone_capture::microphone_permission_state(),
-        system_audio: capture_screen::system_audio_permission_state(),
+        // On Windows system audio is independent WASAPI loopback, not the
+        // screen-recording permission (which `capture_screen` hardcodes as
+        // `Unsupported` off macOS). Use the loopback-endpoint probe so the
+        // onboarding permission row reports the real state instead of a spurious
+        // "Unsupported".
+        system_audio: windows_system_audio_permission_state(),
     };
 
     log_capture_permissions_if_changed(&permissions);
@@ -2271,7 +2497,22 @@ pub async fn request_capture_permission(
     state: tauri::State<'_, NativeCaptureState>,
 ) -> Result<CapturePermissionsResponse, String> {
     match kind.as_str() {
+        // On Windows, system audio is WASAPI loopback and needs no permission
+        // prompt, so skip the screen-recording preflight and just return the
+        // refreshed permission state. On macOS system audio shares the
+        // screen-recording permission, so it still runs the screen preflight.
+        #[cfg(target_os = "windows")]
+        "systemAudio" => {}
+        #[cfg(not(target_os = "windows"))]
         "screen" | "systemAudio" => {
+            tauri::async_runtime::spawn_blocking(|| {
+                capture_screen::ensure_screen_permission();
+            })
+            .await
+            .map_err(|error| format!("screen permission request failed: {error}"))?;
+        }
+        #[cfg(target_os = "windows")]
+        "screen" => {
             tauri::async_runtime::spawn_blocking(|| {
                 capture_screen::ensure_screen_permission();
             })
@@ -2291,30 +2532,59 @@ pub async fn request_capture_permission(
     Ok(get_capture_permissions(app_handle, state))
 }
 
-/// Open the macOS Privacy & Security pane for a capture source so the user can
-/// flip a permission that was already denied (macOS will not re-prompt once
-/// denied).
+/// Open the platform privacy settings pane for a capture source so the user can
+/// flip a permission that was already denied. On macOS this opens the Privacy &
+/// Security pane via `x-apple.systempreferences:` URLs (macOS will not re-prompt
+/// once denied); on Windows it opens the relevant `ms-settings:` deep link.
 #[tauri::command]
 pub fn open_capture_privacy_settings(
     kind: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_opener::OpenerExt;
 
-    let url = match kind.as_str() {
-        "screen" | "systemAudio" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-        }
-        "microphone" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-        }
-        other => return Err(format!("unknown permission kind: {other}")),
-    };
+        let url = match kind.as_str() {
+            "screen" | "systemAudio" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+            "microphone" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            }
+            other => return Err(format!("unknown permission kind: {other}")),
+        };
 
-    app_handle
-        .opener()
-        .open_url(url, None::<String>)
-        .map_err(|error| format!("failed to open privacy settings: {error}"))
+        app_handle
+            .opener()
+            .open_url(url, None::<String>)
+            .map_err(|error| format!("failed to open privacy settings: {error}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+
+        let url = match kind.as_str() {
+            "microphone" => "ms-settings:privacy-microphone",
+            other => {
+                return Err(format!(
+                "capture privacy settings deep link is not supported on Windows for kind: {other}"
+            ))
+            }
+        };
+
+        app_handle
+            .opener()
+            .open_url(url, None::<String>)
+            .map_err(|error| format!("failed to open privacy settings: {error}"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (kind, app_handle);
+        Err("opening capture privacy settings is not supported on this platform".to_string())
+    }
 }
 
 /// One Gecko browser Mnema knows about (reads its active-tab URL via the macOS
@@ -2606,18 +2876,21 @@ fn finish_recording_settings_update(
             },
         );
     }
-    let privacy_changed = previous_settings.privacy != settings.privacy;
-    let metadata_changed = previous_settings.metadata != settings.metadata;
-    if metadata_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
-            privacy::PrivacyRefreshReason::MetadataSettingsMutation,
-        );
-    } else if privacy_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
-            privacy::PrivacyRefreshReason::StaticAppRuleMutation,
-        );
+    #[cfg(target_os = "macos")]
+    {
+        let privacy_changed = previous_settings.privacy != settings.privacy;
+        let metadata_changed = previous_settings.metadata != settings.metadata;
+        if metadata_changed {
+            privacy::request_privacy_filter_refresh(
+                app_handle,
+                privacy::PrivacyRefreshReason::MetadataSettingsMutation,
+            );
+        } else if privacy_changed {
+            privacy::request_privacy_filter_refresh(
+                app_handle,
+                privacy::PrivacyRefreshReason::StaticAppRuleMutation,
+            );
+        }
     }
     crate::status_bar::refresh(app_handle);
 

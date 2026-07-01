@@ -2556,4 +2556,135 @@ mod tests {
             assert_eq!(batch_count, 1);
         });
     }
+
+    /// Windows holds an exclusive handle on a capture file while Media
+    /// Foundation is still finalizing it, so `remove_file` fails with a sharing
+    /// violation (unlike Unix, which permits unlink-while-open). Retention must
+    /// degrade gracefully: the cleanup run completes, the DB rows are removed,
+    /// the still-locked file is left on disk (NOT reported deleted), and a
+    /// pending tombstone is recorded so a later retry can finish the job once
+    /// the handle is released.
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_records_tombstone_when_media_file_is_locked_then_retry_succeeds() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+
+            let dir = create_test_dir("locked-media-file");
+            let locked_path = dir.join("capture-1-segment-0001.mov");
+            fs::write(&locked_path, b"media").expect("test media file should be written");
+
+            // Open the media file with share_mode(0): no FILE_SHARE_READ/WRITE/
+            // DELETE. This is the strongest possible reproduction of a handle the
+            // OS will not let `remove_file` delete — `std::fs` normally opens with
+            // all three share flags, so a plain `File::open` would NOT deny the
+            // delete. Keeping this handle alive forces the sharing violation that
+            // Media Foundation's finalize handle would cause in production.
+            let locked_handle = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&locked_path)
+                .expect("locked media handle should open");
+
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES (
+                    1, 'capture-1', 'screen', 'screen-source-1', 1,
+                    ?1, '2026-05-10T15:00:00Z', '2026-05-10T15:05:00Z', 'completed'
+                 )",
+            )
+            .bind(locked_path.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .expect("capture segment should insert");
+
+            let store = CaptureRetentionStore::new(pool.clone());
+            let context = RetentionCleanupContext {
+                save_directory: Some(dir.to_string_lossy().to_string()),
+                ..Default::default()
+            };
+
+            // The cleanup run must not panic on the un-deletable file. It returns
+            // Ok, removes the DB rows, but surfaces the file-delete failure.
+            let summary = store
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &context,
+                )
+                .await
+                .expect("cleanup should not panic on a locked file");
+
+            assert_eq!(summary.deleted_capture_segments, 1, "DB row still deleted");
+            assert_eq!(summary.file_delete_errors, 1, "locked file delete failed");
+            assert_eq!(
+                summary.pending_file_tombstones, 1,
+                "a tombstone is recorded for the un-deletable file"
+            );
+            assert_eq!(
+                summary.status, "completed_with_file_errors",
+                "run reports the file error instead of claiming clean success"
+            );
+            assert!(
+                locked_path.exists(),
+                "the still-locked file must remain on disk, not be silently dropped"
+            );
+
+            // A tombstone row exists and a retry while the handle is still held
+            // does NOT resolve it (the file is still locked) and does NOT panic.
+            assert_eq!(
+                store
+                    .pending_file_tombstone_count()
+                    .await
+                    .expect("tombstone count should query"),
+                1,
+            );
+            let resolved_while_locked = store
+                .retry_pending_file_tombstones(&context)
+                .await
+                .expect("retry should not panic while the file is still locked");
+            assert_eq!(
+                resolved_while_locked, 0,
+                "retry cannot delete a file that is still locked"
+            );
+            assert!(locked_path.exists(), "file still present after failed retry");
+
+            // Release the handle, then a subsequent retry actually deletes the
+            // file and resolves the tombstone — the deferred-delete path closes.
+            drop(locked_handle);
+            let resolved_after_release = store
+                .retry_pending_file_tombstones(&context)
+                .await
+                .expect("retry should succeed once the handle is released");
+            assert_eq!(resolved_after_release, 1, "tombstone resolved on retry");
+            assert!(
+                !locked_path.exists(),
+                "file is finally deleted once the handle is released"
+            );
+            assert_eq!(
+                store
+                    .pending_file_tombstone_count()
+                    .await
+                    .expect("tombstone count should query"),
+                0,
+                "no pending tombstones remain after a successful retry"
+            );
+
+            fs::remove_dir_all(&dir).ok();
+        });
+    }
 }

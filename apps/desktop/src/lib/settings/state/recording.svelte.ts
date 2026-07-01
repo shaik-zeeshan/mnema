@@ -31,6 +31,7 @@ import type {
   DerivationBudgetTier,
   ExcludedAppEntry,
   MicrophoneVadAdapter,
+  OcrModelStatusResponse,
   OcrProvider,
   OcrRecognitionMode,
   OcrTesseractPageSegmentationMode,
@@ -73,15 +74,12 @@ import {
 import {
   defaultOcrModelIdForProvider,
   defaultOcrLanguageForProvider,
+  selectableOcrProviders,
+  firstSelectableOcrProvider,
 } from "./models-format";
 
 export { ASK_AI_DEFAULT_TOOL_CALL_LIMIT, ASK_AI_MAX_TOOL_CALL_LIMIT, DEFAULT_USER_CONTEXT_BUDGET_TIER, DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS };
 export type { RecordingDomainRequest };
-
-const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
-function isSelectableOcrProvider(value: string | null | undefined): value is OcrProvider {
-  return SELECTABLE_OCR_PROVIDERS.includes(value as OcrProvider);
-}
 
 // Side-effect + gate dependencies injected from the page / sibling stores.
 export interface RecordingStoreDeps {
@@ -97,6 +95,11 @@ export interface RecordingStoreDeps {
   loadAiRuntimeStatus: () => void;
   // The capture-support-derived save-block gates (page state).
   gates: () => RecordingValidationGates;
+  // The live OCR model-status response (model-status store). The OCR default
+  // resolves to the FIRST provider the backend returns — platform-locked
+  // providers are omitted server-side, so this carries the platform knowledge
+  // without an `if windows` here. Lazily read so it reflects whatever has loaded.
+  ocrModelStatus: () => OcrModelStatusResponse | null | undefined;
   // Run once the canonical recording settings (incl. the persisted
   // semantic-search selection) have just landed from a full load. The page-owned
   // semantic-search picker re-seeds its selection here, closing the init race
@@ -192,7 +195,11 @@ export class RecordingStore {
 
   // OCR drafts
   draftOcrEnabled = $state(true);
-  draftOcrProvider = $state<OcrProvider>("apple_vision");
+  // Safe, cross-platform-runnable transient default. Tesseract runs on every OS,
+  // so first paint never selects a provider the backend would hide (e.g. Apple
+  // Vision on Windows). The real default is resolved from the backend status in
+  // `syncProcessingDrafts` once recording settings load.
+  draftOcrProvider = $state<OcrProvider>("tesseract");
   draftOcrModelId = $state<string | null>(null);
   draftOcrLanguage = $state("");
   draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
@@ -375,9 +382,25 @@ export class RecordingStore {
   syncProcessingDrafts(s: RecordingSettings): void {
     this.draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
     this.draftOcrEnabled = s.ocr?.enabled ?? true;
-    const loadedOcrProvider = s.ocr?.provider;
-    const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
-    this.draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
+    // Resolve the OCR provider against the backend-selectable set (the providers
+    // present in the live status response). The set is empty until that status
+    // loads; meanwhile we trust the persisted provider, which the backend's
+    // settings-normalization path has already coerced to a runnable value. Once
+    // the status is present we additionally drop a provider the backend hides and
+    // fall back to the first provider it returns (macOS → apple_vision, Windows →
+    // tesseract — matching the backend default). No `if windows` lives here.
+    const ocrStatus = this.#deps.ocrModelStatus();
+    const ocrSelectable = selectableOcrProviders(ocrStatus);
+    const persistedOcrProvider = s.ocr?.provider ?? null;
+    const fallbackOcrProvider = firstSelectableOcrProvider(ocrStatus) ?? "tesseract";
+    this.draftOcrProvider =
+      persistedOcrProvider !== null
+      && (ocrSelectable.length === 0 || ocrSelectable.includes(persistedOcrProvider))
+        ? persistedOcrProvider
+        : fallbackOcrProvider;
+    // Whether we kept the persisted provider (vs. coercing to the fallback);
+    // when coerced we drop the stale persisted model id / language too.
+    const loadedOcrProviderSelectable = this.draftOcrProvider === persistedOcrProvider;
     this.draftOcrModelId = loadedOcrProviderSelectable
       ? (s.ocr?.modelId ?? defaultOcrModelIdForProvider(this.draftOcrProvider))
       : defaultOcrModelIdForProvider(this.draftOcrProvider);

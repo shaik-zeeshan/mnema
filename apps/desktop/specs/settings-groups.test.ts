@@ -34,6 +34,10 @@ describe("settings rail: 5-group structure", () => {
       "ocr",
       "transcription",
       "speakers",
+      // Windows-only GPU Acceleration (NVIDIA CUDA backend, #137). Lives in the
+      // canonical section list right after Speakers and BEFORE Semantic Search (so
+      // it is never the group's tail); the rail platform-filter hides it off Windows.
+      "gpuAcceleration",
       "semanticSearch",
     ]);
     expect(byId.data).toEqual(["storage", "access"]);
@@ -55,6 +59,7 @@ describe("settings rail: 5-group structure", () => {
       ocr: "intelligence",
       transcription: "intelligence",
       speakers: "intelligence",
+      gpuAcceleration: "intelligence",
       semanticSearch: "intelligence",
       storage: "data",
       access: "data",

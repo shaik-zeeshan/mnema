@@ -59,6 +59,12 @@ struct SourceItemModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct StatusBarCaptureSupport {
+    sources: CaptureSources,
+    system_audio_requires_screen: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StatusBarMenuModel {
     onboarding_complete: bool,
     /// A non-actionable status header shown at the top of the menu. Present only
@@ -71,6 +77,7 @@ struct StatusBarMenuModel {
     pause_label: Option<&'static str>,
     pause_enabled: bool,
     source_items: Vec<SourceItemModel>,
+    system_audio_requires_screen: bool,
     tooltip: &'static str,
 }
 
@@ -86,7 +93,7 @@ fn any_source_enabled(sources: &CaptureSources) -> bool {
 
 fn effective_checked_sources(
     settings: &RecordingSettings,
-    _support: &CaptureSources,
+    _support: &StatusBarCaptureSupport,
 ) -> CaptureSources {
     CaptureSources {
         screen: settings.capture_screen,
@@ -95,26 +102,33 @@ fn effective_checked_sources(
     }
 }
 
-fn supported_sources_only(sources: &CaptureSources, support: &CaptureSources) -> CaptureSources {
+fn supported_sources_only(
+    sources: &CaptureSources,
+    support: &StatusBarCaptureSupport,
+) -> CaptureSources {
     CaptureSources {
-        screen: sources.screen && support.screen,
-        microphone: sources.microphone && support.microphone,
-        system_audio: sources.system_audio && support.system_audio,
+        screen: sources.screen && support.sources.screen,
+        microphone: sources.microphone && support.sources.microphone,
+        system_audio: sources.system_audio && support.sources.system_audio,
     }
 }
 
-fn computed_toggle_sources(current: CaptureSources, source_id: &str) -> Option<CaptureSources> {
+fn computed_toggle_sources(
+    current: CaptureSources,
+    source_id: &str,
+    system_audio_requires_screen: bool,
+) -> Option<CaptureSources> {
     let mut next = current;
     match source_id {
         SOURCE_SCREEN_ID => {
             next.screen = !next.screen;
-            if !next.screen {
+            if !next.screen && system_audio_requires_screen {
                 next.system_audio = false;
             }
         }
         SOURCE_MICROPHONE_ID => next.microphone = !next.microphone,
         SOURCE_SYSTEM_AUDIO_ID => {
-            if !next.screen {
+            if system_audio_requires_screen && !next.screen {
                 return None;
             }
             next.system_audio = !next.system_audio;
@@ -129,7 +143,7 @@ fn source_item_enabled(
     source_id: &str,
     checked: bool,
     current: &CaptureSources,
-    support: &CaptureSources,
+    support: &StatusBarCaptureSupport,
     operation: StatusBarOperation,
     recording: bool,
 ) -> bool {
@@ -138,19 +152,26 @@ fn source_item_enabled(
     }
 
     let supported = match source_id {
-        SOURCE_SCREEN_ID => support.screen,
-        SOURCE_MICROPHONE_ID => support.microphone,
-        SOURCE_SYSTEM_AUDIO_ID => support.system_audio,
+        SOURCE_SCREEN_ID => support.sources.screen,
+        SOURCE_MICROPHONE_ID => support.sources.microphone,
+        SOURCE_SYSTEM_AUDIO_ID => support.sources.system_audio,
         _ => false,
     };
     if !supported {
         return false;
     }
-    if source_id == SOURCE_SYSTEM_AUDIO_ID && !current.screen {
+    if source_id == SOURCE_SYSTEM_AUDIO_ID
+        && support.system_audio_requires_screen
+        && !current.screen
+    {
         return false;
     }
     if checked {
-        let Some(next) = computed_toggle_sources(current.clone(), source_id) else {
+        let Some(next) = computed_toggle_sources(
+            current.clone(),
+            source_id,
+            support.system_audio_requires_screen,
+        ) else {
             return false;
         };
         if !any_source_enabled(&supported_sources_only(&next, support)) {
@@ -167,7 +188,7 @@ fn build_menu_model(
     user_paused: bool,
     low_disk_suspended: bool,
     settings: &RecordingSettings,
-    support: &CaptureSources,
+    support: &StatusBarCaptureSupport,
     operation: StatusBarOperation,
 ) -> StatusBarMenuModel {
     if !onboarding_complete {
@@ -178,6 +199,7 @@ fn build_menu_model(
             recording_enabled: false,
             pause_label: None,
             pause_enabled: false,
+            system_audio_requires_screen: support.system_audio_requires_screen,
             source_items: Vec::new(),
             tooltip: "Mnema",
         };
@@ -225,18 +247,25 @@ fn build_menu_model(
     })
     .collect();
 
+    // Pause/resume is honoured by the backend on every platform: pause_user_capture
+    // is cross-platform and resume_user_capture has a working Windows arm. Expose
+    // the tray control everywhere so it agrees with the global pauseResumeRecording
+    // keyboard shortcut (which is not platform-gated).
+    let pause_supported = true;
+
     StatusBarMenuModel {
         onboarding_complete: true,
         status_label,
         recording_label: Some(recording_label),
         recording_enabled: operation == StatusBarOperation::Idle,
-        pause_label: recording.then_some(if user_paused {
+        pause_label: (pause_supported && recording).then_some(if user_paused {
             "Resume Recording"
         } else {
             "Pause Recording"
         }),
-        pause_enabled: recording && operation == StatusBarOperation::Idle,
+        pause_enabled: pause_supported && recording && operation == StatusBarOperation::Idle,
         source_items,
+        system_audio_requires_screen: support.system_audio_requires_screen,
         tooltip,
     }
 }
@@ -257,7 +286,11 @@ fn set_operation(app: &tauri::AppHandle, operation: StatusBarOperation) {
 
 fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
     let settings = crate::native_capture::current_recording_settings_from_app_handle(app);
-    let support = crate::native_capture::get_capture_support().supported_sources;
+    let support_response = crate::native_capture::get_capture_support();
+    let support = StatusBarCaptureSupport {
+        sources: support_response.supported_sources,
+        system_audio_requires_screen: support_response.system_audio_requires_screen,
+    };
     let session = crate::native_capture::current_native_capture_session(app);
     let recording = session.is_running;
     build_menu_model(
@@ -352,6 +385,8 @@ fn build_menu(
         items.push(header);
         items.push(sep);
     }
+    // The pause item stays visible on every platform, disabled while not
+    // recording, matching the existing macOS tray behaviour.
     items.extend([
         &recording as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
         &pause,
@@ -474,7 +509,8 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
         microphone: settings.capture_microphone,
         system_audio: settings.capture_system_audio,
     };
-    let Some(next) = computed_toggle_sources(current, id) else {
+    let Some(next) = computed_toggle_sources(current, id, model.system_audio_requires_screen)
+    else {
         refresh(app);
         return;
     };
@@ -646,11 +682,20 @@ mod tests {
     use super::*;
     use crate::native_capture::settings::default_recording_settings;
 
-    fn support_all() -> CaptureSources {
-        CaptureSources {
-            screen: true,
-            microphone: true,
-            system_audio: true,
+    fn support_all() -> StatusBarCaptureSupport {
+        support_all_with_system_audio_requires_screen(true)
+    }
+
+    fn support_all_with_system_audio_requires_screen(
+        system_audio_requires_screen: bool,
+    ) -> StatusBarCaptureSupport {
+        StatusBarCaptureSupport {
+            sources: CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            },
+            system_audio_requires_screen,
         }
     }
 
@@ -799,21 +844,37 @@ mod tests {
     }
 
     #[test]
-    fn screen_with_only_system_audio_cannot_be_unchecked() {
+    fn screen_with_only_system_audio_cannot_be_unchecked_when_system_audio_requires_screen() {
         let model = build_menu_model(
             true,
             false,
             false,
             false,
             &settings_with_sources(true, false, true),
-            &support_all(),
+            &support_all_with_system_audio_requires_screen(true),
             StatusBarOperation::Idle,
         );
         assert!(!model.source_items[0].enabled);
+        assert!(model.system_audio_requires_screen);
     }
 
     #[test]
-    fn unchecking_screen_clears_system_audio() {
+    fn screen_with_only_system_audio_can_be_unchecked_when_system_audio_is_independent() {
+        let model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(true, false, true),
+            &support_all_with_system_audio_requires_screen(false),
+            StatusBarOperation::Idle,
+        );
+        assert!(model.source_items[0].enabled);
+        assert!(!model.system_audio_requires_screen);
+    }
+
+    #[test]
+    fn unchecking_screen_clears_system_audio_when_system_audio_requires_screen() {
         assert_eq!(
             computed_toggle_sources(
                 CaptureSources {
@@ -822,6 +883,7 @@ mod tests {
                     system_audio: true,
                 },
                 SOURCE_SCREEN_ID,
+                true,
             ),
             Some(CaptureSources {
                 screen: false,
@@ -832,17 +894,160 @@ mod tests {
     }
 
     #[test]
-    fn system_audio_is_disabled_when_screen_is_unchecked() {
+    fn unchecking_screen_keeps_system_audio_when_system_audio_is_independent() {
+        assert_eq!(
+            computed_toggle_sources(
+                CaptureSources {
+                    screen: true,
+                    microphone: true,
+                    system_audio: true,
+                },
+                SOURCE_SCREEN_ID,
+                false,
+            ),
+            Some(CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: true,
+            })
+        );
+    }
+
+    #[test]
+    fn system_audio_is_disabled_when_screen_is_unchecked_and_system_audio_requires_screen() {
         let model = build_menu_model(
             true,
             false,
             false,
             false,
             &settings_with_sources(false, true, false),
-            &support_all(),
+            &support_all_with_system_audio_requires_screen(true),
             StatusBarOperation::Idle,
         );
         assert!(!model.source_items[2].enabled);
+    }
+
+    #[test]
+    fn toggling_system_audio_without_screen_is_rejected_when_system_audio_requires_screen() {
+        assert_eq!(
+            computed_toggle_sources(
+                CaptureSources {
+                    screen: false,
+                    microphone: true,
+                    system_audio: false,
+                },
+                SOURCE_SYSTEM_AUDIO_ID,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn toggling_system_audio_without_screen_is_allowed_when_system_audio_is_independent() {
+        assert_eq!(
+            computed_toggle_sources(
+                CaptureSources {
+                    screen: false,
+                    microphone: true,
+                    system_audio: false,
+                },
+                SOURCE_SYSTEM_AUDIO_ID,
+                false,
+            ),
+            Some(CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: true,
+            })
+        );
+    }
+
+    #[test]
+    fn system_audio_is_enabled_when_screen_is_unchecked_and_system_audio_is_independent() {
+        let model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(false, true, false),
+            &support_all_with_system_audio_requires_screen(false),
+            StatusBarOperation::Idle,
+        );
+        assert!(model.source_items[2].enabled);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn recording_model_exposes_pause_control_off_windows() {
+        let model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(model.pause_label, Some("Pause Recording"));
+        assert!(model.pause_enabled);
+
+        let paused = build_menu_model(
+            true,
+            true,
+            true,
+            false,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(paused.pause_label, Some("Resume Recording"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn pause_control_is_exposed_on_windows() {
+        // F22: pause/resume is honoured by the backend on every platform
+        // (`pause_user_capture` is cross-platform and `resume_user_capture` has a
+        // working Windows arm), and the global `pauseResumeRecording` keyboard
+        // shortcut is not platform-gated, so the tray must offer it on Windows too
+        // — the same way it does on macOS — rather than diverge from the shortcut.
+        let recording = build_menu_model(
+            true,
+            true,
+            false,
+            false,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(recording.pause_label, Some("Pause Recording"));
+        assert!(recording.pause_enabled);
+
+        let paused = build_menu_model(
+            true,
+            true,
+            true,
+            false,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(paused.pause_label, Some("Resume Recording"));
+        assert!(paused.pause_enabled);
+
+        // Not recording: nothing to pause, on Windows as elsewhere.
+        let idle = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(idle.pause_label, None);
+        assert!(!idle.pause_enabled);
     }
 
     #[test]
@@ -853,10 +1058,13 @@ mod tests {
             false,
             false,
             &settings_with_sources(true, true, true),
-            &CaptureSources {
-                screen: true,
-                microphone: false,
-                system_audio: false,
+            &StatusBarCaptureSupport {
+                sources: CaptureSources {
+                    screen: true,
+                    microphone: false,
+                    system_audio: false,
+                },
+                system_audio_requires_screen: true,
             },
             StatusBarOperation::Idle,
         );

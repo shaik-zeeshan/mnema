@@ -23,10 +23,6 @@ export const SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT =
 // WeSpeaker is its default preset (mirrors recording.svelte.ts defaults).
 export const DEFAULT_SPEAKER_PROVIDER = "speakrs";
 export const DEFAULT_SPEAKER_MODEL_ID = "pyannote-community-1-wespeaker";
-export const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = [
-  "apple_vision",
-  "tesseract",
-];
 
 export function serializeError(err: unknown): string {
   return typeof err === "string" ? err : (JSON.stringify(err) ?? "Unknown error");
@@ -37,12 +33,6 @@ export function parsePositiveInteger(raw: string): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const parsed = Number.parseInt(trimmed, 10);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-export function isSelectableOcrProvider(
-  value: string | null | undefined,
-): value is OcrProvider {
-  return SELECTABLE_OCR_PROVIDERS.includes(value as OcrProvider);
 }
 
 export function defaultOcrModelIdForProvider(provider: OcrProvider): string | null {

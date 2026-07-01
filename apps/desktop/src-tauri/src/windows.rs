@@ -1,16 +1,267 @@
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 use std::{
     collections::VecDeque,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, MutexGuard, OnceLock,
+        Mutex, MutexGuard,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::native_capture;
+#[cfg(target_os = "windows")]
+use std::panic::{catch_unwind, AssertUnwindSafe};
+#[cfg(target_os = "windows")]
+use windows_sys::core::GUID;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    System::RemoteDesktop::{
+        WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+    },
+    UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::{
+            DEVICE_NOTIFY_WINDOW_HANDLE, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
+            PBT_APMRESUMESTANDBY, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE,
+            WM_NCDESTROY, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK,
+            WTS_SESSION_UNLOCK,
+        },
+    },
+};
+
+#[cfg(target_os = "windows")]
+static WINDOWS_SESSION_NOTIFICATION_HWND: Mutex<Option<isize>> = Mutex::new(None);
+#[cfg(target_os = "windows")]
+const WINDOWS_SESSION_NOTIFICATION_SUBCLASS_ID: usize = 1;
+
+// ── Console display-state power notifications (Stream 3 — DPMS-off sleep) ──────
+//
+// `RegisterPowerSettingNotification`, `UnregisterPowerSettingNotification`,
+// `POWERBROADCAST_SETTING`, and `GUID_CONSOLE_DISPLAY_STATE` live behind
+// windows-sys' `Win32_System_Power` / `Win32_System_SystemServices` features,
+// which this crate does not enable. Rather than widen the dependency's feature
+// set (and to keep this slice contained to `windows.rs`), declare the minimal FFI
+// surface locally. Both functions are exported by user32.dll — exactly how
+// windows-sys itself links them.
+
+/// `GUID_CONSOLE_DISPLAY_STATE` (`6fe69556-704a-47a0-8f24-c28d936fda47`).
+///
+/// The modern console display-state power setting: it reflects the *overall*
+/// console display, so one sleeping monitor among several awake ones still reads
+/// "on" — unlike the deprecated per-monitor `GUID_MONITOR_POWER_ON`.
+#[cfg(target_os = "windows")]
+const GUID_CONSOLE_DISPLAY_STATE: GUID =
+    GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
+
+/// Mirror of windows-sys' `POWERBROADCAST_SETTING`: the payload behind `lparam`
+/// for a `PBT_POWERSETTINGCHANGE` message. `data` is a trailing variable-length
+/// byte array (`[u8; 1]` here, matching windows-sys); for
+/// `GUID_CONSOLE_DISPLAY_STATE` the first byte is the display-state value.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct PowerBroadcastSetting {
+    power_setting: GUID,
+    data_length: u32,
+    data: [u8; 1],
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+extern "system" {
+    fn RegisterPowerSettingNotification(
+        hrecipient: *mut std::ffi::c_void,
+        powersettingguid: *const GUID,
+        flags: u32,
+    ) -> isize;
+    fn UnregisterPowerSettingNotification(handle: isize) -> i32;
+}
+
+/// `GUID` has no `PartialEq`, so compare the two power-setting GUIDs field-by-field.
+#[cfg(target_os = "windows")]
+fn guids_equal(a: &GUID, b: &GUID) -> bool {
+    a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
+}
+
+/// The decoded `GUID_CONSOLE_DISPLAY_STATE` value.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConsoleDisplayState {
+    Off,
+    On,
+    Dimmed,
+}
+
+/// Pure decode of a `GUID_CONSOLE_DISPLAY_STATE` `POWERBROADCAST_SETTING.Data`
+/// byte: `0` = display off, `1` = display on, `2` = display dimmed. Any other
+/// value is unknown and yields `None`, so the caller drops it rather than guessing
+/// a capture transition. Kept free of any HWND / Win32 handle so it is unit
+/// testable in isolation.
+#[cfg(target_os = "windows")]
+fn decode_console_display_state(data: u32) -> Option<ConsoleDisplayState> {
+    match data {
+        0 => Some(ConsoleDisplayState::Off),
+        1 => Some(ConsoleDisplayState::On),
+        2 => Some(ConsoleDisplayState::Dimmed),
+        _ => None,
+    }
+}
+
+/// Live `HPOWERNOTIFY` (an `isize` handle) for the console display-state
+/// registration, so teardown can `UnregisterPowerSettingNotification` it. Sits
+/// beside `WINDOWS_SESSION_NOTIFICATION_HWND`; both are owned by the same Main
+/// window HWND.
+#[cfg(target_os = "windows")]
+static WINDOWS_DISPLAY_POWER_NOTIFY: Mutex<Option<isize>> = Mutex::new(None);
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsPowerBroadcastEvent {
+    Suspend,
+    Resume,
+    /// A `GUID_CONSOLE_DISPLAY_STATE` transition decoded from a
+    /// `PBT_POWERSETTINGCHANGE`. Forwarded to the lifecycle as display on/off;
+    /// `Dimmed` is decoded but treated as a no-op (the display is still drawable).
+    DisplayPowerChanged(ConsoleDisplayState),
+}
+
+/// Decode a `WM_POWERBROADCAST` message into a capture-relevant power event.
+///
+/// `wparam` is the broadcast type. APM suspend/resume is fully described by
+/// `wparam`; for `PBT_POWERSETTINGCHANGE` the payload is a `POWERBROADCAST_SETTING`
+/// behind `lparam`, so that arm dereferences `lparam` (null-checked) and, when the
+/// setting is `GUID_CONSOLE_DISPLAY_STATE`, delegates the raw display byte → enum
+/// mapping to the pure [`decode_console_display_state`].
+///
+/// # Safety
+/// For `PBT_POWERSETTINGCHANGE`, `lparam` must be null or a valid pointer to a
+/// `POWERBROADCAST_SETTING` (as the window procedure delivers it). Every other
+/// `wparam` ignores `lparam`, so a `0`/null `lparam` is always sound.
+#[cfg(target_os = "windows")]
+unsafe fn windows_power_broadcast_event(
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<WindowsPowerBroadcastEvent> {
+    match wparam as u32 {
+        PBT_APMSUSPEND => Some(WindowsPowerBroadcastEvent::Suspend),
+        PBT_APMRESUMEAUTOMATIC
+        | PBT_APMRESUMECRITICAL
+        | PBT_APMRESUMESTANDBY
+        | PBT_APMRESUMESUSPEND => Some(WindowsPowerBroadcastEvent::Resume),
+        PBT_POWERSETTINGCHANGE => {
+            // SAFETY: per the function contract `lparam` is null or a valid
+            // `POWERBROADCAST_SETTING`; `as_ref()` null-checks before deref.
+            let setting = (lparam as *const PowerBroadcastSetting).as_ref()?;
+            if !guids_equal(&setting.power_setting, &GUID_CONSOLE_DISPLAY_STATE)
+                || setting.data_length < 1
+            {
+                return None;
+            }
+            decode_console_display_state(setting.data[0] as u32)
+                .map(WindowsPowerBroadcastEvent::DisplayPowerChanged)
+        }
+        _ => None,
+    }
+}
+
+/// SLICE 8 INTEGRATION POINT (Stream 3 — DPMS-off sleep policy).
+///
+/// Forward a decoded console-display power change to the capture lifecycle. This
+/// mirrors how `WindowsPowerBroadcastEvent::{Suspend,Resume}` reach the lifecycle
+/// through `crate::native_capture::handle_windows_system_{suspend,resume}_from_app_handle`
+/// (native_capture.rs:1364 / :1389), each of which locks `NativeCaptureState` and
+/// calls a `lifecycle.handle_windows_system_*` method, then emits the changed
+/// session + refreshes the status bar.
+///
+/// `display_on == false` means the console display slept (pause); `true` means it
+/// woke (guarded resume). `Dimmed` is dropped here — the display is still
+/// drawable, so it is not a capture transition.
+///
+/// Slice 8 wires the lifecycle side and turns the body below into a one-line
+/// forward:
+///   1. Add `TransientLivenessTrigger::DisplayAsleep` (native_capture/inactivity.rs),
+///      alongside `DisplayUnavailable` / `SessionLock` / `SystemSuspend`.
+///   2. Add the lifecycle handlers (native_capture/lifecycle.rs):
+///        - display-off → pause via
+///          `pause_screen_for_transient_liveness(.., TransientLivenessTrigger::DisplayAsleep)`
+///        - display-on  → guarded resume: resume only when the current pause
+///          reason is `DisplayAsleep` AND the session is not locked AND not
+///          suspended (the resume is event-driven; the poll probe cannot observe
+///          DPMS).
+///   3. Add the forwarder in native_capture.rs that locks `NativeCaptureState`
+///      and dispatches — mirror the suspend/resume forwarders exactly:
+///        `pub(crate) fn handle_windows_display_power_changed_from_app_handle(
+///             app_handle: &tauri::AppHandle, display_on: bool)`
+///   4. Replace the body below with the single call:
+///        `crate::native_capture::handle_windows_display_power_changed_from_app_handle(app_handle, display_on);`
+#[cfg(target_os = "windows")]
+fn forward_windows_display_power_change(app_handle: &tauri::AppHandle, state: ConsoleDisplayState) {
+    let display_on = match state {
+        ConsoleDisplayState::On => true,
+        ConsoleDisplayState::Off => false,
+        // A dimmed display is still drawable, so it is not a capture transition.
+        ConsoleDisplayState::Dimmed => return,
+    };
+
+    crate::native_capture::handle_windows_display_power_changed_from_app_handle(
+        app_handle, display_on,
+    );
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows_display_power_notifications(hwnd: HWND) {
+    let mut stored = match WINDOWS_DISPLAY_POWER_NOTIFY.lock() {
+        Ok(stored) => stored,
+        Err(_) => {
+            crate::native_capture::debug_log::log_warn(
+                "Windows display power notification state poisoned; skipping registration",
+            );
+            return;
+        }
+    };
+
+    // Drop any handle left over from a prior HWND before registering on the new
+    // one, so we never leak an `HPOWERNOTIFY`.
+    if let Some(previous) = stored.take() {
+        unsafe {
+            unregister_windows_display_power_notifications(previous);
+        }
+    }
+
+    let handle = unsafe {
+        RegisterPowerSettingNotification(
+            hwnd as *mut std::ffi::c_void,
+            &GUID_CONSOLE_DISPLAY_STATE,
+            DEVICE_NOTIFY_WINDOW_HANDLE,
+        )
+    };
+    if handle == 0 {
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to register Windows console display-state power notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+        return;
+    }
+
+    *stored = Some(handle);
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn unregister_windows_display_power_notifications(handle: isize) {
+    if handle == 0 {
+        return;
+    }
+    if UnregisterPowerSettingNotification(handle) == 0 {
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to unregister Windows display power notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+}
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
@@ -184,9 +435,11 @@ struct AppWindowConfig {
     min_inner_size: (f64, f64),
     gated_by_dev_options: bool,
     decorations: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     overlay_title_bar: bool,
     transparent: bool,
     shadow: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     macos_corner_radius: Option<f64>,
 }
 
@@ -314,6 +567,7 @@ fn current_onboarding_state(
     state
 }
 
+#[cfg(unix)]
 pub fn current_onboarding_state_for_app(
     app: &tauri::AppHandle,
     store: &OnboardingStateStore,
@@ -372,6 +626,211 @@ fn show_and_focus_window(window: &WebviewWindow) {
     refresh_macos_dock_icon_visibility(window.app_handle());
 }
 
+#[cfg(target_os = "windows")]
+fn register_windows_session_notifications(window: &WebviewWindow) {
+    if window.label() != AppWindow::Main.config().label {
+        return;
+    }
+
+    let hwnd = match window.hwnd() {
+        Ok(hwnd) => hwnd.0 as HWND,
+        Err(error) => {
+            crate::native_capture::debug_log::log_warn(format!(
+                "failed to get main window HWND for Windows session notifications: {error}"
+            ));
+            return;
+        }
+    };
+    if hwnd.is_null() {
+        crate::native_capture::debug_log::log_warn(
+            "main window HWND was null while registering Windows session notifications",
+        );
+        return;
+    }
+
+    let raw_hwnd = hwnd as isize;
+    let mut registered_hwnd = match WINDOWS_SESSION_NOTIFICATION_HWND.lock() {
+        Ok(registered_hwnd) => registered_hwnd,
+        Err(_) => {
+            crate::native_capture::debug_log::log_warn(
+                "Windows session notification state poisoned; skipping registration",
+            );
+            return;
+        }
+    };
+    if registered_hwnd.is_some_and(|registered| registered == raw_hwnd) {
+        return;
+    }
+    if let Some(registered) = registered_hwnd.take() {
+        unsafe {
+            unregister_windows_session_notifications(registered as HWND);
+        }
+    }
+
+    let app_handle = Box::into_raw(Box::new(window.app_handle().clone())) as usize;
+    let registered = unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) != 0 };
+    if !registered {
+        unsafe {
+            drop(Box::from_raw(app_handle as *mut tauri::AppHandle));
+        }
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to register Windows session notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+        return;
+    }
+
+    let subclassed = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(windows_session_notification_subclass_proc),
+            WINDOWS_SESSION_NOTIFICATION_SUBCLASS_ID,
+            app_handle,
+        ) != 0
+    };
+    if !subclassed {
+        unsafe {
+            unregister_windows_session_notifications(hwnd);
+            drop(Box::from_raw(app_handle as *mut tauri::AppHandle));
+        }
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to subclass main window for Windows session notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+        return;
+    }
+
+    // Register for console display-state power notifications on the same HWND so
+    // the subclass proc receives WM_POWERBROADCAST / PBT_POWERSETTINGCHANGE for
+    // GUID_CONSOLE_DISPLAY_STATE (Stream 3 — DPMS-off sleep policy). Done only
+    // after the subclass is installed, since the subclass proc is what decodes
+    // these messages. A failure here is logged but non-fatal: sleep/wake +
+    // lock/unlock notifications are already live.
+    register_windows_display_power_notifications(hwnd);
+
+    *registered_hwnd = Some(raw_hwnd);
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn unregister_windows_session_notifications(hwnd: HWND) {
+    if hwnd.is_null() {
+        return;
+    }
+    if WTSUnRegisterSessionNotification(hwnd) == 0 {
+        crate::native_capture::debug_log::log_warn(format!(
+            "failed to unregister Windows session notifications: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn windows_session_notification_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    subclass_id: usize,
+    app_handle_ptr: usize,
+) -> LRESULT {
+    if msg == WM_POWERBROADCAST {
+        // The handlers below lock NativeCaptureState and start/stop real capture,
+        // which can block. Running that inline on the HWND message-queue thread
+        // would stall DefSubclassProc and the message pump, so offload it to a
+        // worker thread (mirroring how macOS offloads wake recovery). The
+        // AppHandle is cloned before being moved into the thread; the
+        // catch_unwind guard is preserved inside the worker so a panicking
+        // handler never tears down the process.
+        if let Some(event) = windows_power_broadcast_event(wparam, lparam) {
+            let app_handle = (*(app_handle_ptr as *const tauri::AppHandle)).clone();
+            std::thread::spawn(move || {
+                let result = catch_unwind(AssertUnwindSafe(|| match event {
+                    WindowsPowerBroadcastEvent::Suspend => {
+                        crate::native_capture::handle_windows_system_suspend_from_app_handle(
+                            &app_handle,
+                        );
+                    }
+                    WindowsPowerBroadcastEvent::Resume => {
+                        crate::native_capture::handle_windows_system_resume_from_app_handle(
+                            &app_handle,
+                        );
+                    }
+                    WindowsPowerBroadcastEvent::DisplayPowerChanged(state) => {
+                        forward_windows_display_power_change(&app_handle, state);
+                    }
+                }));
+                if result.is_err() {
+                    crate::native_capture::debug_log::log_error(
+                        "Windows power broadcast callback panicked; continuing without aborting window procedure",
+                    );
+                }
+            });
+        }
+    }
+
+    if msg == WM_WTSSESSION_CHANGE {
+        // See the WM_POWERBROADCAST note above: lock/unlock restart work runs on a
+        // worker thread so the subclass proc returns promptly and the message
+        // pump keeps draining.
+        let session_event = wparam as u32;
+        if matches!(session_event, WTS_SESSION_LOCK | WTS_SESSION_UNLOCK) {
+            let app_handle = (*(app_handle_ptr as *const tauri::AppHandle)).clone();
+            std::thread::spawn(move || {
+                let result = catch_unwind(AssertUnwindSafe(|| match session_event {
+                    WTS_SESSION_LOCK => {
+                        crate::native_capture::handle_windows_session_lock_from_app_handle(
+                            &app_handle,
+                        );
+                    }
+                    WTS_SESSION_UNLOCK => {
+                        crate::native_capture::handle_windows_session_unlock_from_app_handle(
+                            &app_handle,
+                        );
+                    }
+                    _ => {}
+                }));
+                if result.is_err() {
+                    crate::native_capture::debug_log::log_error(
+                        "Windows session notification callback panicked; continuing without aborting window procedure",
+                    );
+                }
+            });
+        }
+    }
+
+    if msg == WM_NCDESTROY {
+        unregister_windows_session_notifications(hwnd);
+        // Tear down the console display-state power registration alongside the
+        // session notifications (Stream 3 — DPMS-off sleep policy).
+        if let Ok(mut display_notify) = WINDOWS_DISPLAY_POWER_NOTIFY.lock() {
+            if let Some(handle) = display_notify.take() {
+                unregister_windows_display_power_notifications(handle);
+            }
+        } else {
+            crate::native_capture::debug_log::log_warn(
+                "Windows display power notification state poisoned while clearing registration",
+            );
+        }
+        if let Ok(mut registered_hwnd) = WINDOWS_SESSION_NOTIFICATION_HWND.lock() {
+            if registered_hwnd.is_some_and(|registered| registered == hwnd as isize) {
+                *registered_hwnd = None;
+            }
+        } else {
+            crate::native_capture::debug_log::log_warn(
+                "Windows session notification state poisoned while clearing registration",
+            );
+        }
+        RemoveWindowSubclass(
+            hwnd,
+            Some(windows_session_notification_subclass_proc),
+            subclass_id,
+        );
+        drop(Box::from_raw(app_handle_ptr as *mut tauri::AppHandle));
+    }
+
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
 pub(crate) fn open_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(app, AppWindow::Main, None)
 }
@@ -393,8 +852,21 @@ fn open_or_focus_window(
         return Ok(());
     }
 
+    open_new_app_window(app, window, config.path.to_string())
+}
+
+/// Builds (but does not show) one of the app's windows pointing at `url_path`.
+///
+/// `url_path` is normally the window's configured path; the settings window
+/// overrides it to deep-link a specific tab.
+fn build_app_window(
+    app: &tauri::AppHandle,
+    window: AppWindow,
+    url_path: &str,
+) -> Result<WebviewWindow, String> {
+    let config = window.config();
     let mut builder =
-        WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()));
+        WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(url_path.into()));
     builder = builder
         .title(config.title)
         .inner_size(config.inner_size.0, config.inner_size.1)
@@ -403,6 +875,7 @@ fn open_or_focus_window(
         .transparent(config.transparent)
         .shadow(config.shadow);
 
+    #[cfg(target_os = "macos")]
     if config.overlay_title_bar {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
@@ -411,14 +884,72 @@ fn open_or_focus_window(
 
     let built = builder.build().map_err(|err| err.to_string())?;
 
+    #[cfg(target_os = "windows")]
+    {
+        // `SetWindowSubclass` / `WTSRegisterSessionNotification` must run on the
+        // thread that owns the window's message queue. Tauri marshals the actual
+        // window creation onto the main event-loop thread, so for runtime opens
+        // (which build off a worker thread to dodge the WebView2 deadlock) the
+        // HWND is owned by the main thread while we are on a soon-to-exit worker.
+        // Hop back to the main thread to install the subclass; calling it
+        // cross-thread is not contractually guaranteed and can silently drop the
+        // sleep/wake + lock/unlock session notifications transient-liveness
+        // recovery depends on (ADR 0023). The synchronous startup open already
+        // runs on the main thread; `run_on_main_thread` just defers a tick there.
+        let built_for_registration = built.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            register_windows_session_notifications(&built_for_registration);
+        }) {
+            crate::native_capture::debug_log::log_warn(format!(
+                "failed to schedule Windows session-notification registration on the main thread: {error}"
+            ));
+        }
+    }
+
     #[cfg(target_os = "macos")]
     if let Some(radius) = config.macos_corner_radius {
         apply_macos_rounded_content_view(&built, radius);
     }
 
-    show_and_focus_window(&built);
+    Ok(built)
+}
 
-    Ok(())
+/// Creates a brand-new app window and shows it.
+///
+/// On Windows, `WebviewWindowBuilder::build()` deadlocks when it runs inside a
+/// synchronous command or an event-loop callback: the WebView2 controller is
+/// created through a callback that needs the main event loop to keep pumping,
+/// but the synchronous caller is blocking that very loop. The native window
+/// frame appears while its webview never finishes initializing, so it stays a
+/// blank white surface until something else forces it to reload. Building on a
+/// separate thread keeps the main loop free to drive WebView2 creation, so the
+/// window paints on first open. Other platforms don't have this constraint —
+/// and macOS must run the Cocoa corner-radius tweak on the calling main
+/// thread — so they keep building inline.
+fn open_new_app_window(
+    app: &tauri::AppHandle,
+    window: AppWindow,
+    url_path: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let app = app.clone();
+        std::thread::spawn(move || match build_app_window(&app, window, &url_path) {
+            Ok(built) => show_and_focus_window(&built),
+            Err(err) => crate::native_capture::debug_log::log_error(format!(
+                "failed to open {} window: {err}",
+                window.config().label
+            )),
+        });
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let built = build_app_window(app, window, &url_path)?;
+        show_and_focus_window(&built);
+        Ok(())
+    }
 }
 
 fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
@@ -1207,13 +1738,20 @@ pub fn open_startup_window(
     store: &OnboardingStateStore,
 ) -> Result<bool, String> {
     let state = current_onboarding_state(app, store);
-    if state.is_complete() {
-        open_or_focus_window(app, AppWindow::Main, None)?;
-        Ok(true)
+    let window = if state.is_complete() {
+        AppWindow::Main
     } else {
-        open_or_focus_window(app, AppWindow::Onboarding, None)?;
-        Ok(false)
-    }
+        AppWindow::Onboarding
+    };
+
+    // Build synchronously here: this runs from `setup()` before the event loop
+    // starts blocking, so the Windows WebView2 deadlock that `open_new_app_window`
+    // guards against doesn't apply, and a synchronous build guarantees a window
+    // exists before the loop begins.
+    let built = build_app_window(app, window, window.config().path)?;
+    show_and_focus_window(&built);
+
+    Ok(state.is_complete())
 }
 
 pub(crate) fn is_onboarding_complete(app: &tauri::AppHandle) -> bool {
@@ -1342,9 +1880,39 @@ pub fn complete_onboarding(
     }
 
     persist_onboarding_state(&app, state.inner(), OnboardingState::completed_now())?;
-    open_or_focus_window(&app, AppWindow::Main, None)?;
     crate::status_bar::refresh(&app);
-    window.close().map_err(|err| err.to_string())
+    // Open the main window, then close onboarding once main exists so the app
+    // never momentarily drops to zero windows. On Windows the build must run
+    // off the event-loop thread (see `open_new_app_window`), so the close is
+    // sequenced after the build on that same worker thread.
+    open_main_window_then_close(&app, AppWindow::Onboarding.config().label);
+    Ok(())
+}
+
+fn open_main_window_then_close(app: &tauri::AppHandle, close_label: &'static str) {
+    fn build_show_and_close(app: &tauri::AppHandle, close_label: &str) {
+        let main = AppWindow::Main;
+        match build_app_window(app, main, main.config().path) {
+            Ok(built) => {
+                show_and_focus_window(&built);
+                if let Some(previous) = app.get_webview_window(close_label) {
+                    let _ = previous.close();
+                }
+            }
+            Err(err) => crate::native_capture::debug_log::log_error(format!(
+                "failed to open main window after onboarding: {err}"
+            )),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let app = app.clone();
+        std::thread::spawn(move || build_show_and_close(&app, close_label));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    build_show_and_close(app, close_label);
 }
 
 #[cfg(test)]
@@ -1356,6 +1924,134 @@ mod tests {
         AppExitCoordinatorState, DestroyedWindowAction, OnboardingState, OnboardingStateView,
         OpenSettingsTabPayload, PendingOpenSettingsState,
     };
+    #[cfg(target_os = "windows")]
+    use super::{
+        decode_console_display_state, windows_power_broadcast_event, ConsoleDisplayState,
+        PowerBroadcastSetting, WindowsPowerBroadcastEvent, GUID_CONSOLE_DISPLAY_STATE,
+    };
+    #[cfg(target_os = "windows")]
+    use windows_sys::core::GUID;
+    #[cfg(target_os = "windows")]
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        PBT_APMBATTERYLOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
+        PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE,
+    };
+
+    // Suspend/resume ignore `lparam`, so a null (`0`) `lparam` keeps these decode
+    // assertions pure; only the `PBT_POWERSETTINGCHANGE` arm reads `lparam`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_suspend_maps_to_system_suspend() {
+        assert_eq!(
+            unsafe { windows_power_broadcast_event(PBT_APMSUSPEND as usize, 0) },
+            Some(WindowsPowerBroadcastEvent::Suspend)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_resume_variants_map_to_system_resume() {
+        for event in [
+            PBT_APMRESUMEAUTOMATIC,
+            PBT_APMRESUMECRITICAL,
+            PBT_APMRESUMESTANDBY,
+            PBT_APMRESUMESUSPEND,
+        ] {
+            assert_eq!(
+                unsafe { windows_power_broadcast_event(event as usize, 0) },
+                Some(WindowsPowerBroadcastEvent::Resume)
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_ignores_unrelated_power_events() {
+        assert_eq!(
+            unsafe { windows_power_broadcast_event(PBT_APMBATTERYLOW as usize, 0) },
+            None
+        );
+    }
+
+    // PBT-decode → display on/off mapping (the pure core the plan requires).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn decode_console_display_state_maps_known_bytes() {
+        assert_eq!(
+            decode_console_display_state(0),
+            Some(ConsoleDisplayState::Off)
+        );
+        assert_eq!(decode_console_display_state(1), Some(ConsoleDisplayState::On));
+        assert_eq!(
+            decode_console_display_state(2),
+            Some(ConsoleDisplayState::Dimmed)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn decode_console_display_state_rejects_unexpected_bytes() {
+        assert_eq!(decode_console_display_state(3), None);
+        assert_eq!(decode_console_display_state(255), None);
+        assert_eq!(decode_console_display_state(u32::MAX), None);
+    }
+
+    // The `PBT_POWERSETTINGCHANGE` arm reads the `POWERBROADCAST_SETTING` behind
+    // `lparam`: it must match the console-display GUID and decode the state byte.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_decodes_console_display_transitions() {
+        for (byte, expected) in [
+            (0u8, ConsoleDisplayState::Off),
+            (1, ConsoleDisplayState::On),
+            (2, ConsoleDisplayState::Dimmed),
+        ] {
+            let setting = PowerBroadcastSetting {
+                power_setting: GUID_CONSOLE_DISPLAY_STATE,
+                data_length: 1,
+                data: [byte],
+            };
+            let event = unsafe {
+                windows_power_broadcast_event(
+                    PBT_POWERSETTINGCHANGE as usize,
+                    &setting as *const PowerBroadcastSetting as isize,
+                )
+            };
+            assert_eq!(
+                event,
+                Some(WindowsPowerBroadcastEvent::DisplayPowerChanged(expected))
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_ignores_power_setting_change_with_null_payload() {
+        assert_eq!(
+            unsafe { windows_power_broadcast_event(PBT_POWERSETTINGCHANGE as usize, 0) },
+            None
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_power_broadcast_ignores_other_power_setting_guids() {
+        // A non-console-display power setting (arbitrary GUID) must not be decoded
+        // as a display transition.
+        let other = GUID::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0001);
+        let setting = PowerBroadcastSetting {
+            power_setting: other,
+            data_length: 1,
+            data: [1],
+        };
+        let event = unsafe {
+            windows_power_broadcast_event(
+                PBT_POWERSETTINGCHANGE as usize,
+                &setting as *const PowerBroadcastSetting as isize,
+            )
+        };
+        assert_eq!(event, None);
+    }
 
     #[test]
     fn secondary_window_destruction_refocuses_main_window() {

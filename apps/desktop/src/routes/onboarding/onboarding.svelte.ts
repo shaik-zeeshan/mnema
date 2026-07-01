@@ -52,10 +52,13 @@ import {
   defaultOcrLanguageForProvider,
   defaultOcrModelIdForProvider,
   defaultTranscriptionModelIdForProvider,
-  isSelectableOcrProvider,
   parsePositiveInteger,
   serializeError,
 } from "./onboarding-mapping";
+import {
+  firstSelectableOcrProvider,
+  isSelectableOcrProvider,
+} from "$lib/settings/state/models-format";
 import {
   buildSettingsRequestFrom,
   finaleBlockReasonFor,
@@ -68,6 +71,7 @@ import {
   customResolutionErrors as buildCustomResolutionErrors,
   permissionActionFor,
   permissionLabelFor,
+  permissionPermitsCapture,
   permissionToneFor,
 } from "./onboarding-attention";
 import type { PermissionKey, PermissionValue } from "./onboarding-attention";
@@ -117,7 +121,10 @@ export class OnboardingController {
   draftSystemAudioActivitySensitivity = $state(50);
   // Optional feature — starts OFF; the user opts in via its accordion toggle.
   draftOcrEnabled = $state(false);
-  draftOcrProvider = $state<OcrProvider>("apple_vision");
+  // Neutral cross-platform-runnable seed (mirrors recording.svelte.ts). The real
+  // provider is resolved against the backend OCR status by `syncDrafts` on load;
+  // this seed is only the pre-load placeholder and is never platform-locked.
+  draftOcrProvider = $state<OcrProvider>("tesseract");
   draftOcrModelId = $state<string | null>(null);
   draftOcrLanguage = $state("");
   draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
@@ -222,7 +229,10 @@ export class OnboardingController {
     }
     this.draftCaptureScreen = true;
     this.draftOcrEnabled = true;
-    this.chooseOcrProvider("apple_vision");
+    // The recommended OCR provider is the platform default the backend reports
+    // first (macOS → apple_vision, Windows → tesseract); never a hardcoded
+    // platform-locked provider. Falls back to tesseract before the status loads.
+    this.chooseOcrProvider(firstSelectableOcrProvider(this.ocrModelStatus) ?? "tesseract");
     this.draftTranscriptionEnabled = true;
     // Mirror `toggleFeature("transcribe")`'s ON-branch: bind the master to the
     // currently-enabled audio sources, so a source enabled BEFORE this runs
@@ -304,7 +314,9 @@ export class OnboardingController {
     this.permissions === null
       ? 0
       : (["screen", "microphone", "systemAudio"] as const).filter(
-          (k) => this.permissions?.[k] === "granted",
+          // permissionPermitsCapture counts the Windows-only "unknown" mic state
+          // as satisfied, so a configured Windows user reaches the full count.
+          (k) => permissionPermitsCapture(this.permissions?.[k]),
         ).length,
   );
 
@@ -511,7 +523,7 @@ export class OnboardingController {
 
   // ── Provider / model selection helpers (used by Slice 4 bodies) ──────────
   chooseOcrProvider(value: string): void {
-    if (!isSelectableOcrProvider(value)) return;
+    if (!isSelectableOcrProvider(value, this.ocrModelStatus)) return;
     this.draftOcrProvider = value;
     this.draftOcrModelId = this.ocrStore.preferredOcrModelIdForProvider(
       this.draftOcrProvider,
@@ -669,8 +681,10 @@ export class OnboardingController {
   // ── Feature dependency relations ─────────────────────────────────────────
   private lockContext(): FeatureLockContext {
     return {
-      micGranted: this.permissions?.microphone === "granted",
-      systemAudioGranted: this.permissions?.systemAudio === "granted",
+      // permissionPermitsCapture keeps the Windows-only "unknown" mic state from
+      // locking transcription/speaker rows behind a permission Windows can't read.
+      micGranted: permissionPermitsCapture(this.permissions?.microphone),
+      systemAudioGranted: permissionPermitsCapture(this.permissions?.systemAudio),
       transcriptionEnabled: this.draftTranscriptionEnabled,
     };
   }

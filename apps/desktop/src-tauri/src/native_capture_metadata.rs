@@ -1,16 +1,20 @@
-use capture_metadata::MetadataSettings;
 #[cfg(target_os = "macos")]
 use capture_metadata::{browser_url_applescript, browser_url_strategy, BrowserUrlStrategy};
+#[cfg(any(test, target_os = "macos"))]
 use capture_metadata::{
-    evaluate_privacy, is_known_browser_bundle, metadata_collection_plan, sanitize_url,
-    select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
-    MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot, PrivacyFilterDecision,
-    PrivacySettings, RawWindowInfo,
+    evaluate_privacy, metadata_collection_plan, MetadataContext, MetadataSettings, PrivacySettings,
 };
+#[cfg(target_os = "macos")]
+use capture_metadata::{
+    browser_url_script_app_name, is_known_browser_bundle, sanitize_url,
+    select_frontmost_pid_window, MetadataCollectionPlan, NativeActiveWindowSnapshot, RawWindowInfo,
+};
+use capture_metadata::{BrowserUrlProbeCache, FrameMetadataSnapshot, PrivacyFilterDecision};
 #[cfg(target_os = "macos")]
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
+#[cfg(any(test, target_os = "macos"))]
 use std::time::Instant;
 use tauri::Manager;
 
@@ -103,6 +107,7 @@ pub fn capture_privacy_debug_info(state: &CaptureMetadataState) -> CapturePrivac
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn mark_applied_privacy_decision(
     state: &CaptureMetadataState,
     decision: PrivacyFilterDecision,
@@ -113,6 +118,7 @@ pub fn mark_applied_privacy_decision(
         .latest_applied_decision = decision;
 }
 
+#[cfg(target_os = "macos")]
 pub fn latest_applied_privacy_decision(state: &CaptureMetadataState) -> PrivacyFilterDecision {
     state
         .lock()
@@ -129,6 +135,7 @@ pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     runtime.browser_url_probe_cache = BrowserUrlProbeCache::default();
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub fn refresh_metadata_state(
     state: &CaptureMetadataState,
     metadata: &MetadataSettings,
@@ -159,6 +166,7 @@ pub fn refresh_metadata_state(
     decision
 }
 
+#[cfg(target_os = "macos")]
 pub fn refresh_static_excluded_app_privacy_state(
     state: &CaptureMetadataState,
     privacy: &PrivacySettings,
@@ -234,6 +242,7 @@ fn replace_metadata_notifier_guards(
     slot.replace(guards);
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, Clone)]
 struct ActiveWindowMetadata {
     snapshot: Option<FrameMetadataSnapshot>,
@@ -300,6 +309,7 @@ fn browser_url_probe_for_active_bundle(
     )
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn collect_active_window_metadata(
     metadata: &MetadataSettings,
     _privacy: &PrivacySettings,
@@ -370,6 +380,7 @@ fn collect_active_window_metadata(
         let _ = metadata;
         let _ = _privacy;
         let _ = plan;
+        let _ = browser_url_probe_cache;
         let _ = browser_url_read_mode;
         ActiveWindowMetadata {
             snapshot: None,

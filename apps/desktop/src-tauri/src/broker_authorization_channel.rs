@@ -1,19 +1,19 @@
 #[cfg(unix)]
 use std::os::unix::net::UnixListener as StdUnixListener;
-use std::{
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-    time::Duration,
-};
+#[cfg(any(test, unix))]
+use std::path::PathBuf;
+#[cfg(any(test, unix))]
+use std::sync::atomic::Ordering;
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
+#[cfg(unix)]
+use std::time::Duration;
 
 use app_infra::brokered_access::{
     BrokerClientIdentity, BrokerClientIdentitySource, BrokerGrantScope, BrokeredCaptureAccess,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+#[cfg(unix)]
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
@@ -25,9 +25,12 @@ use tokio::{
     time::timeout,
 };
 
+#[cfg(unix)]
 use crate::windows;
 
+#[cfg(any(test, unix))]
 const QUICK_APPROVAL_SCOPE: &str = "lastDay";
+#[cfg(any(test, unix))]
 const QUICK_APPROVAL_DURATION_SECONDS: u64 = 24 * 60 * 60;
 #[cfg(unix)]
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -36,6 +39,7 @@ const REQUEST_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Default)]
 pub struct BrokerAuthorizationChannelState {
+    #[cfg_attr(not(unix), allow(dead_code))]
     active: Arc<AtomicBool>,
     pending: Arc<Mutex<Option<PendingAuthorizationRequest>>>,
 }
@@ -120,16 +124,19 @@ pub struct ApproveCliAccessRequest {
     pub duration_seconds: u64,
 }
 
+#[cfg(any(test, unix))]
 struct ActiveRequestGuard {
     active: Arc<AtomicBool>,
 }
 
+#[cfg(any(test, unix))]
 impl ActiveRequestGuard {
     fn acquire(active: Arc<AtomicBool>) -> Option<Self> {
         (!active.swap(true, Ordering::SeqCst)).then_some(Self { active })
     }
 }
 
+#[cfg(any(test, unix))]
 impl Drop for ActiveRequestGuard {
     fn drop(&mut self) {
         self.active.store(false, Ordering::SeqCst);
@@ -292,6 +299,7 @@ async fn read_request_line(stream: &mut UnixStream) -> std::io::Result<Option<St
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
+#[cfg(unix)]
 fn store_pending_request(
     app: &tauri::AppHandle,
     request: AuthorizationChannelRequest,
@@ -437,12 +445,14 @@ fn scope_satisfies_minimum(selected: &str, minimum: &str) -> bool {
     selected == minimum || selected == "allRetained"
 }
 
+#[cfg(unix)]
 enum AuthorizationDecision {
     Approved,
     MoreOptions,
     Cancelled,
 }
 
+#[cfg(unix)]
 async fn prompt_for_default_access(
     app: &tauri::AppHandle,
     request: &AuthorizationChannelRequest,
@@ -538,10 +548,12 @@ fn grant_policy(scope: &str, duration_seconds: u64) -> GrantPolicy {
     }
 }
 
+#[cfg(any(test, unix))]
 fn quick_approval_grant_policy() -> GrantPolicy {
     grant_policy(QUICK_APPROVAL_SCOPE, QUICK_APPROVAL_DURATION_SECONDS)
 }
 
+#[cfg(any(test, unix))]
 fn quick_approval_grant_policy_for_request(
     request: &AuthorizationChannelRequest,
 ) -> Result<GrantPolicy, String> {
@@ -602,16 +614,19 @@ fn stale_socket(path: &PathBuf) -> bool {
     std::os::unix::net::UnixStream::connect(path).is_err()
 }
 
+#[cfg(any(test, unix))]
 pub fn socket_path_for_identifier(identifier: &str) -> PathBuf {
     default_app_config_dir_for_identifier(identifier)
         .unwrap_or_else(|| std::env::temp_dir().join(identifier))
         .join("cli-access.sock")
 }
 
+#[cfg(unix)]
 fn socket_path_for_config_dir(config_dir: &std::path::Path) -> PathBuf {
     config_dir.join("cli-access.sock")
 }
 
+#[cfg(any(test, unix))]
 fn default_app_config_dir_for_identifier(identifier: &str) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MNEMA_APP_CONFIG_DIR") {
         return Some(PathBuf::from(path));
@@ -730,6 +745,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn request_line_reader_rejects_oversized_requests() {
         tauri::async_runtime::block_on(async {

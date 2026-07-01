@@ -13,18 +13,32 @@ default-run = "mnema"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "mnema_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# `cdylib` is what the Tauri runtime loads; `rlib` is what the `mnema` bin (and
+# tests) link against. The Tauri scaffold also lists `staticlib`, but that is
+# only needed for the mobile (iOS/Android) targets — which this desktop-only app
+# does not build (no gen/apple, gen/android, nor mobile keys in tauri.conf.json).
+# It is REMOVED because on Windows the `staticlib` path bundles every transitive
+# object (now including the statically-linked intel-mkl + ONNX Runtime pulled in
+# by the speakrs CPU backend) into one COFF `.lib` archive whose 32-bit member
+# offsets overflow, crashing rustc's bundled `ar_archive_writer` with an ICE
+# (`TryFromIntError`) at link time. macOS never hit this (Mach-O ar is 64-bit),
+# but it built the unused archive anyway; dropping it fixes Windows and speeds
+# both. Restore `staticlib` here only if/when mobile targets are added.
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["speaker-analysis-speakrs"]
 cargo-clippy = []
 ocr-budget-trace = []
 privacy-refresh-trace = []
-# Forwarding feature: turn the `speaker-analysis` speakrs engine on AND expose a
-# desktop-crate cfg the subprocess dispatcher gates the speakrs arm on (see
-# `speaker_analysis_runtime::analyze_request_for_provider`). Default-on, so the
-# shipped build compiles the on-device diarization engine.
-speaker-analysis-speakrs = ["speaker-analysis/speakrs"]
+# Marker cfg the subprocess dispatcher gates the speakrs arm on (see
+# `speaker_analysis_runtime`). The speakrs engine itself is enabled via the
+# per-target `speaker-analysis` dependencies below — macOS (CoreML + OpenBLAS,
+# Apple Silicon) and Windows (CPU via intel-mkl-static, x86_64) — and the dispatch
+# arm is additionally gated on `any(target_os = "macos", target_os = "windows")`.
+# Default-on so the shipped macOS and Windows builds compile the on-device
+# diarization engine.
+speaker-analysis-speakrs = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -40,6 +54,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-os = "2"
 fs2 = "0.4"
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
@@ -60,11 +75,14 @@ app-infra = { path = "../../../crates/app-infra" }
 # Aliased so the Tauri-side `mod ai_runtime;` does not collide with the crate name.
 ai-engine = { package = "ai-runtime", path = "../../../crates/ai-runtime" }
 audio-transcription = { path = "../../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }
-# The speakrs engine feature is driven by this crate's forwarding feature
-# (default-on) so the subprocess dispatcher can gate the speakrs arm on a
-# matching desktop-crate cfg. See `[features]` above.
+# speakrs (the on-device diarization engine) runs on a per-platform Execution
+# Backend, so its `speakrs` feature is enabled through the per-target
+# dependencies below — macOS (CoreML + OpenBLAS) and Windows (CPU via
+# intel-mkl-static) — never here. This base entry stays default-features = false
+# so platforms without a target entry compile speaker-analysis with no on-device
+# engine. OCR is selected per-target further down (paddle-rs does not build on
+# Windows), so there is no generic `ocr` entry here.
 speaker-analysis = { path = "../../../crates/speaker-analysis", default-features = false }
-ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
 # Semantic Search now runs on candle (ADR 0037). The base dep has no default
 # features (candle-CPU); the macOS target dep below adds `metal` for the Apple GPU
 # (Cargo unions features across the base + target entries). The candle runtime
@@ -81,12 +99,36 @@ tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 tempfile = "3"
 tar = "0.4"
+# The GPU Acceleration Pack downloader (#137, ADR 0005) extracts a handful of
+# NVIDIA CUDA/cuDNN redistributable DLLs out of NVIDIA's official `.zip` archives.
+# `default-features = false` + `deflate` mirrors the audio-transcription crate's
+# entry exactly (NVIDIA's redist zips are DEFLATE-compressed), keeping a single
+# `zip` build in the workspace and dropping the bzip2/zstd/aes back-ends we do not
+# use here.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 url = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
+[target.'cfg(windows)'.dependencies]
+# Enable the speakrs on-device diarization engine on Windows (CPU backend via
+# intel-mkl-static, x86_64; ORT statically linked). Cargo unions this `speakrs`
+# feature with the base (default-features = false) entry above, mirroring the
+# macOS target entry, so only macOS + Windows pull speakrs.
+speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["speakrs"] }
+ocr = { path = "../../../crates/ocr", features = ["tesseract-embedded"] }
+media-decode = { path = "../../../crates/media-decode" }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
+# Enable the speakrs on-device diarization engine on macOS only (CoreML +
+# OpenBLAS, Apple Silicon). Cargo unions this `speakrs` feature with the base
+# (default-features = false) entry above, so non-macOS builds never pull speakrs.
+speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["speakrs"] }
 cocoa = "0.26"
 core-graphics = "0.25"
 core-foundation = "0.10"

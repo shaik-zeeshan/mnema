@@ -282,6 +282,7 @@ struct AuthorizationDuration {
     preferred_seconds: u64,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthorizationResponse {
@@ -926,6 +927,7 @@ fn auth_required_error() -> CliError {
     }
 }
 
+#[cfg(any(test, unix))]
 fn timeout_error() -> CliError {
     CliError {
         exit: 11,
@@ -944,6 +946,7 @@ fn app_unavailable_error() -> CliError {
     }
 }
 
+#[cfg(any(test, unix))]
 fn authorization_denied_error() -> CliError {
     CliError {
         exit: 10,

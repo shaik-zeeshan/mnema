@@ -13,6 +13,7 @@ import type {
 } from "$lib/types";
 import { serializeError } from "./onboarding-mapping";
 import type { OnboardingAiStore } from "./onboarding-ai.svelte";
+import { permissionPermitsCapture } from "./onboarding-attention";
 import type { PermissionKey, PermissionValue } from "./onboarding-attention";
 
 type OnboardingState = {
@@ -136,19 +137,23 @@ export async function finishOnboarding(
     // re-showing onboarding next launch with capture already running.
     await invoke("complete_onboarding");
     if (startRecording) {
-      // Defense-in-depth: never request a source whose OS permission isn't
-      // granted, independent of the attention gate. Capture must not outrun
-      // authorization even if the gating logic ever changes. (System audio
-      // uses the `systemAudio` PermissionKey; screen is required-on and
-      // already gates system audio.)
+      // Defense-in-depth: never request a source the OS permission doesn't
+      // permit, independent of the attention gate. Capture must not outrun
+      // authorization even if the gating logic ever changes. `permissionPermitsCapture`
+      // treats the Windows-only "unknown" mic state as permitted (Windows can't
+      // read the per-app toggle and enforces the real grant at the device level),
+      // so it never silently drops a source on Windows; on macOS it is identical
+      // to `=== "granted"`. (System audio uses the `systemAudio` PermissionKey;
+      // screen is required-on and already gates system audio.)
       await invoke("start_native_capture", {
         request: {
           captureScreen: target.draftCaptureScreen,
-          captureMicrophone: target.draftCaptureMicrophone && target.permissions?.microphone === "granted",
+          captureMicrophone:
+            target.draftCaptureMicrophone && permissionPermitsCapture(target.permissions?.microphone),
           captureSystemAudio:
             target.draftCaptureScreen
             && target.draftCaptureSystemAudio
-            && target.permissions?.systemAudio === "granted",
+            && permissionPermitsCapture(target.permissions?.systemAudio),
         },
       });
     }

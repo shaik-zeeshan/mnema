@@ -57,6 +57,10 @@
     <circle cx="9" cy="8" r="3" />
     <path d="M3 20a6 6 0 0 1 12 0" />
     <path d="M16 5.5a3 3 0 0 1 0 5M18 14a6 6 0 0 1 3 5" />
+  {:else if name === "gpuAcceleration"}
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+    <rect x="10" y="10" width="4" height="4" rx="1" />
+    <path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" />
   {:else if name === "semanticSearch"}
     <circle cx="11" cy="11" r="7" />
     <path d="M21 21l-4.3-4.3" />

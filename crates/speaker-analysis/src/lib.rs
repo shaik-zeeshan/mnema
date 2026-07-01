@@ -8,6 +8,8 @@
 mod core;
 mod macos_audio_decode;
 pub mod providers;
+#[cfg(target_os = "windows")]
+mod windows_audio_decode;
 
 pub use core::{
     PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisError,
@@ -143,21 +145,84 @@ const SPEAKRS_COREML_FILES: &[(&str, u64, &str)] = &[
     ("wespeaker-chunk-emb-s12-w116.mlmodelc/analytics/coremldata.bin", 243, "68234b4f7e8b542bd61d973184fc0c750af22085f8e5eb2d8be85514951da818"),
 ];
 
-/// The flat install-layout `required_files` for the speakrs CoreML preset,
+/// Which on-disk artifact subset of [`SPEAKRS_COREML_FILES`] a platform installs
+/// for the single speakrs preset. The `model_id` is platform-stable (ADR 0004);
+/// only the resolved files vary — macOS reads the full CoreML `.mlmodelc` set,
+/// Windows reads the CPU ONNX + PLDA subset that speakrs's
+/// `required_files(ExecutionMode::Cpu)` returns. Backend is orthogonal to
+/// identity, so this never changes the Voiceprint Space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpeakerArtifactSet {
+    /// The full 76-file CoreML set (`.mlmodelc` + `.onnx` + `.npy`) macOS reads.
+    CoreMl,
+    /// The 10-file CPU subset (2 `.onnx` + 1 external `.onnx.data` + 6 PLDA
+    /// `.npy` + the min-samples `.txt`) Windows reads via ONNX Runtime; named by
+    /// [`SPEAKRS_CPU_FILE_NAMES`].
+    Onnx,
+}
+
+/// The exact `relative_path` set speakrs's `required_files(ExecutionMode::Cpu)`
+/// reads (`PLDA_FILES` + `ONNX_FILES` in speakrs-0.4.2 `src/models.rs`). These
+/// select rows out of [`SPEAKRS_COREML_FILES`] — the sizes/SHA256 are NOT
+/// duplicated here, the table stays the single source of truth. The CoreML
+/// `.mlmodelc` bundles and the batched `-b32`/`-tail` ONNX variants are absent:
+/// the CPU backend reads only `segmentation-3.0.onnx`, the WeSpeaker embedding
+/// `.onnx` (+ its external `.onnx.data`), and the PLDA scoring tensors.
+const SPEAKRS_CPU_FILE_NAMES: &[&str] = &[
+    "plda_lda.npy",
+    "plda_tr.npy",
+    "plda_mu.npy",
+    "plda_psi.npy",
+    "plda_mean1.npy",
+    "plda_mean2.npy",
+    "wespeaker-voxceleb-resnet34.min_num_samples.txt",
+    "segmentation-3.0.onnx",
+    "wespeaker-voxceleb-resnet34.onnx",
+    "wespeaker-voxceleb-resnet34.onnx.data",
+];
+
+/// The rows of [`SPEAKRS_COREML_FILES`] selected by `set`, in table order.
+///
+/// `CoreMl` returns the whole table; `Onnx` keeps only the rows named in
+/// [`SPEAKRS_CPU_FILE_NAMES`], asserting all of them are present so the CPU
+/// subset can never silently drift from the table.
+fn speakrs_artifact_rows(
+    set: SpeakerArtifactSet,
+) -> Vec<&'static (&'static str, u64, &'static str)> {
+    match set {
+        SpeakerArtifactSet::CoreMl => SPEAKRS_COREML_FILES.iter().collect(),
+        SpeakerArtifactSet::Onnx => {
+            let rows: Vec<&'static (&'static str, u64, &'static str)> = SPEAKRS_COREML_FILES
+                .iter()
+                .filter(|(relative_path, _, _)| SPEAKRS_CPU_FILE_NAMES.contains(relative_path))
+                .collect();
+            assert_eq!(
+                rows.len(),
+                SPEAKRS_CPU_FILE_NAMES.len(),
+                "speakrs CPU file set drifted from SPEAKRS_COREML_FILES: expected {} rows, found {}",
+                SPEAKRS_CPU_FILE_NAMES.len(),
+                rows.len()
+            );
+            rows
+        }
+    }
+}
+
+/// The flat install-layout `required_files` for the speakrs preset's `set`,
 /// derived from `SPEAKRS_COREML_FILES` so they cannot drift from the artifact.
-fn speakrs_required_files() -> Vec<String> {
-    SPEAKRS_COREML_FILES
-        .iter()
+fn speakrs_required_files(set: SpeakerArtifactSet) -> Vec<String> {
+    speakrs_artifact_rows(set)
+        .into_iter()
         .map(|(relative_path, _, _)| (*relative_path).to_string())
         .collect()
 }
 
-/// The `MultiFile` artifact files for the speakrs CoreML preset. Each file is a
+/// The `MultiFile` artifact files for the speakrs preset's `set`. Each file is a
 /// direct HuggingFace download at `SPEAKRS_HF_RESOLVE_BASE + relative_path`;
 /// there is no archive to extract.
-fn speakrs_artifact_files() -> Vec<ModelArtifactFile> {
-    SPEAKRS_COREML_FILES
-        .iter()
+fn speakrs_artifact_files(set: SpeakerArtifactSet) -> Vec<ModelArtifactFile> {
+    speakrs_artifact_rows(set)
+        .into_iter()
         .map(|(relative_path, byte_size, sha256)| ModelArtifactFile {
             relative_path: (*relative_path).to_string(),
             url: format!("{SPEAKRS_HF_RESOLVE_BASE}{relative_path}"),
@@ -165,6 +230,16 @@ fn speakrs_artifact_files() -> Vec<ModelArtifactFile> {
             sha256: Some((*sha256).to_string()),
         })
         .collect()
+}
+
+/// The outer `ModelArtifact.byte_size` for the speakrs preset's `set`: the sum
+/// of the selected files' content sizes, derived from the table rather than
+/// hardcoded so it can never drift (CoreML = 419_482_724, ONNX = 59_751_799).
+fn speakrs_artifact_byte_size(set: SpeakerArtifactSet) -> u64 {
+    speakrs_artifact_rows(set)
+        .into_iter()
+        .map(|(_, byte_size, _)| *byte_size)
+        .sum()
 }
 
 const MANIFEST_VERSION: u32 = 1;
@@ -321,45 +396,72 @@ pub struct InstalledModelMarker {
     pub model_id: String,
 }
 
+/// Build the single speakrs preset descriptor for a given artifact `set`.
+///
+/// The sole on-device provider (ADR 0002): a pure-Rust pyannote community-1
+/// diarization pipeline paired with WeSpeaker VoxCeleb ResNet34 embeddings. It
+/// ships RAW files — each `relative_path` is fetched directly from HuggingFace
+/// and placed flat under the install dir (preserving `.mlmodelc/...` subpaths)
+/// where speakrs's `OwnedDiarizationPipeline::from_dir` reads it.
+///
+/// The `model_id`, provider, source URL, license, and marker file are
+/// platform-stable; only the resolved files, derived `byte_size`, display name,
+/// and description vary with the `set` (ADR 0004): macOS reads the full 76-file
+/// CoreML set (`required_files(ExecutionMode::CoreMl)`) and is accelerated
+/// natively with CoreML; Windows reads the 10-file CPU subset
+/// (`required_files(ExecutionMode::Cpu)`) and runs on the CPU via ONNX Runtime.
+fn speakrs_descriptor(set: SpeakerArtifactSet) -> SpeakerAnalysisModelDescriptor {
+    // Backend name in the data-driven UI tracks the resolved artifact so it is
+    // honest on each platform with zero frontend changes.
+    let (display_name, description) = match set {
+        SpeakerArtifactSet::CoreMl => (
+            "pyannote community-1 + WeSpeaker (CoreML)",
+            "On-device speaker diarization: a pure-Rust pyannote community-1 segmentation pipeline paired with WeSpeaker VoxCeleb ResNet34 embeddings, accelerated natively with Apple CoreML.",
+        ),
+        SpeakerArtifactSet::Onnx => (
+            "pyannote community-1 + WeSpeaker (CPU)",
+            "On-device speaker diarization: a pure-Rust pyannote community-1 segmentation pipeline paired with WeSpeaker VoxCeleb ResNet34 embeddings, accelerated on the CPU (ONNX Runtime).",
+        ),
+    };
+
+    SpeakerAnalysisModelDescriptor {
+        provider: SPEAKRS_PROVIDER_ID.to_string(),
+        model_id: Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
+        display_name: display_name.to_string(),
+        description: description.to_string(),
+        license_label: Some(
+            "CC-BY-4.0 (WeSpeaker VoxCeleb ResNet34) + MIT (pyannote segmentation-3.0)".to_string(),
+        ),
+        source_url: Some(SPEAKRS_HF_REPO_URL.to_string()),
+        management: ModelManagement::AppManaged {
+            expected_layout: InstalledModelLayout {
+                marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
+                required_files: speakrs_required_files(set),
+            },
+            artifact: Some(ModelArtifact {
+                url: SPEAKRS_HF_REPO_URL.to_string(),
+                byte_size: speakrs_artifact_byte_size(set),
+                sha256: None,
+                shape: ModelArtifactShape::MultiFile {
+                    files: speakrs_artifact_files(set),
+                },
+            }),
+        },
+    }
+}
+
 pub fn builtin_model_manifest() -> SpeakerAnalysisModelManifest {
+    // One platform-stable `model_id`; only the on-disk artifact subset varies by
+    // build platform (ADR 0004). Windows installs the CPU ONNX subset, every
+    // other target the full CoreML set.
+    let set = if cfg!(target_os = "windows") {
+        SpeakerArtifactSet::Onnx
+    } else {
+        SpeakerArtifactSet::CoreMl
+    };
     SpeakerAnalysisModelManifest {
         version: MANIFEST_VERSION,
-        models: vec![
-            // speakrs (pyannote community-1 + WeSpeaker, CoreML). The sole
-            // on-device provider (ADR 0002): a pure-Rust pyannote community-1
-            // diarization pipeline with native CoreML acceleration. It ships RAW
-            // files — each `relative_path` is fetched directly from HuggingFace
-            // and placed flat under the install dir (preserving `.mlmodelc/...`
-            // subpaths) where speakrs's
-            // `OwnedDiarizationPipeline::from_dir(.., ExecutionMode::CoreMl)`
-            // reads it. The 76-file set + sizes/SHA256 mirror
-            // `required_files(ExecutionMode::CoreMl)` in `speakrs/src/models.rs`.
-            SpeakerAnalysisModelDescriptor {
-                provider: SPEAKRS_PROVIDER_ID.to_string(),
-                model_id: Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
-                display_name: "pyannote community-1 + WeSpeaker (CoreML)".to_string(),
-                description: "On-device speaker diarization: a pure-Rust pyannote community-1 segmentation pipeline paired with WeSpeaker VoxCeleb ResNet34 embeddings, accelerated natively with Apple CoreML.".to_string(),
-                license_label: Some(
-                    "CC-BY-4.0 (WeSpeaker VoxCeleb ResNet34) + MIT (pyannote segmentation-3.0)"
-                        .to_string(),
-                ),
-                source_url: Some(SPEAKRS_HF_REPO_URL.to_string()),
-                management: ModelManagement::AppManaged {
-                    expected_layout: InstalledModelLayout {
-                        marker_file_name: INSTALLED_MARKER_FILE_NAME.to_string(),
-                        required_files: speakrs_required_files(),
-                    },
-                    artifact: Some(ModelArtifact {
-                        url: SPEAKRS_HF_REPO_URL.to_string(),
-                        byte_size: 419_482_724,
-                        sha256: None,
-                        shape: ModelArtifactShape::MultiFile {
-                            files: speakrs_artifact_files(),
-                        },
-                    }),
-                },
-            },
-        ],
+        models: vec![speakrs_descriptor(set)],
     }
 }
 
@@ -529,6 +631,126 @@ pub fn speaker_analysis_models_dir(app_data_dir: impl AsRef<Path>) -> PathBuf {
     app_data_dir.as_ref().join(MODEL_STORE_DIR_NAME)
 }
 
+// ---------------------------------------------------------------------------
+// GPU Acceleration Pack (Windows CUDA Execution Backend, #137 / ADR 0005)
+// ---------------------------------------------------------------------------
+//
+// The CUDA backend is gated behind an opt-in, in-app NVIDIA-redist *pack* that is
+// kept SEPARATE from the model store: the model is identity (the Voiceprint Space
+// / Speaker Continuity), the pack is hardware (CUDA 12 + cuDNN 9 redistributables
+// loaded via ORT's `preload_dylibs`). The base installer never ships it; Slice 4
+// downloads it on demand. These helpers are platform-neutral and feature-free so
+// the pure selection logic below can be unit-tested with no GPU and no speakrs
+// build. Slices 3–4 build on them (pack-presence gating, the downloader).
+
+/// App-data subdir holding the opt-in NVIDIA GPU Acceleration Pack (CUDA 12 +
+/// cuDNN 9 redistributables). Sits alongside the speaker-analysis model store but
+/// is a distinct provisioning unit (ADR 0005).
+pub const GPU_ACCELERATION_PACK_DIR_NAME: &str = "gpu-acceleration-pack";
+
+/// Marker written once the GPU Acceleration Pack is fully installed + verified
+/// (reuses the `.installed.json` pattern of the model store). Its presence — not
+/// merely the dir existing — is what [`gpu_pack_present`] treats as "provisioned".
+pub const GPU_ACCELERATION_PACK_MARKER: &str = ".installed.json";
+
+/// Resolve the GPU Acceleration Pack dir under the app data dir.
+pub fn gpu_acceleration_pack_dir(app_data_dir: impl AsRef<Path>) -> PathBuf {
+    app_data_dir.as_ref().join(GPU_ACCELERATION_PACK_DIR_NAME)
+}
+
+/// Whether the GPU Acceleration Pack is present (its install marker exists).
+///
+/// This is the ONLY gate the helper uses to decide whether CUDA may be
+/// *attempted* (ADR 0005): a GPU machine with no pack is plain CPU with **no**
+/// fallback noise — "not provisioned" is not a failure. NVML detection drives the
+/// Settings *offer* (Slice 3/5), never the attempt.
+pub fn gpu_pack_present(pack_dir: &Path) -> bool {
+    pack_dir.join(GPU_ACCELERATION_PACK_MARKER).is_file()
+}
+
+// ---------------------------------------------------------------------------
+// Execution Backend selection + provenance (pure, platform-neutral — Slice 2)
+// ---------------------------------------------------------------------------
+//
+// Backend is orthogonal to identity (ADR 0004/0005): it only chooses a *hardware
+// path*, never a `model_id`, Voiceprint Space, or Speaker Continuity key, and is
+// observable only in result provenance (`executionMode`). These two functions are
+// the GPU-free, feature-free heart of that decision so they unit-test under plain
+// `cargo test -p speaker-analysis` (the heavy speakrs/ort/CUDA build stays opt-in);
+// the runtime try/CPU-fallback that consumes them lives in providers/speakrs.rs.
+
+/// Whether a Speaker Analysis Job should *attempt* the CUDA Execution Backend or
+/// run plain CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionModeSelection {
+    /// Try `ExecutionMode::Cuda`; on an init failure the caller falls back to CPU
+    /// (still a successful job — ADR 0005). Chosen only when the pack is present
+    /// AND the user has not forced CPU.
+    AttemptCuda,
+    /// Run plain CPU — no CUDA attempt and therefore no fallback diagnostics.
+    Cpu,
+}
+
+/// Decide whether to attempt the CUDA Execution Backend for one job.
+///
+/// `AttemptCuda` iff `!force_cpu && pack_present`; otherwise `Cpu`.
+///
+/// `gpu_detected` is DELIBERATELY not part of the decision: it informs the
+/// Settings *offer* (Slice 5), not the attempt. The try/CPU-fallback in
+/// `run_speakrs_blocking` subsumes detection — attempting CUDA without the pack is
+/// pointless (no provider DLLs to load), and attempting it *with* the pack but no
+/// usable GPU just fails init and falls back to CPU, so a separate detect-gate
+/// here could only add a way to wrongly skip a GPU that would actually have
+/// worked. It stays a parameter so the signature documents the full input space
+/// and the tests can prove it is inert.
+pub fn select_execution_mode(
+    force_cpu: bool,
+    pack_present: bool,
+    gpu_detected: bool,
+) -> ExecutionModeSelection {
+    // Intentionally inert; see the doc-comment above. Bound to `_` so a future
+    // edit that tries to branch on it has to delete this line on purpose.
+    let _ = gpu_detected;
+    if !force_cpu && pack_present {
+        ExecutionModeSelection::AttemptCuda
+    } else {
+        ExecutionModeSelection::Cpu
+    }
+}
+
+/// Stamp the **Execution Backend** outcome into a result's provenance map.
+///
+/// `executionMode` always records the backend that ACTUALLY ran
+/// (`"cpu"` | `"cuda"` | `"coreml"`). Only on a CUDA-init fallback — the caller
+/// ran CPU because `from_dir(.., Cuda)` returned `Err` — do we also add the two
+/// diagnostics `executionModeRequested = "cuda"` and `cudaFallbackReason = <error>`.
+/// A plain CPU run (no pack or Force-CPU), and a successful CUDA or CoreML run,
+/// get `executionMode` ONLY, with NO extra keys ("not provisioned" is not a
+/// failure; ADR 0005). Pure + map-only so it unit-tests without a GPU.
+///
+/// Takes the concrete `BTreeMap` the metadata provenance uses (not a generic
+/// `serde_json::Map`) so it can be called directly on `output.metadata.provenance`.
+pub fn apply_execution_mode_provenance(
+    provenance: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    actual_mode: &str,
+    cuda_fallback: Option<&str>,
+) {
+    provenance.insert(
+        "executionMode".to_string(),
+        serde_json::Value::String(actual_mode.to_string()),
+    );
+    if let Some(reason) = cuda_fallback {
+        provenance.insert(
+            "executionModeRequested".to_string(),
+            serde_json::Value::String("cuda".to_string()),
+        );
+        provenance.insert(
+            "cudaFallbackReason".to_string(),
+            serde_json::Value::String(reason.to_string()),
+        );
+    }
+}
+
 pub fn model_install_dir(
     models_dir: impl AsRef<Path>,
     descriptor: &SpeakerAnalysisModelDescriptor,
@@ -673,9 +895,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn manifest_exposes_speakrs_coreml_preset() {
-        let descriptor = descriptor_for(SPEAKRS_DEFAULT_MODEL_ID);
+    /// Shared invariants for either artifact set's descriptor: identity is
+    /// platform-stable, required_files == artifact relative_paths (derived from
+    /// one table), the outer byte_size is the summed per-file size, and every
+    /// file resolves directly from the HF repo with a content SHA256.
+    fn assert_descriptor_invariants(
+        descriptor: &SpeakerAnalysisModelDescriptor,
+        expected_byte_size: u64,
+        expected_file_count: usize,
+    ) {
         assert_eq!(descriptor.provider, SPEAKRS_PROVIDER_ID);
         assert_eq!(descriptor.model_id.as_deref(), Some(SPEAKRS_DEFAULT_MODEL_ID));
         let license = descriptor
@@ -698,11 +926,10 @@ mod tests {
         let artifact = artifact.as_ref().expect("speakrs preset has an artifact");
         let ModelArtifactShape::MultiFile { files } = &artifact.shape;
 
-        // Exactly the 76 CoreMl required_files speakrs's from_dir reads.
-        assert_eq!(expected_layout.required_files.len(), 76);
-        assert_eq!(files.len(), 76);
-        // required_files == the artifact file relative_paths (derived from the
-        // same table, so they cannot drift).
+        assert_eq!(expected_layout.required_files.len(), expected_file_count);
+        assert_eq!(files.len(), expected_file_count);
+        // required_files == the artifact file relative_paths (both derived from
+        // `SPEAKRS_COREML_FILES`, so they cannot drift).
         let artifact_paths: Vec<&str> =
             files.iter().map(|file| file.relative_path.as_str()).collect();
         let required_paths: Vec<&str> = expected_layout
@@ -712,11 +939,11 @@ mod tests {
             .collect();
         assert_eq!(required_paths, artifact_paths);
 
-        // Outer byte_size is the sum of the per-file sizes; every file carries a
-        // direct HuggingFace URL + content SHA256 (no archive to extract).
+        // Outer byte_size is the derived sum of the per-file sizes; every file
+        // carries a direct HuggingFace URL + content SHA256 (no archive).
         let summed: u64 = files.iter().map(|file| file.byte_size).sum();
         assert_eq!(artifact.byte_size, summed);
-        assert_eq!(artifact.byte_size, 419_482_724);
+        assert_eq!(artifact.byte_size, expected_byte_size);
         for file in files {
             assert!(
                 file.url.starts_with(
@@ -729,14 +956,82 @@ mod tests {
             assert!(!file.url.ends_with(".tar.bz2"), "speakrs ships raw files");
             assert!(file.sha256.is_some(), "every speakrs file is checksummed");
         }
+    }
+
+    #[test]
+    fn coreml_artifact_set_is_the_full_mlmodelc_set() {
+        let descriptor = speakrs_descriptor(SpeakerArtifactSet::CoreMl);
+        // The full 76-file CoreMl required_files set speakrs's from_dir reads.
+        assert_descriptor_invariants(&descriptor, 419_482_724, 76);
+        assert!(descriptor.display_name.contains("CoreML"));
+
+        let required = speakrs_required_files(SpeakerArtifactSet::CoreMl);
+        assert_eq!(required.len(), 76);
         // PLDA + segmentation + WeSpeaker embedding land flat where from_dir
         // looks; sanity-check a flat root file and a nested .mlmodelc subpath.
-        assert!(required_paths.contains(&"segmentation-3.0.onnx"));
-        assert!(required_paths.contains(&"wespeaker-voxceleb-resnet34.onnx"));
-        assert!(required_paths.contains(&"plda_lda.npy"));
-        assert!(required_paths.contains(&"segmentation-3.0.mlmodelc/weights/weight.bin"));
+        assert!(required.iter().any(|path| path == "segmentation-3.0.onnx"));
+        assert!(required.iter().any(|path| path == "wespeaker-voxceleb-resnet34.onnx"));
+        assert!(required.iter().any(|path| path == "plda_lda.npy"));
+        assert!(required
+            .iter()
+            .any(|path| path == "segmentation-3.0.mlmodelc/weights/weight.bin"));
+        assert!(required.iter().any(|path| path.contains(".mlmodelc")));
         // plda_phi.npy is intentionally absent — speakrs does not read it.
-        assert!(!required_paths.iter().any(|path| path.contains("plda_phi")));
+        assert!(!required.iter().any(|path| path.contains("plda_phi")));
+        // The derived total matches the historically verified CoreMl size.
+        assert_eq!(speakrs_artifact_byte_size(SpeakerArtifactSet::CoreMl), 419_482_724);
+    }
+
+    #[test]
+    fn onnx_artifact_set_is_the_ten_cpu_files() {
+        let descriptor = speakrs_descriptor(SpeakerArtifactSet::Onnx);
+        // The 10-file CPU subset speakrs's required_files(ExecutionMode::Cpu)
+        // reads, with the derived ONNX total.
+        assert_descriptor_invariants(&descriptor, 59_751_799, 10);
+        // The Windows preset runs on the CPU (ONNX Runtime), not CoreML.
+        assert!(descriptor.display_name.contains("CPU"));
+        assert!(!descriptor.display_name.contains("CoreML"));
+        assert!(descriptor.description.contains("ONNX Runtime"));
+
+        let required = speakrs_required_files(SpeakerArtifactSet::Onnx);
+        // Exactly the 10 CPU paths, in table order.
+        assert_eq!(required, SPEAKRS_CPU_FILE_NAMES.to_vec());
+        assert_eq!(required.len(), 10);
+        // No CoreML bundles, and none of the batched/CoreML-only ONNX variants.
+        assert!(!required.iter().any(|path| path.contains(".mlmodelc")));
+        assert!(!required.iter().any(|path| path.contains("-b32.onnx")));
+        assert!(!required.iter().any(|path| path.contains("-tail")));
+        // The 2 ONNX graphs (+ external weights) + the PLDA tensors + min-samples
+        // txt are all present.
+        assert!(required.contains(&"segmentation-3.0.onnx".to_string()));
+        assert!(required.contains(&"wespeaker-voxceleb-resnet34.onnx".to_string()));
+        assert!(required.contains(&"wespeaker-voxceleb-resnet34.onnx.data".to_string()));
+        assert!(required.contains(&"plda_lda.npy".to_string()));
+        assert!(required.contains(&"wespeaker-voxceleb-resnet34.min_num_samples.txt".to_string()));
+        assert_eq!(speakrs_artifact_byte_size(SpeakerArtifactSet::Onnx), 59_751_799);
+    }
+
+    #[test]
+    fn both_artifact_sets_share_one_model_id() {
+        // Backend/artifact is orthogonal to identity (ADR 0004): the
+        // platform-stable model_id, provider, source, and license are identical
+        // across the CoreML and CPU/ONNX sets, so one Voiceprint Space stays
+        // comparable across Execution Backends; only the resolved artifact differs.
+        let coreml = speakrs_descriptor(SpeakerArtifactSet::CoreMl);
+        let onnx = speakrs_descriptor(SpeakerArtifactSet::Onnx);
+        assert_eq!(coreml.model_id, onnx.model_id);
+        assert_eq!(coreml.model_id.as_deref(), Some(SPEAKRS_DEFAULT_MODEL_ID));
+        assert_eq!(coreml.provider, onnx.provider);
+        assert_eq!(coreml.source_url, onnx.source_url);
+        assert_eq!(coreml.license_label, onnx.license_label);
+        assert_ne!(
+            speakrs_required_files(SpeakerArtifactSet::CoreMl),
+            speakrs_required_files(SpeakerArtifactSet::Onnx)
+        );
+        assert_ne!(
+            speakrs_artifact_byte_size(SpeakerArtifactSet::CoreMl),
+            speakrs_artifact_byte_size(SpeakerArtifactSet::Onnx)
+        );
     }
 
     #[test]
@@ -758,6 +1053,98 @@ mod tests {
         let decoded: SpeakerAnalysisModelDescriptor =
             serde_json::from_str(&encoded).expect("decodes");
         assert_eq!(decoded, descriptor);
+    }
+
+    #[test]
+    fn select_execution_mode_matrix_gpu_detected_is_inert() {
+        use ExecutionModeSelection::*;
+        // The full {force_cpu × pack_present × gpu_detected} matrix (8 cases).
+        // AttemptCuda iff (!force_cpu && pack_present); everything else is Cpu, and
+        // `gpu_detected` NEVER changes the result (it only drives the Settings
+        // offer, not the attempt — ADR 0005).
+        for &gpu_detected in &[false, true] {
+            assert_eq!(select_execution_mode(false, true, gpu_detected), AttemptCuda);
+            assert_eq!(select_execution_mode(false, false, gpu_detected), Cpu);
+            assert_eq!(select_execution_mode(true, true, gpu_detected), Cpu);
+            assert_eq!(select_execution_mode(true, false, gpu_detected), Cpu);
+        }
+        // Pairwise proof that toggling gpu_detected ALONE is inert at every
+        // (force_cpu, pack_present) corner — the invariant the plan calls out.
+        for &force_cpu in &[false, true] {
+            for &pack_present in &[false, true] {
+                assert_eq!(
+                    select_execution_mode(force_cpu, pack_present, false),
+                    select_execution_mode(force_cpu, pack_present, true),
+                    "gpu_detected changed the selection at force_cpu={force_cpu}, pack_present={pack_present}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn execution_mode_provenance_plain_cpu_has_no_diagnostics() {
+        // (a) plain cpu (no pack / Force-CPU): only executionMode, no fallback keys.
+        let mut provenance = std::collections::BTreeMap::new();
+        apply_execution_mode_provenance(&mut provenance, "cpu", None);
+        assert_eq!(provenance.get("executionMode"), Some(&serde_json::json!("cpu")));
+        assert!(!provenance.contains_key("executionModeRequested"));
+        assert!(!provenance.contains_key("cudaFallbackReason"));
+    }
+
+    #[test]
+    fn execution_mode_provenance_records_cuda_init_fallback() {
+        // (b) init-fallback: all three keys; executionMode is what actually ran
+        // (cpu), requested is cuda, and the reason is carried verbatim.
+        let mut provenance = std::collections::BTreeMap::new();
+        let reason = "CUDA EP init failed: cudnn64_9.dll not found";
+        apply_execution_mode_provenance(&mut provenance, "cpu", Some(reason));
+        assert_eq!(provenance.get("executionMode"), Some(&serde_json::json!("cpu")));
+        assert_eq!(
+            provenance.get("executionModeRequested"),
+            Some(&serde_json::json!("cuda"))
+        );
+        assert_eq!(
+            provenance.get("cudaFallbackReason"),
+            Some(&serde_json::json!(reason))
+        );
+    }
+
+    #[test]
+    fn execution_mode_provenance_cuda_success_has_no_diagnostics() {
+        // (c) cuda success: executionMode=cuda, no requested/reason keys.
+        let mut provenance = std::collections::BTreeMap::new();
+        apply_execution_mode_provenance(&mut provenance, "cuda", None);
+        assert_eq!(provenance.get("executionMode"), Some(&serde_json::json!("cuda")));
+        assert!(!provenance.contains_key("executionModeRequested"));
+        assert!(!provenance.contains_key("cudaFallbackReason"));
+    }
+
+    #[test]
+    fn execution_mode_provenance_coreml() {
+        // (d) macOS CoreML: executionMode=coreml, no requested/reason keys (the
+        // macOS path is byte-identical, no new keys — ADR 0005).
+        let mut provenance = std::collections::BTreeMap::new();
+        apply_execution_mode_provenance(&mut provenance, "coreml", None);
+        assert_eq!(
+            provenance.get("executionMode"),
+            Some(&serde_json::json!("coreml"))
+        );
+        assert!(!provenance.contains_key("executionModeRequested"));
+        assert!(!provenance.contains_key("cudaFallbackReason"));
+    }
+
+    #[test]
+    fn gpu_pack_present_requires_install_marker() {
+        // Pack-presence is the install MARKER, not just the dir: an empty/absent
+        // dir is "not provisioned" (plain CPU, no fallback noise — ADR 0005).
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pack_dir = gpu_acceleration_pack_dir(temp.path());
+        assert_eq!(pack_dir.file_name().unwrap(), GPU_ACCELERATION_PACK_DIR_NAME);
+        assert!(!gpu_pack_present(&pack_dir));
+        fs::create_dir_all(&pack_dir).expect("create pack dir");
+        assert!(!gpu_pack_present(&pack_dir), "dir alone is not provisioned");
+        fs::write(pack_dir.join(GPU_ACCELERATION_PACK_MARKER), "{}").expect("write marker");
+        assert!(gpu_pack_present(&pack_dir), "install marker means provisioned");
     }
 
     #[test]

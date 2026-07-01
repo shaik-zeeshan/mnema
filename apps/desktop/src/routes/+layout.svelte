@@ -268,10 +268,18 @@
       await openSettings(notification.action.tab);
       await clearAppNotification(notification.id);
       notificationsOpen = false;
+    } else if (notification.action?.type === "open_capture_privacy_settings") {
+      await invoke("open_capture_privacy_settings", { kind: notification.action.kind });
+      await clearAppNotification(notification.id);
+      notificationsOpen = false;
     }
   }
 
   function notificationActionLabel(notification: AppNotification): string {
+    if (notification.action?.type === "open_capture_privacy_settings") {
+      if (notification.action.kind === "microphone") return "Open microphone settings";
+      return "Open privacy settings";
+    }
     if (notification.action?.type !== "open_settings_tab") return "Open";
     if (notification.action.tab === "about") return "Open update settings";
     if (notification.action.tab === "processing") return "Open OCR settings";

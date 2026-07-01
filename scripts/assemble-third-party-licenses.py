@@ -123,7 +123,8 @@ It is organized in three parts:
    web frontend shipped inside the app, grouped by license.
 3. **Bundled native libraries and model assets** — components that are not
    tracked by the package managers (OpenBLAS/LAPACK, the GCC runtime libraries,
-   and downloadable ML model weights).
+   the Windows ONNX Runtime DLLs, downloadable ML model weights, and the
+   on-demand NVIDIA CUDA/cuDNN GPU-acceleration redistributables).
 
 Generated {date.today().isoformat()}. Mnema's own first-party source code is **not**
 open source and is **not** covered by this document.
@@ -202,7 +203,8 @@ w("""
 ## Part 3 — Bundled native libraries and model assets
 
 These components are not tracked by Cargo or the JavaScript package manager but are
-either statically linked into the shipped binary or downloaded on demand at runtime.
+statically linked into the shipped binary, bundled alongside it, or downloaded on
+demand at runtime.
 
 ### OpenBLAS / LAPACK (BSD-3-Clause)
 
@@ -258,6 +260,42 @@ GCC Runtime Library Exception are available at:
 - https://www.gnu.org/licenses/gpl-3.0.html
 - https://www.gnu.org/licenses/gcc-exception-3.1.html
 
+### ONNX Runtime (MIT)
+
+The Windows desktop build loads **ONNX Runtime** (Microsoft) dynamically from a
+bundled `onnxruntime.dll` shipped flat next to the executable in the base install.
+Both the **Parakeet** transcription adapter and the on-device **speaker-diarization**
+helper (`speakrs`) share it through the `ort` crate's `load-dynamic` runtime. When the
+optional CUDA GPU-acceleration build is staged, `onnxruntime_providers_shared.dll` and
+`onnxruntime_providers_cuda.dll` ship alongside it. These DLLs are version-locked to the
+pinned `ort = =2.0.0-rc.12` crate (ONNX Runtime 1.24.x; the shipped build is **1.24.4**).
+The macOS build links ONNX Runtime statically into the binary instead and ships no DLL.
+ONNX Runtime is distributed under the **MIT License**.
+
+```
+MIT License
+
+Copyright (c) Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### Machine-learning model weights (downloaded on demand)
 
 Several ML models are downloaded at runtime rather than bundled in the installer.
@@ -268,6 +306,28 @@ surface is assembled descriptor-by-descriptor at runtime from each model crate's
 manifest; the attribution source of truth lives in
 `apps/desktop/src-tauri/src/third_party_notices.rs`. The full text of
 CC-BY-4.0 is available at https://creativecommons.org/licenses/by/4.0/legalcode .
+
+### NVIDIA CUDA Toolkit redistributables (CUDA 12) and NVIDIA cuDNN 9 (downloaded on demand — NVIDIA license)
+
+The optional Windows **GPU Acceleration Pack** runs `speakrs` diarization on an NVIDIA
+GPU through ONNX Runtime's CUDA execution provider, which depends on NVIDIA's **CUDA 12**
+runtime libraries (`cudart64_12.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`,
+`cufft64_11.dll`) and **cuDNN 9** (`cudnn64_9.dll` plus its sub-DLLs).
+
+**These NVIDIA libraries are NOT bundled in the installer and are NOT hosted or
+redistributed by Mnema.** They are fetched on demand — only after the user explicitly
+accepts NVIDIA's license terms in-app — directly from NVIDIA's official redistributable
+endpoints (`developer.download.nvidia.com`) into the application's data directory. Mnema
+acts solely as an *orchestrator* of that download; NVIDIA remains the distributor. The
+base installer ships none of these files.
+
+The current pins — coupled to ONNX Runtime 1.24 — are **CUDA 12.9.1** and **cuDNN
+9.10.2**, bumped deliberately whenever the `ort` pin moves. Use of these components is
+governed by NVIDIA's license agreements, which the user accepts in-app before any byte is
+downloaded:
+
+- NVIDIA CUDA Toolkit EULA — https://docs.nvidia.com/cuda/eula/index.html
+- NVIDIA cuDNN Software License Agreement (SLA) — https://docs.nvidia.com/deeplearning/cudnn/sla/index.html
 
 ---
 

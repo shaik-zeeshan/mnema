@@ -18,10 +18,10 @@ use super::inactivity::InactivityState;
 use super::segments::FrameArtifactMessage;
 use capture_vad::MicrophoneVadRuntime;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) const MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS: u8 = 3;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CaptureSuspensionStatus {
     Retryable,
@@ -31,7 +31,7 @@ pub(crate) enum CaptureSuspensionStatus {
 /// Why screen/system-audio capture was suspended. Both kinds drive the same
 /// recovery loop — restart a fresh screen segment once it's possible again — but
 /// they retry on different terms.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CaptureSuspensionKind {
     /// A privacy content-filter apply failed. The failure is likely persistent,
@@ -53,7 +53,7 @@ pub(crate) enum CaptureSuspensionKind {
 /// trying to recover from. Despite the name it now covers both privacy-filter
 /// failures and transient display-unavailable conditions (see
 /// [`CaptureSuspensionKind`]); `kind` selects the retry policy.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CaptureSuspension {
     pub kind: CaptureSuspensionKind,
@@ -64,7 +64,7 @@ pub(crate) struct CaptureSuspension {
     pub status: CaptureSuspensionStatus,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl CaptureSuspension {
     pub fn with_kind(kind: CaptureSuspensionKind, error: &CaptureErrorResponse) -> Self {
         let reason = match kind {
@@ -119,7 +119,7 @@ pub struct NativeCaptureRuntime {
     pub requested_sources: Option<CaptureSources>,
     pub current_segment_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub current_segment_output_files: Option<CaptureOutputFiles>,
     pub current_segment_index: u64,
     pub screen_frame_rate: u32,
@@ -146,17 +146,32 @@ pub struct NativeCaptureRuntime {
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub recording_file: Option<String>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub microphone_recording_file: Option<String>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub system_audio_recording_file: Option<String>,
-    #[cfg(target_os = "macos")]
-    pub active_screen_session: Option<capture_screen::ActiveCaptureSession>,
+    /// The live screen capture session behind the cross-platform
+    /// [`capture_screen::ScreenCaptureSession`] seam. Populated only when a
+    /// platform backend successfully starts capture; macOS-only operations reach
+    /// the concrete backend via an `Any` downcast from already-gated call sites.
+    pub active_screen_session: Option<Box<dyn capture_screen::ScreenCaptureSession>>,
     #[cfg(target_os = "macos")]
     pub active_microphone_session: Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
-    #[cfg(target_os = "macos")]
+    /// The live microphone capture session behind the cross-platform
+    /// [`capture_microphone::AudioCaptureSession`] seam. On Windows the WASAPI
+    /// backend is held here as a boxed trait object, parallel to
+    /// [`Self::active_screen_session`]; macOS keeps its concrete type above.
+    #[cfg(target_os = "windows")]
+    pub active_microphone_session: Option<Box<dyn microphone_capture::AudioCaptureSession>>,
+    /// The live system-audio capture session behind the same audio seam. Windows
+    /// treats system audio as an independent source (ADR 0022); it is held here
+    /// so segment rotation, liveness, and finalization share one path. Populated
+    /// by the system-audio slice; remains `None` for the microphone slice.
+    #[cfg(target_os = "windows")]
+    pub active_system_audio_session: Option<Box<dyn microphone_capture::AudioCaptureSession>>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub capture_suspension: Option<CaptureSuspension>,
     /// Injectable free-space probe used by the low-disk preflight, the rotation
     /// boundary check, and the suspension recovery driver. `None` means "use the
@@ -165,11 +180,11 @@ pub struct NativeCaptureRuntime {
     /// suspend/resume logic is exercisable without a real full disk. Kept as an
     /// `Option` so the struct keeps deriving `Default` (a bare `fn` pointer does
     /// not implement `Default`).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub free_space_probe: Option<super::disk_space::FreeSpaceProbe>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl NativeCaptureRuntime {
     /// Resolve the effective free-space probe: the injected one if a test set it,
     /// otherwise the production default. Kept here so the `None`-means-default
@@ -177,6 +192,19 @@ impl NativeCaptureRuntime {
     pub(super) fn free_space_probe(&self) -> super::disk_space::FreeSpaceProbe {
         self.free_space_probe
             .unwrap_or(super::disk_space::default_free_space_probe)
+    }
+
+    /// True when the capture-suspension store is holding the session specifically
+    /// for low disk (ADR 0040/0041). On Windows `LowDisk` is the *only*
+    /// `capture_suspension` kind — DPMS/lock/sleep ride the separate inactivity
+    /// store — so this doubles as "the low-disk store currently holds the screen".
+    /// Used by the rotation suspension masking and the transient-liveness
+    /// screen-resume precedence guard so a display waking onto a still-full disk
+    /// does not reopen a screen segment.
+    pub(super) fn is_low_disk_suspended(&self) -> bool {
+        self.capture_suspension
+            .as_ref()
+            .is_some_and(|suspension| suspension.kind == CaptureSuspensionKind::LowDisk)
     }
 }
 
@@ -279,12 +307,9 @@ pub(super) fn prefixed_capture_id(prefix: &str) -> Result<String, CaptureErrorRe
 }
 
 pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession {
-    #[cfg(target_os = "macos")]
-    let is_low_disk_suspended = runtime
-        .capture_suspension
-        .as_ref()
-        .is_some_and(|s| s.kind == CaptureSuspensionKind::LowDisk);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let is_low_disk_suspended = runtime.is_low_disk_suspended();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let is_low_disk_suspended = false;
 
     NativeCaptureSession {
@@ -356,18 +381,35 @@ pub(super) fn validate_start_request(
     if !support.native_capture_supported {
         return Err(CaptureErrorResponse {
             code: "unsupported_platform".to_string(),
-            message: "Native capture is currently supported only on macOS".to_string(),
+            message: "Native capture is not supported on this platform".to_string(),
+        });
+    }
+
+    if request.capture_screen && !support.supported_sources.screen {
+        return Err(CaptureErrorResponse {
+            code: "screen_unsupported".to_string(),
+            message: "Screen capture is not supported on this platform".to_string(),
+        });
+    }
+
+    if request.capture_microphone && !support.supported_sources.microphone {
+        return Err(CaptureErrorResponse {
+            code: "microphone_unsupported".to_string(),
+            message: "Microphone capture is not supported on this platform".to_string(),
         });
     }
 
     if request.capture_system_audio && !support.supported_sources.system_audio {
         return Err(CaptureErrorResponse {
             code: "system_audio_unsupported".to_string(),
-            message: "System audio capture requires macOS 15.0 or newer".to_string(),
+            message: "System audio capture is not supported on this platform".to_string(),
         });
     }
 
-    if request.capture_system_audio && !request.capture_screen {
+    if request.capture_system_audio
+        && !request.capture_screen
+        && support.system_audio_requires_screen
+    {
         return Err(CaptureErrorResponse {
             code: "system_audio_requires_screen".to_string(),
             message: "System audio-only capture is not supported; enable screen capture as well"
@@ -396,7 +438,7 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.frame_artifact_tx = None;
     runtime.effective_screen_bitrate_bps = None;
     runtime.current_segment_sources = None;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         runtime.current_segment_output_files = None;
     }
@@ -404,6 +446,13 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
+        runtime.capture_suspension = None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        runtime.active_screen_session = None;
+        runtime.active_microphone_session = None;
+        runtime.active_system_audio_session = None;
         runtime.capture_suspension = None;
     }
 
@@ -468,7 +517,7 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     runtime.frame_artifact_tx = None;
     runtime.effective_screen_bitrate_bps = None;
     runtime.current_segment_sources = None;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         runtime.current_segment_output_files = None;
     }
@@ -476,6 +525,13 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
+        runtime.capture_suspension = None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        runtime.active_screen_session = None;
+        runtime.active_microphone_session = None;
+        runtime.active_system_audio_session = None;
         runtime.capture_suspension = None;
     }
 
@@ -514,7 +570,7 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
     runtime.requested_sources = None;
     runtime.current_segment_sources = None;
     runtime.output_files = None;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         runtime.current_segment_output_files = None;
     }
@@ -539,10 +595,21 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
         runtime.active_microphone_session = None;
         runtime.capture_suspension = None;
     }
+    #[cfg(target_os = "windows")]
+    {
+        runtime.recording_file = None;
+        runtime.microphone_recording_file = None;
+        runtime.system_audio_recording_file = None;
+        runtime.active_screen_session = None;
+        runtime.active_microphone_session = None;
+        runtime.active_system_audio_session = None;
+        runtime.capture_suspension = None;
+    }
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorResponse) -> bool {
     let is_missing_requested_screen_output =
         capture_writers::single_output_processing_failure_detail(
@@ -570,13 +637,16 @@ pub(super) fn active_sources_for_inactivity_paused_state(
     microphone_paused: bool,
     system_audio_paused: bool,
 ) -> Option<CaptureSources> {
-    // system_audio is captured through the screen session backend, so it
-    // requires both the screen session to be live (!screen_paused) AND the
-    // system audio family to be active (!system_audio_paused).
+    #[cfg(target_os = "macos")]
+    let system_audio_active =
+        requested_sources.system_audio && !system_audio_paused && !screen_paused;
+    #[cfg(not(target_os = "macos"))]
+    let system_audio_active = requested_sources.system_audio && !system_audio_paused;
+
     let active_sources = CaptureSources {
         screen: requested_sources.screen && !screen_paused,
         microphone: requested_sources.microphone && !microphone_paused,
-        system_audio: requested_sources.system_audio && !system_audio_paused && !screen_paused,
+        system_audio: system_audio_active,
     };
 
     has_any_capture_sources(&active_sources).then_some(active_sources)
@@ -695,6 +765,7 @@ fn persist_microphone_source_session(
     source_session
 }
 
+#[cfg(target_os = "macos")]
 fn persist_system_audio_source_session(
     runtime: &mut NativeCaptureRuntime,
     session_id: String,
@@ -757,6 +828,7 @@ pub(super) fn ensure_microphone_planner_for_runtime(
     Ok(Some(planner))
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn ensure_system_audio_planner_for_runtime(
     runtime: &mut NativeCaptureRuntime,
     _context: &str,
@@ -808,6 +880,19 @@ pub(super) fn current_segment_sources_for_runtime(
         );
     }
 
+    // Windows masks ALL sources while a Low-Disk Suspension holds them (ADR 0041):
+    // the boundary suspend detached screen + microphone + the independent
+    // system-audio WASAPI client, so the rotation tick must compute no active
+    // sources and `SkipRotation` cleanly instead of trying to rotate detached
+    // sessions. `LowDisk` is the only Windows `capture_suspension` kind (DPMS/lock/
+    // sleep ride the inactivity store), so `is_some()` is exactly a low-disk hold —
+    // including the window where a DPMS resume has cleared `screen_paused` but the
+    // actual restart is still deferred to low-disk recovery.
+    #[cfg(target_os = "windows")]
+    if runtime.capture_suspension.is_some() {
+        return None;
+    }
+
     if let Some(sources) = runtime.current_segment_sources.clone() {
         return has_any_capture_sources(&sources).then_some(sources);
     }
@@ -830,7 +915,7 @@ pub(super) fn current_segment_sources_for_runtime(
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn microphone_backend_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
     !runtime.inactivity.is_microphone_paused()
         && runtime.active_microphone_session.is_some()
@@ -838,7 +923,7 @@ pub(super) fn microphone_backend_active_for_runtime(runtime: &NativeCaptureRunti
         && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.microphone)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn microphone_probe_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
     runtime.active_microphone_session.is_some()
 }
@@ -848,6 +933,17 @@ pub(super) fn system_audio_writer_active_for_runtime(runtime: &NativeCaptureRunt
     !runtime.inactivity.is_system_audio_paused()
         && !runtime.inactivity.is_screen_paused()
         && capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
+        && runtime.system_audio_recording_file.is_some()
+        && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.system_audio)
+}
+
+/// Windows treats system audio as an independent WASAPI source (ADR 0022), so
+/// its writer truth checks the dedicated session instead of riding on the
+/// screen session the way macOS does.
+#[cfg(target_os = "windows")]
+pub(super) fn system_audio_writer_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
+    !runtime.inactivity.is_system_audio_paused()
+        && runtime.active_system_audio_session.is_some()
         && runtime.system_audio_recording_file.is_some()
         && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.system_audio)
 }
@@ -863,12 +959,12 @@ pub(super) fn should_rotate_segment(
 #[cfg(test)]
 mod tests {
     use super::source_session_suffix;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     use super::{
         CaptureSuspensionKind, CaptureSuspension, CaptureSuspensionStatus,
         MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS,
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     use capture_types::CaptureErrorResponse;
 
     #[test]
@@ -880,6 +976,21 @@ mod tests {
     }
 
     #[test]
+    fn prefixed_capture_id_preserves_multi_word_source_prefix() {
+        let id = super::prefixed_capture_id("sysaudio_session")
+            .expect("capture id generation should succeed");
+
+        assert!(
+            id.starts_with("sysaudio_session_"),
+            "unexpected source id prefix: {id}"
+        );
+        assert!(
+            !id.starts_with("sysaudio_session_native-session-"),
+            "raw native session prefix should be stripped: {id}"
+        );
+    }
+
+    #[test]
     fn source_session_suffix_keeps_legacy_session_prefix_compatibility() {
         assert_eq!(
             source_session_suffix("session-ceb00964-9039-4e1c-a770-c2c1a1251e83"),
@@ -887,7 +998,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn capture_suspension_requires_restart_after_bounded_failures() {
         let error = CaptureErrorResponse {
@@ -910,7 +1021,7 @@ mod tests {
         assert_eq!(suspension.reason, "privacy_recovery_restart_required");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn display_unavailable_suspension_never_stops_retrying() {
         let error = CaptureErrorResponse {
@@ -932,7 +1043,7 @@ mod tests {
         assert_eq!(suspension.status, CaptureSuspensionStatus::Retryable);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn low_disk_suspension_never_stops_retrying() {
         let error = CaptureErrorResponse {
@@ -952,5 +1063,45 @@ mod tests {
 
         assert!(suspension.can_retry());
         assert_eq!(suspension.status, CaptureSuspensionStatus::Retryable);
+    }
+}
+
+#[cfg(all(target_os = "windows", test))]
+mod windows_low_disk_tests {
+    use super::*;
+    use capture_types::CaptureErrorResponse;
+
+    #[test]
+    fn low_disk_suspension_flag_and_default_free_space_probe() {
+        let error = CaptureErrorResponse {
+            code: "capture_low_disk".to_string(),
+            message: "insufficient disk space".to_string(),
+        };
+
+        let mut runtime = NativeCaptureRuntime::default();
+        runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+            CaptureSuspensionKind::LowDisk,
+            &error,
+        ));
+        assert!(
+            session_from_runtime(&runtime).is_low_disk_suspended,
+            "a LowDisk suspension should surface is_low_disk_suspended on Windows"
+        );
+
+        runtime.capture_suspension = None;
+        assert!(
+            !session_from_runtime(&runtime).is_low_disk_suspended,
+            "no suspension should report not low-disk-suspended"
+        );
+
+        // With the field unset, the accessor resolves to the production default
+        // probe (the `None`-means-default convention).
+        let probe = runtime.free_space_probe();
+        let default_probe: super::super::disk_space::FreeSpaceProbe =
+            super::super::disk_space::default_free_space_probe;
+        assert_eq!(
+            probe as usize, default_probe as usize,
+            "an unset free_space_probe should resolve to the default probe"
+        );
     }
 }

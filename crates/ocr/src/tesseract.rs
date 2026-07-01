@@ -1,37 +1,52 @@
 use std::path::{Path, PathBuf};
 
-use image::{imageops::FilterType, GrayImage, Luma};
+#[cfg(feature = "tesseract-embedded")]
+use image::imageops::FilterType;
+#[cfg(any(test, feature = "tesseract-embedded"))]
+use image::{GrayImage, Luma};
+#[cfg(any(test, feature = "tesseract-embedded"))]
 use serde::{de::DeserializeOwned, Deserialize};
 
 #[cfg(feature = "tesseract-embedded")]
 use tesseract_rs::{TessPageSegMode, TesseractAPI};
 
+#[cfg(any(test, feature = "tesseract-embedded"))]
+use crate::normalize_candidate_text;
+#[cfg(feature = "tesseract-embedded")]
+use crate::{OcrBoundingBox, OcrObservation, OcrStructuredPayload, DEFAULT_TESSERACT_LANGUAGE};
 use crate::{
-    normalize_candidate_text, OcrBoundingBox, OcrError, OcrObservation, OcrOutput, OcrRequest,
-    OcrResult, OcrStructuredPayload, DEFAULT_TESSERACT_LANGUAGE, DEFAULT_TESSERACT_MODEL_ID,
-    TESSERACT_PROVIDER_ID,
+    OcrError, OcrOutput, OcrRequest, OcrResult, DEFAULT_TESSERACT_MODEL_ID, TESSERACT_PROVIDER_ID,
 };
 
 const MODEL_PATH_OPTION: &str = "modelPath";
 const DEFAULT_TESSDATA_DIR: &str = "tessdata";
+#[cfg(feature = "tesseract-embedded")]
 const EMBEDDED_TESSERACT_PROVIDER_VERSION: &str = "tesseract-rs 0.2.0";
+#[cfg(any(test, feature = "tesseract-embedded"))]
 const PAGE_SEGMENTATION_MODE_OPTION: &str = "pageSegmentationMode";
+#[cfg(any(test, feature = "tesseract-embedded"))]
 const PREPROCESS_MODE_OPTION: &str = "preprocessMode";
+#[cfg(any(test, feature = "tesseract-embedded"))]
 const UPSCALE_FACTOR_OPTION: &str = "upscaleFactor";
+#[cfg(any(test, feature = "tesseract-embedded"))]
 const CHAR_WHITELIST_OPTION: &str = "charWhitelist";
+#[cfg(any(test, feature = "tesseract-embedded"))]
 const MAX_PREPROCESSED_LONG_EDGE: u32 = 2400;
 
 #[derive(Debug, Clone)]
 pub struct TesseractModelSelection {
+    #[cfg_attr(not(feature = "tesseract-embedded"), allow(dead_code))]
     pub model_id: String,
     pub model_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 pub struct TesseractRuntimeLayout {
+    #[cfg_attr(not(any(test, feature = "tesseract-embedded")), allow(dead_code))]
     pub tessdata_dir: PathBuf,
 }
 
+#[cfg(feature = "tesseract-embedded")]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum TesseractPageSegmentationMode {
@@ -42,6 +57,7 @@ enum TesseractPageSegmentationMode {
     SparseText,
 }
 
+#[cfg(any(test, feature = "tesseract-embedded"))]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum TesseractPreprocessMode {
@@ -272,6 +288,7 @@ fn page_segmentation_mode_for_request(request: &OcrRequest) -> OcrResult<TessPag
     })
 }
 
+#[cfg(any(test, feature = "tesseract-embedded"))]
 fn preprocess_mode_for_request(request: &OcrRequest) -> OcrResult<TesseractPreprocessMode> {
     Ok(
         request_option::<TesseractPreprocessMode>(request, PREPROCESS_MODE_OPTION)?
@@ -279,6 +296,7 @@ fn preprocess_mode_for_request(request: &OcrRequest) -> OcrResult<TesseractPrepr
     )
 }
 
+#[cfg(any(test, feature = "tesseract-embedded"))]
 fn upscale_factor_for_request(request: &OcrRequest) -> OcrResult<u8> {
     let factor = request
         .options
@@ -293,6 +311,7 @@ fn upscale_factor_for_request(request: &OcrRequest) -> OcrResult<u8> {
     Ok(factor as u8)
 }
 
+#[cfg(any(test, feature = "tesseract-embedded"))]
 fn char_whitelist_for_request(request: &OcrRequest) -> OcrResult<Option<String>> {
     let Some(value) = request.options.get(CHAR_WHITELIST_OPTION) else {
         return Ok(None);
@@ -303,6 +322,7 @@ fn char_whitelist_for_request(request: &OcrRequest) -> OcrResult<Option<String>>
     Ok(normalize_candidate_text(whitelist))
 }
 
+#[cfg(any(test, feature = "tesseract-embedded"))]
 fn request_option<T: DeserializeOwned>(request: &OcrRequest, key: &str) -> OcrResult<Option<T>> {
     request
         .options
@@ -316,6 +336,7 @@ fn request_option<T: DeserializeOwned>(request: &OcrRequest, key: &str) -> OcrRe
         .transpose()
 }
 
+#[cfg(feature = "tesseract-embedded")]
 fn preprocess_tesseract_image(
     source: &GrayImage,
     upscale_factor: u8,
@@ -335,6 +356,7 @@ fn preprocess_tesseract_image(
     }
 }
 
+#[cfg(any(test, feature = "tesseract-embedded"))]
 fn bounded_preprocessed_dimensions(width: u32, height: u32, upscale_factor: u8) -> (u32, u32) {
     let target_width = width.saturating_mul(upscale_factor as u32).max(1);
     let target_height = height.saturating_mul(upscale_factor as u32).max(1);
@@ -350,6 +372,7 @@ fn bounded_preprocessed_dimensions(width: u32, height: u32, upscale_factor: u8) 
     )
 }
 
+#[cfg(any(test, feature = "tesseract-embedded"))]
 fn otsu_threshold(source: &GrayImage) -> GrayImage {
     let mut histogram = [0u32; 256];
     for pixel in source.pixels() {
@@ -402,6 +425,7 @@ fn map_tesseract_error(error: tesseract_rs::TesseractError) -> OcrError {
     OcrError::Provider(error.to_string())
 }
 
+#[cfg(feature = "tesseract-embedded")]
 fn normalize_tesseract_box(
     left: u32,
     top: u32,

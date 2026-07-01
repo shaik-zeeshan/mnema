@@ -15,39 +15,61 @@ use capture_writers::{
     AudioAssetWriterState, AudioSampleAppendDisposition, AudioSampleFormat,
 };
 
+// Windows reuses only the cross-platform boundary-trim entry point from
+// `capture-writers`; the rest of the macOS writer surface above is AVFoundation-only.
+#[cfg(target_os = "windows")]
+use capture_writers::trim_audio_file_to_m4a;
+
 #[cfg(target_os = "macos")]
 use cidre::{av, dispatch};
 #[cfg(target_os = "macos")]
 use cidre::{ns, objc};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::time::Instant;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "windows")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+// Both macOS and Windows now record AND consume these boundaries: the unified
+// `finalize_microphone_vad_boundary_trim` drains them to tighten each clip to the
+// spoken sub-range, so the fields are read on both platforms (no longer write-only).
 #[derive(Debug, Default, Clone, Copy)]
 struct MicrophoneVadSpeechBoundaryState {
     first_start_secs: Option<f64>,
@@ -56,7 +78,7 @@ struct MicrophoneVadSpeechBoundaryState {
     invalid_timing: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn microphone_vad_speech_boundaries() -> &'static Mutex<MicrophoneVadSpeechBoundaryState> {
     static BOUNDARIES: OnceLock<Mutex<MicrophoneVadSpeechBoundaryState>> = OnceLock::new();
     BOUNDARIES.get_or_init(|| Mutex::new(MicrophoneVadSpeechBoundaryState::default()))
@@ -70,7 +92,8 @@ pub enum MicrophoneInactivityTailTrimActivityMode {
 
 pub const MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ: u32 = 16_000;
 pub const MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT: usize = 320;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 const MAX_MICROPHONE_VAD_PCM_FRAMES: usize = 96;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,9 +119,50 @@ pub struct MicrophoneOutputFinalization {
     pub speech_detected: bool,
     pub trim_start_offset_ms: u64,
     pub discard_reason: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
-#[cfg(target_os = "macos")]
+/// Platform-neutral seam for a running audio capture session (microphone or
+/// system audio), mirroring [`capture_screen::ScreenCaptureSession`].
+///
+/// The Recording Lifecycle owns microphone and system-audio sessions as
+/// `Box<dyn AudioCaptureSession>` so segment rotation, liveness, and
+/// finalization are written once against this trait rather than per backend.
+/// Rotation and stop both surface a [`MicrophoneOutputFinalization`] so the
+/// existing microphone output finalization path is reused unchanged — that is
+/// the type the macOS AVFoundation backend already produces.
+///
+/// Concrete backends (the macOS `AvFoundationMicrophoneCaptureSession` and the
+/// Windows WASAPI session) keep their richer inherent methods; call sites that
+/// need a backend-specific operation reach it through [`AudioCaptureSession::as_any_mut`].
+pub trait AudioCaptureSession: Send + std::fmt::Debug {
+    /// Rotate the live capture onto `output_file`, returning the finalization of
+    /// the segment that just closed.
+    fn rotate_output_file_returning_finalization(
+        &mut self,
+        output_file: &str,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse>;
+
+    /// Stop the capture session, returning the finalization of the final segment.
+    fn stop_returning_finalization(
+        &mut self,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse>;
+
+    /// Whether the underlying audio capture is still live.
+    fn is_live(&self) -> bool;
+
+    /// Take and clear any stop error the backend recorded asynchronously.
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse>;
+
+    /// Downcast hook for reaching backend-specific session operations that are
+    /// intentionally not part of this cross-platform trait.
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Mutable downcast hook (see [`AudioCaptureSession::as_any`]).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Default)]
 struct MicrophoneVadPcmFeedState {
     source_format: Option<MicrophoneVadSourceFormat>,
@@ -107,7 +171,7 @@ struct MicrophoneVadPcmFeedState {
     output_frames: VecDeque<MicrophoneVadPcmFrame>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct MicrophoneVadSourceFormat {
     sample_rate_hz: u32,
@@ -118,13 +182,14 @@ struct MicrophoneVadSourceFormat {
     format_flags: u32,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn microphone_activity_monotonic_epoch() -> &'static Instant {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     EPOCH.get_or_init(Instant::now)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn now_microphone_activity_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -132,7 +197,7 @@ fn now_microphone_activity_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn now_microphone_activity_monotonic_ms() -> u64 {
     microphone_activity_monotonic_epoch()
         .elapsed()
@@ -140,12 +205,13 @@ fn now_microphone_activity_monotonic_ms() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn now_microphone_activity_marker_ms() -> u64 {
     now_microphone_activity_monotonic_ms().saturating_add(1)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn store_microphone_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
     let level = level.clamp(0.0, 1.0);
     LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.store(level.to_bits(), Ordering::Relaxed);
@@ -154,7 +220,8 @@ fn store_microphone_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64
     record_microphone_activity_window_peak(level);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn record_microphone_activity_window_peak(level: f32) {
     LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -162,6 +229,35 @@ fn record_microphone_activity_window_peak(level: f32) {
     let mut observed_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
     while f32::from_bits(observed_bits) < level {
         match LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.compare_exchange_weak(
+            observed_bits,
+            level_bits,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next_bits) => observed_bits = next_bits,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn store_system_audio_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
+    let level = level.clamp(0.0, 1.0);
+    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(level.to_bits(), Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(now_monotonic_ms, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(now_unix_ms, Ordering::Relaxed);
+    record_system_audio_activity_window_peak(level);
+}
+
+#[cfg(target_os = "windows")]
+fn record_system_audio_activity_window_peak(level: f32) {
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let level_bits = level.to_bits();
+    let mut observed_bits =
+        LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    while f32::from_bits(observed_bits) < level {
+        match LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.compare_exchange_weak(
             observed_bits,
             level_bits,
             Ordering::Relaxed,
@@ -186,13 +282,61 @@ fn maybe_track_microphone_activity(sample_buf: &cidre::cm::SampleBuf) {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn microphone_vad_pcm_feed() -> &'static Mutex<MicrophoneVadPcmFeedState> {
     static FEED: OnceLock<Mutex<MicrophoneVadPcmFeedState>> = OnceLock::new();
     FEED.get_or_init(|| Mutex::new(MicrophoneVadPcmFeedState::default()))
 }
 
-#[cfg(target_os = "macos")]
+/// Record one peak-since-last-poll Audio Activity Sample from the Windows
+/// capture callback. Mirrors the macOS `maybe_track_microphone_activity` store
+/// path, minus the cidre sample-buffer extraction.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub(crate) fn note_microphone_activity_level(level: f32) {
+    store_microphone_activity(
+        level,
+        now_microphone_activity_marker_ms(),
+        now_microphone_activity_unix_ms(),
+    );
+}
+
+/// Record one peak-since-last-poll Audio Activity Sample from the Windows
+/// system-audio loopback capture callback. This updates only system-audio state;
+/// microphone activity and microphone VAD remain untouched.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub(crate) fn note_system_audio_activity_level(level: f32) {
+    store_system_audio_activity(
+        level,
+        now_microphone_activity_marker_ms(),
+        now_microphone_activity_unix_ms(),
+    );
+}
+
+/// Push already-downmixed mono PCM into the VAD PCM feed from the Windows
+/// capture callback. Locks the shared feed exactly like the macOS path.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub(crate) fn feed_microphone_vad_pcm(
+    source_format: MicrophoneVadSourceFormat,
+    captured_at_unix_ms: u64,
+    media_start_secs: Option<f64>,
+    samples: &[f32],
+) {
+    let mut feed = microphone_vad_pcm_feed()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    feed_microphone_vad_pcm_samples_with_source_format(
+        &mut feed,
+        source_format,
+        captured_at_unix_ms,
+        media_start_secs,
+        samples,
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn reset_microphone_vad_pcm_feed() {
     let mut feed = microphone_vad_pcm_feed()
         .lock()
@@ -200,7 +344,7 @@ pub fn reset_microphone_vad_pcm_feed() {
     *feed = MicrophoneVadPcmFeedState::default();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn reset_microphone_vad_pcm_feed() {}
 
 #[cfg(target_os = "macos")]
@@ -213,7 +357,21 @@ pub fn reset_microphone_vad_tail_activity() {
     *boundaries = MicrophoneVadSpeechBoundaryState::default();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn reset_microphone_vad_tail_activity() {
+    // Windows refines the audio writer tail boundary with the same VAD-speech
+    // sequence pulse as macOS and now records the same first/last speech
+    // boundaries, so it zeroes the shared sequence counter and clears the
+    // boundary state. Windows has no AVFoundation boundary-trim-disabled
+    // sequence (that static and its pulse are macOS-only).
+    MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.store(0, Ordering::Relaxed);
+    let mut boundaries = microphone_vad_speech_boundaries()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *boundaries = MicrophoneVadSpeechBoundaryState::default();
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn reset_microphone_vad_tail_activity() {}
 
 #[cfg(target_os = "macos")]
@@ -253,7 +411,39 @@ pub fn record_microphone_vad_speech_event(_event: MicrophoneVadSpeechEvent) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn record_microphone_vad_speech_event(_event: MicrophoneVadSpeechEvent) {
+    // Pulse the shared tail-speech sequence so the WASAPI capture thread can
+    // observe speech and preserve audio up to the speech boundary in the audio
+    // writer's rolling tail buffer, and record the same first/last speech
+    // boundaries macOS does (coalescing the earliest start and latest end) so
+    // the finalize-unification slice can tighten Windows clips to the spoken
+    // sub-range too.
+    MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut boundaries = microphone_vad_speech_boundaries()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    boundaries.detected_speech = true;
+    match (_event.media_start_secs, _event.media_end_secs) {
+        (Some(start), Some(end)) if start.is_finite() && end.is_finite() && end >= start => {
+            boundaries.first_start_secs = Some(
+                boundaries
+                    .first_start_secs
+                    .map(|current| current.min(start))
+                    .unwrap_or(start),
+            );
+            boundaries.last_end_secs = Some(
+                boundaries
+                    .last_end_secs
+                    .map(|current| current.max(end))
+                    .unwrap_or(end),
+            );
+        }
+        _ => boundaries.invalid_timing = true,
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn record_microphone_vad_speech_event(_event: MicrophoneVadSpeechEvent) {}
 
 #[cfg(target_os = "macos")]
@@ -264,7 +454,7 @@ pub fn disable_microphone_vad_boundary_trim_for_current_output() {
 #[cfg(not(target_os = "macos"))]
 pub fn disable_microphone_vad_boundary_trim_for_current_output() {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn current_microphone_vad_tail_speech_sequence() -> u64 {
     MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.load(Ordering::Relaxed)
 }
@@ -274,14 +464,21 @@ fn current_microphone_vad_boundary_trim_disabled_sequence() -> u64 {
     MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE.load(Ordering::Relaxed)
 }
 
-#[cfg(all(target_os = "macos", test))]
+#[cfg(all(any(target_os = "macos", target_os = "windows"), test))]
 fn current_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryState {
     *microphone_vad_speech_boundaries()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[cfg(target_os = "macos")]
+// The unified boundary-trim finalize path below (`take_microphone_vad_speech_*`,
+// `MicrophoneOutputContext`, `finalize_microphone_vad_boundary_trim`, and its
+// move/remove/finalization helpers) is cross-platform. On macOS the AVFoundation
+// session calls it from `finalize_microphone_output_context`; on Windows the WASAPI
+// session's `finalize_segment` (in `windows_microphone.rs`) now calls it too, via
+// `finalize_segment_with_boundary_trim`, so the cluster has a real production caller
+// on both platforms and no longer needs Windows dead-code allowances.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn take_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryState {
     let mut boundaries = microphone_vad_speech_boundaries()
         .lock()
@@ -291,7 +488,7 @@ fn take_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryState {
     current
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn take_microphone_vad_pcm_frames(max_frames: usize) -> Vec<MicrophoneVadPcmFrame> {
     let mut feed = microphone_vad_pcm_feed()
         .lock()
@@ -300,12 +497,12 @@ pub fn take_microphone_vad_pcm_frames(max_frames: usize) -> Vec<MicrophoneVadPcm
     feed.output_frames.drain(..frame_count).collect()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn take_microphone_vad_pcm_frames(_max_frames: usize) -> Vec<MicrophoneVadPcmFrame> {
     Vec::new()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn microphone_vad_pcm_frame_count() -> usize {
     let feed = microphone_vad_pcm_feed()
         .lock()
@@ -313,7 +510,7 @@ pub fn microphone_vad_pcm_frame_count() -> usize {
     feed.output_frames.len()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_vad_pcm_frame_count() -> usize {
     0
 }
@@ -358,7 +555,7 @@ fn sample_buf_start_secs(sample_buf: &cidre::cm::SampleBuf) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn reset_last_microphone_activity_unix_ms() {
     LAST_MICROPHONE_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
     LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
@@ -367,83 +564,656 @@ pub fn reset_last_microphone_activity_unix_ms() {
     LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn reset_last_microphone_activity_unix_ms() {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn last_microphone_activity_unix_ms() -> Option<u64> {
     let ts = LAST_MICROPHONE_ACTIVITY_UNIX_MS.load(Ordering::Relaxed);
     (ts > 0).then_some(ts)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn last_microphone_activity_unix_ms() -> Option<u64> {
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn microphone_activity_idle_ms() -> Option<u64> {
     let ts = LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
     (ts > 0).then_some(now_microphone_activity_marker_ms().saturating_sub(ts))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_activity_idle_ms() -> Option<u64> {
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn microphone_activity_level() -> Option<f32> {
     last_microphone_activity_unix_ms()
         .map(|_| f32::from_bits(LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.load(Ordering::Relaxed)))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
     let sample_count = LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.swap(0, Ordering::Relaxed);
     let level_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.swap(0, Ordering::Relaxed);
     (sample_count > 0).then_some(f32::from_bits(level_bits))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
     let sample_count = LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.load(Ordering::Relaxed);
     let level_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
     (sample_count > 0).then_some(f32::from_bits(level_bits))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn reset_last_system_audio_activity_unix_ms() {
+    LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn reset_last_system_audio_activity_unix_ms() {}
+
+#[cfg(target_os = "windows")]
+pub fn last_system_audio_activity_unix_ms() -> Option<u64> {
+    let ts = LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.load(Ordering::Relaxed);
+    (ts > 0).then_some(ts)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn last_system_audio_activity_unix_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn system_audio_activity_idle_ms() -> Option<u64> {
+    let ts = LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
+    (ts > 0).then_some(now_microphone_activity_marker_ms().saturating_sub(ts))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn system_audio_activity_idle_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn system_audio_activity_level() -> Option<f32> {
+    last_system_audio_activity_unix_ms()
+        .map(|_| f32::from_bits(LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.load(Ordering::Relaxed)))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn system_audio_activity_level() -> Option<f32> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.swap(0, Ordering::Relaxed);
+    let level_bits = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.swap(0, Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(target_os = "windows")]
+pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.load(Ordering::Relaxed);
+    let level_bits = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_activity_level() -> Option<f32> {
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::{
+        last_microphone_activity_unix_ms, last_system_audio_activity_unix_ms,
+        microphone_activity_level, peek_microphone_activity_window_peak_level,
+        peek_system_audio_activity_window_peak_level, reset_last_microphone_activity_unix_ms,
+        reset_last_system_audio_activity_unix_ms, store_microphone_activity,
+        store_system_audio_activity, system_audio_activity_idle_ms, system_audio_activity_level,
+        take_system_audio_activity_window_peak_level,
+    };
+
+    fn activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        GUARD
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn windows_vad_speech_events_record_first_and_last_media_boundaries() {
+        let _guard = activity_state_test_guard();
+        super::reset_microphone_vad_tail_activity();
+
+        // First persists the earliest start; last advances the end across events.
+        super::record_microphone_vad_speech_event(super::MicrophoneVadSpeechEvent {
+            media_start_secs: Some(3.0),
+            media_end_secs: Some(3.5),
+        });
+        super::record_microphone_vad_speech_event(super::MicrophoneVadSpeechEvent {
+            media_start_secs: Some(1.25),
+            media_end_secs: Some(1.75),
+        });
+        super::record_microphone_vad_speech_event(super::MicrophoneVadSpeechEvent {
+            media_start_secs: Some(8.0),
+            media_end_secs: Some(8.2),
+        });
+
+        let boundaries = super::current_microphone_vad_speech_boundaries();
+        assert!(boundaries.detected_speech);
+        assert_eq!(boundaries.first_start_secs, Some(1.25));
+        assert_eq!(boundaries.last_end_secs, Some(8.2));
+        assert!(!boundaries.invalid_timing);
+
+        super::reset_microphone_vad_tail_activity();
+    }
+
+    #[test]
+    fn windows_reset_microphone_vad_tail_activity_clears_recorded_boundaries() {
+        let _guard = activity_state_test_guard();
+        super::reset_microphone_vad_tail_activity();
+
+        super::record_microphone_vad_speech_event(super::MicrophoneVadSpeechEvent {
+            media_start_secs: Some(2.0),
+            media_end_secs: Some(2.5),
+        });
+        let recorded = super::current_microphone_vad_speech_boundaries();
+        assert!(recorded.detected_speech);
+        assert_eq!(recorded.first_start_secs, Some(2.0));
+        assert_eq!(recorded.last_end_secs, Some(2.5));
+
+        super::reset_microphone_vad_tail_activity();
+
+        let cleared = super::current_microphone_vad_speech_boundaries();
+        assert!(!cleared.detected_speech);
+        assert_eq!(cleared.first_start_secs, None);
+        assert_eq!(cleared.last_end_secs, None);
+        assert!(!cleared.invalid_timing);
+    }
+
+    #[test]
+    fn system_audio_activity_reset_clears_last_level_idle_and_peak() {
+        let _guard = activity_state_test_guard();
+        reset_last_system_audio_activity_unix_ms();
+
+        let activity_marker_ms = 1;
+        store_system_audio_activity(0.5, activity_marker_ms, 1_700_000);
+
+        assert_eq!(last_system_audio_activity_unix_ms(), Some(1_700_000));
+        assert_eq!(system_audio_activity_level(), Some(0.5));
+        assert!(system_audio_activity_idle_ms().is_some());
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.5));
+
+        reset_last_system_audio_activity_unix_ms();
+
+        assert_eq!(last_system_audio_activity_unix_ms(), None);
+        assert_eq!(system_audio_activity_level(), None);
+        assert_eq!(system_audio_activity_idle_ms(), None);
+        assert_eq!(peek_system_audio_activity_window_peak_level(), None);
+        assert_eq!(take_system_audio_activity_window_peak_level(), None);
+    }
+
+    #[test]
+    fn system_audio_activity_peak_peek_does_not_consume_and_take_consumes() {
+        let _guard = activity_state_test_guard();
+        reset_last_system_audio_activity_unix_ms();
+
+        let activity_marker_ms = super::now_microphone_activity_marker_ms();
+        store_system_audio_activity(0.2, activity_marker_ms, 1);
+        store_system_audio_activity(0.7, activity_marker_ms, 2);
+        store_system_audio_activity(0.4, activity_marker_ms, 3);
+
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.7));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.7));
+        assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.7));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), None);
+        assert_eq!(take_system_audio_activity_window_peak_level(), None);
+
+        store_system_audio_activity(0.3, activity_marker_ms, 4);
+        assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.3));
+        assert_eq!(take_system_audio_activity_window_peak_level(), None);
+    }
+
+    #[test]
+    fn system_audio_activity_state_is_independent_from_microphone_activity() {
+        let _guard = activity_state_test_guard();
+        reset_last_microphone_activity_unix_ms();
+        reset_last_system_audio_activity_unix_ms();
+
+        let activity_marker_ms = super::now_microphone_activity_marker_ms();
+        store_microphone_activity(0.25, activity_marker_ms, 11);
+        store_system_audio_activity(0.75, activity_marker_ms, 22);
+
+        assert_eq!(last_microphone_activity_unix_ms(), Some(11));
+        assert_eq!(microphone_activity_level(), Some(0.25));
+        assert_eq!(peek_microphone_activity_window_peak_level(), Some(0.25));
+        assert_eq!(last_system_audio_activity_unix_ms(), Some(22));
+        assert_eq!(system_audio_activity_level(), Some(0.75));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.75));
+
+        reset_last_system_audio_activity_unix_ms();
+
+        assert_eq!(last_system_audio_activity_unix_ms(), None);
+        assert_eq!(system_audio_activity_level(), None);
+        assert_eq!(peek_system_audio_activity_window_peak_level(), None);
+        assert_eq!(last_microphone_activity_unix_ms(), Some(11));
+        assert_eq!(microphone_activity_level(), Some(0.25));
+        assert_eq!(peek_microphone_activity_window_peak_level(), Some(0.25));
+
+        reset_last_microphone_activity_unix_ms();
+    }
+
+    // ---------------------------------------------------------------------
+    // Unified mic finalize (Slice 6): the cross-platform
+    // `finalize_microphone_vad_boundary_trim` now runs on Windows, tightening a
+    // clip to the spoken sub-range via `capture_writers::trim_audio_file_to_m4a`
+    // when boundaries are valid, and plain-moving the source into place when they
+    // are not. These mirror the macOS finalize tests but drive the production
+    // Windows AAC sink writer to build self-contained `.m4a` fixtures (no external
+    // tools), matching the capture-writers trim tests.
+    // ---------------------------------------------------------------------
+
+    const FINALIZE_SAMPLE_RATE_HZ: u32 = 48_000;
+    const FINALIZE_MF_TICKS_PER_SECOND: i64 = 10_000_000;
+
+    /// RAII Media Foundation startup. The production AAC sink writer's `create`
+    /// deliberately does NOT call `MFStartup` (it relies on the capture thread's
+    /// single startup), so a standalone test must supply one. The trim and the
+    /// duration probe do their own ref-counted `MFStartup`/`MFShutdown`, which stay
+    /// balanced inside this outer startup.
+    struct MfPlatform;
+    impl MfPlatform {
+        fn startup() -> Self {
+            use windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL, MF_VERSION};
+            use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                MFStartup(MF_VERSION, MFSTARTUP_FULL).expect("MFStartup for finalize test");
+            }
+            Self
+        }
+    }
+    impl Drop for MfPlatform {
+        fn drop(&mut self) {
+            use windows::Win32::Media::MediaFoundation::MFShutdown;
+            unsafe {
+                MFShutdown().ok();
+            }
+        }
+    }
+
+    fn finalize_temp_path(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-mic-finalize-{label}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir.join(format!("{label}.m4a"))
+    }
+
+    /// Generate a self-contained mono source `.m4a` of `duration_secs` by driving
+    /// the production AAC sink writer directly — no external tools — writing a quiet
+    /// sine tone so the file carries real, decodable audio. Assumes an active
+    /// `MFStartup` (see [`MfPlatform`]).
+    fn write_tone_m4a(path: &std::path::Path, duration_secs: f64) {
+        use capture_writers::WindowsAacM4aSinkWriter;
+
+        let mut writer = WindowsAacM4aSinkWriter::create(path, FINALIZE_SAMPLE_RATE_HZ, 1)
+            .expect("create source AAC sink writer");
+
+        let total_frames = (duration_secs * FINALIZE_SAMPLE_RATE_HZ as f64).round() as u64;
+        let chunk_frames = u64::from(FINALIZE_SAMPLE_RATE_HZ / 10); // 100ms chunks
+        let mut frame: u64 = 0;
+        while frame < total_frames {
+            let frames = chunk_frames.min(total_frames - frame);
+            let mut pcm = Vec::with_capacity(frames as usize * 2);
+            for f in 0..frames {
+                let n = (frame + f) as f32;
+                let value = ((n * 0.05).sin() * 0.2 * 32767.0) as i16;
+                pcm.extend_from_slice(&value.to_le_bytes());
+            }
+            let sample_time_100ns = (frame as f64 / FINALIZE_SAMPLE_RATE_HZ as f64
+                * FINALIZE_MF_TICKS_PER_SECOND as f64)
+                .round() as i64;
+            let duration_100ns = (frames as f64 / FINALIZE_SAMPLE_RATE_HZ as f64
+                * FINALIZE_MF_TICKS_PER_SECOND as f64)
+                .round() as i64;
+            writer
+                .append_pcm_s16(&pcm, sample_time_100ns, duration_100ns)
+                .expect("append source tone chunk");
+            frame += frames;
+        }
+        writer.finalize().expect("finalize source tone .m4a");
+    }
+
+    /// Build a Windows boundary-trim finalize context. The macOS-only
+    /// AVFoundation/cidre fields are gated out of `MicrophoneOutputContext` on
+    /// Windows, so only the cross-platform boundary-trim fields are set here —
+    /// mirroring the macOS `tail_activity_context` constructor.
+    fn boundary_trim_context(
+        source_output_file: Option<String>,
+        output_file: Option<String>,
+    ) -> super::MicrophoneOutputContext {
+        super::MicrophoneOutputContext {
+            source_output_file,
+            output_file,
+            boundary_trim_enabled: true,
+            boundary_trim_disabled: false,
+            first_speech_start_secs: None,
+            last_speech_end_secs: None,
+            detected_vad_speech: false,
+        }
+    }
+
+    #[test]
+    fn windows_finalize_trims_to_speech_subrange_when_boundaries_valid() {
+        let _guard = activity_state_test_guard();
+        let _mf = MfPlatform::startup();
+        super::reset_microphone_vad_tail_activity();
+
+        let source = finalize_temp_path("trim-src");
+        let output = finalize_temp_path("trim-out");
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&output);
+
+        // A 6s source with speech in the 3.0..3.5s sub-range: after ±1s boundary
+        // padding the trim window is ~[2.0, 4.5]s, clearly shorter than the source,
+        // so both the leading and trailing silence are dropped.
+        write_tone_m4a(&source, 6.0);
+        let source_str = source.to_string_lossy().to_string();
+        let output_str = output.to_string_lossy().to_string();
+
+        super::record_microphone_vad_speech_event(super::MicrophoneVadSpeechEvent {
+            media_start_secs: Some(3.0),
+            media_end_secs: Some(3.5),
+        });
+
+        let source_ms = capture_writers::windows_audio_file_duration_ms(&source_str)
+            .expect("source .m4a should report a positive duration");
+
+        let mut context = boundary_trim_context(Some(source_str.clone()), Some(output_str.clone()));
+        let finalization = super::finalize_microphone_vad_boundary_trim(&mut context)
+            .expect("windows boundary-trim finalize should succeed");
+
+        // The finalize drained the recorded boundaries into the context and trimmed.
+        assert!(finalization.speech_detected);
+        assert_eq!(finalization.discard_reason, None);
+        assert_eq!(finalization.output_file.as_deref(), Some(output_str.as_str()));
+        assert_eq!(context.first_speech_start_secs, Some(3.0));
+        assert_eq!(context.last_speech_end_secs, Some(3.5));
+        // Leading trim of ~2s => positive start offset reported.
+        assert!(
+            finalization.trim_start_offset_ms >= 1_000,
+            "expected ~2s leading trim offset, got {}ms",
+            finalization.trim_start_offset_ms
+        );
+
+        // The trimmed `.m4a` covers only the padded sub-range and is clearly shorter
+        // than the 6s source (AAC encoder-delay/frame tolerance kept generous).
+        let trimmed_ms = capture_writers::windows_audio_file_duration_ms(&output_str)
+            .expect("trimmed .m4a should report a positive duration");
+        assert!(
+            (1_500..=3_500).contains(&trimmed_ms),
+            "expected ~2.5s trimmed audio, got {trimmed_ms}ms"
+        );
+        assert!(
+            trimmed_ms + 1_000 < source_ms,
+            "trim must shorten the audio: trimmed {trimmed_ms}ms vs source {source_ms}ms"
+        );
+        // A successful trim removes the temp source.
+        assert!(
+            !source.exists(),
+            "successful boundary trim should remove the source fixture"
+        );
+
+        super::reset_microphone_vad_tail_activity();
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn windows_finalize_plain_moves_when_boundaries_invalid() {
+        let _guard = activity_state_test_guard();
+        let _mf = MfPlatform::startup();
+        super::reset_microphone_vad_tail_activity();
+
+        let source = finalize_temp_path("move-src");
+        let output = finalize_temp_path("move-out");
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&output);
+
+        write_tone_m4a(&source, 2.0);
+        let source_str = source.to_string_lossy().to_string();
+        let output_str = output.to_string_lossy().to_string();
+
+        // Speech detected but with no usable media timing (invalid_timing) => the
+        // boundaries are unusable, so finalize must plain-move the full clip into
+        // place rather than trim it.
+        super::record_microphone_vad_speech_event(super::MicrophoneVadSpeechEvent {
+            media_start_secs: None,
+            media_end_secs: None,
+        });
+
+        let source_ms = capture_writers::windows_audio_file_duration_ms(&source_str)
+            .expect("source .m4a should report a positive duration");
+
+        let mut context = boundary_trim_context(Some(source_str.clone()), Some(output_str.clone()));
+        let finalization = super::finalize_microphone_vad_boundary_trim(&mut context)
+            .expect("windows boundary-trim finalize should succeed");
+
+        assert!(finalization.speech_detected);
+        assert_eq!(finalization.discard_reason, None);
+        assert_eq!(finalization.output_file.as_deref(), Some(output_str.as_str()));
+        // No usable boundaries were recorded, so the context keeps None and the
+        // offset stays zero (no leading trim).
+        assert_eq!(context.first_speech_start_secs, None);
+        assert_eq!(context.last_speech_end_secs, None);
+        assert!(context.detected_vad_speech);
+        assert_eq!(finalization.trim_start_offset_ms, 0);
+
+        // The move renames the source into the output verbatim: the output keeps the
+        // full source duration (no trim) and the source no longer exists.
+        let output_ms = capture_writers::windows_audio_file_duration_ms(&output_str)
+            .expect("moved .m4a should report a positive duration");
+        assert!(
+            (source_ms as i64 - output_ms as i64).abs() <= 50,
+            "plain move must preserve the full duration: source {source_ms}ms vs output {output_ms}ms"
+        );
+        assert!(
+            !source.exists(),
+            "plain move should rename the source into the output path"
+        );
+
+        super::reset_microphone_vad_tail_activity();
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&output);
+    }
+
+    // ---------------------------------------------------------------------
+    // Production wiring (Slice 6 finalize-unification). The WASAPI session's
+    // `finalize_segment` routes a closed mic segment through
+    // `windows_microphone::finalize_windows_segment_boundary_trim`, which stages the
+    // produced full clip into a sibling temp *source* file and then runs the shared
+    // boundary trim back onto the original output path. The two finalize tests above
+    // pre-stage the temp by hand; these drive the production staging the WASAPI
+    // finalize actually performs (write full clip at the real output path -> stage ->
+    // trim in place). A full `WasapiMicrophoneCaptureSession` capture->record->stop
+    // test needs a live WASAPI device, so that end-to-end smoke stays
+    // operator-deferred per the plan.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn windows_segment_finalize_stages_and_trims_to_speech_subrange() {
+        let _guard = activity_state_test_guard();
+        let _mf = MfPlatform::startup();
+        super::reset_microphone_vad_tail_activity();
+
+        // The WASAPI sink writes the full (live-tail-trimmed) clip to the planner's
+        // real output path; the finalize stages THAT path into the temp source itself.
+        let output = finalize_temp_path("wire-trim-out");
+        let output_str = output.to_string_lossy().to_string();
+        let staged_source = super::microphone_vad_temp_source_file(&output_str);
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(&staged_source);
+
+        write_tone_m4a(&output, 6.0);
+        let source_ms = capture_writers::windows_audio_file_duration_ms(&output_str)
+            .expect("full clip should report a positive duration");
+
+        super::record_microphone_vad_speech_event(super::MicrophoneVadSpeechEvent {
+            media_start_secs: Some(3.0),
+            media_end_secs: Some(3.5),
+        });
+
+        let finalization =
+            super::windows_microphone::finalize_windows_segment_boundary_trim(output_str.clone())
+                .expect("windows segment boundary-trim finalize should succeed");
+
+        // The clip was tightened in place: output_file stays the real output path,
+        // now trimmed, and the staged temp source was removed by the successful trim.
+        assert!(finalization.speech_detected);
+        assert_eq!(finalization.discard_reason, None);
+        assert_eq!(finalization.output_file.as_deref(), Some(output_str.as_str()));
+        assert!(
+            finalization.trim_start_offset_ms >= 1_000,
+            "expected ~2s leading trim offset, got {}ms",
+            finalization.trim_start_offset_ms
+        );
+        assert!(
+            !std::path::Path::new(&staged_source).exists(),
+            "a successful trim should remove the staged temp source"
+        );
+
+        let trimmed_ms = capture_writers::windows_audio_file_duration_ms(&output_str)
+            .expect("trimmed clip should report a positive duration");
+        assert!(
+            trimmed_ms + 1_000 < source_ms,
+            "staged finalize must shorten the clip: trimmed {trimmed_ms}ms vs full {source_ms}ms"
+        );
+
+        super::reset_microphone_vad_tail_activity();
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(&staged_source);
+    }
+
+    #[test]
+    fn windows_segment_finalize_plain_moves_when_no_valid_boundaries() {
+        let _guard = activity_state_test_guard();
+        let _mf = MfPlatform::startup();
+        super::reset_microphone_vad_tail_activity();
+
+        let output = finalize_temp_path("wire-move-out");
+        let output_str = output.to_string_lossy().to_string();
+        let staged_source = super::microphone_vad_temp_source_file(&output_str);
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(&staged_source);
+
+        write_tone_m4a(&output, 2.0);
+        let source_ms = capture_writers::windows_audio_file_duration_ms(&output_str)
+            .expect("full clip should report a positive duration");
+
+        // Speech detected but with no usable media timing => the staged source is
+        // plain-moved back into place (no trim), preserving the full clip in place.
+        super::record_microphone_vad_speech_event(super::MicrophoneVadSpeechEvent {
+            media_start_secs: None,
+            media_end_secs: None,
+        });
+
+        let finalization =
+            super::windows_microphone::finalize_windows_segment_boundary_trim(output_str.clone())
+                .expect("windows segment boundary-trim finalize should succeed");
+
+        assert!(finalization.speech_detected);
+        assert_eq!(finalization.trim_start_offset_ms, 0);
+        assert_eq!(finalization.output_file.as_deref(), Some(output_str.as_str()));
+        assert!(
+            !std::path::Path::new(&staged_source).exists(),
+            "the staged temp source should be moved back into the output path"
+        );
+
+        let output_ms = capture_writers::windows_audio_file_duration_ms(&output_str)
+            .expect("moved clip should report a positive duration");
+        assert!(
+            (source_ms as i64 - output_ms as i64).abs() <= 50,
+            "plain move must preserve the full duration: full {source_ms}ms vs output {output_ms}ms"
+        );
+
+        super::reset_microphone_vad_tail_activity();
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(&staged_source);
+    }
+}
+
+// The boundary-trim state at the bottom of this struct is cross-platform: the
+// unified `finalize_microphone_vad_boundary_trim` reads it on both macOS and
+// Windows. Everything above it — the AVFoundation writer/cidre URL, the live
+// format-stability tracking, the pending-sample queue, the inactivity-tail-trim
+// configuration, and the AVFoundation double-trim coordination
+// (`observed_boundary_trim_disabled_sequence`) — is macOS-only machinery and is
+// gated off on Windows, whose WASAPI backend owns its own segment writer/tail
+// holdback in `windows_microphone.rs`. The Windows backend constructs this context
+// (cross-platform fields only) in `finalize_segment_with_boundary_trim` to drive the
+// shared boundary trim.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug)]
 struct MicrophoneOutputContext {
+    #[cfg(target_os = "macos")]
     writer: Option<AudioAssetWriterState>,
+    #[cfg(target_os = "macos")]
     output_url: Option<cidre::arc::R<cidre::ns::Url>>,
     source_output_file: Option<String>,
     output_file: Option<String>,
+    #[cfg(target_os = "macos")]
     first_error: Option<CaptureErrorResponse>,
+    #[cfg(target_os = "macos")]
     format_state: MicFormatStabilityState,
+    #[cfg(target_os = "macos")]
     logged_format_samples: u32,
+    #[cfg(target_os = "macos")]
     pending_samples: VecDeque<BufferedMicSample>,
+    #[cfg(target_os = "macos")]
     inactivity_tail_trim_seconds: u64,
+    #[cfg(target_os = "macos")]
     activity_threshold: f32,
+    #[cfg(target_os = "macos")]
     tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
+    #[cfg(target_os = "macos")]
     observed_vad_tail_speech_sequence: u64,
     boundary_trim_enabled: bool,
     boundary_trim_disabled: bool,
+    #[cfg(target_os = "macos")]
     observed_boundary_trim_disabled_sequence: u64,
     first_speech_start_secs: Option<f64>,
     last_speech_end_secs: Option<f64>,
@@ -1177,12 +1947,32 @@ fn feed_microphone_vad_pcm_samples(
     if samples.is_empty() {
         return;
     }
-
     let Some(source_format) = MicrophoneVadSourceFormat::from_sample_format(sample_format) else {
         state.pending_source_samples.clear();
         state.source_format = None;
         return;
     };
+    feed_microphone_vad_pcm_samples_with_source_format(
+        state,
+        source_format,
+        captured_at_unix_ms,
+        media_start_secs,
+        samples,
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn feed_microphone_vad_pcm_samples_with_source_format(
+    state: &mut MicrophoneVadPcmFeedState,
+    source_format: MicrophoneVadSourceFormat,
+    captured_at_unix_ms: u64,
+    media_start_secs: Option<f64>,
+    samples: &[f32],
+) {
+    if samples.is_empty() {
+        return;
+    }
 
     if state.source_format != Some(source_format) {
         state.pending_source_samples.clear();
@@ -1249,7 +2039,26 @@ impl MicrophoneVadSourceFormat {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "windows")]
+impl MicrophoneVadSourceFormat {
+    /// Build a source-format key for already-downmixed mono PCM at `sample_rate_hz`.
+    /// Only `sample_rate_hz` drives the resample/feed logic; the remaining fields
+    /// exist for change-detection equality and are fixed for a WASAPI session.
+    #[allow(dead_code)]
+    pub(crate) fn linear_pcm_mono(sample_rate_hz: u32) -> Self {
+        Self {
+            sample_rate_hz,
+            channels_per_frame: 1,
+            bits_per_channel: 16,
+            bytes_per_frame: 2,
+            format_id: 0,
+            format_flags: 0,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn rounded_positive_sample_rate(sample_rate_hz: f64) -> Option<u32> {
     if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 || sample_rate_hz > f64::from(u32::MAX)
     {
@@ -1259,13 +2068,15 @@ fn rounded_positive_sample_rate(sample_rate_hz: f64) -> Option<u32> {
     Some(sample_rate_hz.round() as u32)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn vad_input_frame_count_for_output_frame(source_sample_rate_hz: u32) -> usize {
     let numerator = source_sample_rate_hz as usize * MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT;
     numerator.div_ceil(MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ as usize)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn resample_microphone_vad_frame(samples: &[f32], source_sample_rate_hz: u32) -> Vec<f32> {
     if source_sample_rate_hz == MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ {
         return samples
@@ -1294,7 +2105,8 @@ fn resample_microphone_vad_frame(samples: &[f32], source_sample_rate_hz: u32) ->
     output
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn normalized_microphone_vad_sample_to_i16(sample: f32) -> i16 {
     let sample = sample.clamp(-1.0, 1.0);
     if sample >= 0.0 {
@@ -1789,6 +2601,43 @@ pub struct AvFoundationMicrophoneCaptureSession {
 }
 
 #[cfg(target_os = "macos")]
+impl AudioCaptureSession for AvFoundationMicrophoneCaptureSession {
+    fn rotate_output_file_returning_finalization(
+        &mut self,
+        output_file: &str,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        AvFoundationMicrophoneCaptureSession::rotate_output_file_returning_finalization(
+            self,
+            output_file,
+        )
+    }
+
+    fn stop_returning_finalization(
+        &mut self,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        AvFoundationMicrophoneCaptureSession::stop_returning_finalization(self)
+    }
+
+    fn is_live(&self) -> bool {
+        // AVFoundation does not surface async stream death for the microphone
+        // session; liveness is implied while the session object exists.
+        true
+    }
+
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        None
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(target_os = "macos")]
 impl AvFoundationMicrophoneCaptureSession {
     pub fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
         self.stop_with_inactivity_tail_trim_seconds(0, 0.0)
@@ -2045,10 +2894,10 @@ fn finalize_microphone_output_context(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const MICROPHONE_VAD_BOUNDARY_PADDING_SECS: f64 = 1.0;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn microphone_output_finalization_for_context(
     context: &MicrophoneOutputContext,
     speech_detected: bool,
@@ -2061,10 +2910,11 @@ fn microphone_output_finalization_for_context(
         speech_detected,
         trim_start_offset_ms,
         discard_reason,
+        duration_ms: None,
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn take_microphone_vad_speech_boundaries_for_context(
     context: &mut MicrophoneOutputContext,
 ) -> MicrophoneVadSpeechBoundaryState {
@@ -2075,13 +2925,24 @@ fn take_microphone_vad_speech_boundaries_for_context(
     boundaries
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn finalize_microphone_vad_boundary_trim(
     context: &mut MicrophoneOutputContext,
 ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
-    let disabled_sequence = current_microphone_vad_boundary_trim_disabled_sequence();
-    if disabled_sequence > context.observed_boundary_trim_disabled_sequence {
-        context.boundary_trim_disabled = true;
+    // macOS-only AVFoundation double-trim coordination: an AVFoundation re-encode
+    // can perform its own boundary trim, so a pulse of
+    // `MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE` newer than the one observed
+    // when this output opened marks the clip as already-trimmed and disables a
+    // second trim here. Windows has no AVFoundation path — its WASAPI sink only
+    // applies the live tail holdback — so that static and pulse do not exist there,
+    // `boundary_trim_disabled` is never set, and the boundary trim below always runs
+    // once boundaries are valid.
+    #[cfg(target_os = "macos")]
+    {
+        let disabled_sequence = current_microphone_vad_boundary_trim_disabled_sequence();
+        if disabled_sequence > context.observed_boundary_trim_disabled_sequence {
+            context.boundary_trim_disabled = true;
+        }
     }
 
     if !context.boundary_trim_enabled || context.boundary_trim_disabled {
@@ -2132,6 +2993,7 @@ fn finalize_microphone_vad_boundary_trim(
             speech_detected: false,
             trim_start_offset_ms: 0,
             discard_reason: Some("no_vad_speech".to_string()),
+            duration_ms: None,
         });
     }
 
@@ -2146,6 +3008,7 @@ fn finalize_microphone_vad_boundary_trim(
             speech_detected: true,
             trim_start_offset_ms: 0,
             discard_reason: None,
+            duration_ms: None,
         });
     }
 
@@ -2162,6 +3025,7 @@ fn finalize_microphone_vad_boundary_trim(
                 speech_detected: true,
                 trim_start_offset_ms: (trim_start_secs * 1000.0).round().max(0.0) as u64,
                 discard_reason: None,
+                duration_ms: None,
             })
         }
         Err(error) => {
@@ -2177,12 +3041,13 @@ fn finalize_microphone_vad_boundary_trim(
                 speech_detected: true,
                 trim_start_offset_ms: 0,
                 discard_reason: None,
+                duration_ms: None,
             })
         }
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn move_microphone_source_to_output(
     source: &str,
     output: &str,
@@ -2253,7 +3118,10 @@ fn microphone_output_context_for_output_url(
     }
 }
 
-#[cfg(target_os = "macos")]
+// Cross-platform: the macOS AVFoundation context creates this sibling temp source
+// path up front (the writer writes into it), while the Windows WASAPI finalize
+// stages the closed segment into it so the boundary trim has a distinct input file.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn microphone_vad_temp_source_file(output_file: &str) -> String {
     let path = std::path::Path::new(output_file);
     let parent = path.parent();
@@ -2308,7 +3176,7 @@ const MICROPHONE_STREAM_OUTPUT_FAILURE_PREFIX: &str = "microphone stream output 
 #[cfg(target_os = "macos")]
 const MICROPHONE_WRITER_FAILURE_PREFIX: &str = "microphone writer failed: ";
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn maybe_remove_microphone_output_file(path: &str) {
     match std::fs::remove_file(path) {
         Ok(()) => {}
@@ -2391,7 +3259,12 @@ pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorRe
     Ok(devices)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
+    windows_microphone::list_microphone_devices()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
     Ok(Vec::new())
 }
@@ -2611,11 +3484,21 @@ pub fn start_microphone_device_change_notifier(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub use windows_microphone::MicrophoneDeviceChangeNotifier;
+
+#[cfg(target_os = "windows")]
+pub fn start_microphone_device_change_notifier(
+    callback: impl Fn() + Send + Sync + 'static,
+) -> MicrophoneDeviceChangeNotifier {
+    windows_microphone::start_microphone_device_change_notifier(callback)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[derive(Debug, Default)]
 pub struct MicrophoneDeviceChangeNotifier;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn start_microphone_device_change_notifier(
     _callback: impl Fn() + Send + Sync + 'static,
 ) -> MicrophoneDeviceChangeNotifier {
@@ -2849,12 +3732,62 @@ pub fn ensure_microphone_permission() -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn microphone_permission_state() -> CapturePermissionState {
+    // Windows exposes no synchronous query for the per-app microphone privacy
+    // setting (Settings -> Privacy & security -> Microphone). We can only tell
+    // whether a usable default capture endpoint exists; whether desktop apps are
+    // actually allowed to open it is not knowable without attempting capture.
+    // The real denial surfaces at capture start as `microphone_access_denied`
+    // (E_ACCESSDENIED at IAudioClient activation/initialize), so we report a
+    // best-effort `Unknown` here when an endpoint exists. Reporting `Unknown`
+    // (not `Unsupported`) keeps the mic source user-selectable in
+    // `get_capture_support`, which only hides it on `Unsupported`.
+    if windows_microphone::microphone_capture_supported() {
+        CapturePermissionState::Unknown
+    } else {
+        CapturePermissionState::Unsupported
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn ensure_microphone_permission() -> bool {
+    windows_microphone::microphone_capture_supported()
+}
+
+#[cfg(target_os = "windows")]
+pub fn system_audio_loopback_permission_state() -> CapturePermissionState {
+    // Windows system audio is captured via WASAPI render-endpoint loopback, which
+    // needs no per-app privacy permission (unlike the microphone, which has a
+    // per-app toggle and so reports `Unknown`). When a default render endpoint
+    // exists, capture will succeed without any prompt, so report `Granted`;
+    // report `Unsupported` only when no endpoint is present. The screen-capture
+    // permission path hardcodes `Unsupported` off macOS, so callers must use this
+    // for Windows system audio.
+    if windows_microphone::system_audio_loopback_capture_supported() {
+        CapturePermissionState::Granted
+    } else {
+        CapturePermissionState::Unsupported
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_permission_state() -> CapturePermissionState {
     CapturePermissionState::Unsupported
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn ensure_microphone_permission() -> bool {
     false
 }
+
+/// Windows WASAPI audio capture backend.
+#[cfg(target_os = "windows")]
+mod windows_microphone;
+
+#[cfg(target_os = "windows")]
+pub use windows_microphone::{
+    start_wasapi_microphone_capture_session_for_file,
+    start_wasapi_system_audio_capture_session_for_file, system_audio_loopback_capture_supported,
+    WasapiMicrophoneCaptureSession, WasapiSystemAudioCaptureSession,
+};

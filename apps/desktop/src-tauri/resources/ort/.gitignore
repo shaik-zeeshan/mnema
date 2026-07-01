@@ -1,0 +1,13 @@
+# ONNX Runtime DLL staging dir for the Windows dynamic-ORT build (#137, Slice 1).
+#
+# These are large (~16 MB) MIT-licensed binaries staged at BUILD time by
+# `scripts/prepare-ort-dylibs.mjs` (invoked from `tauri.conf.json`
+# `beforeBuildCommand`/`beforeDevCommand`) and bundled next to the exe via
+# `tauri.windows.conf.json` -> `bundle.resources`. They are version-locked to
+# `ort = =2.0.0-rc.12` (ONNX Runtime >= 1.24) and must never be committed — keep
+# them as reproducible build output so the pin can be bumped without git churn.
+#
+# Tracked: only this .gitignore, so the dir exists in a fresh clone (the bundle
+# resource path resolves) while the DLLs stay out of version control.
+*
+!.gitignore

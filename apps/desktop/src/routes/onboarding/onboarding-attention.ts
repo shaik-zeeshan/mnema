@@ -20,6 +20,11 @@ export function permissionActionFor(
 ): { label: string; mode: "request" | "settings" } | null {
   if (value === "granted" || value === "unsupported") return null;
   if (value === "denied" || value === "restricted") return { label: "Open Settings", mode: "settings" };
+  // The synthetic "unknown" is only ever emitted on Windows, where the per-app
+  // microphone privacy toggle can't be read and can only be changed in Settings.
+  // Routing through `request_capture_permission` would be a silent no-op (it just
+  // re-checks for an endpoint), so deep-link to the privacy pane instead.
+  if (value === "unknown") return { label: "Open Settings", mode: "settings" };
   return { label: "Grant access", mode: "request" };
 }
 
@@ -30,6 +35,10 @@ export function permissionLabelFor(value: PermissionValue | undefined): string {
     case "not_determined": return "Not requested";
     case "restricted": return "Restricted";
     case "unsupported": return "Unsupported";
+    // Windows can't read the per-app mic toggle, so the backend reports a
+    // best-effort "unknown". Surfacing the raw "Unknown" reads as a fault; frame
+    // it as system-controlled instead ("unknown" is Windows-only).
+    case "unknown": return "Managed by Windows";
     default: return "Unknown";
   }
 }
@@ -39,7 +48,20 @@ export function permissionToneFor(
 ): "ok" | "pending" | "blocked" {
   if (value === "granted") return "ok";
   if (value === "not_determined") return "pending";
+  // The Windows "unknown" mic state is informational, not a denial — keep it on
+  // the neutral (amber) tone rather than the red "blocked" one.
+  if (value === "unknown") return "pending";
   return "blocked";
+}
+
+// A capture source may start when its permission is granted, or when the OS
+// reports the synthetic "unknown" — the Windows-only state for the per-app
+// microphone toggle the backend cannot read. Windows enforces the real grant at
+// the device level (a blocked mic surfaces gracefully at capture time), so
+// "unknown" must not pre-emptively disable the source the way "denied" does. On
+// macOS "unknown" never occurs, so this is identical to `=== "granted"` there.
+export function permissionPermitsCapture(value: PermissionValue | undefined): boolean {
+  return value === "granted" || value === "unknown";
 }
 
 // ── Custom resolution / bitrate validation ─────────────────────────────────

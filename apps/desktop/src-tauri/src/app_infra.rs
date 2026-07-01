@@ -23,9 +23,11 @@ use futures_util::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager};
+#[cfg(any(target_os = "macos", test))]
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 #[cfg(test)]
 use time::{format_description, PrimitiveDateTime};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::watch;
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
@@ -1546,7 +1548,13 @@ impl Drop for AppInfraDirectoryLock {
 
 fn desktop_processing_registry(
     app_handle: &tauri::AppHandle,
-) -> Result<::app_infra::ProcessorRegistry, String> {
+) -> Result<
+    (
+        ::app_infra::ProcessorRegistry,
+        Arc<crate::gpu_acceleration::GpuAccelerationState>,
+    ),
+    String,
+> {
     let app_data_dir = app_handle.path().app_data_dir().map_err(|error| {
         format!("failed to resolve app data directory for processing registry: {error}")
     })?;
@@ -1555,7 +1563,18 @@ fn desktop_processing_registry(
 
     let ocr_models_dir = ocr::ocr_models_dir(&app_data_dir);
 
-    Ok(::app_infra::ProcessorRegistry::new()
+    // GPU Acceleration shared state (Windows CUDA Execution Backend, #137 / ADR
+    // 0005). Constructed HERE — where `app_data_dir` is resolved — because it needs
+    // that dir to locate the GPU pack (`gpu_acceleration_pack_dir`), exactly like
+    // `speaker_models_dir` above. A clone is handed to the subprocess provider so
+    // it can read the live Force-CPU override + pack dir at each spawn and record
+    // the job's backend outcome; the same `Arc` is threaded out and `.manage()`d in
+    // `initialize` (mirroring how `infra` is surfaced) so the Slice 5 Settings
+    // commands reach the SAME state. Default "Use GPU acceleration" ON; the NVML
+    // probe is lazy and only drives the Settings offer.
+    let gpu_state = crate::gpu_acceleration::GpuAccelerationState::new(app_data_dir.clone());
+
+    let registry = ::app_infra::ProcessorRegistry::new()
         .register(::app_infra::OcrProcessorBackend::from_provider_arcs([
             Arc::new(::app_infra::AppleVisionProvider::new()) as Arc<dyn ocr::OcrProvider>,
             Arc::new(::app_infra::TesseractProvider::with_models_dir(
@@ -1583,13 +1602,16 @@ fn desktop_processing_registry(
             // removed. Legacy `sherpa_onnx` job payloads are remapped to speakrs
             // at the normalize/dispatch seam, so only this provider is registered.
             Arc::new(
-                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider(
+                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider_and_gpu(
                     speaker_analysis::SPEAKRS_PROVIDER_ID,
                     speaker_models_dir,
+                    gpu_state.clone(),
                 ),
             ) as Arc<dyn speaker_analysis::SpeakerAnalysisProvider>,
         ]))
-        .register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
+        .register(::app_infra::SystemAudioSpeechActivityProcessorBackend);
+
+    Ok((registry, gpu_state))
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
@@ -1617,7 +1639,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
             }
         })?;
 
-    let processing_registry =
+    let (processing_registry, gpu_state) =
         desktop_processing_registry(&app_handle).map_err(AppInfraInitializeError::Other)?;
     let infra = tauri::async_runtime::block_on(
         ::app_infra::AppInfra::initialize_fast_with_processing_registry(
@@ -1675,6 +1697,21 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         );
         return Err(AppInfraInitializeError::Other(
             "background workers state was already initialized".to_string(),
+        ));
+    }
+
+    // Surface the GPU Acceleration state (constructed in
+    // `desktop_processing_registry`, where `app_data_dir` is resolved) as managed
+    // Tauri state so the Slice 5 Settings commands can read/update it via
+    // `tauri::State<Arc<GpuAccelerationState>>`. The SAME `Arc` was handed to the
+    // subprocess provider, so the live toggle and the recorded last-outcome stay
+    // coherent. Mirrors how `infra` above is surfaced.
+    if !app.manage(gpu_state) {
+        crate::native_capture::debug_log::log_error(
+            "GPU acceleration state was already initialized; refusing duplicate setup",
+        );
+        return Err(AppInfraInitializeError::Other(
+            "GPU acceleration state was already initialized".to_string(),
         ));
     }
 
@@ -2132,7 +2169,7 @@ fn audio_transcription_admission_for_settings(
     }
 }
 
-fn system_audio_speech_admission_for_current_settings(
+pub(crate) fn system_audio_speech_admission_for_current_settings(
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::SystemAudioSpeechActivityAdmission {
     let settings = match app_handle
@@ -2857,6 +2894,7 @@ fn active_workspace_dirs_for_hidden_workspace_repair(
     }
 
     let mut active_workspace_dirs = BTreeSet::new();
+    #[cfg(target_os = "macos")]
     for screen_file in [
         runtime.recording_file.as_deref(),
         runtime
@@ -2892,6 +2930,7 @@ fn active_workspace_dirs_for_hidden_workspace_repair(
     active_workspace_dirs
 }
 
+#[cfg(target_os = "macos")]
 fn hidden_workspace_dir_for_screen_recording_file(screen_file: &str) -> Option<String> {
     let path = Path::new(screen_file);
     if let Some(parent) = path.parent() {
@@ -3018,7 +3057,7 @@ async fn process_pending_speaker_analysis_jobs_once(
 }
 
 fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBaseDir, String> {
-    let settings = crate::native_capture::settings::load_recording_settings_or_default(app_handle);
+    let settings = crate::native_capture::current_recording_settings_from_app_handle(app_handle);
     let base_dir = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
         &settings.save_directory,
     )
@@ -6203,7 +6242,10 @@ mod tests {
         );
         assert_eq!(
             resolved.video_path,
-            PathBuf::from("/tmp/2026/04/12/session-abc-segment-0004.mov")
+            PathBuf::from(format!(
+                "/tmp/2026/04/12/session-abc-segment-0004.{}",
+                capture_runtime::screen_segment_extension()
+            ))
         );
     }
 
@@ -6759,6 +6801,65 @@ mod tests {
         });
     }
 
+    // Windows exact previews come back as JPEG (ADR 0024 / issue #81). This
+    // proves the video-fallback path carries whatever MIME the extractor reports
+    // (here `image/jpeg`) all the way to the DTO and persists with the matching
+    // extension — consumers read the MIME rather than assuming WebP/PNG. The
+    // extractor hook stands in for the real MF seam (no capture hardware in CI);
+    // the seam's own RGBA->JPEG encoding is covered by `media-decode` unit tests.
+    #[test]
+    fn get_frame_preview_inner_flows_jpeg_mime_from_video_fallback() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-preview-jpeg-mime");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let cache = FramePreviewCacheState::default();
+            let segment_dir = dir.path().join("2026/04/12");
+            let workspace_dir = segment_dir.join(".session-preview-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("frames directory should be created");
+
+            // Windows visible segments are `.mp4`; write a fixture with a `moov`
+            // atom so the openability probe passes and the video path is taken.
+            let target_frame_path = frames_dir.join("frame-1744459201500-1.png");
+            let video_path = segment_dir.join("session-preview-segment-0001.mp4");
+            fs::write(&video_path, b"\0\0\0\x14ftypmp42\0\0\0\0mp42 moov mdat")
+                .expect("visible segment video should be written");
+
+            let target_frame = infra
+                .insert_frame(&::app_infra::NewFrame::new(
+                    "session-preview",
+                    target_frame_path.to_string_lossy().to_string(),
+                    "2025-04-12T10:00:01.500Z",
+                ))
+                .await
+                .expect("target frame should be inserted");
+
+            let _extractor_guard = TestVideoPreviewExtractorGuard::install(Arc::new(
+                |_path, _offset_seconds| Ok((b"jpeg-preview-bytes".to_vec(), "image/jpeg")),
+            ));
+
+            let preview = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                target_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect("preview should load")
+            .expect("preview should exist");
+
+            assert_eq!(preview.mime_type, "image/jpeg");
+            assert_eq!(preview.source_kind, FramePreviewSourceKindDto::VideoFallback);
+            // The persisted file uses the JPEG extension derived from the MIME,
+            // proving nothing downstream hard-codes WebP/PNG for the fallback.
+            assert!(preview.file_path.ends_with(".jpg"));
+            assert!(Path::new(&preview.file_path).is_file());
+        });
+    }
+
     #[test]
     fn frame_preview_cache_returns_entries_within_ttl() {
         let dir = TestDir::new("frame-preview-cache-hit");
@@ -6927,7 +7028,7 @@ mod tests {
     }
 
     #[test]
-    fn mov_file_appears_openable_for_preview_requires_moov_atom() {
+    fn segment_video_appears_openable_for_preview_requires_moov_atom() {
         let dir = TestDir::new("frame-preview-moov-check");
         let missing_moov_path = dir.path().join("missing-moov.mov");
         let with_moov_path = dir.path().join("with-moov.mov");
@@ -6937,9 +7038,9 @@ mod tests {
         fs::write(&with_moov_path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  moov")
             .expect("mov fixture with moov should be written");
 
-        assert!(!mov_file_appears_openable_for_preview(&missing_moov_path)
+        assert!(!segment_video_appears_openable_for_preview(&missing_moov_path)
             .expect("missing-moov fixture should read"));
-        assert!(mov_file_appears_openable_for_preview(&with_moov_path)
+        assert!(segment_video_appears_openable_for_preview(&with_moov_path)
             .expect("with-moov fixture should read"));
     }
 

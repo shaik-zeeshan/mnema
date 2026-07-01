@@ -29,7 +29,7 @@ For a Windows 11 bring-up:
 | `recording-settings.json` under Tauri `app_config_dir()` | `apps/desktop/src-tauri/src/native_capture_settings.rs` | Good. Tauri resolves app config to `config_dir / bundle_identifier`; on Windows `config_dir` is Roaming AppData. |
 | `keyboard-bindings.json`, `one-time-prompts.json`, `app-update-settings.json`, CLI grants/audit under app config | `keyboard_bindings.rs`, `one_time_prompts.rs`, `app_updates.rs`, `crates/app-infra/src/brokered_access.rs` | Good for small user settings/policy files. CLI uses `dirs::config_dir()`, which also maps to Roaming AppData on Windows. |
 | Default `saveDirectory` from `HOME/.mnema` | `native_capture_settings.rs` | Not Windows-safe. `HOME` may be unset in a Windows desktop process, causing relative `.mnema`. Use `dirs::data_local_dir()` or Tauri `app_local_data_dir()` for Windows defaults. |
-| SQLite / SQLCipher DB under `<saveDirectory>/db/app.sqlite3` | `crates/app-infra/src/db.rs` | Works conceptually. Keep DB in the active capture library, but keep the encryption key outside `saveDirectory`. Verify bundled SQLCipher builds on `windows-latest` MSVC; a local Windows check currently fails unless OpenSSL is configured (`OPENSSL_DIR` or an equivalent `libsqlite3-sys`/OpenSSL setup). |
+| SQLite / SQLCipher DB under `<saveDirectory>/db/app.sqlite3` | `crates/app-infra/src/db.rs` | Works conceptually. Keep DB in the active capture library, but keep the encryption key outside `saveDirectory`. Resolved: on Windows, `app-infra` enables `libsqlite3-sys`'s `bundled-sqlcipher-vendored-openssl` (target-gated), so OpenSSL is built from source via `openssl-src` and linked statically — no `OPENSSL_DIR` / system OpenSSL. macOS/Linux keep the system-linked `bundled-sqlcipher`. The `windows-latest` CI job builds the real `mnema-cli` sidecar to verify the link. |
 | Recordings under `<saveDirectory>/recordings/YYYY/MM/DD/` | capture lifecycle / app infra | Works conceptually. Keep default path shallow to avoid Windows `MAX_PATH` surprises; test user-selected OneDrive/network locations separately. |
 | Model downloads under `app_data_dir()` | `audio_transcription_models.rs`, `ocr_models.rs`, `speaker_analysis_models.rs`, `native_capture.rs` | On Windows, Tauri `app_data_dir()` maps to Roaming AppData. Large models should move to `app_local_data_dir()` for Windows so they do not roam. |
 | App icon and preview caches under `BaseDirectory::AppCache` | `native_capture.rs`, `app_infra/frame_preview.rs` | Good. Cache is disposable and should remain under LocalAppData/cache roots. |
@@ -53,7 +53,7 @@ For a Windows 11 bring-up:
 | Current use | Source | Windows 11 status / action |
 | --- | --- | --- |
 | Tauri bundling with `targets: "all"`, `createUpdaterArtifacts: true`, `externalBin: ["binaries/mnema-cli"]` | `apps/desktop/src-tauri/tauri.conf.json` | Add Windows-specific bundle config. Prefer NSIS-only initially or set Tauri Action to prefer NSIS if MSI and NSIS are both built. |
-| CLI sidecar target suffix script supports `.exe` | `scripts/prepare-mnema-cli-sidecar.sh` | Good shape. Run it on `windows-latest` under Git Bash/PowerShell before relying on it. |
+| CLI sidecar target suffix script supports `.exe` | `scripts/prepare-mnema-cli-sidecar.mjs` | Cross-platform (`bun`/Node); appends `.exe` for Windows target triples and runs natively on `windows-latest`. |
 | macOS-only release workflows and docs | `.github/workflows/macos-release*.yml`, `docs/release-process.md` | Add Windows release workflow/docs. Decide whether one multi-platform release workflow owns `latest.json` or whether a post-build step merges platform manifests. |
 | App update feed stable/preview | `app_updates.rs`, `docs/release-process.md` | Tauri updater supports Windows. Static `latest.json` must include `windows-x86_64` target entries with URL and signature. |
 | Incompatible update copy says “Mac” | `apps/desktop/src-tauri/src/app_updates.rs` | Change to platform-neutral copy before Windows release. |
@@ -147,7 +147,7 @@ Windows-specific follow-ups:
 Tauri sidecar packaging is mostly ready:
 
 - `externalBin: ["binaries/mnema-cli"]` expects `mnema-cli-x86_64-pc-windows-msvc.exe` for Windows x64.
-- `scripts/prepare-mnema-cli-sidecar.sh` already appends `.exe` for Windows target triples.
+- `scripts/prepare-mnema-cli-sidecar.mjs` already appends `.exe` for Windows target triples.
 - `bundled_mnema_cli_path_in_dir` already searches plain and target-triple `.exe` sidecar names.
 
 Open Windows install-path decision:
@@ -198,7 +198,7 @@ Windows workflow checklist:
 2. `bun run check`.
 3. Install Rust stable and ensure MSVC build tools are available on `windows-latest`.
 4. Build/prepare `mnema-cli-x86_64-pc-windows-msvc.exe` sidecar.
-5. Install/configure native prerequisites before the Rust check: OpenSSL for SQLCipher (`OPENSSL_DIR` or equivalent), LLVM/libclang for bindgen (`LIBCLANG_PATH`), CMake/C++ tools for native crates, and Bun for frontend/Tauri commands.
+5. Install/configure native prerequisites before the Rust check: OpenSSL for SQLCipher is handled in-tree by `bundled-sqlcipher-vendored-openssl` (needs only Perl + NASM + MSVC, all preinstalled on `windows-latest`); LLVM/libclang for bindgen (`LIBCLANG_PATH`), CMake/C++ tools for native crates, and Bun for frontend/Tauri commands.
 6. `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked` on Windows.
 7. `bun run tauri -- build --target x86_64-pc-windows-msvc` or Tauri Action equivalent.
 8. Sign Windows executable/installer with Authenticode.

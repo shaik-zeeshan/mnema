@@ -3,10 +3,11 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "macos")]
+use crate::{TranscriptionMetadata, TranscriptionSegment, TranscriptionWord};
 use crate::{
-    TranscriptionError, TranscriptionMetadata, TranscriptionOutput, TranscriptionProvider,
-    TranscriptionRequest, TranscriptionResult, TranscriptionSegment, TranscriptionWord,
-    APPLE_SPEECH_ON_DEVICE_PROVIDER_ID,
+    TranscriptionError, TranscriptionOutput, TranscriptionProvider, TranscriptionRequest,
+    TranscriptionResult, APPLE_SPEECH_ON_DEVICE_PROVIDER_ID,
 };
 
 #[cfg(target_os = "macos")]

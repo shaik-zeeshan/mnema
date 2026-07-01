@@ -113,7 +113,7 @@ jobs:
         run: ./scripts/generate-third-party-licenses.sh
 
       - name: Prepare Mnema CLI sidecar for Tauri check
-        run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked
+        run: bun scripts/prepare-mnema-cli-sidecar.mjs debug --locked
 
       - name: Check Tauri Rust app
         run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
