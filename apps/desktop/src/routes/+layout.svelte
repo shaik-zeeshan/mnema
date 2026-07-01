@@ -341,11 +341,6 @@
   const captureLoadingSettings = $derived(captureControls.loadingSettings);
   const captureStatusLabel = $derived(captureControls.statusLabel);
   const captureStatusModifier = $derived(captureControls.statusModifier);
-  // The shared seam captures every lifecycle failure (start/stop/pause/resume
-  // and source-toggle persistence) here; without surfacing it the Record button
-  // just snaps back with no explanation. Clears on the next successful session
-  // apply (capture-controls.svelte.ts) so the chip is self-healing.
-  const captureError = $derived(captureControls.error);
 
   // ── Pause / resume control ──────────────────────────────────────────────
   // Pause is a *whole-session* control and must stay available even while an
@@ -612,8 +607,8 @@
     if (captureLoadingStart || captureLoadingStop || restartingPrivacyCapture || !isCapturing) return;
     restartingPrivacyCapture = true;
     try {
-      // stop/start funnel any failure into `captureControls.error`, which the
-      // title-bar error chip renders — so a failed restart is now visible.
+      // stop/start funnel any failure into the shared capture-error dialog
+      // (capture-controls.svelte.ts) — so a failed restart is now visible.
       await stopCapture();
       if (!captureControls.isRunning) {
         await startCapture();
@@ -951,32 +946,6 @@
           <span class="titlebar__status-dot" aria-hidden="true"></span>
           <span class="titlebar__status-label">{captureStatusLabel}</span>
         </span>
-        {#if captureError}
-          <span
-            class="titlebar__capture-error"
-            role="alert"
-            aria-live="assertive"
-            use:tip={captureError}
-          >
-            <svg
-              class="titlebar__capture-error-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 9v4" />
-              <path d="M12 17h.01" />
-              <path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z" />
-            </svg>
-            <span class="titlebar__capture-error-label">{captureError}</span>
-          </span>
-        {/if}
         {#if isCapturing}
           <button
             type="button"
@@ -2639,35 +2608,6 @@
     outline: none;
     border-color: var(--app-accent);
     box-shadow: var(--app-ring);
-  }
-
-  /* Inline lifecycle-failure chip shown beside the status pill when a
-     start/stop/pause/resume or source-toggle command rejects. Mirrors the
-     danger treatment of the privacy warning; self-clears on the next
-     successful session apply. */
-  .titlebar__capture-error {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: min(360px, 30vw);
-    height: 22px;
-    padding: 3px 8px;
-    border-radius: 4px;
-    border: 1px solid var(--app-danger-border);
-    background: var(--app-danger-bg-soft);
-    color: var(--app-danger-text);
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-  }
-  .titlebar__capture-error-icon {
-    flex: 0 0 auto;
-  }
-  .titlebar__capture-error-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .titlebar__privacy-warning {

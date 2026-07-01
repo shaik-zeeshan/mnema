@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { message } from "@tauri-apps/plugin-dialog";
 import { captureSession, setSession } from "$lib/session.svelte";
 import { humanizeError } from "$lib/format-error";
 import type {
@@ -20,7 +21,6 @@ const _state = $state<{
   loadingPause: boolean;
   loadingSettings: boolean;
   bootstrapped: boolean;
-  error: string | null;
   sessionGeneration: number;
   runtimeSources: RuntimeSourcesStatus | null;
 }>({
@@ -30,7 +30,6 @@ const _state = $state<{
   loadingPause: false,
   loadingSettings: false,
   bootstrapped: false,
-  error: null,
   sessionGeneration: 0,
   runtimeSources: null,
 });
@@ -39,8 +38,11 @@ const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
 const NATIVE_CAPTURE_SESSION_CHANGED_EVENT = "native_capture_session_changed";
 let _settingsSyncInitialized = false;
 
-function serializeError(err: unknown): string {
-  return humanizeError(err);
+// Lifecycle failures (start/stop/pause/resume, source-toggle, bootstrap) are
+// surfaced through the project's native dialog so the user gets an explicit
+// alert instead of a silent snap-back. Fire-and-forget; callers don't await.
+function reportCaptureError(err: unknown): void {
+  void message(humanizeError(err), { title: "Recording error", kind: "error" });
 }
 
 export const captureControls = {
@@ -61,9 +63,6 @@ export const captureControls = {
   },
   get bootstrapped(): boolean {
     return _state.bootstrapped;
-  },
-  get error(): string | null {
-    return _state.error;
   },
   get sessionGeneration(): number {
     return _state.sessionGeneration;
@@ -143,9 +142,8 @@ export async function bootstrapCaptureControls(): Promise<void> {
       setSession(perm.session);
     }
     _state.recordingSettings = settings;
-    _state.error = null;
   } catch (err) {
-    _state.error = serializeError(err);
+    reportCaptureError(err);
   } finally {
     _state.loadingSettings = false;
     _state.bootstrapped = true;
@@ -158,7 +156,6 @@ function initRecordingSettingsSync(): void {
 
   void listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
     _state.recordingSettings = event.payload;
-    _state.error = null;
   });
 
   void listen<CaptureSession>(NATIVE_CAPTURE_SESSION_CHANGED_EVENT, (event) => {
@@ -175,7 +172,6 @@ function applyCaptureSession(session: CaptureSession): void {
   _state.loadingStart = false;
   _state.loadingStop = false;
   _state.loadingPause = false;
-  _state.error = null;
   if (session.isRunning) {
     void refreshRuntimeSources();
   } else {
@@ -192,12 +188,11 @@ export async function pauseCapture(): Promise<void> {
     captureControls.isUserPaused
   ) return;
   _state.loadingPause = true;
-  _state.error = null;
   try {
     const result = await invoke<{ session: CaptureSession }>("pause_native_capture");
     applyCaptureSession(result.session);
   } catch (err) {
-    _state.error = serializeError(err);
+    reportCaptureError(err);
   } finally {
     _state.loadingPause = false;
   }
@@ -212,12 +207,11 @@ export async function resumeCapture(): Promise<void> {
     !captureControls.isUserPaused
   ) return;
   _state.loadingPause = true;
-  _state.error = null;
   try {
     const result = await invoke<{ session: CaptureSession }>("resume_native_capture");
     applyCaptureSession(result.session);
   } catch (err) {
-    _state.error = serializeError(err);
+    reportCaptureError(err);
   } finally {
     _state.loadingPause = false;
   }
@@ -226,7 +220,6 @@ export async function resumeCapture(): Promise<void> {
 export async function startCapture(): Promise<void> {
   if (_state.loadingStart || captureControls.isRunning) return;
   _state.loadingStart = true;
-  _state.error = null;
   try {
     const result = await invoke<{ session: CaptureSession }>(
       "start_native_capture",
@@ -240,7 +233,7 @@ export async function startCapture(): Promise<void> {
     );
     applyCaptureSession(result.session);
   } catch (err) {
-    _state.error = serializeError(err);
+    reportCaptureError(err);
   } finally {
     _state.loadingStart = false;
   }
@@ -249,12 +242,11 @@ export async function startCapture(): Promise<void> {
 export async function stopCapture(): Promise<void> {
   if (_state.loadingStop || !captureControls.isRunning) return;
   _state.loadingStop = true;
-  _state.error = null;
   try {
     const result = await invoke<{ session: CaptureSession }>("stop_native_capture");
     applyCaptureSession(result.session);
   } catch (err) {
-    _state.error = serializeError(err);
+    reportCaptureError(err);
   } finally {
     _state.loadingStop = false;
   }
@@ -395,9 +387,8 @@ export async function setSourceSelected(
       request: overrides,
     });
     _state.recordingSettings = updated.settings;
-    _state.error = null;
   } catch (err) {
-    _state.error = serializeError(err);
+    reportCaptureError(err);
   } finally {
     _selectionState.saving[key] = false;
   }
