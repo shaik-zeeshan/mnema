@@ -1586,7 +1586,7 @@ async fn broker_frame_timeline(
     );
     query.push_bind(limit as i64);
 
-    let rows = query.build().fetch_all(infra.pool()).await?;
+    let rows = query.build().fetch_all(infra.read_pool()).await?;
 
     // Read-time URL guard: load the representative (landing) frames' metadata
     // snapshots in a SINGLE batched query (keyed by frame id), NOT one sequential
@@ -1741,150 +1741,14 @@ async fn broker_recall_context(
     }))
 }
 
-/// Trivial stopwords dropped from the question before token-overlap scoring.
-const RECALL_STOPWORDS: &[&str] = &[
-    "the", "and", "for", "are", "was", "were", "that", "this", "with", "what", "when", "where",
-    "who", "why", "how", "did", "does", "have", "has", "had", "you", "your", "they", "them",
-    "from", "about", "into", "over", "been", "being", "she", "her", "his", "him", "their", "our",
-    "can", "could", "would", "should", "will", "shall", "may", "might", "any", "all", "some",
-];
-
-/// Lowercase, tokenize the query into words (length >= 3, punctuation stripped),
-/// dropping trivial stopwords, then **stem** each survivor ([`recall_stem`]) so
-/// the matcher is morphology-insensitive ("running" ~ "run"). Empty when the
-/// query has no usable tokens. Tokens are de-duplicated so a repeated query word
-/// cannot inflate the overlap score.
-fn recall_query_tokens(query: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::new();
-    for word in query.split(|ch: char| !ch.is_alphanumeric()) {
-        let word = word.to_lowercase();
-        if word.len() < 3 || RECALL_STOPWORDS.contains(&word.as_str()) {
-            continue;
-        }
-        let stemmed = recall_stem(&word);
-        if !tokens.contains(&stemmed) {
-            tokens.push(stemmed);
-        }
-    }
-    tokens
-}
-
-/// Cheap, hand-rolled English suffix stripper (#3) — NOT a real stemmer, just a
-/// lexical-gap reducer applied identically to query tokens and corpus words so
-/// "running"~"run", "coding"~"code", "tests"~"test", "quickly"~"quick" collapse
-/// to a shared key. It does NOT try to produce a real dictionary stem; it only
-/// has to be *consistent*, so a query word and the corpus word it should match
-/// land on the same key.
-///
-/// Three passes: (1) strip one common suffix (`-ing`, `-edly`, `-ied`, `-ed`,
-/// `-ly`, `-ies`, `-es`, `-s`); (2) collapse a doubled final consonant
-/// ("runn" -> "run", "stopp" -> "stop") so the `-ing`/`-ed` doubling rule is
-/// undone; (3) drop a single silent terminal `e` from whatever remains so the
-/// un-suffixed form lines up with the suffixed one ("code" -> "cod" matches
-/// "coding" -> "cod"). Guards against over-stemming: a suffix is only stripped
-/// when a reasonable stem (>= 3 chars) remains, so short words like
-/// "is"/"red"/"bus"/"ring" are left intact. No allocation when nothing changes.
-fn recall_stem(word: &str) -> String {
-    // Each rule: (suffix, min length of the FULL word to apply). Longer suffixes
-    // first so `-ing` wins over `-s`. The min-length guards keep very short words
-    // from being gutted.
-    const RULES: &[(&str, usize)] = &[
-        ("ing", 6),
-        ("edly", 7),
-        ("ied", 5),
-        ("ed", 5),
-        ("ly", 5),
-        ("ies", 5),
-        ("es", 5),
-        ("s", 4),
-    ];
-
-    // Pass 1: strip the first matching suffix (if a >= 3-char stem survives).
-    let mut stem = word;
-    for (suffix, min_len) in RULES {
-        if word.len() >= *min_len && word.ends_with(suffix) {
-            let candidate = &word[..word.len() - suffix.len()];
-            if candidate.len() >= 3 {
-                stem = candidate;
-                break;
-            }
-        }
-    }
-
-    let bytes = stem.as_bytes();
-    let mut end = bytes.len();
-
-    // Pass 2: collapse a doubled final consonant ("runn" -> "run").
-    if end >= 2 {
-        let last = bytes[end - 1];
-        let prev = bytes[end - 2];
-        let is_consonant = last.is_ascii_alphabetic() && !b"aeiou".contains(&last);
-        if last == prev && is_consonant && end - 1 >= 3 {
-            end -= 1;
-        }
-    }
-
-    // Pass 3: drop a single silent terminal `e` ("code" -> "cod") so the
-    // un-suffixed form matches the suffixed one. Keep >= 3 chars.
-    if end >= 4 && bytes[end - 1] == b'e' {
-        end -= 1;
-    }
-
-    stem[..end].to_string()
-}
-
-/// Split `text` into lowercased, stemmed whole-word keys (length >= 3), the same
-/// normalization [`recall_query_tokens`] applies to the query so the two sides
-/// compare like-for-like. Used to build per-document word sets for whole-word
-/// (#1) matching and IDF (#2) document-frequency.
-fn recall_doc_words(text: &str) -> std::collections::HashSet<String> {
-    text.split(|ch: char| !ch.is_alphanumeric())
-        .filter(|word| word.len() >= 3)
-        .map(|word| recall_stem(&word.to_lowercase()))
-        .collect()
-}
-
-/// IDF-style weight for a token matching `df` of `n` candidate documents: rarer
-/// tokens (low `df`) outweigh common ones. `ln((N+1)/(df+1)) + 1`, always
-/// positive so any match still counts. (#2)
-fn recall_idf_weight(n: usize, df: usize) -> f64 {
-    (((n as f64 + 1.0) / (df as f64 + 1.0)).ln()) + 1.0
-}
-
-/// Build a token -> document-frequency map over the candidate `docs` (each a
-/// pre-split whole-word set), counting only tokens that are actual query tokens.
-/// (#2)
-fn recall_document_frequencies(
-    tokens: &[String],
-    docs: &[std::collections::HashSet<String>],
-) -> std::collections::HashMap<String, usize> {
-    let mut df: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for token in tokens {
-        let count = docs.iter().filter(|words| words.contains(token)).count();
-        df.insert(token.clone(), count);
-    }
-    df
-}
-
-/// Whole-word (#1), rare-token-weighted (#2) relevance score of `tokens` against
-/// a document's pre-split whole-word set `doc_words`: sums the IDF weight of each
-/// query token present as a full (stemmed) word. Substring hits no longer count —
-/// "cat" matches "cat" but not "category". Returns `0.0` when nothing matches.
-fn recall_overlap_score(
-    tokens: &[String],
-    doc_words: &std::collections::HashSet<String>,
-    df: &std::collections::HashMap<String, usize>,
-    n: usize,
-) -> f64 {
-    if tokens.is_empty() {
-        return 0.0;
-    }
-    tokens
-        .iter()
-        .filter(|token| doc_words.contains(*token))
-        .map(|token| recall_idf_weight(n, df.get(token).copied().unwrap_or(0)))
-        .sum()
-}
+// Lexical relevance primitives now live in `crate::lexical` (shared with the
+// User Context distillation candidate selector). Imported under their historical
+// `recall_*` names so the call sites + tests below read unchanged; the test-only
+// `stem` / `idf_weight` aliases are imported in the `tests` module.
+use crate::lexical::{
+    doc_words as recall_doc_words, document_frequencies as recall_document_frequencies,
+    overlap_score as recall_overlap_score, query_tokens as recall_query_tokens,
+};
 
 /// Convert a snake_case-serde enum value to its wire string (e.g. `Creating` ->
 /// `"creating"`), so recalled activities carry the same category/focus labels the
@@ -2360,6 +2224,9 @@ fn broker_search_result_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only lexical primitives (the non-test code references the other aliases
+    // at module scope); kept under their historical `recall_*` names.
+    use crate::lexical::{idf_weight as recall_idf_weight, stem as recall_stem};
     use crate::{
         AppInfra, NewAudioSegment, NewFrame, ProcessingJobDraft, ProcessingResultDraft,
         SearchCaptureRefinements, SearchCaptureResponse, SearchDateRangeOrigin,

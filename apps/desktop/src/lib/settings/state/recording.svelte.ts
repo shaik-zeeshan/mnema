@@ -18,6 +18,7 @@
 // slice-2 stores.
 
 import { invoke } from "@tauri-apps/api/core";
+import { humanizeError } from "$lib/format-error";
 import type {
   RecordingSettings,
   RecordingSettingsDomainUpdateResponse,
@@ -585,7 +586,7 @@ export class RecordingStore {
       this.recordingSettingsLoaded = true;
       this.#deps.onRecordingSettingsLoaded?.();
     } catch (err) {
-      this.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      this.recError = humanizeError(err);
     } finally {
       this.loadingRecSettings = false;
     }

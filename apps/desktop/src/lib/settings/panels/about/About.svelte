@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import {
     ABOUT_REPO_URL,
@@ -15,6 +17,9 @@
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconClear from "~icons/lucide/x";
+  import IconArrowUpRight from "~icons/lucide/arrow-up-right";
   import type { AppUpdateChannel, AppUpdateStatus } from "$lib/types";
 
   const c = getSettingsController();
@@ -66,45 +71,47 @@
 </script>
 
 <SettingGroup id="settings-section-about" title="About" hint="Version, build details, and the projects Mnema is built on.">
-  <SettingRow label="Mnema" description="Your memory, on rewind. Mnema records your screen so you can scrub back to anything you've seen: searchable, local, and yours." full>
-    {#snippet control()}
-      <div class="about-identity">
-        <div class="about-id__mark">
-          {#if appUpdateStatus?.app.version}
-            <span class="about-id__version">v{appUpdateStatus.app.version}</span>
-          {:else}
-            <span class="about-id__version about-id__version--pending">checking…</span>
-          {/if}
-          <span class="badge badge--neutral badge--sm about-id__channel">
-            {updateChannelLabel(appUpdateStatus?.channel)} channel
-          </span>
-        </div>
-        <dl class="about-meta">
-          <div class="about-meta__row">
-            <dt>Platform</dt>
-            <dd>{platformLabel(appUpdateStatus)}</dd>
-          </div>
-          <div class="about-meta__row">
-            <dt>Identifier</dt>
-            <dd>{appUpdateStatus?.app.identifier ?? "Unknown"}</dd>
-          </div>
-          <div class="about-meta__row">
-            <dt>License</dt>
-            <dd>MIT</dd>
-          </div>
-        </dl>
+  <!-- Identity hero: the product name leads as the visual anchor of the panel
+       (a dedicated block, not a plain action-row label rendered at 13px/550). -->
+  <div class="about-hero">
+    <div class="about-hero__head">
+      <span class="about-hero__name">Mnema</span>
+      <div class="about-id__mark">
+        {#if appUpdateStatus?.app.version}
+          <span class="about-id__version">v{appUpdateStatus.app.version}</span>
+        {:else}
+          <span class="about-id__version about-id__version--pending">checking…</span>
+        {/if}
+        <span class="badge badge--neutral badge--sm about-id__channel">
+          {updateChannelLabel(appUpdateStatus?.channel)} channel
+        </span>
       </div>
-    {/snippet}
-  </SettingRow>
+    </div>
+    <p class="about-hero__tagline">Your memory, on rewind. Mnema records your screen so you can scrub back to anything you've seen: searchable, local, and yours.</p>
+    <dl class="about-meta">
+      <div class="about-meta__row">
+        <dt>Platform</dt>
+        <dd>{platformLabel(appUpdateStatus)}</dd>
+      </div>
+      <div class="about-meta__row">
+        <dt>Identifier</dt>
+        <dd>{appUpdateStatus?.app.identifier ?? "Unknown"}</dd>
+      </div>
+      <div class="about-meta__row">
+        <dt>License</dt>
+        <dd>MIT</dd>
+      </div>
+    </dl>
+  </div>
 
   <SettingRow label="Links" description="Browse the source or read what changed in each release.">
     {#snippet control()}
       <div class="about-links">
         <button type="button" class="about-link" onclick={() => openExternalUrl(ABOUT_REPO_URL)}>
-          Source<span class="about-link__arrow" aria-hidden="true">↗</span>
+          Source<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
         </button>
         <button type="button" class="about-link" onclick={() => openExternalUrl(ABOUT_RELEASES_URL)}>
-          Release notes<span class="about-link__arrow" aria-hidden="true">↗</span>
+          Release notes<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
         </button>
       </div>
     {/snippet}
@@ -118,7 +125,7 @@
         onclick={copyAboutDetails}
         aria-label="Copy version and build details to the clipboard"
       >
-        {aboutDetailsCopied ? "Copied" : "Copy details"}
+        <span class="copy-status" aria-live="polite">{aboutDetailsCopied ? "Copied" : "Copy details"}</span>
       </button>
     {/snippet}
   </SettingRow>
@@ -166,8 +173,8 @@
       <div class="about-update">
         <div class="about-update__head">
           <span class="badge badge--neutral badge--sm">{appUpdateStateLabel(appUpdateStatus)}</span>
-          <button class="btn btn--primary btn--sm" onclick={checkForAppUpdate} disabled={checkDisabled}>
-            {checkingAppUpdate || appUpdateStatus?.state === "checking" ? "Checking" : "Check for Updates"}
+          <button type="button" class="btn btn--primary btn--sm" onclick={checkForAppUpdate} disabled={checkDisabled} aria-busy={checkingAppUpdate || appUpdateStatus?.state === "checking"}>
+            {#if checkingAppUpdate || appUpdateStatus?.state === "checking"}<ButtonSpinner />Checking{:else}Check for Updates{/if}
           </button>
         </div>
 
@@ -207,12 +214,12 @@
 
         <div class="row-actions">
           {#if appUpdateStatus?.state === "restartRequired"}
-            <button class="btn btn--primary" type="button" onclick={restartAfterAppUpdate} disabled={!canRestartAfterUpdate(appUpdateStatus)}>
-              {restartingAfterUpdate ? "Restarting" : "Restart to Update"}
+            <button class="btn btn--primary" type="button" onclick={restartAfterAppUpdate} disabled={!canRestartAfterUpdate(appUpdateStatus)} aria-busy={restartingAfterUpdate}>
+              {#if restartingAfterUpdate}<ButtonSpinner />Restarting{:else}Restart to Update{/if}
             </button>
           {:else}
-            <button class="btn btn--primary" type="button" onclick={installAppUpdate} disabled={!canInstallAppUpdate(appUpdateStatus)}>
-              {installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing" ? "Installing" : "Install Update"}
+            <button class="btn btn--primary" type="button" onclick={installAppUpdate} disabled={!canInstallAppUpdate(appUpdateStatus)} aria-busy={installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}>
+              {#if installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}<ButtonSpinner />Installing{:else}Install Update{/if}
             </button>
           {/if}
           {#if appUpdateStatus?.recordingActive && appUpdateStatus?.update}
@@ -222,9 +229,9 @@
 
         {#if about.appUpdateActionError}
           <div class="inline-error">
-            <span class="inline-error__icon">⚠</span>
+            <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{about.appUpdateActionError}</span>
-            <button class="btn btn--ghost btn--sm" onclick={() => about.appUpdateActionError = null}>×</button>
+            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => about.appUpdateActionError = null}><IconClear aria-hidden="true" /></button>
           </div>
         {/if}
       </div>
@@ -244,7 +251,7 @@
             disabled={!thirdPartyNotices || loadingThirdPartyNotices}
             aria-label="Copy the full third-party notices to the clipboard"
           >
-            {thirdPartyNoticesCopied ? "Copied" : "Copy notices"}
+            <span class="copy-status" aria-live="polite">{thirdPartyNoticesCopied ? "Copied" : "Copy notices"}</span>
           </button>
         </div>
 
@@ -269,9 +276,9 @@
                           type="button"
                           class="notice-item__source"
                           onclick={() => openExternalUrl(entry.sourceUrl ?? "")}
-                          title={entry.sourceUrl}
+                          use:tip={entry.sourceUrl}
                         >
-                          {entry.sourceUrl}<span class="about-link__arrow" aria-hidden="true">↗</span>
+                          {entry.sourceUrl}<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
                         </button>
                       {/if}
                     </li>
@@ -293,12 +300,50 @@
 </SettingGroup>
 
 <style>
-  /* Identity block laid into a full-width row's control slot. */
-  .about-identity {
+  /* Identity hero: a dedicated block (not a SettingRow) so the product name can
+     anchor the panel. Rows supply the card's own padding, so the hero replicates
+     it (16px 20px) and draws the same inset hairline beneath itself that a
+     following `.setting-row` would have drawn above. */
+  .about-hero {
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    width: 100%;
+    gap: 10px;
+    padding: 18px 20px;
+  }
+
+  .about-hero::after {
+    content: "";
+    position: absolute;
+    left: 20px;
+    right: 20px;
+    bottom: 0;
+    height: 1px;
+    background: var(--app-border);
+    pointer-events: none;
+  }
+
+  .about-hero__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 12px;
+  }
+
+  .about-hero__name {
+    font-size: var(--text-xl);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    line-height: 1.1;
+    color: var(--app-text-strong);
+  }
+
+  .about-hero__tagline {
+    margin: 0;
+    max-width: 52ch;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    color: var(--app-text-muted);
   }
 
   /* The check-for-updates action sits beside the state badge in the
@@ -318,4 +363,13 @@
     justify-content: space-between;
     gap: 8px;
   }
+
+  /* The copy buttons swap their label to "Copied" on success; reserve the
+     widest label's width so the button doesn't reflow narrower mid-action. */
+  .copy-status {
+    display: inline-block;
+    min-width: 6.5em;
+    text-align: center;
+  }
+
 </style>

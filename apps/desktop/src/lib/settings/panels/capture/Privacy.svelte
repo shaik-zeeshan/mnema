@@ -5,12 +5,14 @@
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
   const appPrivacyExclusion = c.appPrivacyExclusion;
 
   const setBrowserUrlMode = (m: string) => c.setBrowserUrlMode(m);
+
 </script>
 
 <SettingGroup id="settings-section-privacy" title="Privacy">
@@ -62,8 +64,8 @@
               <p>Lets Mnema capture the page address for Firefox and Zen. Enable Mnema under Privacy &amp; Security → Accessibility.</p>
             </div>
             {#if !gecko.trusted}
-              <button class="btn btn--ghost" onclick={() => gecko.request()} disabled={gecko.requesting}>
-                {gecko.requesting ? "Requesting" : "Grant access"}
+              <button type="button" class="btn btn--ghost" onclick={() => gecko.request()} disabled={gecko.requesting} aria-busy={gecko.requesting}>
+                {#if gecko.requesting}<ButtonSpinner />Requesting…{:else}Grant access{/if}
               </button>
             {/if}
           </div>
@@ -72,8 +74,8 @@
               <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.openSettings()}>
                 Open System Settings
               </button>
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.recheck()} disabled={gecko.rechecking}>
-                {gecko.rechecking ? "Checking" : "Recheck"}
+              <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.recheck()} disabled={gecko.rechecking} aria-busy={gecko.rechecking}>
+                {#if gecko.rechecking}<ButtonSpinner />Checking…{:else}Recheck{/if}
               </button>
             </div>
           {/if}

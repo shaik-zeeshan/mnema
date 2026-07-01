@@ -18,9 +18,7 @@ import type {
   AudioTranscriptionMemoryMode,
   AudioTranscriptionModelDownloadProgress,
   AudioTranscriptionProvider,
-  BrowserUrlAccessibilityStatus,
   ExcludedAppEntry,
-  GetPermissionsResponse,
   MicrophoneVadAdapter,
   OcrModelDownloadProgress,
   OcrProvider,
@@ -46,6 +44,7 @@ import {
   OS_MANAGED_OPTION_VALUE,
 } from "./onboarding-models.svelte";
 import { createOnboardingAiStore } from "./onboarding-ai.svelte";
+import { createOnboardingPermissionsStore } from "./onboarding-permissions.svelte";
 import {
   DEFAULT_SPEAKER_MODEL_ID,
   DEFAULT_SPEAKER_PROVIDER,
@@ -54,7 +53,6 @@ import {
   defaultTranscriptionModelIdForProvider,
   isSelectableOcrProvider,
   parsePositiveInteger,
-  serializeError,
 } from "./onboarding-mapping";
 import {
   buildSettingsRequestFrom,
@@ -66,9 +64,6 @@ import { startOnboardingListeners } from "./onboarding-listeners";
 import {
   customBitrateErrors as buildCustomBitrateErrors,
   customResolutionErrors as buildCustomResolutionErrors,
-  permissionActionFor,
-  permissionLabelFor,
-  permissionToneFor,
 } from "./onboarding-attention";
 import type { PermissionKey, PermissionValue } from "./onboarding-attention";
 import {
@@ -161,24 +156,38 @@ export class OnboardingController {
   // Optional feature — starts OFF; the user opts in via its accordion toggle.
   privacyEnabled = $state(false);
 
-  // ── Backing settings + permissions ───────────────────────────────────────
+  // ── Backing settings ──────────────────────────────────────────────────────
   settings = $state<RecordingSettings | null>(null);
-  permissions = $state<Record<PermissionKey, PermissionValue> | null>(null);
-  requestingPerm = $state<PermissionKey | null>(null);
-  refreshingPerms = $state(false);
 
-  // ── Optional Gecko (Firefox/Zen) browser-URL access ───────────────────────
-  // Surfaced via the macOS Accessibility API. Shown only when a Gecko browser is
-  // installed; the status is non-fatal (a null probe simply hides the row) and
-  // never gates onboarding progression.
-  geckoUrlAccess = $state<BrowserUrlAccessibilityStatus | null>(null);
-  requestingGeckoAccess = $state(false);
-  recheckingGeckoAccess = $state(false);
-  geckoInstalled = $derived((this.geckoUrlAccess?.geckoBrowsers ?? []).some((b) => b.installed));
-  geckoTrusted = $derived(this.geckoUrlAccess?.trusted ?? false);
-  geckoInstalledNames = $derived(
-    (this.geckoUrlAccess?.geckoBrowsers ?? []).filter((b) => b.installed).map((b) => b.displayName),
-  );
+  // Permissions + optional Gecko (Firefox/Zen) browser-URL access — split into
+  // OnboardingPermissionsStore to keep this file under the 800-line cap; members
+  // re-exposed flat below so body components stay verbatim.
+  private readonly permsStore = createOnboardingPermissionsStore({
+    setError: (message) => {
+      this.errorMessage = message;
+    },
+  });
+
+  get permissions() { return this.permsStore.permissions; }
+  set permissions(value: Record<PermissionKey, PermissionValue> | null) { this.permsStore.permissions = value; }
+  get requestingPerm() { return this.permsStore.requestingPerm; }
+  get refreshingPerms() { return this.permsStore.refreshingPerms; }
+  get geckoUrlAccess() { return this.permsStore.geckoUrlAccess; }
+  get requestingGeckoAccess() { return this.permsStore.requestingGeckoAccess; }
+  get recheckingGeckoAccess() { return this.permsStore.recheckingGeckoAccess; }
+  get grantedCount() { return this.permsStore.grantedCount; }
+  get geckoInstalled() { return this.permsStore.geckoInstalled; }
+  get geckoTrusted() { return this.permsStore.geckoTrusted; }
+  get geckoInstalledNames() { return this.permsStore.geckoInstalledNames; }
+  get refreshPermissions() { return this.permsStore.refreshPermissions; }
+  get permissionAction() { return this.permsStore.permissionAction; }
+  get requestPermission() { return this.permsStore.requestPermission; }
+  get permissionLabel() { return this.permsStore.permissionLabel; }
+  get permissionTone() { return this.permsStore.permissionTone; }
+  get loadGeckoUrlAccess() { return this.permsStore.loadGeckoUrlAccess; }
+  get requestGeckoAccess() { return this.permsStore.requestGeckoAccess; }
+  get openGeckoAccessSettings() { return this.permsStore.openGeckoAccessSettings; }
+  get recheckGeckoAccess() { return this.permsStore.recheckGeckoAccess; }
 
   // ── Lifecycle flags ──────────────────────────────────────────────────────
   loading = $state(true);
@@ -298,112 +307,6 @@ export class OnboardingController {
   customBitrateErrors = $derived(
     buildCustomBitrateErrors(this.draftBitrateMode, this.draftCustomMbps),
   );
-
-  // ── Permissions ──────────────────────────────────────────────────────────
-  grantedCount = $derived(
-    this.permissions === null
-      ? 0
-      : (["screen", "microphone", "systemAudio"] as const).filter(
-          (k) => this.permissions?.[k] === "granted",
-        ).length,
-  );
-
-  async refreshPermissions(): Promise<void> {
-    this.errorMessage = null;
-    this.refreshingPerms = true;
-    try {
-      const response = await invoke<GetPermissionsResponse>("get_capture_permissions");
-      this.permissions = response.permissions as Record<PermissionKey, PermissionValue>;
-    } catch (err) {
-      this.errorMessage = serializeError(err);
-    } finally {
-      this.refreshingPerms = false;
-    }
-  }
-
-  // Granted/unsupported need no action. macOS won't re-prompt once denied, so
-  // those rows deep-link to System Settings instead of re-requesting.
-  permissionAction(
-    value: PermissionValue | undefined,
-  ): { label: string; mode: "request" | "settings" } | null {
-    return permissionActionFor(value);
-  }
-
-  async requestPermission(key: PermissionKey): Promise<void> {
-    if (this.requestingPerm) return;
-    this.errorMessage = null;
-    this.requestingPerm = key;
-    try {
-      const action = this.permissionAction(this.permissions?.[key]);
-      if (action?.mode === "settings") {
-        await invoke("open_capture_privacy_settings", { kind: key });
-      } else {
-        const response = await invoke<GetPermissionsResponse>("request_capture_permission", { kind: key });
-        this.permissions = response.permissions as Record<PermissionKey, PermissionValue>;
-      }
-    } catch (err) {
-      this.errorMessage = serializeError(err);
-    } finally {
-      this.requestingPerm = null;
-    }
-  }
-
-  permissionLabel(value: PermissionValue | undefined): string {
-    return permissionLabelFor(value);
-  }
-
-  permissionTone(value: PermissionValue | undefined): "ok" | "pending" | "blocked" {
-    return permissionToneFor(value);
-  }
-
-  // Probe whether a Gecko browser (Firefox/Zen) is installed and whether Mnema is
-  // trusted for the macOS Accessibility API used to read its active-tab URL.
-  // Non-fatal: a failure leaves the status null so the optional row simply hides.
-  async loadGeckoUrlAccess(): Promise<void> {
-    try {
-      this.geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("get_browser_url_accessibility_status");
-    } catch {
-      this.geckoUrlAccess = null;
-    }
-  }
-
-  // Raises the macOS Accessibility prompt (and adds Mnema to the list). The grant
-  // is completed by the user in System Settings, so `trusted` usually stays false
-  // here until they enable Mnema and we re-poll via recheck.
-  async requestGeckoAccess(): Promise<void> {
-    if (this.requestingGeckoAccess) return;
-    this.errorMessage = null;
-    this.requestingGeckoAccess = true;
-    try {
-      this.geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("request_browser_url_accessibility");
-    } catch (err) {
-      this.errorMessage = serializeError(err);
-    } finally {
-      this.requestingGeckoAccess = false;
-    }
-  }
-
-  async openGeckoAccessSettings(): Promise<void> {
-    this.errorMessage = null;
-    try {
-      await invoke("open_browser_url_accessibility_settings");
-    } catch (err) {
-      this.errorMessage = serializeError(err);
-    }
-  }
-
-  async recheckGeckoAccess(): Promise<void> {
-    if (this.recheckingGeckoAccess) return;
-    this.errorMessage = null;
-    this.recheckingGeckoAccess = true;
-    try {
-      this.geckoUrlAccess = await invoke<BrowserUrlAccessibilityStatus>("get_browser_url_accessibility_status");
-    } catch (err) {
-      this.errorMessage = serializeError(err);
-    } finally {
-      this.recheckingGeckoAccess = false;
-    }
-  }
 
   // ── OCR model subsystem (flat delegation) ────────────────────────────────
   get ocrModelStatus() { return this.ocrStore.ocrModelStatus; }
@@ -710,6 +613,64 @@ export class OnboardingController {
       && this.customBitrateErrors.length === 0,
   );
 
+  // The first FEATURE row currently needing attention (in FEATURES order), or
+  // null. Drives the footer count chip's "jump to the blocker" affordance so the
+  // disabled "Review & finish" CTA points at what to fix instead of leaving the
+  // user to hunt for it. Mirrors `attentionCount`'s single-owner predicate.
+  firstAttentionFeatureId = $derived(
+    FEATURES.find((feature) => this.featureAttention(feature.id))?.id ?? null,
+  );
+
+  // True when a selected custom resolution/bitrate is invalid. These serialize as
+  // null and break the backend save, so they block the configure→finale step just
+  // like an attention item — but they live in the `screen` row's body, not the
+  // attention tally, so they need their own footer reason + jump target.
+  customValueInvalid = $derived(
+    this.customResolutionErrors.length > 0 || this.customBitrateErrors.length > 0,
+  );
+
+  // The first row blocking the configure→finale step (attention rows first, then
+  // the custom resolution/bitrate which lives in the `screen` row), or null. This
+  // is what the footer's "jump to the blocker" affordance targets so EVERY reason
+  // the CTA is disabled points at the row to fix — including the custom-value case.
+  firstConfigureBlockerId = $derived(
+    this.firstAttentionFeatureId ?? (this.customValueInvalid ? ("screen" as FeatureId) : null),
+  );
+
+  // Names what is blocking the configure→finale step, or null when nothing blocks.
+  // Mirrors the finale's `finaleBlockReason` copy idiom so the footer can say WHAT
+  // is blocking instead of only a terse "N need attention" count. Covers both the
+  // attention rows AND an invalid custom resolution/bitrate (which would otherwise
+  // disable the CTA with no stated reason).
+  configureBlockReason = $derived.by(() => {
+    const names = FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name);
+    if (names.length > 0) {
+      return `Needs attention before you can finish: ${names.join(", ")}.`;
+    }
+    if (this.customValueInvalid) {
+      return "Fix the custom recording resolution or bitrate before you can finish.";
+    }
+    return null;
+  });
+
+  // Open + scroll to the first row blocking the step (attention OR the custom
+  // resolution/bitrate) so the footer reason is an actionable jump target (not
+  // just text). Opening is the controller's job; the scroll is a best-effort DOM
+  // nudge (the row mounts its body on open), guarded for the no-blocker case.
+  jumpToFirstAttention(): void {
+    const id = this.firstConfigureBlockerId;
+    if (!id) return;
+    this.openId = id;
+    // Defer the scroll until the row has re-rendered open.
+    requestAnimationFrame(() => {
+      const head = document.querySelector<HTMLElement>(
+        `[data-feature-row][data-feature-id="${id}"] [data-feature-head]`,
+      );
+      head?.scrollIntoView({ behavior: "smooth", block: "center" });
+      head?.focus();
+    });
+  }
+
   // The legacy completion gate (`processingReady`): finishing is blocked only
   // when a selected, enabled model isn't ready. Permissions never block finish.
   canFinish = $derived(
@@ -748,6 +709,18 @@ export class OnboardingController {
 
   ctaLabel = $derived("Start recording");
   ctaDisabled = $derived(this.loading || this.saving || this.completing || !this.canComplete);
+
+  // The finale escape hatch ("Just open the dashboard") must NOT share the
+  // model-readiness gate that "Start recording" uses — opening the dashboard
+  // while a model still downloads (or with an attention item outstanding) is
+  // harmless, so blocking the skip would be a dead-end. It only needs the
+  // settings to serialize cleanly, so it stays gated solely on the custom
+  // resolution/bitrate validity that would break the backend save (those
+  // serialize as null) plus the in-flight save/complete guard.
+  canSkipToDashboard = $derived(
+    this.customResolutionErrors.length === 0 && this.customBitrateErrors.length === 0,
+  );
+  skipDisabled = $derived(this.loading || this.saving || this.completing || !this.canSkipToDashboard);
 
   // Surfaced reason the finale CTAs are dead for an attention regression (not an in-flight op). Helper owns gate + copy.
   finaleBlockReason = $derived(finaleBlockReasonFor(this.phase === "done" && !this.loading && !this.saving && !this.completing,

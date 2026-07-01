@@ -4,6 +4,7 @@
   import Slider from "$lib/components/Slider.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import { formatBytes } from "./onboarding-mapping";
+  import { useLockCalloutSlot } from "./FeatureRow.svelte";
 
   let { controller }: { controller: OnboardingController } = $props();
 
@@ -19,9 +20,18 @@
     if (controller.selectedSpeakerDownloadRunning) return "pending";
     return "denied";
   });
+
+  // Hoist the unmet-prerequisite callout OUT of FeatureRow's inert `.body-inner`
+  // — otherwise its "Turn on Audio transcription" button renders but is inert.
+  const setLockCallout = useLockCalloutSlot();
+  const lockReason = $derived(controller.featureLockReason("speakers"));
+  $effect(() => {
+    setLockCallout(lockReason ? lockCallout : null);
+    return () => setLockCallout(null);
+  });
 </script>
 
-{#if controller.featureLockReason("speakers")}
+{#snippet lockCallout()}
   <div class="lock-callout">
     <div class="lock-callout-text">
       Audio transcription must be on to separate speakers.
@@ -34,7 +44,7 @@
       Turn on Audio transcription
     </button>
   </div>
-{/if}
+{/snippet}
 
 <div class="group">
   <div class="note muted">
@@ -94,7 +104,20 @@
   </div>
 
   {#if controller.speakerModelError}
-    <div class="note">Failed to load speaker model status: {controller.speakerModelError}</div>
+    <div class="note">
+      <div>Failed to load speaker model status: {controller.speakerModelError}</div>
+      <div class="dl-meta">
+        <span>This is a fetch error, not a missing model — retry to recheck.</span>
+        <button
+          type="button"
+          class="btn sm"
+          disabled={controller.loadingSpeakerModelStatus}
+          onclick={() => controller.loadSpeakerModelStatus()}
+        >
+          {controller.loadingSpeakerModelStatus ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    </div>
   {:else if model}
     <div class="model-card">
       <div class="model-top">
@@ -111,11 +134,19 @@
         {#if controller.selectedSpeakerDownloadRunning}
           <div class="dl">
             <div class="dl-track">
-              <div class="dl-fill" style={`width: ${controller.selectedSpeakerDownloadPercent ?? 8}%`}></div>
+              <div
+                class="dl-fill"
+                class:dl-fill--indeterminate={controller.selectedSpeakerDownloadPercent === null}
+                style={controller.selectedSpeakerDownloadPercent === null
+                  ? undefined
+                  : `width: ${controller.selectedSpeakerDownloadPercent}%`}
+              ></div>
             </div>
             <div class="dl-meta">
               <span>
-                <b>{controller.selectedSpeakerDownloadPercent ?? 0}%</b>
+                <b>{controller.selectedSpeakerDownloadPercent === null
+                    ? "…"
+                    : `${controller.selectedSpeakerDownloadPercent}%`}</b>
                 · {controller.selectedSpeakerDownloadProgress?.status ?? "downloading"}
               </span>
               <button

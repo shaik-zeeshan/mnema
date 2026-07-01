@@ -15,6 +15,7 @@
   const rec = c.rec;
   const askAi = c.askAi;
 
+
   // Store-read aliases.
   const askAiAvailable = $derived(askAi.askAiAvailable);
   const askAiAvailabilityLoading = $derived(askAi.askAiAvailabilityLoading);
@@ -62,7 +63,7 @@
     full
   >
     {#snippet aside()}
-      <Switch bind:checked={rec.draftAskAiLimitToolCalls} ariaLabel="Limit tool calls per question" />
+      <Switch bind:checked={rec.draftAskAiLimitToolCalls} disabled={!rec.draftAskAiEnabled} ariaLabel="Limit tool calls per question" />
     {/snippet}
     {#snippet control()}
       <div class="ask-ai-stack">
@@ -77,6 +78,7 @@
             min={1}
             max={ASK_AI_MAX_TOOL_CALL_LIMIT}
             step={1}
+            disabled={!rec.draftAskAiEnabled}
           />
           <p class="group-hint">
             Each tool call is one brokered query into your redacted capture history. A lower cap bounds how much a single answer can pull; the default is {ASK_AI_DEFAULT_TOOL_CALL_LIMIT}.
@@ -126,13 +128,16 @@
         {/if}
         <div class="model-status" class:model-status--available={askAiAvailable}>
           <div>
-            <div class="model-status__title">Ask AI {askAiAvailable ? "available" : "unavailable"}</div>
+            <div class="model-status__title">{askAiAvailable ? "Ask AI is ready to answer" : "Ask AI isn’t ready yet"}</div>
             <div class="model-status__meta">{askAiStatusDetail}</div>
           </div>
-          <span class="model-status__pill">{askAiAvailable ? "available" : "unavailable"}</span>
+          <span
+            class="model-status__pill"
+            class:model-status__pill--ok={askAiAvailable}
+          >{askAiAvailable ? "available" : "unavailable"}</span>
         </div>
         {#if askAiAvailabilityError}
-          <p class="error-text">{askAiAvailabilityError}</p>
+          <p class="error-text" role="alert">{askAiAvailabilityError}</p>
         {/if}
         <div class="row-actions">
           <ReloadButton
@@ -153,7 +158,7 @@
   .ask-ai-stack {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
     width: 100%;
   }
 </style>

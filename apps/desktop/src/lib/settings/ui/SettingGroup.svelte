@@ -12,11 +12,15 @@
         sit directly on the page. Used by the keybinding lists, whose rows
         already carry their own borders — the parent frame is redundant. */
     bare?: boolean;
+    /** Render the section title as a nested/child heading (smaller, lighter,
+        inset) so a group sitting under a parent section reads as its child,
+        not a fifth equal-weight sibling. Used by the shortcut category lists. */
+    nested?: boolean;
     /** The stack of <SettingRow>s. */
     children: Snippet;
   }
 
-  let { title, hint, id, actions, bare = false, children }: Props = $props();
+  let { title, hint, id, actions, bare = false, nested = false, children }: Props = $props();
 </script>
 
 <!-- `id` is the deeplink + scroll-spy anchor — it MUST stay on this outer
@@ -24,7 +28,7 @@
 <section class="setting-group" {id}>
   <header class="setting-group__header">
     <div class="setting-group__heading">
-      <span class="setting-group__title">{title}</span>
+      <span class="setting-group__title" class:setting-group__title--nested={nested}>{title}</span>
       {#if hint}
         <span class="setting-group__hint">{hint}</span>
       {/if}
@@ -45,7 +49,7 @@
   .setting-group {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
   }
 
   /* ── Section head (above the card) ─────────────────────────── */
@@ -54,22 +58,37 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
-    padding: 0 3px;
+    padding: 0 4px;
   }
 
   .setting-group__heading {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
     min-width: 0;
   }
 
+  /* Eyebrow/overline: kept smaller than the row labels by design, but pushed to
+     the strong text tone so it registers on the squint test rather than reading
+     as the faintest line on the page. */
   .setting-group__title {
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 10.5px;
+    font-size: var(--text-xs);
+    font-weight: 700;
     letter-spacing: 0.13em;
     text-transform: uppercase;
+    color: var(--app-text-strong);
+  }
+
+  /* Nested/child section title: a parent section (e.g. "Keyboard Shortcuts")
+     owns the strong eyebrow; the category groups beneath it are its children,
+     so lighten + inset their titles to read one level down rather than as
+     equal-weight siblings. */
+  .setting-group__title--nested {
+    font-weight: 600;
+    letter-spacing: 0.1em;
     color: var(--app-text-muted);
+    padding-left: 8px;
   }
 
   .setting-group__hint {

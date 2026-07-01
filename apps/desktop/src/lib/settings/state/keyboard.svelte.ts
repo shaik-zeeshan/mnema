@@ -10,6 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { humanizeError } from "$lib/format-error";
 import { detectKeyboardPlatform, formatShortcut } from "$lib/keyboard";
 import {
   DEFAULT_KEYBOARD_BINDINGS,
@@ -223,7 +224,7 @@ export class KeyboardStore {
       const s = await invoke<KeyboardBindingsSettings>("get_keyboard_bindings_settings");
       this.syncKeyboardBindingsDrafts(s);
     } catch (err) {
-      this.keyboardBindingsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      this.keyboardBindingsError = humanizeError(err);
     }
   }
 
@@ -258,7 +259,7 @@ export class KeyboardStore {
       this.keyboardBindingsSaved = true;
       setTimeout(() => { this.keyboardBindingsSaved = false; }, 2200);
     } catch (err) {
-      this.keyboardBindingsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      this.keyboardBindingsError = humanizeError(err);
     } finally {
       this.savingKeyboardBindings = false;
     }

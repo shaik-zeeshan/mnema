@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+  import IconRefresh from "~icons/lucide/refresh-cw";
+  import { tip } from "$lib/components/tooltip";
+
   interface Props {
     onclick: () => void;
     /** Reload in flight — spins the icon and disables the button. */
@@ -12,22 +16,42 @@
   }
 
   let { onclick, busy = false, disabled = false, title = "Reload", label }: Props = $props();
+
+  // Guarantee a visible spin on activation. Several callers either pass no `busy`
+  // or a flag that flips true→false within a few ms (a local status read), so a
+  // `busy`-only spin is an imperceptible one-frame twitch. On click we latch a
+  // short minimum spin; the icon keeps spinning while EITHER the latch or a real
+  // `busy` is active, so fast reloads still read as a spin and slow ones spin for
+  // their full duration.
+  const MIN_SPIN_MS = 500;
+  let latched = $state(false);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const spinning = $derived(latched || busy);
+
+  function handleClick() {
+    latched = true;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      latched = false;
+      timer = null;
+    }, MIN_SPIN_MS);
+    onclick();
+  }
+
+  onDestroy(() => {
+    if (timer) clearTimeout(timer);
+  });
 </script>
 
 <button
   class="settings-icon-btn"
-  class:settings-icon-btn--spin={busy}
+  class:settings-icon-btn--spin={spinning}
   type="button"
-  {title}
+  use:tip={title}
   aria-label={label ?? title}
   aria-busy={busy}
   disabled={disabled || busy}
-  {onclick}
+  onclick={handleClick}
 >
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-    <path d="M21 3v5h-5" />
-    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-    <path d="M3 21v-5h5" />
-  </svg>
+  <span class="settings-icon-btn__glyph"><IconRefresh aria-hidden="true" /></span>
 </button>

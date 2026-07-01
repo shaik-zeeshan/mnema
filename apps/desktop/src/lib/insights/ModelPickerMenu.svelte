@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // ModelPickerMenu — the shared model-picker UI: a trigger that opens a search
   // box over a provider-grouped listbox. ONE picker surface for every place a
   // model is chosen (the Chat composer's per-thread pin and the Settings
@@ -252,6 +253,15 @@
   // The selectable subset, for keyboard navigation bounds.
   let pickerOptions = $derived(pickerRows.filter((row) => row.type === "option"));
 
+  // The DOM id of the currently highlighted option, mirrored onto the combobox
+  // input's `aria-activedescendant` so assistive tech announces the arrow-key
+  // cursor (which moves a visual highlight while DOM focus stays on the input).
+  let activeDescendantId = $derived(
+    pickerOptions.some((row) => row.type === "option" && row.index === highlight)
+      ? `mpm-opt-${highlight}`
+      : null,
+  );
+
   // Measure room below vs above the trigger and flip the block popover upward
   // when there isn't enough room below (and there's more above). The inline pill
   // keeps its fixed upward open — only `--block` consults this. CSS `max-height`
@@ -372,6 +382,7 @@
         role="combobox"
         aria-expanded="true"
         aria-controls="mpm-list"
+        aria-activedescendant={activeDescendantId}
         aria-label="Search models"
         placeholder="Search or paste a model id…"
         spellcheck="false"
@@ -390,12 +401,13 @@
             <button
               type="button"
               bind:this={optionEls[row.index]}
+              id={`mpm-opt-${row.index}`}
               class="mpm-option"
               class:mpm-option--active={row.selected}
               class:mpm-option--cursor={row.index === highlight}
               role="option"
               aria-selected={row.selected}
-              title={row.title}
+              use:tip={row.title}
               onmousedown={(event) => event.preventDefault()}
               onmouseenter={() => (highlight = row.index)}
               onclick={() => selectOption(row.option)}
@@ -427,7 +439,7 @@
       <div class="mpm-failures">
         {#each failures as failure (failure.provider)}
           <div class="mpm-failure">
-            <span class="mpm-failure-text" title={`${failure.label}: ${failure.reason}`}>
+            <span class="mpm-failure-text" use:tip={`${failure.label}: ${failure.reason}`}>
               <span class="mpm-failure-warn" aria-hidden="true">⚠</span>
               {failure.label} — {failure.reason}
             </span>
@@ -459,7 +471,7 @@
     aria-haspopup="listbox"
     aria-expanded={open}
     aria-label={ariaLabel}
-    {title}
+    use:tip={title}
     {disabled}
     onclick={toggleMenu}
   >
@@ -494,11 +506,18 @@
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
     cursor: pointer;
-    transition: border-color 0.12s ease, color 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .mpm-trigger:hover:not(:disabled) {
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
+  }
+  .mpm-trigger:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .mpm-trigger:disabled {
     cursor: default;
@@ -518,7 +537,6 @@
     border-color: var(--app-border-strong);
     background: var(--app-surface);
     color: var(--app-text);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
     transition: border-color 0.15s, box-shadow 0.15s;
   }
   .mpm-trigger--block:hover:not(:disabled) {
@@ -526,7 +544,7 @@
   }
   .mpm-trigger--block:focus-visible {
     border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
     outline: none;
   }
   .mpm-trigger--block[aria-expanded="true"] {

@@ -35,6 +35,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use capture_types::{AppTransition, AppUsage, HeatmapBucket, SiteUsage, UsageChartsResponse};
 
+use crate::db::CaptureDb;
 use crate::{Result, FRAME_SUBJECT_TYPE};
 
 /// Maximum gap (ms) attributed to a single frame's frontmost app. Caps idle /
@@ -52,7 +53,7 @@ const UNKNOWN_APP: &str = "Unknown";
 /// SQLite pool (mirrors `SearchStore` / `UserContextStore`).
 #[derive(Clone)]
 pub struct UsageChartsStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 /// A single frame row pulled for aggregation, already mapped to its app label
@@ -83,12 +84,12 @@ struct SiteAccum {
 }
 
 impl UsageChartsStore {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     pub(crate) fn pool(&self) -> &SqlitePool {
-        &self.pool
+        self.db.read()
     }
 
     /// Computes the full engine-free Overview aggregation for the half-open
@@ -630,7 +631,7 @@ mod tests {
             .await
             .expect("insert frames");
 
-            let store = UsageChartsStore::new(pool);
+            let store = UsageChartsStore::new(CaptureDb::single(pool));
 
             // Full-history (None, None) covers all three frames.
             let resp = store.usage_charts(None, None).await.expect("charts");

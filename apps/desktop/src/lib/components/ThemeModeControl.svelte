@@ -1,6 +1,11 @@
 <script lang="ts">
   import type { AppearanceSetting } from "$lib/types";
+  import { message } from "@tauri-apps/plugin-dialog";
+  import { humanizeError } from "$lib/format-error";
   import Segmented from "$lib/components/Segmented.svelte";
+  import IconSystem from "~icons/lucide/monitor";
+  import IconLight from "~icons/lucide/sun";
+  import IconDark from "~icons/lucide/moon";
 
   let {
     value = $bindable<AppearanceSetting>("system"),
@@ -49,7 +54,13 @@
       if (value === nextValue) {
         value = previous;
       }
-      console.error("Failed to update theme mode", err);
+      // The control silently snapped back before; tell the user why so the
+      // revert doesn't read as the click being ignored.
+      const detail = humanizeError(err);
+      await message(`The theme could not be changed.\n\n${detail}`, {
+        title: "Couldn't change theme",
+        kind: "error",
+      });
     } finally {
       pending = false;
     }
@@ -67,27 +78,11 @@
   >
     {#snippet icon(optionValue)}
       {#if optionValue === "system"}
-        <svg viewBox="0 0 24 24">
-          <rect x="4" y="5" width="16" height="11" rx="2" />
-          <path d="M9 19h6" />
-          <path d="M12 16v3" />
-        </svg>
+        <IconSystem aria-hidden="true" />
       {:else if optionValue === "light"}
-        <svg viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 3v2" />
-          <path d="M12 19v2" />
-          <path d="M3 12h2" />
-          <path d="M19 12h2" />
-          <path d="m5.6 5.6 1.4 1.4" />
-          <path d="m17 17 1.4 1.4" />
-          <path d="m18.4 5.6-1.4 1.4" />
-          <path d="m7 17-1.4 1.4" />
-        </svg>
+        <IconLight aria-hidden="true" />
       {:else}
-        <svg viewBox="0 0 24 24">
-          <path d="M20 14.5A7.5 7.5 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" />
-        </svg>
+        <IconDark aria-hidden="true" />
       {/if}
     {/snippet}
   </Segmented>

@@ -83,6 +83,7 @@ export function createModelStatusStore() {
   let semanticSearchDownloadProgress = $state<SemanticSearchModelDownloadProgress | null>(null);
   let startingSemanticSearchDownload = $state(false);
   let cancellingSemanticSearchDownload = $state(false);
+  let deletingSemanticSearchModel = $state(false);
   let semanticSearchDownloadError = $state<string | null>(null);
   let semanticSearchReindexing = $state(false);
   let semanticSearchReindexMessage = $state<string | null>(null);
@@ -423,6 +424,23 @@ export function createModelStatusStore() {
     }
   }
 
+  async function deleteSemanticSearchModel(provider: string, modelId: string, displayName: string) {
+    const ok = await ask(`Delete ${displayName}?`, {
+      title: "Delete semantic search model", kind: "warning", okLabel: "Delete", cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    deletingSemanticSearchModel = true;
+    semanticSearchDownloadError = null;
+    try {
+      await invoke("delete_semantic_search_model", { request: { provider, modelId } });
+      await loadSemanticSearchModelStatus();
+    } catch (err) {
+      semanticSearchDownloadError = errorText(err);
+    } finally {
+      deletingSemanticSearchModel = false;
+    }
+  }
+
   async function handleSemanticSearchDownloadProgress(progress: SemanticSearchModelDownloadProgress) {
     semanticSearchDownloadProgress = progress;
     if (progress.status === "failed") {
@@ -510,6 +528,7 @@ export function createModelStatusStore() {
     get semanticSearchDownloadProgress() { return semanticSearchDownloadProgress; },
     get startingSemanticSearchDownload() { return startingSemanticSearchDownload; },
     get cancellingSemanticSearchDownload() { return cancellingSemanticSearchDownload; },
+    get deletingSemanticSearchModel() { return deletingSemanticSearchModel; },
     get semanticSearchDownloadError() { return semanticSearchDownloadError; },
     get semanticSearchReindexing() { return semanticSearchReindexing; },
     set semanticSearchReindexing(v: boolean) { semanticSearchReindexing = v; },
@@ -522,6 +541,7 @@ export function createModelStatusStore() {
     loadSemanticSearchSupportedModels,
     startSemanticSearchModelDownload,
     cancelSemanticSearchModelDownload,
+    deleteSemanticSearchModel,
     handleSemanticSearchDownloadProgress,
   };
 }

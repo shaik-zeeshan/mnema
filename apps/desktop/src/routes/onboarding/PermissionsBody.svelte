@@ -48,7 +48,11 @@
             disabled={controller.requestingPerm === row.key}
             onclick={() => controller.requestPermission(row.key)}
           >
-            {controller.requestingPerm === row.key ? "…" : action.label}
+            {#if controller.requestingPerm === row.key}
+              {action.mode === "settings" ? "Opening…" : "Requesting…"}
+            {:else}
+              {action.label}
+            {/if}
           </button>
         {/if}
       </div>
@@ -122,7 +126,7 @@
               disabled={controller.recheckingGeckoAccess}
               onclick={() => controller.recheckGeckoAccess()}
             >
-              {controller.recheckingGeckoAccess ? "Checking…" : "Recheck"}
+              {controller.recheckingGeckoAccess ? "Checking…" : "Re-check"}
             </button>
           </div>
         </div>

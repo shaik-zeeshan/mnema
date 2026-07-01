@@ -65,7 +65,9 @@ own view on the **Insights** surface that shows every **Conclusion** about it, e
 **confidence-over-time line** — the literal picture of warming up to a thing and then cooling off
 (the founding "likes Apple, then cools" example). The Subject page shows the *individual* Conclusions
 and their trajectories, NOT a single rolled-up "sentiment score" (that would resurrect the structured
-sentiment model rejected in the **Conclusion** definition).
+sentiment model rejected in the **Conclusion** definition). A **Subject** is also the **identity key
+for reinforcement**: recurring evidence about the same subject reinforces its existing **Conclusion**
+rather than minting a reworded duplicate (see the subject-centric reinforcement Relationships below).
 _Avoid_: knowledge-graph node, single net sentiment score, rolled-up stance scalar, search-filter-only
 
 **Confidence History**:
@@ -73,7 +75,12 @@ A stored time-series of a **Conclusion**'s **Confidence** — periodic snapshots
 value — that powers the **Subject** trajectory line. Tiny (a few floats per snapshot interval) and
 aggressively prunable, since recency-weighting means old snapshots stop mattering. It exists because
 the trajectory is the headline view; without it Mnema would know a stance moved but could never show it.
-_Avoid_: current-value-only, full audit log, per-frame confidence trace
+Both directions are recorded: the slow decay beat snapshots the **down** steps, and reinforcement
+snapshots the **up** step when **Confidence** ratchets higher (plus one seed point on formation), so a
+positive slope — what the **Subject** view's "warming" tier detects — is now reachable. (Originally
+only the decay beat wrote points, so trajectories were monotonically non-increasing and "warming"
+could never appear.)
+_Avoid_: current-value-only, decay-only snapshots, full audit log, per-frame confidence trace
 
 **Confidence**:
 A strength value on a **Conclusion** that is **recency-weighted evidence**: recent supporting
@@ -327,6 +334,70 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   between doing something and its appearing as an **Activity** is accepted.
 - A **Conclusion** is open-ended natural language, not a structured `subject+attribute+value`
   row; its **Subject** is a grouping handle, not a rigid schema slot.
+- **Conclusion identity is subject-centric, so recurring evidence reinforces rather than duplicates.**
+  The upsert matches on **Subject alone** (case-insensitive, non-dismissed) and reinforces that
+  subject's **canonical row — highest **Confidence**, ties broken by lowest id** — rather than matching
+  the `(subject, statement)` pair; a new row is inserted only for a genuinely new subject. On reinforce
+  it bumps **Confidence**, replaces evidence, and snapshots the up-step into **Confidence History**, but
+  **freezes the statement text** (the displayed phrasing stays as first formed — an accepted cosmetic
+  cost) to keep one clean per-row trajectory and dodge the `UNIQUE(subject, statement)` index, which
+  stays as a safety net. This is **forward-only**: the legacy near-duplicate rows (the pre-fix sprawl,
+  e.g. one subject with 133 reworded rows) are left to **self-fade** under decay rather than collapsed
+  by a migration. See [ADR 0042](../adr/0042-subject-centric-conclusion-identity-and-pre-retrieval-candidate-selection.md).
+- **The distillation Reasoning Engine is the matcher; it is shown the beliefs it already holds.**
+  The distillation prompt now carries a **"KNOWN SUBJECTS — reuse these handles"** block (alongside the
+  user-authored and dismissed blocks) and a preamble instruction to reuse a handle verbatim when a
+  belief is about an existing subject and coin a new one only for a genuinely new subject. Lexical
+  *matching* (as the identity decider) was rejected at the source (measured rephrasing overlap ~31%, too
+  low to decide identity) — but lexical overlap is a fine *recall* signal, so the candidate handles are
+  the **union of three recall legs**, deduped case-insensitively with the **recency floor first** so the
+  freshest (most duplication-prone) handles always survive the `KNOWN_SUBJECTS_CHAR_CAP=4000`-char cap:
+  - **Recency floor:** the newest `KNOWN_SUBJECTS_RECENCY_FLOOR=30` distinct non-dismissed handles
+    (`list_subject_handles_by_recency`, newest-supported-first). Always present, model or not.
+  - **Lexical leg (model-free):** `list_subject_handles_by_lexical_overlap` ranks ALL non-dismissed
+    subjects by whole-word IDF overlap (name-boosted) of name/statements against the recent Activity
+    text, keeping the best `KNOWN_SUBJECTS_LEXICAL_LIMIT=20`. Reuses the `recall_*` tokenizer/stemmer
+    (the `recall_context` broker tool's) lifted into a shared `crate::lexical` module — the Rust twin of
+    the frontend `subjectSearch.ts`. **No embedding, no backfill lag**, so it catches the common case (a
+    reworded duplicate shares words) even in the no-model config.
+  - **Semantic leg — Mode 1 (embedding model installed):** per-activity embed the distillation window
+    (`EmbedKind::Query`), KNN top-`K_PER_ACTIVITY=5` against the subject vectors, union+dedup
+    case-insensitively (keep max similarity), drop below cosine floor `SUBJECT_CANDIDATE_COSINE_FLOOR=0.3`,
+    cap at `SUBJECT_CANDIDATE_CAP=40` handles. Catches *non-lexical* relatedness ("Apple" ↔ "iPhone");
+    empty no-op when no model is installed.
+
+  This union replaced an earlier `semantic OR recency` **either/or** that was a live duplication bug: the
+  embedding backfill embeds a new subject's vector only *after* the distillation that creates it, so the
+  freshest subjects were invisible to semantic KNN, and a non-empty semantic set suppressed the recency
+  fallback — letting "Marvel Rivals / gaming" get reworded into "Marvel Rivals gaming videos". The recency
+  floor and lag-free lexical leg both close that gap. **Graceful degradation is load-bearing** (prod
+  ships zero embedding model today): with no model the recency + lexical legs still run. Gated on
+  `default_semantic_search_enabled()`, default model `nomic-embed-text-v1.5`, **not bundled** (opt-in
+  download). The semantic floor/`K`/cap are **starting points pending calibration against real subject
+  clusters** once a model runs on real data. See [ADR 0042](../adr/0042-subject-centric-conclusion-identity-and-pre-retrieval-candidate-selection.md).
+- **Subject vectors live in their own plain table, embedded by a desktop backfill worker.** Migration
+  `0043` adds `user_context_subject_vectors(subject TEXT PRIMARY KEY COLLATE NOCASE, embedding BLOB,
+  embedded_at_ms INTEGER)` and migration `0044` adds `embedded_model TEXT` — **not `vec0`**: at ~2k
+  subjects, loading BLOBs and brute-force f32 cosine in
+  Rust is microseconds. `SubjectVectorStore` (in `crates/app-infra/src/user_context/subject_vectors.rs`)
+  does upsert/get/mark-stale/needs-embedding/cosine-KNN, and **app-infra stays embedding-free** — it
+  stores BLOBs and computes cosine, never holds an embedder (the same boundary that keeps `ai-runtime`
+  out of it). The desktop backfill worker (`subject_vector_worker.rs`, spawned on the deferred-startup
+  seam) embeds distinct subjects via the shared **Semantic Search** embedder, embedding text
+  `"{subject}: {canonical_statement}"` (statement enrichment so terse handles carry context). It is an
+  **idle no-op when no model is installed** (self-runs the day one is), and **Dismiss** marks the
+  affected subject's vector stale for lazy re-embed. **Vectors are model-identity aware:** each row
+  records the `provider/model_id` it was embedded under; the worker's "needs embedding" query treats a
+  vector embedded under a *different* model as stale (so the worker continuously re-embeds the whole
+  dossier after a model switch — no separate reconciliation pass), and KNN ranks only vectors under the
+  active model (so a stale cross-model vector never produces a garbage cosine while it waits to be
+  re-embedded). This is stricter than the **Semantic Search** index, whose dimension-only `vec0` rebuild
+  is forced by the fixed-dimension table rather than chosen — the plain subject table has no such
+  constraint, so it keys off model identity directly. The subject vectors are derived **User Context**:
+  cleared by **Wipe User Context**, never cascaded by **Retention Policy**
+  ([ADR 0029](../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md)). The embedder
+  reuses the **Semantic Search** machinery ([ADR 0036](../adr/0036-semantic-search-v1-hybrid-fastembed-vectors-with-fts5.md) /
+  [ADR 0037](../adr/0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md)).
 - Derivation runs on **two cadences**: **Activity** derivation is opportunistic and frequent
   (batched, preferring idle time or just-after-recording, the **OCR Catch-Up** pattern, off the hot
   path), while **Conclusion** re-distillation runs on a slower beat over accumulated Activities, plus

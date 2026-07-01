@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // SubjectDetail — the drill-in detail surface for a single Subject (#106).
   //
   // A Subject shows its INDIVIDUAL Conclusions — each scored on its OWN
@@ -26,6 +27,7 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
   import type {
     Conclusion,
@@ -37,6 +39,12 @@
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import Sparkline from "$lib/insights/charts/Sparkline.svelte";
+  import IconTrendUp from "~icons/lucide/trending-up";
+  import IconTrendDown from "~icons/lucide/trending-down";
+  import IconTrendFlat from "~icons/lucide/minus";
+  import { humanizeError } from "$lib/format-error";
+  import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
   interface Props {
     subject: string;
@@ -50,24 +58,16 @@
   const _interface = () => onBack;
   void _interface;
 
-  const CAT_PALETTE = [
-    "--cat-creating",
-    "--cat-communication",
-    "--cat-meetings",
-    "--cat-research",
-    "--cat-learning",
-    "--cat-organizing",
-    "--cat-personal",
-    "--cat-entertainment",
-  ] as const;
-
   type Trend = "up" | "steady" | "down" | "faded";
 
   let view = $state<SubjectView | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
   let selectedId = $state<number | null>(null);
+  // In-flight Pin/Dismiss guard. `actionKind` records WHICH action is running so
+  // only that button shows its busy affordance (the sibling stays disabled).
   let actionId = $state<number | null>(null);
+  let actionKind = $state<"pin" | "dismiss" | null>(null);
 
   // Activities resolved lazily for richer evidence rows + Timeline handoff. Maps
   // activityId → Activity (title/time/category + raw evidence refs).
@@ -77,22 +77,22 @@
   // Best-effort; rows without a resolved preview keep the colored placeholder.
   let thumbnailCache = $state<Map<number, string>>(new Map());
 
-  function colorVarFor(index: number): string {
-    return CAT_PALETTE[index % CAT_PALETTE.length];
+  // Single-hue magnitude ramp (mirrors MiniBars): confidence is encoded by
+  // INTENSITY of one accent hue, not by a category colour. A high-confidence
+  // conclusion reads as pure accent; lower confidence blends further toward the
+  // track surface. Using the --cat-* palette here previously implied a category
+  // encoding the data doesn't carry — this ramp removes that false signal.
+  function magnitudeFill(confidence: number): string {
+    const v = Math.max(0, Math.min(1, confidence));
+    // Blend up to 62% into the track surface at zero confidence; pure accent at 1.
+    const fade = Math.round((1 - v) * 62);
+    return `color-mix(in oklab, var(--app-accent) ${100 - fade}%, var(--app-surface-hover))`;
   }
 
-  // Stable display order: conclusions sorted by confidence desc. Index in this
-  // ordering drives the colour assignment (so the chart line, legend swatch,
-  // and inspector dot all agree).
+  // Stable display order: conclusions sorted by confidence desc.
   const orderedConclusions = $derived.by<Conclusion[]>(() => {
     if (!view) return [];
     return [...view.conclusions].sort((a, b) => b.confidence - a.confidence);
-  });
-
-  const colorById = $derived.by<Map<number, string>>(() => {
-    const m = new Map<number, string>();
-    orderedConclusions.forEach((c, i) => m.set(c.id, colorVarFor(i)));
-    return m;
   });
 
   const trajectoryById = $derived.by<Map<number, SubjectTrajectory>>(() => {
@@ -284,7 +284,7 @@
       }
       void loadActivities(next);
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      loadError = humanizeError(error);
     } finally {
       loading = false;
     }
@@ -325,29 +325,57 @@
     selectedId = id;
   }
 
+  // Subject → Chat hand-off (#106 / fix #5). Open a fresh Chat thread with the
+  // composer prefilled to ask about THIS subject. The hand-off routes through
+  // the shared store's selection bus (the Insights shell watches the same bus
+  // and switches to the Chat sub-surface); the prompt is seeded, not auto-sent,
+  // so the user can review/edit before pressing Enter. The engine recalls what
+  // it knows about the subject through its brokered tools when answering.
+  function askAboutSubject(): void {
+    conversationStore.requestNewChat(
+      `Tell me what you know about ${subject} and what I've been doing related to it.`,
+    );
+  }
+
   async function togglePinned(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
+    actionKind = "pin";
     try {
       await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
       await loadSubject();
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // A write failure must NOT blank the inspector — surface it in a dialog
+      // and leave the loaded subject intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: c.pinned ? "Couldn't unpin conclusion" : "Couldn't pin conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
   async function dismiss(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
+    actionKind = "dismiss";
     try {
       await invoke("user_context_dismiss_conclusion", { id: c.id });
       await loadSubject();
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // A write failure must NOT blank the inspector — surface it in a dialog
+      // and leave the loaded subject intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't dismiss conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
@@ -380,7 +408,13 @@
     } catch {
       // fall through to a plain Timeline navigation
     }
-    // Graceful fallback: open the Timeline surface.
+    // No precise frame/audio span was resolvable (or the handoff threw) — tell
+    // the user before the graceful fallback so jumping to the Timeline top isn't
+    // a silent surprise that looks like the wrong moment opened.
+    await message("Couldn't pinpoint the exact moment — opening the Timeline.", {
+      title: "Opening Timeline",
+      kind: "info",
+    });
     void goto("/");
   }
 
@@ -407,10 +441,19 @@
 </script>
 
 <section class="subject-detail" aria-label={`Subject — ${subject}`}>
-  {#if loadError}
+  {#if loadError && !view}
     <div class="state state--error">
       <p class="state-title">Couldn't load this subject.</p>
       <p class="state-detail">{loadError}</p>
+      <button
+        type="button"
+        class="state-retry"
+        onclick={() => void loadSubject()}
+        disabled={loading}
+      >
+        <span class="state-retry-ico" aria-hidden="true">↻</span>
+        Try again
+      </button>
     </div>
   {:else if loading && !view}
     <!-- Loading skeleton — hero + overlay chart + master/detail, matching the
@@ -490,6 +533,12 @@
           {/if}
         </div>
       </div>
+      <!-- Subject → Chat hand-off: open a fresh chat prefilled to ask the engine
+           about this subject (the prompt is seeded for review/edit, not sent). -->
+      <button type="button" class="ask-subject" onclick={askAboutSubject}>
+        <span class="ask-subject-glyph" aria-hidden="true">✦</span>
+        Ask AI about {subject}
+      </button>
     </div>
 
     <!-- Master-detail: ranked conclusions (master) + evidence inspector -->
@@ -514,7 +563,7 @@
                   class="rank-row"
                   class:is-selected={selectedId === c.id}
                   class:rank-row--faded={c.status === "faded"}
-                  title={c.statement}
+                  use:tip={c.statement}
                   onclick={() => selectConclusion(c.id)}
                 >
                   <span class="rank-statement">
@@ -526,7 +575,7 @@
                       <span
                         class="rank-fill"
                         class:rank-fill--faded={c.status === "faded"}
-                        style="width:{pct(c.confidence)}%; background:var({colorById.get(c.id)});"
+                        style="width:{pct(c.confidence)}%; background:{magnitudeFill(c.confidence)};"
                       ></span>
                     </span>
                     <span class="rank-pct">{pct(c.confidence)}%</span>
@@ -558,7 +607,7 @@
           <div class="insp-conclusion">
             <span
               class="ic-dot"
-              style="background: var({colorById.get(selectedConclusion.id)});"
+              style="background: {magnitudeFill(selectedConclusion.confidence)};"
             ></span>
             {selectedConclusion.statement}
             <span class="insp-conf">
@@ -579,18 +628,32 @@
                 type="button"
                 class="btn"
                 class:btn--accent={selectedConclusion.pinned}
+                class:btn--busy={actionId === selectedConclusion.id &&
+                  actionKind === "pin"}
                 disabled={actionId !== null}
                 onclick={() => void togglePinned(selectedConclusion)}
               >
-                {selectedConclusion.pinned ? "★ Pinned" : "Pin"}
+                {#if actionId === selectedConclusion.id && actionKind === "pin"}
+                  <span class="btn-spinner" aria-hidden="true"></span>
+                  {selectedConclusion.pinned ? "Unpinning…" : "Pinning…"}
+                {:else}
+                  {selectedConclusion.pinned ? "★ Pinned" : "Pin"}
+                {/if}
               </button>
               <button
                 type="button"
                 class="btn"
+                class:btn--busy={actionId === selectedConclusion.id &&
+                  actionKind === "dismiss"}
                 disabled={actionId !== null}
                 onclick={() => void dismiss(selectedConclusion)}
               >
-                Dismiss
+                {#if actionId === selectedConclusion.id && actionKind === "dismiss"}
+                  <span class="btn-spinner" aria-hidden="true"></span>
+                  Dismissing…
+                {:else}
+                  Dismiss
+                {/if}
               </button>
             </div>
           </div>
@@ -599,7 +662,12 @@
             {#if evidenceRows.length === 0}
               <p class="ev-empty">No grounding evidence linked.</p>
             {:else}
-              {#each evidenceRows as ev (ev.activityId)}
+              <!-- Index key: `ev.activityId` is NOT unique — one activity can be
+                   cited by the same conclusion under two stances (supports +
+                   contradicts), giving two rows with the same id. A duplicate
+                   `{#each}` key throws and aborts the Svelte flush, freezing this
+                   pane. evidenceRows is a positional, recomputed list. -->
+              {#each evidenceRows as ev, evIdx (evIdx)}
                 {@const thumbUrl =
                   ev.frameId != null
                     ? (thumbnailCache.get(ev.frameId) ?? null)
@@ -648,21 +716,53 @@
           </div>
 
           <div class="insp-subhead">Confidence history</div>
-          <div class="conf-hist">
-            {#if selectedTrajectory && selectedTrajectory.history.length > 0}
-              {#each selectedTrajectory.history as h, i (i)}
-                <div class="ch-row">
-                  <span class="ch-date">{fmtMonth(h.snapshotAtMs)}</span>
-                  <div class="ch-track">
-                    <div class="ch-fill" style="width:{pct(h.confidence)}%;"></div>
-                  </div>
-                  <span class="ch-val">{pct(h.confidence)}</span>
+          {#if selectedTrajectory && selectedTrajectory.history.length > 0}
+            {@const hist = selectedTrajectory.history}
+            {@const first = hist[0]}
+            {@const last = hist[hist.length - 1]}
+            {@const delta = pct(last.confidence) - pct(first.confidence)}
+            <div class="conf-hist">
+              <div class="ch-hero">
+                <span class="ch-now">{pct(last.confidence)}</span>
+                <span
+                  class="ch-delta"
+                  class:up={delta > 0}
+                  class:down={delta < 0}
+                >
+                  {#if delta > 0}
+                    <IconTrendUp />
+                  {:else if delta < 0}
+                    <IconTrendDown />
+                  {:else}
+                    <IconTrendFlat />
+                  {/if}
+                  {#if delta !== 0}<span>{Math.abs(delta)}</span>{/if}
+                </span>
+              </div>
+              {#if hist.length > 1}
+                <div class="ch-spark">
+                  <Sparkline
+                    series={[
+                      {
+                        colorVar: "--app-accent",
+                        points: hist.map((h) => h.confidence),
+                      },
+                    ]}
+                    label={`Confidence trend, ${delta > 0 ? "rising" : delta < 0 ? "falling" : "steady"}, over ${hist.length} snapshots`}
+                  />
                 </div>
-              {/each}
-            {:else}
-              <p class="ev-empty">No history snapshots yet.</p>
-            {/if}
-          </div>
+                <div class="ch-range">
+                  <span>{fmtMonth(first.snapshotAtMs)}</span>
+                  <span>{hist.length} snapshots</span>
+                  <span>{fmtMonth(last.snapshotAtMs)}</span>
+                </div>
+              {/if}
+            </div>
+          {:else}
+            <p class="ev-empty" style="padding: 2px 13px 14px;">
+              No history snapshots yet.
+            </p>
+          {/if}
         {:else}
           <div class="insp-head">
             <span class="ih-title">Evidence</span>
@@ -701,7 +801,7 @@
     min-width: 0;
   }
   .subj-title {
-    font-size: 25px;
+    font-size: 24px;
     letter-spacing: -0.01em;
     color: var(--app-text-strong);
     font-weight: 600;
@@ -720,6 +820,41 @@
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
     white-space: nowrap;
+  }
+
+  /* Subject → Chat hand-off button (top-right of the hero). The primary outbound
+     action from a subject, so it carries the accent treatment. */
+  .ask-subject {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: inherit;
+    font-size: 11.5px;
+    padding: 6px 12px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 7px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
+  }
+  .ask-subject:hover {
+    border-color: var(--app-accent);
+  }
+  .ask-subject:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .ask-subject:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .ask-subject-glyph {
+    font-size: 11px;
+    line-height: 1;
   }
 
   .section-title {
@@ -771,6 +906,14 @@
   }
   .rank-row:hover {
     background: var(--app-surface-hover);
+  }
+  .rank-row:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .rank-row:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
   .rank-row.is-selected {
     border-color: var(--app-accent-border);
@@ -826,7 +969,7 @@
     text-align: right;
   }
   .rank-trend {
-    font-size: 9px;
+    font-size: var(--text-xs);
     width: 11px;
     text-align: center;
     line-height: 1;
@@ -834,8 +977,11 @@
   .rank-trend--up {
     color: var(--app-accent);
   }
+  /* "cooling" is normal decay, not an error — read it QUIET (muted neutral), so
+     the saturated --app-danger token stays reserved for destructive/contradiction
+     states and the two never collide. Matches the Subjects index trend pill. */
   .rank-trend--down {
-    color: var(--app-danger);
+    color: var(--app-text-muted);
   }
   .rank-trend--steady {
     color: var(--app-text-subtle);
@@ -873,6 +1019,9 @@
   }
 
   .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font: inherit;
     font-size: 11.5px;
     padding: 3px 10px;
@@ -890,9 +1039,36 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* Busy: the acting button stays legible (no dim) while its sibling dims via
+     :disabled, so the spinner + "Pinning…/Dismissing…" label reads clearly. */
+  .btn--busy:disabled {
+    opacity: 1;
+    cursor: progress;
+  }
+  .btn-spinner {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid var(--app-border-hover);
+    border-top-color: var(--app-text-strong);
+    animation: btn-spin 0.6s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes btn-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .btn--accent {
     border-color: var(--app-accent-border);
@@ -1010,7 +1186,7 @@
     position: absolute;
     left: 2px;
     bottom: 2px;
-    font-size: 7px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     padding: 0 3px;
     border-radius: 3px;
@@ -1063,10 +1239,19 @@
   .ev-link:hover {
     color: var(--app-accent);
   }
+  .ev-link:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .ev-link:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+    box-shadow: var(--app-ring);
+    border-radius: 3px;
+  }
 
   .insp-subhead {
     padding: 9px 13px 5px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -1075,34 +1260,50 @@
   .conf-hist {
     padding: 2px 13px 14px;
   }
-  .ch-row {
-    display: grid;
-    grid-template-columns: 30px 1fr 30px;
-    align-items: center;
+  .ch-hero {
+    display: flex;
+    align-items: baseline;
     gap: 8px;
-    padding: 2px 0;
-    font-size: 10.5px;
-    color: var(--app-text-muted);
   }
-  .ch-date {
-    color: var(--app-text-subtle);
-  }
-  .ch-track {
-    height: 5px;
-    border-radius: 999px;
-    background: var(--app-surface-hover);
-    overflow: hidden;
-    border: 1px solid var(--app-border);
-  }
-  .ch-fill {
-    height: 100%;
-    background: var(--app-accent);
-    border-radius: 999px;
-  }
-  .ch-val {
-    text-align: right;
+  .ch-now {
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1;
     color: var(--app-text);
     font-variant-numeric: tabular-nums;
+  }
+  .ch-delta {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    color: var(--app-text-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  .ch-delta :global(svg) {
+    width: 13px;
+    height: 13px;
+  }
+  .ch-delta.up {
+    color: var(--app-accent);
+  }
+  .ch-delta.down {
+    color: var(--app-danger);
+  }
+  .ch-spark {
+    margin-top: 8px;
+  }
+  /* Sparkline caps its own width at 140px; let it fill the inspector column. */
+  .ch-spark :global(.sparkline) {
+    max-width: none;
+    height: 44px;
+  }
+  .ch-range {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--app-text-subtle);
   }
 
   /* ---- Loading skeleton helpers ---- */
@@ -1168,6 +1369,63 @@
     font-size: 11.5px;
     color: var(--app-text-muted);
     line-height: 1.6;
+  }
+  /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
+  .state-retry {
+    align-self: flex-start;
+    margin-top: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .state-retry:hover:not(:disabled) {
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
+  }
+  .state-retry:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .state-retry:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .state-retry-ico {
+    font-size: 12px;
+    line-height: 1;
+    letter-spacing: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rank-row,
+    .btn,
+    .ev-item,
+    .ev-link {
+      transition: none;
+    }
+    .btn:not(:disabled):active,
+    .rank-row:not(:disabled):active,
+    .ev-link:not(:disabled):active,
+    .state-retry:not(:disabled):active {
+      transform: none;
+    }
+    .btn-spinner {
+      animation: none;
+    }
   }
 
   @media (max-width: 900px) {

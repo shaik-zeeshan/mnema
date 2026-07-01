@@ -27,6 +27,7 @@
 
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
+use crate::db::CaptureDb;
 use crate::Result;
 
 /// One **Search Result Anchor** that needs a **Semantic Search Vector**: its
@@ -46,12 +47,12 @@ pub struct AnchorMissingVector {
 /// Store seam for the **Semantic Index Backfill** worker.
 #[derive(Clone)]
 pub struct SemanticSearchStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl SemanticSearchStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     /// Select up to `limit` `direct` **Search Result Anchor**s that have
@@ -81,7 +82,7 @@ impl SemanticSearchStore {
              LIMIT ?1",
         )
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows
@@ -110,7 +111,7 @@ impl SemanticSearchStore {
              LIMIT 1",
         )
         .bind(anchor_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
         Ok(exists.is_some())
     }
@@ -166,7 +167,7 @@ impl SemanticSearchStore {
             )));
         }
         let blob = vector_to_le_bytes(vector);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.begin_write().await?;
         // Drop any existing vector for this anchor first — vec0 0.1.9 rejects a
         // re-insert of the same rowid with a UNIQUE constraint error rather than
         // replacing, so the upsert must DELETE then INSERT. Harmless when no prior
@@ -177,7 +178,7 @@ impl SemanticSearchStore {
             .await?;
         let result = sqlx::query(
             "INSERT INTO search_document_vectors (rowid, embedding) \
-             SELECT search_documents.id, ?2 \
+             SELECT search_documents.id, vec_quantize_int8(?2, 'unit') \
              FROM search_documents \
              WHERE search_documents.id = ?1 \
                AND search_documents.text_source_kind = 'direct'",
@@ -240,6 +241,77 @@ impl SemanticSearchStore {
         }
     }
 
+    /// Batched counterpart to [`store_vector_if_dimension_matches`]: stores a whole
+    /// sweep batch in **one** write transaction (one writer-lock acquisition for the
+    /// batch instead of one per anchor), returning a per-anchor `stored` flag
+    /// aligned to `pairs`. Each `true`/`false` carries the exact same meaning as the
+    /// single-anchor call — `true` stored, `false` skipped (dimension mismatch, no
+    /// table, or the `direct` anchor vanished mid-embed so the row-conditioned
+    /// INSERT affected nothing). Reducing the lock-acquisition rate is the point:
+    /// the per-anchor version made the background sweep grab the writer lock once
+    /// per vector, churning contention with foreground capture writes.
+    ///
+    /// All-or-nothing on a real DB failure: a genuine `Err` rolls the batch back, so
+    /// the caller retries the whole batch (transient). The live dimension is read
+    /// once up front; the same single-dimension-authority invariant as
+    /// [`store_vector_if_dimension_matches`] applies (a wrong-length vector is
+    /// skipped, never inserted).
+    pub async fn store_vectors_if_dimension_matches(
+        &self,
+        pairs: &[(i64, Vec<f32>)],
+    ) -> Result<Vec<bool>> {
+        if pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Non-finite guard (defensive; mirrors `store_vector`). A NaN/inf component
+        // would poison KNN ordering, so refuse the batch rather than store it.
+        for (anchor_id, vector) in pairs {
+            if vector.iter().any(|component| !component.is_finite()) {
+                return Err(crate::AppInfraError::InvalidSearchRequest(format!(
+                    "refusing to store a non-finite Semantic Search Vector for anchor {anchor_id} \
+                     (a NaN/inf component would poison KNN ordering)"
+                )));
+            }
+        }
+        // No live table → every anchor is a skip (awaiting re-index), no write needed.
+        let Some(dimension) = self.live_vector_dimension().await? else {
+            return Ok(vec![false; pairs.len()]);
+        };
+        let mut tx = self.db.begin_write().await?;
+        let mut outcomes = Vec::with_capacity(pairs.len());
+        for (anchor_id, vector) in pairs {
+            // Length mismatch with the live column: skip (not an error), exactly as
+            // the single-anchor gate does, so a mid-switch vector idles instead of
+            // being rejected by vec0.
+            if vector.len() != dimension {
+                outcomes.push(false);
+                continue;
+            }
+            let blob = vector_to_le_bytes(vector);
+            // DELETE-then-INSERT upsert (vec0 0.1.9 rejects same-rowid re-insert), the
+            // INSERT row-conditioned on the `direct` anchor still existing so a delete
+            // racing the store leaves no orphan.
+            sqlx::query("DELETE FROM search_document_vectors WHERE rowid = ?1")
+                .bind(anchor_id)
+                .execute(&mut *tx)
+                .await?;
+            let result = sqlx::query(
+                "INSERT INTO search_document_vectors (rowid, embedding) \
+                 SELECT search_documents.id, vec_quantize_int8(?2, 'unit') \
+                 FROM search_documents \
+                 WHERE search_documents.id = ?1 \
+                   AND search_documents.text_source_kind = 'direct'",
+            )
+            .bind(anchor_id)
+            .bind(blob)
+            .execute(&mut *tx)
+            .await?;
+            outcomes.push(result.rows_affected() > 0);
+        }
+        tx.commit().await?;
+        Ok(outcomes)
+    }
+
     /// The **live `vec0` column dimension** of `search_document_vectors` — the
     /// single source of truth for the active vector width, read straight from the
     /// table definition rather than inferred from the (separately persisted)
@@ -251,7 +323,7 @@ impl SemanticSearchStore {
     /// "no usable dimension" — the worker idles and the query path degrades to
     /// keyword-only rather than erroring).
     pub async fn live_vector_dimension(&self) -> Result<Option<usize>> {
-        live_vector_dimension(&self.pool).await
+        live_vector_dimension(self.db.read()).await
     }
 
     /// Reconcile the live `vec0` table dimension against `expected_dimension`,
@@ -308,7 +380,7 @@ impl SemanticSearchStore {
     /// could land in the new index undetected — that case requires a stronger
     /// model-identity/epoch guard stamped here, not just the dimension width.
     pub async fn recreate_vectors_table(&self, dimension: usize) -> Result<u64> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.begin_write().await?;
         // Count existing vectors only when the table is actually present: this is
         // also reached from `reconcile_vectors_table`'s "absent → rebuild" self-heal
         // path, where the table is missing — an unguarded `COUNT(*)` would raise
@@ -331,8 +403,11 @@ impl SemanticSearchStore {
             .execute(&mut *tx)
             .await?;
         // `dimension` is a usize from the in-tree model catalog, never user input.
+        // int8 (not float) matches the migration: the write/query paths quantize
+        // via `vec_quantize_int8(?, 'unit')`, so a recreate must keep the same dtype
+        // or the quantized blobs would not match a float column.
         sqlx::query(&format!(
-            "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding float[{dimension}])"
+            "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding int8[{dimension}])"
         ))
         .execute(&mut *tx)
         .await?;
@@ -351,7 +426,7 @@ impl SemanticSearchStore {
                    SELECT rowid FROM search_document_vectors\
                )",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         Ok(count)
     }
@@ -425,9 +500,14 @@ where
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_document_vectors.rowid \
          FROM search_document_vectors \
-         WHERE search_document_vectors.embedding MATCH ",
+         WHERE search_document_vectors.embedding MATCH vec_quantize_int8(",
     );
     query.push_bind(vector_to_le_bytes(query_embedding));
+    // Quantize the query vector to int8 the same way stored vectors are, so the
+    // KNN compares like with like against the int8[] column. The embedder
+    // guarantees unit vectors, so 'unit' (input range [-1,1]) is the right scale
+    // and unit-vector L2 ordering ≡ cosine ordering — rank is preserved.
+    query.push(", 'unit')");
     query.push(" AND k = ");
     query.push_bind(k);
     query.push(" AND search_document_vectors.rowid IN (");
@@ -456,16 +536,17 @@ pub(crate) async fn live_vector_dimension(pool: &SqlitePool) -> Result<Option<us
     Ok(sql.as_deref().and_then(parse_vec0_dimension))
 }
 
-/// Parse the declared dimension `N` out of a `vec0(embedding float[N])` table
+/// Parse the declared dimension `N` out of a `vec0(embedding int8[N])` table
 /// DDL (`sqlite_master.sql`). The whole feature keys its dimension authority off
 /// this — the recreate writes exactly this shape (see
 /// [`SemanticSearchStore::recreate_vectors_table`]), so the parse is the inverse
 /// of that format. Returns `None` on any shape it does not recognize, so an
 /// unexpected DDL degrades to "no usable dimension" rather than a wrong guess.
 fn parse_vec0_dimension(sql: &str) -> Option<usize> {
-    // Tolerate arbitrary whitespace/casing around the `float[N]` declaration.
+    // Parse the `[N]` after the dtype, dtype-agnostic (int8 today, float in
+    // legacy DDL) — the only bracket in the vec0 column declaration.
     let lowered = sql.to_ascii_lowercase();
-    let open = lowered.find("float[")? + "float[".len();
+    let open = lowered.find('[')? + 1;
     let close = lowered[open..].find(']')? + open;
     lowered[open..close].trim().parse::<usize>().ok()
 }
@@ -1001,6 +1082,46 @@ mod tests {
     }
 
     #[test]
+    fn store_vectors_batch_stores_matching_and_skips_wrong_dimension_in_one_call() {
+        run_async_test(async {
+            let dir = test_dir("store-batch-mixed");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+            seed_frame_with_text(&infra, "2026-05-17T10:00:01Z", "bravo").await;
+
+            let store = infra.semantic_search();
+            let missing = store.anchors_missing_vector(10).await.expect("query");
+            assert_eq!(missing.len(), 2, "two anchors await a vector");
+
+            // One correctly-sized (768) vector and one wrong-dimension (1024) vector
+            // in a single batched call: the matching one stores, the mismatch is
+            // skipped (not an error, not stored), and the per-anchor outcomes line up
+            // with the input order.
+            let outcomes = store
+                .store_vectors_if_dimension_matches(&[
+                    (missing[0].anchor_id, unit_vector(768, 0.5)),
+                    (missing[1].anchor_id, unit_vector(1024, 0.5)),
+                ])
+                .await
+                .expect("a dimension mismatch is a skip, not a fatal error");
+            assert_eq!(outcomes, vec![true, false], "stored, then skipped");
+
+            // The stored anchor leaves the missing set; the skipped one stays for a
+            // later re-embed once dimensions agree.
+            assert!(!store
+                .anchor_still_missing_vector(missing[0].anchor_id)
+                .await
+                .expect("recheck"));
+            assert!(store
+                .anchor_still_missing_vector(missing[1].anchor_id)
+                .await
+                .expect("recheck"));
+        });
+    }
+
+    #[test]
     fn reconcile_rebuilds_a_table_whose_dimension_disagrees_with_the_model() {
         run_async_test(async {
             let dir = test_dir("reconcile-mismatch");
@@ -1069,6 +1190,14 @@ mod tests {
 
     #[test]
     fn parse_vec0_dimension_extracts_the_declared_width() {
+        // The live (int8) DDL the migration + recreate now emit.
+        assert_eq!(
+            super::parse_vec0_dimension(
+                "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding int8[768])"
+            ),
+            Some(768)
+        );
+        // Legacy float DDL still parses (dtype-agnostic bracket parse).
         assert_eq!(
             super::parse_vec0_dimension(
                 "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding float[768])"
@@ -1365,6 +1494,80 @@ mod tests {
             assert_eq!(
                 store.count_anchors_missing_vector().await.expect("count"),
                 1
+            );
+        });
+    }
+
+    /// A unit vector at angle `theta` in the (e0, e1) plane: `cos²+sin² = 1`, so
+    /// it is exactly unit-length and within the [-1,1] range `vec_quantize_int8(_,
+    /// 'unit')` assumes. Dot product between two such vectors is `cos(Δθ)`, so a
+    /// spread of distinct angles gives an unambiguous, well-separated f32 ranking.
+    fn angled_unit_vector(dim: usize, theta: f32) -> Vec<f32> {
+        let mut v = vec![0.0_f32; dim];
+        v[0] = theta.cos();
+        v[1] = theta.sin();
+        v
+    }
+
+    fn dot(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| x * y).sum()
+    }
+
+    #[test]
+    fn int8_quantized_knn_preserves_the_f32_ranking_order_for_unit_vectors() {
+        run_async_test(async {
+            let dir = test_dir("int8-ranking-parity");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // Five direct anchors, each given a distinct unit vector spread across
+            // angles 0.0, 0.3, 0.6, 0.9, 1.2 rad in the (e0, e1) plane.
+            for i in 0..5 {
+                seed_frame_with_text(&infra, &format!("2026-05-17T10:0{i}:00Z"), &format!("doc {i}"))
+                    .await;
+            }
+            let store = infra.semantic_search();
+            let mut anchors = store.anchors_missing_vector(10).await.expect("query");
+            anchors.sort_by_key(|a| a.anchor_id);
+
+            let dim = 768;
+            let vectors: Vec<Vec<f32>> = (0..anchors.len())
+                .map(|i| angled_unit_vector(dim, i as f32 * 0.3))
+                .collect();
+            for (anchor, v) in anchors.iter().zip(&vectors) {
+                store
+                    .store_vector(anchor.anchor_id, v)
+                    .await
+                    .expect("vector stores (quantized to int8 on write)");
+            }
+
+            // Query at 0.65 rad: off every stored angle, so the f32 cosine ranking
+            // is strict and well-separated (no ties for int8 quantization to flip).
+            let query = angled_unit_vector(dim, 0.65);
+
+            // Ground truth: anchors ordered by DESCENDING f32 cosine (== dot, unit).
+            let mut expected: Vec<i64> = anchors.iter().map(|a| a.anchor_id).collect();
+            expected.sort_by(|&a, &b| {
+                let ia = anchors.iter().position(|x| x.anchor_id == a).unwrap();
+                let ib = anchors.iter().position(|x| x.anchor_id == b).unwrap();
+                dot(&query, &vectors[ib])
+                    .partial_cmp(&dot(&query, &vectors[ia]))
+                    .unwrap()
+            });
+
+            // The int8-quantized KNN (column, stored vectors, AND query vector all
+            // int8) must return the SAME top-k ORDER as the f32 cosine ranking.
+            // Rank stability is the contract — distances differ, order does not.
+            let candidates =
+                super::knn_in_scope_anchors(infra.pool(), &query, 200, |q| {
+                    push_direct_scope(q, None)
+                })
+                .await
+                .expect("knn succeeds");
+            assert_eq!(
+                candidates, expected,
+                "int8 KNN order matches the f32 cosine order for unit vectors"
             );
         });
     }

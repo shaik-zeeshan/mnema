@@ -5,9 +5,17 @@ use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
 use time::{format_description::well_known::Rfc3339, Date, Duration, OffsetDateTime, UtcOffset};
 
+use crate::db::CaptureDb;
 use crate::{processing::ProcessingJobStatus, Result};
 
 const SQLITE_BIND_CHUNK_SIZE: usize = 500;
+
+/// Capture segments deleted per write transaction during a retention sweep.
+/// Bounds how long the single writer lock is held: the whole-sweep cascade (each
+/// row cascading FTS5 + vec0 triggers) used to run in one transaction and starve
+/// every other writer past `busy_timeout`. ponytail: small batch keeps each
+/// lock-hold short; shrink toward 1 if a single batch ever stalls.
+const RETENTION_SEGMENT_BATCH_SIZE: usize = 4;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -186,12 +194,12 @@ struct SegmentFilePath {
 
 #[derive(Clone)]
 pub struct CaptureRetentionStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl CaptureRetentionStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     pub async fn create_capture_session(&self, session: &NewCaptureSession) -> Result<()> {
@@ -222,7 +230,7 @@ impl CaptureRetentionStore {
         .bind(session.microphone_source_session_id.as_deref())
         .bind(session.system_audio_source_session_id.as_deref())
         .bind(session.segment_duration_seconds)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -241,7 +249,7 @@ impl CaptureRetentionStore {
         .bind(capture_session_id)
         .bind(stopped_at)
         .bind(status)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -274,7 +282,7 @@ impl CaptureRetentionStore {
             query.push(" OR system_audio_source_session_id = ");
             query.push_bind(source_session_id);
         }
-        Ok(query.build().execute(&self.pool).await?.rows_affected())
+        Ok(query.build().execute(self.db.write()).await?.rows_affected())
     }
 
     pub async fn upsert_capture_segment(
@@ -316,7 +324,7 @@ impl CaptureRetentionStore {
         .bind(&segment.started_at)
         .bind(&segment.ended_at)
         .bind(&segment.status)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         let row = sqlx::query(
@@ -329,7 +337,7 @@ impl CaptureRetentionStore {
         .bind(segment.source_kind.as_str())
         .bind(&segment.source_session_id)
         .bind(segment.segment_index)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.write())
         .await?;
         map_capture_segment(row)
     }
@@ -350,7 +358,7 @@ impl CaptureRetentionStore {
         .bind(source_kind.as_str())
         .bind(source_session_id)
         .bind(segment_index)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         row.map(map_capture_segment).transpose()
@@ -382,7 +390,7 @@ impl CaptureRetentionStore {
         )
         .bind(start_at)
         .bind(end_at)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter()
@@ -418,7 +426,7 @@ impl CaptureRetentionStore {
              LIMIT 1",
         )
         .bind(source_session_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.write())
         .await?
         else {
             return Ok(None);
@@ -489,7 +497,7 @@ impl CaptureRetentionStore {
         // string; conversations store `last_activity_at_ms` in unix millis.
         if let Some(cutoff_ms) = rfc3339_to_ms(&cutoff) {
             summary.deleted_conversations =
-                delete_conversations_older_than(&self.pool, cutoff_ms).await?;
+                delete_conversations_older_than(self.db.write(), cutoff_ms).await?;
         }
 
         if summary.eligible_capture_segments == 0
@@ -499,18 +507,18 @@ impl CaptureRetentionStore {
             return Ok(summary);
         }
 
-        let segment_ids = eligible_segment_ids(&self.pool, &cutoff, context).await?;
-        let orphan_frame_ids = orphan_frame_ids(&self.pool, &cutoff, context).await?;
-        let orphan_audio_ids = orphan_audio_segment_ids(&self.pool, &cutoff, context).await?;
+        let segment_ids = eligible_segment_ids(self.db.read(), &cutoff, context).await?;
+        let orphan_frame_ids = orphan_frame_ids(self.db.read(), &cutoff, context).await?;
+        let orphan_audio_ids = orphan_audio_segment_ids(self.db.read(), &cutoff, context).await?;
         if segment_ids.is_empty() && orphan_frame_ids.is_empty() && orphan_audio_ids.is_empty() {
             return Ok(summary);
         }
 
-        let mut file_paths = file_paths_for_segments(&self.pool, &segment_ids).await?;
-        file_paths.extend(file_paths_for_audio_segments(&self.pool, &segment_ids).await?);
-        file_paths.extend(file_paths_for_orphan_frames(&self.pool, &orphan_frame_ids).await?);
+        let mut file_paths = file_paths_for_segments(self.db.read(), &segment_ids).await?;
+        file_paths.extend(file_paths_for_audio_segments(self.db.read(), &segment_ids).await?);
+        file_paths.extend(file_paths_for_orphan_frames(self.db.read(), &orphan_frame_ids).await?);
         file_paths
-            .extend(file_paths_for_orphan_audio_segments(&self.pool, &orphan_audio_ids).await?);
+            .extend(file_paths_for_orphan_audio_segments(self.db.read(), &orphan_audio_ids).await?);
         file_paths.sort_by_key(|path| match path.path_kind.as_str() {
             "media_file" | "sidecar_file" => 0,
             "frame_dir" => 1,
@@ -522,39 +530,39 @@ impl CaptureRetentionStore {
             .filter(|path| path.capture_segment_id.is_some() && path.path_kind == "media_file")
             .map(|path| path.path.clone())
             .collect::<Vec<_>>();
-        let mut tx = self.pool.begin().await?;
-        let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", &segment_ids).await?;
-        frame_ids.extend(orphan_frame_ids);
-        let mut audio_ids =
-            ids_for_capture_segments(&mut tx, "audio_segments", &segment_ids).await?;
-        audio_ids.extend(orphan_audio_ids);
-        let frame_batch_ids = frame_batch_ids_deletable_with_frames(&mut tx, &frame_ids).await?;
-        let background_job_ids =
-            background_job_ids_for_frame_batches(&mut tx, &frame_batch_ids).await?;
-        let job_ids = processing_job_ids_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
-        delete_search_documents_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
-        summary.deleted_processing_results =
-            delete_by_job_ids(&mut tx, "processing_results", &job_ids).await?;
-        summary.deleted_processing_jobs = delete_processing_jobs(&mut tx, &job_ids).await?;
-        delete_speaker_rows_for_audio_segments(&mut tx, &audio_ids).await?;
-        let deleted_frame_ids = frame_ids.clone();
-        let deleted_audio_segment_ids = audio_ids.clone();
-        summary.deleted_frames = delete_by_ids(&mut tx, "frames", &frame_ids).await?;
-        cleanup_unreferenced_frame_metadata_snapshots(&mut tx).await?;
-        summary.deleted_frame_ids = deleted_frame_ids;
-        summary.deleted_frame_batches =
-            delete_by_ids(&mut tx, "frame_batches", &frame_batch_ids).await?;
-        summary.deleted_background_jobs =
-            delete_by_ids(&mut tx, "background_jobs", &background_job_ids).await?;
-        summary.deleted_audio_segments =
-            delete_by_ids(&mut tx, "audio_segments", &audio_ids).await?;
-        summary.deleted_audio_segment_ids = deleted_audio_segment_ids;
-        summary.deleted_capture_segments =
-            delete_by_ids(&mut tx, "capture_segments", &segment_ids).await?;
         summary.deleted_capture_segment_media_paths = deleted_capture_segment_media_paths;
-        let cleanup_run_id =
-            insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;
-        tx.commit().await?;
+
+        // Per-batch write transactions instead of one sweep-wide tx: a
+        // multi-thousand-row cascade (each row firing FTS5 + vec0 delete
+        // triggers) in a single transaction held the one writer lock far longer
+        // than busy_timeout and starved every other writer — the frame-batch and
+        // semantic-backfill workers and UI invokes — into "database is locked"
+        // plus an unresponsive window. Each batch stays atomic (raw rows + their
+        // derived cascade commit together), so the privacy guarantee holds
+        // per-segment instead of per-sweep. plan_cleanup pre-set deleted_frames /
+        // deleted_audio_segments as estimates; zero them so the per-batch
+        // accumulation below counts actuals (the rest default to 0/empty).
+        summary.deleted_frames = 0;
+        summary.deleted_audio_segments = 0;
+        for segment_chunk in segment_ids.chunks(RETENTION_SEGMENT_BATCH_SIZE) {
+            self.delete_eligible_batch(segment_chunk, &[], &[], &mut summary)
+                .await?;
+        }
+        // Orphan frames/audio belong to no still-deletable segment; clear them in
+        // their own batch (still atomic, still short-locked).
+        if !orphan_frame_ids.is_empty() || !orphan_audio_ids.is_empty() {
+            self.delete_eligible_batch(&[], &orphan_frame_ids, &orphan_audio_ids, &mut summary)
+                .await?;
+        }
+        // Run record is best-effort bookkeeping after the durable deletes (file
+        // tombstoning below keys off its id); a crash here only loses one
+        // latest_status row, never leaves raw-gone-dossier-left.
+        let cleanup_run_id = {
+            let mut tx = self.db.begin_write().await?;
+            let id = insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;
+            tx.commit().await?;
+            id
+        };
         let file_delete_errors = self
             .delete_segment_files_and_tombstone(cleanup_run_id, &file_paths, context)
             .await?;
@@ -569,12 +577,56 @@ impl CaptureRetentionStore {
             )
             .bind(cleanup_run_id)
             .bind(summary.pending_file_tombstones)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         } else {
             summary.status = "completed".to_string();
         }
         Ok(summary)
+    }
+
+    /// Delete one batch of eligible capture segments (and/or orphan frame/audio
+    /// rows) plus their entire derived cascade in ONE short write transaction,
+    /// accumulating counts into `summary`. The cross-batch frame-batch delete is
+    /// safe because `frame_batch_ids_deletable_with_frames` re-checks live
+    /// `frames` state inside each tx: a batch split across batches is deleted by
+    /// whichever batch removes its last frame (earlier batches' frames are
+    /// already committed-gone), so no batch row leaks.
+    async fn delete_eligible_batch(
+        &self,
+        segment_ids: &[i64],
+        orphan_frame_ids: &[i64],
+        orphan_audio_ids: &[i64],
+        summary: &mut RetentionCleanupSummary,
+    ) -> Result<()> {
+        let mut tx = self.db.begin_write().await?;
+        let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", segment_ids).await?;
+        frame_ids.extend_from_slice(orphan_frame_ids);
+        let mut audio_ids = ids_for_capture_segments(&mut tx, "audio_segments", segment_ids).await?;
+        audio_ids.extend_from_slice(orphan_audio_ids);
+        let frame_batch_ids = frame_batch_ids_deletable_with_frames(&mut tx, &frame_ids).await?;
+        let background_job_ids =
+            background_job_ids_for_frame_batches(&mut tx, &frame_batch_ids).await?;
+        let job_ids = processing_job_ids_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
+        delete_search_documents_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
+        summary.deleted_processing_results +=
+            delete_by_job_ids(&mut tx, "processing_results", &job_ids).await?;
+        summary.deleted_processing_jobs += delete_processing_jobs(&mut tx, &job_ids).await?;
+        delete_speaker_rows_for_audio_segments(&mut tx, &audio_ids).await?;
+        summary.deleted_frames += delete_by_ids(&mut tx, "frames", &frame_ids).await?;
+        cleanup_unreferenced_frame_metadata_snapshots(&mut tx).await?;
+        summary.deleted_frame_ids.extend(frame_ids);
+        summary.deleted_frame_batches +=
+            delete_by_ids(&mut tx, "frame_batches", &frame_batch_ids).await?;
+        summary.deleted_background_jobs +=
+            delete_by_ids(&mut tx, "background_jobs", &background_job_ids).await?;
+        summary.deleted_audio_segments +=
+            delete_by_ids(&mut tx, "audio_segments", &audio_ids).await?;
+        summary.deleted_audio_segment_ids.extend(audio_ids);
+        summary.deleted_capture_segments +=
+            delete_by_ids(&mut tx, "capture_segments", segment_ids).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn latest_status(&self, policy: RetentionPolicy) -> Result<RetentionCleanupSummary> {
@@ -590,7 +642,7 @@ impl CaptureRetentionStore {
              LIMIT 1",
         )
         .bind(policy.as_str())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
         let pending = self.pending_file_tombstone_count().await?;
         let Some(row) = row else {
@@ -630,7 +682,7 @@ impl CaptureRetentionStore {
              WHERE status IN ('pending', 'failed')
              ORDER BY id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         let mut resolved = 0_i64;
         for row in rows {
@@ -645,7 +697,7 @@ impl CaptureRetentionStore {
                          WHERE id = ?1",
                     )
                     .bind(id)
-                    .execute(&self.pool)
+                    .execute(self.db.write())
                     .await?;
                 }
                 Err(error) => {
@@ -657,7 +709,7 @@ impl CaptureRetentionStore {
                     )
                     .bind(id)
                     .bind(error)
-                    .execute(&self.pool)
+                    .execute(self.db.write())
                     .await?;
                 }
             }
@@ -671,13 +723,13 @@ impl CaptureRetentionStore {
         cutoff: String,
         context: &RetentionCleanupContext,
     ) -> Result<RetentionCleanupSummary> {
-        let segment_ids = eligible_segment_ids(&self.pool, &cutoff, context).await?;
+        let segment_ids = eligible_segment_ids(self.db.read(), &cutoff, context).await?;
         let mut summary = RetentionCleanupSummary {
             policy: policy.as_str().to_string(),
             cutoff_ended_before: Some(cutoff.clone()),
             eligible_capture_segments: segment_ids.len() as i64,
-            skipped_active_segments: count_active_skipped(&self.pool, context).await?,
-            skipped_running_jobs: count_running_blocked_segments(&self.pool, &cutoff, context)
+            skipped_active_segments: count_active_skipped(self.db.read(), context).await?,
+            skipped_running_jobs: count_running_blocked_segments(self.db.read(), &cutoff, context)
                 .await?,
             pending_file_tombstones: self.pending_file_tombstone_count().await?,
             status: "skipped".to_string(),
@@ -685,13 +737,13 @@ impl CaptureRetentionStore {
         };
         if !segment_ids.is_empty() {
             summary.deleted_frames =
-                count_by_capture_segments(&self.pool, "frames", &segment_ids).await?;
+                count_by_capture_segments(self.db.read(), "frames", &segment_ids).await?;
             summary.deleted_audio_segments =
-                count_by_capture_segments(&self.pool, "audio_segments", &segment_ids).await?;
+                count_by_capture_segments(self.db.read(), "audio_segments", &segment_ids).await?;
         }
         summary.deleted_frames +=
-            orphan_frame_ids(&self.pool, &cutoff, context).await?.len() as i64;
-        summary.deleted_audio_segments += orphan_audio_segment_ids(&self.pool, &cutoff, context)
+            orphan_frame_ids(self.db.read(), &cutoff, context).await?.len() as i64;
+        summary.deleted_audio_segments += orphan_audio_segment_ids(self.db.read(), &cutoff, context)
             .await?
             .len() as i64;
         // Conversations obey the same local-calendar cutoff and are deleted by
@@ -700,7 +752,7 @@ impl CaptureRetentionStore {
         // yields the same skip semantics as the run path.
         if let Some(cutoff_ms) = rfc3339_to_ms(&cutoff) {
             summary.deleted_conversations =
-                count_conversations_older_than(&self.pool, cutoff_ms).await?;
+                count_conversations_older_than(self.db.read(), cutoff_ms).await?;
         }
         Ok(summary)
     }
@@ -709,7 +761,7 @@ impl CaptureRetentionStore {
         Ok(sqlx::query(
             "SELECT COUNT(*) AS count FROM retention_file_tombstones WHERE status IN ('pending', 'failed')",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?
         .get("count"))
     }
@@ -732,7 +784,7 @@ impl CaptureRetentionStore {
         .bind(path)
         .bind(path_kind)
         .bind(last_error)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -1870,7 +1922,7 @@ mod tests {
             .await
             .expect("capture session should insert");
 
-            let store = CaptureRetentionStore::new(pool.clone());
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool.clone()));
             store
                 .upsert_screen_segment_for_source_session(
                     "screen-source-1",
@@ -1916,7 +1968,7 @@ mod tests {
                 .await
                 .expect("in-memory db should open");
             create_retention_cleanup_tables(&pool).await;
-            let store = CaptureRetentionStore::new(pool);
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
 
             store
                 .upsert_capture_segment(&NewCaptureSegment {
@@ -1991,7 +2043,7 @@ mod tests {
             .await
             .expect("linked frame should insert");
 
-            let store = CaptureRetentionStore::new(pool);
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
             let segments = store
                 .list_finalized_screen_segments_overlapping_window(
                     "2026-05-16T07:45:30Z",
@@ -2035,7 +2087,7 @@ mod tests {
             .await
             .expect("segments should insert");
 
-            let store = CaptureRetentionStore::new(pool);
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
             let segments = store
                 .list_finalized_screen_segments_overlapping_window(
                     "2026-05-16T07:45:30Z",
@@ -2085,7 +2137,7 @@ mod tests {
                 .await
                 .expect("processing result should insert");
 
-            let summary = CaptureRetentionStore::new(pool.clone())
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2106,6 +2158,200 @@ mod tests {
                     .expect("count should query")
                     .get("count");
                 assert_eq!(count, 0, "{table} should be empty after cleanup");
+            }
+        });
+    }
+
+    /// A sweep spanning more capture segments than `RETENTION_SEGMENT_BATCH_SIZE`
+    /// still deletes every eligible segment + frame — exercising the per-batch
+    /// chunk loop (>1 write transaction) that keeps each writer-lock hold short.
+    #[test]
+    fn cleanup_deletes_segments_across_multiple_batches() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+
+            // More segments than one batch → at least two write transactions.
+            let segment_count = RETENTION_SEGMENT_BATCH_SIZE as i64 + 2;
+            for id in 1..=segment_count {
+                sqlx::query(
+                    "INSERT INTO capture_segments (
+                        id, capture_session_id, source_kind, source_session_id, segment_index,
+                        media_file_path, started_at, ended_at, status
+                     ) VALUES (?1, 'capture-1', 'screen', 'screen-source-1', ?1,
+                        '/tmp/mnema-multibatch-missing.mov',
+                        '2026-05-10T15:00:00Z', '2026-05-10T15:05:00Z', 'completed')",
+                )
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("capture segment should insert");
+                sqlx::query(
+                    "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                     VALUES ('screen-source-1', '/tmp/mnema-multibatch-frame.jpg', '2026-05-10T15:01:50Z', ?1, NULL)",
+                )
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("frame should insert");
+            }
+
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.deleted_capture_segments, segment_count);
+            assert_eq!(summary.deleted_frames, segment_count);
+            assert_eq!(summary.deleted_frame_ids.len() as i64, segment_count);
+            for table in ["capture_segments", "frames"] {
+                let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count should query");
+                assert_eq!(count, 0, "{table} should be empty after a multi-batch cleanup");
+            }
+        });
+    }
+
+    /// ADR 0029 (behavioral): aging raw media out via the Retention Policy must
+    /// NOT cascade into derived `user_context_*` data. We seed an orphan frame
+    /// plus the Activity / activity-evidence / Conclusion derived from it, run a
+    /// real cleanup that deletes the frame, and assert the frame is gone while
+    /// every user_context row survives. With `foreign_keys = ON`, this is the
+    /// guard a source-grep can't be: a future migration that added an `ON DELETE
+    /// CASCADE` FK from `user_context_activity_evidence.subject_id` to
+    /// `frames(id)` would silently delete derived data here and fail this test.
+    #[test]
+    fn run_cleanup_deletes_source_frames_but_user_context_rows_survive() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            // The derived-data tables, deliberately with NO foreign key to
+            // `frames` — that absence is the ADR 0029 guarantee under test.
+            for statement in [
+                "CREATE TABLE user_context_activities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    ended_at_ms INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                )",
+                "CREATE TABLE user_context_activity_evidence (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    activity_id INTEGER NOT NULL REFERENCES user_context_activities(id) ON DELETE CASCADE,
+                    subject_type TEXT NOT NULL,
+                    subject_id INTEGER NOT NULL,
+                    captured_at_ms INTEGER
+                )",
+                "CREATE TABLE user_context_conclusions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject TEXT NOT NULL,
+                    statement TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'visible',
+                    formed_at_ms INTEGER NOT NULL,
+                    last_supported_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                )",
+            ] {
+                sqlx::query(statement)
+                    .execute(&pool)
+                    .await
+                    .expect("user_context test table should be created");
+            }
+            sqlx::query("PRAGMA foreign_keys = ON")
+                .execute(&pool)
+                .await
+                .expect("enable foreign keys");
+
+            // An aged orphan frame (the raw media Retention will delete).
+            sqlx::query(
+                "INSERT INTO frames (id, session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                 VALUES (1, 'screen-source-1', '/tmp/mnema-retention-derived.jpg', '2026-05-10T15:01:50Z', NULL, NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("orphan frame should insert");
+            // The derived Activity, its evidence pointing AT that frame, and a
+            // Conclusion — exactly what must outlive the raw frame.
+            sqlx::query(
+                "INSERT INTO user_context_activities (id, title, summary, started_at_ms, ended_at_ms, created_at_ms)
+                 VALUES (1, 'Studied retention', 'Read the ADR', 1, 2, 3)",
+            )
+            .execute(&pool)
+            .await
+            .expect("activity should insert");
+            sqlx::query(
+                "INSERT INTO user_context_activity_evidence (activity_id, subject_type, subject_id, captured_at_ms)
+                 VALUES (1, 'frame', 1, 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("activity evidence should insert");
+            sqlx::query(
+                "INSERT INTO user_context_conclusions (subject, statement, confidence, formed_at_ms, last_supported_at_ms, updated_at_ms, created_at_ms)
+                 VALUES ('Retention', 'Derived data outlives raw media', 0.9, 1, 1, 1, 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("conclusion should insert");
+
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            // The raw frame was aged out.
+            assert_eq!(summary.deleted_frames, 1, "the aged frame is deleted");
+            let frames: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frames")
+                .fetch_one(&pool)
+                .await
+                .expect("count frames");
+            assert_eq!(frames, 0, "no frames remain after retention cleanup");
+
+            // ...but every derived row survives (no cascade).
+            for table in [
+                "user_context_activities",
+                "user_context_activity_evidence",
+                "user_context_conclusions",
+            ] {
+                let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count user_context table");
+                assert_eq!(
+                    count, 1,
+                    "{table} must survive Retention Policy aging (ADR 0029)"
+                );
             }
         });
     }
@@ -2160,7 +2406,7 @@ mod tests {
                 .await
                 .expect("enable foreign keys");
 
-            let summary = CaptureRetentionStore::new(pool.clone())
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup(
                     RetentionPolicy::Days7,
                     now,
@@ -2232,7 +2478,7 @@ mod tests {
             .await
             .expect("audio segments should insert");
 
-            let summary = CaptureRetentionStore::new(pool.clone())
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2276,7 +2522,7 @@ mod tests {
             .await
             .expect("orphan frame should insert");
 
-            CaptureRetentionStore::new(pool.clone())
+            CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup_with_mode(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2322,7 +2568,7 @@ mod tests {
             .await
             .expect("cleanup runs should insert");
 
-            let status = CaptureRetentionStore::new(pool)
+            let status = CaptureRetentionStore::new(CaptureDb::single(pool))
                 .latest_status(RetentionPolicy::Days7)
                 .await
                 .expect("latest status should query");
@@ -2418,7 +2664,7 @@ mod tests {
             .await
             .expect("processing jobs should insert");
 
-            let summary = CaptureRetentionStore::new(pool)
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool))
                 .preview_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2477,7 +2723,7 @@ mod tests {
             .await
             .expect("frame should insert");
 
-            let summary = CaptureRetentionStore::new(pool)
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool))
                 .preview_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:10:00Z"),
@@ -2529,7 +2775,7 @@ mod tests {
             .await
             .expect("frames should insert");
 
-            let summary = CaptureRetentionStore::new(pool.clone())
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
                 .run_cleanup(
                     RetentionPolicy::Days7,
                     rfc3339("2026-05-17T15:06:30Z"),

@@ -165,7 +165,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        db::Database, AudioSegmentSourceKind, NewAudioSegment, ProcessingJobDraft, ProcessorBackend,
+        db::{CaptureDb, Database},
+        AudioSegmentSourceKind, NewAudioSegment, ProcessingJobDraft, ProcessorBackend,
     };
 
     struct TestDir {
@@ -256,7 +257,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let segment = store
                 .upsert_audio_segment(&NewAudioSegment::new(
                     AudioSegmentSourceKind::Microphone,

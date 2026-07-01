@@ -47,6 +47,7 @@ export interface OnboardingLifecycleTarget {
   draftCaptureMicrophone: boolean;
   draftCaptureSystemAudio: boolean;
   readonly canComplete: boolean;
+  readonly canSkipToDashboard: boolean;
   readonly ai: OnboardingAiStore;
   readonly appPrivacyExclusion: PrivacyExclusionLoaders;
   syncDrafts(next: RecordingSettings): void;
@@ -123,7 +124,14 @@ export async function finishOnboarding(
   target: OnboardingLifecycleTarget,
   startRecording: boolean,
 ): Promise<void> {
-  if (target.settings === null || !target.canComplete) return;
+  // "Start recording" requires full model readiness (`canComplete`); the
+  // "Just open the dashboard" escape hatch only requires a serializable config
+  // (`canSkipToDashboard`) so a mid-download / un-ready model never traps the
+  // user in onboarding. The skip still commits the settings (with that feature
+  // enabled — its download simply continues in the background) and marks
+  // onboarding complete, it just doesn't start capture.
+  const ready = startRecording ? target.canComplete : target.canSkipToDashboard;
+  if (target.settings === null || !ready) return;
   target.completing = true;
   target.starting = startRecording;
   target.errorMessage = null;

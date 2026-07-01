@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import { formatTimestampCompact } from "$lib/format-time";
   import AudioWaveform from "$lib/components/AudioWaveform.svelte";
 
@@ -69,14 +70,17 @@
 
 <!-- The card root is itself the <button> select target, so the "open in browser"
      control cannot nest inside it (invalid HTML). This positioned wrapper makes
-     the card-button and the open-button DOM siblings. -->
+     the card-button and the open-button DOM siblings. The select button is a
+     natural tab stop (no tabindex override): the strip is plain presentation with
+     no roving model, so every cited source — frame AND audio — is reachable and
+     activatable (Enter/Space) by keyboard, not mouse-only. -->
+
 <div class="source-card-wrap">
 <button
   class="source-card"
   class:source-card--frame={kind === "frame"}
   class:source-card--audio={kind === "audio"}
   type="button"
-  tabindex="-1"
   aria-label={kind === "frame"
     ? `Screen capture from ${appName ?? "Unknown app"}`
     : `${isMic ? "Microphone" : "System audio"} capture`}
@@ -84,7 +88,7 @@
 >
   {#if kind === "frame"}
     <div class="source-card__thumb">
-      <svg class="source-card__thumb-glyph" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" aria-hidden="true">
+      <svg class="source-card__thumb-glyph" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
         <rect x="1.5" y="2" width="11" height="8" rx="1.5" />
         <path d="M4 12h6" />
         <path d="M7 10v2" />
@@ -123,7 +127,7 @@
       {/if}
     </div>
     {#if windowTitle}
-      <span class="source-card__sub" title={windowTitle}>{windowTitle}</span>
+      <span class="source-card__sub" use:tip={windowTitle}>{windowTitle}</span>
     {/if}
     <span class="source-card__time">{formatTimestampCompact(startedAt)}</span>
   </div>
@@ -138,7 +142,7 @@
     type="button"
     class="source-card__open"
     class:source-card__open--busy={opening}
-    title={`Open ${url} in browser`}
+    use:tip={`Open ${url} in browser`}
     aria-label={`Open ${openHost} in browser`}
     disabled={opening}
     onclick={handleOpen}
@@ -284,7 +288,7 @@
 
   .source-card__source {
     flex: 0 0 auto;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--app-text-muted);
   }
@@ -333,7 +337,7 @@
     font-size: 10px;
     line-height: 1.6;
     cursor: pointer;
-    opacity: 0;
+    opacity: 0.35;
     transition:
       opacity 0.12s ease,
       color 0.12s ease,

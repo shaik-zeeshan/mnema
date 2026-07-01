@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Subjects — the browsable Subjects index sub-surface, "Conviction view"
   // redesign (Subjects-tab Conviction redesign, Slice 2).
   //
@@ -26,15 +27,20 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
+  import { openSettings } from "$lib/surface-windows";
   import type {
     Conclusion,
     SubjectView,
     ConclusionEvidenceRef,
     Activity,
+    AiRuntimeStatus,
+    UserContextStatus,
   } from "$lib/types/recording";
   import Sparkline from "$lib/insights/charts/Sparkline.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import {
     type Axis,
     type Trend,
@@ -48,6 +54,7 @@
     debounce,
   } from "$lib/insights/subjectsTiers";
   import { rankSubjects } from "$lib/insights/subjectSearch";
+  import { humanizeError } from "$lib/format-error";
 
   // Number of placeholder rows shown while the conclusions load.
   const SKELETON_COUNT = 6;
@@ -58,17 +65,12 @@
 
   let { onOpenSubject }: Props = $props();
 
-  // Category palette cycled to colour each conclusion's sparkline line.
-  const CAT_PALETTE = [
-    "--cat-creating",
-    "--cat-communication",
-    "--cat-meetings",
-    "--cat-research",
-    "--cat-learning",
-    "--cat-organizing",
-    "--cat-personal",
-    "--cat-entertainment",
-  ] as const;
+  // Sparkline lines encode MAGNITUDE, not identity: the top conclusion draws in
+  // accent and the remaining lines are a single neutral grey, so a subject with
+  // many conclusions never fans out into a hard-to-decode rainbow of hues
+  // (categorical colours past ~5-6 stop mapping reliably to meaning).
+  const SPARK_LEAD = "--app-accent";
+  const SPARK_REST = "--chart-grey-3";
 
   const FLOOR = 0.15;
 
@@ -97,10 +99,18 @@
   let conclusions = $state<Conclusion[] | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
+  // Engine on/off — lets the empty state tell "engine is off, turn it on" apart
+  // from "engine is on but hasn't formed any views yet" (two very different
+  // next steps). null until the first status call resolves.
+  let engineOn = $state<boolean | null>(null);
 
   // Grouping axis for the tier layout. "conviction" = how firmly held (default);
   // "movement" = which way it's heading. Drives `buildTiers`.
   let axis = $state<Axis>("conviction");
+  const AXIS_OPTIONS = [
+    { value: "conviction", label: "By conviction" },
+    { value: "movement", label: "By movement" },
+  ];
 
   // Search box. `searchQuery` is the raw input; `appliedQuery` is the debounced
   // value the ranking actually runs on (filtering is in-memory and cheap, so the
@@ -119,19 +129,27 @@
   // expand container is an interaction skeleton — Slice 3 fills its content.
   let expandedSubject = $state<string | null>(null);
 
-  // Per-tier paging: each tier shows at most TIER_PAGE rows until the reader
-  // opts into "Show more", which adds the tier's id to `expandedTiers`. Keeps a
-  // crowded tier (e.g. a big "Forming" pile) from dominating the surface while
-  // still being one click from the full list. Reassign the Set on change so the
-  // $state reacts (plain Sets aren't deep-proxied in Svelte 5).
+  // Per-tier paging: each tier shows TIER_PAGE rows at a time. `tierShown` maps a
+  // tier id to how many rows it currently reveals (absent → the default page).
+  // "Show 10 more" grows the count one page at a time rather than dumping the
+  // whole list, so a crowded tier (e.g. a big "Forming" pile) never floods the
+  // surface in a single click. Reassign the Map on change so the $state reacts
+  // (plain Maps aren't deep-proxied in Svelte 5).
   const TIER_PAGE = 10;
-  let expandedTiers = $state<Set<string>>(new Set());
+  let tierShown = $state<Map<string, number>>(new Map());
 
-  function toggleTier(id: string): void {
-    const next = new Set(expandedTiers);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    expandedTiers = next;
+  function shownCount(id: string): number {
+    return tierShown.get(id) ?? TIER_PAGE;
+  }
+  function showMoreTier(id: string): void {
+    const next = new Map(tierShown);
+    next.set(id, shownCount(id) + TIER_PAGE);
+    tierShown = next;
+  }
+  function collapseTier(id: string): void {
+    const next = new Map(tierShown);
+    next.delete(id);
+    tierShown = next;
   }
 
   // Per-subject real trajectory history, fetched lazily. Maps subject → (map of
@@ -145,7 +163,10 @@
 
   // Guards a single in-flight Pin/Dismiss action by conclusion id, so the
   // expanded detail's per-conclusion buttons disable while one is running.
+  // `actionKind` records WHICH action is running so only that button shows its
+  // busy affordance (the sibling stays disabled but unlabelled).
   let actionId = $state<number | null>(null);
+  let actionKind = $state<"pin" | "dismiss" | null>(null);
 
   // ---- Slice 4: realtime staging buffer + refresh pill --------------------
   // Engine `user_context_changed` events never reflow the page while the user
@@ -196,7 +217,7 @@
             ? [pts[0], pts[0]]
             : [c.confidence, c.confidence]; // flat baseline (2 pts so a line draws)
       return {
-        colorVar: CAT_PALETTE[i % CAT_PALETTE.length],
+        colorVar: i === 0 ? SPARK_LEAD : SPARK_REST,
         faded: c.status === "faded",
         points,
       };
@@ -227,7 +248,7 @@
         trend: deriveTrend(cs, history),
         spark,
         topConfidence: top?.confidence ?? 0,
-        catColorVar: spark[0]?.colorVar ?? CAT_PALETTE[0],
+        catColorVar: spark[0]?.colorVar ?? SPARK_LEAD,
       });
     }
     return out;
@@ -302,12 +323,6 @@
   function openSubject(row: SubjectRow): void {
     onOpenSubject(row.subject);
   }
-  function onRowKey(e: KeyboardEvent, row: SubjectRow): void {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      openSubject(row);
-    }
-  }
   function toggleExpand(subject: string): void {
     expandedSubject = expandedSubject === subject ? null : subject;
     if (expandedSubject) void resolveActivitiesFor(expandedSubject);
@@ -325,26 +340,42 @@
   async function togglePinned(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
+    actionKind = "pin";
     try {
       await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
       applyConclusions(await fetchConclusions());
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // Write failure must NOT blow away the loaded list — surface it in a
+      // dialog (mirrors Context.svelte) and leave the rows intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: c.pinned ? "Couldn't unpin conclusion" : "Couldn't pin conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
   async function dismiss(c: Conclusion): Promise<void> {
     if (actionId !== null) return;
     actionId = c.id;
+    actionKind = "dismiss";
     try {
       await invoke("user_context_dismiss_conclusion", { id: c.id });
       applyConclusions(await fetchConclusions());
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // Write failure must NOT blow away the loaded list — surface it in a
+      // dialog (mirrors Context.svelte) and leave the rows intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't dismiss conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
@@ -506,7 +537,7 @@
       // failure keeps the intact rendered rows instead of flashing the error
       // state over good content; we still return the current list below.
       if (!conclusions?.length) {
-        loadError = error instanceof Error ? error.message : String(error);
+        loadError = humanizeError(error);
       }
       return conclusions ?? [];
     }
@@ -528,6 +559,19 @@
     } finally {
       loading = false;
     }
+  }
+
+  // Probe whether the Reasoning Engine is on so the empty state can disambiguate
+  // engine-off from no-data. Best-effort: a failed probe leaves `engineOn` null,
+  // and the empty state falls back to neutral both-cases copy.
+  async function loadEngineStatus(): Promise<void> {
+    const [ai, ctx] = await Promise.all([
+      invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null),
+      invoke<UserContextStatus>("get_user_context_status").catch(() => null),
+    ]);
+    engineOn =
+      Boolean(ai?.enabled && ai?.available) ||
+      Boolean(ctx?.engineAvailable);
   }
 
   // Apply the staged reload now (the refresh-pill click, or auto-apply on idle).
@@ -619,6 +663,7 @@
 
   $effect(() => {
     void untrack(() => loadConclusions());
+    void untrack(() => loadEngineStatus());
 
     // Debounce the engine-change reload (store the wrapped fn so cleanup can
     // cancel a pending trailing call on unmount).
@@ -628,6 +673,7 @@
     let disposed = false;
     void listen("user_context_changed", () => {
       debounced();
+      void loadEngineStatus();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -679,18 +725,32 @@
 
 {#snippet row(r: SubjectRow)}
   {@const open = expandedSubject === r.subject}
+  <!-- The row is a non-interactive container; navigation lives on an explicit
+       button (the subject name/headline) and the caret/Pin/Dismiss are the only
+       other controls — one keyboard path per action, no button-in-button. -->
   <div
     class="card conv-row"
     class:is-faded={r.faded}
     class:is-open={open}
-    role="button"
-    tabindex="0"
-    onclick={() => openSubject(r)}
-    onkeydown={(e) => onRowKey(e, r)}
   >
-    <div class="conv-rowmain">
-      <!-- LEFT: meta -->
-      <div class="conv-meta">
+    <!-- The whole main strip opens the subject on click (so the hover highlight
+         matches the hit-area, not just the left meta). This is a MOUSE-ONLY
+         convenience; the real keyboard path stays the inner `.conv-open` button
+         (one tab stop per action). The caret + pin/dismiss stopPropagation so
+         they don't also navigate. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="conv-rowmain" onclick={() => openSubject(r)}>
+      <!-- LEFT: meta — the navigation trigger (keyboard path). -->
+      <button
+        type="button"
+        class="conv-meta conv-open"
+        aria-label={`Open ${r.subject}`}
+        onclick={(e) => {
+          e.stopPropagation();
+          openSubject(r);
+        }}
+      >
         <div class="conv-metatop">
           <span
             class="conv-catdot"
@@ -698,7 +758,7 @@
           ></span>
           <span class="conv-name">{r.subject}</span>
           {#if r.pinned}
-            <span class="conv-pin" title="Pinned">📌</span>
+            <span class="conv-pin" use:tip={"Pinned"}>★</span>
           {/if}
           <span class="pill {trendPillClass(r.trend)}">{trendLabel(r.trend)}</span>
           <span class="conv-cc">
@@ -707,12 +767,16 @@
           </span>
         </div>
         <div class="conv-headline">{r.headline}</div>
-      </div>
+      </button>
 
       <!-- RIGHT: hero sparkline + figure + caret -->
       <div class="conv-hero">
         <div class="conv-spark">
-          <Sparkline series={r.spark} floor={FLOOR} />
+          <Sparkline
+            series={r.spark}
+            floor={FLOOR}
+            label={`${r.subject} — confidence trend, ${trendLabel(r.trend)}, across ${r.conclusionCount} ${r.conclusionCount === 1 ? "conclusion" : "conclusions"}`}
+          />
         </div>
         <div class="conv-figure">
           <div class="conv-conf">{r.topConfidence.toFixed(2)}</div>
@@ -722,7 +786,8 @@
           type="button"
           class="conv-caret"
           class:is-open={open}
-          aria-label="Expand"
+          aria-label={open ? "Collapse conclusions" : "Expand conclusions"}
+          use:tip={open ? "Collapse conclusions" : "Expand conclusions"}
           aria-expanded={open}
           onclick={(e) => {
             e.stopPropagation();
@@ -746,7 +811,7 @@
               {#each r.conclusions as c (c.id)}
                 {@const faded = c.status === "faded"}
                 <div class="conv-concl-row" class:is-faded={faded}>
-                  <span class="conv-concl-stmt" title={c.statement}>
+                  <span class="conv-concl-stmt" use:tip={c.statement}>
                     {#if c.pinned}<span class="conv-concl-pin" aria-hidden="true"
                         >★</span
                       >{/if}{c.statement}
@@ -767,24 +832,37 @@
                       type="button"
                       class="btn"
                       class:btn--accent={c.pinned}
+                      class:btn--busy={actionId === c.id && actionKind === "pin"}
                       disabled={actionId !== null}
                       onclick={(e) => {
                         e.stopPropagation();
                         void togglePinned(c);
                       }}
                     >
-                      {c.pinned ? "★ Pinned" : "Pin"}
+                      {#if actionId === c.id && actionKind === "pin"}
+                        <span class="btn-spinner" aria-hidden="true"></span>
+                        {c.pinned ? "Unpinning…" : "Pinning…"}
+                      {:else}
+                        {c.pinned ? "★ Pinned" : "Pin"}
+                      {/if}
                     </button>
                     <button
                       type="button"
                       class="btn"
+                      class:btn--busy={actionId === c.id &&
+                        actionKind === "dismiss"}
                       disabled={actionId !== null}
                       onclick={(e) => {
                         e.stopPropagation();
                         void dismiss(c);
                       }}
                     >
-                      Dismiss
+                      {#if actionId === c.id && actionKind === "dismiss"}
+                        <span class="btn-spinner" aria-hidden="true"></span>
+                        Dismissing…
+                      {:else}
+                        Dismiss
+                      {/if}
                     </button>
                   </span>
                 </div>
@@ -883,7 +961,20 @@
   <!-- Controls: search box + grouping-axis toggle -->
   <div class="conv-controls">
     <div class="search">
-      <span class="search-glyph" aria-hidden="true">⌕</span>
+      <svg
+        class="search-glyph"
+        width="13"
+        height="13"
+        viewBox="0 0 14 14"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        aria-hidden="true"
+      >
+        <circle cx="6" cy="6" r="4.5" />
+        <path d="M9.5 9.5 13 13" />
+      </svg>
       <input
         type="search"
         class="search-input"
@@ -895,28 +986,36 @@
         oninput={onSearchInput}
       />
     </div>
-    <div class="sort-seg" role="group" aria-label="Organize subjects by">
-      <button
-        type="button"
-        class:active={axis === "conviction"}
-        aria-pressed={axis === "conviction"}
-        aria-current={axis === "conviction" ? "true" : undefined}
-        onclick={() => (axis = "conviction")}>By conviction</button
-      >
-      <button
-        type="button"
-        class:active={axis === "movement"}
-        aria-pressed={axis === "movement"}
-        aria-current={axis === "movement" ? "true" : undefined}
-        onclick={() => (axis = "movement")}>By movement</button
-      >
-    </div>
+    <Segmented
+      options={AXIS_OPTIONS}
+      value={axis}
+      onValueChange={(v) => (axis = v as Axis)}
+      ariaLabel="Organize subjects by"
+    />
   </div>
+  <!-- Define the grouping axis for newcomers — "conviction" and "movement" aren't
+       self-evident terms. The line tracks the active axis. -->
+  <p class="axis-hint">
+    {#if axis === "conviction"}
+      Conviction — how firmly the engine holds each view (its confidence).
+    {:else}
+      Movement — which way each view is trending: warming, steady, or cooling.
+    {/if}
+  </p>
 
-  {#if loadError}
+  {#if loadError && !conclusions}
     <div class="state state--error">
       <p class="state-title">Couldn't load Subjects.</p>
       <p class="state-detail">{loadError}</p>
+      <button
+        type="button"
+        class="state-retry"
+        onclick={() => void loadConclusions()}
+        disabled={loading}
+      >
+        <span class="state-retry-ico" aria-hidden="true">↻</span>
+        Try again
+      </button>
     </div>
   {:else if loading && !conclusions}
     <!-- Loading skeleton — a few rows matching the loaded row shape so the swap
@@ -943,12 +1042,29 @@
     </div>
   {:else if displayRows.length === 0}
     <div class="state">
-      <p class="state-title">No subjects yet.</p>
-      <p class="state-detail">
-        As the Reasoning Engine forms views about you, each one appears here with
-        its own confidence trajectory. If the engine is off, turn it on in
-        Settings → Access to begin.
-      </p>
+      {#if engineOn === false}
+        <!-- Engine is off — the actionable case: a direct path to turn it on. -->
+        <p class="state-title">The Reasoning Engine is off.</p>
+        <p class="state-detail">
+          Subjects appear as the engine forms views about you — each with its own
+          confidence trajectory. Turn it on to begin.
+        </p>
+        <button
+          type="button"
+          class="state-cta"
+          onclick={() => void openSettings("intelligence")}
+        >
+          Open engine settings
+        </button>
+      {:else}
+        <!-- Engine is on (or status unknown) — nothing concluded yet. -->
+        <p class="state-title">No subjects yet.</p>
+        <p class="state-detail">
+          As the Reasoning Engine forms views about you, each one appears here
+          with its own confidence trajectory. Keep working and check back — they
+          build up as evidence accumulates.
+        </p>
+      {/if}
     </div>
   {:else if searching}
     <!-- Search active: one flat list ranked by relevance, no tier headers. -->
@@ -981,10 +1097,10 @@
   {:else}
     <!-- Tiered layout — one section per non-empty tier. -->
     {#each tiers as tier (tier.id)}
-      {@const tierOpen = expandedTiers.has(tier.id)}
-      {@const shown =
-        tierOpen ? tier.items : tier.items.slice(0, TIER_PAGE)}
+      {@const visible = shownCount(tier.id)}
+      {@const shown = tier.items.slice(0, visible)}
       {@const hidden = tier.items.length - shown.length}
+      {@const nextPage = Math.min(TIER_PAGE, hidden)}
       <section class="conv-tier" class:conv-tier--faded={tier.faded}>
         <div class="conv-tier-head">
           <span class="section-title">{tier.title}</span>
@@ -996,18 +1112,21 @@
             {@render row(r)}
           {/each}
         </div>
-        {#if tier.items.length > TIER_PAGE}
+        {#if hidden > 0}
           <button
             type="button"
             class="conv-tier-more"
-            aria-expanded={tierOpen}
-            onclick={() => toggleTier(tier.id)}
+            onclick={() => showMoreTier(tier.id)}
           >
-            {#if tierOpen}
-              Show less
-            {:else}
-              Show {hidden} more
-            {/if}
+            Show {nextPage} more
+          </button>
+        {:else if visible > TIER_PAGE}
+          <button
+            type="button"
+            class="conv-tier-more"
+            onclick={() => collapseTier(tier.id)}
+          >
+            Show less
           </button>
         {/if}
       </section>
@@ -1035,11 +1154,11 @@
     font-size: 18px;
     font-weight: 600;
     color: var(--app-text-strong);
-    letter-spacing: 0.01em;
+    letter-spacing: -0.01em;
   }
   .conv-head .conv-sub {
     margin: 0;
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text-muted);
     max-width: 760px;
   }
@@ -1047,7 +1166,7 @@
   /* Honest counts line — token-driven, tabular figures so it never reflows. */
   .conv-summary {
     margin: 8px 0 0;
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
@@ -1058,8 +1177,9 @@
   .conv-summary .up {
     color: var(--app-accent-strong);
   }
+  /* faded/cooling count reads quiet (normal decay), not as a danger red. */
   .conv-summary .down {
-    color: var(--app-danger);
+    color: var(--app-text-muted);
   }
   .conv-summary .sep {
     color: var(--app-text-faint);
@@ -1073,6 +1193,13 @@
     gap: 10px;
     flex-wrap: wrap;
     margin: 14px 0 10px;
+  }
+  /* Quiet definition of the active grouping axis (conviction / movement). */
+  .axis-hint {
+    margin: 0 0 14px;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    line-height: 1.5;
   }
 
   /* Search box — same surface as the Chat rail's search so the two read alike. */
@@ -1090,17 +1217,19 @@
     max-width: 320px;
   }
   .search:focus-within {
-    border-color: var(--app-border-hover);
+    border-color: var(--app-accent-border);
+    box-shadow: var(--app-ring);
   }
   .search-glyph {
+    display: block;
+    flex: 0 0 auto;
     color: var(--app-text-subtle);
-    font-size: 12px;
   }
   .search-input {
     flex: 1 1 auto;
     min-width: 0;
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     border: none;
     background: transparent;
     color: var(--app-text);
@@ -1112,42 +1241,6 @@
   .search-input::-webkit-search-cancel-button {
     -webkit-appearance: none;
     appearance: none;
-  }
-
-  /* Segmented grouping-axis control — the canonical segmented control look. */
-  .sort-seg {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-  }
-  .sort-seg button {
-    font: inherit;
-    font-size: 11.5px;
-    line-height: 1;
-    letter-spacing: 0.02em;
-    padding: 0 11px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .sort-seg button:hover {
-    color: var(--app-text-strong);
-  }
-  .sort-seg button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
   }
 
   /* ---- Realtime refresh pill ---- */
@@ -1168,7 +1261,7 @@
     align-items: center;
     gap: 6px;
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     letter-spacing: 0.02em;
     padding: 4px 13px;
     border-radius: 999px;
@@ -1189,6 +1282,9 @@
     color: var(--app-accent-contrast, var(--app-text-strong));
     transform: translateY(-1px);
   }
+  .conv-refresh-pill:not(:disabled):active {
+    transform: translateY(0);
+  }
   .conv-refresh-pill:focus-visible {
     outline: 2px solid var(--app-accent-border);
     outline-offset: 2px;
@@ -1208,14 +1304,14 @@
     margin-bottom: 8px;
   }
   .section-title {
-    font-size: 13px;
+    font-size: var(--text-md);
     font-weight: 600;
     color: var(--app-text-strong);
     letter-spacing: -0.01em;
   }
   .conv-tier-note {
     margin-left: auto;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
@@ -1236,7 +1332,7 @@
     align-self: flex-start;
     margin-top: 8px;
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     letter-spacing: 0.02em;
     padding: 4px 10px;
     border: 1px solid var(--app-border);
@@ -1254,6 +1350,13 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .conv-tier-more:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .conv-tier-more:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .conv-tier--faded .conv-tier-head .section-title {
     color: var(--app-text-subtle);
   }
@@ -1270,7 +1373,6 @@
   }
   .conv-row {
     padding: 0;
-    cursor: pointer;
     overflow: hidden;
     transition:
       background 0.12s ease,
@@ -1280,10 +1382,30 @@
     background: var(--app-surface-hover);
     border-color: var(--app-border-hover);
   }
-  .conv-row:focus-visible {
-    outline: none;
+  /* The whole card lifts to the accent affordance when its navigation button is
+     focused, so keyboard focus is obvious without the card itself being a button. */
+  .conv-row:has(.conv-open:focus-visible) {
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
+  }
+  /* Navigation trigger — a real button reset to look like the meta block. */
+  .conv-open {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: block;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+  .conv-open:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 6px;
   }
   .conv-row.is-faded {
     opacity: 0.6;
@@ -1300,6 +1422,8 @@
     align-items: center;
     gap: 14px;
     padding: 11px 14px;
+    /* The whole strip opens the subject (matches the full-row hover highlight). */
+    cursor: pointer;
   }
 
   /* row LEFT — meta */
@@ -1320,25 +1444,25 @@
     flex: 0 0 auto;
   }
   .conv-name {
-    font-size: 13.5px;
+    font-size: var(--text-md);
     font-weight: 600;
     color: var(--app-text-strong);
     letter-spacing: 0.01em;
     min-width: 0;
   }
   .conv-pin {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-accent-strong);
     flex: 0 0 auto;
   }
   .conv-cc {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
   .conv-headline {
     margin-top: 3px;
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text);
     white-space: nowrap;
     overflow: hidden;
@@ -1350,7 +1474,7 @@
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 1px 7px;
     border-radius: 999px;
@@ -1365,10 +1489,14 @@
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
   }
+  /* "cooling" is normal decay, not an error — so it reads QUIET (muted text on a
+     neutral surface) and the ▼ glyph carries the direction. This keeps the
+     saturated --app-danger token reserved for destructive/contradiction states
+     so the two never collide. */
   .pill.trend-down {
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
+    color: var(--app-text-muted);
+    border-color: var(--app-border);
+    background: var(--app-surface);
   }
   .pill.trend-steady {
     color: var(--app-text-muted);
@@ -1391,23 +1519,28 @@
     min-width: 56px;
   }
   .conv-conf {
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
     line-height: 1.2;
   }
   .conv-moved {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;
   }
   .conv-caret {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
     color: var(--app-text-subtle);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
-    padding: 4px;
+    padding: 0;
     border: none;
     background: transparent;
     cursor: pointer;
@@ -1418,9 +1551,20 @@
   .conv-row:hover .conv-caret {
     color: var(--app-text-muted);
   }
+  .conv-caret:not(:disabled):active {
+    transform: translateY(1px);
+  }
   .conv-caret.is-open {
     transform: rotate(90deg);
     color: var(--app-accent-strong);
+  }
+  .conv-caret.is-open:not(:disabled):active {
+    transform: rotate(90deg) translateY(1px);
+  }
+  .conv-caret:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 4px;
   }
 
   /* ---- Expanded detail (interaction skeleton; Slice 3 fills content) ---- */
@@ -1432,7 +1576,7 @@
     padding: 12px 14px 13px;
   }
   .conv-detail-label {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -1442,7 +1586,7 @@
     margin-top: 13px;
   }
   .ev-empty {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     margin: 0;
   }
@@ -1463,7 +1607,7 @@
     opacity: 0.55;
   }
   .conv-concl-stmt {
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text-strong);
     min-width: 0;
     overflow: hidden;
@@ -1476,10 +1620,10 @@
   .conv-concl-pin {
     color: var(--app-accent-strong);
     margin-right: 5px;
-    font-size: 11px;
+    font-size: var(--text-sm);
   }
   .conv-concl-pct {
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
     text-align: right;
@@ -1519,7 +1663,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -1565,7 +1709,7 @@
     align-items: center;
     gap: 6px;
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     padding: 3px 10px;
     border: 1px solid var(--app-border);
     border-radius: 6px;
@@ -1581,9 +1725,36 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* Busy: the acting button stays legible (no dim) while its sibling dims via
+     :disabled, so the spinner + "Pinning…/Dismissing…" label reads clearly. */
+  .btn--busy:disabled {
+    opacity: 1;
+    cursor: progress;
+  }
+  .btn-spinner {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid var(--app-border-hover);
+    border-top-color: var(--app-text-strong);
+    animation: btn-spin 0.6s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes btn-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .btn--accent {
     border-color: var(--app-accent-border);
@@ -1606,7 +1777,7 @@
     margin-top: 22px;
     padding-top: 12px;
     border-top: 1px solid var(--app-border);
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
 
@@ -1626,14 +1797,79 @@
   }
   .state-title {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     line-height: 1.6;
+  }
+  /* Empty-state CTA — accent button (e.g. "Open engine settings"). */
+  .state-cta {
+    align-self: flex-start;
+    margin-top: 8px;
+    font: inherit;
+    font-size: var(--text-sm);
+    padding: 6px 13px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 7px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
+  }
+  .state-cta:hover {
+    border-color: var(--app-accent);
+  }
+  .state-cta:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .state-cta:active {
+    transform: translateY(1px);
+  }
+  /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
+  .state-retry {
+    align-self: flex-start;
+    margin-top: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .state-retry:hover:not(:disabled) {
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
+  }
+  .state-retry:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .state-retry:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .state-retry-ico {
+    font-size: var(--text-base);
+    line-height: 1;
+    letter-spacing: 0;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -1641,12 +1877,21 @@
     .conv-caret,
     .conv-refresh-pill,
     .conv-tier-more,
-    .sort-seg button,
     .btn {
       transition: none;
     }
     .conv-refresh-pill:hover {
       transform: none;
+    }
+    .btn:not(:disabled):active,
+    .conv-caret:not(:disabled):active,
+    .conv-caret.is-open:not(:disabled):active,
+    .conv-tier-more:not(:disabled):active,
+    .state-retry:not(:disabled):active {
+      transform: none;
+    }
+    .btn-spinner {
+      animation: none;
     }
   }
 </style>

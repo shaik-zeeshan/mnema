@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Context — the user-AUTHORED Context sub-surface (issue #107).
   //
   // The user tells Mnema about themselves directly ("I'm a designer", "I care
@@ -30,8 +31,10 @@
     UserContextStatus,
     DerivationBudgetTier,
     AuthoredContext,
+    DismissedView,
   } from "$lib/types/recording";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import { humanizeError } from "$lib/format-error";
 
   // Placeholder statement rows shown while authored context loads.
   const SKELETON_COUNT = 3;
@@ -65,6 +68,23 @@
   let editText = $state("");
   let editTopic = $state("");
   let savingEdit = $state(false);
+
+  // ── Dismissed archive (the negative space: "what you're NOT") ─────────
+  // Beliefs the user rejected from the inferred dossier. Restoring lifts the
+  // suppression veto — it does NOT resurrect the old conclusion; the belief can
+  // only re-form on the next derivation pass IF the user's activity still
+  // supports it (honest copy below).
+  let dismissed = $state<DismissedView[] | null>(null);
+  let dismissedError = $state<string | null>(null);
+  let showDismissed = $state(false);
+  // Per-row restore busy flag, keyed by `subject\0statement`.
+  let restoringKey = $state<string | null>(null);
+
+  const dismissedCount = $derived(dismissed?.length ?? 0);
+
+  function dismissedKey(d: DismissedView): string {
+    return `${d.subject}\0${d.statement}`;
+  }
 
   // ── Engine tier badge + steering links ───────────────────────────────
   let budgetTier = $state<DerivationBudgetTier | null>(null);
@@ -121,7 +141,7 @@
       statements = list;
       loadError = null;
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      loadError = humanizeError(error);
       statements = statements ?? [];
     } finally {
       loading = false;
@@ -142,6 +162,36 @@
       if (list) conclusions = list;
     } catch {
       // Best-effort; the rail degrades gracefully.
+    }
+  }
+
+  async function loadDismissed(): Promise<void> {
+    try {
+      dismissed = await invoke<DismissedView[]>("user_context_list_dismissed");
+      dismissedError = null;
+    } catch (error) {
+      dismissedError = humanizeError(error);
+      dismissed = dismissed ?? [];
+    }
+  }
+
+  async function restoreDismissed(d: DismissedView): Promise<void> {
+    const key = dismissedKey(d);
+    if (restoringKey === key) return;
+    restoringKey = key;
+    try {
+      await invoke<void>("user_context_restore_dismissed", {
+        subject: d.subject,
+        statement: d.statement,
+      });
+      // Optimistically drop it from the archive; the `user_context_changed`
+      // event the command emits also re-lists, keeping every surface in sync.
+      dismissed = (dismissed ?? []).filter((x) => dismissedKey(x) !== key);
+      dismissedError = null;
+    } catch (error) {
+      dismissedError = humanizeError(error);
+    } finally {
+      restoringKey = null;
     }
   }
 
@@ -167,7 +217,7 @@
       draftText = "";
       draftTopic = "";
     } catch (error) {
-      composerError = error instanceof Error ? error.message : String(error);
+      composerError = humanizeError(error);
     } finally {
       submitting = false;
     }
@@ -204,7 +254,7 @@
       // The list-load error surface only renders when there are no statements,
       // so it's unreachable here (we're editing an existing one). Show a visible
       // dialog instead of silently swallowing the failure.
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = humanizeError(error);
       await message(detail, { title: "Couldn't save context", kind: "error" });
     } finally {
       savingEdit = false;
@@ -223,7 +273,7 @@
       if (editingId === s.id) cancelEdit();
     } catch (error) {
       // Same unreachable-surface problem as saveEdit — surface a visible dialog.
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = humanizeError(error);
       await message(detail, { title: "Couldn't delete context", kind: "error" });
     }
   }
@@ -231,12 +281,14 @@
   $effect(() => {
     void untrack(() => loadStatements());
     void untrack(() => loadSideContext());
+    void untrack(() => loadDismissed());
 
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen("user_context_changed", () => {
       void loadStatements();
       void loadSideContext();
+      void loadDismissed();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -269,7 +321,7 @@
         <div class="composer-head">
           <span class="section-title">Add context</span>
           <span class="spacer"></span>
-          <span class="tier-badge" title="Reasoning Engine derivation tier">
+          <span class="tier-badge" use:tip={"Reasoning Engine derivation tier"}>
             <span class="dot" aria-hidden="true"></span>{tierLabel(budgetTier)}
           </span>
           <span class="authored-pill"><span class="quill">✎</span>authored</span>
@@ -343,6 +395,15 @@
         <div class="state state--error">
           <p class="state-title">Couldn't load your context.</p>
           <p class="state-detail">{loadError}</p>
+          <button
+            type="button"
+            class="state-retry"
+            onclick={() => void loadStatements()}
+            disabled={loading}
+          >
+            <span class="state-retry-ico" aria-hidden="true">↻</span>
+            Try again
+          </button>
         </div>
       {:else if loading && !statements}
         <!-- Loading skeleton rows — mirror the authored-statement shape. The
@@ -439,6 +500,57 @@
           {/each}
         </div>
       {/if}
+
+      <!-- DISMISSED ARCHIVE — the negative space of the inferred dossier. -->
+      {#if dismissedCount > 0 || dismissedError}
+        <div class="list-head dismissed-head">
+          <span class="section-title">Dismissed</span>
+          <span class="pill count-pill">{dismissedCount}</span>
+          <span class="spacer"></span>
+          <button
+            type="button"
+            class="btn btn--ghost"
+            aria-expanded={showDismissed}
+            onclick={() => (showDismissed = !showDismissed)}
+          >
+            {showDismissed ? "Hide" : "Show"}
+          </button>
+        </div>
+
+        {#if showDismissed}
+          <p class="dismissed-note">
+            Beliefs you removed from your dossier. Restoring lets one form again —
+            only if your activity still supports it.
+          </p>
+          {#if dismissedError}
+            <p class="composer-error">{dismissedError}</p>
+          {/if}
+          <div class="stmt-list">
+            {#each dismissed ?? [] as d (dismissedKey(d))}
+              <div class="stmt stmt--dismissed">
+                <div class="stmt-text">{d.statement}</div>
+                <div class="stmt-meta">
+                  <span class="topic-chip">{d.subject}</span>
+                  <span class="meta-time">
+                    dismissed {relativeTime(d.dismissedAtMs)}
+                  </span>
+                  <span class="meta-actions">
+                    <button
+                      type="button"
+                      class="btn btn--ghost"
+                      disabled={restoringKey === dismissedKey(d)}
+                      aria-busy={restoringKey === dismissedKey(d)}
+                      onclick={() => void restoreDismissed(d)}
+                    >
+                      {restoringKey === dismissedKey(d) ? "Restoring…" : "Restore"}
+                    </button>
+                  </span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {/if}
     </div>
 
     <!-- ────────────────────────── SIDE PANEL ────────────────────────── -->
@@ -498,7 +610,7 @@
                   </div>
                   <div class="steer-to">
                     <span class="supports">supports</span>
-                    <span class="infer-chip" title="Inferred conclusion">
+                    <span class="infer-chip" use:tip={"Inferred conclusion"}>
                       ◆ {c.statement}
                     </span>
                     <span class="infer-conf">
@@ -553,7 +665,7 @@
   }
   .ctx-header .subtitle {
     margin: 4px 0 0;
-    font-size: 12.5px;
+    font-size: var(--text-base);
     line-height: 1.6;
     color: var(--app-text-muted);
   }
@@ -603,7 +715,7 @@
     padding: 14px;
   }
   .section-title {
-    font-size: 11px;
+    font-size: var(--text-sm);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -611,7 +723,7 @@
   .pill {
     display: inline-flex;
     align-items: center;
-    font-size: 11px;
+    font-size: var(--text-sm);
     padding: 1px 8px;
     border-radius: 999px;
     border: 1px solid var(--app-border);
@@ -621,7 +733,7 @@
 
   .btn {
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1;
     letter-spacing: 0.02em;
     display: inline-flex;
@@ -642,6 +754,9 @@
   .btn:hover {
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
+  }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
   }
   .btn:disabled {
     opacity: 0.5;
@@ -676,7 +791,7 @@
     font: inherit;
     display: inline-flex;
     align-items: center;
-    font-size: 11px;
+    font-size: var(--text-sm);
     letter-spacing: 0.02em;
     padding: 2px 9px;
     border-radius: 999px;
@@ -703,7 +818,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     padding: 2px 8px;
@@ -724,7 +839,7 @@
     min-height: 60px;
     resize: vertical;
     font: inherit;
-    font-size: 13.5px;
+    font-size: var(--text-md);
     line-height: 1.6;
     padding: 11px 12px;
     border: 1px solid var(--app-border);
@@ -743,7 +858,7 @@
     outline: none;
     border-color: var(--app-accent-border);
     background: var(--app-surface);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .composer-topic {
@@ -752,7 +867,7 @@
   .topic-input {
     width: 100%;
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     padding: 8px 11px;
     border: 1px solid var(--app-border);
     border-radius: 7px;
@@ -768,7 +883,7 @@
   .topic-input:focus {
     outline: none;
     border-color: var(--app-accent-border);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .composer-suggest {
@@ -779,7 +894,7 @@
     margin: 11px 0 0;
   }
   .composer-suggest .suggest-label {
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -797,6 +912,9 @@
     border-color: var(--app-accent-border);
     color: var(--app-accent-strong);
   }
+  .chip--suggest:not(:disabled):active {
+    transform: translateY(1px);
+  }
 
   .composer-foot {
     display: flex;
@@ -811,7 +929,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
   .composer-foot .helper .hint-glyph {
@@ -819,7 +937,7 @@
   }
   .composer-error {
     margin: 10px 0 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-danger);
     line-height: 1.5;
   }
@@ -832,11 +950,28 @@
     margin: 2px 2px 0;
   }
   .count-pill {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     min-width: 18px;
     justify-content: center;
     padding: 1px 7px;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Dismissed archive — the negative space, set apart below standing context. */
+  .dismissed-head {
+    margin-top: 20px;
+  }
+  .dismissed-head .spacer {
+    flex: 1 1 auto;
+  }
+  .dismissed-note {
+    margin: 6px 2px 10px;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    line-height: 1.5;
+  }
+  .stmt--dismissed {
+    opacity: 0.82;
   }
 
   .stmt-list {
@@ -873,7 +1008,7 @@
   }
 
   .stmt-text {
-    font-size: 13.5px;
+    font-size: var(--text-md);
     line-height: 1.55;
     color: var(--app-text-strong);
     font-weight: 600;
@@ -888,7 +1023,7 @@
   .topic-chip {
     display: inline-flex;
     align-items: center;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 1px 7px;
     border-radius: 4px;
@@ -909,7 +1044,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 1px 8px;
     border-radius: 999px;
@@ -918,11 +1053,11 @@
     color: var(--app-accent-strong);
   }
   .authored-pill .quill {
-    font-size: 9.5px;
+    font-size: var(--text-xs);
   }
 
   .stmt-meta .meta-time {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
   .stmt-meta .meta-actions {
@@ -953,7 +1088,7 @@
     min-height: 52px;
     resize: vertical;
     font: inherit;
-    font-size: 13.5px;
+    font-size: var(--text-md);
     line-height: 1.55;
     padding: 10px 11px;
     border: 1px solid var(--app-accent-border);
@@ -964,7 +1099,7 @@
   .stmt-edit textarea:focus {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
   .stmt-edit .edit-row {
     display: flex;
@@ -976,7 +1111,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-accent-strong);
@@ -993,7 +1128,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -1018,7 +1153,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: var(--text-base);
   }
   .av-glyph--authored {
     color: var(--app-accent-strong);
@@ -1031,7 +1166,7 @@
     border: 1px solid var(--app-info-border);
   }
   .av-body .av-head {
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--app-text-strong);
     display: flex;
@@ -1040,11 +1175,11 @@
   }
   .av-body .av-head .av-where {
     font-weight: 400;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-subtle);
   }
   .av-body .av-desc {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--app-text-muted);
     margin-top: 2px;
@@ -1054,7 +1189,7 @@
     align-items: center;
     gap: 5px;
     margin-top: 6px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--app-accent-strong);
@@ -1072,7 +1207,7 @@
     align-items: center;
     gap: 5px;
     margin-top: 6px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -1136,14 +1271,14 @@
     left: 3px;
     bottom: 0;
     color: var(--app-info);
-    font-size: 10px;
+    font-size: var(--text-xs);
     line-height: 1;
   }
   .steer-body {
     min-width: 0;
   }
   .steer-from {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text-strong);
     font-weight: 600;
@@ -1158,7 +1293,7 @@
     gap: 7px;
     flex-wrap: wrap;
     margin-top: 5px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.45;
     color: var(--app-text-muted);
   }
@@ -1169,7 +1304,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -1182,13 +1317,13 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
   .steer-empty {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--app-text-muted);
   }
@@ -1211,19 +1346,19 @@
     border-radius: 6px;
     border: 1px solid var(--app-border-strong);
     color: var(--app-text-subtle);
-    font-size: 12px;
+    font-size: var(--text-base);
   }
   .guardrail-card .gd-body {
     min-width: 0;
   }
   .guardrail-card .gd-title {
-    font-size: 11px;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--app-text);
     letter-spacing: 0.02em;
   }
   .guardrail-card .gd-text {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--app-text-muted);
     margin-top: 3px;
@@ -1248,13 +1383,60 @@
   }
   .state-title {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     line-height: 1.6;
+  }
+  /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
+  .state-retry {
+    align-self: flex-start;
+    margin-top: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .state-retry:hover:not(:disabled) {
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
+  }
+  .state-retry:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .state-retry:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .state-retry-ico {
+    font-size: var(--text-base);
+    line-height: 1;
+    letter-spacing: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn:not(:disabled):active,
+    .chip--suggest:not(:disabled):active,
+    .state-retry:not(:disabled):active {
+      transform: none;
+    }
   }
 </style>

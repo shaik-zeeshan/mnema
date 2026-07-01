@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { onMount, onDestroy, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -22,6 +23,7 @@
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { message } from "@tauri-apps/plugin-dialog";
+  import { humanizeError } from "$lib/format-error";
   import type {
     Conversation,
     ConversationTurn,
@@ -225,7 +227,7 @@
       appliedRefinements = null;
       residualQuery = "";
       parseErrors = [];
-      errorMessage = error instanceof Error ? error.message : String(error);
+      errorMessage = humanizeError(error);
     }
   }
 
@@ -263,12 +265,27 @@
     }
   }
 
+  // Surface a hand-off failure for the open-result/open-source paths. The
+  // brokered open is this window's core action, so a rejected invoke must not
+  // close the window onto nothing — we keep the window open and report instead.
+  async function surfaceResultHandoffFailure(err: unknown): Promise<void> {
+    await message(
+      `Couldn't open that result: ${humanizeError(err, "it may no longer be available.")}`,
+      { title: "Couldn't open result", kind: "error" },
+    );
+  }
+
   async function selectFrame(result: FrameSearchResultDto): Promise<void> {
-    await invoke("open_capture_result_in_main_window", {
-      kind: "frame",
-      frameId: result.representativeFrame.id,
-      audioSegmentId: null,
-    });
+    try {
+      await invoke("open_capture_result_in_main_window", {
+        kind: "frame",
+        frameId: result.representativeFrame.id,
+        audioSegmentId: null,
+      });
+    } catch (err) {
+      await surfaceResultHandoffFailure(err);
+      return;
+    }
     await closeCurrentWindow();
   }
 
@@ -276,15 +293,30 @@
     // Carry the Audio Search Result Anchor (match span start + aligned frame)
     // so the dashboard lands on the selected transcript match rather than the
     // segment start, mirroring the in-dashboard selectAudioSearchResult path.
-    await invoke("open_capture_result_in_main_window", {
-      kind: "audio",
-      frameId: null,
-      audioSegmentId: result.audioSegment.id,
-      spanStartMs: result.spanStartMs,
-      alignedFrameId: result.alignedFrame?.id ?? null,
-    });
+    try {
+      await invoke("open_capture_result_in_main_window", {
+        kind: "audio",
+        frameId: null,
+        audioSegmentId: result.audioSegment.id,
+        spanStartMs: result.spanStartMs,
+        alignedFrameId: result.alignedFrame?.id ?? null,
+      });
+    } catch (err) {
+      await surfaceResultHandoffFailure(err);
+      return;
+    }
     await closeCurrentWindow();
   }
+
+  // Opening a cited source closes the Quick Recall window. By the time the user
+  // clicks a source they have almost always SEEN the answer (focused + terminal →
+  // askOutcomeSeen), so without this flag the dismiss/idle-clear would treat the
+  // close as ordinary teardown and re-summon would land on an empty search — the
+  // answer gone with no breadcrumb. This one-shot flag keeps the thread alive
+  // across the source hand-off so re-summoning restores the same answer (the
+  // thread is also persisted server-side and reachable via "Continue in Chat").
+  // Reset on the next focus (re-summon) so an ordinary later dismiss is normal.
+  let sourceHandoffPending = $state(false);
 
   // Hand off an Ask AI answer source to the main window, mirroring
   // selectFrame/selectAudio (frame xor audio carried by the source kind).
@@ -292,13 +324,21 @@
     // Carry the Audio Search Result Anchor for audio sources (frame sources
     // leave these null), mirroring selectAudio so the dashboard lands on the
     // cited transcript match rather than the segment start.
-    await invoke("open_capture_result_in_main_window", {
-      kind: source.kind,
-      frameId: source.frameId,
-      audioSegmentId: source.audioSegmentId,
-      spanStartMs: source.spanStartMs ?? null,
-      alignedFrameId: source.alignedFrameId ?? null,
-    });
+    try {
+      await invoke("open_capture_result_in_main_window", {
+        kind: source.kind,
+        frameId: source.frameId,
+        audioSegmentId: source.audioSegmentId,
+        spanStartMs: source.spanStartMs ?? null,
+        alignedFrameId: source.alignedFrameId ?? null,
+      });
+    } catch (err) {
+      await surfaceResultHandoffFailure(err);
+      return;
+    }
+    // Preserve the thread across the close so re-summon restores the answer
+    // instead of dropping to a blank search (see sourceHandoffPending above).
+    sourceHandoffPending = true;
     await closeCurrentWindow();
   }
 
@@ -758,6 +798,10 @@
   // it to distinguish an in-help click (keep open) from an outside click (close).
   let syntaxHelpEl = $state<HTMLDivElement | null>(null);
   const SYNTAX_HELP_POPOVER_ID = "quick-recall-syntax-help";
+  // Stable id for the disabled-Ask-AI reason line, referenced by the disabled
+  // button's aria-describedby so keyboard/AT users reach the reason (the native
+  // `title` tooltip is mouse-only).
+  const ASK_UNAVAILABLE_HINT_ID = "quick-recall-ask-unavailable-hint";
 
   function toggleSyntaxHelp(): void {
     syntaxHelpOpen = !syntaxHelpOpen;
@@ -891,20 +935,46 @@
     summaryExpanded: boolean;
     // Per-turn copy-confirmation flash (icon swaps to a check briefly).
     copied: boolean;
+    // Per-turn copy-FAILURE flash (button flashes red briefly when the
+    // clipboard write rejects, so a failed copy isn't silent).
+    copyFailed: boolean;
     // Last applied `ask_ai_update` version for this turn (0 if none — e.g. a
     // hydrated past turn that isn't live).
     version: number;
+    // The user STOPPED this turn mid-stream. Frontend-only marker (the backend
+    // persists the partial as an ordinary `done` turn) driving a "Stopped early"
+    // tag in Quick Recall so the cut-off is acknowledged where it happened.
+    stoppedEarly?: boolean;
   };
 
-  // The thread id (one live PI session). null when no thread is open.
+  // The thread id of the live, streamable thread. null when no thread is open,
+  // OR after a Stop (the partial is persisted; its id moves to
+  // `stoppedConversationId` so late buffered updates stop matching the guard).
   let askConversationId = $state<string | null>(null);
+  // The persisted id of a STOPPED thread. Kept apart from `askConversationId`
+  // (so the late-update guard in cancelActiveAsk stays intact) purely to keep
+  // "Continue in Chat" + the follow-up composer pointed at the real, already-
+  // persisted `done` thread. Cleared on reset or when a follow-up re-adopts it.
+  let stoppedConversationId = $state<string | null>(null);
+  // The id of whichever thread is continuable right now — live or just-stopped.
+  let askContinuableConversationId = $derived(
+    askConversationId ?? stoppedConversationId,
+  );
   // The transcript. The last entry is the live turn that stream events feed.
   let askTurns = $state<AskTurn[]>([]);
   // True between a turn starting and that turn's terminal done/error event.
   // Thread-level: gates the composer (disabled while any turn streams).
   let askStreaming = $state(false);
 
-  // The seed used for the current thread's FIRST turn, so an error "Try again"
+  // True once the user has Stopped a streaming answer in place. Stopping drops
+  // the live session id (cancelActiveAsk), so the composer and "Continue in
+  // Chat" hide via their askConversationId guards — which would otherwise strand
+  // the partial answer with no way forward. This flag drives an explicit
+  // "Stopped — start a new question" affordance so the surface isn't a dead end.
+  // Cleared whenever a fresh thread starts or the thread state is reset.
+  let askStopped = $state(false);
+
+  // The seed used for the current thread's FIRST turn, so an error "Retry"
   // can re-run the exact same question + seed pairing as a fresh thread.
   let askLastSeed = $state<string | null>(null);
 
@@ -923,12 +993,64 @@
     askTurns.length > 0 ? askTurns[askTurns.length - 1] : null,
   );
 
+  // AT-only phase announcement for the Ask AI transcript. The transcript itself
+  // is NOT an aria-live region — streaming the answer token-by-token through one
+  // polite region floods a screen reader with a re-read of the whole growing
+  // answer on every delta. Instead this small string announces ONLY the live
+  // turn's phase transitions (searching → thinking → writing → settled / error /
+  // stopped), mirroring the search door's `searchStatusAnnouncement` + its
+  // visually-hidden `role="status"` region. The visible transcript carries
+  // `aria-busy` while streaming so AT knows it's updating without narrating each
+  // token.
+  let askPhaseAnnouncement = $derived.by((): string => {
+    if (mode !== "ask" || !askSubmitted) {
+      return "";
+    }
+    if (askStopped) {
+      return "Stopped.";
+    }
+    const live = askLiveTurn;
+    if (live === null) {
+      return "";
+    }
+    switch (live.phase) {
+      case "seeding":
+        return "Searching your captures.";
+      case "thinking":
+        return "Thinking.";
+      case "streaming":
+        return "Writing the answer.";
+      case "error":
+        return live.errorMessage ?? "Ask AI failed.";
+      case "done":
+        return live.sources.length > 0
+          ? "Answer ready, with sources."
+          : "Answer ready.";
+      default:
+        return "";
+    }
+  });
+
+  // The live answer is settled and has copyable text — gates the footer's ⌃C
+  // copy hint (the ⌘C shortcut existed but was never surfaced anywhere).
+  let askCopyAvailable = $derived(
+    askLiveTurn !== null &&
+      askLiveTurn.phase === "done" &&
+      turnAnswerText(askLiveTurn).length > 0,
+  );
+
   // The composer is available once the FIRST answer has completed and no turn is
   // currently streaming-or-pending. It stays VISIBLE (but disabled) while a
   // follow-up streams. Hidden entirely while turn 1 is still seeding / streaming
   // / errored-with-no-completed-answer.
   let askHasCompletedTurn = $derived(askTurns.some((t) => t.phase === "done"));
-  let askComposerVisible = $derived(askSubmitted && askHasCompletedTurn);
+  // Visible once the first answer completes. A STOPPED thread stays continuable
+  // (its partial is persisted as a `done` turn under `stoppedConversationId`),
+  // so the composer keeps showing — a follow-up re-adopts that thread and runs
+  // a fresh turn that builds on the partial.
+  let askComposerVisible = $derived(
+    askSubmitted && askHasCompletedTurn && askContinuableConversationId !== null,
+  );
 
   // ---------------------------------------------------------------------------
   // "Seen" state (background completion — see PLAN.md slice 1)
@@ -998,7 +1120,17 @@
     } catch {
       // Best-effort: proceed to open even if the suppression call failed.
     }
-    void openUrl(href);
+    // Await the open so a launcher failure surfaces instead of vanishing; match
+    // the openCapturedUrl "Couldn't open URL: …" feedback so every open-link
+    // affordance reports the same way.
+    try {
+      await openUrl(href);
+    } catch (err) {
+      await message(
+        `Couldn't open URL: ${humanizeError(err, "the link could not be opened")}`,
+        { title: "Couldn't open link", kind: "error" },
+      );
+    }
   }
 
   // The scrollable transcript region; focused on entry so Escape (back-to-search)
@@ -1109,7 +1241,7 @@
       // Treat a failed availability probe as unavailable rather than erroring.
       askAvailability = {
         available: false,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: humanizeError(error),
       };
     }
   }
@@ -1137,6 +1269,7 @@
       seededResultCount: null,
       summaryExpanded: false,
       copied: false,
+      copyFailed: false,
       version: 0,
     };
   }
@@ -1247,7 +1380,7 @@
       if (hydrated.length === 0) return;
       askTurns = hydrated;
       askSubmitted = true;
-      // Restore the first-turn question so the turn-1 "Try again" button (which
+      // Restore the first-turn question so the turn-1 "Retry" button (which
       // re-runs the whole thread via retryAsk) isn't silently dead after a
       // re-summon. The seed isn't persisted per turn, so retry re-runs without
       // one (askLastSeed stays null, which startAsk handles).
@@ -1277,7 +1410,15 @@
     } catch {
       return;
     }
-    if (snapshot === null || askConversationId !== conversationId) return;
+    if (askConversationId !== conversationId) return;
+    if (snapshot === null) {
+      // No live turn: the conversation is fully finalized. A persisted
+      // "streaming" last turn may have left `askStreaming = true` during
+      // hydrate (finalize-race); clear it so the follow-up composer isn't
+      // left permanently disabled.
+      askStreaming = false;
+      return;
+    }
     const turn = askTurns.find((t) => t.turnIndex === snapshot.view.turnIndex);
     if (!turn) return;
     adoptView(turn, snapshot.view, snapshot.version);
@@ -1331,6 +1472,13 @@
         break;
       case "reasoning":
         turn.reasoning = (turn.reasoning ?? "") + update.text;
+        // Reasoning streamed LIVE shows as an always-expanded panel; once the
+        // answer starts it settles into the collapsed "Thought process" chip.
+        // Mark it expanded so a reader mid-thought isn't collapsed out from under
+        // them on settle — they can still collapse it manually. Only set on the
+        // live stream (this op), never on snapshot/hydrate (adoptView), so a
+        // cold-reloaded turn stays collapsed.
+        turn.reasoningExpanded = true;
         break;
       case "toolActivity":
         turn.toolActivities = [...turn.toolActivities, update.entry];
@@ -1430,7 +1578,7 @@
       await cancelActiveAsk();
     }
 
-    // Normalize and record the seed so an error "Try again" reuses it exactly.
+    // Normalize and record the seed so an error "Retry" reuses it exactly.
     const normalizedSeed =
       seedQuery && seedQuery.trim().length > 0 ? seedQuery.trim() : null;
     askLastSeed = normalizedSeed;
@@ -1443,6 +1591,7 @@
     // outcome has not been seen yet — re-arm so it survives dismiss/blur until
     // the user lays eyes on its terminal turn (one conversation, newest wins).
     askOutcomeSeen = false;
+    askStopped = false;
     clearAskCopiedTimers();
     askTurns = [makeAskTurn(0, trimmedQuestion, "seeding")];
     askStreaming = true;
@@ -1470,7 +1619,7 @@
       const last = askTurns[askTurns.length - 1];
       if (last) {
         last.phase = "error";
-        last.errorMessage = error instanceof Error ? error.message : String(error);
+        last.errorMessage = humanizeError(error);
       }
     }
   }
@@ -1500,7 +1649,7 @@
   // Whether the current thread has at least one completed (done) turn, gating the
   // "Open in Chat" affordance — the handoff promotes a real, answered thread.
   let askCanOpenInChat = $derived(
-    askConversationId !== null && askHasCompletedTurn,
+    askContinuableConversationId !== null && askHasCompletedTurn,
   );
 
   // Promote the current Quick Recall thread into the Insights → Chat workspace.
@@ -1511,14 +1660,19 @@
   // hand-off (open_capture_result_in_main_window), which also dismisses the Quick
   // Recall window — so we do the same here for consistency.
   async function openInChat(): Promise<void> {
-    const conversationId = askConversationId;
+    const conversationId = askContinuableConversationId;
     if (conversationId === null || !askHasCompletedTurn) {
       return;
     }
     try {
       await invoke("open_conversation_in_chat", { conversationId });
-    } catch {
-      // Best-effort hand-off; if it fails, leave the Quick Recall thread open.
+    } catch (err) {
+      // Leave the Quick Recall thread open AND tell the user, so the action
+      // doesn't appear to do nothing when the hand-off rejects.
+      await message(
+        `Couldn't open this in Chat: ${humanizeError(err, "please try again.")}`,
+        { title: "Couldn't continue in Chat", kind: "error" },
+      );
       return;
     }
     await closeCurrentWindow();
@@ -1532,9 +1686,16 @@
     if (trimmed.length === 0) {
       return;
     }
-    const conversationId = askConversationId;
+    const conversationId = askContinuableConversationId;
     if (conversationId === null || askStreaming) {
       return;
+    }
+    // Resuming a STOPPED thread: re-adopt its persisted id as the live thread so
+    // the new turn's streaming `ask_ai_update` events match the id guard again.
+    if (askConversationId === null) {
+      askConversationId = conversationId;
+      stoppedConversationId = null;
+      askStopped = false;
     }
 
     followupInput = "";
@@ -1563,7 +1724,7 @@
       const turn = askTurns[turnIndex];
       if (turn) {
         turn.phase = "error";
-        turn.errorMessage = error instanceof Error ? error.message : String(error);
+        turn.errorMessage = humanizeError(error);
       }
     }
   }
@@ -1675,27 +1836,41 @@
     if (!turn || text.length === 0) {
       return;
     }
+    // Arm a single per-turn flash timer that resets BOTH flash flags. The
+    // success and failure flashes share one timer keyed by turnIndex, so a
+    // fail-then-success (or vice versa) within the flash window must clear the
+    // other flag too — otherwise the surviving flag leaves the button stuck on
+    // the wrong state.
+    const armFlashReset = () => {
+      const existing = askCopiedTimers.get(turnIndex);
+      if (existing !== undefined) {
+        clearTimeout(existing);
+      }
+      askCopiedTimers.set(
+        turnIndex,
+        setTimeout(() => {
+          const t = askTurns[turnIndex];
+          if (t) {
+            t.copied = false;
+            t.copyFailed = false;
+          }
+          askCopiedTimers.delete(turnIndex);
+        }, 1500),
+      );
+    };
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      // Clipboard write is best-effort; swallow (no toast surface here).
+      // Clipboard write rejected: flash the button red so the failure isn't
+      // silent, reusing the same per-turn flash-timer machinery as success.
+      turn.copyFailed = true;
+      turn.copied = false;
+      armFlashReset();
       return;
     }
     turn.copied = true;
-    const existing = askCopiedTimers.get(turnIndex);
-    if (existing !== undefined) {
-      clearTimeout(existing);
-    }
-    askCopiedTimers.set(
-      turnIndex,
-      setTimeout(() => {
-        const t = askTurns[turnIndex];
-        if (t) {
-          t.copied = false;
-        }
-        askCopiedTimers.delete(turnIndex);
-      }, 1500),
-    );
+    turn.copyFailed = false;
+    armFlashReset();
   }
 
   function toggleTurnSummary(turn: AskTurn): void {
@@ -1755,6 +1930,29 @@
   // the unseeded ask input). A guard keeps Enter inert while a turn streams (the
   // composer is disabled then anyway, but a stray keydown shouldn't submit).
   function handleFollowupKeydown(event: KeyboardEvent): void {
+    // Keep the footer-advertised ⌃C copy working even though focus parks on the
+    // composer (a sibling of the answer area that owns handleAnswerAreaKeydown)
+    // after an answer settles. Only act when the textarea has no active text
+    // selection, so a normal "select-then-copy" inside the composer still runs
+    // native copy.
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      (event.key === "c" || event.key === "C")
+    ) {
+      const el = event.currentTarget as HTMLTextAreaElement;
+      const hasComposerSelection = el.selectionStart !== el.selectionEnd;
+      const last = askTurns[askTurns.length - 1];
+      if (
+        !hasComposerSelection &&
+        last &&
+        last.phase === "done" &&
+        turnAnswerText(last).length > 0
+      ) {
+        event.preventDefault();
+        void copyTurnAnswer(askTurns.length - 1);
+      }
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (!askStreaming) {
@@ -1763,11 +1961,63 @@
     }
   }
 
+  // Auto-grow a composer textarea to fit its content (the standard chat-composer
+  // affordance): reset to one row, then expand to scrollHeight capped at ~5 rows,
+  // after which it scrolls. Driven reactively off the bound value so the field
+  // reflects multi-line questions as they're typed (and collapses on clear).
+  const ASK_TEXTAREA_MAX_PX = 112;
+  function autosizeAskTextarea(el: HTMLTextAreaElement | null): void {
+    if (el === null) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, ASK_TEXTAREA_MAX_PX)}px`;
+    el.style.overflowY =
+      el.scrollHeight > ASK_TEXTAREA_MAX_PX ? "auto" : "hidden";
+  }
+
+  // Re-send a failed FOLLOW-UP turn's question through ask_ai_followup. The PI
+  // session stays resident after a follow-up error, so this appends a fresh
+  // attempt (mirroring a normal follow-up) rather than rebuilding the thread the
+  // way retryAsk does for a turn-1 failure.
+  async function retryFollowupTurn(turn: AskTurn): Promise<void> {
+    // Guard on the *continuable* id, not askConversationId: a Stop nulls
+    // askConversationId and parks the thread under stoppedConversationId, but the
+    // empty-answer "Try asking again" Retry is still offered. submitFollowup()
+    // re-adopts the stopped thread, so keying off askConversationId here makes
+    // Retry a dead click on a stopped-empty follow-up turn.
+    if (askStreaming || askContinuableConversationId === null) {
+      return;
+    }
+    followupInput = turn.question;
+    await submitFollowup();
+  }
+
+  // Stop a streaming answer in place: cooperatively cancel the turn and settle it
+  // to `done` so its partial answer stays rendered and copyable, rather than
+  // abandoning the whole surface the way Escape does. `cancelActiveAsk` nulls the
+  // live id (so late buffered updates stop applying), but the backend has already
+  // persisted the partial as an ordinary `done` turn — so we stash that id in
+  // `stoppedConversationId` to keep the thread continuable ("Continue in Chat" +
+  // the follow-up composer both re-point at it; a follow-up re-adopts it live).
+  async function stopActiveAsk(): Promise<void> {
+    const live = askLiveTurn;
+    const conversationId = askConversationId;
+    await cancelActiveAsk();
+    stoppedConversationId = conversationId;
+    if (live && live.phase !== "done" && live.phase !== "error") {
+      live.phase = "done";
+      live.liveActivity = null;
+      // Tag this turn as cut off, so Quick Recall shows "Stopped early" on it.
+      live.stoppedEarly = true;
+    }
+    askStopped = true;
+  }
+
   // Tear down all ephemeral thread state (transcript, ids, timers, inputs). Does
   // NOT cancel the live session — callers route through cancelActiveAsk first.
   function resetAskThreadState(): void {
     clearAskCopiedTimers();
     askConversationId = null;
+    stoppedConversationId = null;
     askTurns = [];
     askSubmitted = false;
     askInput = "";
@@ -1776,6 +2026,8 @@
     askFirstQuestion = "";
     askStreaming = false;
     askOutcomeSeen = false;
+    askStopped = false;
+    sourceHandoffPending = false;
   }
 
   // Return to search mode, abandoning the whole thread (a single Escape drops
@@ -1790,6 +2042,17 @@
 
   $effect(() => {
     scheduleSearch(query);
+  });
+
+  // Keep both Ask AI composer textareas grown to their content. Reading the bound
+  // value + the element ref tracks typing AND programmatic clears / first mount.
+  $effect(() => {
+    void askInput;
+    autosizeAskTextarea(askInputEl);
+  });
+  $effect(() => {
+    void followupInput;
+    autosizeAskTextarea(followupInputEl);
   });
 
   // Keep the live (last) turn and the composer in view as the transcript grows:
@@ -2309,7 +2572,7 @@
   let pickerIndex = $state(0);
   // Bound to the picker overlay so we can move DOM focus there on open (the
   // search input keeps focus via aria-activedescendant; this is the listbox the
-  // input's keydown drives, and the date inputs live inside it).
+  // input's keydown drives).
   let pickerEl = $state<HTMLDivElement | null>(null);
 
   // The three categories, in display order. `level` is the operator family the
@@ -2325,7 +2588,7 @@
     {
       id: "date",
       label: "Date range",
-      hint: "A day, a preset, or a from/to span",
+      hint: "A day, a preset, or a typed range",
       level: "date" as const,
     },
   ];
@@ -3119,6 +3382,12 @@
   async function openSemanticSearchSettings(): Promise<void> {
     await openSettings("semanticSearch");
   }
+  // Route the unavailable-Ask-AI hint to the Intelligence pane (providers + Ask
+  // AI + Reasoning Engine), so the friendly "do X in Settings" reason becomes
+  // actionable from here instead of a dead end.
+  async function openAskAiSettings(): Promise<void> {
+    await openSettings("intelligence");
+  }
   // Show the hint once results have run and no model is installed — the hint is
   // most useful exactly when keyword-only search underwhelms.
   let showSemanticSearchHint = $derived(
@@ -3136,6 +3405,31 @@
   let resultsPaused = $derived(
     !belowMinimum && !loading && !errorMessage && parseErrorMessage !== null,
   );
+
+  // Screen-reader announcement for the results region. The cards live in an
+  // aria-activedescendant listbox whose count/loading/empty/error transitions
+  // are otherwise silent to AT; this polite live-region string mirrors the
+  // visible state so a result-count change (or a switch to loading/no-matches/
+  // error) is spoken. Branch order matches the results markup so the spoken
+  // state and the rendered state never disagree.
+  let searchStatusAnnouncement = $derived.by((): string => {
+    if (mode !== "search" || belowMinimum) {
+      return "";
+    }
+    if (loading) {
+      return "Searching…";
+    }
+    if (errorMessage) {
+      return errorMessage;
+    }
+    if (resultsPaused) {
+      return "Results paused — fix the filter above to search.";
+    }
+    if (showEmpty) {
+      return `No matches for ${resultsQuery}.`;
+    }
+    return `${resultCount} ${resultCount === 1 ? "result" : "results"} for ${resultsQuery}.`;
+  });
 
   // A search or Ask AI operation is in flight — that counts as activity, so the
   // idle countdown is suspended while it runs.
@@ -3212,7 +3506,8 @@
       !windowFocused &&
       hasClearableState &&
       !operationRunning &&
-      !askConversationPending
+      !askConversationPending &&
+      !sourceHandoffPending
     ) {
       scheduleIdleClear();
     } else {
@@ -3347,6 +3642,10 @@
       .onFocusChanged(({ payload: focused }) => {
         windowFocused = focused;
         if (focused) {
+          // A source hand-off kept the thread alive across the close; now that the
+          // user re-summoned, return to ordinary ephemeral rules (the in-memory
+          // thread is still present, so it renders immediately — no re-hydrate).
+          sourceHandoffPending = false;
           // The panel is hidden/re-shown rather than recreated, so re-probe Ask
           // AI availability each time it becomes key — onMount fires only once,
           // and the user may have enabled Ask AI or fixed PI/auth since the last
@@ -3396,7 +3695,7 @@
     // conversation is seen, or when there is no conversation at all — restoring
     // today's ephemeral search behavior. App exit / onDestroy still tears down.
     listen("quick_recall_dismissed", () => {
-      if (askConversationPending) {
+      if (askConversationPending || sourceHandoffPending) {
         return;
       }
       void cancelActiveAsk().then(() => {
@@ -3523,6 +3822,12 @@
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
+        <!-- Polite live region announcing result-count / loading / no-matches /
+             error transitions to AT, which the aria-activedescendant results
+             listbox cannot convey on its own. Visually hidden. -->
+        <span class="quick-recall__sr-status" role="status" aria-live="polite"
+          >{searchStatusAnnouncement}</span
+        >
         <div class="quick-recall__field">
           <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
           <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
@@ -3550,10 +3855,13 @@
               placeholder="Search your captures…"
               aria-label="Search your captures"
               role="combobox"
-              aria-expanded={pickerOpen || resultCount > 0}
+              aria-expanded={pickerOpen || valueListActive || resultCount > 0}
+              aria-keyshortcuts="ArrowUp ArrowDown Enter Escape Control+Enter Control+O"
               aria-controls={pickerOpen
                 ? "quick-recall-picker"
-                : "quick-recall-results-list"}
+                : valueListActive
+                  ? "quick-recall-value-list"
+                  : "quick-recall-results-list"}
               aria-activedescendant={pickerOpen
                 ? pickerActiveOptionId
                 : valueListActive
@@ -3570,6 +3878,37 @@
               }}
             />
           </div>
+          <!-- Visible Filter Picker trigger: the picker was previously reachable
+               only via ⌘F / `/`, advertised nowhere — a funnel in the field row
+               gives it a mouse-discoverable door (and surfaces the ⌘F shortcut via
+               its title). Click opens the same category picker as the key path; DOM
+               focus stays on the search input (openPicker refocuses it), so the
+               picker's aria-activedescendant navigation keeps working. -->
+          <button
+            type="button"
+            class="quick-recall__filter-trigger"
+            class:quick-recall__filter-trigger--active={pickerOpen}
+            onclick={() => (pickerOpen ? closePicker() : openPicker())}
+            aria-label="Filter results"
+            use:tip={"Filter results (⌘F)"}
+            aria-expanded={pickerOpen}
+            aria-controls={pickerOpen ? "quick-recall-picker" : undefined}
+            aria-keyshortcuts="Control+F"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M2 3h10l-3.8 4.5v3.2l-2.4 1.2V7.5z" />
+            </svg>
+          </button>
           <!-- Slice 7: syntax-help affordance. A quiet `?` trigger toggling a
                static popover that documents the typed Body Match Operators (and,
                for completeness, the field operators that pair with the picker).
@@ -3640,6 +3979,7 @@
               class="quick-recall__ask-button"
               onclick={() => void activateAskAi()}
               aria-label="Ask AI"
+              aria-keyshortcuts="Control+Enter"
             >
               Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⌃↵</span>
             </button>
@@ -3649,7 +3989,8 @@
               class="quick-recall__ask-button quick-recall__ask-button--disabled"
               disabled
               aria-label={askUnavailableHint ?? "Ask AI unavailable"}
-              title={askUnavailableHint ?? "Ask AI unavailable"}
+              aria-describedby={ASK_UNAVAILABLE_HINT_ID}
+              use:tip={askUnavailableHint ?? "Ask AI unavailable"}
             >
               Ask AI
             </button>
@@ -3673,7 +4014,7 @@
                   class="quick-recall__chip-remove"
                   onclick={() => removeChip(chip)}
                   aria-label={`Remove ${chip.label} filter`}
-                  title={`Remove ${chip.label} filter`}
+                  use:tip={`Remove ${chip.label} filter`}
                 >
                   ×
                 </button>
@@ -3692,8 +4033,20 @@
           <p class="quick-recall__parse-error" role="alert">{parseErrorMessage}</p>
         {/if}
 
-        {#if askUnavailableHint}
-          <p class="quick-recall__ask-hint">{askUnavailableHint}</p>
+        <!-- Always-present describedby target for the disabled Ask AI button, so
+             keyboard/AT users get the reason the native `title` tooltip can't
+             surface. Rendered whenever Ask AI is unavailable (mirroring the
+             disabled button's condition) with a fallback so the reference never
+             dangles before the availability probe resolves. -->
+        {#if !askAvailable}
+          <button
+            type="button"
+            id={ASK_UNAVAILABLE_HINT_ID}
+            class="quick-recall__ask-hint"
+            onclick={() => void openAskAiSettings()}
+          >
+            {askUnavailableHint ?? "Ask AI unavailable"} — open Settings →
+          </button>
         {/if}
 
         {#if pickerOpen}
@@ -3766,6 +4119,7 @@
                lists, and the input's keydown owns Arrow/Enter/Escape while up. -->
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div
+            id="quick-recall-value-list"
             class="quick-recall__results quick-recall__picker"
             role="listbox"
             aria-label="Filter values"
@@ -3827,8 +4181,10 @@
           <div
             id="quick-recall-results-list"
             class="quick-recall__results"
+            class:quick-recall__results--refetching={loading && hasResults}
             role="listbox"
             aria-label="Search results"
+            aria-busy={loading}
           >
             {#if belowMinimum}
             <!-- Slice 4: feature-teaching orientation view for the pristine /
@@ -3851,9 +4207,13 @@
                   > to ask AI.{/if}
               </p>
             </div>
-          {:else if loading}
+          {:else if loading && !hasResults}
             <!-- Slice 6: skeleton rows mirroring SearchResultCard's two-column
-                 layout (116px 16/10 thumb + stacked text lines). -->
+                 layout (116px 16/10 thumb + stacked text lines). Only the FIRST
+                 search (no prior results) shows the full skeleton; a refetch on a
+                 subsequent keystroke keeps the prior results visible-but-dimmed
+                 (the `--refetching` class on the list) so the surface doesn't flash
+                 empty between every keystroke. -->
             <div class="quick-recall__skeletons" aria-hidden="true">
               {#each [0, 1, 2] as row (row)}
                 <div class="quick-recall__skeleton-row">
@@ -3871,7 +4231,19 @@
               {/each}
             </div>
           {:else if errorMessage}
+            <!-- A backend search failure offers an explicit recovery (re-issue the
+                 same query), mirroring the Ask AI "Retry" so the path isn't a
+                 soft dead end the user has to guess at by editing the query. -->
             <p class="quick-recall__state quick-recall__state--error">{errorMessage}</p>
+            <div class="quick-recall__retry-row">
+              <button
+                type="button"
+                class="quick-recall__retry"
+                onclick={() => void runSearch(resultsQuery)}
+              >
+                Retry
+              </button>
+            </div>
           {:else if resultsPaused}
             <!-- Slice 3: paused-results state. The backend suppressed results for
                  a malformed filter, so we render neither stale cards nor the bare
@@ -3885,6 +4257,26 @@
             </p>
           {:else if showEmpty}
             <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
+            <!-- Recovery for a constrained search: when filter chips narrow the
+                 query, the most likely fix is loosening a filter, so name that
+                 path; offer the Ask AI pivot too so the empty result isn't a dead
+                 end. Both are quiet inline actions, not a heavy empty-state block. -->
+            {#if activeFilterChips.length > 0 || askAvailable}
+              <p class="quick-recall__empty-recovery">
+                {#if activeFilterChips.length > 0}
+                  Try removing a filter{askAvailable ? ", or " : "."}
+                {/if}
+                {#if askAvailable}
+                  <button
+                    type="button"
+                    class="quick-recall__empty-action"
+                    onclick={() => void activateAskAi()}
+                  >
+                    ask AI instead <kbd>⌃↵</kbd>
+                  </button>
+                {/if}
+              </p>
+            {/if}
             {@render semanticHint()}
           {:else}
             {@render semanticHint()}
@@ -3938,6 +4330,7 @@
             class="quick-recall__back"
             onclick={() => void backToSearch()}
             aria-label="Back to search"
+            aria-keyshortcuts="Escape"
           >
             ← Back
           </button>
@@ -3945,6 +4338,20 @@
             <!-- Once the thread exists the header is just the Back affordance —
                  each turn's question renders as its own header in the transcript. -->
             <span class="quick-recall__ask-thread-label" aria-hidden="true">Ask AI</span>
+            {#if askStreaming}
+              <!-- Interrupt a streaming answer in place (keeps the partial answer
+                   visible) instead of forcing Escape, which abandons the surface. -->
+              <button
+                type="button"
+                class="quick-recall__stop"
+                onclick={() => void stopActiveAsk()}
+                aria-label="Stop generating"
+                use:tip={"Stop generating"}
+              >
+                <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
+                Stop
+              </button>
+            {/if}
           {:else}
             <textarea
               bind:this={askInputEl}
@@ -3956,16 +4363,25 @@
               spellcheck="false"
               placeholder="Ask anything about your captures…"
               aria-label="Ask AI a question"
+              aria-keyshortcuts="Enter Escape"
               onkeydown={handleAskInputKeydown}
             ></textarea>
           {/if}
         </div>
 
+        <!-- Visually-hidden polite live region announcing ONLY the Ask AI phase
+             transitions to AT. The transcript below is intentionally NOT a live
+             region (token-by-token deltas flooded screen readers); this mirrors
+             the search door's `searchStatusAnnouncement` pattern. -->
+        <span class="quick-recall__sr-status" role="status" aria-live="polite"
+          >{askPhaseAnnouncement}</span
+        >
+
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div
           bind:this={askAreaEl}
           class="quick-recall__results quick-recall__answer-area"
-          aria-live="polite"
+          aria-busy={askStreaming}
           tabindex="-1"
           onkeydown={handleAnswerAreaKeydown}
         >
@@ -3978,7 +4394,7 @@
                  turn (the live one). Keyed by index — turns are append-only. -->
             {#each askTurns as turn, ti (ti)}
               <div class="quick-recall__turn">
-                <p class="quick-recall__turn-question" title={turn.question}>
+                <p class="quick-recall__turn-question" use:tip={turn.question}>
                   {turn.question}
                 </p>
 
@@ -3986,19 +4402,25 @@
                   <p class="quick-recall__state quick-recall__state--error">
                     {turn.errorMessage ?? "Ask AI failed."}
                   </p>
-                  {#if ti === 0}
-                    <!-- Turn-1 error retries the whole thread (same question +
-                         seed) as a fresh thread. Follow-up errors have no retry. -->
-                    <div class="quick-recall__retry-row">
-                      <button
-                        type="button"
-                        class="quick-recall__retry"
-                        onclick={() => void retryAsk()}
-                      >
-                        Try again
-                      </button>
-                    </div>
-                  {/if}
+                  <!-- Every errored turn gets a retry. Turn 1 rebuilds the whole
+                       thread (same question + seed); a follow-up error re-sends its
+                       question through ask_ai_followup on the still-resident session. -->
+                  <div class="quick-recall__retry-row">
+                    <button
+                      type="button"
+                      class="quick-recall__retry"
+                      disabled={askStreaming}
+                      onclick={() => {
+                        if (ti === 0) {
+                          void retryAsk();
+                        } else {
+                          void retryFollowupTurn(turn);
+                        }
+                      }}
+                    >
+                      Retry
+                    </button>
+                  </div>
                 {:else}
                   <!-- Thinking disclosure: the model's reasoning, ABOVE the
                        answer body. Rendered only when reasoning text arrived.
@@ -4050,7 +4472,7 @@
                       <span class="quick-recall__dot" aria-hidden="true"></span>
                       Searching your captures…
                     </p>
-                  {:else if turn.phase === "thinking" && turn.liveActivity === null}
+                  {:else if turn.phase === "thinking" && turn.liveActivity === null && !reasoningIsLive(turn)}
                     <p class="quick-recall__state quick-recall__state--working">
                       <span class="quick-recall__dot" aria-hidden="true"></span>
                       Thinking…
@@ -4063,11 +4485,26 @@
                           type="button"
                           class="quick-recall__copy"
                           class:quick-recall__copy--copied={turn.copied}
+                          class:quick-recall__copy--failed={turn.copyFailed}
                           onclick={() => void copyTurnAnswer(ti)}
-                          aria-label="Copy answer"
-                          title="Copy answer"
+                          aria-label={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
+                          use:tip={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
                         >
-                          {#if turn.copied}
+                          {#if turn.copyFailed}
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 14 14"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.4"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
+                            </svg>
+                          {:else if turn.copied}
                             <svg
                               width="14"
                               height="14"
@@ -4242,6 +4679,33 @@
                           {/if}
                         </div>
                       {/if}
+
+                      <!-- Empty-answer fallback: a settled turn that produced no
+                           answer blocks and no sources (e.g. the model returned
+                           nothing) would otherwise render a blank turn with no
+                           explanation or way forward. Surface a calm line plus the
+                           same retry the error branch offers. -->
+                      {#if turn.phase === "done" && turn.blocks.length === 0 && turn.sources.length === 0}
+                        <p class="quick-recall__state">
+                          No answer came back. Try asking again.
+                        </p>
+                        <div class="quick-recall__retry-row">
+                          <button
+                            type="button"
+                            class="quick-recall__retry"
+                            disabled={askStreaming}
+                            onclick={() => {
+                              if (ti === 0) {
+                                void retryAsk();
+                              } else {
+                                void retryFollowupTurn(turn);
+                              }
+                            }}
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      {/if}
                     {/if}
                     {#if turn.liveActivity !== null}
                       <!-- Live animated working line: the real tool filter string. -->
@@ -4265,6 +4729,13 @@
                     {/if}
                   {/if}
                 {/if}
+                {#if turn.stoppedEarly}
+                  <!-- This turn was cut off by Stop; the partial below is kept
+                       and is still continuable (composer / "Continue in Chat"). -->
+                  <p class="quick-recall__stopped-tag" role="status">
+                    Stopped early
+                  </p>
+                {/if}
               </div>
             {/each}
           {/if}
@@ -4280,7 +4751,7 @@
               type="button"
               class="quick-recall__handoff"
               onclick={() => void openInChat()}
-              title="Continue this thread in the Insights Chat workspace"
+              use:tip={"Continue this thread in the Insights Chat workspace"}
             >
               Continue in Chat
               <span class="quick-recall__handoff-arrow" aria-hidden="true">↗</span>
@@ -4330,11 +4801,13 @@
         {#if selectedResultIsOpenable}
           <span class="quick-recall__hint-item"><kbd>⌃O</kbd> open page</span>
         {/if}
+        <span class="quick-recall__hint-item"><kbd>⌃F</kbd> filters</span>
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> Ask AI</span>
         {/if}
         <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
       {:else}
+        <span class="quick-recall__hint-item"><kbd>⌃F</kbd> filters</span>
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> Ask AI</span>
         {/if}
@@ -4344,6 +4817,9 @@
       <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {:else}
+      {#if askCopyAvailable}
+        <span class="quick-recall__hint-item"><kbd>⌃C</kbd> copy</span>
+      {/if}
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {/if}
   </div>
@@ -4387,17 +4863,39 @@
     flex-direction: column;
   }
 
+  /* Visually-hidden polite live region for AT-only result-status announcements. */
+  .quick-recall__sr-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .quick-recall__field {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 15px;
+    padding: 8px 16px;
     flex-shrink: 0;
     border-bottom: 1px solid var(--app-border);
   }
 
+  /* The search row keeps a constant neutral hairline divider (Spotlight/Raycast
+     style). We intentionally do NOT recolor it to the accent on :focus-within:
+     the field only has a `border-bottom`, so an accent border-color paints a
+     hard green line on that one edge rather than a ring, and the accompanying
+     box-shadow ring is clipped on three sides by the parent's `overflow: hidden`
+     rounded frame — leaving an asymmetric halo only below the field. The launcher
+     auto-focuses this input on open, so that focus chrome was effectively always
+     on. The blinking accent caret already signals focus. */
+
   .quick-recall__glyph {
-    font-size: 16px;
+    font-size: var(--text-lg);
     line-height: 1;
     color: var(--app-text-muted);
     flex-shrink: 0;
@@ -4432,7 +4930,7 @@
   }
 
   .quick-recall__input::placeholder {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   /* Slice 4: ghost-text mirror. Overlays the input exactly, rendering the typed
@@ -4461,7 +4959,7 @@
   }
 
   .quick-recall__ghost-suffix {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__footer {
@@ -4478,7 +4976,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     line-height: 1;
     color: var(--app-text-subtle);
     white-space: nowrap;
@@ -4486,7 +4984,7 @@
 
   .quick-recall__footer kbd {
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     line-height: 1;
     text-transform: lowercase;
     color: var(--app-text-muted);
@@ -4512,6 +5010,14 @@
     gap: 16px;
   }
 
+  /* Refetch-in-flight: prior results stay on screen but dim slightly so the
+     keystroke-driven refresh reads as "updating" without the surface flashing
+     empty between every keystroke. */
+  .quick-recall__results--refetching {
+    opacity: 0.55;
+    transition: opacity 0.12s ease;
+  }
+
   .quick-recall__section {
     display: flex;
     flex-direction: column;
@@ -4519,7 +5025,7 @@
   }
 
   .quick-recall__section-label {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -4536,13 +5042,62 @@
   .quick-recall__state {
     margin: 0;
     padding: 8px 2px;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text-muted);
   }
 
   .quick-recall__state--error {
+    color: var(--app-danger-text);
+  }
+
+  /* Quiet recovery line under the "No matches" empty state: muted prose with an
+     inline link-style action, so it reads as a gentle next step rather than a
+     loud CTA block (the dedicated empty-state styling is reserved for the
+     semantic-search hint card). */
+  .quick-recall__empty-recovery {
+    margin: 0;
+    padding: 0 2px 8px;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    color: var(--app-text-subtle);
+  }
+
+  .quick-recall__empty-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0;
+    font: inherit;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .quick-recall__empty-action:hover {
     color: var(--app-accent);
+  }
+
+  .quick-recall__empty-action:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__empty-action kbd {
+    font-family: inherit;
+    font-size: var(--text-xs);
+    line-height: 1;
+    color: var(--app-text-muted);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 5px;
+    padding: 2px 5px;
   }
 
   /* In-search discoverability hint (issue #125): keyword-only search → Settings. */
@@ -4552,11 +5107,11 @@
     margin: 4px 0 8px;
     padding: 8px 10px;
     text-align: left;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text-muted);
-    background: var(--app-surface-raised, rgba(127, 127, 127, 0.08));
-    border: 1px solid var(--app-border, rgba(127, 127, 127, 0.2));
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
     border-radius: 6px;
     cursor: pointer;
   }
@@ -4564,6 +5119,16 @@
   .quick-recall__semantic-hint:hover {
     color: var(--app-text);
     border-color: var(--app-accent);
+  }
+
+  .quick-recall__semantic-hint:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__semantic-hint:active {
+    background: var(--app-surface-active);
   }
 
   /* Slice 4: feature-teaching orientation view shown pre-query (belowMinimum).
@@ -4586,7 +5151,7 @@
     justify-content: center;
     width: 40px;
     height: 40px;
-    font-size: 20px;
+    font-size: var(--text-xl);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-bg);
@@ -4597,7 +5162,7 @@
 
   .quick-recall__orient-tagline {
     margin: 0;
-    font-size: 13.5px;
+    font-size: var(--text-md);
     line-height: 1.4;
     color: var(--app-text-strong);
   }
@@ -4608,34 +5173,34 @@
     gap: 9px;
   }
 
+  /* Plain muted labels, NOT pills: the bordered/padded chip styling previously
+     read as clickable buttons but these cues are inert (they only name what's
+     searchable). Stripping the border/background/padding removes that false
+     affordance while keeping the quiet uppercase label tone. */
   .quick-recall__orient-cue {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--app-text-subtle);
-    background: var(--app-surface-subtle);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    padding: 6px 10px;
   }
 
   .quick-recall__orient-cue-dot {
     color: var(--app-text-subtle);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
   }
 
   .quick-recall__orient-hint {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--app-text-subtle);
   }
 
   .quick-recall__orient-hint kbd {
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface);
@@ -4654,21 +5219,24 @@
     gap: 8px;
   }
 
+  /* Match the resting SearchResultCard chrome (transparent border + fill, 9px
+     radius) so a skeleton doesn't visually flip into a frameless card when the
+     real results arrive — the shimmer blocks inside carry the loading signal. */
   .quick-recall__skeleton-row {
     display: flex;
-    gap: 11px;
+    gap: 12px;
     align-items: stretch;
-    padding: 6px 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-subtle);
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
   }
 
   .quick-recall__skeleton-thumb {
     flex-shrink: 0;
     width: 96px;
     aspect-ratio: 16 / 10;
-    border-radius: 6px;
+    border-radius: 7px;
     background: var(--app-bg);
     border: 1px solid var(--app-border);
   }
@@ -4733,13 +5301,13 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     color: var(--app-text);
     background: var(--app-surface-subtle);
     border: 1px solid var(--app-border);
     border-radius: 6px;
-    padding: 6px 9px;
+    padding: 6px 8px;
     cursor: pointer;
     transition: border-color 0.12s ease, color 0.12s ease;
   }
@@ -4749,8 +5317,18 @@
     color: var(--app-text-strong);
   }
 
+  .quick-recall__ask-button:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__ask-button:not(:disabled):not(.quick-recall__ask-button--disabled):active {
+    background: var(--app-surface-active);
+  }
+
   .quick-recall__ask-key {
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
 
@@ -4779,10 +5357,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -4795,6 +5373,53 @@
   .quick-recall__syntax-trigger:hover {
     border-color: var(--app-accent);
     color: var(--app-text-strong);
+  }
+
+  .quick-recall__syntax-trigger:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__syntax-trigger:active {
+    background: var(--app-surface-active);
+  }
+
+  /* Funnel Filter Picker trigger: shares the quiet round-chip idiom of the
+     syntax `?` trigger (accent reserved for hover/active), so the two field-row
+     affordances read as a matched pair. The active variant marks it pressed while
+     the picker overlay is open. */
+  .quick-recall__filter-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  }
+
+  .quick-recall__filter-trigger:hover {
+    border-color: var(--app-accent);
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__filter-trigger:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__filter-trigger:active,
+  .quick-recall__filter-trigger--active {
+    background: var(--app-surface-active);
+    border-color: var(--app-accent);
+    color: var(--app-accent);
   }
 
   /* The popover floats below-right of the trigger, anchored to the wrapper. It's
@@ -4816,7 +5441,7 @@
 
   .quick-recall__syntax-heading {
     margin: 0 0 6px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.3;
     color: var(--app-text-muted);
   }
@@ -4846,9 +5471,8 @@
   }
 
   .quick-recall__syntax-row dt code {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-      monospace;
-    font-size: 11px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-sm);
     line-height: 1;
     padding: 0.15em 0.4em;
     border-radius: 4px;
@@ -4860,18 +5484,36 @@
 
   .quick-recall__syntax-row dd {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.35;
     color: var(--app-text);
   }
 
   .quick-recall__ask-hint {
+    display: block;
+    width: 100%;
     margin: 0;
     padding: 6px 18px 0;
-    font-size: 11px;
+    text-align: left;
+    font-size: var(--text-sm);
     line-height: 1.4;
     color: var(--app-text-subtle);
+    background: none;
+    border: none;
+    cursor: pointer;
     flex-shrink: 0;
+  }
+
+  .quick-recall__ask-hint:hover {
+    color: var(--app-text);
+    text-decoration: underline;
+  }
+
+  .quick-recall__ask-hint:focus-visible {
+    outline: none;
+    color: var(--app-text);
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
   }
 
   /* Slice 2: active filter chip band. A thin wrapping row beneath the input,
@@ -4883,7 +5525,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding: 8px 15px 0;
+    padding: 8px 16px 0;
     flex-shrink: 0;
   }
 
@@ -4891,7 +5533,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1;
     color: var(--app-text);
     background: var(--app-surface-subtle);
@@ -4905,13 +5547,14 @@
   }
 
   .quick-recall__chip-remove {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 16px;
     height: 16px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1;
     color: var(--app-text-muted);
     background: transparent;
@@ -4922,28 +5565,51 @@
     transition: color 0.12s ease, background-color 0.12s ease;
   }
 
+  /* Invisible hit area expanding the 16px glyph to the 24px comfortable minimum
+     without enlarging the chip itself. */
+  .quick-recall__chip-remove::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 24px;
+    height: 24px;
+    transform: translate(-50%, -50%);
+  }
+
   .quick-recall__chip-remove:hover {
     color: var(--app-text-strong);
     background: color-mix(in srgb, var(--app-accent) 18%, transparent);
   }
 
+  .quick-recall__chip-remove:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__chip-remove:active {
+    background: color-mix(in srgb, var(--app-accent) 28%, transparent);
+  }
+
   /* Slice 3: inline parse-error line under the input. Shares the chip band's
      horizontal padding so it lines up with the chips it sits alongside, and uses
-     the accent color (same as .quick-recall__state--error) to read as a live
-     correction prompt rather than chrome. */
+     the danger ramp (same as .quick-recall__state--error) — a malformed filter is
+     a genuine failure, so it reads as a correction prompt, not success chrome. */
   .quick-recall__parse-error {
     margin: 0;
-    padding: 8px 15px 0;
+    padding: 8px 16px 0;
     flex-shrink: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.4;
-    color: var(--app-accent);
+    color: var(--app-danger-text);
   }
 
   /* Slice 5: Filter Picker overlay. Reuses the results-region box (flex column,
      scroll) so it occupies the same slot the results would, then layers a header,
-     a vertical option list, and (for dates) the From/To row + presets. Item
-     highlight uses the same accent-tinted surface idiom as a selected result. */
+     a vertical option list, and (for dates) the preset rows plus a typed-range
+     hint (custom ranges are typed as after:/before: — there is no From/To field
+     pair). Item highlight uses the same accent-tinted surface idiom as a selected
+     result. */
   .quick-recall__picker {
     gap: 10px;
   }
@@ -4957,7 +5623,7 @@
   }
 
   .quick-recall__picker-title {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -4965,7 +5631,7 @@
   }
 
   .quick-recall__picker-crumb-hint {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     color: var(--app-text-subtle);
   }
@@ -4986,6 +5652,25 @@
     cursor: pointer;
   }
 
+  /* Mouse-hover feedback for the clickable rows: a quiet neutral surface that
+     stays clearly below the accent-tinted keyboard --selected highlight, so a
+     pointer user gets feedback without it reading as the roving selection.
+     Excludes disabled rows (they never highlight) and the already-selected row. */
+  .quick-recall__picker-item:not(.quick-recall__picker-item--disabled):not(
+      .quick-recall__picker-item--selected
+    ):hover {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+
+  /* Pressed feedback for a clickable row (excludes disabled/selected, which carry
+     their own treatment), so a pointer click reads as responsive. */
+  .quick-recall__picker-item:not(.quick-recall__picker-item--disabled):not(
+      .quick-recall__picker-item--selected
+    ):active {
+    background: var(--app-surface-active);
+  }
+
   .quick-recall__picker-item--selected {
     background: color-mix(in srgb, var(--app-accent) 12%, transparent);
     border-color: var(--app-accent-border);
@@ -4995,30 +5680,30 @@
      chip (app + audio source are mutually exclusive). Dimmed and non-selectable —
      it never highlights on hover and Enter skips it. */
   .quick-recall__picker-item--disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     cursor: default;
   }
 
   /* Slice 4 (typed path): the one-line conflict note below the value list, and
-     the typed-date hint for the date operators. Both read as muted guidance
-     rather than chrome; the conflict note borrows the accent the parse-error line
-     uses so it lands as a live correction prompt. */
+     the typed-date hint for the date operators. The conflict note is a correction
+     prompt ("these filters can't combine"), so it shares the danger ramp with the
+     sibling .quick-recall__parse-error line rather than reading as success-green. */
   .quick-recall__picker-conflict {
     margin: 0;
     padding: 2px 2px 0;
     flex-shrink: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.4;
-    color: var(--app-accent);
+    color: var(--app-danger-text);
   }
 
   .quick-recall__picker-hint {
     margin: 0;
     padding: 2px 2px 0;
     flex-shrink: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.4;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__picker-hint code {
@@ -5027,7 +5712,7 @@
   }
 
   .quick-recall__picker-item-label {
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1.3;
     color: var(--app-text-strong);
     white-space: nowrap;
@@ -5038,9 +5723,9 @@
   .quick-recall__picker-item-hint {
     flex: 1;
     min-width: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.3;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -5048,7 +5733,7 @@
 
   .quick-recall__picker-item-chevron {
     flex-shrink: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     color: var(--app-text-muted);
   }
 
@@ -5056,7 +5741,7 @@
     margin: auto 0 0;
     padding: 8px 2px 0;
     flex-shrink: 0;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     line-height: 1;
     color: var(--app-text-subtle);
     display: flex;
@@ -5066,7 +5751,7 @@
 
   .quick-recall__picker-cue kbd {
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     line-height: 1;
     text-transform: lowercase;
     color: var(--app-text-muted);
@@ -5082,10 +5767,65 @@
     gap: 12px;
   }
 
+  /* WKWebView focus idiom: the borderless ask input delegates its focus ring to
+     the bar it sits in, mirroring the follow-up composer. Scoped to the input
+     (not bare :focus-within) so the ring doesn't fire when the sibling Back/Stop
+     buttons — which carry their own focus chrome — take focus. */
+  .quick-recall__field--ask:has(.quick-recall__ask-input:focus) {
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
   .quick-recall__back {
     flex-shrink: 0;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
+    line-height: 1;
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease;
+  }
+
+  .quick-recall__back:hover {
+    border-color: var(--app-accent);
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__back:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__back:not(:disabled):active {
+    background: var(--app-surface-active);
+  }
+
+  /* The thread header label once a thread is open (the per-turn question
+     headers live in the transcript, so this is just a quiet section marker). */
+  .quick-recall__ask-thread-label {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--text-sm);
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--app-text-subtle);
+  }
+
+  /* Stop the streaming answer in place — quiet by default, shifting to the danger
+     register on hover since it interrupts an in-flight action. */
+  .quick-recall__stop {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: inherit;
+    font-size: var(--text-base);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -5096,21 +5836,27 @@
     transition: border-color 0.12s ease, color 0.12s ease;
   }
 
-  .quick-recall__back:hover {
-    border-color: var(--app-accent);
-    color: var(--app-text-strong);
+  .quick-recall__stop-glyph {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: currentColor;
+    flex-shrink: 0;
   }
 
-  /* The thread header label once a thread is open (the per-turn question
-     headers live in the transcript, so this is just a quiet section marker). */
-  .quick-recall__ask-thread-label {
-    flex: 1;
-    min-width: 0;
-    font-size: 11px;
-    line-height: 1;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
+  .quick-recall__stop:hover {
+    border-color: var(--app-danger);
+    color: var(--app-danger-text);
+  }
+
+  .quick-recall__stop:focus-visible {
+    outline: none;
+    border-color: var(--app-danger);
+    box-shadow: var(--app-ring-danger);
+  }
+
+  .quick-recall__stop:active {
+    background: var(--app-surface-active);
   }
 
   .quick-recall__ask-input {
@@ -5125,11 +5871,16 @@
     line-height: 1.4;
     padding: 0;
     resize: none;
+    /* Auto-grown to content in JS (autosizeAskTextarea); the cap + hidden
+       overflow keep it bounded to ~5 rows before scrolling. */
+    box-sizing: border-box;
+    max-height: 112px;
+    overflow-y: hidden;
     caret-color: var(--app-accent);
   }
 
   .quick-recall__ask-input::placeholder {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__answer-area {
@@ -5163,6 +5914,16 @@
     overflow-wrap: anywhere;
   }
 
+  /* "Stopped early" tag on a turn the user cut off mid-stream. The partial
+     answer below stays kept and continuable; this just acknowledges the cut. */
+  .quick-recall__stopped-tag {
+    margin: 8px 0 0;
+    font-size: 12px;
+    color: var(--app-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
   /* Follow-up composer: pinned beneath the scrolling transcript. Mirrors the
      unseeded ask input but framed as its own bottom bar. Disabled (dimmed) while
      a turn streams. */
@@ -5172,6 +5933,13 @@
     align-items: center;
     padding: 10px 15px;
     border-top: 1px solid var(--app-border);
+  }
+
+  /* WKWebView focus idiom: the borderless composer input delegates its focus ring
+     to the bar it sits in. */
+  .quick-recall__composer:focus-within {
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .quick-recall__composer-input {
@@ -5186,11 +5954,16 @@
     line-height: 1.4;
     padding: 0;
     resize: none;
+    /* Auto-grown to content in JS (autosizeAskTextarea); the cap + hidden
+       overflow keep it bounded to ~5 rows before scrolling. */
+    box-sizing: border-box;
+    max-height: 112px;
+    overflow-y: hidden;
     caret-color: var(--app-accent);
   }
 
   .quick-recall__composer-input::placeholder {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__composer-input:disabled {
@@ -5215,7 +5988,7 @@
     background: var(--app-surface-subtle);
   }
   .quick-recall__graphic-title {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -5236,7 +6009,7 @@
     gap: 9px;
   }
   .quick-recall__dossier-statement {
-    font-size: 12.5px;
+    font-size: var(--text-base);
     color: var(--app-text-strong);
     line-height: 1.5;
     margin: 0;
@@ -5251,7 +6024,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -5277,7 +6050,7 @@
   }
 
   .quick-recall__sources-heading {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -5331,6 +6104,7 @@
     border: 1px solid var(--app-border);
     border-radius: 6px;
     cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
   }
 
   .quick-recall__copy:hover {
@@ -5338,9 +6112,26 @@
     border-color: var(--app-accent);
   }
 
+  .quick-recall__copy:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__copy:not(:disabled):active {
+    transform: translateY(1px);
+  }
+
   .quick-recall__copy--copied {
     color: var(--app-accent);
     border-color: var(--app-accent-border);
+  }
+
+  /* Copy-failed flash: a brief red cue so a rejected clipboard write isn't
+     silent (the icon also swaps to an error glyph). */
+  .quick-recall__copy--failed {
+    color: var(--app-danger-text);
+    border-color: var(--app-danger);
   }
 
   /* "Continue in Chat" hand-off affordance (#111). A subtle, terminal-style
@@ -5358,7 +6149,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1;
     letter-spacing: 0.02em;
     color: var(--app-text-muted);
@@ -5376,19 +6167,29 @@
     background: var(--app-accent-bg);
   }
 
+  .quick-recall__handoff:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__handoff:not(:disabled):active {
+    transform: translateY(1px);
+  }
+
   .quick-recall__handoff-arrow {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
   }
 
-  /* Error "Try again" affordance. */
+  /* Error "Retry" affordance. */
   .quick-recall__retry-row {
     padding: 2px;
   }
 
   .quick-recall__retry {
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     color: var(--app-text);
     background: var(--app-surface-subtle);
@@ -5401,6 +6202,21 @@
   .quick-recall__retry:hover {
     border-color: var(--app-accent);
     color: var(--app-text-strong);
+  }
+
+  .quick-recall__retry:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__retry:not(:disabled):active {
+    background: var(--app-surface-active);
+  }
+
+  .quick-recall__retry:disabled {
+    opacity: var(--app-disabled-opacity);
+    cursor: not-allowed;
   }
 
   /* Collapsed, expandable activity summary chip. */
@@ -5429,7 +6245,7 @@
     border-radius: 6px;
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -5442,7 +6258,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -5455,6 +6271,16 @@
   .quick-recall__activity-chip:hover {
     border-color: var(--app-border-hover);
     color: var(--app-text);
+  }
+
+  .quick-recall__activity-chip:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__activity-chip:active {
+    background: var(--app-surface-active);
   }
 
   .quick-recall__activity-caret {
@@ -5487,7 +6313,7 @@
   /* The expanded disclosure exists to show the full filter detail, so its rows
      wrap rather than truncate (unlike the one-line live working label). */
   .quick-recall__activity-item {
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.4;
     color: var(--app-text-subtle);
     min-width: 0;
@@ -5544,7 +6370,7 @@
   .quick-recall__seeded {
     margin: 0;
     padding: 0 2px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -5602,7 +6428,10 @@
     .quick-recall__retry,
     .quick-recall__activity-chip,
     .quick-recall__activity-caret,
-    .quick-recall__syntax-trigger {
+    .quick-recall__syntax-trigger,
+    .quick-recall__filter-trigger,
+    .quick-recall__results--refetching,
+    .quick-recall__stop {
       transition: none;
     }
   }

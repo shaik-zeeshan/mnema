@@ -94,11 +94,19 @@
       {#if controller.selectedSemanticSearchDownloadRunning}
         <div class="dl">
           <div class="dl-track">
-            <div class="dl-fill" style={`width: ${controller.selectedSemanticSearchDownloadPercent ?? 8}%`}></div>
+            <div
+              class="dl-fill"
+              class:dl-fill--indeterminate={controller.selectedSemanticSearchDownloadPercent === null}
+              style={controller.selectedSemanticSearchDownloadPercent === null
+                ? undefined
+                : `width: ${controller.selectedSemanticSearchDownloadPercent}%`}
+            ></div>
           </div>
           <div class="dl-meta">
             <span>
-              <b>{controller.selectedSemanticSearchDownloadPercent ?? 0}%</b>
+              <b>{controller.selectedSemanticSearchDownloadPercent === null
+                  ? "…"
+                  : `${controller.selectedSemanticSearchDownloadPercent}%`}</b>
               · {controller.selectedSemanticSearchDownloadProgress?.status ?? "downloading"}
             </span>
             <button
@@ -127,6 +135,11 @@
             {controller.startingSemanticSearchDownload ? "Starting…" : "Download"}
           </button>
         </div>
+        {#if !model.available && !model.provider}
+          <!-- Explain the otherwise-silent disabled Download: this model has no
+               source to fetch from, so point the user at another one. -->
+          <div class="note muted">No download source for this model — pick another above.</div>
+        {/if}
       {/if}
       {#if controller.semanticSearchDownloadError}
         <div class="note">Download failed: {controller.semanticSearchDownloadError}</div>

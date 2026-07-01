@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import { tick, type Snippet } from "svelte";
   import {
     focusableIndex as computeFocusableIndex,
@@ -67,6 +68,14 @@
     onValueChange?.(next);
   }
 
+  // Click handler: select, then pull DOM focus onto the clicked segment. The
+  // Tauri WKWebView doesn't focus a <button> on click, so without this the
+  // roving tabindex has no anchor and a follow-up arrow key does nothing.
+  function selectByClick(index: number) {
+    select(options[index].value);
+    segEls[index]?.focus();
+  }
+
   // After a keyboard selection, move focus to the new segment — but only when
   // focus is already inside this group, so we never steal focus on mount or on
   // a programmatic value change.
@@ -118,10 +127,10 @@
       role="radio"
       aria-checked={value === option.value}
       aria-label={option.ariaLabel ?? option.label}
-      title={option.ariaLabel ?? option.label}
+      use:tip={option.ariaLabel ?? option.label}
       tabindex={index === focusableIndex ? 0 : -1}
       disabled={disabled || isOff(option.value)}
-      onclick={() => select(option.value)}
+      onclick={() => selectByClick(index)}
       onkeydown={(e) => onKeydown(e, index)}
     >
       {#if icon}
@@ -150,7 +159,7 @@
   }
 
   .segmented--disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -179,8 +188,14 @@
     background: var(--app-surface-hover);
   }
 
+  .seg:not(.seg--active):not(:disabled):active {
+    background: var(--app-surface-active);
+  }
+
   .seg:focus-visible {
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+    outline: 2px solid var(--app-accent);
+    outline-offset: -2px;
   }
 
   .seg--active {
@@ -195,7 +210,7 @@
 
   /* Individually disabled segment (group stays interactive). */
   .seg--off {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
   }
 
   .seg__icon,

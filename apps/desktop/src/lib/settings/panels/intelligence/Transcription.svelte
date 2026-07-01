@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
@@ -21,6 +22,7 @@
   const c = getSettingsController();
   const rec = c.rec;
   const models = c.models;
+
 
   // Store-read aliases.
   const loadingTranscriptionModelStatus = $derived(models.loadingTranscriptionModelStatus);
@@ -210,14 +212,17 @@
     {#snippet control()}
       <div class="tx-stack">
         {#if transcriptionModelError}
-          <p class="group-hint group-hint--warn">Failed to load model status: {transcriptionModelError}</p>
+          <p class="group-hint group-hint--warn" role="alert">Failed to load model status: {transcriptionModelError}</p>
         {:else if selectedTranscriptionModel}
           <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
             <div>
               <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
               <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
             </div>
-            <span class="model-status__pill">{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
+            <span
+              class="model-status__pill"
+              class:model-status__pill--ok={selectedTranscriptionModel.available}
+            >{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
           </div>
           <p class="group-hint">{selectedTranscriptionModel.description}</p>
           {#if selectedAppleSpeechPermissionStatus}
@@ -230,25 +235,27 @@
               {#if selectedAppleSpeechNeedsPermission}
                 {#if selectedAppleSpeechPermissionStatus === "permission_not_determined"}
                   <button
+                    type="button"
                     class="btn btn--ghost"
                     onclick={requestAppleSpeechPermission}
                     disabled={requestingAppleSpeechPermission}
+                    aria-busy={requestingAppleSpeechPermission}
                   >
-                    {requestingAppleSpeechPermission ? "Requesting" : "Get permission"}
+                    {#if requestingAppleSpeechPermission}<ButtonSpinner />Requesting{:else}Get permission{/if}
                   </button>
                 {:else}
-                  <button class="btn btn--ghost" onclick={openAppleSpeechPrivacySettings}>
+                  <button type="button" class="btn btn--ghost" onclick={openAppleSpeechPrivacySettings}>
                     Open System Settings
                   </button>
                 {/if}
               {/if}
             </div>
             {#if appleSpeechPermissionError}
-              <p class="group-hint group-hint--warn">Permission request failed: {appleSpeechPermissionError}</p>
+              <p class="group-hint group-hint--warn" role="alert">Permission request failed: {appleSpeechPermissionError}</p>
             {/if}
           {/if}
           {#if selectedTranscriptionModel.installPath}
-            <p class="group-hint"><strong>Install path:</strong> {selectedTranscriptionModel.installPath}</p>
+            <p class="group-hint"><strong>Install path:</strong> <span class="model-path">{selectedTranscriptionModel.installPath}</span></p>
           {/if}
           <ModelMissingFiles files={selectedTranscriptionModel.missingFiles} />
           {#if selectedTranscriptionModel.failureMessage}
@@ -272,13 +279,13 @@
                     {#if selectedTranscriptionDownloadPercent !== null} · {selectedTranscriptionDownloadPercent}%{/if}
                     {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
                   </p>
-                  <button class="btn btn--ghost" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload}>
-                    {cancellingTranscriptionDownload ? "Cancelling" : "Cancel download"}
+                  <button type="button" class="btn btn--ghost" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload} aria-busy={cancellingTranscriptionDownload}>
+                    {#if cancellingTranscriptionDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
                   </button>
                 </div>
               {:else}
-                <button class="btn btn--ghost" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available}>
-                  {startingTranscriptionDownload ? "Starting" : `Download (${formatBytes(selectedTranscriptionModel.download.byteSize)})`}
+                <button type="button" class="btn btn--primary" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available} aria-busy={startingTranscriptionDownload}>
+                  {#if startingTranscriptionDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedTranscriptionModel.download.byteSize)}){/if}
                 </button>
               {/if}
               <p class="group-hint">Download support validates sha256 before marking this model installed.</p>
@@ -288,14 +295,14 @@
               </p>
             {/if}
             {#if transcriptionDownloadError}
-              <p class="group-hint group-hint--warn">Download failed: {transcriptionDownloadError}</p>
+              <p class="group-hint group-hint--warn" role="alert">Download failed: {transcriptionDownloadError}</p>
             {/if}
           {:else}
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
           {/if}
           <div class="debug-log-actions">
-            <button class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning}>
-              Delete unused transcription models
+            <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning} aria-busy={deletingUnusedTranscriptionModels}>
+              {#if deletingUnusedTranscriptionModels}<ButtonSpinner />Deleting…{:else}Delete unused transcription models{/if}
             </button>
           </div>
           <p class="group-hint">Removes app-managed transcription model files except the model selected above.</p>
@@ -329,7 +336,7 @@
             </div>
           {/if}
           {#if deleteUnusedTranscriptionModelsError}
-            <p class="group-hint group-hint--warn">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
+            <p class="group-hint group-hint--warn" role="alert">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
           {/if}
         {:else if loadingTranscriptionModelStatus}
           <p class="group-hint">Checking installed transcription models…</p>
@@ -350,4 +357,12 @@
     gap: 10px;
     width: 100%;
   }
+
+  /* Render filesystem paths in mono so they read as machine values, matching
+     the Developer log path treatment. */
+  .model-path {
+    font-family: var(--app-font-mono);
+    word-break: break-all;
+  }
+
 </style>

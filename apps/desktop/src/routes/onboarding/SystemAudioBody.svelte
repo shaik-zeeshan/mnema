@@ -2,6 +2,7 @@
   import type { OnboardingController } from "./onboarding.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
+  import { useLockCalloutSlot } from "./FeatureRow.svelte";
 
   let { controller }: { controller: OnboardingController } = $props();
 
@@ -13,9 +14,22 @@
     if (value >= 20) return "Low — only louder system audio keeps capture active.";
     return "Very low — only very loud system audio triggers activity.";
   };
+
+  // Hoist the unmet-prerequisite callout OUT of FeatureRow's inert `.body-inner`
+  // — otherwise its "Grant System audio access" button renders but is inert.
+  const setLockCallout = useLockCalloutSlot();
+  const lockReason = $derived(controller.featureLockReason("sysaudio"));
+  $effect(() => {
+    setLockCallout(lockReason ? lockCallout : null);
+    return () => setLockCallout(null);
+  });
 </script>
 
-{#if controller.featureLockReason("sysaudio")}
+{#snippet lockCallout()}
+  <!-- Once system-audio access is denied macOS won't re-prompt, so
+       `requestPermission` deep-links to System Settings — mirror PermissionsBody
+       and relabel ("Open Settings"/"Opening…") rather than promising a prompt. -->
+  {@const sysAction = controller.permissionAction(controller.permissions?.systemAudio)}
   <div class="lock-callout">
     <div class="lock-callout-text">
       System audio access is required before you can capture system sound.
@@ -26,10 +40,14 @@
       disabled={controller.requestingPerm === "systemAudio"}
       onclick={() => controller.requestPermission("systemAudio")}
     >
-      {controller.requestingPerm === "systemAudio" ? "…" : "Grant System audio access"}
+      {#if controller.requestingPerm === "systemAudio"}
+        {sysAction?.mode === "settings" ? "Opening…" : "Requesting…"}
+      {:else}
+        {sysAction?.mode === "settings" ? "Open Settings" : "Grant System audio access"}
+      {/if}
     </button>
   </div>
-{/if}
+{/snippet}
 
 <div class="group">
   <div class="note muted">

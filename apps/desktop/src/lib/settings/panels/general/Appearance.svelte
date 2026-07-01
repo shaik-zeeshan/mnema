@@ -7,6 +7,7 @@
 
   const c = getSettingsController();
   const rec = c.rec;
+
 </script>
 
 <SettingGroup

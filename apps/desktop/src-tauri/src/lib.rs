@@ -374,6 +374,7 @@ pub fn run() {
         .manage(native_capture::MicrophoneControllerPreferencesState::default())
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
         .manage(native_capture::SystemWakeNotifierState::default())
+        .manage(native_capture::DisplayReconfigurationNotifierState::default())
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::PrivacyFilterRefreshState::default())
         .manage(native_capture::RecordingSettingsState::default())
@@ -493,6 +494,7 @@ pub fn run() {
             semantic_search_models::start_semantic_search_model_download,
             semantic_search_models::cancel_semantic_search_model_download,
             semantic_search_models::select_semantic_search_model,
+            semantic_search_models::delete_semantic_search_model,
             native_capture::update_semantic_search_settings,
             speaker_analysis_models::get_speaker_analysis_model_status,
             speaker_analysis_models::start_speaker_analysis_model_download,
@@ -595,6 +597,8 @@ pub fn run() {
             user_context::commands::regenerate_user_context_digest,
             user_context::commands::user_context_run_derivation_now,
             user_context::commands::user_context_dismiss_conclusion,
+            user_context::commands::user_context_list_dismissed,
+            user_context::commands::user_context_restore_dismissed,
             user_context::commands::user_context_set_pinned,
             user_context::commands::user_context_correct_activity_category,
             user_context::commands::user_context_correct_activity_focus,
@@ -624,10 +628,12 @@ pub fn run() {
             native_capture::stop_native_capture,
             windows::focus_main_and_open_settings,
             windows::drain_pending_open_settings,
+            windows::request_app_relaunch,
             windows::open_debug_window,
             windows::close_current_window,
             windows::focus_quick_recall_window,
             windows::quick_recall_suppress_blur_dismiss,
+            windows::summon_quick_recall_window_command,
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,
@@ -682,6 +688,7 @@ pub fn run() {
             native_capture::maybe_push_ocr_unavailable_startup_warning(app.handle());
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());
+            native_capture::start_display_reconfiguration_notifier(app.handle().clone());
             native_capture::start_metadata_notifier(app.handle().clone());
             let onboarding_complete = windows::is_onboarding_complete(app.handle());
             let handled_startup_authorization_request =

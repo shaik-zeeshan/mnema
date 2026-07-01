@@ -116,7 +116,12 @@
     {#if title}
       <div class="timeline-title">{title}</div>
     {/if}
-    <ol class="rail">
+    <!-- Fallback accessible name when no visible caption is passed, so the rail
+         is never an unlabelled list to assistive tech. -->
+    <ol
+      class="rail"
+      aria-label={title ?? `Activity timeline, ${intervals.length} ${intervals.length === 1 ? "interval" : "intervals"}`}
+    >
       {#each intervals as interval, i (i)}
         <li class="row">
           <span class="spine" aria-hidden="true">

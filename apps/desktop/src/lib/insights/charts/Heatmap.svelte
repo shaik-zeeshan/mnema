@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Heatmap — a labelled grid of cells coloured by intensity, for focus or
   // activity heatmaps. Each row has a label and an array of cell intensities
   // (0..1). Two colour modes:
@@ -30,6 +31,42 @@
     "--chart-grey-5",
   ];
 
+  // The focus mode's three intensity bands, in cellStyle's bucket order
+  // (deep ≥ 0.66, mid ≥ 0.33, distracted < 0.33). When a focus-mode legend is
+  // supplied we render its `·`-separated labels next to these swatches so the
+  // colour key is shown, not just named. Extra label segments fall back to a
+  // plain dot; missing ones simply aren't rendered.
+  const focusLegendVars = ["--focus-deep", "--focus-mid", "--focus-distracted"];
+
+  // Parsed legend items for focus mode: each `·`-separated label paired with its
+  // band colour token. Empty for grey mode or when no legend is given.
+  const focusLegendItems = $derived.by<{ label: string; colorVar: string }[]>(
+    () => {
+      if (colorMode !== "focus" || !legend) return [];
+      return legend
+        .split("·")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((label, i) => ({
+          label,
+          colorVar: focusLegendVars[i] ?? focusLegendVars[focusLegendVars.length - 1],
+        }));
+    },
+  );
+
+  // Per-cell readout so the heatmap is never decode-by-hue only: every cell
+  // exposes its row label + a readable value via title (hover) and aria-label.
+  function cellTitle(rowLabel: string, value: number): string {
+    const v = Math.max(0, Math.min(1, value));
+    if (v <= 0) return `${rowLabel} — no signal`;
+    const pct = Math.round(v * 100);
+    if (colorMode === "focus") {
+      const band = v >= 0.66 ? "deep focus" : v >= 0.33 ? "mixed focus" : "scattered";
+      return `${rowLabel} — ${band} (${pct}%)`;
+    }
+    return `${rowLabel} — ${pct}% activity`;
+  }
+
   function cellStyle(value: number): string {
     const v = Math.max(0, Math.min(1, value));
     if (v <= 0) {
@@ -50,18 +87,44 @@
 
 <div class="heatmap">
   <div class="grid">
-    {#each rows as row (row.label)}
+    <!-- Key by index, not `row.label`: labels are weekday/short-date names that
+         legitimately repeat (4–5 "Mon"s in a month; a boundary-straddling day
+         can even repeat within a week), and a duplicate `{#each}` key throws and
+         aborts the whole Svelte flush — freezing this tile AND its siblings on
+         their skeletons. Rows are a positional, fully-recomputed list, so index
+         keys are both correct and collision-proof across all range modes. -->
+    {#each rows as row, i (i)}
       <div class="row">
         <span class="rlabel">{row.label}</span>
         <div class="cells">
           {#each row.cells as cell, i (i)}
-            <span class="cell" style={cellStyle(cell)}></span>
+            <span
+              class="cell"
+              style={cellStyle(cell)}
+              role="img"
+              use:tip={cellTitle(row.label, cell)}
+              aria-label={cellTitle(row.label, cell)}
+            ></span>
           {/each}
         </div>
       </div>
     {/each}
   </div>
-  {#if legend}
+  {#if focusLegendItems.length > 0}
+    <!-- Focus mode: colored swatches so each band's hue is shown, not just named. -->
+    <div class="legend legend--swatched">
+      {#each focusLegendItems as item (item.label)}
+        <span class="legend__item">
+          <span
+            class="legend__swatch"
+            style="background:var({item.colorVar});"
+            aria-hidden="true"
+          ></span>
+          {item.label}
+        </span>
+      {/each}
+    </div>
+  {:else if legend}
     <div class="legend">{legend}</div>
   {/if}
 </div>
@@ -82,7 +145,7 @@
     gap: 8px;
   }
   .rlabel {
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     white-space: nowrap;
   }
@@ -98,7 +161,24 @@
   }
   .legend {
     margin-top: 9px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-subtle);
+  }
+  /* Focus-mode key: colored swatch + label per intensity band. */
+  .legend--swatched {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .legend__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .legend__swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
   }
 </style>

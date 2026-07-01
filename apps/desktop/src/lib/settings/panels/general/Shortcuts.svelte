@@ -1,9 +1,14 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import IconRestore from "~icons/lucide/rotate-ccw";
+  import IconRestoreAll from "~icons/lucide/list-restart";
+  import IconClear from "~icons/lucide/x";
+  import IconAlert from "~icons/lucide/triangle-alert";
 
   const c = getSettingsController();
   const keyboard = c.keyboard;
@@ -31,6 +36,31 @@
     keyboard.clearShortcut(actionId);
   const resetShortcut = (actionId: Parameters<typeof keyboard.resetShortcut>[0]) =>
     keyboard.resetShortcut(actionId);
+
+  // Category order — single source for both the rendered list and the
+  // first-conflict scan (so "Jump to conflict" lands on the row the user sees
+  // first, not whatever order the issues map happens to enumerate in).
+  const SHORTCUT_CATEGORIES = ["global", "app", "dashboard", "audioDrawer"] as const;
+
+  // The first action (in visual order) that currently carries an issue. The
+  // conflict banner is global, but the offending row can be scrolled off in a
+  // sibling category — so anchor a jump on this id.
+  const firstConflictActionId = $derived.by(() => {
+    for (const category of SHORTCUT_CATEGORIES) {
+      for (const action of shortcutCategoryActions(category)) {
+        if (shortcutIssueFor(action.id)) return action.id;
+      }
+    }
+    return null;
+  });
+
+  function jumpToConflict() {
+    if (firstConflictActionId === null) return;
+    const row = document.getElementById(`shortcut-row-${firstConflictActionId}`);
+    if (!row) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    row.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+  }
 
   // ─── Window-capture keydown/pointerdown effect (verbatim from legacy) ─────────
   $effect(() => {
@@ -65,15 +95,12 @@
     <button
       class="settings-icon-btn"
       type="button"
-      title="Restore defaults"
-      aria-label="Restore default shortcuts"
+      use:tip={"Restore all defaults"}
+      aria-label="Restore all default shortcuts"
       onclick={restoreDefaultShortcuts}
       disabled={savingKeyboardBindings}
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4 4v5h5" />
-        <path d="M4 9a8 8 0 1 1-1.5 5" />
-      </svg>
+      <IconRestoreAll aria-hidden="true" />
     </button>
   {/snippet}
 
@@ -92,8 +119,13 @@
     {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
       <div class="shortcuts-error-row">
         <div class="inline-error" role="alert">
-          <span class="inline-error__icon" aria-hidden="true">⚠</span>
+          <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
           <span class="inline-error__msg">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</span>
+          {#if firstConflictActionId !== null}
+            <button type="button" class="btn btn--ghost btn--sm shortcuts-jump" onclick={jumpToConflict}>
+              Jump to conflict
+            </button>
+          {/if}
         </div>
       </div>
     {/if}
@@ -101,15 +133,15 @@
 </SettingGroup>
 
 {#if keyboardBindingsSettings !== null}
-  {#each ["global", "app", "dashboard", "audioDrawer"] as category (category)}
-    <SettingGroup title={shortcutCategoryLabel(category)} bare>
+  {#each SHORTCUT_CATEGORIES as category (category)}
+    <SettingGroup title={shortcutCategoryLabel(category)} bare nested>
       <div class="shortcut-editor-list">
         {#each shortcutCategoryActions(category) as action (action.id)}
           {@const binding = shortcutDraftBinding(action.id)}
           {@const issue = shortcutIssueFor(action.id)}
           {@const tokens = shortcutKeyTokens(binding)}
           {@const listening = shortcutCaptureActionId === action.id}
-          <div class="shortcut-editor-row" class:shortcut-editor-row--error={issue !== null} class:shortcut-editor-row--listening={listening}>
+          <div id={`shortcut-row-${action.id}`} class="shortcut-editor-row" class:shortcut-editor-row--error={issue !== null} class:shortcut-editor-row--listening={listening}>
             <div class="shortcut-editor-row__main">
               <span class="shortcut-editor-row__title">{action.label}</span>
               <span class="shortcut-editor-row__description">{action.description}</span>
@@ -124,6 +156,7 @@
                 class:shortcut-capture--empty={!tokens && !listening}
                 type="button"
                 data-shortcut-capture={action.id}
+                disabled={savingKeyboardBindings}
                 aria-label={listening ? `Listening for ${action.label} shortcut` : `Set shortcut for ${action.label}`}
                 onclick={(event) => { startShortcutCapture(action.id); event.currentTarget.focus(); }}
               >
@@ -143,27 +176,22 @@
               <button
                 class="settings-icon-btn"
                 type="button"
-                title="Reset to default"
+                use:tip={"Reset to default"}
                 aria-label={`Reset ${action.label} to default`}
+                disabled={savingKeyboardBindings}
                 onclick={() => resetShortcut(action.id)}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M4 4v5h5" />
-                  <path d="M4 9a8 8 0 1 1-1.5 5" />
-                </svg>
+                <IconRestore aria-hidden="true" />
               </button>
               <button
                 class="settings-icon-btn"
                 type="button"
-                title="Clear shortcut"
+                use:tip={"Clear shortcut"}
                 aria-label={`Clear ${action.label}`}
-                disabled={!binding}
+                disabled={savingKeyboardBindings || !binding}
                 onclick={() => clearShortcut(action.id)}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m6 6 12 12" />
-                  <path d="m18 6-12 12" />
-                </svg>
+                <IconClear aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -178,5 +206,12 @@
      row — break it out of the row grid so it spans the group. */
   .shortcuts-error-row {
     padding: 12px 0;
+  }
+
+  /* "Jump to conflict" sits at the trailing edge of the banner so the message
+     keeps the lead and the action reads as the escape hatch. */
+  .shortcuts-jump {
+    margin-left: auto;
+    flex-shrink: 0;
   }
 </style>

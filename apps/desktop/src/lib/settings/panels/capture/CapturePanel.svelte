@@ -5,7 +5,7 @@
   import Privacy from "./Privacy.svelte";
 </script>
 
-<div role="tabpanel" id="settings-panel-capture" tabindex="0">
+<div class="settings-panel" id="settings-panel-capture">
   <Capture />
   <Video />
   <Audio />

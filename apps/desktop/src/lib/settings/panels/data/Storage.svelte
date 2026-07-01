@@ -1,7 +1,9 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, confirm } from "@tauri-apps/plugin-dialog";
+  import { humanizeError } from "$lib/format-error";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import RetentionPicker from "$lib/components/RetentionPicker.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
@@ -14,6 +16,7 @@
   const retentionCleanupRunning = $derived(c.retentionCleanupRunning);
   const retentionCleanupError = $derived(c.retentionCleanupError);
 
+
   const runRetentionCleanupNow = () => c.runRetentionCleanupNow();
 
   // The resolved on-disk storage root, fetched from the backend so it reflects
@@ -24,18 +27,55 @@
   let storageLocationError = $state<string | null>(null);
   let browsing = $state(false);
 
+  // The storage root currently IN EFFECT (resolved at launch). The backend only
+  // re-resolves it on the next launch, so a freshly-picked directory updates the
+  // display but not this — the gap drives the "restart to apply" notice below.
+  let appliedLocation = $state("");
+
   const displayPath = $derived(storageLocation || rec.draftSaveDirectory);
+
+  // A picked directory differs from the one the running app resolved at launch,
+  // so the change is saved but won't take effect until Mnema restarts.
+  const pendingRestart = $derived(
+    appliedLocation.length > 0 &&
+      displayPath.length > 0 &&
+      displayPath !== appliedLocation,
+  );
 
   async function loadStorageLocation() {
     try {
       storageLocation = await invoke<string>("get_storage_location");
+      appliedLocation = storageLocation;
       storageLocationError = null;
     } catch (err) {
-      storageLocationError = typeof err === "string" ? err : String(err);
+      storageLocationError = humanizeError(err);
     }
   }
 
   onMount(loadStorageLocation);
+
+  // Apply a pending save-directory change by relaunching. The backend
+  // (`request_app_relaunch`) finalizes any in-flight recording before
+  // restarting, so this is safe mid-capture — confirm first because a restart is
+  // disruptive, then leave the button busy until the process tears down.
+  let restarting = $state(false);
+
+  async function restartNow() {
+    if (restarting) return;
+    const ok = await confirm(
+      "Restart now? Any in-progress recording will be saved first.",
+      { title: "Restart Mnema", kind: "warning" },
+    );
+    if (!ok) return;
+    restarting = true;
+    try {
+      await invoke<void>("request_app_relaunch");
+    } catch (err) {
+      // Relaunch failed before tearing down — surface it and re-enable the button.
+      storageLocationError = humanizeError(err);
+      restarting = false;
+    }
+  }
 
   async function browseSaveDirectory() {
     if (browsing) return;
@@ -48,12 +88,14 @@
         defaultPath: displayPath || undefined,
       });
       if (typeof picked === "string" && picked.trim().length > 0) {
-        // Drive the autosaved draft; mirror it into the display immediately so
-        // the field doesn't lag behind the picker (the backend only re-resolves
-        // the storage root on the next launch).
         rec.draftSaveDirectory = picked;
         storageLocation = picked;
+        storageLocationError = null;
       }
+    } catch (err) {
+      // The folder picker can reject (dialog plugin error / cancelled-by-error).
+      // Surface it instead of swallowing — the error-text block below renders it.
+      storageLocationError = humanizeError(err);
     } finally {
       browsing = false;
     }
@@ -87,12 +129,31 @@
             class="btn btn--ghost"
             onclick={browseSaveDirectory}
             disabled={browsing}
+            aria-busy={browsing}
           >
-            {browsing ? "…" : "Browse"}
+            {#if browsing}<ButtonSpinner />Browsing…{:else}Browse{/if}
           </button>
         </div>
         {#if storageLocationError}
-          <p class="group-hint group-hint--error">{storageLocationError}</p>
+          <p class="error-text">{storageLocationError}</p>
+        {/if}
+        {#if pendingRestart}
+          <div class="restart-notice" role="status">
+            <p class="group-hint group-hint--warn">
+              Saved — but this takes effect after you restart Mnema. Captures already on disk stay where they are.
+            </p>
+            <div class="row-actions">
+              <button
+                type="button"
+                class="btn btn--primary btn--sm"
+                onclick={restartNow}
+                disabled={restarting}
+                aria-busy={restarting}
+              >
+                {#if restarting}<ButtonSpinner />Restarting…{:else}Restart Mnema{/if}
+              </button>
+            </div>
+          </div>
         {/if}
       </div>
     {/snippet}
@@ -113,18 +174,22 @@
             class="btn btn--ghost btn--sm"
             onclick={runRetentionCleanupNow}
             disabled={retentionCleanupRunning}
+            aria-busy={retentionCleanupRunning}
           >
-            {retentionCleanupRunning ? "Running…" : "Run cleanup now"}
+            {#if retentionCleanupRunning}<ButtonSpinner />Running…{:else}Run cleanup now{/if}
           </button>
         </div>
         {#if retentionCleanupSummary}
-          <p class="group-hint">
-            Latest cleanup: {retentionCleanupSummary.deletedCaptureSegments} segment(s), {retentionCleanupSummary.deletedFrames}
-            frame(s), {retentionCleanupSummary.deletedAudioSegments} audio segment(s).
-          </p>
+          <div class="cleanup-result" aria-live="polite">
+            <strong>Latest cleanup</strong>
+            <p>
+              {retentionCleanupSummary.deletedCaptureSegments} segment(s), {retentionCleanupSummary.deletedFrames}
+              frame(s), {retentionCleanupSummary.deletedAudioSegments} audio segment(s).
+            </p>
+          </div>
         {/if}
         {#if retentionCleanupError}
-          <p class="group-hint group-hint--error">{retentionCleanupError}</p>
+          <p class="error-text">{retentionCleanupError}</p>
         {/if}
       </div>
     {/snippet}
@@ -151,8 +216,12 @@
   .path-field .text-input {
     flex: 1 1 auto;
     min-width: 0;
-    /* Read-only display: keep the recessed field look but signal non-editing. */
+    /* Read-only display: de-chrome the editable recess into a flat path/code
+       chip so the field doesn't invite typing. */
     cursor: default;
+    box-shadow: none;
+    background: var(--app-surface-subtle);
+    font-family: var(--app-font-mono);
   }
 
   .path-field .btn {
@@ -170,6 +239,19 @@
   }
 
   .retention-control .row-actions {
+    justify-content: flex-start;
+  }
+
+  /* The pending-restart notice stacks its warning copy above an inline
+     "Restart Mnema" action, left-aligned under the path field. */
+  .restart-notice {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .restart-notice .row-actions {
+    display: flex;
     justify-content: flex-start;
   }
 </style>

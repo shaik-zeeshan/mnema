@@ -123,7 +123,11 @@
       <div class="model-top">
         <div class="model-id">
           {model.displayName}
-          <div class="meta">{controller.ocrStatusLabel(model)}{model.description ? ` · ${model.description}` : ""}</div>
+          <!-- Status lives in the pill only (mirrors SemanticSearchBody); the meta
+               line carries the model description, not a second copy of the status. -->
+          {#if model.description}
+            <div class="meta">{model.description}</div>
+          {/if}
         </div>
         <span class="pill {pillClass}">
           <span class="d"></span>{controller.ocrStatusLabel(model)}
@@ -134,11 +138,19 @@
         {#if controller.selectedOcrDownloadRunning}
           <div class="dl">
             <div class="dl-track">
-              <div class="dl-fill" style={`width: ${controller.selectedOcrDownloadPercent ?? 8}%`}></div>
+              <div
+                class="dl-fill"
+                class:dl-fill--indeterminate={controller.selectedOcrDownloadPercent === null}
+                style={controller.selectedOcrDownloadPercent === null
+                  ? undefined
+                  : `width: ${controller.selectedOcrDownloadPercent}%`}
+              ></div>
             </div>
             <div class="dl-meta">
               <span>
-                <b>{controller.selectedOcrDownloadPercent ?? 0}%</b>
+                <b>{controller.selectedOcrDownloadPercent === null
+                    ? "…"
+                    : `${controller.selectedOcrDownloadPercent}%`}</b>
                 · {controller.selectedOcrDownloadProgress?.status ?? "downloading"}
               </span>
               <button

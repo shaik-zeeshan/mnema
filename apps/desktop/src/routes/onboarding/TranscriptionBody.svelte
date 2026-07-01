@@ -2,7 +2,7 @@
   import type { OnboardingController } from "./onboarding.svelte";
   import type { AudioTranscriptionMemoryMode } from "$lib/types";
   import Segmented from "$lib/components/Segmented.svelte";
-  import Slider from "$lib/components/Slider.svelte";
+  import Stepper from "$lib/components/Stepper.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import AdvancedReveal from "./AdvancedReveal.svelte";
   import { formatBytes } from "./onboarding-mapping";
@@ -110,13 +110,30 @@
   </div>
 
   {#if controller.transcriptionModelError}
-    <div class="note">Failed to load model status: {controller.transcriptionModelError}</div>
+    <div class="note">
+      <div>Failed to load model status: {controller.transcriptionModelError}</div>
+      <div class="dl-meta">
+        <span>This is a fetch error, not a missing model — retry to recheck.</span>
+        <button
+          type="button"
+          class="btn sm"
+          disabled={controller.loadingTranscriptionModelStatus}
+          onclick={() => controller.loadTranscriptionModelStatus()}
+        >
+          {controller.loadingTranscriptionModelStatus ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    </div>
   {:else if model}
     <div class="model-card">
       <div class="model-top">
         <div class="model-id">
           {model.displayName}
-          <div class="meta">{controller.transcriptionStatusLabel(model)}{model.description ? ` · ${model.description}` : ""}</div>
+          <!-- Status lives in the pill only (mirrors SemanticSearchBody); the meta
+               line carries the model description, not a second copy of the status. -->
+          {#if model.description}
+            <div class="meta">{model.description}</div>
+          {/if}
         </div>
         <span class="pill {pillClass}">
           <span class="d"></span>{controller.transcriptionStatusLabel(model)}
@@ -127,11 +144,19 @@
         {#if controller.selectedTranscriptionDownloadRunning}
           <div class="dl">
             <div class="dl-track">
-              <div class="dl-fill" style={`width: ${controller.selectedTranscriptionDownloadPercent ?? 8}%`}></div>
+              <div
+                class="dl-fill"
+                class:dl-fill--indeterminate={controller.selectedTranscriptionDownloadPercent === null}
+                style={controller.selectedTranscriptionDownloadPercent === null
+                  ? undefined
+                  : `width: ${controller.selectedTranscriptionDownloadPercent}%`}
+              ></div>
             </div>
             <div class="dl-meta">
               <span>
-                <b>{controller.selectedTranscriptionDownloadPercent ?? 0}%</b>
+                <b>{controller.selectedTranscriptionDownloadPercent === null
+                    ? "…"
+                    : `${controller.selectedTranscriptionDownloadPercent}%`}</b>
                 · {controller.selectedTranscriptionDownloadProgress?.status ?? "downloading"}
               </span>
               <button
@@ -217,29 +242,50 @@
 
   <div class="group">
     <AdvancedReveal>
+      <!-- Stepper (not Slider) here mirrors Settings' Transcription.svelte so the
+           same value snaps identically across onboarding and Settings (matching
+           min/max/step). -->
       {#if controller.draftTranscriptionMemoryMode === "balanced"}
-        <div class="slider-block">
-          <Slider
-            bind:value={controller.draftTranscriptionIdleUnloadSeconds}
-            min={0}
-            max={1800}
-            step={30}
-            label="Idle unload"
-            formatValue={(v) => (v === 0 ? "off" : v >= 60 ? `${Math.floor(v / 60)}m${v % 60 ? ` ${v % 60}s` : ""}` : `${v}s`)}
-          />
-          <span class="kbd-hint">Unload the model after this much idle time to free memory.</span>
+        <div class="ctl stack-field">
+          <div class="ctl-label">
+            <div class="name">Idle unload</div>
+          </div>
+          <div class="ctl-field">
+            <Stepper
+              id="onboarding-transcription-idle-unload"
+              bind:value={
+                () => String(controller.draftTranscriptionIdleUnloadSeconds),
+                (v) => { controller.draftTranscriptionIdleUnloadSeconds = parseInt(v, 10) || 0; }
+              }
+              min={0}
+              max={1800}
+              step={30}
+              unit="s"
+              ariaLabel="idle unload seconds"
+            />
+            <span class="kbd-hint">Unload the model after this much idle time to free memory.</span>
+          </div>
         </div>
       {/if}
-      <div class="slider-block">
-        <Slider
-          bind:value={controller.draftTranscriptionChunkSeconds}
-          min={0}
-          max={300}
-          step={5}
-          label="Chunk duration"
-          formatValue={(v) => (v === 0 ? "off" : `${v}s`)}
-        />
-        <span class="kbd-hint">Chunking caps peak activation memory; 0 disables chunking.</span>
+      <div class="ctl stack-field">
+        <div class="ctl-label">
+          <div class="name">Chunk duration</div>
+        </div>
+        <div class="ctl-field">
+          <Stepper
+            id="onboarding-transcription-chunk-seconds"
+            bind:value={
+              () => String(controller.draftTranscriptionChunkSeconds),
+              (v) => { controller.draftTranscriptionChunkSeconds = parseInt(v, 10) || 0; }
+            }
+            min={0}
+            max={300}
+            step={15}
+            unit="s"
+            ariaLabel="chunk seconds"
+          />
+          <span class="kbd-hint">Chunking caps peak activation memory; 0 disables chunking.</span>
+        </div>
       </div>
     </AdvancedReveal>
   </div>

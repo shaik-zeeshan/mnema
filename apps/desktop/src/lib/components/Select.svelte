@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Select as BitsSelect } from "bits-ui";
+  import IconSpinner from "~icons/lucide/loader-circle";
   import { pinAncestorScrollOnOpen } from "./pin-scroll-on-open";
   import { shouldOpenUpward } from "./popover-direction";
 
@@ -15,7 +16,13 @@
     placeholder?: string;
     disabled?: boolean;
     label?: string;
+    /** Accessible name for the trigger when there is no visible `label`. */
+    ariaLabel?: string;
     warn?: boolean;
+    /** Show a loading row instead of an empty/options list while async-fetching. */
+    loading?: boolean;
+    /** Copy for the no-options row (when not loading). */
+    emptyText?: string;
   }
 
   let {
@@ -25,7 +32,10 @@
     placeholder = "Select…",
     disabled = false,
     label,
+    ariaLabel,
     warn = false,
+    loading = false,
+    emptyText = "No options",
   }: Props = $props();
 
   let openUp = $state(false);
@@ -70,6 +80,7 @@
 <div
   class="select-wrapper"
   class:select-wrapper--disabled={disabled}
+  class:select-wrapper--busy={loading && !disabled}
   class:select-wrapper--up={openUp}
   bind:this={wrapperEl}
 >
@@ -86,18 +97,23 @@
     value={value ?? ""}
     onValueChange={handleValueChange}
     onOpenChange={handleOpenChange}
-    {disabled}
+    disabled={disabled || loading}
   >
     <BitsSelect.Trigger
       class={warn ? "select-trigger select-trigger--warn" : "select-trigger"}
       aria-labelledby={label ? labelId : undefined}
+      aria-label={label ? undefined : ariaLabel}
     >
       <span class={selectedLabel ? "select-trigger-text" : "select-trigger-text select-trigger-text--placeholder"}>
         {selectedLabel ?? placeholder}
       </span>
-      <svg class="select-chevron" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="m6 9 6 6 6-6" />
-      </svg>
+      {#if loading}
+        <span class="select-spinner" aria-hidden="true"><IconSpinner /></span>
+      {:else}
+        <svg class="select-chevron" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      {/if}
     </BitsSelect.Trigger>
     <!-- Render inline (no body portal). bits-ui defaults to portaling the
          content to <body>; across Settings' inner `.settings-scroll` container
@@ -118,6 +134,11 @@
               {/snippet}
             </BitsSelect.Item>
           {/each}
+          {#if loading}
+            <div class="select-empty" role="status">Loading…</div>
+          {:else if options.length === 0}
+            <div class="select-empty">{emptyText}</div>
+          {/if}
         </BitsSelect.Viewport>
       </BitsSelect.Content>
     </BitsSelect.Portal>
@@ -166,8 +187,17 @@
   }
 
   .select-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
+  }
+
+  /* In-flight (e.g. an async ActionSelect pick): locked like disabled but dimmed
+     less, so it reads as "working" rather than "unavailable". The trigger shows
+     a spinner in place of the chevron. */
+  .select-wrapper--busy {
+    opacity: var(--app-busy-opacity);
+    pointer-events: none;
+    cursor: progress;
   }
 
   .select-label {
@@ -189,7 +219,7 @@
     border-radius: 8px;
     cursor: pointer;
     outline: none;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
     transition: border-color 0.15s, box-shadow 0.15s;
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 12px;
@@ -201,9 +231,13 @@
     border-color: var(--app-border-hover);
   }
 
+  :global(.select-trigger:active) {
+    background: var(--app-surface-active);
+  }
+
   :global(.select-trigger:focus-visible) {
     border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
     outline: none;
   }
 
@@ -217,7 +251,7 @@
 
   :global(.select-trigger--warn:focus-visible) {
     border-color: var(--app-warn-strong);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
       0 0 0 3px color-mix(in srgb, var(--app-warn) 18%, transparent);
   }
 
@@ -251,12 +285,34 @@
     stroke: var(--app-accent);
   }
 
+  /* Busy spinner shown on the closed trigger while a pick is in flight. Rotate
+     the wrapper span (not the <svg>): WKWebView doesn't reliably spin an <svg>
+     around its own center. Mirrors ButtonSpinner. */
+  .select-spinner {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--app-text-muted);
+    animation: select-spinner-spin 0.7s linear infinite;
+  }
+
+  .select-spinner :global(svg) {
+    width: 14px;
+    height: 14px;
+    stroke-width: 2;
+  }
+
+  @keyframes select-spinner-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   :global(.select-content) {
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border-strong);
     border-radius: 6px;
     padding: 4px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--app-shadow-popover);
     z-index: 100;
     min-width: var(--bits-select-anchor-width);
     max-height: 220px;
@@ -306,11 +362,25 @@
     font-family: inherit;
   }
 
+  /* Mirrors Combobox's .combobox-empty so a blank/loading popover reads as a
+     state, not a dead-end. */
+  .select-empty {
+    padding: 14px 10px;
+    text-align: center;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--text-sm);
+    font-style: italic;
+    color: var(--app-text-subtle);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     :global(.select-trigger),
     .select-chevron,
     :global(.select-item) {
       transition: none;
+    }
+    .select-spinner {
+      animation: none;
     }
   }
 </style>

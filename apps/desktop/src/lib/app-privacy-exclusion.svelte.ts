@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { humanizeError } from "$lib/format-error";
 import type {
   ExcludedAppEntry,
   RecordingSettingsDomainUpdateResponse,
@@ -44,7 +45,7 @@ type AppPrivacyExclusionState = {
 };
 
 function serializeError(err: unknown): string {
-  return typeof err === "string" ? err : (JSON.stringify(err) ?? "Unknown error");
+  return humanizeError(err);
 }
 
 function makeDraftId(prefix: string): string {

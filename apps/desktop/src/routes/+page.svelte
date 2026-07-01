@@ -1,26 +1,29 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { tick } from "svelte";
   import { fly } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
-  import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
+  import { writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
-  import { Calendar } from "bits-ui";
-  import {
-    CalendarDate,
-    type DateValue,
-  } from "@internationalized/date";
   import {
     bootstrapCaptureControls,
     captureControls,
     resyncCaptureSession,
   } from "$lib/capture-controls.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
+  import ActionSelect from "$lib/components/ActionSelect.svelte";
+  import TimelineJumper from "$lib/timeline/TimelineJumper.svelte";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
+  import { humanizeError } from "$lib/format-error";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
+  import IconScanText from "~icons/lucide/scan-text";
+  import IconMoreHorizontal from "~icons/lucide/ellipsis";
+  import IconClapperboard from "~icons/lucide/clapperboard";
+  import IconHeadphones from "~icons/lucide/headphones";
   import {
     activeExactPreviewDelayMs,
     scrubPreviewResponseShouldApply,
@@ -331,6 +334,13 @@
       kind: "command",
       scope: "dashboard",
     },
+    playMoment: {
+      id: "dashboard.playMoment",
+      label: "Play audio at this moment",
+      bindings: [{ key: "P" }],
+      kind: "command",
+      scope: "dashboard",
+    },
     closeSurface: {
       id: "dashboard.closeSurface",
       label: "Close the top open surface",
@@ -561,6 +571,12 @@
   let frameActionStatus = $state<FrameActionStatus | null>(null);
   let frameActionStatusTimer: ReturnType<typeof setTimeout> | null = null;
   let frameActionStatusHovered = $state(false);
+  // In-flight latch for the stage's copy/download frame-image actions so the
+  // triggering menu item can show a "Copying…/Saving…" status and disable while
+  // the async clipboard/file write runs. Cleared in each action's finally.
+  let frameImageActionBusy = $state<null | "copy" | "download">(null);
+  // In-flight latch for the OCR "copy all recognized text" action.
+  let ocrCopyAllBusy = $state(false);
   let stageActionsMenuOpen = $state(false);
   // In-flight latch for the stage's "open captured URL" action: only one open
   // runs at a time on the stage, so a single boolean keeps a double-click on the
@@ -607,6 +623,12 @@
   let activePreviewLoadErrorFrameId = $state<number | null>(null);
   let timelineAppIconPathsByBundleId = $state<Record<string, string>>({});
   const requestedTimelineAppIconBundleIds = new Set<string>();
+  // A refetched preview whose bytes still fail to decode in the <img> sentinel
+  // would otherwise retry forever (fetch succeeds → paint fails → onerror →
+  // refetch …). Cap decode retries per frameId; on exhaustion we surface a
+  // terminal error in the always-visible stage status and stop refetching.
+  const MAX_ACTIVE_PREVIEW_DECODE_RETRIES = 2;
+  const activePreviewDecodeRetries = new Map<number, number>();
 
   function handleActivePreviewLoadError(frameId: number): void {
     const activeIndex = timelineFrames.findIndex((frame) => frame.id === frameId);
@@ -628,11 +650,32 @@
       return;
     }
     if (activePreviewLoadErrorFrameId === frameId) return;
+    const retries = activePreviewDecodeRetries.get(frameId) ?? 0;
+    if (retries >= MAX_ACTIVE_PREVIEW_DECODE_RETRIES) {
+      // Refetching keeps returning bytes the browser can't decode — stop the
+      // loop and leave a terminal, visible error instead of churning silently.
+      if (isTimelineActiveFrame(frameId)) {
+        setFrameActionStatus("Preview couldn't be displayed", {
+          detail: "This frame's image failed to decode after several attempts.",
+          tone: "error",
+        });
+      }
+      return;
+    }
+    activePreviewDecodeRetries.set(frameId, retries + 1);
     activePreviewLoadErrorFrameId = frameId;
     previewStaleRetryCount += 1;
     dropPreviewCacheEntry(frameId);
     clearPreviewFailure(frameId);
     void ensurePreview(frameId);
+  }
+
+  function handleActivePreviewLoad(frameId: number): void {
+    // A successful repaint means the current bytes decoded fine, so clear this
+    // frame's decode-retry budget. Otherwise a frame that transiently failed
+    // (then recovered) keeps a poisoned counter, and a later genuine decode
+    // failure on the same frame would trip the terminal error immediately.
+    activePreviewDecodeRetries.delete(frameId);
   }
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
@@ -652,8 +695,11 @@
   const activeExactPreviewLoadMs = $derived(
     timelineActive ? previewLoadMsCache.get(timelineActive.id) ?? null : null,
   );
-  const activeScrubPreviewLoadMs = $derived(
-    timelineActive ? scrubPreviewLoadMsCache.get(timelineActive.id) ?? null : null,
+  // Scrub previews display via the interval cache (`scrubPreviewIntervalForFrame`),
+  // which records no per-frame JS load-ms — so report readiness, not a timing that
+  // can never populate. ponytail: the per-frame scrubPreview*Cache maps are dead.
+  const activeScrubPreviewReady = $derived(
+    timelineActive ? scrubPreviewIntervalForFrame(timelineActive) != null : false,
   );
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
   let lastPreviewReuseFrameId = $state<number | null>(null);
@@ -943,7 +989,7 @@
       selectedAudioMediaError = null;
     } catch (err) {
       if (gen !== selectedAudioMediaGeneration || selectedAudioSegmentId !== id) return;
-      selectedAudioMediaError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioMediaError = humanizeError(err);
       selectedAudioSrc = null;
     } finally {
       if (gen === selectedAudioMediaGeneration && selectedAudioSegmentId === id) {
@@ -1318,7 +1364,7 @@
       selectedAudioSpeakerClusters = [];
       selectedAudioSpeakerTurnsNotice = null;
       selectedAudioSpeakerAnalysisFailedJobId = null;
-      selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioSpeakerTurnsError = humanizeError(err);
     }
   }
 
@@ -1327,10 +1373,13 @@
   ): Promise<void> {
     const id = selectedAudioSegmentId;
     if (id == null) return;
-    const scrollEl = audioDrawerEl;
+    // The transcript body (not the drawer) now owns the scroll, so preserve
+    // its position across a turns refresh rather than the drawer's (which no
+    // longer scrolls).
+    const scrollEl = selectedAudioTranscriptContainerEl;
     const scrollTop = scrollEl?.scrollTop ?? null;
     await loadSelectedAudioSpeakerTurns(id, selectedAudioTranscriptGeneration, null, options);
-    if (scrollEl && scrollTop != null && audioDrawerEl === scrollEl) {
+    if (scrollEl && scrollTop != null && selectedAudioTranscriptContainerEl === scrollEl) {
       await tick();
       scrollEl.scrollTop = scrollTop;
     }
@@ -1403,7 +1452,7 @@
       speakerNameDrafts = remainingDrafts;
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1482,15 +1531,13 @@
       });
       await refreshCurrentSpeakerTurns();
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
   }
 
-  async function linkSpeakerCluster(clusterId: number, event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
-    const personId = Number(select.value);
+  async function linkSpeakerCluster(clusterId: number, personId: number): Promise<void> {
     if (!Number.isFinite(personId) || personId <= 0) return;
     speakerCorrectionBusyClusterId = clusterId;
     speakerCorrectionError = null;
@@ -1500,10 +1547,9 @@
       });
       await refreshCurrentSpeakerTurns();
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
-      select.value = "";
     }
   }
 
@@ -1516,7 +1562,7 @@
       });
       await refreshCurrentSpeakerTurns();
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1529,7 +1575,7 @@
       await invoke("reject_speaker_recognition_suggestion", { request: { clusterId } });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
@@ -1542,18 +1588,10 @@
       await invoke("unlink_speaker_cluster_from_person", { request: { clusterId } });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
-  }
-
-  async function mergeSpeakerCluster(sourceClusterId: number, event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
-    const targetClusterId = Number(select.value);
-    if (!Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
-    await mergeSpeakerClusterById(sourceClusterId, targetClusterId);
-    select.value = "";
   }
 
   async function mergeSpeakerClusterById(
@@ -1569,15 +1607,16 @@
       });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
     }
   }
 
-  async function moveSpeakerBlockTurns(group: SpeakerTranscriptGroup, event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
-    const targetClusterId = Number(select.value);
+  async function moveSpeakerBlockTurns(
+    group: SpeakerTranscriptGroup,
+    targetClusterId: number,
+  ): Promise<void> {
     if (!Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
     speakerCorrectionBusyClusterId = group.clusterId;
     speakerCorrectionError = null;
@@ -1589,10 +1628,9 @@
       }
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
-      speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
+      speakerCorrectionError = humanizeError(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
-      select.value = "";
     }
   }
 
@@ -1656,7 +1694,7 @@
       selectedAudioTranscriptStatus = "error";
       selectedAudioTranscriptText = null;
       selectedAudioTranscriptSegments = [];
-      selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioTranscriptError = humanizeError(err);
     }
   }
 
@@ -1826,7 +1864,7 @@
       selectedAudioSpeakerAnalysisRunning = false;
       selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsNotice = null;
-      selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioSpeakerTurnsError = humanizeError(err);
     }
   }
 
@@ -2017,7 +2055,7 @@
       selectedAudioSpeakerAnalysisRunning = false;
       selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsNotice = null;
-      selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioTranscriptError = humanizeError(err);
     }
   }
 
@@ -2104,7 +2142,7 @@
       await applySelectedAudioTranscriptJob(id, gen, result.job);
     } catch (err) {
       if (selectedAudioSegmentId !== id) return;
-      selectedAudioTranscriptRerunError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioTranscriptRerunError = humanizeError(err);
     } finally {
       if (selectedAudioSegmentId === id) {
         selectedAudioTranscriptRerunLoading = false;
@@ -2133,7 +2171,7 @@
       await applySelectedAudioSpeakerAnalysisJob(id, gen, result.job);
     } catch (err) {
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
-      selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedAudioSpeakerTurnsError = humanizeError(err);
     } finally {
       if (selectedAudioSegmentId === id) {
         selectedAudioSpeakerAnalysisRetryLoading = false;
@@ -2162,6 +2200,13 @@
   // While the user drags the scrub thumb we hold UI updates from `timeupdate`
   // events so the indicator doesn't fight the drag. Commit on release.
   let audioScrubbing = $state(false);
+  // Whether the user has explicitly seeked (clicked a transcript segment, used
+  // the scrubber, etc.) within the current segment. The active-segment
+  // highlight is normally suppressed at the paused-at-zero start so a fresh
+  // segment doesn't auto-highlight its first line; but once the user seeks —
+  // even to the very first segment at 0ms while paused — that highlight should
+  // resolve from the seek target. Reset whenever the selected segment changes.
+  let audioHasSeeked = $state(false);
 
   function findActiveTranscriptSegmentIndex(
     segments: TranscriptionSegment[],
@@ -2176,7 +2221,8 @@
   }
 
   const selectedAudioTranscriptActiveSegmentIndex = $derived(
-    selectedAudioTranscriptSegments.length === 0 || (!audioIsPlaying && audioCurrentTime <= 0)
+    selectedAudioTranscriptSegments.length === 0 ||
+      (!audioIsPlaying && audioCurrentTime <= 0 && !audioHasSeeked)
       ? null
       : findActiveTranscriptSegmentIndex(selectedAudioTranscriptSegments, audioCurrentTime),
   );
@@ -2194,7 +2240,8 @@
   }
 
   const selectedAudioSpeakerActiveGroupIndex = $derived(
-    selectedAudioSpeakerGroups.length === 0 || (!audioIsPlaying && audioCurrentTime <= 0)
+    selectedAudioSpeakerGroups.length === 0 ||
+      (!audioIsPlaying && audioCurrentTime <= 0 && !audioHasSeeked)
       ? null
       : findActiveSpeakerGroupIndex(selectedAudioSpeakerGroups, audioCurrentTime),
   );
@@ -2225,6 +2272,7 @@
     audioCurrentTime = 0;
     audioDuration = 0;
     audioScrubbing = false;
+    audioHasSeeked = false;
   });
 
   function togglePlayPause() {
@@ -2282,6 +2330,9 @@
     if (!Number.isFinite(nextTime)) return;
     el.currentTime = nextTime;
     audioCurrentTime = nextTime;
+    // Mark an explicit seek so the active-segment highlight resolves even when
+    // the target is the first segment at 0ms while paused.
+    audioHasSeeked = true;
   }
 
   $effect(() => {
@@ -2317,50 +2368,44 @@
     return `${start}–${formatPlayerTime(segment.endMs / 1000)}`;
   }
 
-  // ─── Outside-click dismissal ─────────────────────────────────────────────
-  // While the drawer is open, a pointerdown anywhere outside the drawer
-  // dismisses it. Timeline audio bars are outside the drawer too, but when
-  // the drawer is already open a click on any bar should close only — not
-  // immediately re-open/switch the drawer on the trailing `click`. Pointerdown
-  // — not click — because `click` doesn't fire on every dismiss target (e.g.
-  // dragging a scrollbar) and we want the close to feel immediate.
-  let suppressNextAudioSegmentBarClick = false;
-  let suppressNextAudioSegmentBarClickResetTimer: ReturnType<typeof setTimeout> | null =
-    null;
-
-  function clearPendingSuppressedAudioSegmentBarClick() {
-    if (suppressNextAudioSegmentBarClickResetTimer != null) {
-      clearTimeout(suppressNextAudioSegmentBarClickResetTimer);
-      suppressNextAudioSegmentBarClickResetTimer = null;
-    }
-    suppressNextAudioSegmentBarClick = false;
-  }
-
-  function rememberSuppressedAudioSegmentBarClick() {
-    clearPendingSuppressedAudioSegmentBarClick();
-    suppressNextAudioSegmentBarClick = true;
-    suppressNextAudioSegmentBarClickResetTimer = setTimeout(() => {
-      suppressNextAudioSegmentBarClickResetTimer = null;
-      suppressNextAudioSegmentBarClick = false;
-    }, 250);
+  // ─── Outside-click & scroll dismissal ────────────────────────────────────
+  // While the drawer is open, a pointerdown genuinely outside the timeline
+  // surface dismisses it. Two interactions are deliberately NOT dismissals:
+  //   1. Clicking a *different* segment's bar is a SWITCH — the bar's own
+  //      click handler reselects; the drawer stays open on the new segment.
+  //   2. Scrubbing/scrolling the rail or stage keeps the player open so the
+  //      user can browse frames while listening (the rail scrolls as it
+  //      scrubs, which used to slam the drawer shut on every wheel tick).
+  // Close therefore stays reserved for the X button, Escape, and a true click
+  // or scroll outside the timeline surface.
+  function isWithinTimelineSurface(node: Node): boolean {
+    return (
+      stageEl?.contains(node) === true ||
+      timelineRailWrap?.contains(node) === true
+    );
   }
 
   function onAudioDrawerOutsidePointerDown(event: PointerEvent) {
     if (selectedAudioSegmentId == null) return;
-    clearPendingSuppressedAudioSegmentBarClick();
     const target = event.target;
     if (!(target instanceof Node)) return;
     if (audioDrawerEl?.contains(target)) return;
+    const onAudioBar =
+      target instanceof Element &&
+      target.closest(".timeline-rail__audio-bar") != null;
+    // A click on another segment's bar switches the drawer, never closes it —
+    // collapse a transient speaker-actions popover first, then let the bar's
+    // click handler reselect.
+    if (onAudioBar) {
+      if (speakerActionsOpenIndex != null) closeSpeakerActions();
+      return;
+    }
     if (speakerActionsOpenIndex != null) {
-      if (target instanceof Element && target.closest(".timeline-rail__audio-bar")) {
-        rememberSuppressedAudioSegmentBarClick();
-      }
       closeSpeakerActions();
       return;
     }
-    if (target instanceof Element && target.closest(".timeline-rail__audio-bar")) {
-      rememberSuppressedAudioSegmentBarClick();
-    }
+    // Scrubbing or clicking the rail/stage keeps the drawer open.
+    if (isWithinTimelineSurface(target)) return;
     closeAudioDrawer();
   }
 
@@ -2368,6 +2413,9 @@
     if (selectedAudioSegmentId == null) return;
     const target = event.target;
     if (target instanceof Node && audioDrawerEl?.contains(target)) return;
+    // Rail/stage scrubbing must not dismiss the player — only a scroll
+    // genuinely elsewhere collapses speaker actions or closes the drawer.
+    if (target instanceof Node && isWithinTimelineSurface(target)) return;
     if (speakerActionsOpenIndex != null) {
       closeSpeakerActions();
       return;
@@ -2441,6 +2489,7 @@
     if (!Number.isFinite(nextTime)) return;
     el.currentTime = nextTime;
     audioCurrentTime = nextTime;
+    audioHasSeeked = true;
   }
 
   function isAudioDrawerShortcutSuppressedTarget(target: EventTarget | null): boolean {
@@ -2620,6 +2669,45 @@
     }
     return out;
   });
+
+  // ─── "Play this moment" bridge ───────────────────────────────────────────
+  // The audio segment (if any) whose [startUnixMs, endUnixMs] window contains
+  // the active frame's capture time, so the user can jump straight from a
+  // frame to hearing what was happening at that instant. Microphone wins when
+  // both lanes cover the same moment; segments within a lane don't overlap.
+  const activeFrameAudioMoment = $derived.by<{
+    segment: AudioSegmentRecord;
+    offsetMs: number;
+  } | null>(() => {
+    const frame = timelineActive;
+    if (!frame || audioSegments.length === 0) return null;
+    const capturedMs = parseCapturedAt(frame.capturedAt).getTime();
+    if (!Number.isFinite(capturedMs)) return null;
+    const overlapping = audioSegments.filter(
+      (s) => capturedMs >= s.startUnixMs && capturedMs <= s.endUnixMs,
+    );
+    if (overlapping.length === 0) return null;
+    const chosen =
+      overlapping.find((s) => s.source === "microphone") ?? overlapping[0]!;
+    return { segment: chosen, offsetMs: Math.max(0, capturedMs - chosen.startUnixMs) };
+  });
+
+  // Open the audio drawer on the segment that covers the active frame and seek
+  // to the matching offset. Surfaces a status ack when no audio covers the
+  // frame so the control never silently no-ops. Reuses the pinned-segment slot
+  // so the selection survives a window that hasn't refreshed the segment list.
+  function playActiveFrameMoment(): void {
+    const moment = activeFrameAudioMoment;
+    if (!moment) {
+      setFrameActionStatus("No audio captured at this moment.", {
+        detail: "This frame isn't covered by a microphone or system-audio segment.",
+      });
+      return;
+    }
+    selectedAudioSegmentPinned = moment.segment;
+    pendingAudioSeekMs = moment.offsetMs;
+    selectedAudioSegmentId = moment.segment.id;
+  }
 
   // Custom tooltip state for the rail. `hoveredFrameId` tracks which slot the
   // pointer is currently over; `hoveredX` is the pointer x relative to the
@@ -3151,7 +3239,9 @@
     timelineScrollLeft = scrollLeft;
   }
 
-  async function syncTimelineScrollToActiveFrame(): Promise<void> {
+  async function syncTimelineScrollToActiveFrame(
+    opts: { animate?: boolean } = {},
+  ): Promise<void> {
     await tick();
     if (!timelineRail) {
       commitTimelineScrollPosition(0);
@@ -3162,7 +3252,23 @@
       0,
       Math.min(max, max - timelineActiveIndex * TIMELINE_SLOT_WIDTH),
     );
-    timelineRail.scrollLeft = targetScrollLeft;
+    // Explicit user jumps animate the playhead to the new moment (matching the
+    // arrow-key scrub's smooth scroll); every other caller — initial load,
+    // refresh, resize recovery, head poll — hard-pins to avoid spurious motion.
+    // Honor `prefers-reduced-motion` by falling back to the instant set.
+    const animate =
+      opts.animate === true &&
+      typeof timelineRail.scrollTo === "function" &&
+      !(
+        typeof window !== "undefined" &&
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      );
+    if (animate) {
+      timelineRail.scrollTo({ left: targetScrollLeft, behavior: "smooth" });
+    } else {
+      timelineRail.scrollLeft = targetScrollLeft;
+    }
     commitTimelineScrollPosition(targetScrollLeft);
   }
 
@@ -3238,10 +3344,20 @@
   function scheduleFrameActionStatusDismiss() {
     clearFrameActionStatusTimer();
     if (!frameActionStatus || frameActionStatusHovered) return;
+    // Error-tone messages must persist until the user dismisses them (X / hover
+    // is no longer the only escape) — only neutral success/progress acks
+    // auto-clear. The banner carries an explicit close affordance for errors.
+    if (frameActionStatus.tone === "error") return;
     frameActionStatusTimer = setTimeout(() => {
       frameActionStatus = null;
       frameActionStatusTimer = null;
     }, 2200);
+  }
+
+  function dismissFrameActionStatus() {
+    clearFrameActionStatusTimer();
+    frameActionStatus = null;
+    frameActionStatusHovered = false;
   }
 
   function setFrameActionStatus(
@@ -3293,7 +3409,7 @@
       }
     } catch (error) {
       scrubPerfLog("preview_video_generation_cancel_failed", {
-        message: error instanceof Error ? error.message : String(error),
+        message: humanizeError(error),
       });
     }
   }
@@ -3789,6 +3905,7 @@
   }
 
   async function copyActiveFrameImage(): Promise<void> {
+    if (frameImageActionBusy) return;
     const frame = timelineActive;
     const previewUrl = frame ? previewCache.get(frame.id) : null;
     if (!frame || !previewUrl) {
@@ -3796,8 +3913,10 @@
       return;
     }
 
+    frameImageActionBusy = "copy";
     try {
       if (!(await confirmOriginalMediaAccessIfRedacted(frame.id))) return;
+      setFrameActionStatus("Copying…");
       const image = await previewFilePathToClipboardImage(previewUrl);
       try {
         await writeImage(image);
@@ -3810,10 +3929,13 @@
       setFrameActionStatus(
         `Copy failed: ${typeof err === "string" ? err : "clipboard write was rejected"}`,
       );
+    } finally {
+      frameImageActionBusy = null;
     }
   }
 
   async function downloadActiveFrameImage(): Promise<void> {
+    if (frameImageActionBusy) return;
     const frame = timelineActive;
     const previewUrl = frame ? previewCache.get(frame.id) : null;
     if (!frame || !previewUrl) {
@@ -3821,8 +3943,10 @@
       return;
     }
 
+    frameImageActionBusy = "download";
     try {
       if (!(await confirmOriginalMediaAccessIfRedacted(frame.id))) return;
+      setFrameActionStatus("Saving…");
       await writeFile(
         activeFrameDownloadName(frame, previewMimeTypeCache.get(frame.id) ?? null),
         await readFramePreviewBytes(previewUrl),
@@ -3836,6 +3960,38 @@
       setFrameActionStatus(
         `Download failed: ${typeof err === "string" ? err : "file write was rejected"}`,
       );
+    } finally {
+      frameImageActionBusy = null;
+    }
+  }
+
+  // Copy every recognized OCR text region for the active frame as one block.
+  // The on-image overlay only reveals text on hover, so this gives a
+  // discoverable, single-shot way to lift all recognized text — with visible
+  // in-flight + success/failure feedback through the stage status banner.
+  async function copyAllRecognizedText(): Promise<void> {
+    if (ocrCopyAllBusy) return;
+    const text = ocrObservations
+      .map((obs) => obs.text)
+      .join("\n")
+      .trim();
+    if (!text) {
+      setFrameActionStatus("No recognized text to copy");
+      return;
+    }
+    ocrCopyAllBusy = true;
+    setFrameActionStatus("Copying text…");
+    try {
+      await writeText(text);
+      const count = ocrObservations.length;
+      setFrameActionStatus(`Copied ${count} text region${count === 1 ? "" : "s"}`);
+      stageActionsMenuOpen = false;
+    } catch (err) {
+      setFrameActionStatus(
+        `Copy failed: ${typeof err === "string" ? err : "clipboard write was rejected"}`,
+      );
+    } finally {
+      ocrCopyAllBusy = false;
     }
   }
 
@@ -3956,14 +4112,22 @@
       const frame = await invoke<FrameDto | null>("get_frame", {
         request: { frameId: payload.frameId },
       });
-      if (frame) await jumpToFrame(frame, false);
+      if (!frame) {
+        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+        return;
+      }
+      await jumpToFrameWithBanner(frame);
       return;
     }
     if (payload.kind === "audio" && payload.audioSegmentId != null) {
       const request: GetAudioSegmentRequest = { audioSegmentId: payload.audioSegmentId };
       const audio = await invoke<AudioSegmentDto | null>("get_audio_segment", { request });
       const mapped = audio ? mapAudioSegmentDto(audio) : null;
-      if (mapped && !audioSegments.some((segment) => segment.id === mapped.id)) {
+      if (!mapped) {
+        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+        return;
+      }
+      if (!audioSegments.some((segment) => segment.id === mapped.id)) {
         audioSegments = [...audioSegments, mapped].sort((a, b) => a.startUnixMs - b.startUnixMs);
       }
       selectedAudioSegmentPinned = mapped;
@@ -3976,17 +4140,29 @@
         const alignedFrame = await invoke<FrameDto | null>("get_frame", {
           request: { frameId: payload.alignedFrameId },
         });
-        if (alignedFrame) await jumpToFrame(alignedFrame, false);
+        if (alignedFrame) await jumpToFrameWithBanner(alignedFrame);
       }
     }
   }
 
   async function drainPendingBrokerOpenCaptureResults(): Promise<void> {
-    const payloads = await invoke<BrokerOpenCaptureResultPayload[]>(
-      "drain_pending_broker_open_capture_results",
-    );
+    let payloads: BrokerOpenCaptureResultPayload[];
+    try {
+      payloads = await invoke<BrokerOpenCaptureResultPayload[]>(
+        "drain_pending_broker_open_capture_results",
+      );
+    } catch {
+      setFrameActionStatus("Couldn't open that capture — please try again.", { tone: "error" });
+      return;
+    }
     for (const payload of payloads) {
-      await openBrokerCaptureResult(payload);
+      try {
+        await openBrokerCaptureResult(payload);
+      } catch {
+        // get_frame / get_audio_segment threw (capture gone or DB error) — the
+        // broker handoff must never fail silently, so surface a visible note.
+        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+      }
     }
   }
 
@@ -4047,7 +4223,7 @@
       audioSegmentsError = null;
     } catch (err) {
       if (gen !== audioSegmentsGeneration) return;
-      audioSegmentsError = typeof err === "string" ? err : JSON.stringify(err);
+      audioSegmentsError = humanizeError(err);
     } finally {
       if (gen === audioSegmentsGeneration) {
         audioSegmentsLoading = false;
@@ -4142,7 +4318,7 @@
         active: isTimelineActiveFrame(frameId),
       }, SCRUB_PERF_SLOW_PREVIEW_MS);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = humanizeError(error);
       if (isPreviewGenerationCancelled(message)) {
         scrubPerfLog("exact_preview_cancelled", {
           frameId,
@@ -4379,7 +4555,10 @@
     }
   }
 
-  async function loadTimelinePage(reset = false) {
+  async function loadTimelinePage(
+    reset = false,
+    opts: { animate?: boolean } = {},
+  ) {
     // A reset must always be able to supersede an in-flight page request, so
     // only "load more" is gated on the loading flags. The generation token
     // below ensures the older response is discarded if a reset bumps it.
@@ -4423,8 +4602,10 @@
         // Newest frame (slot 0) sits at the right edge of the track; scroll
         // all the way to the right so it's centered under the static cursor.
         // Wait for the DOM to lay out the new track before reading
-        // scrollWidth, else we'd just set 0 → 0.
-        await syncTimelineScrollToActiveFrame();
+        // scrollWidth, else we'd just set 0 → 0. For an explicit picker-Latest
+        // commit (`animate`) this glides to the live head; every other reset
+        // caller hard-cuts.
+        await syncTimelineScrollToActiveFrame({ animate: opts.animate });
         // Drop cached previews from any prior generation — keeping them
         // would grow unboundedly across refreshes.
         previewCache = new Map();
@@ -4478,7 +4659,7 @@
       timelineError = null;
     } catch (err) {
       if (gen !== timelineGeneration) return;
-      timelineError = typeof err === "string" ? err : JSON.stringify(err);
+      timelineError = humanizeError(err);
     } finally {
       // Only the request that still owns the current generation should clear
       // the loading flags; otherwise a superseding reset's flags would be
@@ -4589,7 +4770,7 @@
       timelineError = null;
     } catch (err) {
       if (gen !== timelineGeneration) return;
-      timelineError = typeof err === "string" ? err : JSON.stringify(err);
+      timelineError = humanizeError(err);
     } finally {
       if (gen === timelineGeneration) {
         timelineLoadingMore = false;
@@ -5127,7 +5308,9 @@
     if (!timelineShortcutSuppressed) {
       if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.openJumpPicker)) {
         event.preventDefault();
-        if (!pickerOpen) togglePicker();
+        // Opening seeds from the active frame inside the jumper component
+        // (rising-edge $effect). Guard so the shortcut never toggles closed.
+        if (!pickerOpen) pickerOpen = true;
         return;
       }
       if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.jumpLatest)) {
@@ -5158,6 +5341,12 @@
         if (!activePreviewPath) return;
         event.preventDefault();
         void downloadActiveFrameImage();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.playMoment)) {
+        if (!timelineActive) return;
+        event.preventDefault();
+        playActiveFrameMoment();
         return;
       }
     }
@@ -5239,12 +5428,9 @@
   // navigation everywhere else.
   function onAudioSegmentBarClick(event: MouseEvent, id: number) {
     event.stopPropagation();
-    if (suppressNextAudioSegmentBarClick) {
-      clearPendingSuppressedAudioSegmentBarClick();
-      closeAudioDrawer();
-      return;
-    }
-    clearPendingSuppressedAudioSegmentBarClick();
+    // Clicking the already-selected bar toggles the drawer closed; clicking a
+    // different bar switches the drawer to that segment (the capture-phase
+    // outside-pointerdown handler now lets bar clicks through for exactly this).
     selectedAudioSegmentPinned = null;
     pendingAudioSeekMs = null;
     selectedAudioSegmentId = selectedAudioSegmentId === id ? null : id;
@@ -5717,7 +5903,7 @@
         status: "error",
         observations: [],
         providerLabel: null,
-        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        error: humanizeError(err),
         job: null,
       });
     }
@@ -5773,7 +5959,7 @@
         status: "error",
         observations: [],
         providerLabel: null,
-        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        error: humanizeError(err),
         job: null,
       });
     }
@@ -5870,7 +6056,7 @@
         status: "error",
         observations: [],
         providerLabel: null,
-        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        error: humanizeError(err),
         job: null,
       });
     }
@@ -5910,6 +6096,22 @@
     const top = (sh - height) / 2;
     return { left, top, width, height };
   });
+
+  // OCR succeeded with text, but the active frame carries no intrinsic
+  // dimensions, so the boxes can't be anchored to an image rect (the overlay
+  // renders nothing). Surface a hint pointing at the ⋯ → Copy text path so the
+  // recognized text isn't silently inaccessible. Gated on a measured stage so
+  // it never flashes during the initial mount before dimensions resolve.
+  const ocrSuccessUnpositionable = $derived(
+    ocrVisible &&
+      ocrStatus === "success" &&
+      timelineActive != null &&
+      ocrFrameId === timelineActive.id &&
+      ocrObservations.length > 0 &&
+      stageWidth > 0 &&
+      stageHeight > 0 &&
+      (renderedImageRect.width <= 0 || renderedImageRect.height <= 0),
+  );
 
   // Track the stage's content-box size so the derived rect updates as the
   // window/layout resizes around it.
@@ -5987,252 +6189,48 @@
   );
 
   // ─── Date / time jump picker ──────────────────────────────────────────────
-  // A custom Bits UI calendar + time list that lets the user jump the
-  // timeline to a specific local date (and optionally a specific minute).
-  // Strategy:
-  //   - Frame summaries (id + capturedAt) are loaded per visible calendar
-  //     month and grouped by LOCAL date. The calendar disables dates with
-  //     no frames in months we've already loaded.
-  //   - When a date is selected we expose the available minute-buckets for
-  //     that day; the user can pick the latest frame of the day, or a
-  //     specific minute. Either way we delegate the "latest at or before"
-  //     resolution to `get_latest_frame_in_range` so the backend remains
-  //     the source of truth for the jump target.
-  //   - After resolving the target we load a focused newest-first window
-  //     around that frame in one request, then scroll the rail to the
-  //     returned target index. From there the rail can page both directions:
-  //     newer frames back toward the live head from the loaded start, and
-  //     older history from the loaded tail via the normal `beforeId` path.
-
-  type DateKey = string; // "YYYY-MM-DD" in local time
-  type MonthKey = string; // "YYYY-MM" in local time
-
+  // The jump picker UI (trigger + two-pane calendar/time popover, per-month
+  // summary cache + stale-while-revalidate, focus trap, positioning) lives in
+  // `TimelineJumper.svelte`. The dashboard keeps ownership of the actual
+  // timeline-mutating jump (`jumpToFrame`, which loads a focused newest-first
+  // window via `get_timeline_window_around_frame` and rebuilds preview caches)
+  // and reaches into the component only for per-month cache invalidation.
+  //
+  // `pickerOpen` / `pickerJumping` stay here as bindable state so the
+  // dashboard's keyboard shortcuts, shortcut-help table, wheel/Escape guards,
+  // and tooltip gating keep working unchanged.
   let pickerOpen = $state(false);
-  let pickerPlaceholder = $state<DateValue>(todayLocal());
-  let pickerSelectedDate = $state<DateValue | undefined>(undefined);
-  // Selected hour bucket label, e.g. "1:00 AM". Null when nothing has been
-  // chosen for the current selected date yet.
-  let pickerSelectedTime = $state<string | null>(null);
-  // Guard token that suppresses the date-change auto-jump effect for one
-  // tick after we programmatically seed `pickerSelectedDate` (e.g. when the
-  // picker opens, or when we sync the selection back to the resolved
-  // jump-target frame). Without this, opening the picker would immediately
-  // trigger a date-jump, and post-jump bookkeeping would re-jump in a loop.
-  let suppressPickerDateAutoJump = false;
-  let summariesByDate = $state<Map<DateKey, FrameSummaryDto[]>>(new Map());
-  let loadedMonths = $state<Set<MonthKey>>(new Set());
-  // Months whose cached summaries are known to be out-of-date because new
-  // frames have arrived in them. Kept SEPARATE from `loadedMonths` /
-  // `summariesByDate` so the open picker keeps rendering the existing
-  // disabled-date map while a background revalidation is in flight — a
-  // stale-while-revalidate strategy that avoids the visible flicker that
-  // came from deleting a month's cache before its replacement landed.
-  let staleMonths = $state<Set<MonthKey>>(new Set());
-  // In-flight month fetches. Dedupes concurrent revalidations triggered by
-  // the picker effect, manual refresh, and head poll all racing to refresh
-  // the same month.
-  const monthsInFlight = new Set<MonthKey>();
-  let pickerLoading = $state(false);
   let pickerJumping = $state(false);
-  let pickerError = $state<string | null>(null);
-  let pickerStyle = $state("");
-
-  function todayLocal(): DateValue {
-    const d = new Date();
-    return new CalendarDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-  }
-
-  function pad2(n: number): string {
-    return String(n).padStart(2, "0");
-  }
-
-  function dateKeyOf(d: { year: number; month: number; day: number }): DateKey {
-    return `${d.year}-${pad2(d.month)}-${pad2(d.day)}`;
-  }
-
-  function monthKeyOf(d: { year: number; month: number }): MonthKey {
-    return `${d.year}-${pad2(d.month)}`;
-  }
-
-  function localDateKeyFromTs(ts: string): DateKey {
-    const d = parseCapturedAt(ts);
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-  }
+  let jumperRef = $state<ReturnType<typeof TimelineJumper> | null>(null);
 
   /**
-   * Targeted invalidation of the date-jump picker's per-month summary
-   * cache. Given a set of newly-arrived frames, compute the LOCAL months
-   * they belong to and MARK those months stale. We deliberately do NOT
-   * delete `loadedMonths` entries or drop rows from `summariesByDate`:
-   * doing so during a routine refresh / head poll would unmount the open
-   * picker's disabled-date map for the visible month and produce a
-   * visible flicker every poll, even when no UI-visible change exists.
-   *
-   * Reactivity: `staleMonths` is itself reactive state, and the picker's
-   * `$effect` reads it via `loadMonthSummaries`, so marking the visible
-   * month stale here re-triggers a background revalidation. The existing
-   * cached data stays mounted until the replacement response lands, at
-   * which point `loadMonthSummaries` swaps the affected month's rows in
-   * one assignment and clears the stale flag (see below).
+   * Targeted invalidation of the jump picker's per-month summary cache. Given
+   * newly-arrived frames, the component marks the LOCAL months they belong to
+   * stale (not deleted) so the open picker keeps rendering its disabled-date
+   * map until the background revalidation lands — a flicker-free
+   * stale-while-revalidate. Thin delegate so existing head-poll / refresh call
+   * sites stay unchanged.
    */
-  function invalidatePickerMonthsForFrames(frames: { capturedAt: string }[]): void {
-    if (frames.length === 0) return;
-    const affectedMonths = new Set<MonthKey>();
-    for (const f of frames) {
-      const d = parseCapturedAt(f.capturedAt);
-      if (isNaN(d.getTime())) continue;
-      affectedMonths.add(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
-    }
-    if (affectedMonths.size === 0) return;
-    let changed = false;
-    const next = new Set(staleMonths);
-    for (const m of affectedMonths) {
-      if (!next.has(m)) {
-        next.add(m);
-        changed = true;
-      }
-    }
-    if (changed) staleMonths = next;
+  function invalidatePickerMonthsForFrames(
+    frames: { capturedAt: string }[],
+  ): void {
+    jumperRef?.invalidateMonthsForFrames(frames);
   }
 
   function invalidateLoadedPickerSummaryMonths(): void {
-    if (loadedMonths.size === 0) return;
-    const next = new Set(staleMonths);
-    for (const month of loadedMonths) {
-      next.add(month);
-    }
-    staleMonths = next;
+    jumperRef?.invalidateAllLoadedMonths();
   }
 
-  async function loadMonthSummaries(value: DateValue): Promise<void> {
-    const key = monthKeyOf(value);
-    const isStale = staleMonths.has(key);
-    // Already up-to-date and loaded — nothing to do.
-    if (loadedMonths.has(key) && !isStale) return;
-    // Another caller is already revalidating this month; let its response
-    // be the one that swaps the data in. Prevents fetch storms when the
-    // picker effect, head poll, and manual refresh all race.
-    if (monthsInFlight.has(key)) return;
-    monthsInFlight.add(key);
-    // Only show the spinner when there's nothing to render yet. Stale
-    // revalidations happen quietly so the existing disabled-date map keeps
-    // rendering until replacement data arrives.
-    const isFirstLoad = !loadedMonths.has(key);
-    if (isFirstLoad) pickerLoading = true;
-    try {
-      // Local month bounds, converted to UTC ISO for the backend.
-      const start = new Date(value.year, value.month - 1, 1, 0, 0, 0, 0);
-      const end = new Date(value.year, value.month, 1, 0, 0, 0, 0);
-      const req: FrameRangeRequest = {
-        capturedAtStart: start.toISOString(),
-        capturedAtEnd: end.toISOString(),
-      };
-      const summaries = await invoke<FrameSummaryDto[]>(
-        "list_frame_summaries_in_range",
-        { request: req },
-      );
-      // Atomically swap this month's rows: drop any prior entries whose
-      // local date falls inside this month, then insert the fresh ones.
-      // Doing this in one assignment means the picker never observes an
-      // intermediate "month exists in loadedMonths but has no rows" state.
-      const next = new Map(summariesByDate);
-      for (const k of Array.from(next.keys())) {
-        if (k.startsWith(`${key}-`)) next.delete(k);
-      }
-      for (const s of summaries) {
-        const k = localDateKeyFromTs(s.capturedAt);
-        const arr = next.get(k);
-        if (arr) arr.push(s);
-        else next.set(k, [s]);
-      }
-      // Ascending by capture time within each day so minute buckets resolve
-      // their "latest in bucket" by simple last-write-wins below.
-      for (const arr of next.values()) {
-        arr.sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
-      }
-      summariesByDate = next;
-      if (!loadedMonths.has(key)) {
-        const nextMonths = new Set(loadedMonths);
-        nextMonths.add(key);
-        loadedMonths = nextMonths;
-      }
-      if (staleMonths.has(key)) {
-        const nextStale = new Set(staleMonths);
-        nextStale.delete(key);
-        staleMonths = nextStale;
-      }
-      pickerError = null;
-    } catch (err) {
-      pickerError = typeof err === "string" ? err : JSON.stringify(err);
-    } finally {
-      monthsInFlight.delete(key);
-      if (isFirstLoad) pickerLoading = false;
-    }
-  }
-
-  // Eagerly fetch the visible month whenever the placeholder lands on a new
-  // month while the picker is open.
-  $effect(() => {
-    if (!pickerOpen) return;
-    void loadMonthSummaries(pickerPlaceholder);
-  });
-
-  function isPickerDateDisabled(d: DateValue): boolean {
-    // Pre-load: don't disable so the user can navigate into a month before
-    // its summaries arrive. Once a month is loaded, disable any local date
-    // not present in the dataset.
-    if (!loadedMonths.has(monthKeyOf(d))) return false;
-    return !summariesByDate.has(dateKeyOf(d));
-  }
-
-  // Hourly time buckets for the selected date. Labels use 12-hour clock
-  // (e.g. "1:00 AM", "12:00 PM", "11:00 PM"). For today we stop at the
-  // current hour; for any other date we render the full day through 11 PM.
-  // The chosen hour resolves to the latest frame at-or-before that hour's
-  // end via `get_latest_frame_in_range`, so the rail jumps near the picked
-  // time even if no frame falls exactly inside that hour.
-  type TimeBucket = { label: string; hour: number; disabled: boolean };
-  function formatHourLabel(hour: number): string {
-    const period = hour < 12 ? "AM" : "PM";
-    const display = hour % 12 === 0 ? 12 : hour % 12;
-    return `${display}:00 ${period}`;
-  }
-  const availableTimes = $derived.by<TimeBucket[]>(() => {
-    if (!pickerSelectedDate) return [];
-    const now = new Date();
-    const isToday =
-      pickerSelectedDate.year === now.getFullYear() &&
-      pickerSelectedDate.month === now.getMonth() + 1 &&
-      pickerSelectedDate.day === now.getDate();
-    const lastHour = isToday ? now.getHours() : 23;
-    // Determine which hours of the selected date have at least one frame,
-    // using the already-loaded month summaries. If the month for this date
-    // has not loaded yet, leave every hour enabled — disabling everything on
-    // a not-yet-loaded month would block the user from time-picking before
-    // background data arrives. Once the month is loaded, an absent day key
-    // means the day truly has no frames, so all its hours render disabled.
-    const monthLoaded = loadedMonths.has(monthKeyOf(pickerSelectedDate));
-    const hoursWithFrames = new Set<number>();
-    if (monthLoaded) {
-      const daySummaries = summariesByDate.get(dateKeyOf(pickerSelectedDate));
-      if (daySummaries) {
-        for (const s of daySummaries) {
-          const d = parseCapturedAt(s.capturedAt);
-          if (!isNaN(d.getTime())) hoursWithFrames.add(d.getHours());
-        }
-      }
-    }
-    const out: TimeBucket[] = [];
-    for (let h = 0; h <= lastHour; h++) {
-      const disabled = monthLoaded && !hoursWithFrames.has(h);
-      out.push({ label: formatHourLabel(h), hour: h, disabled });
-    }
-    return out;
-  });
-
-  async function jumpToFrame(target: FrameDto, closePicker = true): Promise<void> {
-    pickerJumping = true;
-    pickerError = null;
+  // Performs the timeline jump to an already-resolved frame: loads a focused
+  // newest-first window in one request, rebuilds the preview caches, and pins
+  // the rail to the returned target index. Returns null on success or a
+  // human-readable error string on failure (the caller decides where to
+  // surface it — the picker's footer, or the stage status banner). `animate`
+  // smooth-scrolls the playhead to the new moment for explicit user commits.
+  async function jumpToFrame(
+    target: FrameDto,
+    opts: { animate?: boolean } = {},
+  ): Promise<string | null> {
     timelineGeneration += 1;
     const gen = timelineGeneration;
     timelineLoading = true;
@@ -6247,10 +6245,9 @@
         "get_timeline_window_around_frame",
         { request },
       );
-      if (gen !== timelineGeneration) return;
+      if (gen !== timelineGeneration) return null;
       if (!window.frames[window.targetIndex] || window.frames[window.targetIndex]?.id !== target.id) {
-        pickerError = "failed to focus selected frame";
-        return;
+        return "failed to focus selected frame";
       }
       timelineFrames = window.frames;
       timelineActiveIndex = window.targetIndex;
@@ -6270,311 +6267,51 @@
       scrubPreviewLoadMsCache = new Map();
       scrubPreviewFailedAt = new Map();
       scrubPreviewIntervalCache = new Map();
+      activePreviewDecodeRetries.clear();
       resetTimelinePreviewDisplay();
-      await syncTimelineScrollToActiveFrame();
+      await syncTimelineScrollToActiveFrame({ animate: opts.animate });
       void refreshAudioSegments();
-      // Keep picker selection state in sync with the resolved target frame
-      // so the calendar/time list reflects where we actually landed. The
-      // suppression flag prevents the date-change effect from re-jumping
-      // in response to our own assignment.
-      const resolved = parseCapturedAt(target.capturedAt);
-      if (!isNaN(resolved.getTime())) {
-        suppressPickerDateAutoJump = true;
-        const cd = new CalendarDate(
-          resolved.getFullYear(),
-          resolved.getMonth() + 1,
-          resolved.getDate(),
-        );
-        pickerPlaceholder = cd;
-        pickerSelectedDate = cd;
-        pickerSelectedTime = formatHourLabel(resolved.getHours());
-      }
-      if (closePicker) pickerOpen = false;
+      return null;
     } catch (err) {
-      if (gen !== timelineGeneration) return;
-      pickerError = typeof err === "string" ? err : JSON.stringify(err);
+      if (gen !== timelineGeneration) return null;
+      return humanizeError(err);
     } finally {
       if (gen === timelineGeneration) {
         timelineLoading = false;
         timelineLoadingMore = false;
       }
-      pickerJumping = false;
     }
   }
 
-  async function resolveAndJump(
-    rangeStart: Date,
-    rangeEnd: Date,
-    closePicker = true,
-  ): Promise<void> {
-    const req: FrameRangeRequest = {
-      capturedAtStart: rangeStart.toISOString(),
-      capturedAtEnd: rangeEnd.toISOString(),
-    };
-    try {
-      const frame = await invoke<FrameDto | null>("get_latest_frame_in_range", {
-        request: req,
-      });
-      if (!frame) {
-        pickerError = "no frame in that range";
-        return;
-      }
-      await jumpToFrame(frame, closePicker);
-    } catch (err) {
-      pickerError = typeof err === "string" ? err : JSON.stringify(err);
-    }
+  // Surfaces a jump error from a NON-picker entry point (broker handoff,
+  // duplicate-frame link) on the always-visible stage status banner — the
+  // picker owns its own footer-strip error for picker-originated commits.
+  async function jumpToFrameWithBanner(target: FrameDto): Promise<void> {
+    const err = await jumpToFrame(target);
+    if (err) setFrameActionStatus(err, { tone: "error" });
   }
 
-  async function jumpToSelectedDateLatest(closePicker = true): Promise<void> {
-    const d = pickerSelectedDate;
-    if (!d) return;
-    const start = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
-    const end = new Date(d.year, d.month - 1, d.day, 23, 59, 59, 999);
-    await resolveAndJump(start, end, closePicker);
+  // Bridges the jumper component's commit to the dashboard's timeline jump.
+  // Returns null on success (popover closes) or an error string (popover
+  // stays open and shows it). `animate` smooth-scrolls the playhead.
+  async function onJumperJump(target: FrameDto): Promise<string | null> {
+    return jumpToFrame(target, { animate: true });
   }
 
-  async function jumpToSelectedDateTime(label: string, hour: number): Promise<void> {
-    const d = pickerSelectedDate;
-    if (!d) return;
-    const start = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
-    // "Latest at or before the end of the picked hour" — backend treats
-    // the range as inclusive, so we extend to :59:59.999 of that hour.
-    const end = new Date(d.year, d.month - 1, d.day, hour, 59, 59, 999);
-    pickerSelectedTime = label;
-    await resolveAndJump(start, end);
-  }
-
-  // Auto-jump when the user picks a date in the calendar. We deliberately
-  // do NOT close the picker so the user can then choose a time, dismiss it
-  // manually, or keep navigating. Programmatic seeding (open, post-jump
-  // sync) bypasses this via `suppressPickerDateAutoJump`.
-  $effect(() => {
-    const d = pickerSelectedDate;
-    if (!pickerOpen) return;
-    if (suppressPickerDateAutoJump) {
-      suppressPickerDateAutoJump = false;
-      return;
-    }
-    if (!d) return;
-    if (pickerJumping) return;
-    // Once the month for this date has been loaded, we know definitively
-    // whether the date has any frames. If it doesn't, skip the futile
-    // backend call (and the resulting "no frame in that range" error).
-    // When the month is still loading we don't over-block — the user may
-    // have navigated into a freshly visible month whose summaries haven't
-    // arrived yet, and the backend call is the cheapest way to land on a
-    // real frame once data is available.
-    if (loadedMonths.has(monthKeyOf(d)) && !summariesByDate.has(dateKeyOf(d))) {
-      return;
-    }
-    void jumpToSelectedDateLatest(false);
-  });
-
-  // ─── Picker dialog a11y ───────────────────────────────────────────────────
-  // The jump picker is rendered as a non-modal `role="dialog"` popover. To
-  // give keyboard and screen-reader users a baseline dialog experience we
-  // wire up: focus-into-dialog on open, focus-restore on close, Escape to
-  // dismiss, a Tab focus trap while open, and click-outside to dismiss.
-  let pickerEl = $state<HTMLDivElement | null>(null);
-  let pickerTriggerEl = $state<HTMLButtonElement | null>(null);
-
-  function updatePickerPosition(): void {
-    if (!pickerEl || !pickerTriggerEl) return;
-    const viewportMargin = 12;
-    const triggerGap = 6;
-    const triggerRect = pickerTriggerEl.getBoundingClientRect();
-    const pickerRect = pickerEl.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const pickerWidth = Math.min(
-      pickerRect.width,
-      Math.max(0, viewportWidth - viewportMargin * 2),
-    );
-
-    let left = triggerRect.left;
-    if (triggerRect.left + pickerWidth > viewportWidth - viewportMargin) {
-      left = triggerRect.right - pickerWidth;
-    }
-    left = Math.min(
-      Math.max(viewportMargin, left),
-      Math.max(viewportMargin, viewportWidth - viewportMargin - pickerWidth),
-    );
-
-    const availableBelow = Math.max(
-      160,
-      viewportHeight - triggerRect.bottom - triggerGap - viewportMargin,
-    );
-    const availableAbove = Math.max(160, triggerRect.top - triggerGap - viewportMargin);
-    const maxHeight = Math.min(420, Math.max(availableBelow, availableAbove));
-    const openAbove = availableBelow < 260 && availableAbove > availableBelow;
-    const top = openAbove
-      ? Math.max(
-          viewportMargin,
-          triggerRect.top - triggerGap - Math.min(pickerRect.height, maxHeight),
-        )
-      : Math.min(
-          triggerRect.bottom + triggerGap,
-          viewportHeight - viewportMargin - Math.min(pickerRect.height, maxHeight),
-        );
-
-    pickerStyle = `left: ${left}px; top: ${top}px; max-height: ${maxHeight}px;`;
-  }
-
-  function getPickerFocusable(): HTMLElement[] {
-    if (!pickerEl) return [];
-    const sel =
-      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-    return Array.from(pickerEl.querySelectorAll<HTMLElement>(sel)).filter(
-      (el) => el.offsetParent !== null || el === document.activeElement,
-    );
-  }
-
-  function onPickerKeydown(e: KeyboardEvent) {
-    if (!pickerOpen) return;
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      pickerOpen = false;
-      return;
-    }
-    if (e.key !== "Tab") return;
-    const focusable = getPickerFocusable();
-    if (focusable.length === 0) {
-      e.preventDefault();
-      pickerEl?.focus();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement as HTMLElement | null;
-    if (e.shiftKey) {
-      if (active === first || !pickerEl?.contains(active)) {
-        e.preventDefault();
-        last.focus();
-      }
-    } else if (active === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  }
-
-  function onPickerPointerDownOutside(e: MouseEvent) {
-    if (!pickerOpen) return;
-    const target = e.target as Node | null;
-    if (!target) return;
-    if (pickerEl?.contains(target)) return;
-    if (pickerTriggerEl?.contains(target)) return; // trigger handles its own toggle
-    pickerOpen = false;
-  }
-
-  // When the picker opens, move focus inside it; when it closes, restore
-  // focus to the trigger so keyboard users don't get stranded.
-  $effect(() => {
-    if (!pickerOpen) return;
-    let cancelled = false;
-    void tick().then(() => {
-      if (cancelled || !pickerOpen) return;
-      updatePickerPosition();
-      const focusable = getPickerFocusable();
-      (focusable[0] ?? pickerEl)?.focus();
-    });
-    return () => {
-      cancelled = true;
-      // Restore focus to trigger only if focus is still inside (or has
-      // landed on body) — avoids stealing focus from elsewhere on the page.
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        !active ||
-        active === document.body ||
-        pickerEl?.contains(active)
-      ) {
-        pickerTriggerEl?.focus();
-      }
-    };
-  });
-
-  $effect(() => {
-    if (!pickerOpen) {
-      pickerStyle = "";
-      return;
-    }
-
-    let frame = 0;
-    const scheduleUpdate = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => updatePickerPosition());
-    };
-
-    void tick().then(scheduleUpdate);
-
-    const ro = new ResizeObserver(scheduleUpdate);
-    if (pickerEl) ro.observe(pickerEl);
-    if (pickerTriggerEl) ro.observe(pickerTriggerEl);
-
-    window.addEventListener("resize", scheduleUpdate);
-    window.addEventListener("scroll", scheduleUpdate, true);
-
-    return () => {
-      cancelAnimationFrame(frame);
-      ro.disconnect();
-      window.removeEventListener("resize", scheduleUpdate);
-      window.removeEventListener("scroll", scheduleUpdate, true);
-    };
-  });
-
-  function togglePicker() {
-    if (pickerOpen) {
-      pickerOpen = false;
-      return;
-    }
-    // Always re-initialize from the active frame on open so the picker
-    // reflects "you are here" rather than whatever was last selected.
-    // Suppress the date-change auto-jump for this seeding so opening the
-    // picker doesn't immediately re-jump to the frame already shown.
-    suppressPickerDateAutoJump = true;
-    if (timelineActive) {
-      const d = parseCapturedAt(timelineActive.capturedAt);
-      const cd = new CalendarDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
-      pickerPlaceholder = cd;
-      pickerSelectedDate = cd;
-      // Containing hour bucket: align with the hour the active frame
-      // actually falls inside (floor), rather than rounding into the next
-      // hour. Clamp to today's current hour when the active frame is on
-      // today's date so we don't pre-select a future hour the list won't
-      // even render.
-      const candidate = d.getHours();
-      const now = new Date();
-      const isToday =
-        d.getFullYear() === now.getFullYear() &&
-        d.getMonth() === now.getMonth() &&
-        d.getDate() === now.getDate();
-      const maxHour = isToday ? now.getHours() : 23;
-      const hour = Math.max(0, Math.min(maxHour, candidate));
-      pickerSelectedTime = formatHourLabel(hour);
-    } else {
-      pickerSelectedDate = undefined;
-      pickerSelectedTime = null;
-    }
-    pickerError = null;
-    pickerOpen = true;
-  }
-
-  // Display string for the picker trigger button — reflects the active
-  // frame's local time so the control doubles as a compact jump readout.
-  const triggerLabel = $derived(
-    timelineActive
-      ? formatCapturedAt(timelineActive.capturedAt)
-      : "no active frame",
-  );
   const latestFrameOffset = $derived(
     timelineFrames.length === 0 ? 0 : timelineActiveIndex + (timelineHasNewer ? 1 : 0),
   );
   const showJumpToLatestButton = $derived(latestFrameOffset > 50);
 
+  // Snap the timeline to the live head ("Latest" / "snap to now"). Closes the
+  // jump picker if open, then reloads the newest page. This is an explicit
+  // user "go to now" commit, so the playhead glides to the live head rather
+  // than hard-cutting (§12.6) — gated on `prefers-reduced-motion` inside
+  // `syncTimelineScrollToActiveFrame`. Refresh / initial-load / head-poll
+  // resets keep the hard-cut (they pass no `animate`).
   async function jumpToLatestFrame(): Promise<void> {
     pickerOpen = false;
-    pickerError = null;
-    await loadTimelinePage(true);
+    await loadTimelinePage(true, { animate: true });
   }
 
   $effect(() => {
@@ -6616,6 +6353,10 @@
       {
         ...effectiveShortcut(DASHBOARD_SHORTCUTS.downloadFrame),
         enabled: activePreviewPath != null,
+      },
+      {
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.playMoment),
+        enabled: activeFrameAudioMoment != null,
       },
     ];
 
@@ -6753,6 +6494,7 @@
       if (deletedFrameIds.size > 0) {
         const nextFrames = timelineFrames.filter((frame) => !deletedFrameIds.has(frame.id));
         if (nextFrames.length !== timelineFrames.length) {
+          const activeWasDeleted = activeFrameId !== null && deletedFrameIds.has(activeFrameId);
           timelineFrames = nextFrames;
           if (timelineFrames.length === 0) {
             timelineActiveIndex = 0;
@@ -6766,6 +6508,16 @@
           }
           prunePreviewCache(timelineFrames);
           void syncTimelineScrollToActiveFrame();
+          // The active frame just vanished from under the user. The stage
+          // status banner only renders when a frame is shown, so surface the
+          // acknowledgment in the nearest-frame case (the empty case already
+          // collapses to the "No frames yet" empty state).
+          if (activeWasDeleted && timelineFrames.length > 0) {
+            setFrameActionStatus(
+              "This capture was deleted — showing the nearest frame.",
+              { tone: "error" },
+            );
+          }
         }
       }
 
@@ -6844,7 +6596,6 @@
 <!-- ── Timeline browser ──────────────────────────────────────────────────── -->
 <svelte:window
   onpointerdown={(event) => {
-    onPickerPointerDownOutside(event);
     onFrameActionsPointerDownOutside(event);
     const target = event.target;
     if (
@@ -6865,131 +6616,29 @@
            recording affordance is visible regardless of which route is
            active. The timeline header retains only timeline-specific
            controls below (jump, OCR toggle, refresh). -->
-      <div class="timeline__jump">
-        <button
-          class="btn btn--ghost btn--sm timeline__jump-trigger"
-          onclick={togglePicker}
-          bind:this={pickerTriggerEl}
-          aria-haspopup="dialog"
-          aria-expanded={pickerOpen}
-          aria-controls="timeline-jump-picker"
-          title="Jump to date and time (J)"
-        >
-          <span class="timeline__jump-icon" aria-hidden="true">▣</span>
-          <span class="timeline__jump-label">{triggerLabel}</span>
-        </button>
-        {#if showJumpToLatestButton}
-          <button
-            class="btn btn--ghost btn--sm timeline__jump-latest"
-            onclick={jumpToLatestFrame}
-            disabled={timelineLoading || timelineLoadingMore || pickerJumping}
-            title="Jump to latest frame (L)"
-          >latest</button>
-        {/if}
-        {#if pickerOpen}
-          <div
-            class="timeline__picker"
-            id="timeline-jump-picker"
-            style={pickerStyle}
-            role="dialog"
-            aria-modal="false"
-            aria-label="Jump to date and time"
-            tabindex="-1"
-            bind:this={pickerEl}
-            onkeydown={onPickerKeydown}
-          >
-            <Calendar.Root
-              type="single"
-              bind:value={pickerSelectedDate}
-              bind:placeholder={pickerPlaceholder}
-              isDateDisabled={isPickerDateDisabled}
-              weekdayFormat="short"
-              class="cal"
-            >
-              {#snippet children({ months, weekdays })}
-                <header class="cal__header">
-                  <Calendar.PrevButton class="cal__nav">‹</Calendar.PrevButton>
-                  <Calendar.Heading class="cal__heading" />
-                  <Calendar.NextButton class="cal__nav">›</Calendar.NextButton>
-                </header>
-                {#each months as month (month.value)}
-                  <Calendar.Grid class="cal__grid">
-                    <Calendar.GridHead>
-                      <Calendar.GridRow class="cal__row">
-                        {#each weekdays as wd (wd)}
-                          <Calendar.HeadCell class="cal__weekday">{wd}</Calendar.HeadCell>
-                        {/each}
-                      </Calendar.GridRow>
-                    </Calendar.GridHead>
-                    <Calendar.GridBody>
-                      {#each month.weeks as weekDates, weekIdx (weekIdx)}
-                        <Calendar.GridRow class="cal__row">
-                          {#each weekDates as date (date.toString())}
-                            <Calendar.Cell {date} month={month.value} class="cal__cell">
-                              <Calendar.Day class="cal__day" />
-                            </Calendar.Cell>
-                          {/each}
-                        </Calendar.GridRow>
-                      {/each}
-                    </Calendar.GridBody>
-                  </Calendar.Grid>
-                {/each}
-              {/snippet}
-            </Calendar.Root>
-
-            <div class="timeline__picker-side">
-              {#if pickerLoading}
-                <div class="timeline__picker-pending">loading month…</div>
-              {/if}
-              {#if pickerError}
-                <div class="timeline__picker-error">{pickerError}</div>
-              {/if}
-              {#if pickerSelectedDate}
-                <div class="timeline__picker-row">
-                  <span class="timeline__picker-key">date</span>
-                  <span class="timeline__picker-val">{dateKeyOf(pickerSelectedDate)}</span>
-                </div>
-                <button
-                  class="btn btn--ghost btn--sm"
-                  onclick={() => jumpToSelectedDateLatest()}
-                  disabled={pickerJumping || availableTimes.length === 0}
-                >jump to latest of day</button>
-                <div class="timeline__picker-key">times</div>
-                {#if availableTimes.length === 0}
-                  <div class="timeline__picker-pending">no frames on this day</div>
-                {:else}
-                  <div class="timeline__picker-times">
-                    {#each availableTimes as t (t.label)}
-                      <button
-                        type="button"
-                        class="timeline__picker-time"
-                        class:timeline__picker-time--active={pickerSelectedTime === t.label}
-                        onclick={() => jumpToSelectedDateTime(t.label, t.hour)}
-                        disabled={pickerJumping || t.disabled}
-                      >{t.label}</button>
-                    {/each}
-                  </div>
-                {/if}
-              {:else}
-                <div class="timeline__picker-pending">pick a date</div>
-              {/if}
-            </div>
-          </div>
-        {/if}
-      </div>
+      <TimelineJumper
+        bind:this={jumperRef}
+        bind:open={pickerOpen}
+        bind:jumping={pickerJumping}
+        activeFrame={timelineActive}
+        timelineBusy={timelineLoading || timelineLoadingMore}
+        showLatest={showJumpToLatestButton}
+        onJump={onJumperJump}
+        onJumpToLatest={jumpToLatestFrame}
+      />
     </div>
 
     <div class="timeline__bar-group timeline__bar-group--secondary">
       {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
         {#if ocrProviderLabel}
-          <span class="timeline__ocr-provider-chip" title={ocrProviderLabel}>{ocrProviderLabel}</span>
+          <span class="timeline__ocr-provider-chip" use:tip={ocrProviderLabel}>{ocrProviderLabel}</span>
         {/if}
         <button
           type="button"
           class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
           onclick={reprocessOcrForActiveFrame}
           disabled={ocrRerunDisabled}
-          title={!ocrEnabled
+          use:tip={!ocrEnabled
             ? ocrRunDisabledTooltip
             : ocrStatus === "running"
             ? "OCR is queued or still processing"
@@ -7005,13 +6654,13 @@
         class:timeline__ocr-btn--success={ocrStatus === "success"}
         onclick={toggleOcrForActiveFrame}
         disabled={!timelineActive}
-        title={ocrToggleTitle}
+        use:tip={ocrToggleTitle}
         aria-label={ocrVisible
           ? "Hide OCR data for active frame"
           : "Show OCR data for active frame"}
         aria-pressed={ocrVisible}
       >
-        <span class="timeline__ocr-glyph" aria-hidden="true">⌖</span>
+        <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
         <span>{ocrButtonLabel}</span>
         {#if ocrStatus === "success" && ocrObservations.length > 0}
           <span class="timeline__ocr-count">{ocrObservations.length}</span>
@@ -7021,15 +6670,23 @@
         class="btn btn--ghost btn--sm"
         onclick={refreshTimelineAndDashboard}
         disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
-        title="Refresh dashboard timeline (R)"
+        use:tip={"Refresh dashboard timeline (R)"}
       >refresh</button>
     </div>
   </header>
 
   {#if timelineError}
-    <div class="timeline__error">
-      <span class="timeline__error-label">load error</span>
-      <span class="timeline__error-msg">{timelineError}</span>
+    <div class="timeline__error" role="alert">
+      <div class="timeline__error-body">
+        <span class="timeline__error-label">load error</span>
+        <span class="timeline__error-msg">{timelineError}</span>
+      </div>
+      <button
+        type="button"
+        class="btn btn--ghost btn--sm timeline__error-retry"
+        onclick={refreshTimelineAndDashboard}
+        disabled={timelineLoading || timelineLoadingMore}
+      >{timelineLoading ? "retrying…" : "retry"}</button>
     </div>
   {/if}
 
@@ -7041,33 +6698,79 @@
        audio lane bars themselves remain visible above the rail so audio
        presence/discovery is unaffected. -->
 
-  <div class="timeline__stage" bind:this={stageEl}>
-    {#if timelineLoading && timelineFrames.length === 0}
-      <div class="timeline__preview-pending">loading frames…</div>
-    {:else if timelineFrames.length === 0}
-      <div class="timeline__empty">
-        <span>no frames yet</span>
-        <span class="timeline__empty-hint">capture a session to populate the timeline</span>
-      </div>
-    {:else if timelineActive}
-      {@const previewDisplay = timelinePreviewDisplay}
-      {@const previewPath = previewDisplay?.filePath ?? null}
-      {@const previewUrl = previewPath ? framePreviewAssetUrl(previewPath) : null}
-      {#if frameActionStatus}
-        <div
-          class="timeline__stage-status"
-          class:timeline__stage-status--error={frameActionStatus.tone === "error"}
-          role="status"
-          aria-live="polite"
-          onpointerenter={onFrameActionStatusPointerEnter}
-          onpointerleave={onFrameActionStatusPointerLeave}
-        >
+  <div
+    class="timeline__stage"
+    class:timeline__stage--stale={timelineError && timelineFrames.length > 0}
+    bind:this={stageEl}
+  >
+    <!-- Stage status banner is hoisted to a direct child of the stage (it is
+         absolutely positioned bottom-right, so DOM order doesn't move it) so
+         broker open-capture failures and deletion acks surface even when there
+         is no active frame (e.g. the "No frames yet" empty state). -->
+    {#if frameActionStatus}
+      <div
+        class="timeline__stage-status"
+        class:timeline__stage-status--error={frameActionStatus.tone === "error"}
+        role={frameActionStatus.tone === "error" ? "alert" : "status"}
+        aria-live={frameActionStatus.tone === "error" ? "assertive" : "polite"}
+        onpointerenter={onFrameActionStatusPointerEnter}
+        onpointerleave={onFrameActionStatusPointerLeave}
+      >
+        <div class="timeline__stage-status-body">
           <div class="timeline__stage-status-summary">{frameActionStatus.message}</div>
           {#if frameActionStatus.detail}
             <div class="timeline__stage-status-detail">{frameActionStatus.detail}</div>
           {/if}
         </div>
+        {#if frameActionStatus.tone === "error"}
+          <button
+            type="button"
+            class="timeline__stage-status-close"
+            aria-label="Dismiss message"
+            use:tip={"Dismiss"}
+            onclick={dismissFrameActionStatus}
+          >
+            <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+              <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
+            </svg>
+          </button>
+        {/if}
+      </div>
+    {/if}
+    {#if timelineLoading && timelineFrames.length === 0}
+      <div class="timeline__preview-pending">
+        <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
+        <span>loading frames…</span>
+      </div>
+    {:else if timelineFrames.length === 0}
+      {#if captureControls.isCapturing}
+        <!-- Capture is live but no frames have landed yet: drop the misleading
+             "Press Record" cue and reassure that the first frames are imminent. -->
+        <div class="timeline__empty timeline__empty--capturing">
+          <span class="timeline__empty-glyph" aria-hidden="true"><IconClapperboard /></span>
+          <h2 class="timeline__empty-title">
+            <span class="timeline__empty-rec-dot" aria-hidden="true"></span>Recording started
+          </h2>
+          <p class="timeline__empty-hint">
+            Your first frames will appear here in a moment…
+          </p>
+        </div>
+      {:else}
+        <div class="timeline__empty">
+          <span class="timeline__empty-glyph" aria-hidden="true"><IconClapperboard /></span>
+          <h2 class="timeline__empty-title">No frames yet</h2>
+          <p class="timeline__empty-hint">
+            Your timeline fills up as Mnema captures your screen.
+          </p>
+          <p class="timeline__empty-cue">
+            Press <span class="timeline__empty-cue-key">Record</span> in the title bar above to start a capture session.
+          </p>
+        </div>
       {/if}
+    {:else if timelineActive}
+      {@const previewDisplay = timelinePreviewDisplay}
+      {@const previewPath = previewDisplay?.filePath ?? null}
+      {@const previewUrl = previewPath ? framePreviewAssetUrl(previewPath) : null}
       {#if previewUrl}
         {@const activeExactPreviewReady = previewCache.has(timelineActive.id)}
         {@const displayedActiveExactPreview = previewDisplay?.frameId === timelineActive.id && previewDisplay.source === "exact"}
@@ -7075,6 +6778,18 @@
           class="timeline__stage-actions"
           class:timeline__stage-actions--open={stageActionsMenuOpen}
         >
+          {#if activeFrameAudioMoment}
+            <!-- Play-this-moment bridge: opens the audio segment that overlaps
+                 this frame's capture time and seeks to the matching offset.
+                 Mirrors the "P" dashboard shortcut. -->
+            <button
+              type="button"
+              class="btn btn--ghost btn--sm timeline__stage-action-trigger timeline__stage-play-moment"
+              aria-label={`Play audio at this moment (${audioSourceLabel(activeFrameAudioMoment.segment.source)})`}
+              use:tip={"Play audio at this moment (P)"}
+              onclick={playActiveFrameMoment}
+            ><span class="timeline__stage-action-glyph" aria-hidden="true"><IconHeadphones /></span></button>
+          {/if}
           <button
             type="button"
             class="btn btn--ghost btn--sm timeline__stage-action-trigger"
@@ -7082,12 +6797,12 @@
             aria-haspopup="dialog"
             aria-expanded={stageActionsMenuOpen}
             aria-controls="timeline-stage-action-menu"
-            title="Frame actions (C copy, D download)"
+            use:tip={"Frame actions (C copy, D download)"}
             bind:this={stageActionsTriggerEl}
             onkeydown={onFrameActionsTriggerKeydown}
             onpointerdown={() => { stageActionsOpenedByKeyboard = false; }}
             onclick={() => toggleFrameActions(stageActionsOpenedByKeyboard)}
-          >⋯</button>
+          ><span class="timeline__stage-action-glyph" aria-hidden="true"><IconMoreHorizontal /></span></button>
           {#if stageActionsMenuOpen}
             <div
               id="timeline-stage-action-menu"
@@ -7100,25 +6815,38 @@
                 type="button"
                 class="timeline__stage-action-menu-item"
                 onclick={copyActiveFrameImage}
-                disabled={!activeExactPreviewReady}
+                disabled={!activeExactPreviewReady || frameImageActionBusy !== null}
                 aria-label="Copy active frame image"
-                title="Copy image (C)"
-              >copy</button>
+                aria-busy={frameImageActionBusy === "copy"}
+                use:tip={"Copy image (C)"}
+              >{frameImageActionBusy === "copy" ? "copying…" : "copy"}</button>
               <button
                 type="button"
                 class="timeline__stage-action-menu-item"
                 onclick={downloadActiveFrameImage}
-                disabled={!activeExactPreviewReady}
+                disabled={!activeExactPreviewReady || frameImageActionBusy !== null}
                 aria-label="Download active frame image"
-                title="Download image (D)"
-              >download</button>
+                aria-busy={frameImageActionBusy === "download"}
+                use:tip={"Download image (D)"}
+              >{frameImageActionBusy === "download" ? "saving…" : "download"}</button>
+              {#if ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0}
+                <button
+                  type="button"
+                  class="timeline__stage-action-menu-item"
+                  onclick={copyAllRecognizedText}
+                  disabled={ocrCopyAllBusy}
+                  aria-busy={ocrCopyAllBusy}
+                  aria-label="Copy all recognized text"
+                  use:tip={"Copy all recognized on-screen text"}
+                >{ocrCopyAllBusy ? "copying text…" : "copy text"}</button>
+              {/if}
               {#if currentFrameHost}
                 <button
                   type="button"
                   class="timeline__stage-action-menu-item timeline__stage-action-menu-item--open"
                   onclick={openCurrentFrameUrl}
                   disabled={openingCurrentFrameUrl}
-                  title={`Open ${currentFrameHost} in browser`}
+                  use:tip={`Open ${currentFrameHost} in browser`}
                   aria-label={`Open ${currentFrameHost} in browser`}
                 >
                   <svg class="timeline__stage-action-open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -7143,6 +6871,7 @@
           src={previewUrl}
           alt=""
           aria-hidden="true"
+          onload={() => handleActivePreviewLoad(previewDisplay?.frameId ?? timelineActive.id)}
           onerror={() => handleActivePreviewLoadError(previewDisplay?.frameId ?? timelineActive.id)}
         />
         <!-- OCR overlay: anchored to the painted background-image rect
@@ -7156,23 +6885,37 @@
         {#if displayedActiveExactPreview && ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0 && renderedImageRect.width > 0 && renderedImageRect.height > 0}
           <div
             class="timeline__ocr-overlay"
-            aria-hidden="true"
+            role="list"
+            aria-label="Recognized on-screen text"
             style={`left: ${renderedImageRect.left}px; top: ${renderedImageRect.top}px; width: ${renderedImageRect.width}px; height: ${renderedImageRect.height}px;`}
           >
             {#each ocrObservations as obs, i (i)}
+              <!-- Boxes are a pixel-positioned visual overlay; the recognized
+                   text is exposed to assistive tech via the list/listitem role
+                   + aria-label (no per-box tabindex — that would add dozens of
+                   tab stops and trip a11y_no_noninteractive_tabindex). The
+                   chip still reveals on hover for pointer users. -->
               <div
                 class="timeline__ocr-box"
+                role="listitem"
                 style={ocrBoxStyle(obs)}
-                title={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
+                aria-label={`${obs.text} (${(obs.confidence * 100).toFixed(0)}% confidence)`}
+                use:tip={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
               >
                 <span class="timeline__ocr-text">{obs.text}</span>
               </div>
             {/each}
+            <span class="timeline__ocr-overlay-hint" aria-hidden="true">
+              hover to read · copy all in ⋯
+            </span>
           </div>
         {/if}
       {:else}
         <div class="timeline__preview-pending">
-          {frameActionStatus?.tone === "error" ? "preview unavailable" : "decoding preview…"}
+          {#if frameActionStatus?.tone !== "error"}
+            <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
+          {/if}
+          <span>{frameActionStatus?.tone === "error" ? "preview unavailable" : "decoding preview…"}</span>
         </div>
       {/if}
     {/if}
@@ -7200,6 +6943,13 @@
           <span class="timeline__ocr-status-glyph" aria-hidden="true">!</span>
           <span class="timeline__ocr-status-msg">{ocrError ?? "OCR failed"}</span>
         {/if}
+      </div>
+    {/if}
+
+    {#if ocrSuccessUnpositionable}
+      <div class="timeline__ocr-status timeline__ocr-status--empty" role="status" aria-live="polite">
+        <span class="timeline__ocr-status-glyph" aria-hidden="true">⌶</span>
+        <span>Text detected but can't be positioned — use ⋯ → Copy text.</span>
       </div>
     {/if}
 
@@ -7237,7 +6987,7 @@
         <div class="timeline__overlay-row">
           <span class="timeline__overlay-key">fetch</span>
           <span class="timeline__overlay-val timeline__overlay-truncate">
-            exact {activeExactPreviewLoadMs == null ? "—" : `${activeExactPreviewLoadMs.toFixed(1)}ms`} scrub {activeScrubPreviewLoadMs == null ? "—" : `${activeScrubPreviewLoadMs.toFixed(1)}ms`}
+            exact {activeExactPreviewLoadMs == null ? "—" : `${activeExactPreviewLoadMs.toFixed(1)}ms`} scrub {activeScrubPreviewReady ? "ready" : "none"}
           </span>
         </div>
         {#if timelineActive.equivalenceHint}
@@ -7277,7 +7027,7 @@
             <button
               type="button"
               class="timeline__overlay-link"
-              onclick={() => void jumpToFrame(duplicateOf)}
+              onclick={() => void jumpToFrameWithBanner(duplicateOf)}
             >{duplicateOf.id}</button>
           </div>
         {/if}
@@ -7290,7 +7040,10 @@
        The rail itself is locked to a fixed height and the loading indicator
        lives outside the rail so neither pagination loads nor the
        loading→loaded swap can change page/stage/rail height. -->
-  <div class="timeline__rail-wrap" bind:this={timelineRailWrap}>
+  <div
+    class="timeline__rail-wrap"
+    bind:this={timelineRailWrap}
+  >
     {#if timelineFrames.length > 0}
       <div
         class="timeline-rail"
@@ -7321,7 +7074,7 @@
               class:timeline-rail__app-group--single={group.variant === "single"}
               class:timeline-rail__app-group--range={group.variant === "range"}
               style="right: {group.rightPx}px; width: {group.widthPx}px; --timeline-app-icon-left: {group.iconLeftPx}px"
-              title={timelineAppGroupTitle(group)}
+              use:tip={timelineAppGroupTitle(group)}
               aria-hidden="true"
             >
               {#if group.showIcon}
@@ -7378,7 +7131,7 @@
         class="timeline-rail__audio-lane-wrap"
         aria-label="Audio segments"
       >
-        <div class="timeline-rail__audio-lane-labels" aria-hidden="true">
+        <div class="timeline-rail__audio-lane-labels">
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--microphone">mic</span>
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--systemAudio">sys</span>
         </div>
@@ -7398,7 +7151,7 @@
                       class="timeline-rail__audio-bar timeline-rail__audio-bar--microphone"
                       class:timeline-rail__audio-bar--selected={seg.id === selectedAudioSegmentId}
                       style="right: {seg.rightPx}px; width: {seg.widthPx}px"
-                      title={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
+                      use:tip={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
                       aria-label={`Play ${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} from ${formatTimeOfDay(seg.startUnixMs)} to ${formatTimeOfDay(seg.endUnixMs)}`}
                       aria-pressed={seg.id === selectedAudioSegmentId}
                       onclick={(e) => onAudioSegmentBarClick(e, seg.id)}
@@ -7416,7 +7169,7 @@
                       class="timeline-rail__audio-bar timeline-rail__audio-bar--systemAudio"
                       class:timeline-rail__audio-bar--selected={seg.id === selectedAudioSegmentId}
                       style="right: {seg.rightPx}px; width: {seg.widthPx}px"
-                      title={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
+                      use:tip={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
                       aria-label={`Play ${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} from ${formatTimeOfDay(seg.startUnixMs)} to ${formatTimeOfDay(seg.endUnixMs)}`}
                       aria-pressed={seg.id === selectedAudioSegmentId}
                       onclick={(e) => onAudioSegmentBarClick(e, seg.id)}
@@ -7427,12 +7180,22 @@
                 {/each}
               </div>
             </div>
+          {:else if audioSegmentsError}
+            <div class="timeline-rail__audio-lane-error" role="alert">
+              <span class="timeline-rail__audio-lane-error-label" use:tip={audioSegmentsError}>audio unavailable</span>
+              <button
+                type="button"
+                class="btn btn--ghost btn--sm timeline-rail__audio-lane-retry"
+                onclick={(e) => { e.stopPropagation(); void refreshAudioSegments(); }}
+                onpointerdown={(e) => e.stopPropagation()}
+                disabled={audioSegmentsLoading}
+                use:tip={`Retry loading audio · ${audioSegmentsError}`}
+              >{audioSegmentsLoading ? "retrying…" : "retry"}</button>
+            </div>
           {:else}
             <span class="timeline-rail__audio-lane-empty">
               {#if audioSegmentsLoading}
                 loading audio…
-              {:else if audioSegmentsError}
-                audio unavailable
               {:else}
                 no audio in range
               {/if}
@@ -7450,22 +7213,26 @@
         class="timeline-rail__audio-lane-wrap"
         aria-label="Audio segments"
       >
-        <div class="timeline-rail__audio-lane-labels" aria-hidden="true">
+        <div class="timeline-rail__audio-lane-labels">
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--microphone">mic</span>
           <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--systemAudio">sys</span>
         </div>
         <div class="timeline-rail__audio-lane-viewport">
-          <span class="timeline-rail__audio-lane-empty">
-            {#if audioSegmentsLoading}
-              loading audio…
-            {:else if audioSegmentsError}
-              audio unavailable
-            {:else if timelineLoading}
-              waiting for frames…
-            {:else}
-              no frames loaded
-            {/if}
-          </span>
+          {#if audioSegmentsError}
+            <div class="timeline-rail__audio-lane-error" role="alert">
+              <span class="timeline-rail__audio-lane-error-label" use:tip={audioSegmentsError}>audio unavailable</span>
+              <button
+                type="button"
+                class="btn btn--ghost btn--sm timeline-rail__audio-lane-retry"
+                onclick={() => void refreshAudioSegments()}
+                disabled={audioSegmentsLoading}
+                use:tip={`Retry loading audio · ${audioSegmentsError}`}
+              >{audioSegmentsLoading ? "retrying…" : "retry"}</button>
+            </div>
+          {/if}
+          <!-- The big stage empty state ("No frames yet") already carries the
+               zero-frame messaging, so the lane stays silent here rather than
+               stacking a redundant "no frames loaded" line beneath it. -->
         </div>
       </div>
     {/if}
@@ -7561,7 +7328,7 @@
       </span>
       <span
         class="audio-drawer__time"
-        title={`${formatUnixMs(selectedAudioSegment.startUnixMs)} – ${formatUnixMs(selectedAudioSegment.endUnixMs)}`}
+        use:tip={`${formatUnixMs(selectedAudioSegment.startUnixMs)} – ${formatUnixMs(selectedAudioSegment.endUnixMs)}`}
       >
         {formatTimeOfDay(selectedAudioSegment.startUnixMs)}
         <span class="audio-drawer__time-sep" aria-hidden="true">→</span>
@@ -7570,7 +7337,7 @@
           >· {formatDurationSeconds(selectedAudioSegment.durationSeconds)}</span
         >
       </span>
-      <span class="audio-drawer__file" title={selectedAudioSegment.filePath}
+      <span class="audio-drawer__file" use:tip={selectedAudioSegment.filePath}
         >{selectedAudioSegment.fileName}</span
       >
       <button
@@ -7579,11 +7346,15 @@
         onclick={closeAudioDrawer}
         bind:this={audioDrawerCloseEl}
         aria-label="Close audio player"
-      >×</button>
+      >
+        <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+          <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
+        </svg>
+      </button>
     </div>
     {#if selectedAudioMediaLoading}
-      <div class="audio-drawer__status">
-        <span class="audio-drawer__status-glyph" aria-hidden="true">…</span>
+      <div class="audio-drawer__status" role="status" aria-live="polite" aria-busy="true">
+        <span class="audio-drawer__spinner" aria-hidden="true"></span>
         <span>loading audio segment…</span>
       </div>
     {:else if selectedAudioMediaError}
@@ -7684,12 +7455,12 @@
         <div class="audio-drawer__transcript-heading">
           <span class="audio-drawer__transcript-title">Transcript</span>
           {#if selectedAudioTranscriptModelLabel}
-            <span class="audio-drawer__transcript-model" title={selectedAudioTranscriptModelLabel}>
+            <span class="audio-drawer__transcript-model" use:tip={selectedAudioTranscriptModelLabel}>
               · {selectedAudioTranscriptModelLabel}
             </span>
           {/if}
           {#if selectedAudioSpeakerGroups.length > 0}
-            <span class="audio-drawer__transcript-hint">Click words to seek · click speaker to edit</span>
+            <span class="audio-drawer__transcript-hint">Click a line to jump · click a speaker to edit</span>
           {/if}
         </div>
         <div class="audio-drawer__transcript-actions">
@@ -7698,13 +7469,23 @@
             class="audio-drawer__transcript-action"
             onclick={reprocessSelectedAudioSegmentTranscript}
             disabled={selectedAudioTranscriptActionDisabled}
-            title={selectedAudioTranscriptActionTitle}
+            use:tip={selectedAudioTranscriptActionTitle}
           >
             {selectedAudioTranscriptRerunLoading
               ? "Starting…"
               : selectedAudioTranscriptActionLabel}
           </button>
-          <span class="audio-drawer__transcript-state audio-drawer__transcript-state--{selectedAudioTranscriptStatus}">
+          <span
+            class="audio-drawer__transcript-state audio-drawer__transcript-state--{selectedAudioTranscriptStatus}"
+            role="status"
+            aria-live="polite"
+            aria-busy={selectedAudioSpeakerAnalysisRunning ||
+              selectedAudioTranscriptStatus === "running" ||
+              selectedAudioTranscriptStatus === "loading"}
+          >
+            {#if selectedAudioSpeakerAnalysisRunning || selectedAudioTranscriptStatus === "running" || selectedAudioTranscriptStatus === "loading"}
+              <span class="audio-drawer__spinner audio-drawer__spinner--pill" aria-hidden="true"></span>
+            {/if}
             {#if selectedAudioSpeakerAnalysisRunning}
               speakers
             {:else if selectedAudioSegment.source === "systemAudio" && selectedAudioTranscriptStatus === "running"}
@@ -7723,6 +7504,8 @@
               no speech
             {:else if selectedAudioTranscriptStatus === "error"}
               error
+            {:else if selectedAudioTranscriptStatus === "missing"}
+              not run
             {:else}
               unavailable
             {/if}
@@ -7730,7 +7513,7 @@
         </div>
       </div>
       {#if selectedAudioTranscriptRerunError}
-        <p class="audio-drawer__transcript-error">{selectedAudioTranscriptRerunError}</p>
+        <p class="audio-drawer__transcript-error" role="alert">{selectedAudioTranscriptRerunError}</p>
       {/if}
       {#if selectedAudioTranscriptStatus === "success"}
         {#if selectedAudioSpeakerGroups.length > 0}
@@ -7798,17 +7581,17 @@
                         </span>
                       {/if}
                       {#if selectablePersonProfiles(group).length > 0}
-                        <select
-                          class="audio-drawer__speaker-select"
+                        <ActionSelect
+                          compact
+                          placeholder="Use saved person…"
+                          ariaLabel="Use an existing saved person for this speaker"
                           disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                          onchange={(event) => linkSpeakerCluster(group.clusterId, event)}
-                          aria-label="Use an existing saved person for this speaker"
-                        >
-                          <option value="">Use saved person…</option>
-                          {#each selectablePersonProfiles(group) as profile}
-                            <option value={profile.id}>{profile.displayName}</option>
-                          {/each}
-                        </select>
+                          options={selectablePersonProfiles(group).map((profile) => ({
+                            value: String(profile.id),
+                            label: profile.displayName,
+                          }))}
+                          onpick={(value) => linkSpeakerCluster(group.clusterId, Number(value))}
+                        />
                       {/if}
                     </div>
                     <details class="audio-drawer__speaker-more">
@@ -7826,28 +7609,28 @@
                           </button>
                         {/if}
                         {#if selectedAudioSpeakerClusters.length > 1}
-                          <select
-                            class="audio-drawer__speaker-select"
+                          {@const mergeTargets = selectedAudioSpeakerClusters
+                            .filter((cluster) => cluster.id !== group.clusterId)
+                            .map((cluster) => ({
+                              value: String(cluster.id),
+                              label: speakerClusterOptionLabel(cluster),
+                            }))}
+                          <ActionSelect
+                            compact
+                            placeholder="Same speaker as…"
+                            ariaLabel="Merge this speaker cluster"
                             disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            onchange={(event) => mergeSpeakerCluster(group.clusterId, event)}
-                            aria-label="Merge this speaker cluster"
-                          >
-                            <option value="">Same speaker as…</option>
-                            {#each selectedAudioSpeakerClusters.filter((cluster) => cluster.id !== group.clusterId) as cluster}
-                              <option value={cluster.id}>{speakerClusterOptionLabel(cluster)}</option>
-                            {/each}
-                          </select>
-                          <select
-                            class="audio-drawer__speaker-select"
+                            options={mergeTargets}
+                            onpick={(value) => mergeSpeakerClusterById(group.clusterId, Number(value))}
+                          />
+                          <ActionSelect
+                            compact
+                            placeholder="Move this line to…"
+                            ariaLabel="Move this visible speaker block"
                             disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            onchange={(event) => moveSpeakerBlockTurns(group, event)}
-                            aria-label="Move this visible speaker block"
-                          >
-                            <option value="">Move this line to…</option>
-                            {#each selectedAudioSpeakerClusters.filter((cluster) => cluster.id !== group.clusterId) as cluster}
-                              <option value={cluster.id}>{speakerClusterOptionLabel(cluster)}</option>
-                            {/each}
-                          </select>
+                            options={mergeTargets}
+                            onpick={(value) => moveSpeakerBlockTurns(group, Number(value))}
+                          />
                         {/if}
                       </div>
                     </details>
@@ -7861,7 +7644,7 @@
                     aria-haspopup="dialog"
                     aria-expanded={speakerActionsOpenIndex === index}
                     aria-controls={`speaker-actions-${group.clusterId}`}
-                    title="Edit speaker"
+                    use:tip={"Edit speaker"}
                     onclick={(event) => toggleSpeakerActions(index, event)}
                   >
                     {speakerPersistedName(group)}
@@ -7948,7 +7731,7 @@
                     type="button"
                     class="audio-drawer__speaker-text"
                     class:audio-drawer__speaker-text--active={selectedAudioSpeakerActiveGroupIndex === index}
-                    title={`Jump to ${formatTranscriptSegmentTitle(group)}`}
+                    use:tip={`Jump to ${formatTranscriptSegmentTitle(group)}`}
                     onclick={() => onSpeakerLineClick(group)}
                   >
                     {group.text}
@@ -7958,7 +7741,7 @@
             {/each}
           </div>
           {#if speakerCorrectionError}
-            <p class="audio-drawer__transcript-error">{speakerCorrectionError}</p>
+            <p class="audio-drawer__transcript-error" role="alert">{speakerCorrectionError}</p>
           {/if}
         {:else if selectedAudioTranscriptSegments.length > 0}
           <div
@@ -7971,7 +7754,7 @@
                 class="audio-drawer__transcript-segment"
                 class:audio-drawer__transcript-segment--active={selectedAudioTranscriptActiveSegmentIndex === index}
                 data-transcript-segment-index={index}
-                title={`Jump to ${formatTranscriptSegmentTitle(segment)}`}
+                use:tip={`Jump to ${formatTranscriptSegmentTitle(segment)}`}
                 aria-label={`Jump to transcript segment at ${formatTranscriptSegmentTitle(segment)}`}
                 onclick={() => seekAudioToTimeMs(segment.startMs)}
               >
@@ -7983,7 +7766,7 @@
           <p class="audio-drawer__transcript-text">{selectedAudioTranscriptText}</p>
         {/if}
         {#if selectedAudioSpeakerTurnsError}
-          <div class="audio-drawer__transcript-error-row">
+          <div class="audio-drawer__transcript-error-row" role="alert">
             <p class="audio-drawer__transcript-error">{selectedAudioSpeakerTurnsError}</p>
             {#if selectedAudioSpeakerRetryVisible}
               <button
@@ -8005,11 +7788,17 @@
       {:else if selectedAudioTranscriptStatus === "empty"}
         <p class="audio-drawer__transcript-empty">No speech detected in this segment.</p>
       {:else if selectedAudioTranscriptStatus === "loading"}
-        <p class="audio-drawer__transcript-empty">Loading transcript…</p>
+        <p class="audio-drawer__transcript-empty audio-drawer__transcript-empty--loading" role="status" aria-live="polite" aria-busy="true">
+          <span class="audio-drawer__spinner" aria-hidden="true"></span>
+          Loading transcript…
+        </p>
       {:else if selectedAudioTranscriptStatus === "running"}
-        <p class="audio-drawer__transcript-empty">Transcription is queued or still processing.</p>
+        <p class="audio-drawer__transcript-empty audio-drawer__transcript-empty--loading" role="status" aria-live="polite" aria-busy="true">
+          <span class="audio-drawer__spinner" aria-hidden="true"></span>
+          Transcription is queued or still processing.
+        </p>
       {:else if selectedAudioTranscriptStatus === "error"}
-        <p class="audio-drawer__transcript-error">{selectedAudioTranscriptError}</p>
+        <p class="audio-drawer__transcript-error" role="alert">{selectedAudioTranscriptError}</p>
       {:else}
         <p class="audio-drawer__transcript-empty">No transcript has been recorded for this segment.</p>
       {/if}
@@ -8040,6 +7829,7 @@
   .timeline__error,
   .timeline__rail-wrap {
     flex: 0 0 auto;
+    position: relative;
   }
 
   /* Header bar: two clearly-separated control groups (recording + jump on
@@ -8063,6 +7853,11 @@
 
   .timeline__bar-group--secondary {
     margin-left: auto;
+  }
+
+  /* Align bar-2 control typography with the app titlebar (10px). */
+  .timeline__bar .btn--sm {
+    font-size: var(--text-xs);
   }
 
   /* ── Recording control cluster ─────────────────────────────
@@ -8089,7 +7884,11 @@
     gap: 6px;
     max-height: 50vh;
     padding: 8px 12px 10px;
-    overflow-y: auto;
+    /* The drawer itself no longer scrolls — the meta row and transport stay
+       pinned while only the transcript body scrolls (see
+       `.audio-drawer__transcript`). Auto-scroll-to-active therefore moves the
+       transcript, never the controls. */
+    overflow: hidden;
     scrollbar-width: none;
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border-strong);
@@ -8111,10 +7910,10 @@
   }
 
   .audio-drawer:focus-visible {
-    border-color: rgba(255, 68, 85, 0.5);
+    border-color: var(--app-accent);
     box-shadow:
       0 18px 40px rgba(0, 0, 0, 0.55),
-      0 0 0 2px rgba(255, 68, 85, 0.35);
+      var(--app-ring);
   }
 
   @keyframes audio-drawer-rise {
@@ -8125,6 +7924,26 @@
     to {
       transform: translateY(0);
       opacity: 1;
+    }
+  }
+
+  /* Honor the OS reduced-motion preference for every CSS animation defined in
+     this surface: the drawer's slide-in entrance, the OCR-running glyph pulse,
+     and the OCR spinner. Spinners/pulses degrade to a static state; the drawer
+     simply appears without the rising transform. */
+  @media (prefers-reduced-motion: reduce) {
+    .audio-drawer {
+      animation: none;
+    }
+
+    .timeline__ocr-btn--running .timeline__ocr-glyph {
+      animation: none;
+    }
+
+    .timeline__ocr-spinner,
+    .timeline__preview-pending-spinner,
+    .audio-drawer__spinner {
+      animation: none;
     }
   }
 
@@ -8171,16 +7990,16 @@
   .audio-drawer__source--microphone .audio-drawer__swatch {
     background: linear-gradient(
       90deg,
-      rgba(120, 200, 255, 0.95),
-      rgba(80, 160, 230, 0.95)
+      var(--app-source-mic),
+      var(--app-source-mic-strong)
     );
   }
 
   .audio-drawer__source--systemAudio .audio-drawer__swatch {
     background: linear-gradient(
       90deg,
-      rgba(255, 180, 100, 0.95),
-      rgba(220, 130, 60, 0.95)
+      var(--app-source-sysaudio),
+      var(--app-source-sysaudio-strong)
     );
   }
 
@@ -8213,11 +8032,7 @@
     color: var(--app-text-muted);
     text-transform: none;
     letter-spacing: 0;
-    font-family:
-      ui-monospace,
-      SFMono-Regular,
-      Menlo,
-      monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     text-align: right;
   }
@@ -8229,8 +8044,10 @@
     border-radius: 4px;
     width: 24px;
     height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--app-text-muted);
-    font-size: 16px;
     line-height: 1;
     cursor: pointer;
     transition:
@@ -8243,8 +8060,14 @@
   .audio-drawer__close:focus-visible {
     color: var(--app-danger);
     border-color: var(--app-danger-strong);
-    background: rgba(255, 68, 85, 0.08);
+    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
     outline: none;
+  }
+
+  /* A distinct ring on keyboard focus so the close affordance no longer reads
+     identically to its hover state. */
+  .audio-drawer__close:focus-visible {
+    box-shadow: var(--app-ring);
   }
 
   .audio-drawer__audio-native {
@@ -8269,10 +8092,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: color-mix(in srgb, var(--app-danger-strong) 10%, transparent);
-    border: 1px solid var(--app-danger-border);
+    background: color-mix(in srgb, var(--app-record-glyph-start) 10%, transparent);
+    border: 1px solid var(--app-status-running-border);
     border-radius: 50%;
-    color: var(--app-danger);
+    color: var(--app-status-running-fg);
     cursor: pointer;
     transition:
       background 0.12s,
@@ -8282,14 +8105,14 @@
   }
 
   .audio-drawer__play:hover {
-    background: color-mix(in srgb, var(--app-danger-strong) 18%, transparent);
-    border-color: var(--app-danger-strong);
+    background: color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
+    border-color: var(--app-record-glyph-start);
   }
 
   .audio-drawer__play:focus-visible {
     outline: none;
-    border-color: var(--app-danger-strong);
-    box-shadow: 0 0 0 2px rgba(255, 68, 85, 0.35);
+    border-color: var(--app-record-glyph-start);
+    box-shadow: var(--app-ring-danger);
   }
 
   .audio-drawer__play:active {
@@ -8323,12 +8146,12 @@
     margin: 0;
     background: transparent;
     cursor: pointer;
-    color: var(--app-danger);
+    color: var(--app-status-running-fg);
   }
 
   .audio-drawer__scrub:disabled {
     cursor: not-allowed;
-    opacity: 0.55;
+    opacity: var(--app-disabled-opacity);
   }
 
   .audio-drawer__scrub::-webkit-slider-runnable-track {
@@ -8336,8 +8159,8 @@
     border-radius: 2px;
     background: linear-gradient(
       to right,
-      var(--app-danger-strong) 0%,
-      var(--app-danger-strong) var(--audio-progress, 0%),
+      var(--app-record-glyph-start) 0%,
+      var(--app-record-glyph-start) var(--audio-progress, 0%),
       var(--app-surface-hover) var(--audio-progress, 0%),
       var(--app-surface-hover) 100%
     );
@@ -8352,7 +8175,7 @@
   .audio-drawer__scrub::-moz-range-progress {
     height: 4px;
     border-radius: 2px;
-    background: var(--app-danger-strong);
+    background: var(--app-record-glyph-start);
   }
 
   .audio-drawer__scrub::-webkit-slider-thumb {
@@ -8361,10 +8184,10 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--app-danger);
+    background: var(--app-status-running-fg);
     border: 2px solid var(--app-surface-raised);
     margin-top: -3px;
-    box-shadow: 0 0 0 0 rgba(255, 68, 85, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-record-glyph-start) 0%, transparent);
     transition:
       transform 0.12s,
       box-shadow 0.12s;
@@ -8374,9 +8197,9 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--app-danger);
+    background: var(--app-status-running-fg);
     border: 2px solid var(--app-surface-raised);
-    box-shadow: 0 0 0 0 rgba(255, 68, 85, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-record-glyph-start) 0%, transparent);
     transition:
       transform 0.12s,
       box-shadow 0.12s;
@@ -8385,13 +8208,13 @@
   .audio-drawer__scrub:hover::-webkit-slider-thumb,
   .audio-drawer__scrub:focus-visible::-webkit-slider-thumb {
     transform: scale(1.15);
-    box-shadow: 0 0 0 4px rgba(255, 68, 85, 0.18);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
   }
 
   .audio-drawer__scrub:hover::-moz-range-thumb,
   .audio-drawer__scrub:focus-visible::-moz-range-thumb {
     transform: scale(1.15);
-    box-shadow: 0 0 0 4px rgba(255, 68, 85, 0.18);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
   }
 
   .audio-drawer__scrub:focus-visible {
@@ -8421,6 +8244,35 @@
     font-size: 9px;
   }
 
+  /* Indeterminate motion for in-flight audio/transcript states so a long
+     poll or media load reads as active rather than stuck. Reuses the shared
+     `timeline-ocr-spin` keyframe; degrades to a static ring under
+     reduced-motion (see the media query below). */
+  .audio-drawer__spinner {
+    flex: 0 0 auto;
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in srgb, var(--app-text-muted) 30%, transparent);
+    border-top-color: var(--app-text-muted);
+    animation: timeline-ocr-spin 0.9s linear infinite;
+  }
+
+  .audio-drawer__spinner--pill {
+    width: 9px;
+    height: 9px;
+    border-width: 1.25px;
+    vertical-align: middle;
+    margin-right: 4px;
+  }
+
+  .audio-drawer__transcript-empty--loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
   .audio-drawer__error {
     display: flex;
     align-items: flex-start;
@@ -8435,7 +8287,7 @@
 
   .audio-drawer__error-label {
     flex: 0 0 auto;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8445,19 +8297,54 @@
 
   .audio-drawer__error-msg {
     flex: 1 1 auto;
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     word-break: break-word;
     line-height: 1.4;
   }
 
   .audio-drawer__transcript {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 6px;
     margin-top: 2px;
     padding: 8px 10px;
+    /* Take the drawer's remaining height and allow shrinking so the body
+       below can own the scroll instead of the whole drawer. */
+    flex: 1 1 auto;
+    min-height: 0;
     background: color-mix(in srgb, var(--app-surface-hover) 58%, transparent);
     border: 1px solid var(--app-border);
     border-radius: 6px;
+  }
+
+  /* Scrollable transcript bodies: each becomes its own scroll region (so the
+     transport stays pinned) with a thin, always-styled scrollbar as the scroll
+     signifier and contained overscroll so a transcript scroll never chains out
+     to dismiss the drawer or scroll the page. */
+  .audio-drawer__speaker-transcript,
+  .audio-drawer__transcript-text--segmented,
+  .audio-drawer__transcript-text {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-border-strong) transparent;
+  }
+
+  .audio-drawer__speaker-transcript::-webkit-scrollbar,
+  .audio-drawer__transcript-text--segmented::-webkit-scrollbar,
+  .audio-drawer__transcript-text::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .audio-drawer__speaker-transcript::-webkit-scrollbar-thumb,
+  .audio-drawer__transcript-text--segmented::-webkit-scrollbar-thumb,
+  .audio-drawer__transcript-text::-webkit-scrollbar-thumb {
+    background: var(--app-border-strong);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
   }
 
   .audio-drawer__transcript-header {
@@ -8477,7 +8364,7 @@
 
   .audio-drawer__transcript-title,
   .audio-drawer__transcript-state {
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8499,7 +8386,7 @@
 
   .audio-drawer__transcript-hint {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -8523,7 +8410,7 @@
     background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
     color: var(--app-text-muted);
     font: inherit;
-    font-size: 9px;
+    font-size: var(--text-sm);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -8543,8 +8430,12 @@
     outline: none;
   }
 
+  .audio-drawer__transcript-action:focus-visible:not(:disabled) {
+    box-shadow: var(--app-ring);
+  }
+
   .audio-drawer__transcript-action:disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -8633,7 +8524,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 8px;
     background: var(--app-surface-raised);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+    box-shadow: var(--app-shadow-popover);
   }
 
   .audio-drawer__speaker-chip {
@@ -8666,6 +8557,12 @@
   .audio-drawer__speaker-chip--open {
     color: var(--app-text);
     outline: none;
+  }
+
+  /* Keyboard focus gets a ring so it's distinguishable from the hover tint. */
+  .audio-drawer__speaker-chip:focus-visible {
+    border-radius: 3px;
+    box-shadow: var(--app-ring);
   }
 
   .audio-drawer__speaker-chip:hover::after,
@@ -8755,7 +8652,7 @@
 
   .audio-drawer__speaker-label-input:disabled {
     cursor: not-allowed;
-    opacity: 0.48;
+    opacity: var(--app-disabled-opacity);
   }
 
   .audio-drawer__speaker-time {
@@ -8765,7 +8662,8 @@
     background: transparent;
     color: var(--app-text);
     font: inherit;
-    font-size: 9px;
+    /* Bumped from 9px: the uppercase secondary metadata was borderline-legible. */
+    font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -8782,15 +8680,14 @@
 
   .audio-drawer__speaker-toolset-label {
     color: var(--app-text-muted);
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 900;
     letter-spacing: 0.13em;
     line-height: 1;
     text-transform: uppercase;
   }
 
-  .audio-drawer__speaker-tool,
-  .audio-drawer__speaker-select {
+  .audio-drawer__speaker-tool {
     min-height: 24px;
     border: 1px solid var(--app-border);
     border-radius: 999px;
@@ -8824,36 +8721,30 @@
 
   .audio-drawer__speaker-profile {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.08em;
     line-height: 1.2;
     text-transform: uppercase;
   }
 
-  .audio-drawer__speaker-select {
-    max-width: 12rem;
-    padding: 3px 7px;
-    color: var(--app-text);
-  }
-
-  .audio-drawer__speaker-select option {
-    background: var(--app-surface-raised);
-    color: var(--app-text);
-  }
-
   .audio-drawer__speaker-tool:hover:not(:disabled),
-  .audio-drawer__speaker-tool:focus-visible:not(:disabled),
-  .audio-drawer__speaker-select:hover:not(:disabled),
-  .audio-drawer__speaker-select:focus-visible:not(:disabled) {
+  .audio-drawer__speaker-tool:focus-visible:not(:disabled) {
     border-color: var(--app-accent);
     color: var(--app-text);
     outline: none;
   }
 
-  .audio-drawer__speaker-tool:disabled,
-  .audio-drawer__speaker-select:disabled {
-    opacity: 0.42;
+  /* Reject is a benign-decline, not an affirmative — keep its hover warn-tinted
+     rather than adopting the accent-green confirm treatment. */
+  .audio-drawer__speaker-tool--reject:hover:not(:disabled),
+  .audio-drawer__speaker-tool--reject:focus-visible:not(:disabled) {
+    border-color: var(--app-warn-border);
+    color: var(--app-warn);
+  }
+
+  .audio-drawer__speaker-tool:disabled {
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -8865,14 +8756,14 @@
 
   .audio-drawer__speaker-overlap-note {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
     line-height: 1.2;
   }
 
   .audio-drawer__speaker-confidence {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -8914,7 +8805,7 @@
 
   .audio-drawer__speaker-action-meta {
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
   }
 
@@ -8962,8 +8853,17 @@
     outline: none;
   }
 
+  /* Reject is a benign-decline, not an affirmative — keep its hover warn-tinted
+     rather than adopting the confirm action's accent-green. */
+  .audio-drawer__speaker-action-button--reject:hover:not(:disabled),
+  .audio-drawer__speaker-action-button--reject:focus-visible:not(:disabled) {
+    border-color: var(--app-warn-border);
+    background: color-mix(in srgb, var(--app-warn) 12%, var(--app-surface-raised));
+    color: var(--app-warn);
+  }
+
   .audio-drawer__speaker-action-button:disabled {
-    opacity: 0.42;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -8988,6 +8888,11 @@
   .audio-drawer__speaker-text--active {
     background: color-mix(in srgb, var(--app-accent) 8%, transparent);
     outline: none;
+  }
+
+  /* Distinct keyboard-focus ring so a focused line isn't mistaken for a hover. */
+  .audio-drawer__speaker-text:focus-visible {
+    box-shadow: var(--app-ring);
   }
 
   .audio-drawer__transcript-segment {
@@ -9016,6 +8921,10 @@
     outline: none;
   }
 
+  .audio-drawer__transcript-segment:focus-visible {
+    box-shadow: var(--app-ring);
+  }
+
   .audio-drawer__transcript-segment--active {
     background: color-mix(in srgb, var(--app-accent) 18%, transparent);
     color: var(--app-text);
@@ -9040,7 +8949,7 @@
 
   .audio-drawer__transcript-error {
     color: var(--app-danger-text);
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     word-break: break-word;
   }
 
@@ -9067,7 +8976,7 @@
     padding: 8px 16px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: var(--text-sm);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -9078,15 +8987,26 @@
   }
 
   .btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
+  }
+
+  .btn:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .btn:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
   }
 
   .btn--ghost {
     background: transparent;
     color: var(--app-text-muted);
     border-color: var(--app-border-strong);
-    font-size: 10px;
+    font-size: var(--text-sm);
   }
 
   .btn--ghost:not(:disabled):hover {
@@ -9097,265 +9017,40 @@
 
   .btn--sm {
     padding: 3px 8px;
-    font-size: 9px;
+    font-size: var(--text-sm);
   }
 
   /* The previous dashboard-local settings/menu anchor moved into the shared
      title bar as reusable surface actions, so those local rules were removed. */
 
-  /* ── Date jump picker ──────────────────────────────────────── */
-  .timeline__jump {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    position: relative;
-  }
-
-  .timeline__jump-trigger {
-    gap: 6px;
-    font-variant-numeric: tabular-nums;
-    max-width: 220px;
-  }
-
-  .timeline__jump-latest {
-    flex: 0 0 auto;
-  }
-
-  .timeline__jump-icon {
-    font-size: 10px;
-    color: var(--app-text-muted);
-  }
-
-  .timeline__jump-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .timeline__picker {
-    position: fixed;
-    z-index: 20;
-    display: grid;
-    grid-template-columns: auto 200px;
-    width: min(520px, calc(100vw - 24px));
-    gap: 12px;
-    padding: 12px;
-    box-sizing: border-box;
-    overflow: auto;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  }
-
-  .timeline__picker-side {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .timeline__picker-row {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .timeline__picker-key {
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-
-  .timeline__picker-val {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
-    font-size: 11px;
-    color: var(--app-text);
-  }
-
-  .timeline__picker-pending {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-
-  .timeline__picker-error {
-    font-size: 10px;
-    color: var(--app-danger-text);
-    word-break: break-word;
-  }
-
-  .timeline__picker-times {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
-    gap: 4px;
-    max-height: 180px;
-    overflow-y: auto;
-    padding-right: 2px;
-  }
-
-  .timeline__picker-time {
-    padding: 4px 6px;
-    background: transparent;
-    border: 1px solid var(--app-border);
-    border-radius: 3px;
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
-    font-size: 10px;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-
-  .timeline__picker-time:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-
-  .timeline__picker-time:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .timeline__picker-time--active {
-    color: var(--app-danger-strong);
-    border-color: color-mix(in srgb, var(--app-danger-strong) 40%, transparent);
-    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
-  }
-
-  @media (max-width: 640px) {
-    .timeline__picker {
-      grid-template-columns: minmax(0, 1fr);
-      width: min(320px, calc(100vw - 24px));
-    }
-  }
-
-  /* Bits UI calendar — narrow themed shell. */
-  :global(.cal) {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    color: var(--app-text);
-  }
-
-  :global(.cal__header) {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 0 2px 4px;
-  }
-
-  :global(.cal__nav) {
-    width: 22px;
-    height: 22px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: 1px solid var(--app-border);
-    border-radius: 3px;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-  }
-
-  :global(.cal__nav:hover) {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-
-  :global(.cal__heading) {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text);
-  }
-
-  :global(.cal__grid) {
-    border-collapse: collapse;
-  }
-
-  :global(.cal__row) {
-    display: grid;
-    grid-template-columns: repeat(7, 28px);
-  }
-
-  :global(.cal__weekday) {
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    text-align: center;
-    padding: 4px 0;
-  }
-
-  :global(.cal__cell) {
-    padding: 1px;
-  }
-
-  :global(.cal__day) {
-    width: 26px;
-    height: 26px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 3px;
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
-    font-size: 11px;
-    color: var(--app-text);
-    background: transparent;
-    border: 1px solid transparent;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-
-  :global(.cal__day:hover:not([data-disabled])) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-
-  :global(.cal__day[data-disabled]),
-  :global(.cal__day[data-outside-month]) {
-    color: var(--app-text-faint);
-    cursor: not-allowed;
-  }
-
-  :global(.cal__day[data-selected]) {
-    background: rgba(255, 68, 85, 0.12);
-    border-color: rgba(255, 68, 85, 0.5);
-    color: var(--app-danger-text);
-  }
-
-  :global(.cal__day[data-today]:not([data-selected])) {
-    border-color: var(--app-border-strong);
-    color: var(--app-text-strong);
-  }
-
   /* ── Error / empty ─────────────────────────────────────────── */
   .timeline__error {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
     padding: 10px 12px;
     background: var(--app-danger-bg-soft);
     border: 1px solid var(--app-danger-border);
     border-radius: 4px;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-danger-text);
   }
 
+  .timeline__error-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .timeline__error-retry {
+    flex: 0 0 auto;
+  }
+
   .timeline__error-label {
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -9363,24 +9058,113 @@
   }
 
   .timeline__error-msg {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     word-break: break-word;
   }
 
   .timeline__empty {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 8px;
     align-items: center;
     justify-content: center;
-    color: var(--app-text-subtle);
-    font-size: 11px;
-    letter-spacing: 0.06em;
+    text-align: center;
+    max-width: 360px;
+    padding: 24px;
+  }
+
+  .timeline__empty-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 4px;
+    color: var(--app-text-muted);
+  }
+
+  .timeline__empty-glyph :global(svg) {
+    width: 40px;
+    height: 40px;
+    stroke-width: 1.5;
+  }
+
+  .timeline__empty-title {
+    margin: 0;
+    font-family: inherit;
+    font-size: var(--text-lg);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: var(--app-text);
+  }
+
+  /* Live-capture variant of the empty state: a pulsing record dot inline with
+     the title so the surface reads as "recording, waiting for first frames"
+     rather than the idle "Press Record" prompt. */
+  .timeline__empty--capturing .timeline__empty-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .timeline__empty-rec-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--app-danger-strong);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 60%, transparent);
+    animation: timeline-empty-rec-pulse 1.6s ease-out infinite;
+  }
+
+  @keyframes timeline-empty-rec-pulse {
+    0% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 55%, transparent);
+    }
+    70% {
+      box-shadow: 0 0 0 6px color-mix(in srgb, var(--app-danger-strong) 0%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-danger-strong) 0%, transparent);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .timeline__empty-rec-dot {
+      animation: none;
+    }
   }
 
   .timeline__empty-hint {
-    font-size: 10px;
-    color: var(--app-text-faint);
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--app-text-muted);
+  }
+
+  .timeline__empty-cue {
+    margin: 4px 0 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--app-text-muted);
+  }
+
+  /* "Record" is a title-bar button, not a keystroke — so it reads as an
+     emphasized inline label with a small record-dot glyph that matches the
+     title-bar control, rather than a misleading kbd chip. */
+  .timeline__empty-cue-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--app-text-strong);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .timeline__empty-cue-key::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-danger-strong);
   }
 
   /* ── Stage (preview dominates) ─────────────────────────────── */
@@ -9395,6 +9179,14 @@
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+
+  /* When the timeline load fails but stale frames remain decoded, dim and
+     desaturate the stage so the last preview never reads as live data. The
+     inline alert above carries the recovery action. */
+  .timeline__stage--stale {
+    opacity: var(--app-disabled-opacity);
+    filter: grayscale(0.6);
   }
 
   .timeline__preview {
@@ -9420,6 +9212,19 @@
     top: 10px;
     right: 10px;
     z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* The play-this-moment trigger tints toward the recording accent so it reads
+     as a distinct "listen" affordance next to the neutral frame-actions menu. */
+  .timeline__stage-play-moment {
+    color: color-mix(in srgb, var(--app-accent) 70%, var(--app-text-muted));
+  }
+
+  .timeline__stage-play-moment:hover {
+    color: var(--app-accent-strong, var(--app-accent));
   }
 
   .timeline__stage-actions--open {
@@ -9454,6 +9259,17 @@
       color 0.12s,
       box-shadow 0.12s,
       transform 0.12s;
+  }
+
+  .timeline__stage-action-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .timeline__stage-action-glyph :global(svg) {
+    width: 18px;
+    height: 18px;
   }
 
   .timeline__stage-action-trigger:hover {
@@ -9535,7 +9351,7 @@
      and drop the pointer cursor so it reads as inert without shifting layout. */
   .timeline__stage-action-menu-item:disabled {
     cursor: default;
-    opacity: 0.45;
+    opacity: var(--app-disabled-opacity);
   }
 
   .timeline__stage-action-menu-item:disabled:hover {
@@ -9571,9 +9387,10 @@
     bottom: 10px;
     z-index: 2;
     max-width: min(60%, 360px);
-    padding: 6px 8px;
-    display: grid;
-    gap: 4px;
+    padding: 7px 9px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
     background: var(--app-overlay-bg-strong);
     border: 1px solid var(--app-overlay-border);
     border-radius: 8px;
@@ -9583,6 +9400,12 @@
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
     box-shadow: 0 10px 24px color-mix(in srgb, var(--app-bg) 28%, transparent);
+  }
+
+  .timeline__stage-status-body {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
   }
 
   .timeline__stage-status-summary {
@@ -9595,24 +9418,73 @@
     padding-top: 3px;
     border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
     color: var(--app-text-subtle);
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     line-height: 1.45;
     white-space: pre-wrap;
     word-break: break-word;
   }
 
+  /* Errors persist until dismissed, so they read at a more legible size than
+     the transient neutral acks and carry a close affordance. */
   .timeline__stage-status--error {
     color: color-mix(in srgb, var(--app-danger) 72%, var(--app-text) 28%);
     border-color: color-mix(in srgb, var(--app-danger) 40%, var(--app-overlay-border));
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .timeline__stage-status--error .timeline__stage-status-detail {
+    font-size: 10px;
+  }
+
+  .timeline__stage-status-close {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin: -1px -2px 0 0;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.75;
+    cursor: pointer;
+    transition: opacity 0.12s ease, background 0.12s ease;
+  }
+
+  .timeline__stage-status-close:hover {
+    opacity: 1;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+  }
+
+  .timeline__stage-status-close:focus-visible {
+    outline: none;
+    opacity: 1;
+    box-shadow: var(--app-ring);
   }
 
   .timeline__preview-pending {
-    font-size: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-muted);
+  }
+
+  .timeline__preview-pending-spinner {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in srgb, var(--app-text-muted) 30%, transparent);
+    border-top-color: var(--app-text-muted);
+    animation: timeline-ocr-spin 0.9s linear infinite;
   }
 
   /* Compact metadata pinned to the corner of the stage so the preview
@@ -9639,7 +9511,7 @@
   }
 
   .timeline__overlay-key {
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -9648,14 +9520,14 @@
   }
 
   .timeline__overlay-val {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text);
     min-width: 0;
   }
 
   .timeline__overlay-link {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-info);
     min-width: 0;
@@ -9690,12 +9562,30 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* When OCR is toggled ON the button carries a resting accent tint so its
+     stateful (pressed) nature reads at a glance, distinct from the plain
+     refresh ghost button. The :not() guards keep the run-state modifiers
+     (running/error/success) authoritative over this resting colour. */
+  .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+
+  .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) .timeline__ocr-glyph {
+    color: var(--app-accent);
+  }
+
   .timeline__ocr-glyph {
-    display: inline-block;
-    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
     line-height: 1;
     color: var(--app-text-muted);
-    transform: translateY(-1px);
+  }
+
+  .timeline__ocr-glyph :global(svg) {
+    width: 1.2em;
+    height: 1.2em;
   }
 
   .timeline__ocr-count {
@@ -9741,7 +9631,7 @@
   .timeline__ocr-btn--running {
     color: var(--app-warn);
     border-color: var(--app-warn-border);
-    background: rgba(214, 161, 74, 0.06);
+    background: color-mix(in srgb, var(--app-warn) 6%, transparent);
   }
   .timeline__ocr-btn--running .timeline__ocr-glyph {
     color: var(--app-warn);
@@ -9782,10 +9672,35 @@
     pointer-events: none;
   }
 
+  /* Persistent signifier that the overlaid boxes hold copyable recognized
+     text — the per-box chip is otherwise only discoverable by hovering each
+     box. Non-interactive (pointer-events stay off so scrub/click pass through)
+     and tucked into the corner so it never competes with the frame. */
+  .timeline__ocr-overlay-hint {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--app-ocr-chip-bg);
+    color: var(--app-ocr-chip-text);
+    border: 1px solid var(--app-ocr-chip-border);
+    font-family: var(--app-font-mono);
+    font-size: 10px;
+    letter-spacing: 0.02em;
+    line-height: 1.2;
+    white-space: nowrap;
+    opacity: 0.72;
+    pointer-events: none;
+  }
+
   .timeline__ocr-box {
     position: absolute;
     border: 1px solid var(--app-ocr-box);
-    background: transparent;
+    /* A faint at-rest fill (plus the text cursor) signals these boxes are
+       live, copyable text rather than inert decoration — without tinting the
+       preview enough to fight the underlying pixels. Hover deepens it. */
+    background: color-mix(in srgb, var(--app-ocr-box-fill) 18%, transparent);
     border-radius: 2px;
     /* Allow zero-width/height edge cases to remain visible as a hairline. */
     min-width: 1px;
@@ -9809,6 +9724,12 @@
     z-index: 2;
   }
 
+  .timeline__ocr-box:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
   /* Text is hidden by default — boxes alone act as a quiet visual scan
      layer over the original pixels. On hover/focus a single chip is
      revealed; it sits flush with the bbox and is fully opaque so it
@@ -9826,11 +9747,7 @@
     background: var(--app-ocr-chip-bg);
     color: var(--app-ocr-chip-text);
     text-shadow: var(--app-ocr-chip-text-shadow);
-    font-family:
-      ui-monospace,
-      SFMono-Regular,
-      Menlo,
-      monospace;
+    font-family: var(--app-font-mono);
     font-size: var(--ocr-font-size, 11px);
     line-height: 1;
     letter-spacing: -0.01em;
@@ -9870,7 +9787,7 @@
     border-radius: 4px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    font-size: 10px;
+    font-size: var(--text-sm);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text);
@@ -9910,11 +9827,7 @@
   .timeline__ocr-status-msg {
     text-transform: none;
     letter-spacing: 0;
-    font-family:
-      ui-monospace,
-      SFMono-Regular,
-      Menlo,
-      monospace;
+    font-family: var(--app-font-mono);
     word-break: break-word;
     max-width: 360px;
   }
@@ -9950,6 +9863,35 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+
+  /* Persistent center playhead: a pair of neutral carets framing the rail's
+     midpoint so the relationship "center = currently shown frame" is
+     self-evident without reading the floating tooltip. Carets sit over the
+     rail's top/bottom edges (rail height = 36px), never covering the active
+     tick body, and stay non-interactive. */
+  .timeline__rail-wrap::before,
+  .timeline__rail-wrap::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    pointer-events: none;
+    z-index: 4;
+  }
+
+  .timeline__rail-wrap::before {
+    top: 0;
+    border-top: 5px solid var(--app-text-subtle);
+  }
+
+  .timeline__rail-wrap::after {
+    top: 31px;
+    border-bottom: 5px solid var(--app-text-subtle);
   }
 
   .timeline-rail {
@@ -9996,8 +9938,8 @@
 
   .timeline-rail:focus-visible {
     outline: none;
-    border-color: var(--app-danger-strong);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-danger-strong) 35%, transparent);
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .timeline-rail::-webkit-scrollbar {
@@ -10115,22 +10057,31 @@
     flex: 0 0 28px;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    align-items: flex-end;
-    padding: 1px 4px 1px 0;
-    font-size: 8px;
+    padding: 0 4px 0 0;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
     user-select: none;
   }
 
+  /* Each label owns half the lane height so its baseline lands on the
+     vertical center of its row in the viewport (mic row center ~6.5px,
+     sys row center ~19.5px within the 26px lane). */
+  .timeline-rail__audio-lane-label {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    line-height: 1;
+  }
+
   .timeline-rail__audio-lane-label--microphone {
-    color: rgba(120, 200, 255, 0.85);
+    color: var(--app-source-mic);
   }
 
   .timeline-rail__audio-lane-label--systemAudio {
-    color: rgba(255, 180, 100, 0.85);
+    color: var(--app-source-sysaudio);
   }
 
   .timeline-rail__audio-lane-viewport {
@@ -10181,12 +10132,38 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 9px;
+    font-size: var(--text-sm);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     pointer-events: none;
+  }
+
+  .timeline-rail__audio-lane-error {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    pointer-events: none;
+  }
+
+  .timeline-rail__audio-lane-error-label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--app-danger-text);
+  }
+
+  /* The retry now reuses the shared `btn btn--ghost btn--sm` style so the
+     audio-lane retry matches the timeline retry (the danger-bordered variant
+     was the lone inconsistent retry affordance). This class only restores
+     pointer-events inside the pointer-events:none lane error row. */
+  .timeline-rail__audio-lane-retry {
+    pointer-events: auto;
   }
 
   .timeline-rail__audio-bar {
@@ -10218,38 +10195,38 @@
     filter: brightness(1.15);
     box-shadow:
       0 0 0 0.5px rgba(0, 0, 0, 0.55),
-      0 0 0 1px rgba(255, 255, 255, 0.3);
+      0 0 0 1px var(--app-border-hover);
   }
 
   .timeline-rail__audio-bar:focus-visible {
     outline: none;
     box-shadow:
       0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      0 0 0 2px rgba(255, 208, 96, 0.85);
+      var(--app-ring);
     z-index: 2;
   }
 
   .timeline-rail__audio-bar--selected {
     box-shadow:
       0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      0 0 0 1.5px var(--app-danger-strong),
-      0 0 8px color-mix(in srgb, var(--app-danger-strong) 45%, transparent);
+      0 0 0 1.5px var(--app-record-glyph-start),
+      0 0 8px color-mix(in srgb, var(--app-record-glyph-start) 45%, transparent);
     z-index: 1;
   }
 
   .timeline-rail__audio-bar--microphone {
     background: linear-gradient(
       180deg,
-      rgba(140, 215, 255, 0.95),
-      rgba(70, 150, 220, 0.9)
+      var(--app-source-mic),
+      var(--app-source-mic-strong)
     );
   }
 
   .timeline-rail__audio-bar--systemAudio {
     background: linear-gradient(
       180deg,
-      rgba(255, 195, 120, 0.95),
-      rgba(215, 125, 55, 0.9)
+      var(--app-source-sysaudio),
+      var(--app-source-sysaudio-strong)
     );
   }
 
@@ -10270,8 +10247,8 @@
   .timeline-rail__slot:focus-visible .timeline-rail__tick {
     width: 2px;
     height: 18px;
-    background: var(--app-warn);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-warn) 35%, transparent);
+    background: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .timeline-rail__tick {
@@ -10301,8 +10278,8 @@
   :global(.timeline-rail__slot--active.timeline-rail__slot--major) .timeline-rail__tick {
     width: 2px;
     height: 22px;
-    background: var(--app-danger-strong);
-    box-shadow: 0 0 6px color-mix(in srgb, var(--app-danger-strong) 70%, transparent);
+    background: var(--app-record-glyph-start);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--app-record-glyph-start) 70%, transparent);
   }
 
   .timeline-rail--placeholder {
@@ -10324,7 +10301,7 @@
     top: 4px;
     width: fit-content;
     padding: 2px 6px;
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -10573,51 +10550,6 @@
     background: var(--app-surface-hover);
   }
 
-  :global([data-theme="light"]) .timeline__jump-trigger {
-    background: var(--app-surface);
-    color: var(--app-text);
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .timeline__jump-trigger:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .timeline__jump-icon {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline__jump-label {
-    color: var(--app-text);
-  }
-
-  :global([data-theme="light"]) .timeline__picker {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-    box-shadow: 0 12px 28px rgba(20, 28, 40, 0.12);
-  }
-  :global([data-theme="light"]) .timeline__picker-key {
-    color: var(--app-text-subtle);
-  }
-  :global([data-theme="light"]) .timeline__picker-val {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline__picker-pending {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline__picker-time {
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline__picker-time:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .timeline__picker-time--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
-  }
-
   :global([data-theme="light"]) .timeline__stage-action-trigger {
     background: color-mix(in srgb, var(--app-surface) 90%, transparent);
     border-color: color-mix(in srgb, var(--app-border-strong) 92%, transparent);
@@ -10664,7 +10596,7 @@
     border-color: var(--app-border);
   }
   :global([data-theme="light"]) .timeline__empty-hint {
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   :global([data-theme="light"]) .timeline__stage {
@@ -10706,6 +10638,14 @@
     background: var(--app-surface-hover);
     border-color: var(--app-border-hover);
   }
+  :global([data-theme="light"]) .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+  :global([data-theme="light"]) .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) .timeline__ocr-glyph {
+    color: var(--app-accent);
+  }
   :global([data-theme="light"]) .timeline__ocr-glyph {
     color: var(--app-text-muted);
   }
@@ -10746,7 +10686,7 @@
     color: var(--app-text-subtle);
   }
   :global([data-theme="light"]) .timeline-rail__audio-lane-empty {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
   }
   :global([data-theme="light"]) .timeline-rail--placeholder {
     background: var(--app-surface);

@@ -190,6 +190,18 @@ export interface AuthoredContext {
 	updatedAtMs: number;
 }
 
+/**
+ * A dismissed belief for the Context "Dismissed" archive — what the user told
+ * Mnema they are NOT. Render-only projection of the backend dismissal record,
+ * deduplicated by `(subject, statement)`, newest first. Mirrors the Rust
+ * `DismissedView` (capture-types `user_context.rs`).
+ */
+export interface DismissedView {
+	subject: string;
+	statement: string;
+	dismissedAtMs: number;
+}
+
 /** Whether a piece of evidence supports or contradicts a Conclusion. */
 export type EvidenceStance = "support" | "contradict";
 

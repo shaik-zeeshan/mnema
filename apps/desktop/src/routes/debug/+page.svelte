@@ -1,7 +1,21 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
+  import type { Component } from "svelte";
   import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import IconMonitor from "~icons/lucide/monitor";
+  import IconMic from "~icons/lucide/mic";
+  import IconVolume2 from "~icons/lucide/volume-2";
+
+  // Monochrome Lucide glyphs per capture-source family (inherit currentColor,
+  // sized via the host span's font-size). Replaces full-colour emoji that
+  // clashed with the theme.
+  const SOURCE_ICONS: Record<"screen" | "microphone" | "systemAudio", Component> = {
+    screen: IconMonitor,
+    microphone: IconMic,
+    systemAudio: IconVolume2,
+  };
   import type {
     CaptureSupport,
     CaptureSession,
@@ -21,11 +35,16 @@
     ProcessingJobStatus,
   } from "$lib/types";
   import { captureSession, setSession } from "$lib/session.svelte";
+  import { humanizeError } from "$lib/format-error";
 
   // ─── State ────────────────────────────────────────────────────────────────
 
   let support = $state<CaptureSupport | null>(null);
   let permissions = $state<PermissionsMap | null>(null);
+  // Per-block probe errors so a failed auto-load (on mount) surfaces inline
+  // instead of silently falling back to the "not queried yet" empty state.
+  let supportError = $state<string | null>(null);
+  let permissionsError = $state<string | null>(null);
   let recordingSettings = $state<RecordingSettings | null>(null);
 
   // Read-only alias — writes go through captureSession.value so the shared
@@ -38,7 +57,22 @@
   // preventing a slow response from overwriting a newer stopped state.
   let sessionGeneration = $state(0);
 
+  // Background reconcile / wake-resync are best-effort and swallow transient
+  // errors. But a sustained string of failures means the displayed "Recording"
+  // status may no longer reflect the backend — surface a note after N
+  // consecutive misses so the user knows the readout may be stale.
+  const RECONCILE_STALE_THRESHOLD = 3;
+  let reconcileFailures = $state(0);
+  let reconcileStale = $derived(reconcileFailures >= RECONCILE_STALE_THRESHOLD);
+  function noteReconcileSuccess() { reconcileFailures = 0; }
+  function noteReconcileFailure() { reconcileFailures += 1; }
+
   let lastError = $state<string | null>(null);
+  // Start/Stop failures get their own inline chip beside the action buttons so
+  // the failure is visible where the user clicked, not only in the page-bottom
+  // error card. Set on the start/stop catch; cleared by clearError() (which
+  // every start/stop attempt calls first) and on the next success.
+  let lifecycleError = $state<string | null>(null);
   let loadingSupport = $state(false);
   let loadingPermissions = $state(false);
   let loadingStart = $state(false);
@@ -136,6 +170,10 @@
 
   let ocrBudgetDebug = $state<OcrBudgetDebug | null>(null);
   let ocrBudgetDebugError = $state<string | null>(null);
+  // True while a budget fetch is in flight. Drives first-load skeleton rows so
+  // the table can distinguish "fetching" from "never loaded" (the 1s poll keeps
+  // toggling this, but the skeleton only renders while no data exists yet).
+  let ocrBudgetFetching = $state(false);
   let admissionPage = $state(0);
   let executionPage = $state(0);
   const OCR_EVENT_PAGE_SIZE = 10;
@@ -149,7 +187,7 @@
       idleDebug = await invoke<IdleDebugInfo>("get_idle_debug");
       idleDebugError = null;
     } catch (err) {
-      idleDebugError = typeof err === "string" ? err : JSON.stringify(err);
+      idleDebugError = humanizeError(err);
     }
   }
 
@@ -160,18 +198,66 @@
       privacyDebug = await invoke<CapturePrivacyDebugInfo>("get_capture_privacy_debug");
       privacyDebugError = null;
     } catch (err) {
-      privacyDebugError = typeof err === "string" ? err : JSON.stringify(err);
+      privacyDebugError = humanizeError(err);
     }
   }
 
   async function fetchOcrBudgetDebug() {
     if (activeTab !== "pipeline") return;
     if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    ocrBudgetFetching = true;
     try {
       ocrBudgetDebug = await invoke<OcrBudgetDebug>("get_ocr_budget_debug");
       ocrBudgetDebugError = null;
     } catch (err) {
-      ocrBudgetDebugError = typeof err === "string" ? err : JSON.stringify(err);
+      ocrBudgetDebugError = humanizeError(err);
+    } finally {
+      ocrBudgetFetching = false;
+    }
+  }
+
+  // Per-button loading flags for the manual ↻ refresh controls. The underlying
+  // fetch fns are also driven by polling/effects, so each button owns its own
+  // flag (set in try/finally) rather than reading a shared one — polling won't
+  // flicker the button, and the button disables only itself while in flight.
+  let loadingRuntimeSources = $state(false);
+  let loadingPrivacyFilter = $state(false);
+  let loadingInactivity = $state(false);
+  let loadingOcrBudget = $state(false);
+
+  async function refreshRuntimeSources() {
+    loadingRuntimeSources = true;
+    try {
+      await Promise.all([fetchIdleDebug(), fetchCapturePrivacyDebug()]);
+    } finally {
+      loadingRuntimeSources = false;
+    }
+  }
+
+  async function refreshPrivacyFilter() {
+    loadingPrivacyFilter = true;
+    try {
+      await fetchCapturePrivacyDebug();
+    } finally {
+      loadingPrivacyFilter = false;
+    }
+  }
+
+  async function refreshInactivity() {
+    loadingInactivity = true;
+    try {
+      await fetchIdleDebug();
+    } finally {
+      loadingInactivity = false;
+    }
+  }
+
+  async function refreshOcrBudget() {
+    loadingOcrBudget = true;
+    try {
+      await fetchOcrBudgetDebug();
+    } finally {
+      loadingOcrBudget = false;
     }
   }
 
@@ -249,7 +335,6 @@
   type RuntimeSourceLane = {
     key: "screen" | "microphone" | "systemAudio";
     label: string;
-    glyph: string;
     sample: { lastUnixMs: number | null; idleMs: number | null; level: number | null } | null;
     qualifiedIdleMs: number | null;
     qualifiedThreshold: number | null;
@@ -261,7 +346,6 @@
           {
             key: "screen",
             label: "Screen",
-            glyph: "◉",
             sample: idleDebug.screenActivityLastUnixMs != null
               ? { lastUnixMs: idleDebug.screenActivityLastUnixMs, idleMs: idleDebug.screenActivityIdleMs, level: null }
               : null,
@@ -271,7 +355,6 @@
           {
             key: "microphone",
             label: "Microphone",
-            glyph: "🎙",
             sample: { lastUnixMs: idleDebug.microphoneActivitySample.lastUnixMs, idleMs: null, level: idleDebug.microphoneActivitySample.level },
             qualifiedIdleMs: idleDebug.microphoneActivityDecision.idleMs,
             qualifiedThreshold: idleDebug.microphoneActivityDecision.activityThreshold,
@@ -279,7 +362,6 @@
           {
             key: "systemAudio",
             label: "System Audio",
-            glyph: "🔊",
             sample: { lastUnixMs: idleDebug.systemAudioActivitySample.lastUnixMs, idleMs: null, level: idleDebug.systemAudioActivitySample.level },
             qualifiedIdleMs: idleDebug.systemAudioActivityDecision.idleMs,
             qualifiedThreshold: idleDebug.systemAudioActivityDecision.activityThreshold,
@@ -315,10 +397,18 @@
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
-  function clearError() { lastError = null; }
+  function clearError() {
+    lastError = null;
+    lifecycleError = null;
+  }
 
   function setError(err: unknown) {
-    lastError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    lastError = humanizeError(err);
+  }
+
+  // Short, single-line message for the inline action-row chip.
+  function lifecycleErrorMessage(err: unknown): string {
+    return humanizeError(err);
   }
 
   function permissionBadgeClass(status: PermissionStatus | undefined): string {
@@ -378,8 +468,10 @@
     clearError();
     try {
       support = await invoke<CaptureSupport>("get_capture_support");
+      supportError = null;
     } catch (err) {
       support = null;
+      supportError = humanizeError(err);
       setError(err);
     } finally {
       loadingSupport = false;
@@ -393,11 +485,13 @@
     try {
       const result = await invoke<GetPermissionsResponse>("get_capture_permissions");
       permissions = result.permissions;
+      permissionsError = null;
       // Only apply the session when no authoritative action (start/stop)
       // occurred while this request was in-flight.
       if (result.session && sessionGeneration === gen) setSession(result.session);
     } catch (err) {
       permissions = null;
+      permissionsError = humanizeError(err);
       setError(err);
     } finally {
       loadingPermissions = false;
@@ -430,8 +524,10 @@
       });
       sessionGeneration += 1;
       setSession(result.session);
+      noteReconcileSuccess();
     } catch (err) {
       setError(err);
+      lifecycleError = lifecycleErrorMessage(err);
     } finally {
       loadingStart = false;
     }
@@ -444,8 +540,10 @@
       const result = await invoke<{ session: CaptureSession }>("stop_native_capture");
       sessionGeneration += 1;
       setSession(result.session);
+      noteReconcileSuccess();
     } catch (err) {
       setError(err);
+      lifecycleError = lifecycleErrorMessage(err);
       try {
         const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
         permissions = r.permissions;
@@ -488,6 +586,8 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenControllerChanged = fn;
+    }).catch(() => {
+      // Non-fatal: this listener only clears stale errors. Nothing to surface.
     });
 
     listen<MicrophoneAutoDisconnectTransitionFailedEvent>(
@@ -499,6 +599,13 @@
     ).then((fn) => {
       if (destroyed) fn();
       else unlistenAutoDisconnectFailure = fn;
+    }).catch(() => {
+      // This is the channel that reports microphone auto-disconnect failures —
+      // if we can't subscribe, those failures would go unreported. Surface it
+      // once so the operator knows this debug signal is missing.
+      if (!destroyed && !lastError) {
+        setError("Could not subscribe to microphone auto-disconnect failure events — those failures will not be reported here.");
+      }
     });
 
     listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
@@ -507,6 +614,8 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenRecordingSettingsChanged = fn;
+    }).catch(() => {
+      // Non-fatal: settings still load via loadSettings(); live updates only.
     });
 
     return () => {
@@ -578,8 +687,11 @@
         const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
         if (sessionGeneration !== gen) return; // stale — discard
         if (r.session) setSession(r.session);
+        noteReconcileSuccess();
       } catch {
-        // Best-effort — a transient backend error should not crash the UI.
+        // Best-effort — a transient backend error should not crash the UI, but
+        // count it so a sustained outage surfaces a "status may be stale" note.
+        noteReconcileFailure();
       }
     }
 
@@ -616,8 +728,11 @@
         const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
         if (sessionGeneration !== gen) return; // superseded by start/stop
         if (r.session) setSession(r.session);
+        noteReconcileSuccess();
       } catch {
-        // Best-effort — the periodic reconcile still covers steady-state drift.
+        // Best-effort — the periodic reconcile still covers steady-state drift,
+        // but count the miss so a sustained outage surfaces a stale-status note.
+        noteReconcileFailure();
       }
     }
     const onVisibility = () => {
@@ -633,6 +748,9 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenSystemDidWake = fn;
+    }).catch(() => {
+      // Non-fatal: focus/visibility/drift backstops still trigger resync; only
+      // the explicit wake event is lost.
     });
 
     document.addEventListener("visibilitychange", onVisibility);
@@ -716,7 +834,7 @@
     } catch (err) {
       workspaceClassification = null;
       workspaceClassificationLoaded = false;
-      workspaceClassificationError = typeof err === "string" ? err : JSON.stringify(err);
+      workspaceClassificationError = humanizeError(err);
     } finally {
       loadingWorkspaceClassification = false;
     }
@@ -772,7 +890,7 @@
     try {
       infraStatus = await invoke<AppInfraStatus>("get_app_infra_status");
     } catch (err) {
-      infraStatusError = typeof err === "string" ? err : JSON.stringify(err);
+      infraStatusError = humanizeError(err);
     } finally {
       loadingInfraStatus = false;
     }
@@ -797,7 +915,7 @@
         }
       }
     } catch (err) {
-      jobsError = typeof err === "string" ? err : JSON.stringify(err);
+      jobsError = humanizeError(err);
     } finally {
       loadingJobs = false;
     }
@@ -830,7 +948,7 @@
         selectedJobId = null;
       }
     } catch (err) {
-      selectedJobError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedJobError = humanizeError(err);
       selectedJob = job;
     } finally {
       loadingSelectedJob = false;
@@ -851,7 +969,7 @@
         selectedJobId = null;
       }
     } catch (err) {
-      selectedJobError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedJobError = humanizeError(err);
     } finally {
       loadingSelectedJob = false;
     }
@@ -884,7 +1002,7 @@
         }
       }, POST_SUBMIT_POLL_MS);
     } catch (err) {
-      submitError = typeof err === "string" ? err : JSON.stringify(err);
+      submitError = humanizeError(err);
     } finally {
       submitting = false;
     }
@@ -1106,27 +1224,26 @@
     return out.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "err" ? -1 : 1));
   });
 
-  type OverviewSource = { key: CaptureSource; label: string; glyph: string; word: string; cls: string };
+  type OverviewSource = { key: CaptureSource; label: string; word: string; cls: string };
 
   // While recording, each source reflects its live runtime state (running /
   // paused / idle / off); while stopped, it reflects whether it is selected for
   // the next session. Mirrors the title bar's per-source pills.
   const overviewSources = $derived.by<OverviewSource[]>(() => {
     const defs = [
-      { key: "screen", label: "Screen", glyph: "◉", selected: recordingSettings?.captureScreen ?? false },
-      { key: "microphone", label: "Microphone", glyph: "🎙", selected: recordingSettings?.captureMicrophone ?? false },
-      { key: "systemAudio", label: "System audio", glyph: "🔊", selected: recordingSettings?.captureSystemAudio ?? false },
+      { key: "screen", label: "Screen", selected: recordingSettings?.captureScreen ?? false },
+      { key: "microphone", label: "Microphone", selected: recordingSettings?.captureMicrophone ?? false },
+      { key: "systemAudio", label: "System audio", selected: recordingSettings?.captureSystemAudio ?? false },
     ] as const;
     const rs = idleDebug?.runtimeSources;
     return defs.map((d) => {
       if (isCapturing && rs) {
         const state = runtimeStateWord(rs[d.key]);
-        return { key: d.key, label: d.label, glyph: d.glyph, word: state.word, cls: state.cls };
+        return { key: d.key, label: d.label, word: state.word, cls: state.cls };
       }
       return {
         key: d.key,
         label: d.label,
-        glyph: d.glyph,
         word: d.selected ? "selected" : "off",
         cls: d.selected ? "rs-state rs-state--partial" : "rs-state rs-state--off",
       };
@@ -1167,7 +1284,6 @@
         role="tab"
         id="debug-tab-{tab.id}"
         aria-selected={activeTab === tab.id}
-        aria-controls="debug-panel-{tab.id}"
         tabindex={activeTab === tab.id ? 0 : -1}
         class="debug-tabs__btn"
         class:debug-tabs__btn--active={activeTab === tab.id}
@@ -1205,7 +1321,7 @@
       disabled={overviewRefreshing}
       aria-label="Refresh overview"
     >
-      {overviewRefreshing ? "…" : "↻"}
+      <span class="refresh-glyph" class:refresh-glyph--spin={overviewRefreshing} aria-hidden="true">↻</span>
     </button>
   </h2>
 
@@ -1213,6 +1329,9 @@
     <div class="session-status" class:session-status--recording={isCapturing}>
       <span class="rec-dot" class:rec-dot--active={isCapturing}></span>
       <span class="session-label">{isCapturing ? "Recording" : session?.isRunning === false ? "Stopped" : "Idle"}</span>
+      {#if reconcileStale}
+        <span class="session-stale" role="status" aria-live="polite" use:tip={"The backend stopped responding to status checks; this readout may be out of date."}>status may be stale</span>
+      {/if}
     </div>
     <div class="action-row">
       <button class="btn btn--primary" onclick={startCapture} disabled={isCapturing || loadingStart || loadingSettings}>
@@ -1221,6 +1340,12 @@
       <button class="btn btn--danger" onclick={stopCapture} disabled={!isCapturing || loadingStop}>
         {loadingStop ? "Stopping…" : "Stop"}
       </button>
+      {#if lifecycleError}
+        <span class="lifecycle-error" role="alert" aria-live="assertive" use:tip={lifecycleError}>
+          <span class="lifecycle-error__tag" aria-hidden="true">✕</span>
+          <span class="lifecycle-error__text">{lifecycleError}</span>
+        </span>
+      {/if}
     </div>
   </div>
 
@@ -1257,8 +1382,9 @@
       <div class="ov-tile__label">Sources <span class="idle-note">{isCapturing ? "live" : "selected"}</span></div>
       <ul class="ov-rows">
         {#each overviewSources as src (src.key)}
+          {@const SourceIcon = SOURCE_ICONS[src.key]}
           <li class="ov-row">
-            <span class="ov-row__glyph" aria-hidden="true">{src.glyph}</span>
+            <span class="ov-row__glyph" aria-hidden="true"><SourceIcon /></span>
             <span class="ov-row__name">{src.label}</span>
             <span class={src.cls}>{src.word}</span>
           </li>
@@ -1291,7 +1417,7 @@
     <section class="ov-tile">
       <div class="ov-tile__label">Background jobs</div>
       {#if infraStatusError}
-        <p class="debug-err">{infraStatusError}</p>
+        <p class="debug-err" role="alert" aria-live="polite">{infraStatusError}</p>
       {:else if infraStatus}
         <ul class="ov-rows">
           <li class="ov-row">
@@ -1426,6 +1552,12 @@
     >
       {loadingStop ? "Stopping…" : "Stop Recording"}
     </button>
+    {#if lifecycleError}
+      <span class="lifecycle-error" role="alert" aria-live="assertive" use:tip={lifecycleError}>
+        <span class="lifecycle-error__tag" aria-hidden="true">✕</span>
+        <span class="lifecycle-error__text">{lifecycleError}</span>
+      </span>
+    {/if}
   </div>
 </div>
 
@@ -1435,7 +1567,15 @@
     <span class="debug-tag">dbg</span>
     Runtime Sources
     <span class="idle-note">capture session · writer · activity</span>
-    <button class="btn btn--ghost btn--sm" onclick={() => { fetchIdleDebug(); fetchCapturePrivacyDebug(); }}>↻</button>
+    <button
+      class="btn btn--ghost btn--sm"
+      onclick={refreshRuntimeSources}
+      disabled={loadingRuntimeSources || !isCapturing}
+      aria-label="Refresh runtime sources"
+      use:tip={isCapturing ? "Refresh runtime sources" : "No active capture session — start recording to refresh"}
+    >
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingRuntimeSources} aria-hidden="true">↻</span>
+    </button>
   </h2>
 
   {#if idleDebug && idleDebug.runtimeSources}
@@ -1443,6 +1583,7 @@
       {#each runtimeLanes as lane (lane.key)}
         {@const src = idleDebug.runtimeSources[lane.key]}
         {@const state = runtimeStateWord(src)}
+        {@const LaneIcon = SOURCE_ICONS[lane.key]}
         <article
           class="rs-lane rs-lane--{lane.key}"
           class:rs-lane--off={!src.requested}
@@ -1450,7 +1591,7 @@
           class:rs-lane--running={src.requested && !src.paused && src.writerActive === true}
         >
           <header class="rs-lane__head">
-            <span class="rs-lane__glyph">{lane.glyph}</span>
+            <span class="rs-lane__glyph" aria-hidden="true"><LaneIcon /></span>
             <span class="rs-lane__name">{lane.label}</span>
             <span class={state.cls}>{state.word}</span>
           </header>
@@ -1503,7 +1644,7 @@
           <!-- Output path -->
           <div class="rs-path">
             <span class="rs-path__label">out</span>
-            <span class="rs-path__val" title={src.outputPath ?? ""}>{shortenPath(src.outputPath)}</span>
+            <span class="rs-path__val" use:tip={src.outputPath ?? ""}>{shortenPath(src.outputPath)}</span>
           </div>
 
           <!-- Activity readouts: distinguish raw sample vs threshold-qualified -->
@@ -1545,7 +1686,7 @@
       <span class="idle-note">sample = raw probe timestamp · activity = threshold-qualified idle</span>
     </p>
   {:else if idleDebugError}
-    <p class="debug-err">{idleDebugError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{idleDebugError}</p>
   {:else}
     <p class="empty">runtime status only available while a session is active</p>
   {/if}
@@ -1556,11 +1697,19 @@
     <span class="debug-tag">dbg</span>
     Privacy Filter
     <span class="idle-note">last successfully applied ScreenCaptureKit exclusions</span>
-    <button class="btn btn--ghost btn--sm" onclick={fetchCapturePrivacyDebug}>↻</button>
+    <button
+      class="btn btn--ghost btn--sm"
+      onclick={refreshPrivacyFilter}
+      disabled={loadingPrivacyFilter || !isCapturing}
+      aria-label="Refresh privacy filter"
+      use:tip={isCapturing ? "Refresh privacy filter" : "No active capture session — start recording to refresh"}
+    >
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingPrivacyFilter} aria-hidden="true">↻</span>
+    </button>
   </h2>
 
   {#if privacyDebugError}
-    <p class="debug-err">{privacyDebugError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{privacyDebugError}</p>
   {:else if privacyDebug}
     <ul class="kv-list">
       <li>
@@ -1599,8 +1748,10 @@
         <p class="empty">no metadata snapshot captured yet</p>
       {/if}
     </details>
+  {:else if isCapturing}
+    <p class="empty">privacy filter status has not loaded yet — press ↻</p>
   {:else}
-    <p class="empty">privacy filter status has not loaded yet</p>
+    <p class="empty">only available while a session is active</p>
   {/if}
 </div>
 </div>
@@ -1616,7 +1767,7 @@
       <div class="probe-block__header">
         <span class="probe-block__name">Support</span>
         <button class="btn btn--ghost btn--sm" onclick={loadSupport} disabled={loadingSupport}>
-          {loadingSupport ? "…" : "Query"}
+          Query{#if loadingSupport}&nbsp;<span class="refresh-glyph refresh-glyph--spin" aria-hidden="true">↻</span>{/if}
         </button>
       </div>
       {#if support}
@@ -1650,8 +1801,10 @@
             </span>
           </li>
         </ul>
+      {:else if supportError}
+        <p class="debug-err" role="alert" aria-live="polite">{supportError}</p>
       {:else}
-        <p class="empty">—</p>
+        <p class="empty">not queried yet — press Query</p>
       {/if}
     </div>
 
@@ -1659,7 +1812,7 @@
       <div class="probe-block__header">
         <span class="probe-block__name">Permissions</span>
         <button class="btn btn--ghost btn--sm" onclick={loadPermissions} disabled={loadingPermissions}>
-          {loadingPermissions ? "…" : "Query"}
+          Query{#if loadingPermissions}&nbsp;<span class="refresh-glyph refresh-glyph--spin" aria-hidden="true">↻</span>{/if}
         </button>
       </div>
       {#if permissions}
@@ -1683,8 +1836,10 @@
             </span>
           </li>
         </ul>
+      {:else if permissionsError}
+        <p class="debug-err" role="alert" aria-live="polite">{permissionsError}</p>
       {:else}
-        <p class="empty">—</p>
+        <p class="empty">not queried yet — press Query</p>
       {/if}
     </div>
   </div>
@@ -1695,13 +1850,18 @@
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     App Infra
-    <button class="btn btn--ghost btn--sm card__title-action" onclick={refreshAll} disabled={loadingInfraStatus || loadingJobs}>
-      {loadingInfraStatus || loadingJobs ? "…" : "↻"}
+    <button
+      class="btn btn--ghost btn--sm card__title-action"
+      onclick={refreshAll}
+      disabled={loadingInfraStatus || loadingJobs}
+      aria-label="Refresh app infra"
+    >
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingInfraStatus || loadingJobs} aria-hidden="true">↻</span>
     </button>
   </h2>
 
   {#if infraStatusError}
-    <p class="debug-err">{infraStatusError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{infraStatusError}</p>
   {:else if infraStatus}
     <ul class="kv-list">
       <li>
@@ -1736,7 +1896,7 @@
     <div class="idle-section-label">DB path</div>
     <p class="infra-db-path">{infraStatus.databasePath}</p>
   {:else}
-    <p class="empty">—</p>
+    <p class="empty">infra status has not loaded yet — press ↻</p>
   {/if}
 </div>
 </div>
@@ -1748,11 +1908,19 @@
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Inactivity Policy
-    <button class="btn btn--ghost btn--sm" onclick={fetchIdleDebug}>↻</button>
+    <button
+      class="btn btn--ghost btn--sm"
+      onclick={refreshInactivity}
+      disabled={loadingInactivity || !isCapturing}
+      aria-label="Refresh inactivity policy"
+      use:tip={isCapturing ? "Refresh inactivity policy" : "No active capture session — start recording to refresh"}
+    >
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingInactivity} aria-hidden="true">↻</span>
+    </button>
   </h2>
 
   {#if idleDebugError}
-    <p class="debug-err">{idleDebugError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{idleDebugError}</p>
   {:else if idleDebug}
     <!-- ── Status row ──────────────────────────────────── -->
     <ul class="kv-list">
@@ -1827,7 +1995,7 @@
       <!-- Screen detector -->
       <div class="detector-card detector-card--screen" class:detector-card--paused={idleDebug.screenPaused}>
         <div class="detector-card__header">
-          <span class="detector-card__icon">◉</span>
+          <span class="detector-card__icon" aria-hidden="true"><IconMonitor /></span>
           <span class="detector-card__name">Screen</span>
           {#if idleDebug.screenPaused}
             <span class="badge badge--warn badge--sm">paused</span>
@@ -1850,7 +2018,7 @@
       <!-- Microphone detector -->
       <div class="detector-card detector-card--mic" class:detector-card--paused={idleDebug.microphonePaused && idleDebug.microphoneActivityDecision.enabled} class:detector-card--off={!idleDebug.microphoneActivityDecision.enabled}>
         <div class="detector-card__header">
-          <span class="detector-card__icon">🎙</span>
+          <span class="detector-card__icon" aria-hidden="true"><IconMic /></span>
           <span class="detector-card__name">Microphone</span>
           {#if !idleDebug.microphoneActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
@@ -1887,7 +2055,7 @@
       <!-- System audio detector -->
       <div class="detector-card detector-card--sysaudio" class:detector-card--paused={idleDebug.systemAudioPaused && idleDebug.systemAudioActivityDecision.enabled} class:detector-card--off={!idleDebug.systemAudioActivityDecision.enabled}>
         <div class="detector-card__header">
-          <span class="detector-card__icon">🔊</span>
+          <span class="detector-card__icon" aria-hidden="true"><IconVolume2 /></span>
           <span class="detector-card__name">System Audio</span>
           {#if !idleDebug.systemAudioActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
@@ -2017,8 +2185,10 @@
       {/if}
     </ul>
     </details>
+  {:else if isCapturing}
+    <p class="empty">inactivity policy has not loaded yet — press ↻</p>
   {:else}
-    <p class="empty">—</p>
+    <p class="empty">only available while a session is active</p>
   {/if}
 </div>
 {/if}
@@ -2030,13 +2200,18 @@
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     OCR Budget
-    <button class="btn btn--ghost btn--sm card__title-action" onclick={fetchOcrBudgetDebug}>
-      ↻
+    <button
+      class="btn btn--ghost btn--sm card__title-action"
+      onclick={refreshOcrBudget}
+      disabled={loadingOcrBudget}
+      aria-label="Refresh OCR budget"
+    >
+      <span class="refresh-glyph" class:refresh-glyph--spin={loadingOcrBudget} aria-hidden="true">↻</span>
     </button>
   </h2>
 
   {#if ocrBudgetDebugError}
-    <p class="debug-err">{ocrBudgetDebugError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{ocrBudgetDebugError}</p>
   {:else if ocrBudgetDebug}
     <div class="ocr-summary-grid">
       <div><span>queued/running</span><strong>{ocrBudgetDebug.summary.queuedOrRunningCount}</strong></div>
@@ -2056,7 +2231,7 @@
         <table class="debug-table">
           <thead>
             <tr>
-              <th>time</th><th>session</th><th>workspace</th><th>frame</th><th>outcome</th><th>reason</th><th>queue</th><th>job</th><th>related</th><th>signals</th>
+              <th>time</th><th>session</th><th>workspace</th><th class="cell-num" use:tip={"frame id"}>frame</th><th>outcome</th><th>reason</th><th class="cell-num" use:tip={"queue pressure — OCR jobs queued or running at admission"}>queue</th><th class="cell-num" use:tip={"job id"}>job</th><th class="cell-num" use:tip={"related frame id (near-duplicate source)"}>related</th><th use:tip={"active admission signal badges"}>signals</th>
             </tr>
           </thead>
           <tbody>
@@ -2065,12 +2240,12 @@
                 <td>{formatDebugTime(event.occurredAt)}</td>
                 <td class="mono-cell">{event.sessionId}</td>
                 <td class="mono-cell">{event.workspaceScope}</td>
-                <td>#{event.frameId}</td>
+                <td class="cell-num">#{event.frameId}</td>
                 <td>{event.outcome}</td>
                 <td>{event.reason}</td>
-                <td>{event.queuePressureCount}</td>
-                <td>{event.jobId == null ? "—" : `#${event.jobId}`}</td>
-                <td>{event.relatedFrameId == null ? "—" : `#${event.relatedFrameId}`}</td>
+                <td class="cell-num">{event.queuePressureCount}</td>
+                <td class="cell-num">{event.jobId == null ? "—" : `#${event.jobId}`}</td>
+                <td class="cell-num">{event.relatedFrameId == null ? "—" : `#${event.relatedFrameId}`}</td>
                 <td>
                   {#each activeSignalBadges(event.signals) as signal}
                     <span class="badge badge--neutral badge--sm">{signal}</span>
@@ -2100,24 +2275,24 @@
         <table class="debug-table">
           <thead>
             <tr>
-              <th>time</th><th>job</th><th>frame</th><th>provider</th><th>model</th><th>mode</th><th>status</th><th>run</th><th>wait</th><th>text</th><th>obs</th><th>error</th>
+              <th>time</th><th class="cell-num" use:tip={"job id"}>job</th><th class="cell-num" use:tip={"frame id"}>frame</th><th>provider</th><th>model</th><th>mode</th><th>status</th><th class="cell-num" use:tip={"run duration (ms)"}>run</th><th class="cell-num" use:tip={"queue wait before execution (ms)"}>wait</th><th class="cell-num" use:tip={"result text length (chars)"}>text</th><th class="cell-num" use:tip={"observation count extracted"}>obs</th><th>error</th>
             </tr>
           </thead>
           <tbody>
             {#each pagedExecutionEvents as event (`execution-${event.occurredAt}-${event.jobId}`)}
               <tr>
                 <td>{formatDebugTime(event.occurredAt)}</td>
-                <td>#{event.jobId}</td>
-                <td>{event.frameId == null ? "—" : `#${event.frameId}`}</td>
+                <td class="cell-num">#{event.jobId}</td>
+                <td class="cell-num">{event.frameId == null ? "—" : `#${event.frameId}`}</td>
                 <td>{event.provider}</td>
                 <td>{event.modelId ?? "—"}</td>
                 <td>{event.recognitionMode ?? "—"}</td>
                 <td>{event.status}</td>
-                <td>{formatOptionalMs(event.runDurationMs)}</td>
-                <td>{formatOptionalMs(event.queueWaitMs)}</td>
-                <td>{event.resultTextLength ?? "—"}</td>
-                <td>{event.observationCount ?? "—"}</td>
-                <td title={event.lastError ?? ""}>{truncateDebugText(event.lastError)}</td>
+                <td class="cell-num">{formatOptionalMs(event.runDurationMs)}</td>
+                <td class="cell-num">{formatOptionalMs(event.queueWaitMs)}</td>
+                <td class="cell-num">{event.resultTextLength ?? "—"}</td>
+                <td class="cell-num">{event.observationCount ?? "—"}</td>
+                <td use:tip={event.lastError ?? ""}>{truncateDebugText(event.lastError)}</td>
               </tr>
             {/each}
           </tbody>
@@ -2132,6 +2307,14 @@
       {/if}
     {/if}
     </details>
+  {:else if ocrBudgetFetching || loadingOcrBudget}
+    <!-- First load in flight: skeleton rows distinguish "fetching" from
+         "never loaded" / "no data", and aria-busy announces the wait. -->
+    <div class="ocr-skeleton" aria-busy="true" aria-live="polite" aria-label="Loading OCR budget state">
+      {#each Array.from({ length: 5 }) as _, i (i)}
+        <div class="skeleton-row"></div>
+      {/each}
+    </div>
   {:else}
     <p class="empty">OCR budget state has not loaded yet</p>
   {/if}
@@ -2159,6 +2342,7 @@
       placeholder="/…/recordings/YYYY/MM/DD/.session-segment-####"
       bind:value={workspaceDirInput}
       disabled={loadingWorkspaceClassification}
+      aria-invalid={workspaceClassificationError ? "true" : undefined}
       spellcheck="false"
       autocomplete="off"
     />
@@ -2172,7 +2356,7 @@
   </form>
 
   {#if workspaceClassificationError}
-    <p class="debug-err">{workspaceClassificationError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{workspaceClassificationError}</p>
   {:else if workspaceClassificationLoaded && workspaceClassification == null}
     <p class="empty">
       not a hidden segment workspace path (expected a directory named
@@ -2198,7 +2382,7 @@
         <span class={info.visibleSegmentExists ? "badge badge--ok badge--sm" : "badge badge--err badge--sm"}>
           {info.visibleSegmentExists ? "present" : "missing"}
         </span>
-        <span class="kv-val kv-val--mono" title={info.paths.visibleSegmentPath}>
+        <span class="kv-val kv-val--mono" use:tip={info.paths.visibleSegmentPath}>
           {shortenPath(info.paths.visibleSegmentPath)}
         </span>
       </li>
@@ -2208,13 +2392,13 @@
       </li>
       <li>
         <span class="kv-key kv-key--wide">workspace</span>
-        <span class="kv-val kv-val--mono" title={info.paths.workspaceDir}>
+        <span class="kv-val kv-val--mono" use:tip={info.paths.workspaceDir}>
           {shortenPath(info.paths.workspaceDir)}
         </span>
       </li>
       <li>
         <span class="kv-key kv-key--wide">frames dir</span>
-        <span class="kv-val kv-val--mono" title={info.paths.framesDir}>
+        <span class="kv-val kv-val--mono" use:tip={info.paths.framesDir}>
           {shortenPath(info.paths.framesDir)}
         </span>
       </li>
@@ -2290,12 +2474,16 @@
       bind:value={submitSourceText}
       disabled={submitting}
     />
-    <button class="btn btn--primary btn--sm" type="submit" disabled={submitting}>
+    <button
+      class="btn btn--primary btn--sm"
+      type="submit"
+      disabled={submitting || submitDocName.trim() === "" || submitSourceText.trim() === ""}
+    >
       {submitting ? "…" : "submit"}
     </button>
   </form>
   {#if submitError}
-    <p class="debug-err">{submitError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{submitError}</p>
   {/if}
   </details>
 
@@ -2310,7 +2498,7 @@
     {/if}
   </div>
   {#if jobsError}
-    <p class="debug-err">{jobsError}</p>
+    <p class="debug-err" role="alert" aria-live="polite">{jobsError}</p>
   {:else if jobs.length === 0}
     <p class="empty">no jobs yet</p>
   {:else}
@@ -2367,6 +2555,7 @@
         class="btn btn--ghost btn--sm"
         onclick={refreshSelectedJob}
         disabled={loadingSelectedJob}
+        aria-label="Refresh selected job"
         style="margin-left: 6px;"
       >
         {loadingSelectedJob ? "…" : "↻"}
@@ -2384,7 +2573,7 @@
       {/if}
     </div>
     {#if selectedJobError}
-      <p class="debug-err">{selectedJobError}</p>
+      <p class="debug-err" role="alert" aria-live="polite">{selectedJobError}</p>
     {/if}
     {#if selectedJob}
       <ul class="kv-list">
@@ -2429,7 +2618,7 @@
 
 <!-- ── Error display ─────────────────────────────────────────────────────── -->
 {#if lastError}
-  <section class="card card--error">
+  <section class="card card--error" role="alert" aria-live="assertive">
     <h2 class="card__title">
       Error
       <button class="btn btn--ghost btn--sm" onclick={() => lastError = null}>dismiss</button>
@@ -2662,6 +2851,12 @@
     color: var(--app-text);
   }
 
+  .advanced__summary:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 3px;
+  }
+
   /* ── Session status ─────────────────────────────────────────── */
   .session-status {
     display: flex;
@@ -2777,8 +2972,17 @@
     outline: none;
   }
 
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+
+  .btn:not(:disabled):active {
+    transform: translateY(0.5px);
+  }
+
   .btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -2824,7 +3028,8 @@
 
   .btn--sm {
     padding: 3px 8px;
-    font-size: 9px;
+    min-height: 24px;
+    font-size: var(--text-xs);
   }
 
   /* ── Probe grid ─────────────────────────────────────────────── */
@@ -2943,7 +3148,7 @@
 
   /* ── Misc ───────────────────────────────────────────────────── */
   .empty {
-    color: var(--app-text-faint);
+    color: var(--app-text-muted);
     font-size: 11px;
     font-style: italic;
   }
@@ -2963,7 +3168,7 @@
     background: var(--app-neutral-bg);
     border: 1px solid var(--app-neutral-border);
     border-radius: 2px;
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.1em;
     color: var(--app-text-muted);
@@ -2975,7 +3180,7 @@
   }
 
   .kv-val--mono {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text);
   }
@@ -2999,7 +3204,7 @@
     border-radius: 4px;
     background: var(--app-surface-raised);
     color: var(--app-text-muted);
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     line-height: 1.45;
     white-space: pre-wrap;
@@ -3014,17 +3219,17 @@
 
   /* ── Idle debug sub-sections ────────────────────────── */
   .idle-section-label {
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     margin-top: 4px;
   }
 
   .idle-note {
-    font-size: 9px;
-    color: var(--app-text-faint);
+    font-size: var(--text-sm);
+    color: var(--app-text-subtle);
     font-style: italic;
     margin-left: 4px;
   }
@@ -3063,6 +3268,13 @@
   .detector-card__icon {
     font-size: 11px;
     flex-shrink: 0;
+    display: inline-flex;
+    color: var(--app-text-muted);
+  }
+
+  .detector-card__icon :global(svg) {
+    width: 1em;
+    height: 1em;
   }
 
   .detector-card__name {
@@ -3093,7 +3305,7 @@
   }
 
   .detector-card__metric-value {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     font-weight: 700;
     color: var(--app-source-screen);
@@ -3104,7 +3316,7 @@
   .detector-card--sysaudio .detector-card__metric-value { color: var(--app-source-sysaudio); }
 
   .detector-card__metric-source {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-muted);
   }
@@ -3129,14 +3341,14 @@
   }
 
   .effective-idle-summary__value {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     font-weight: 700;
     color: var(--app-text);
   }
 
   .effective-idle-summary__source {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-muted);
   }
@@ -3159,7 +3371,83 @@
   .debug-err {
     font-size: 10px;
     color: var(--app-danger);
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
+  }
+
+  /* ── Inline lifecycle (start/stop) error chip ───────────────── */
+  .lifecycle-error {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 360px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--app-danger-bg);
+    border: 1px solid var(--app-danger-border);
+    color: var(--app-danger);
+    font-size: 11px;
+    font-family: var(--app-font-mono);
+  }
+
+  .lifecycle-error__tag {
+    flex-shrink: 0;
+    font-weight: 700;
+  }
+
+  .lifecycle-error__text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ── Stale-status note (sustained reconcile failure) ────────── */
+  .session-stale {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--app-warn-bg);
+    border: 1px solid var(--app-warn-border);
+    color: var(--app-warn);
+    font-size: 10px;
+    font-family: var(--app-font-mono);
+    letter-spacing: 0.02em;
+  }
+
+  /* ── Skeleton rows (OCR budget first load) ──────────────────── */
+  .ocr-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .skeleton-row {
+    height: 14px;
+    border-radius: 4px;
+    background: linear-gradient(
+      90deg,
+      var(--app-surface-subtle) 0%,
+      var(--app-surface-raised) 50%,
+      var(--app-surface-subtle) 100%
+    );
+    background-size: 200% 100%;
+    animation: debug-skeleton-shimmer 1.2s ease-in-out infinite;
+  }
+
+  .skeleton-row:nth-child(2) { width: 90%; }
+  .skeleton-row:nth-child(3) { width: 80%; }
+  .skeleton-row:nth-child(4) { width: 95%; }
+  .skeleton-row:nth-child(5) { width: 70%; }
+
+  @keyframes debug-skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton-row { animation: none; }
   }
 
   .badge--warn {
@@ -3209,7 +3497,7 @@
   }
 
   .infra-db-path {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-subtle);
     word-break: break-all;
@@ -3225,9 +3513,9 @@
 
   .ocr-summary-grid > div {
     border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border-radius: 5px;
     padding: 10px;
-    background: var(--app-bg-soft);
+    background: var(--app-surface-raised);
   }
 
   .ocr-summary-grid span {
@@ -3238,7 +3526,7 @@
   }
 
   .ocr-summary-grid strong {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 12px;
     font-weight: 700;
   }
@@ -3246,7 +3534,7 @@
   .debug-table-wrap {
     overflow-x: auto;
     border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border-radius: 5px;
   }
 
   .debug-table {
@@ -3265,17 +3553,29 @@
   }
 
   .debug-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     color: var(--app-text-subtle);
     font-weight: 700;
-    background: var(--app-bg-soft);
+    background: var(--app-surface-subtle);
   }
 
   .debug-table tbody tr:last-child td {
     border-bottom: 0;
   }
 
+  /* Numeric columns: right-aligned with tabular figures so magnitudes
+     line up down a column. Compound selector is needed to outrank the
+     `.debug-table th, .debug-table td { text-align: left }` base rule. */
+  .debug-table th.cell-num,
+  .debug-table td.cell-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
   .mono-cell {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     max-width: 180px;
     overflow-wrap: anywhere;
   }
@@ -3303,7 +3603,19 @@
   }
 
   .job-input:focus {
-    border-color: var(--app-info-strong);
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  .job-input--error,
+  .job-input[aria-invalid="true"] {
+    border-color: var(--app-danger);
+  }
+
+  .job-input--error:focus,
+  .job-input[aria-invalid="true"]:focus {
+    border-color: var(--app-danger);
+    box-shadow: var(--app-ring-danger);
   }
 
   .job-input::placeholder {
@@ -3311,7 +3623,7 @@
   }
 
   .job-input:disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
   }
 
   .job-list {
@@ -3346,12 +3658,18 @@
   }
 
   .job-row--selected {
-    background: var(--app-info-bg);
-    border-color: var(--app-info-border);
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+
+  .job-row:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-color: var(--app-accent);
   }
 
   .job-row__id {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-subtle);
     min-width: 28px;
@@ -3360,7 +3678,7 @@
 
   .job-row__kind {
     font-size: 10px;
-    color: var(--app-info-strong);
+    color: var(--app-text);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3368,7 +3686,7 @@
   }
 
   .job-row__ts {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 9px;
     color: var(--app-text-faint);
     flex-shrink: 0;
@@ -3388,7 +3706,7 @@
   }
 
   .job-detail-text {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-neutral-text);
     white-space: pre-wrap;
@@ -3450,6 +3768,12 @@
     font-size: 12px;
     line-height: 1;
     flex-shrink: 0;
+    display: inline-flex;
+  }
+
+  .rs-lane__glyph :global(svg) {
+    width: 1em;
+    height: 1em;
   }
 
   .rs-lane__name {
@@ -3462,7 +3786,7 @@
   }
 
   .rs-state {
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -3501,7 +3825,7 @@
   }
 
   .rs-row__label {
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -3544,7 +3868,7 @@
     white-space: nowrap;
   }
   .rs-row__val--mono {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text-muted);
     /* Sample/activity readouts: show full text, allow wrapping. */
@@ -3572,7 +3896,7 @@
     color: var(--app-text-subtle);
   }
   .rs-path__val {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 10px;
     color: var(--app-text-muted);
     overflow: hidden;
@@ -3602,6 +3926,27 @@
   .rs-legend__dot--on { background: linear-gradient(90deg, var(--app-source-mic-strong) 0%, var(--app-source-mic) 100%); }
   .rs-legend__dot--paused { background: linear-gradient(90deg, var(--app-warn-strong) 0%, var(--app-warn) 100%); }
   .rs-legend__dot--off { background: var(--app-neutral-border); }
+
+  /* ── Async refresh glyph ───────────────────────────────────── */
+  .refresh-glyph {
+    display: inline-block;
+    line-height: 1;
+  }
+
+  .refresh-glyph--spin {
+    animation: refresh-glyph-spin 0.6s linear infinite;
+  }
+
+  @keyframes refresh-glyph-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .refresh-glyph--spin {
+      animation: none;
+    }
+  }
 
   /* ── Section tabs ──────────────────────────────────────────── */
   .debug-tabs-wrap {
@@ -3636,19 +3981,19 @@
 
   .debug-tabs__btn:hover {
     color: var(--app-text);
-    background: var(--app-surface-raised);
+    background: var(--app-surface-subtle);
   }
 
   .debug-tabs__btn:focus-visible {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .debug-tabs__btn--active {
     color: var(--app-text-strong);
     background: var(--app-surface-raised);
-    border-color: var(--app-border-strong);
+    border-color: var(--app-accent);
   }
 
   /* ── Jobs pager ─────────────────────────────────────────────── */
@@ -3828,6 +4173,14 @@
     font-size: 11px;
     line-height: 1;
     text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .ov-row__glyph :global(svg) {
+    width: 1em;
+    height: 1em;
   }
 
   .ov-row__name {
@@ -3839,7 +4192,7 @@
 
   .ov-row__val {
     margin-left: auto;
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-family: var(--app-font-mono);
     font-size: 11px;
     font-weight: 700;
     color: var(--app-text);

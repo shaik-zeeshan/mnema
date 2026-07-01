@@ -12,6 +12,7 @@
     invalid = false,
     id,
     ariaLabel,
+    errorId,
   }: {
     value?: string;
     inputmode?: "text" | "numeric" | "decimal" | "tel" | "email" | "url" | "search" | "none";
@@ -20,6 +21,10 @@
     invalid?: boolean;
     id?: string;
     ariaLabel?: string;
+    // Id of the element holding the validation message; wired to
+    // aria-describedby/aria-errormessage while `invalid` so AT announces the
+    // reason, not just that the field is invalid.
+    errorId?: string;
   } = $props();
 </script>
 
@@ -34,6 +39,8 @@
   bind:value
   aria-label={ariaLabel}
   aria-invalid={invalid}
+  aria-describedby={invalid && errorId ? errorId : undefined}
+  aria-errormessage={invalid && errorId ? errorId : undefined}
   autocomplete="off"
 />
 
@@ -51,18 +58,20 @@
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 12px;
     outline: none;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
     transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
   }
 
   .input::placeholder {
-    color: var(--app-text-faint);
+    /* Format hints must clear AA contrast; --app-text-faint is decoration-only
+       and falls below it. Match Select/Combobox placeholder text. */
+    color: var(--app-text-subtle);
   }
 
   .input:focus {
     border-color: var(--app-accent);
     background: var(--app-surface-raised);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), var(--app-ring);
   }
 
   .input--invalid {
@@ -71,12 +80,12 @@
 
   .input--invalid:focus {
     border-color: var(--app-danger);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
       0 0 0 3px color-mix(in srgb, var(--app-danger) 30%, transparent);
   }
 
   .input:disabled {
-    opacity: 0.45;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 </style>

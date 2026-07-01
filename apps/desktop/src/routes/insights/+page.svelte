@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Insights workspace — the second top-level Surface of Main (alongside the
   // Timeline). It hosts four sub-surfaces (Overview / Subjects / Context / Chat)
   // switched via local state (NOT separate routes), plus a Subject drill-in.
@@ -179,7 +180,10 @@
   const RAIL_WIDTH_KEY = "mnema.insights.rail-width";
   const RAIL_MIN_WIDTH = 180;
   const RAIL_MAX_WIDTH = 400;
-  const RAIL_DEFAULT_WIDTH = 200;
+  // First-run width sits in the conventional 240-280px expanded-sidebar band so
+  // long conversation titles + the engine/model footer get room (still drag-
+  // resizable within [min,max] and persisted).
+  const RAIL_DEFAULT_WIDTH = 240;
 
   function clampRailWidth(px: number): number {
     return Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(px)));
@@ -326,7 +330,7 @@
         class="rail-expand-float"
         aria-label="Expand sidebar"
         aria-expanded="false"
-        title="Expand sidebar"
+        use:tip={"Expand sidebar"}
         onclick={toggleRailCollapsed}
       >
         <span aria-hidden="true">»</span>
@@ -459,6 +463,12 @@
   .breadcrumb-link:hover {
     color: var(--app-text-strong);
   }
+  .breadcrumb-link:focus-visible {
+    outline: none;
+    color: var(--app-text-strong);
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
+  }
   .breadcrumb .sep {
     color: var(--app-text-faint);
   }
@@ -478,10 +488,18 @@
     font: inherit;
     font-size: 11.5px;
     cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .breadcrumb-back:hover {
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
+  }
+  .breadcrumb-back:focus-visible {
+    outline: none;
+    color: var(--app-text-strong);
+    box-shadow: var(--app-ring);
   }
 </style>

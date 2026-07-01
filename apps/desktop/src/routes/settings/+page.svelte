@@ -559,6 +559,7 @@
     return () => {
       destroyed = true;
       c.autosaveEngine.cancelAll();
+      c.cancelPendingSaveRetries();
       stopMicListeners();
       unlistenRecordingSettingsChanged?.();
       unlistenRecordingSettingsDomainChanged?.();
@@ -578,6 +579,10 @@
      scrolls. One group panel is mounted at a time, so the rail and window
      chrome stay pinned. -->
 <div class="settings-shell">
+  <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
+       <h1>, so the route reads as untitled to a screen reader. Visually hidden —
+       the visible title is the window chrome + the rail's grouped sections. -->
+  <h1 class="settings-page-title">Settings</h1>
   <SettingsRail
     {activeGroup}
     {activeSection}
@@ -621,5 +626,21 @@
     min-height: 0;
     display: flex;
     gap: 18px;
+  }
+
+  /* Visually-hidden page heading — present in the AT accessibility tree as the
+     route's <h1> landmark, but removed from the visual layout (the flex shell's
+     two columns are unaffected). */
+  .settings-page-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

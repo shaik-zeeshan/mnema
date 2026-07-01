@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { tick, type Snippet } from "svelte";
@@ -6,7 +7,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
-  import { closeCurrentWindow, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
+  import { closeCurrentWindow, getLastMainSurface, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
   import { createSettingsDeeplink } from "$lib/settings/deeplink.svelte";
   import {
     bootstrapCaptureControls,
@@ -27,7 +28,10 @@
     appNotifications,
     clearAppNotification,
     clearAppNotifications,
+    dismissAppNotificationError,
     initAppNotifications,
+    noteAppNotificationError,
+    reloadAppNotifications,
     type AppNotification,
   } from "$lib/notifications.svelte";
   import {
@@ -86,6 +90,8 @@
   let notificationsOpenedByKeyboard = false;
   let notificationsButtonEl = $state<HTMLButtonElement | null>(null);
   let notificationsPopoverEl = $state<HTMLDivElement | null>(null);
+  let settingsButtonEl = $state<HTMLButtonElement | null>(null);
+  let restartingPrivacyCapture = $state(false);
   let shortcutsHelpOpen = $state(false);
   let shortcutsHelpPanelEl = $state<HTMLDivElement | null>(null);
   let shortcutsHelpCloseEl = $state<HTMLButtonElement | null>(null);
@@ -258,17 +264,63 @@
   const isNarrow = $derived(isDebug);
   const notificationCount = $derived(appNotifications.count);
   const hasNotifications = $derived(notificationCount > 0);
+  const notificationLoadError = $derived(appNotifications.loadError);
+  const notificationActionError = $derived(appNotifications.actionError);
+  // The bell must also stay reachable when the initial load failed (count 0 but
+  // a recoverable error) so the failure isn't indistinguishable from "no
+  // notifications" and a retry remains available.
+  const hasNotificationIndicator = $derived(
+    hasNotifications || notificationLoadError !== null,
+  );
+  const hasErrorNotification = $derived(
+    appNotifications.items.some((n) => n.severity === "error"),
+  );
+  const hasWarningNotification = $derived(
+    appNotifications.items.some((n) => n.severity === "warning"),
+  );
+  // The count + worst-severity badge is `aria-hidden` (decorative), so assistive
+  // tech otherwise hears only "Open notifications" with no sense of how many or
+  // how urgent. Fold the live summary into the button name and mirror it into a
+  // dedicated live region (assertive when an error is present) so a new alert is
+  // announced even while the popover is closed.
+  const notificationSummary = $derived.by<string>(() => {
+    if (notificationLoadError) {
+      return "Notifications failed to load — open to retry.";
+    }
+    if (notificationCount === 0) return "";
+    const noun = notificationCount === 1 ? "notification" : "notifications";
+    const severity = hasErrorNotification
+      ? ", including an error"
+      : hasWarningNotification
+        ? ", including a warning"
+        : "";
+    return `${notificationCount} ${noun}${severity}`;
+  });
+  const notificationsAriaLabel = $derived(
+    notificationSummary ? `Open notifications — ${notificationSummary}` : "Open notifications",
+  );
+  const notificationLiveTone = $derived(
+    hasErrorNotification || notificationLoadError !== null ? "assertive" : "polite",
+  );
 
   $effect(() => {
-    if (!hasNotifications) notificationsOpen = false;
+    if (!hasNotificationIndicator) notificationsOpen = false;
   });
 
   async function runNotificationAction(notification: AppNotification): Promise<void> {
-    if (notification.action?.type === "open_settings_tab") {
+    if (notification.action?.type !== "open_settings_tab") return;
+    try {
       await openSettings(notification.action.tab);
-      await clearAppNotification(notification.id);
-      notificationsOpen = false;
+    } catch {
+      // Navigation failed — keep the notification and the popover so the user
+      // can see the action did not complete and retry.
+      noteAppNotificationError("Couldn't open settings. Try again.");
+      return;
     }
+    // Only dismiss + close once the navigation succeeded; if the clear itself
+    // fails it surfaces its own error and we leave the popover open.
+    const cleared = await clearAppNotification(notification.id);
+    if (cleared) notificationsOpen = false;
   }
 
   function notificationActionLabel(notification: AppNotification): string {
@@ -289,6 +341,35 @@
   const captureLoadingSettings = $derived(captureControls.loadingSettings);
   const captureStatusLabel = $derived(captureControls.statusLabel);
   const captureStatusModifier = $derived(captureControls.statusModifier);
+
+  // ── Pause / resume control ──────────────────────────────────────────────
+  // Pause is a *whole-session* control and must stay available even while an
+  // inactivity auto-pause has idled one or more sources: inactivity pausing is
+  // per-source (the session reports `is_inactivity_paused` when *any* source
+  // idles, even though others may still be recording), so it must not steal the
+  // user's ability to deliberately pause the entire session. This matches the
+  // pause/resume keyboard shortcut, which already keys off the user pause alone.
+  //
+  // The button reads "Resume" only when the *user* paused, or when a low-disk
+  // suspension (which the user cannot clear from here) holds the session — that
+  // is the one case the control is disabled. An inactivity pause leaves the
+  // button as an enabled "Pause" so the user can lock the whole session paused.
+  const showResume = $derived(
+    captureControls.isUserPaused || captureControls.isLowDiskSuspended,
+  );
+  const pauseDisabled = $derived(
+    captureLoadingPause ||
+      (captureControls.isLowDiskSuspended && !captureControls.isUserPaused),
+  );
+  const pauseButtonTitle = $derived(
+    captureControls.isUserPaused
+      ? "Resume recording"
+      : captureControls.isLowDiskSuspended
+        ? "Paused — free up disk space to resume recording"
+        : captureControls.isInactivityPaused
+          ? "Pause the whole session (recording auto-paused while you're away)"
+          : "Pause recording",
+  );
 
   // ── Per-source runtime indicators ──────────────────────────────────────
   // While a capture session is running, fetch `get_idle_debug` periodically
@@ -465,6 +546,7 @@
     }
 
     rows.push(getEffectiveGlobalShortcut("toggleMainWindow"));
+    rows.push(getEffectiveGlobalShortcut("toggleQuickRecall"));
     rows.push(getEffectiveGlobalShortcut("openSettings"));
 
     if (devEnabled) {
@@ -522,10 +604,17 @@
   }
 
   async function restartCaptureForPrivacyRecovery(): Promise<void> {
-    if (captureLoadingStart || captureLoadingStop || !isCapturing) return;
-    await stopCapture();
-    if (!captureControls.isRunning) {
-      await startCapture();
+    if (captureLoadingStart || captureLoadingStop || restartingPrivacyCapture || !isCapturing) return;
+    restartingPrivacyCapture = true;
+    try {
+      // stop/start funnel any failure into the shared capture-error dialog
+      // (capture-controls.svelte.ts) — so a failed restart is now visible.
+      await stopCapture();
+      if (!captureControls.isRunning) {
+        await startCapture();
+      }
+    } finally {
+      restartingPrivacyCapture = false;
     }
   }
 
@@ -539,10 +628,77 @@
     void goto(target);
   }
 
+  // On the Settings route neither surface is the current page, so the toggle has
+  // no active segment. Rather than leaving it blank we de-emphasize it and mark
+  // the surface "Back to app" will return to (visually only — no `aria-current`,
+  // since Settings is the page).
+  const settingsReturnsToInsights = $derived(
+    isSettingsRoute && normalizeAppPathname(getLastMainSurface()).startsWith("/insights"),
+  );
+  const settingsReturnsToTimeline = $derived(isSettingsRoute && !settingsReturnsToInsights);
+
+  // The gear is a real toggle: opening Settings from a surface, then clicking
+  // the gear again returns to the surface it was opened from (Timeline or
+  // Insights) instead of being a no-op with no obvious exit.
+  function onSettingsButtonClick(): void {
+    if (isSettings) {
+      const returnsToInsights = normalizeAppPathname(getLastMainSurface()).startsWith("/insights");
+      goToSurface(returnsToInsights ? "insights" : "timeline");
+      return;
+    }
+    void openSettings();
+  }
+
+  // Quick Recall has no in-app door otherwise — it is only summonable via the
+  // global ⌥Space shortcut, which a new user can't discover. The titlebar
+  // affordance asks Rust to toggle the Quick Recall panel (the same path the
+  // global shortcut takes); the shortcut stays the canonical fallback if the
+  // command is unavailable.
+  async function summonQuickRecall(): Promise<void> {
+    try {
+      await invoke("summon_quick_recall_window_command");
+    } catch {
+      // Best-effort: leave the global ⌥Space shortcut as the summon path.
+    }
+  }
+
   function openNotifications(openedByKeyboard = false): void {
-    if (!hasNotifications) return;
+    if (!hasNotificationIndicator) return;
     notificationsOpenedByKeyboard = openedByKeyboard;
     notificationsOpen = true;
+  }
+
+  // Relative age for each notification row so a stale alert is distinguishable
+  // from a fresh one. Recomputed against `notificationsNow`, which ticks while
+  // the popover is open.
+  let notificationsNow = $state(Date.now());
+  $effect(() => {
+    if (!notificationsOpen) return;
+    notificationsNow = Date.now();
+    const handle = setInterval(() => {
+      notificationsNow = Date.now();
+    }, 30_000);
+    return () => clearInterval(handle);
+  });
+
+  function formatNotificationAge(createdAtUnixMs: number): string {
+    const deltaMs = Math.max(0, notificationsNow - createdAtUnixMs);
+    const seconds = Math.floor(deltaMs / 1000);
+    if (seconds < 45) return "just now";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    return `${days}d ago`;
+  }
+
+  function formatNotificationTimestamp(createdAtUnixMs: number): string {
+    try {
+      return new Date(createdAtUnixMs).toLocaleString();
+    } catch {
+      return "";
+    }
   }
 
   function closeNotifications(): void {
@@ -633,6 +789,10 @@
       return;
     }
     trapTabKey(event, shortcutsHelpPanelEl);
+  }
+
+  function onNotificationsPopoverKeydown(event: KeyboardEvent): void {
+    trapTabKey(event, notificationsPopoverEl);
   }
 
   function handleGlobalShortcutKeydown(event: KeyboardEvent): void {
@@ -743,7 +903,13 @@
         (notificationsOpenedByKeyboard && (!active || active === document.body)) ||
         (active && notificationsPopoverEl?.contains(active))
       ) {
-        notificationsButtonEl?.focus({ preventScroll: true });
+        // Clearing the last notification removes the bell, so fall back to a
+        // stable neighbour (the settings button) instead of dropping focus to
+        // <body>.
+        const target = notificationsButtonEl?.isConnected
+          ? notificationsButtonEl
+          : settingsButtonEl;
+        target?.focus({ preventScroll: true });
       }
       notificationsOpenedByKeyboard = false;
     };
@@ -775,7 +941,7 @@
         <span
           class="titlebar__status titlebar__status--{captureStatusModifier}"
           aria-live="polite"
-          title="Recording status"
+          use:tip={"Recording status"}
         >
           <span class="titlebar__status-dot" aria-hidden="true"></span>
           <span class="titlebar__status-label">{captureStatusLabel}</span>
@@ -784,23 +950,32 @@
           <button
             type="button"
             class="titlebar__record titlebar__record--pause"
-            class:titlebar__record--resume={captureControls.isUserPaused}
-            onclick={captureControls.isUserPaused ? resumeCapture : pauseCapture}
-            disabled={captureLoadingPause}
-            title={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
-            aria-label={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
+            class:titlebar__record--resume={showResume}
+            onclick={showResume ? resumeCapture : pauseCapture}
+            disabled={pauseDisabled}
+            aria-busy={captureLoadingPause}
+            use:tip={pauseButtonTitle}
+            aria-label={pauseButtonTitle}
           >
-            <span>{captureLoadingPause ? "Working…" : captureControls.isUserPaused ? "Resume" : "Pause"}</span>
+            {#if captureLoadingPause}
+              <span class="titlebar__record-spinner" aria-hidden="true"></span>
+            {/if}
+            <span>{captureLoadingPause ? (showResume ? "Resuming…" : "Pausing…") : showResume ? "Resume" : "Pause"}</span>
           </button>
           <button
             type="button"
             class="titlebar__record titlebar__record--stop"
             onclick={stopCapture}
             disabled={captureLoadingStop}
-            title={`Stop recording (${shortcutDisplay("toggleRecording")})`}
+            aria-busy={captureLoadingStop}
+            use:tip={`Stop recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Stop recording"
           >
-            <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
+            {#if captureLoadingStop}
+              <span class="titlebar__record-spinner" aria-hidden="true"></span>
+            {:else}
+              <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
+            {/if}
             <span>{captureLoadingStop ? "Stopping…" : "Stop"}</span>
           </button>
         {:else}
@@ -809,11 +984,16 @@
             class="titlebar__record titlebar__record--start"
             onclick={startCapture}
             disabled={captureLoadingStart || captureLoadingSettings}
-            title={`Start recording (${shortcutDisplay("toggleRecording")})`}
+            aria-busy={captureLoadingStart || captureLoadingSettings}
+            use:tip={captureLoadingSettings ? "Preparing recording controls…" : `Start recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Start recording"
           >
-            <span class="titlebar__record-glyph" aria-hidden="true">●</span>
-            <span>{captureLoadingStart ? "Starting…" : "Record"}</span>
+            {#if captureLoadingStart || captureLoadingSettings}
+              <span class="titlebar__record-spinner" aria-hidden="true"></span>
+            {:else}
+              <span class="titlebar__record-glyph" aria-hidden="true"></span>
+            {/if}
+            <span>{captureLoadingStart ? "Starting…" : captureLoadingSettings ? "Loading…" : "Record"}</span>
           </button>
         {/if}
         {#snippet sourceIcon(key: SourceLane["key"])}
@@ -876,7 +1056,7 @@
             {@const state = liveStateFor(lane.key)}
             <span
               class="titlebar__source titlebar__source--{lane.key} titlebar__source--{state}"
-              title={liveTitleFor(lane, state)}
+              use:tip={liveTitleFor(lane, state)}
               aria-label={liveTitleFor(lane, state)}
               role="status"
             >
@@ -901,7 +1081,7 @@
             <button
               type="button"
               class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
-              title={`${selectTitleFor(lane, state)} (${shortcutDisplay(sourceShortcutIdFor(lane.key))})`}
+              use:tip={`${selectTitleFor(lane, state)} (${shortcutDisplay(sourceShortcutIdFor(lane.key))})`}
               aria-label={selectTitleFor(lane, state)}
               aria-pressed={state === "selected"}
               disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
@@ -930,7 +1110,7 @@
         {#if privacyVisualCaptureStatus}
           <span
             class="titlebar__privacy-warning titlebar__privacy-warning--{privacyVisualCaptureStatus.modifier}"
-            title={privacyVisualCaptureStatus.detail}
+            use:tip={privacyVisualCaptureStatus.detail}
             aria-label={privacyVisualCaptureStatus.detail}
             aria-live="polite"
             role="status"
@@ -956,12 +1136,13 @@
               <button
                 type="button"
                 class="titlebar__privacy-warning-action"
-                title={privacyVisualCaptureStatus.detail}
+                use:tip={privacyVisualCaptureStatus.detail}
                 aria-label={privacyVisualCaptureStatus.detail}
-                disabled={captureLoadingStart || captureLoadingStop}
+                aria-busy={restartingPrivacyCapture}
+                disabled={captureLoadingStart || captureLoadingStop || restartingPrivacyCapture}
                 onclick={restartCaptureForPrivacyRecovery}
               >
-                Restart
+                {restartingPrivacyCapture ? "Restarting…" : "Restart"}
               </button>
             {/if}
           </span>
@@ -970,15 +1151,19 @@
     </div>
 
     <!-- Inert centre area carries the drag region + the Timeline⇄Insights
-         surface toggle + the (Timeline-only) centered search trigger. -->
+         surface toggle + the Quick Recall (Search) door. -->
     <div class="titlebar__drag" data-tauri-drag-region>
       <!-- Surface toggle — Main hosts Timeline + Insights; "dashboard" retired (#103). -->
-      <div class="surface-toggle" role="tablist" aria-label="Main surface">
+      <div
+        class="surface-toggle"
+        class:surface-toggle--muted={isSettingsRoute}
+        role="navigation"
+        aria-label="Main surface"
+      >
         <button
           type="button"
-          role="tab"
           class:active={isMainRoute}
-          aria-selected={isMainRoute}
+          class:return-target={settingsReturnsToTimeline}
           aria-current={isMainRoute ? "page" : undefined}
           onclick={() => goToSurface("timeline")}
         >
@@ -986,103 +1171,220 @@
         </button>
         <button
           type="button"
-          role="tab"
           class:active={isInsightsRoute}
-          aria-selected={isInsightsRoute}
+          class:return-target={settingsReturnsToInsights}
           aria-current={isInsightsRoute ? "page" : undefined}
           onclick={() => goToSurface("insights")}
         >
           Insights
         </button>
       </div>
+      <!-- Quick Recall door — otherwise summonable only via the global ⌥Space
+           shortcut, which a new user can't discover. -->
+      <button
+        type="button"
+        class="titlebar__search"
+        use:tip={`Search · Recall (${shortcutDisplay("toggleQuickRecall")})`}
+        aria-label={`Search and recall (${shortcutDisplay("toggleQuickRecall")})`}
+        onclick={() => void summonQuickRecall()}
+      >
+        <svg
+          class="titlebar__search-icon"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+        <span class="titlebar__search-label">Search</span>
+        <kbd class="titlebar__search-kbd" aria-hidden="true">{shortcutDisplay("toggleQuickRecall")}</kbd>
+      </button>
     </div>
 
     <div class="titlebar__group titlebar__group--right">
       {#if showMainTitlebar}
-        {#if hasNotifications}
-          <div class="titlebar__notifications">
-            <button
-              bind:this={notificationsButtonEl}
-              type="button"
-              class="titlebar__settings titlebar__notifications-button"
-              aria-label="Open notifications"
-              aria-expanded={notificationsOpen}
-              aria-controls="notification-popover"
-              title="Notifications"
-              onkeydown={onNotificationsButtonKeydown}
-              onpointerdown={() => { notificationsOpenedByKeyboard = false; }}
-              onclick={() => toggleNotifications(notificationsOpenedByKeyboard)}
+        <!-- Persistent live regions: announce a new/cleared alert even while the
+             bell popover is closed. Two always-mounted regions (one polite, one
+             assertive) so the summary routes into the matching politeness — some
+             screen readers don't re-register an attribute-only aria-live change
+             on a mounted node. The count badge itself stays aria-hidden. -->
+        <span class="sr-only" aria-live="polite" aria-atomic="true">
+          {notificationLiveTone === "polite" ? notificationSummary : ""}
+        </span>
+        <span class="sr-only" aria-live="assertive" aria-atomic="true">
+          {notificationLiveTone === "assertive" ? notificationSummary : ""}
+        </span>
+        <!-- Persistent bell slot: the button stays mounted with a quiet rest
+             state (no count dot) so the neighbouring gear/help/theme icons
+             don't shift when alerts arrive or clear. The count dot + popover
+             stay gated on a live indicator. -->
+        <div class="titlebar__notifications">
+          <button
+            bind:this={notificationsButtonEl}
+            type="button"
+            class="titlebar__settings titlebar__notifications-button"
+            class:active={notificationsOpen}
+            class:titlebar__notifications-button--quiet={!hasNotificationIndicator}
+            aria-label={notificationsAriaLabel}
+            aria-expanded={notificationsOpen}
+            aria-controls="notification-popover"
+            use:tip={hasNotificationIndicator ? "Notifications" : "No notifications"}
+            onkeydown={onNotificationsButtonKeydown}
+            onpointerdown={() => { notificationsOpenedByKeyboard = false; }}
+            onclick={() => toggleNotifications(notificationsOpenedByKeyboard)}
+          >
+            <svg
+              class="titlebar__settings-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
             >
-              <svg
-                class="titlebar__settings-icon"
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+              <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+            </svg>
+            {#if hasNotificationIndicator}
+              <span
+                class="titlebar__notification-dot"
+                class:titlebar__notification-dot--warning={hasWarningNotification && !hasErrorNotification && !notificationLoadError}
+                class:titlebar__notification-dot--error={hasErrorNotification || notificationLoadError !== null}
                 aria-hidden="true"
-              >
-                <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
-                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-              </svg>
-              <span class="titlebar__notification-dot" aria-hidden="true">{notificationCount}</span>
-            </button>
-            {#if notificationsOpen}
-              <div
-                id="notification-popover"
-                class="notification-popover"
-                role="dialog"
-                aria-label="Notifications"
-                bind:this={notificationsPopoverEl}
-              >
-                <div class="notification-popover__head">
-                  <span>Notifications</span>
+              >{notificationCount > 0 ? notificationCount : "!"}</span>
+            {/if}
+          </button>
+          {#if notificationsOpen}
+            <div
+              id="notification-popover"
+              class="notification-popover"
+              role="dialog"
+              aria-label="Notifications"
+              tabindex="-1"
+              bind:this={notificationsPopoverEl}
+              onkeydown={onNotificationsPopoverKeydown}
+            >
+              <div class="notification-popover__head">
+                <span>Notifications</span>
+                {#if hasNotifications}
                   <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
                     Clear all
                   </button>
+                {/if}
+              </div>
+              {#if notificationActionError}
+                <div class="notification-popover__error" role="alert">
+                  <span class="notification-popover__error-text">{notificationActionError}</span>
+                  <button
+                    type="button"
+                    class="notification-popover__error-dismiss"
+                    onclick={dismissAppNotificationError}
+                  >
+                    Dismiss
+                  </button>
                 </div>
-                <div class="notification-popover__list">
-                  {#each appNotifications.items as notification (notification.id)}
-                    <div class="notification-item notification-item--{notification.severity}">
-                      <div class="notification-item__body">
-                        <span class="notification-item__title">{notification.title}</span>
-                        <span class="notification-item__message">{notification.message}</span>
-                        {#if notification.action?.type === "open_settings_tab"}
-                          <button
-                            type="button"
-                            class="notification-item__action"
-                            onclick={() => void runNotificationAction(notification)}
-                          >
-                            {notificationActionLabel(notification)}
-                          </button>
-                        {/if}
-                      </div>
+              {/if}
+              <div class="notification-popover__list">
+                {#if notificationLoadError}
+                  <div class="notification-item notification-item--error" role="alert">
+                    <div class="notification-item__body">
+                      <span class="notification-item__title">Couldn't load notifications</span>
+                      <span class="notification-item__message">{notificationLoadError}</span>
                       <button
                         type="button"
-                        class="notification-item__clear"
-                        aria-label="Clear notification"
-                        onclick={() => void clearAppNotification(notification.id)}
+                        class="notification-item__action"
+                        onclick={() => void reloadAppNotifications()}
                       >
-                        x
+                        Try again
                       </button>
                     </div>
-                  {/each}
-                </div>
+                  </div>
+                {/if}
+                {#each appNotifications.items as notification (notification.id)}
+                  <div class="notification-item notification-item--{notification.severity}">
+                    <div class="notification-item__body">
+                      <span class="notification-item__title">{notification.title}</span>
+                      <span class="notification-item__message">{notification.message}</span>
+                      <time
+                        class="notification-item__time"
+                        datetime={new Date(notification.createdAtUnixMs).toISOString()}
+                        use:tip={formatNotificationTimestamp(notification.createdAtUnixMs)}
+                      >{formatNotificationAge(notification.createdAtUnixMs)}</time>
+                      {#if notification.action?.type === "open_settings_tab"}
+                        <button
+                          type="button"
+                          class="notification-item__action"
+                          onclick={() => void runNotificationAction(notification)}
+                        >
+                          {notificationActionLabel(notification)}
+                        </button>
+                      {/if}
+                    </div>
+                    <button
+                      type="button"
+                      class="notification-item__clear"
+                      aria-label="Clear notification"
+                      onclick={() => void clearAppNotification(notification.id)}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+                        <path d="M2.5 2.5 9.5 9.5" />
+                        <path d="M9.5 2.5 2.5 9.5" />
+                      </svg>
+                    </button>
+                  </div>
+                {/each}
               </div>
-            {/if}
-          </div>
+            </div>
+          {/if}
+        </div>
+        {#if canShowShortcutsHelp}
+          <button
+            type="button"
+            class="titlebar__settings titlebar__settings--help"
+            class:active={shortcutsHelpOpen}
+            aria-label="Keyboard shortcuts"
+            aria-haspopup="dialog"
+            aria-expanded={shortcutsHelpOpen}
+            use:tip={`Keyboard shortcuts (${shortcutDisplay("toggleShortcutsHelp")})`}
+            onclick={() => toggleShortcutsHelp()}
+          >
+            <svg
+              class="titlebar__settings-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M9.4 9.2a2.6 2.6 0 0 1 5 .9c0 1.7-2.4 2-2.4 3.6" />
+              <path d="M12 17h.01" />
+            </svg>
+          </button>
         {/if}
         <button
+          bind:this={settingsButtonEl}
           type="button"
           class="titlebar__settings"
           class:active={isSettings}
-          aria-label="Open settings"
+          aria-label={isSettings ? "Close settings" : "Open settings"}
           aria-current={isSettings ? "page" : undefined}
-          title={`Settings (${shortcutDisplay("openSettings")})`}
-          onclick={() => void openSettings()}
+          use:tip={isSettings ? "Close settings" : `Settings (${shortcutDisplay("openSettings")})`}
+          onclick={onSettingsButtonClick}
         >
           <svg
             class="titlebar__settings-icon"
@@ -1100,18 +1402,20 @@
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
         </button>
-        <ThemeModeControl
-          bind:value={chromeAppearance}
-          compact
-          disabled={!theme.loaded || savingChromeAppearance}
-          onChange={setChromeAppearance}
-        />
+        <div class="titlebar__theme">
+          <ThemeModeControl
+            bind:value={chromeAppearance}
+            compact
+            disabled={!theme.loaded || savingChromeAppearance}
+            onChange={setChromeAppearance}
+          />
+        </div>
         {#if devEnabled}
           <button
             type="button"
             class="titlebar__settings"
             aria-label="Open debug"
-            title={`Debug (${shortcutDisplay("openDebug")})`}
+            use:tip={`Debug (${shortcutDisplay("openDebug")})`}
             onclick={() => void openDebugWindow()}
           >
             <svg
@@ -1157,7 +1461,7 @@
         type="button"
         class="surface-titlebar__close"
         aria-label="Close window"
-        title="Close"
+        use:tip={"Close"}
         onclick={() => void closeCurrentWindow()}
       >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
@@ -1198,7 +1502,12 @@
             class="shortcut-help__close"
             aria-label="Close keyboard shortcuts"
             onclick={closeShortcutsHelp}
-          >×</button>
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+              <path d="M2.5 2.5 9.5 9.5" />
+              <path d="M9.5 2.5 2.5 9.5" />
+            </svg>
+          </button>
         </header>
 
         <div class="shortcut-help__groups">
@@ -1258,7 +1567,7 @@
 
     --app-status-bg: #0a0a10;
     --app-status-border: #161624;
-    --app-status-fg: #555574;
+    --app-status-fg: #6f6f90;
     --app-status-dot: #2a2a3a;
 
     --app-status-running-fg: #ff5d6c;
@@ -1309,14 +1618,55 @@
     --app-border-hover: #3a3a5a;
     --app-text-strong: #e2e2e8;
     --app-text: #c0c0d0;
-    --app-text-muted: #7a7a9a;
-    --app-text-subtle: #44445a;
+    /* Secondary conveyed text — brightened to sit comfortably above the AA
+       4.5:1 floor on the dark surface (#9696ae ≈ 6.6:1, was #7a7a9a ≈ 4.6:1). */
+    --app-text-muted: #9696ae;
+    /* Tertiary conveyed text / structural labels — was #44445a (~2:1, FAIL);
+       #7e7e98 ≈ 4.9:1 clears AA while staying clearly dimmer than muted. */
+    --app-text-subtle: #7e7e98;
+    /* Placeholder / decorative ONLY (intentionally sub-AA). Never use for text
+       a user must read. */
     --app-text-faint: #33334a;
     --app-accent: #3dffa0;
     --app-accent-strong: #2a8a60;
     --app-accent-bg: #0d1f15;
     --app-accent-border: #1a4a30;
     --app-accent-glow: rgba(61, 255, 160, 0.18);
+    /* Dark ink for text placed ON the bright-green accent fill — stays dark
+       in both modes because the accent fill it sits on is bright in both. */
+    --app-accent-contrast: #07120c;
+
+    /* Brand monospace face. Referenced by 20+ rules across the app via
+       `var(--app-font-mono, ...)`; defining it here makes the brand face
+       resolve everywhere instead of silently falling back. Mode-independent. */
+    --app-font-mono: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+      monospace;
+
+    /* Shared focus-visible rings (mode-independent; the accent-glow they key
+       off is per-mode, so the ring adapts to the active theme automatically). */
+    --app-ring: 0 0 0 3px var(--app-accent-glow);
+    --app-ring-danger: 0 0 0 3px
+      color-mix(in srgb, var(--app-danger) 30%, transparent);
+
+    /* Canonical disabled-control opacity (mode-independent) — one source of
+       truth so dimmed controls stop drifting across 0.35/0.38/0.4/0.45. */
+    --app-disabled-opacity: 0.4;
+
+    /* In-flight / saving (`cursor: progress`) controls dim less than a true
+       disabled control so the action still reads as "busy, not unavailable". */
+    --app-busy-opacity: 0.6;
+
+    /* Shared popover / tooltip elevation. Page depth is normally surface
+       lightness, but floating layers lift off with this one shadow. */
+    --app-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.22);
+
+    /* Type scale (mode-independent). 6 integer steps consumed app-wide. */
+    --text-xs: 10px;
+    --text-sm: 11px;
+    --text-base: 12px;
+    --text-md: 13px;
+    --text-lg: 16px;
+    --text-xl: 20px;
 
     --app-warn: #d6a14a;
     --app-warn-strong: #c47a30;
@@ -1358,6 +1708,11 @@
     --app-overlay-bg-strong: rgba(10, 10, 16, 0.82);
     --app-overlay-border: rgba(255, 255, 255, 0.06);
 
+    /* Recessed inner shadow for form-control insets (Input/Select/Combobox/
+       Stepper). Softens in the light theme below so near-white fields don't
+       carry a hard 25%-black inner shadow. */
+    --app-input-recess: rgba(0, 0, 0, 0.25);
+
     --app-ocr-box: rgba(120, 220, 160, 0.45);
     --app-ocr-box-hover: rgba(120, 220, 160, 0.95);
     --app-ocr-box-fill: rgba(120, 220, 160, 0.10);
@@ -1378,14 +1733,18 @@
     --chart-grey-4: #757589;
     --chart-grey-5: #9a9ab0;
 
-    --cat-creating: #3dffa0;
+    /* "Creating" and "Entertainment" are rotated off the exact --app-accent /
+       --app-danger values so a category color never reads as the semantic
+       accent/error signal (grass-green vs the neon accent; coral-orange vs the
+       rose danger red). */
+    --cat-creating: #5fe07a;
     --cat-communication: #c0b0ff;
     --cat-meetings: #ff9fd0;
     --cat-research: #60b0ff;
     --cat-learning: #4fd8c8;
     --cat-organizing: #b0c080;
     --cat-personal: #d6a14a;
-    --cat-entertainment: #ff6b7a;
+    --cat-entertainment: #ff7a4d;
 
     --focus-deep: #3dffa0;
     --focus-mid: #d6a14a;
@@ -1459,14 +1818,20 @@
     --app-border-hover: #a4a4a0;
     --app-text-strong: #14141a;
     --app-text: #2a2a32;
+    /* Secondary conveyed text — already ~6:1 on the light surface, unchanged. */
     --app-text-muted: #5a5a6a;
-    --app-text-subtle: #7a7a86;
+    /* Tertiary conveyed text / structural labels — was #7a7a86 (~3.8:1,
+       borderline); #5e5e6a ≈ 6.2:1 clears AA. */
+    --app-text-subtle: #5e5e6a;
+    /* Placeholder / decorative ONLY (intentionally sub-AA). */
     --app-text-faint: #9a9aa4;
     --app-accent: #1f7a4a;
     --app-accent-strong: #155a36;
     --app-accent-bg: #e6f4ec;
     --app-accent-border: #9bd3b4;
     --app-accent-glow: rgba(31, 122, 74, 0.16);
+    /* Dark ink on the bright accent fill — same as dark mode by design. */
+    --app-accent-contrast: #07120c;
 
     --app-warn: #9a5a12;
     --app-warn-strong: #7f4300;
@@ -1508,6 +1873,9 @@
     --app-overlay-bg-strong: rgba(255, 255, 255, 0.86);
     --app-overlay-border: rgba(20, 24, 32, 0.12);
 
+    /* Softer inset recess on near-white fields (0.25 → 0.08). */
+    --app-input-recess: rgba(0, 0, 0, 0.08);
+
     --app-ocr-box: rgba(31, 122, 74, 0.42);
     --app-ocr-box-hover: rgba(31, 122, 74, 0.88);
     --app-ocr-box-fill: transparent;
@@ -1528,14 +1896,16 @@
     --chart-grey-4: #6a6a74;
     --chart-grey-5: #46464e;
 
-    --cat-creating: #1f7a4a;
+    /* "Creating"/"Entertainment" rotated off the exact --app-accent /
+       --app-danger values (see dark block) so categories never read semantic. */
+    --cat-creating: #2f8a3f;
     --cat-communication: #5949b8;
     --cat-meetings: #c2407f;
     --cat-research: #2b78c5;
     --cat-learning: #1f8579;
     --cat-organizing: #6f7a2e;
     --cat-personal: #9a5a12;
-    --cat-entertainment: #c43a48;
+    --cat-entertainment: #c2542b;
 
     --focus-deep: #1f7a4a;
     --focus-mid: #9a5a12;
@@ -1555,9 +1925,8 @@
     min-height: 100%;
     background-color: var(--app-bg);
     color: var(--app-fg);
-    font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
-      "Cascadia Code", "Fira Code", monospace;
-    font-size: 13px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-md);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
@@ -1661,6 +2030,47 @@
     background-clip: padding-box;
   }
 
+  /* Custom tooltip — portaled to <body> by the `tip` action
+     ($lib/components/tooltip.ts), styled here so it reads the same tokens as
+     the app instead of the OS's native `title` bubble. The accent left edge is
+     the terminal "prompt" signature. */
+  :global(.app-tooltip) {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 9999;
+    max-width: 260px;
+    padding: 5px 8px 6px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    letter-spacing: 0.01em;
+    color: var(--app-text-strong);
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border-strong);
+    border-left: 2px solid var(--app-accent);
+    border-radius: 5px;
+    box-shadow: var(--app-shadow-popover);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(2px);
+    transition:
+      opacity 90ms ease,
+      transform 90ms ease;
+  }
+  :global(.app-tooltip[data-show="true"]) {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(.app-tooltip) {
+      transition: none;
+      transform: none;
+    }
+  }
+
   .app-shell {
     --app-titlebar-height: 36px;
     --app-window-radius: 10px;
@@ -1709,6 +2119,11 @@
     padding: 0 8px 0 78px;
     background: var(--app-titlebar-bg);
     border-bottom: 1px solid var(--app-titlebar-border);
+    /* Hard backstop: a tiling WM (e.g. aerospace) can force the window below the
+       640px app minimum, and flex items can't shrink past their content width —
+       clip rather than let the row spill the right-hand controls off-screen.
+       The responsive tiers below shed items progressively so this rarely bites. */
+    overflow: hidden;
     user-select: none;
     -webkit-user-select: none;
     /* Sticky so the title bar stays visible when a route's main content
@@ -1765,7 +2180,7 @@
     background: var(--app-surface-raised);
     color: var(--app-text-muted);
     font-family: inherit;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -1778,6 +2193,15 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .surface-titlebar__close:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .surface-titlebar__close:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
+  }
 
   .titlebar__group {
     display: inline-flex;
@@ -1786,8 +2210,20 @@
     flex: 0 0 auto;
   }
 
+  /* Let the left cluster yield at narrow widths so the deficit is absorbed by
+     the privacy-warning's ellipsis (its label already truncates) rather than
+     the centered drag region clipping the primary surface-toggle nav. */
+  .titlebar__group--left {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
   .titlebar__drag {
     flex: 1 1 auto;
+    /* Let the centre region collapse to zero so the inert drag slack yields
+       first under width pressure and never pushes the surface toggle, search,
+       or right-hand controls off-screen. */
+    min-width: 0;
     height: 100%;
     display: flex;
     align-items: center;
@@ -1814,7 +2250,7 @@
   }
   .surface-toggle button {
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-base);
     line-height: 1;
     letter-spacing: 0.02em;
     display: inline-flex;
@@ -1832,10 +2268,177 @@
   .surface-toggle button:hover {
     color: var(--app-text-strong);
   }
+  .surface-toggle button:not(.active):hover {
+    background: var(--app-surface-hover);
+  }
+  .surface-toggle button:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .surface-toggle button:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
+  }
   .surface-toggle button.active {
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
+    /* Active = "you are here": use the brighter --app-accent (AA-legible on
+       accent-bg) + 600 weight. --app-accent-strong is a fill/border tone, not
+       body text, and reads ~4:1 here. */
+    color: var(--app-accent);
+    font-weight: 600;
+  }
+  /* On the Settings route neither surface is the current page; de-emphasize the
+     whole toggle so it doesn't read as a live selection, and quietly mark the
+     surface "Back to app" returns to (no accent fill — that's reserved for the
+     active page). */
+  .surface-toggle--muted {
+    opacity: 0.72;
+  }
+  .surface-toggle--muted button.return-target {
+    color: var(--app-text);
+    border-color: var(--app-border);
+    background: var(--app-surface-raised);
+  }
+
+  /* ── Quick Recall door ─────────────────────────────────────────
+     A visible, mouse-discoverable entry to Quick Recall; the global ⌥Space
+     shortcut alone is undiscoverable for a new user. */
+  .titlebar__search {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 26px;
+    padding: 0 8px 0 9px;
+    border: 1px solid var(--app-border);
+    border-radius: 7px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: var(--text-base);
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  }
+  .titlebar__search-icon {
+    flex: 0 0 auto;
+  }
+  .titlebar__search-label {
+    letter-spacing: 0.02em;
+  }
+  .titlebar__search-kbd {
+    flex: 0 0 auto;
+    padding: 1px 5px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-subtle);
+    font-family: var(--app-font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.3;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .titlebar__search:hover {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+  }
+  .titlebar__search:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .titlebar__search:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
+  }
+
+  /* ── Responsive title-bar degradation ─────────────────────────
+     Three progressive tiers that shed non-essential affordances as the window
+     narrows. The app's own minimum is 640px (min_inner_size in
+     src-tauri/src/windows.rs), but a tiling WM (e.g. aerospace) ignores that
+     and can force the window down to ~400px — so the bar must keep shedding
+     well below 640px. Flex items can't shrink past their content width, so
+     instead of squeezing we drop whole items, lowest-priority first.
+
+     ALWAYS VISIBLE at every width (never hidden, never clipped):
+       • record / pause / stop control
+       • the Timeline⇄Insights `.surface-toggle`
+       • the settings gear (`.titlebar__settings`, sans `--help`)
+       • notifications bell when present
+     Combined with `.titlebar { overflow: hidden }`, the right group can never
+     spill off-screen. (The dashboard body's own breakpoint lives in
+     +page.svelte.) */
+
+  /* The titlebar is control-dense; the fully-labelled row needs ~820px to fit,
+     and the WM can force widths well below the app's 640px minimum, so the row
+     sheds progressively. Always-visible at every width: record/pause/stop, the
+     surface toggle, the settings gear, and notifications-when-present. Combined
+     with the base `.titlebar__status-label` ellipsis (left cluster yields
+     first) and `.titlebar { overflow: hidden }`, nothing can spill off-screen.
+     Breakpoints are tuned to real content widths — the labelled row overflows
+     below ~820px, which includes the 800px default window. */
+
+  /* Compact ≤820px: drop the Search word + kbd to an icon-only button, hide the
+     status text (the colored dot still conveys state), tighten the row gap. */
+  @media (max-width: 820px) {
+    .titlebar {
+      gap: 6px;
+    }
+    .titlebar__search-label,
+    .titlebar__search-kbd {
+      display: none;
+    }
+    .titlebar__search {
+      gap: 0;
+      padding: 0 6px;
+    }
+    .titlebar__status-label {
+      display: none;
+    }
+  }
+
+  /* Narrow ≤720px: drop the lowest-value right-group items — the help button and
+     the theme control (both still reachable from Settings). Gap tightens. */
+  @media (max-width: 720px) {
+    .titlebar {
+      gap: 4px;
+    }
+    /* `.titlebar`-prefixed to outrank the later base `.titlebar__settings`
+       display rule (equal specificity would otherwise lose on source order). */
+    .titlebar .titlebar__settings--help {
+      display: none;
+    }
+    .titlebar__theme {
+      display: none;
+    }
+  }
+
+  /* Tight ≤600px (incl. WM-forced sub-minimum widths): drop the source toggles
+     — recording sources stay reachable via the tray menu + Settings — and
+     shrink the surface toggle's button padding so Timeline/Insights still fit
+     beside the record control and gear. */
+  @media (max-width: 600px) {
+    /* `.titlebar`-prefixed to outrank the later base `.titlebar__source`
+       display rule. */
+    .titlebar .titlebar__source {
+      display: none;
+    }
+    .surface-toggle button {
+      padding: 0 8px;
+    }
   }
 
   /* ── Recording status indicator ───────────────────────────── */
@@ -1847,12 +2450,25 @@
     background: var(--app-status-bg);
     border: 1px solid var(--app-status-border);
     border-radius: 4px;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--app-status-fg);
     font-variant-numeric: tabular-nums;
+    /* Let the status pill yield first under width pressure (its label width
+       varies with state — "Recording" is far wider than "Idle"), so the row
+       self-compresses before anything overflows, at any width. */
+    min-width: 0;
+  }
+
+  /* Base ellipsis so the label can shrink at any width (not just at a
+     breakpoint); the ≤820px tier hides it entirely in favour of the dot. */
+  .titlebar__status-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .titlebar__status-dot {
@@ -1886,6 +2502,13 @@
     50% { opacity: 0.55; }
   }
 
+  @media (prefers-reduced-motion: reduce) {
+    .titlebar__status--running .titlebar__status-dot,
+    .titlebar__source-dot {
+      animation: none;
+    }
+  }
+
   /* ── Per-source recording pills ───────────────────────────────
      One pill per requested capture source (screen / microphone /
      system audio), rendered after the Record/Stop button. Each pill
@@ -1898,8 +2521,8 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 3px 7px;
-    height: 22px;
+    padding: 4px 8px;
+    height: 24px;
     background: var(--app-status-bg);
     border: 1px solid var(--app-status-border);
     border-radius: 4px;
@@ -1958,7 +2581,7 @@
   }
   .titlebar__source--toggle:disabled {
     cursor: progress;
-    opacity: 0.6;
+    opacity: var(--app-busy-opacity);
   }
   .titlebar__source--toggle.titlebar__source--selected {
     color: var(--app-text-strong);
@@ -1966,16 +2589,25 @@
     background: var(--app-surface-raised);
   }
   .titlebar__source--toggle.titlebar__source--unselected {
-    color: var(--app-fg-subtle);
+    /* "Off" must still be legible: --app-fg-subtle at 0.7 opacity rendered the
+       glyph near-invisible (well under the 3:1 non-text floor). --app-text-subtle
+       (~4.9:1) at near-full opacity reads clearly as a disabled-but-present
+       source while staying dimmer than the selected --app-text-strong. */
+    color: var(--app-text-subtle);
     border-color: var(--app-status-border);
     background: var(--app-status-bg);
-    opacity: 0.7;
+    opacity: 0.9;
   }
   .titlebar__source--toggle:not(:disabled):hover {
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
     background: var(--app-surface-hover);
     opacity: 1;
+  }
+  .titlebar__source--toggle:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
   }
 
   .titlebar__privacy-warning {
@@ -1989,7 +2621,7 @@
     border: 1px solid var(--app-warn-border);
     background: var(--app-warn-bg);
     color: var(--app-warn);
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2017,7 +2649,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2028,7 +2660,7 @@
   }
   .titlebar__privacy-warning-action:disabled {
     cursor: progress;
-    opacity: 0.55;
+    opacity: var(--app-busy-opacity);
   }
 
   /* Diagonal slash glyph used when a source is unselected (idle) or
@@ -2052,7 +2684,7 @@
     border-radius: 4px;
     border: 1px solid transparent;
     font-family: inherit;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2060,8 +2692,17 @@
     transition: background 0.12s, border-color 0.12s, opacity 0.12s, color 0.12s;
   }
   .titlebar__record:disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
+  }
+  .titlebar__record:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .titlebar__record:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
   }
   .titlebar__record--pause {
     background: var(--app-surface-raised);
@@ -2104,21 +2745,40 @@
   }
   .titlebar__record-glyph {
     display: inline-block;
-    width: 8px;
-    height: 8px;
-    line-height: 1;
-    text-align: center;
+    width: 7px;
+    height: 7px;
+    background: currentColor;
+    border-radius: 50%;
     color: var(--app-record-glyph-start);
-    font-size: 12px;
   }
   .titlebar__record--stop .titlebar__record-glyph {
     color: var(--app-record-glyph-stop);
   }
   .titlebar__record-glyph--square {
-    background: currentColor;
     border-radius: 1px;
-    width: 7px;
-    height: 7px;
+  }
+  /* In-flight spinner for the highest-stakes async actions (record / stop /
+     pause) so the button reads "busy", not frozen, while the lifecycle call is
+     outstanding. Inherits the button's text color via currentColor. */
+  .titlebar__record-spinner {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    animation: titlebar-spin 0.7s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes titlebar-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .titlebar__record-spinner {
+      animation: none;
+    }
   }
 
   /* ── Surface actions ──────────────────────────────────────── */
@@ -2152,6 +2812,15 @@
     border-color: var(--app-accent-border);
     color: var(--app-accent-strong);
   }
+  .titlebar__settings:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .titlebar__settings:not(:disabled):active {
+    transform: translateY(0.5px);
+    filter: brightness(0.92);
+  }
   .titlebar__settings-icon {
     display: block;
     flex: 0 0 auto;
@@ -2159,6 +2828,12 @@
   .titlebar__notifications {
     position: relative;
     display: inline-flex;
+  }
+  /* Quiet rest state: the bell is always mounted (so neighbours don't shift),
+     but when there's nothing to open it recedes to the dim icon tone. */
+  .titlebar__notifications-button--quiet {
+    color: var(--app-icon-fg);
+    opacity: 0.5;
   }
   .titlebar__notifications-button {
     position: relative;
@@ -2171,12 +2846,23 @@
     height: 12px;
     padding: 0 3px;
     border-radius: 999px;
-    background: var(--app-warn);
+    /* Notification count = "items need attention", not "success" — use the
+       info tone, not the green success accent. Warning/error variants below
+       escalate it. */
+    background: var(--app-info);
     color: var(--app-bg);
-    font-size: 8px;
+    font-size: var(--text-xs);
     font-weight: 800;
     line-height: 12px;
     text-align: center;
+  }
+  .titlebar__notification-dot--warning {
+    background: var(--app-warn);
+    color: var(--app-bg);
+  }
+  .titlebar__notification-dot--error {
+    background: var(--app-danger);
+    color: var(--app-bg);
   }
   .notification-popover {
     position: absolute;
@@ -2191,7 +2877,7 @@
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border);
     border-radius: 8px;
-    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--app-shadow-popover);
   }
   .notification-popover__head {
     display: flex;
@@ -2200,25 +2886,35 @@
     gap: 10px;
     padding: 10px 12px;
     border-bottom: 1px solid var(--app-border);
-    font-size: 11px;
+    font-size: var(--text-sm);
     font-weight: 700;
     color: var(--app-text-strong);
   }
   .notification-popover__clear,
   .notification-item__clear {
-    border: 0;
+    border: 1px solid transparent;
     background: transparent;
     color: var(--app-text-muted);
     cursor: pointer;
     font: inherit;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
   .notification-popover__clear {
-    font-size: 10px;
+    font-size: var(--text-sm);
     font-weight: 700;
+    padding: 4px 7px;
   }
   .notification-popover__clear:hover,
   .notification-item__clear:hover {
     color: var(--app-text-strong);
+    background: var(--app-surface-hover);
+    border-color: var(--app-border);
+  }
+  .notification-popover__clear:focus-visible,
+  .notification-item__clear:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .notification-popover__list {
     overflow-y: auto;
@@ -2242,7 +2938,17 @@
   }
   .notification-item--error {
     border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
+    background: var(--app-danger-bg-soft);
+  }
+  .notification-item--error .notification-item__title {
+    color: var(--app-danger-text);
+  }
+  .notification-item--info {
+    border-color: var(--app-info-border);
+    background: var(--app-info-bg);
+  }
+  .notification-item--info .notification-item__title {
+    color: var(--app-info);
   }
   .notification-item__body {
     min-width: 0;
@@ -2252,14 +2958,58 @@
   }
   .notification-item__title {
     color: var(--app-text-strong);
-    font-size: 11px;
+    font-size: var(--text-sm);
     font-weight: 700;
     line-height: 1.2;
   }
   .notification-item__message {
     color: var(--app-text-muted);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.35;
+  }
+  .notification-item__time {
+    margin-top: 2px;
+    color: var(--app-text-faint, var(--app-text-muted));
+    font-size: var(--text-xs);
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+  }
+  .notification-popover__error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 6px 6px 0;
+    padding: 7px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--app-danger-border);
+    background: var(--app-danger-bg-soft);
+    color: var(--app-danger-text);
+    font-size: var(--text-sm);
+  }
+  .notification-popover__error-text {
+    min-width: 0;
+  }
+  .notification-popover__error-dismiss {
+    flex: 0 0 auto;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-xs);
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .notification-popover__error-dismiss:hover {
+    background: color-mix(in srgb, currentColor 14%, transparent);
+  }
+  .notification-popover__error-dismiss:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .notification-item__action {
     align-self: flex-start;
@@ -2269,7 +3019,7 @@
     border: 1px solid var(--app-border-strong);
     background: var(--app-surface);
     color: var(--app-text);
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2278,16 +3028,22 @@
     border-color: var(--app-border-hover);
     background: var(--app-surface-hover);
   }
+  .notification-item__action:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
   .notification-item__clear {
     align-self: start;
-    width: 20px;
-    height: 20px;
-    font-size: 16px;
-    line-height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
   }
   .titlebar__settings-label {
     display: block;
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     line-height: 1;
@@ -2368,7 +3124,7 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: rgba(0, 0, 0, 0.42);
+    background: var(--app-overlay-bg);
     backdrop-filter: blur(10px);
   }
 
@@ -2377,10 +3133,10 @@
     max-height: min(680px, calc(100vh - 48px));
     overflow-y: auto;
     border: 1px solid var(--app-border-strong);
-    border-radius: 18px;
-    background: var(--app-surface);
+    border-radius: 12px;
+    background: var(--app-surface-raised);
     color: var(--app-text);
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+    box-shadow: var(--app-shadow-popover);
     padding: 18px;
   }
 
@@ -2394,7 +3150,7 @@
 
   .shortcut-help__eyebrow {
     color: var(--app-text-muted);
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     line-height: 1;
@@ -2404,11 +3160,15 @@
 
   .shortcut-help h2 {
     color: var(--app-text-strong);
-    font-size: 18px;
+    font-size: var(--text-xl);
     line-height: 1.15;
+    letter-spacing: -0.02em;
   }
 
   .shortcut-help__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 30px;
     height: 30px;
     border: 1px solid var(--app-border);
@@ -2417,8 +3177,6 @@
     color: var(--app-text-muted);
     cursor: pointer;
     font: inherit;
-    font-size: 20px;
-    line-height: 1;
   }
 
   .shortcut-help__close:hover,
@@ -2440,7 +3198,7 @@
 
   .shortcut-help__group h3 {
     color: var(--app-text-muted);
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.12em;
     line-height: 1;
@@ -2459,7 +3217,7 @@
     gap: 18px;
     padding: 9px 10px;
     border: 1px solid var(--app-border);
-    border-radius: 12px;
+    border-radius: 8px;
     background: var(--app-surface-raised);
   }
 
@@ -2472,7 +3230,7 @@
 
   .shortcut-help__row dd {
     color: var(--app-text);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.3;
     text-align: right;
   }
@@ -2485,18 +3243,18 @@
     border-radius: 7px;
     background: var(--app-bg);
     color: var(--app-text-strong);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 11px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-sm);
     font-weight: 700;
     line-height: 1;
     text-align: center;
-    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+    box-shadow: inset 0 -1px 0 var(--app-overlay-border);
   }
 
   .shortcut-help__note {
     margin-top: 14px;
     color: var(--app-text-muted);
-    font-size: 11px;
+    font-size: var(--text-sm);
     line-height: 1.45;
   }
 </style>

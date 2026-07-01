@@ -7,6 +7,18 @@ if [[ "${OSTYPE}" != darwin* ]]; then
   exit 1
 fi
 
+debug=false
+for arg in "$@"; do
+  case "${arg}" in
+    --debug) debug=true ;;
+    *)
+      print -u2 "Unknown option: ${arg}"
+      print -u2 "Usage: $0 [--debug]"
+      exit 1
+      ;;
+  esac
+done
+
 identity="${APPLE_SIGNING_IDENTITY:-}"
 
 if [[ -z "${identity}" ]]; then
@@ -23,7 +35,14 @@ fi
 print "Using signing identity: ${identity}"
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
-dmg_dir="${repo_root}/target/release/bundle/dmg"
+
+if [[ "${debug}" == true ]]; then
+  profile_dir="debug"
+  print "Build profile: debug"
+else
+  profile_dir="release"
+fi
+dmg_dir="${repo_root}/target/${profile_dir}/bundle/dmg"
 
 # speakrs links OpenBLAS via the `openblas-static` feature, built from source:
 # put the gcc lib dir on the linker search path (shared helper), and — because
@@ -38,8 +57,13 @@ print "OpenBLAS: static + DYNAMIC_ARCH (all Apple Silicon generations)"
 print "Generating third-party license attribution…"
 "${repo_root}/scripts/generate-third-party-licenses.sh"
 
+tauri_args=(build)
+if [[ "${debug}" == true ]]; then
+  tauri_args+=(--debug)
+fi
+
 cd "${repo_root}/apps/desktop"
-CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- build
+CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- "${tauri_args[@]}"
 
 dmg_path="$(ls -t "${dmg_dir}"/*.dmg 2>/dev/null | head -n 1 || true)"
 

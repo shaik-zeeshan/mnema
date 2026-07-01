@@ -214,7 +214,7 @@
   }
 
   .combobox-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -239,7 +239,7 @@
     border-radius: 8px;
     cursor: pointer;
     outline: none;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
     transition: border-color 0.15s, box-shadow 0.15s;
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 12px;
@@ -251,9 +251,13 @@
     border-color: var(--app-border-hover);
   }
 
+  :global(.combobox-trigger:active) {
+    background: var(--app-surface-active);
+  }
+
   :global(.combobox-trigger:focus-visible) {
     border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
     outline: none;
   }
 
@@ -267,7 +271,7 @@
 
   :global(.combobox-trigger--warn:focus-visible) {
     border-color: var(--app-warn-strong);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
       0 0 0 3px color-mix(in srgb, var(--app-warn) 18%, transparent);
   }
 
@@ -306,7 +310,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 6px;
     padding: 4px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--app-shadow-popover);
     z-index: 100;
     min-width: var(--bits-floating-anchor-width, 200px);
     max-height: 260px;
@@ -395,7 +399,7 @@
     padding: 14px 10px;
     text-align: center;
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     font-style: italic;
     color: var(--app-text-subtle);
   }

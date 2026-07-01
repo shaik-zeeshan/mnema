@@ -116,8 +116,13 @@
   }
 
   .btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
+  }
+
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
 
   .btn--ghost {
@@ -135,13 +140,19 @@
 
   .btn--primary {
     background: var(--app-accent);
-    color: var(--app-bg);
+    color: var(--app-accent-contrast);
     border-color: var(--app-accent);
   }
 
   .btn--primary:not(:disabled):hover {
     background: var(--app-accent-strong);
     border-color: var(--app-accent-strong);
+    color: var(--app-accent-contrast);
+  }
+
+  .btn--primary:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
 
   .btn--sm {

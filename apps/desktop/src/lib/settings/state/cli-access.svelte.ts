@@ -68,7 +68,11 @@ export function grantStatusLabel(grant: BrokerGrant): string {
 export function createCliAccessStore() {
   let brokerGrants = $state<BrokerGrant[]>([]);
   let brokerGrantLoading = $state(false);
-  let brokerGrantSaving = $state(false);
+  // Ids of grants whose revoke is currently in flight, so the panel can
+  // spin/disable only those grants' buttons (mirrors aiProviderKeySavingProvider).
+  // A Set (not a single slot) so two concurrent revokes of different grants each
+  // track their own spinner — clearing one never prematurely stops another.
+  let brokerGrantSavingIds = $state<Set<string>>(new Set());
   let brokerGrantError = $state<string | null>(null);
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
   let mnemaCliLoading = $state(false);
@@ -115,7 +119,7 @@ export function createCliAccessStore() {
   }
 
   async function revokeAgentBrokerGrant(grantId: string) {
-    brokerGrantSaving = true;
+    brokerGrantSavingIds = new Set(brokerGrantSavingIds).add(grantId);
     brokerGrantError = null;
     try {
       await invoke<boolean>("revoke_cli_access_grant", { grantId });
@@ -123,14 +127,17 @@ export function createCliAccessStore() {
     } catch (err) {
       brokerGrantError = describeError(err);
     } finally {
-      brokerGrantSaving = false;
+      const next = new Set(brokerGrantSavingIds);
+      next.delete(grantId);
+      brokerGrantSavingIds = next;
     }
   }
 
   return {
     get brokerGrants() { return brokerGrants; },
     get brokerGrantLoading() { return brokerGrantLoading; },
-    get brokerGrantSaving() { return brokerGrantSaving; },
+    get brokerGrantSaving() { return brokerGrantSavingIds.size > 0; },
+    isGrantRevoking(grantId: string) { return brokerGrantSavingIds.has(grantId); },
     get brokerGrantError() { return brokerGrantError; },
     get mnemaCliStatus() { return mnemaCliStatus; },
     get mnemaCliLoading() { return mnemaCliLoading; },

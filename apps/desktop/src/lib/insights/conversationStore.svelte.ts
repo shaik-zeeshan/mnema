@@ -81,10 +81,18 @@ export class ConversationStore {
   activeConversationId = $state<string | null>(null);
   /** The selection BUS. `id === null` means "start a new empty chat"; a string
    *  is a thread to open. `nonce` bumps on EVERY request so re-requesting the
-   *  same id still re-triggers the watcher. */
-  pendingOpen = $state<{ id: string | null; nonce: number }>({
+   *  same id still re-triggers the watcher. `prefill` (new-chat only) carries an
+   *  optional question to seed the composer with — a hand-off (e.g. "Ask AI about
+   *  {subject}") drops the user into a fresh chat with the prompt already typed,
+   *  ready to review/edit and send (it does NOT auto-send). */
+  pendingOpen = $state<{
+    id: string | null;
+    nonce: number;
+    prefill: string | null;
+  }>({
     id: null,
     nonce: 0,
+    prefill: null,
   });
 
   /** Date-grouped view of `conversations` for the rail's section headers. */
@@ -223,12 +231,23 @@ export class ConversationStore {
   requestOpen(conversationId: string): void {
     const id = conversationId.trim();
     if (!id) return;
-    this.pendingOpen = { id, nonce: this.pendingOpen.nonce + 1 };
+    this.pendingOpen = {
+      id,
+      nonce: this.pendingOpen.nonce + 1,
+      prefill: null,
+    };
   }
 
-  /** Ask Chat to start a fresh empty chat (id === null). */
-  requestNewChat(): void {
-    this.pendingOpen = { id: null, nonce: this.pendingOpen.nonce + 1 };
+  /** Ask Chat to start a fresh empty chat (id === null). An optional `prefill`
+   *  seeds the composer (a Subject→Chat hand-off prefills "Ask AI about …"); the
+   *  user reviews/edits and presses Enter — it is never auto-sent. */
+  requestNewChat(prefill?: string): void {
+    const seed = prefill?.trim() ?? "";
+    this.pendingOpen = {
+      id: null,
+      nonce: this.pendingOpen.nonce + 1,
+      prefill: seed.length > 0 ? seed : null,
+    };
   }
 
   /** Idempotent startup: wire the `conversation_changed` refresh listener (kept

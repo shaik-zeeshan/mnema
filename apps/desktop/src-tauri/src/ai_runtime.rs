@@ -464,35 +464,53 @@ pub(crate) async fn engine_configured_prerequisite(
     Ok(())
 }
 
+// Keychain access shells out to `security`, which can block on a macOS
+// authorization dialog. These run `async` + `spawn_blocking` so the blocking
+// subprocess never freezes the Tauri main thread (sync commands run there).
 #[tauri::command]
-pub fn ai_runtime_set_provider_key(request: AiRuntimeProviderKeyRequest) -> Result<(), String> {
-    let provider = request.provider.trim();
+pub async fn ai_runtime_set_provider_key(
+    request: AiRuntimeProviderKeyRequest,
+) -> Result<(), String> {
+    let provider = request.provider.trim().to_string();
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    let key = request.key.trim();
+    let key = request.key.trim().to_string();
     if key.is_empty() {
         return Err("an API key is required".to_string());
     }
-    app_infra::store_ai_provider_key(provider, key).map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || app_infra::store_ai_provider_key(&provider, &key))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn ai_runtime_clear_provider_key(request: AiRuntimeProviderRequest) -> Result<(), String> {
-    let provider = request.provider.trim();
+pub async fn ai_runtime_clear_provider_key(
+    request: AiRuntimeProviderRequest,
+) -> Result<(), String> {
+    let provider = request.provider.trim().to_string();
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    app_infra::delete_ai_provider_key(provider).map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || app_infra::delete_ai_provider_key(&provider))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn ai_runtime_has_provider_key(request: AiRuntimeProviderRequest) -> Result<bool, String> {
-    let provider = request.provider.trim();
+pub async fn ai_runtime_has_provider_key(
+    request: AiRuntimeProviderRequest,
+) -> Result<bool, String> {
+    let provider = request.provider.trim().to_string();
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    app_infra::has_ai_provider_key(provider).map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || app_infra::has_ai_provider_key(&provider))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

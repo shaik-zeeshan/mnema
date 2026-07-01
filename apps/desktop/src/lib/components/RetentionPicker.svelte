@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import { tick } from "svelte";
   import type { RetentionPolicy } from "$lib/types";
   import { retentionPresets } from "./retention";
@@ -32,6 +33,14 @@
     if (disabled || next === value) return;
     value = next;
     onValueChange?.(next);
+  }
+
+  // Click handler: select, then pull DOM focus onto the clicked chip. The Tauri
+  // WKWebView doesn't focus a <button> on click, so without this the roving
+  // tabindex has no anchor and a follow-up arrow key does nothing.
+  function selectByClick(index: number) {
+    select(presets[index].value);
+    chipEls[index]?.focus();
   }
 
   // After a keyboard selection, move focus to the new chip — but only when
@@ -83,13 +92,13 @@
       role="radio"
       aria-checked={active}
       aria-label={preset.label}
-      title={preset.label}
+      use:tip={preset.label}
       tabindex={active ||
       (!presets.some((p) => p.value === value) && index === 0)
         ? 0
         : -1}
       {disabled}
-      onclick={() => select(preset.value)}
+      onclick={() => selectByClick(index)}
       onkeydown={(e) => onKeydown(e, index)}
     >
       <span class="preset__label">{preset.label}</span>
@@ -108,7 +117,7 @@
   }
 
   .retention-picker--disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -122,7 +131,7 @@
     background: var(--app-surface);
     color: var(--app-text-muted);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 540;
     line-height: 1;
     letter-spacing: 0.01em;
@@ -138,8 +147,14 @@
     background: var(--app-surface-hover);
   }
 
+  .preset:not(.preset--active):not(:disabled):active {
+    background: var(--app-surface-active);
+  }
+
   .preset:focus-visible {
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+    outline: 2px solid var(--app-accent);
+    outline-offset: 2px;
   }
 
   .preset--active {

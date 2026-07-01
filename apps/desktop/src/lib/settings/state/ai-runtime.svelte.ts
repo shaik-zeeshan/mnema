@@ -13,6 +13,8 @@
 // into its own draft module, only the injected closures change.
 
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { humanizeError } from "$lib/format-error";
 import type {
   AiProviderConfig,
   AiRuntimeStatus,
@@ -80,7 +82,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       aiRuntimeStatus = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
     } catch (error) {
-      aiRuntimeStatusError = error instanceof Error ? error.message : String(error);
+      aiRuntimeStatusError = humanizeError(error);
     } finally {
       aiRuntimeStatusLoading = false;
     }
@@ -125,7 +127,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
         delete probed[id];
         aiProviderKeyErrors = {
           ...aiProviderKeyErrors,
-          [id]: error instanceof Error ? error.message : String(error),
+          [id]: humanizeError(error),
         };
       }
     }
@@ -170,7 +172,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     } catch (error) {
       aiProviderKeyErrors = {
         ...aiProviderKeyErrors,
-        [provider]: error instanceof Error ? error.message : String(error),
+        [provider]: humanizeError(error),
       };
     } finally {
       aiProviderKeyInFlight.delete(provider);
@@ -181,6 +183,32 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   async function clearAiProviderKey(provider: string) {
     // A save/clear for this same id is already in flight — bail so a rapid
     // double-invoke (save+clear, or two clears) can't race on the keychain.
+    if (aiProviderKeyInFlight.has(provider)) return;
+    // Clearing deletes the keychain credential with no undo — gate it on an
+    // explicit confirm, matching the Remove-provider flow, so a single mis-click
+    // can't wipe a saved API key. Arm the in-flight latch BEFORE the awaited
+    // dialog so a second click can't open a second dialog mid-confirm; release it
+    // if the user cancels.
+    aiProviderKeyInFlight.add(provider);
+    try {
+      const confirmed = await confirm(
+        `Deleting the API key for “${deps.labelForProvider(provider)}” removes it from the macOS keychain right away. Any AI feature using this provider will stop working until you enter a new key.`,
+        {
+          title: "Delete this API key?",
+          kind: "warning",
+          okLabel: "Delete Key",
+          cancelLabel: "Keep Key",
+        },
+      );
+      if (!confirmed) return;
+    } catch {
+      // A dialog failure must not silently delete the key — bail.
+      return;
+    } finally {
+      // The block below re-arms the latch for the actual keychain call; release
+      // it here so a cancel/dialog-error path doesn't leave it stuck.
+      aiProviderKeyInFlight.delete(provider);
+    }
     if (aiProviderKeyInFlight.has(provider)) return;
     aiProviderKeyInFlight.add(provider);
     aiProviderKeySavingProvider = provider;
@@ -196,7 +224,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     } catch (error) {
       aiProviderKeyErrors = {
         ...aiProviderKeyErrors,
-        [provider]: error instanceof Error ? error.message : String(error),
+        [provider]: humanizeError(error),
       };
     } finally {
       aiProviderKeyInFlight.delete(provider);
@@ -227,7 +255,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       aiProviderKeySavedByProvider = rest;
       aiProviderRemovalError = null;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = humanizeError(error);
       aiProviderRemovalError = `Could not clear the saved key for the removed provider ${label} — it may still be in the keychain. ${message}`;
     }
   }
@@ -248,7 +276,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       aiRuntimeTestResult = await invoke<AiRuntimeTestResult>("ai_runtime_test_connection");
     } catch (error) {
-      aiRuntimeTestError = error instanceof Error ? error.message : String(error);
+      aiRuntimeTestError = humanizeError(error);
     } finally {
       aiRuntimeTestRunning = false;
       void loadAiRuntimeStatus();

@@ -1,9 +1,14 @@
 <script lang="ts">
   // RailResizer — the draggable boundary between the Insights left rail and the
   // active sub-surface. It is the visible 1px divider (the rail dropped its own
-  // border-right) AND the grab strip: a 7px hit area with the hairline flush to
-  // the rail edge so the seam looks unchanged while a wider target sits to its
-  // right. Drag (pointer), arrow-key nudges, and double-click-to-reset all feed
+  // border-right) AND the grab strip: a 7px hit area painted with the rail's own
+  // surface, with the hairline flush to its RIGHT (main-facing) edge. The strip
+  // must carry the rail surface, not stay transparent: as a flex sibling it adds
+  // 7px between the rail and main, and a transparent strip lets the window
+  // background show through — which on the Chat tab (white main pane) reads as the
+  // rail's cream bleeding past the divider. Painting it as the rail and seating
+  // the hairline at the cream→main seam keeps the boundary clean in every theme.
+  // Drag (pointer), arrow-key nudges, and double-click-to-reset all feed
   // the shell's persisted `railWidth`; the shell owns clamping + storage. Follows
   // the WAI-ARIA window-splitter pattern (focusable `role="separator"` carrying
   // aria-valuenow/min/max). Visual cues — hairline-as-handle, a grip that surfaces
@@ -103,15 +108,18 @@
 </div>
 
 <style>
-  /* A thin flex gutter that owns the rail/main divider. The visible hairline is
-     flush to the LEFT edge (the rail side) so the seam reads identically to the
-     old border-right, while the 7px box gives a comfortable grab target spilling
-     into the content gutter. */
+  /* A thin flex gutter that owns the rail/main divider. It is painted with the
+     rail's own surface (NOT transparent): the strip adds 7px between the rail and
+     main, and a see-through strip leaks the window background — which against the
+     Chat tab's white main pane reads as the rail's cream spilling past the line.
+     With the strip carrying the rail surface and the hairline flush to its RIGHT
+     (main-facing) edge, the boundary lands cleanly at the cream→main seam. */
   .rail-resizer {
     position: relative;
     flex: 0 0 auto;
     width: 7px;
     align-self: stretch;
+    background: var(--app-surface-subtle);
     cursor: col-resize;
     /* Don't let a quick drag select sub-surface text. */
     touch-action: none;
@@ -119,13 +127,14 @@
     user-select: none;
   }
 
-  /* The hairline divider — flush left, full height. Quiet by default, accent on
+  /* The hairline divider — flush to the strip's RIGHT (main-facing) edge so it
+     sits on the cream→main seam, full height. Quiet by default, accent on
      hover / drag / keyboard focus. */
   .rail-resizer .line {
     position: absolute;
     top: 0;
     bottom: 0;
-    left: 0;
+    right: 0;
     width: 1px;
     background: var(--app-border);
     transition: background 0.12s ease;
@@ -140,7 +149,7 @@
   .rail-resizer .grip {
     position: absolute;
     top: 50%;
-    left: -1px;
+    right: -1px;
     transform: translateY(-50%);
     width: 3px;
     height: 26px;

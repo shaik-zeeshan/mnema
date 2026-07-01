@@ -5,6 +5,10 @@
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import IconInfo from "~icons/lucide/info";
+  import IconLoader from "~icons/lucide/loader-circle";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconCheck from "~icons/lucide/check";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -17,6 +21,7 @@
   const nonOriginalResolutionDisabled = $derived(c.nonOriginalResolutionDisabled);
   const customResolutionErrors = $derived(c.customResolutionErrors);
   const customBitrateErrors = $derived(c.customBitrateErrors);
+
 </script>
 
 <SettingGroup id="settings-section-video" title="Video Output">
@@ -42,7 +47,7 @@
       <div class="control-stack">
         {#if nativeCaptureUnsupported}
           <div class="resolution-unsupported-notice">
-            <span class="resolution-unsupported-notice__icon">ℹ</span>
+            <span class="resolution-unsupported-notice__icon" aria-hidden="true"><IconInfo /></span>
             <span class="resolution-unsupported-notice__text">
               Native screen capture is unsupported on this system. Resolution settings are saved,
               but only apply when native screen capture is available.
@@ -50,7 +55,7 @@
           </div>
         {:else if onlyOriginalResolutionSupported}
           <div class="resolution-locked-notice">
-            <span class="resolution-locked-notice__icon">ℹ</span>
+            <span class="resolution-locked-notice__icon" aria-hidden="true"><IconInfo /></span>
             <span class="resolution-locked-notice__text">
               Scaled and custom resolutions require macOS 15 or later (ScreenCaptureKit).
               Only <strong>Original</strong> resolution is available on this system.
@@ -58,14 +63,14 @@
           </div>
         {:else if resolutionSupportPending}
           <div class="resolution-pending-notice">
-            <span class="resolution-pending-notice__icon">⏳</span>
+            <span class="resolution-pending-notice__icon resolution-pending-notice__icon--spin" aria-hidden="true"><IconLoader /></span>
             <span class="resolution-pending-notice__text">
               Checking capture support… Scaled and custom resolutions are disabled until support is confirmed.
             </span>
           </div>
         {:else if captureSupportFailed}
           <div class="resolution-warn-notice">
-            <span class="resolution-warn-notice__icon">⚠</span>
+            <span class="resolution-warn-notice__icon" aria-hidden="true"><IconAlert /></span>
             <span class="resolution-warn-notice__text">
               Could not determine capture support for this system. You can still edit and save —
               the backend will validate the chosen resolution.
@@ -73,7 +78,7 @@
           </div>
         {:else if nonOriginalResolutionSupported}
           <div class="resolution-supported-notice">
-            <span class="resolution-supported-notice__icon">✓</span>
+            <span class="resolution-supported-notice__icon" aria-hidden="true"><IconCheck /></span>
             <span class="resolution-supported-notice__text">
               Native capture supports scaled and custom output resolutions.
             </span>
@@ -162,14 +167,6 @@
             {/if}
           </p>
         {/if}
-
-        <div class="bitrate-compat-notice">
-          <span class="bitrate-compat-notice__icon">ℹ</span>
-          <span class="bitrate-compat-notice__text">
-            Bitrate is applied only on macOS 15+ (ScreenCaptureKit path).
-            On older macOS the system default bitrate is used regardless of this setting.
-          </span>
-        </div>
       </div>
     {/snippet}
   </SettingRow>
@@ -188,5 +185,37 @@
 
   .control-stack :global(.group-hint) {
     margin: 0;
+  }
+
+  /* The notice `__icon` spans (styled globally in settings-blocks.css for a text
+     glyph) now hold a Lucide SVG — size + stroke it to inherit the span's color.
+     The svg is rendered by a child icon component, so it needs a `:global`
+     descendant rule (a class on the component wouldn't carry this scope hash). */
+  .resolution-unsupported-notice__icon :global(svg),
+  .resolution-locked-notice__icon :global(svg),
+  .resolution-pending-notice__icon :global(svg),
+  .resolution-warn-notice__icon :global(svg),
+  .resolution-supported-notice__icon :global(svg) {
+    display: block;
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* The "checking support…" state spins its loader. Rotate the wrapper span, not
+     the svg (WKWebView won't reliably rotate an svg around its own center). */
+  .resolution-pending-notice__icon--spin {
+    display: inline-flex;
+    animation: settings-icon-spin 0.7s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .resolution-pending-notice__icon--spin {
+      animation: none;
+    }
   }
 </style>

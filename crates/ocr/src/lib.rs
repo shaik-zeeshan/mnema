@@ -230,8 +230,29 @@ impl OcrOutput {
     }
 
     pub fn structured_payload_json(&self) -> OcrResult<String> {
-        serde_json::to_string(&self.structured_payload).map_err(Into::into)
+        // Round geometry + confidence to 3 decimals before serialize: overlay boxes
+        // sit on a ~1500px screen, so 18-digit float mantissas are pure waste. Rounding
+        // also strips high-entropy mantissa noise so the downstream zstd compresses far
+        // better (geometry compression, app-infra Slice 1).
+        let mut payload = self.structured_payload.clone();
+        for observation in &mut payload.observations {
+            observation.confidence = round3_f32(observation.confidence);
+            let bbox = &mut observation.bounding_box;
+            bbox.x = round3_f64(bbox.x);
+            bbox.y = round3_f64(bbox.y);
+            bbox.width = round3_f64(bbox.width);
+            bbox.height = round3_f64(bbox.height);
+        }
+        serde_json::to_string(&payload).map_err(Into::into)
     }
+}
+
+fn round3_f64(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
+fn round3_f32(value: f32) -> f32 {
+    (value * 1000.0).round() / 1000.0
 }
 
 #[async_trait]

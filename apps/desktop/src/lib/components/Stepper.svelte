@@ -15,6 +15,7 @@
     invalid = false,
     id,
     ariaLabel,
+    errorId,
   }: {
     value: string;
     min?: number;
@@ -26,6 +27,9 @@
     invalid?: boolean;
     id?: string;
     ariaLabel?: string;
+    // Id of the element holding the validation message; wired to
+    // aria-describedby/aria-errormessage while `invalid`.
+    errorId?: string;
   } = $props();
 
   // Commit clamps the raw string into range (blank stays blank, non-numeric is
@@ -44,6 +48,13 @@
   // assistive tech via the spinbutton aria-value* attributes so the +/- buttons
   // announce the resulting value and its bounds.
   const numericValue = $derived(parseStepperRaw(value));
+
+  // Bound state for the +/- buttons: once the value sits at (or past) a bound,
+  // the corresponding button is disabled so pressing it again gives an honest
+  // "can't go further" cue instead of a dead no-op. A blank/non-numeric field
+  // leaves both live so the user can step up or down from empty.
+  const atMax = $derived(max !== undefined && numericValue !== null && numericValue >= max);
+  const atMin = $derived(min !== undefined && numericValue !== null && numericValue <= min);
 
   function bump(direction: 1 | -1) {
     if (disabled) return;
@@ -68,7 +79,7 @@
   <button
     type="button"
     class="step-btn"
-    {disabled}
+    disabled={disabled || atMin}
     aria-label={`Decrease${ariaLabel ? ` ${ariaLabel}` : ""}`}
     onclick={() => bump(-1)}
   >
@@ -88,6 +99,8 @@
       {disabled}
       aria-label={ariaLabel}
       aria-invalid={invalid}
+      aria-describedby={invalid && errorId ? errorId : undefined}
+      aria-errormessage={invalid && errorId ? errorId : undefined}
       aria-valuenow={numericValue !== null
         ? clampNumber(numericValue, min, max)
         : undefined}
@@ -108,7 +121,7 @@
   <button
     type="button"
     class="step-btn"
-    {disabled}
+    disabled={disabled || atMax}
     aria-label={`Increase${ariaLabel ? ` ${ariaLabel}` : ""}`}
     onclick={() => bump(1)}
   >
@@ -125,7 +138,7 @@
   }
 
   .stepper--disabled {
-    opacity: 0.45;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -152,14 +165,19 @@
     color: var(--app-text-strong);
   }
 
+  .step-btn:not(:disabled):active {
+    background: var(--app-surface-active);
+    transform: translateY(0.5px);
+  }
+
   .step-btn:focus-visible {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .step-btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
   }
 
@@ -184,7 +202,7 @@
     font-size: 12px;
     text-align: center;
     outline: none;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
     transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
   }
 
@@ -201,7 +219,7 @@
   .num-input:focus {
     border-color: var(--app-accent);
     background: var(--app-surface-raised);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
   }
 
   .num-input--invalid {
@@ -210,7 +228,7 @@
 
   .num-input--invalid:focus {
     border-color: var(--app-danger);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
       0 0 0 3px color-mix(in srgb, var(--app-danger) 30%, transparent);
   }
 

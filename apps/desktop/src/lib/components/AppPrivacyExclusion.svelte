@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import type { AppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
 
   let {
@@ -8,6 +9,92 @@
     controller: AppPrivacyExclusionController;
     comboboxListId?: string;
   } = $props();
+
+  // Roving keyboard highlight for the combobox listbox. The controller exposes
+  // the filtered candidates and the add/close actions, but the highlighted
+  // option is pure view state, so it lives here in the component.
+  let highlightedIndex = $state(0);
+  // Error state: the query matched nothing selectable when the user committed.
+  let comboboxError = $state(false);
+
+  const optionId = (index: number) => `${comboboxListId}-option-${index}`;
+  const activeDescendantId = $derived(
+    controller.comboboxOpen &&
+      controller.filteredCandidates.length > 0 &&
+      highlightedIndex >= 0 &&
+      highlightedIndex < controller.filteredCandidates.length
+      ? optionId(highlightedIndex)
+      : undefined,
+  );
+
+  // Keep the highlight in bounds as the filtered list changes (typing / open).
+  $effect(() => {
+    const count = controller.filteredCandidates.length;
+    if (count === 0) {
+      if (highlightedIndex !== 0) highlightedIndex = 0;
+      return;
+    }
+    if (highlightedIndex > count - 1) highlightedIndex = count - 1;
+    if (highlightedIndex < 0) highlightedIndex = 0;
+  });
+
+  function onComboboxInput() {
+    comboboxError = false;
+    highlightedIndex = 0;
+    controller.handlePrivacyAppComboboxInput();
+  }
+
+  // Component-owned keyboard handling so Enter picks the HIGHLIGHTED option
+  // (not blindly filteredCandidates[0]) and Arrow keys rove the highlight.
+  function onComboboxKeydown(event: KeyboardEvent) {
+    const candidates = controller.filteredCandidates;
+    switch (event.key) {
+      case "ArrowDown": {
+        event.preventDefault();
+        if (!controller.comboboxOpen) {
+          controller.comboboxOpen = true;
+          highlightedIndex = 0;
+          return;
+        }
+        if (candidates.length > 0) {
+          highlightedIndex = (highlightedIndex + 1) % candidates.length;
+        }
+        return;
+      }
+      case "ArrowUp": {
+        event.preventDefault();
+        if (!controller.comboboxOpen) {
+          controller.comboboxOpen = true;
+          highlightedIndex = Math.max(candidates.length - 1, 0);
+          return;
+        }
+        if (candidates.length > 0) {
+          highlightedIndex = (highlightedIndex - 1 + candidates.length) % candidates.length;
+        }
+        return;
+      }
+      case "Enter": {
+        event.preventDefault();
+        const target = candidates[highlightedIndex];
+        if (target) {
+          comboboxError = false;
+          controller.addPrivacyAppCandidate(target);
+        } else {
+          // Non-empty query that resolves to no selectable app → invalid input.
+          comboboxError = controller.comboboxQuery.trim().length > 0;
+        }
+        return;
+      }
+      case "Escape": {
+        controller.comboboxOpen = false;
+        return;
+      }
+    }
+  }
+
+  function onOptionHover(index: number) {
+    highlightedIndex = index;
+  }
 </script>
 
 <div class="app-privacy-exclusion">
@@ -89,29 +176,35 @@
   <div class="app-combobox">
     <input
       class="text-input app-combobox__input"
+      class:is-error={comboboxError}
       role="combobox"
       aria-expanded={controller.comboboxOpen}
       aria-controls={comboboxListId}
       aria-autocomplete="list"
+      aria-activedescendant={activeDescendantId}
+      aria-invalid={comboboxError}
       bind:value={controller.comboboxQuery}
       placeholder="Search installed apps"
-      oninput={controller.handlePrivacyAppComboboxInput}
+      oninput={onComboboxInput}
       onfocus={() => { controller.comboboxOpen = true; }}
       onblur={controller.closePrivacyAppComboboxSoon}
-      onkeydown={controller.handlePrivacyAppComboboxKeydown}
+      onkeydown={onComboboxKeydown}
       disabled={controller.commandInFlight}
     />
     {#if controller.comboboxOpen}
       <div class="app-combobox__panel" id={comboboxListId} role="listbox">
         {#if controller.filteredCandidates.length > 0}
-          {#each controller.filteredCandidates as candidate (candidate.bundleId)}
+          {#each controller.filteredCandidates as candidate, index (candidate.bundleId)}
             {@const iconSrc = controller.privacyAppIconSrc(candidate)}
             <button
               class="app-combobox__option"
+              class:option--active={index === highlightedIndex}
+              id={optionId(index)}
               type="button"
               role="option"
-              aria-selected="false"
+              aria-selected={index === highlightedIndex}
               onmousedown={(event) => event.preventDefault()}
+              onmouseenter={() => onOptionHover(index)}
               onclick={() => controller.addPrivacyAppCandidate(candidate)}
             >
               <span class="app-combobox__option-content">
@@ -151,7 +244,7 @@
               class="exclusion-chip__toggle"
               aria-pressed={app.enabled}
               aria-label={`${app.displayName} — ${app.enabled ? "exclusion active, activate to disable" : "exclusion disabled, activate to enable"}`}
-              title={`${app.displayName}\n${app.bundleId}\n${app.enabled ? "Excluded · click to disable" : "Disabled · click to enable"}`}
+              use:tip={`${app.displayName}\n${app.bundleId}\n${app.enabled ? "Excluded · click to disable" : "Disabled · click to enable"}`}
               disabled={controller.commandInFlight}
               onclick={() => controller.setPrivacyExcludedAppEnabled(app.id, !app.enabled)}
             >
@@ -168,7 +261,7 @@
               type="button"
               class="exclusion-chip__remove"
               aria-label={`Remove ${app.displayName} from exclusions`}
-              title="Remove exclusion"
+              use:tip={"Remove exclusion"}
               disabled={controller.commandInFlight}
               onclick={() => controller.removePrivacyApp(app.id)}
             >
@@ -449,7 +542,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 6px;
     background: var(--app-surface-raised);
-    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-bg) 34%, transparent);
+    box-shadow: var(--app-shadow-popover);
   }
 
   .app-combobox__option {
@@ -471,6 +564,13 @@
   .app-combobox__option:hover {
     border-color: var(--app-border-hover);
     background: var(--app-surface-hover);
+  }
+
+  /* Roving keyboard highlight: the active option reads as the Enter target. */
+  .app-combobox__option.option--active {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-text-strong);
   }
 
   .app-combobox__option-content {
@@ -528,6 +628,19 @@
 
   .text-input:focus {
     border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  /* Invalid state: Enter committed a query that matches no selectable app. */
+  .text-input.is-error,
+  .text-input[aria-invalid="true"] {
+    border-color: var(--app-danger-border);
+  }
+
+  .text-input.is-error:focus,
+  .text-input[aria-invalid="true"]:focus {
+    border-color: var(--app-danger);
+    box-shadow: var(--app-ring-danger);
   }
 
   .text-input::placeholder {
@@ -552,8 +665,13 @@
   }
 
   .btn:disabled {
-    opacity: 0.35;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
+  }
+
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
 
   .btn--ghost {

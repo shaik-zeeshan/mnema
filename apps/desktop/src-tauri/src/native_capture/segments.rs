@@ -3831,6 +3831,34 @@ where
         return Ok(false);
     }
 
+    // Never fight a deliberate suspension or manual pause. A DisplayUnavailable /
+    // LowDisk / privacy suspension owns the screen state and re-arms through its
+    // own path (`attempt_privacy_suspension_recovery`), and a user pause resumes
+    // explicitly. The system-wake callbacks (`NSWorkspaceDidWake` and the Core
+    // Graphics display-reconfiguration callback) fire on the same display events
+    // that surface those suspensions, so recovering here would race the owner:
+    // restart a segment the owner immediately re-tears-down, or leave a live
+    // session with `capture_suspension` still set. Defer to the owner. This
+    // mirrors the guard in `RecordingLifecycle::should_attempt_recovery_after_possible_wake`,
+    // which only covered the frontend permission-poll path, not these callbacks.
+    if runtime.capture_suspension.is_some() || runtime.user_capture_paused {
+        return Ok(false);
+    }
+
+    // A display-reconfiguration callback fires for *any* display change
+    // (resolution/SetMode, monitor connect/Add, set-main), not only a wake, and
+    // `NSWorkspaceDidWake` fires alongside it — so this path can be entered while
+    // the screen is still capturing normally. Recovering an already-live session
+    // would tear it down and rotate the segment (a spurious mid-recording boundary
+    // and a brief capture gap), and a second wake callback would re-rotate the
+    // segment the first just started. If the screen session is already live there
+    // is nothing to recover — this is the `!session_is_live` idempotency the wake
+    // callbacks document but never enforced on this path (the legitimate
+    // post-sleep path clears `active_screen_session`, so it still proceeds).
+    if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
+        return Ok(false);
+    }
+
     let Some(screen_planner) = screen_planner_for_runtime(runtime).cloned() else {
         return Err(CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),

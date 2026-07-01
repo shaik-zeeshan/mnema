@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use app_infra::{
     evidence_fingerprint, ActivityCorrection, CaptureWindow, NewActivity, NewActivityEvidence,
-    NewConclusion, NewConclusionEvidence, UserContextStore,
+    NewConclusion, NewConclusionEvidence, SubjectVectorStore, UserContextStore,
 };
 use app_infra::user_context::{confidence, guardrail};
 
@@ -455,7 +455,10 @@ communication\" — NOT a fixed subject+attribute+value row and NOT a tag. Each 
 Subject: a short grouping handle like \"Apple\" or \"async communication\". Ground every Conclusion \
 in evidence: list the Activity ids that SUPPORT it, and (only when an Activity genuinely cuts \
 against it) the Activity ids that CONTRADICT it. Only reference Activity ids that appear in the \
-input. Prefer a few well-supported Conclusions over many flimsy ones. Return the structured result.";
+input. Prefer a few well-supported Conclusions over many flimsy ones. When a KNOWN SUBJECTS list \
+is provided and a Conclusion is about one of those handles, reuse that handle VERBATIM as its \
+subject so it reinforces the existing subject; only invent a new handle for a genuinely new \
+subject. Return the structured result.";
 
 /// The full Conclusion-distillation preamble the engine sees: the **soft**
 /// Sensitive Category Guardrail instruction (#96) prepended to
@@ -585,6 +588,8 @@ pub(crate) fn category_label(category: ActivityCategory) -> &'static str {
 pub async fn distill_conclusions(
     engine: &ai_engine::EngineConfig,
     store: &UserContextStore,
+    app_handle: &tauri::AppHandle,
+    subject_vectors: &SubjectVectorStore,
 ) -> Result<ConclusionDistillationOutcome, String> {
     let activities = store
         .activities_for_distillation(DISTILLATION_ACTIVITY_LIMIT)
@@ -642,6 +647,56 @@ pub async fn distill_conclusions(
     // touch the seedQuery / window text. The deterministic resurface gate at the
     // persist site is the hard backstop for when the engine ignores this.
     prompt.push_str(&build_dismissed_conclusions_block(&dismissals));
+    // KNOWN SUBJECTS block (slices 5/6): feed the engine the subject handles the
+    // user already has so it reuses one VERBATIM (which then reinforces the
+    // canonical Subject row via the subject-only upsert) instead of coining a
+    // reworded duplicate. The candidate set is the UNION of three sources, with the
+    // LLM as the matcher over all of them:
+    //   * a recency floor — the newest distinct handles, always included;
+    //   * the LEXICAL leg — existing Subjects whose name/statements share words with
+    //     the recent Activity text (model-free, no embedding-backfill lag); and
+    //   * Mode 1 (semantic) — when a Semantic Search model is installed, the
+    //     window's Activities embedded and KNN'd against the stored Subject Vectors
+    //     for non-lexically-related handles (e.g. "Apple" ↔ "iPhone").
+    // The recency floor + lexical leg are load-bearing: a Subject created by a recent
+    // distillation is not embedded into the Subject Vectors until the backfill worker
+    // runs *after* it, so semantic KNN structurally cannot surface the freshest
+    // Subjects — exactly the ones the next distillation re-derives and duplicates.
+    // The lexical leg catches the common case (a reworded duplicate shares words) with
+    // no model at all, so it works in the default/prod config too. Unioning (not the
+    // old `semantic OR recency` either/or, whose non-empty semantic set suppressed the
+    // fallback and let a fresh Subject get reworded) closes the gap. Appended steering
+    // context (like the authored / dismissed blocks); it does not touch the Activity
+    // list above.
+    let activity_query = activities
+        .iter()
+        .map(|activity| format!("{} {}", activity.title.trim(), activity.summary.trim()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let lexical_handles = store
+        .list_subject_handles_by_lexical_overlap(&activity_query, KNOWN_SUBJECTS_LEXICAL_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?;
+    let semantic_candidates =
+        super::subject_candidates::select_semantic_subject_candidates(
+            app_handle,
+            subject_vectors,
+            &activities,
+        )
+        .await;
+    let recency_handles = store
+        .list_subject_handles_by_recency(KNOWN_SUBJECTS_FALLBACK_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?;
+    // Related = lexical first (most precise for dedup), then semantic. merge_known_subjects
+    // leads with the recency floor, then these related handles (so an OLD lexical/semantic
+    // duplicate survives the char cap ahead of the older recency tail), then the rest of
+    // recency. Dedup is case-insensitive across all three.
+    let mut related = lexical_handles;
+    related.extend(semantic_candidates);
+    let known_subjects =
+        super::subject_candidates::merge_known_subjects(recency_handles, related);
+    prompt.push_str(&build_known_subjects_block(&known_subjects));
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
     let batch: DistilledConclusionBatch = ai_engine::extract_with_preamble::<
@@ -866,6 +921,68 @@ belief out.\n\n",
             dismissal.subject.trim(),
             dismissal.statement.trim()
         ));
+    }
+    block
+}
+
+/// How many recency-ordered handles Mode 2 (no Semantic Search model, or an empty
+/// semantic pass) pulls from the store as the fallback candidate set. The real
+/// bound on what reaches the prompt is [`KNOWN_SUBJECTS_CHAR_CAP`]; this just caps
+/// the store read so a user with thousands of Subjects does not over-fetch.
+const KNOWN_SUBJECTS_FALLBACK_LIMIT: i64 = 200;
+
+/// How many lexical-overlap candidate handles the model-free leg contributes to the
+/// KNOWN SUBJECTS union per distillation. The leg ranks ALL existing Subjects by
+/// shared-word relevance to the recent Activity text and keeps this many best; the
+/// real bound on the prompt is [`KNOWN_SUBJECTS_CHAR_CAP`]. Kept modest so a wide,
+/// topically-scattered window cannot flood the block with weak lexical matches.
+const KNOWN_SUBJECTS_LEXICAL_LIMIT: i64 = 20;
+
+/// Total char budget for the KNOWN SUBJECTS block (slices 5/6). Handles are short,
+/// so this generous cap effectively hands a big-context cloud LLM every candidate
+/// handle; a small-context local LLM is recency/relevance-bounded by the cap (the
+/// accepted worst case — the most-recent/most-relevant handles lead). Listed until
+/// the cap, then the rest are dropped.
+const KNOWN_SUBJECTS_CHAR_CAP: usize = 4_000;
+
+/// Render the KNOWN SUBJECTS prompt block (slices 5/6): the candidate Subject
+/// handles the user already has, fed to the engine with an instruction to reuse a
+/// handle VERBATIM as a Conclusion's `subject` when the belief is about that
+/// subject (so a reworded distillation reinforces the canonical Subject row via the
+/// subject-only upsert instead of splitting it into a near-duplicate), and to coin
+/// a new handle only for a genuinely new subject. Handles arrive most-relevant /
+/// newest-first and are kept until [`KNOWN_SUBJECTS_CHAR_CAP`] is reached (the rest
+/// dropped). Empty (no trailing block) when there are no candidate handles, so a
+/// fresh dossier's prompt is unchanged — the same convention as the authored /
+/// dismissed blocks.
+fn build_known_subjects_block(handles: &[String]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for handle in handles {
+        let handle = handle.trim();
+        if handle.is_empty() {
+            continue;
+        }
+        let line = format!("- {handle}\n");
+        if used + line.chars().count() > KNOWN_SUBJECTS_CHAR_CAP && !lines.is_empty() {
+            break;
+        }
+        used += line.chars().count();
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut block = String::new();
+    block.push_str(
+        "\nKNOWN SUBJECTS — these are subject handles the user already has. When a \
+Conclusion you form is about one of them, reuse the handle VERBATIM (exactly as written below) as \
+that Conclusion's subject so it reinforces the existing subject rather than creating a reworded \
+duplicate. Only coin a NEW handle for a genuinely new subject that is not in this list.\n\n",
+    );
+    for line in lines {
+        block.push_str(&line);
     }
     block
 }
@@ -1147,6 +1264,47 @@ mod tests {
         assert!(block.contains("subject=Vim statement=Prefers Vim"));
         // The instruction enforces the high-bar / never-same-evidence rule.
         assert!(block.contains("substantially MORE and NEWER"));
+    }
+
+    #[test]
+    fn known_subjects_block_is_empty_without_handles() {
+        assert!(build_known_subjects_block(&[]).is_empty());
+        // All-blank handles also yield no block (prompt unchanged).
+        assert!(build_known_subjects_block(&["   ".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn known_subjects_block_renders_handles_and_header() {
+        let handles = vec!["Apple".to_string(), "async communication".to_string()];
+        let block = build_known_subjects_block(&handles);
+        assert!(block.contains("KNOWN SUBJECTS"));
+        // The reuse-verbatim instruction frames the block.
+        assert!(block.contains("VERBATIM"));
+        assert!(block.contains("reinforces the existing subject"));
+        // One `- {handle}` line per handle, in order.
+        assert!(block.contains("- Apple"));
+        assert!(block.contains("- async communication"));
+    }
+
+    #[test]
+    fn known_subjects_block_respects_char_cap() {
+        // Many handles; the block stays bounded by the cap (plus the header + the
+        // single over-budget line the !lines.is_empty() guard allows once).
+        let handles: Vec<String> = (0..2_000).map(|i| format!("subject-{i:05}")).collect();
+        let block = build_known_subjects_block(&handles);
+        assert!(block.contains("KNOWN SUBJECTS"));
+        assert!(
+            block.chars().count() < KNOWN_SUBJECTS_CHAR_CAP + 600,
+            "block stays bounded by the char cap (+header/one-line slack)"
+        );
+    }
+
+    #[test]
+    fn conclusion_preamble_instructs_reuse_of_known_subject_handles() {
+        let preamble = conclusion_preamble();
+        assert!(preamble.contains("KNOWN SUBJECTS"));
+        assert!(preamble.contains("reuse that handle VERBATIM"));
+        assert!(preamble.contains("genuinely new subject"));
     }
 
     #[test]
