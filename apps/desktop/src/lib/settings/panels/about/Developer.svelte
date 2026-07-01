@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
@@ -71,7 +72,7 @@
               </div>
               <div class="debug-log-status__row">
                 <span class="debug-log-status__label">Path</span>
-                <span class="debug-log-status__path" title={debugLogStatus.path}>{debugLogStatus.path}</span>
+                <span class="debug-log-status__path" use:tip={debugLogStatus.path}>{debugLogStatus.path}</span>
               </div>
               <div class="debug-log-status__row">
                 <span class="debug-log-status__label">File</span>
@@ -138,7 +139,7 @@
           <div class="debug-log-status">
             <div class="debug-log-status__row">
               <span class="debug-log-status__label">Path</span>
-              <span class="debug-log-status__path" title={generalLogStatus.path}>{generalLogStatus.path}</span>
+              <span class="debug-log-status__path" use:tip={generalLogStatus.path}>{generalLogStatus.path}</span>
             </div>
             <div class="debug-log-status__row">
               <span class="debug-log-status__label">File</span>

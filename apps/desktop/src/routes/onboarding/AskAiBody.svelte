@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import type { OnboardingController } from "./onboarding.svelte";
   import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
 
@@ -186,7 +187,7 @@
         class="btn sm"
         type="button"
         disabled={ai.aiProviderRemoving}
-        title={ai.aiProviderKindDescription(kind)}
+        use:tip={ai.aiProviderKindDescription(kind)}
         onclick={() => ai.addProvider(kind)}
       >
         + {ai.aiProviderKindLabel(kind)}

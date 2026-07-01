@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, tick } from "svelte";
@@ -425,7 +426,7 @@
       {:else}
         <section class="requester" aria-label="Requesting tool">
           <div class="requester__head">
-            <span class="requester__label" title={pendingRequest.client.label}
+            <span class="requester__label" use:tip={pendingRequest.client.label}
               >{pendingRequest.client.label}</span
             >
             <span

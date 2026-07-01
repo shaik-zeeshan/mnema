@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import {
     grantStatus,
@@ -94,11 +95,11 @@
                 <li class="grant-row" class:grant-row--inactive={status !== "active"}>
                   <span class="grant-row__status grant-row__status--{status}" aria-hidden="true"></span>
                   <div class="grant-row__meta">
-                    <span class="grant-row__name" title={grant.label}>{grant.label}</span>
+                    <span class="grant-row__name" use:tip={grant.label}>{grant.label}</span>
                     <span class="grant-row__detail">
                       <span class="grant-row__scope">{formatGrantScope(grant.scope)}</span>
                       <span class="grant-row__sep" aria-hidden="true">·</span>
-                      <span title={new Date(grant.expiresAtUnixMs).toLocaleString()}>{grantStatusLabel(grant)}</span>
+                      <span use:tip={new Date(grant.expiresAtUnixMs).toLocaleString()}>{grantStatusLabel(grant)}</span>
                     </span>
                   </div>
                   <button

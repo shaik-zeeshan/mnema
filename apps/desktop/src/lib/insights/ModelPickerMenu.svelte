@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // ModelPickerMenu — the shared model-picker UI: a trigger that opens a search
   // box over a provider-grouped listbox. ONE picker surface for every place a
   // model is chosen (the Chat composer's per-thread pin and the Settings
@@ -406,7 +407,7 @@
               class:mpm-option--cursor={row.index === highlight}
               role="option"
               aria-selected={row.selected}
-              title={row.title}
+              use:tip={row.title}
               onmousedown={(event) => event.preventDefault()}
               onmouseenter={() => (highlight = row.index)}
               onclick={() => selectOption(row.option)}
@@ -438,7 +439,7 @@
       <div class="mpm-failures">
         {#each failures as failure (failure.provider)}
           <div class="mpm-failure">
-            <span class="mpm-failure-text" title={`${failure.label}: ${failure.reason}`}>
+            <span class="mpm-failure-text" use:tip={`${failure.label}: ${failure.reason}`}>
               <span class="mpm-failure-warn" aria-hidden="true">⚠</span>
               {failure.label} — {failure.reason}
             </span>
@@ -470,7 +471,7 @@
     aria-haspopup="listbox"
     aria-expanded={open}
     aria-label={ariaLabel}
-    {title}
+    use:tip={title}
     {disabled}
     onclick={toggleMenu}
   >

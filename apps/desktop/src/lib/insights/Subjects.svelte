@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Subjects — the browsable Subjects index sub-surface, "Conviction view"
   // redesign (Subjects-tab Conviction redesign, Slice 2).
   //
@@ -757,7 +758,7 @@
           ></span>
           <span class="conv-name">{r.subject}</span>
           {#if r.pinned}
-            <span class="conv-pin" title="Pinned">★</span>
+            <span class="conv-pin" use:tip={"Pinned"}>★</span>
           {/if}
           <span class="pill {trendPillClass(r.trend)}">{trendLabel(r.trend)}</span>
           <span class="conv-cc">
@@ -786,7 +787,7 @@
           class="conv-caret"
           class:is-open={open}
           aria-label={open ? "Collapse conclusions" : "Expand conclusions"}
-          title={open ? "Collapse conclusions" : "Expand conclusions"}
+          use:tip={open ? "Collapse conclusions" : "Expand conclusions"}
           aria-expanded={open}
           onclick={(e) => {
             e.stopPropagation();
@@ -810,7 +811,7 @@
               {#each r.conclusions as c (c.id)}
                 {@const faded = c.status === "faded"}
                 <div class="conv-concl-row" class:is-faded={faded}>
-                  <span class="conv-concl-stmt" title={c.statement}>
+                  <span class="conv-concl-stmt" use:tip={c.statement}>
                     {#if c.pinned}<span class="conv-concl-pin" aria-hidden="true"
                         >★</span
                       >{/if}{c.statement}

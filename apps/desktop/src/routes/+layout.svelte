@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { tick, type Snippet } from "svelte";
@@ -945,7 +946,7 @@
         <span
           class="titlebar__status titlebar__status--{captureStatusModifier}"
           aria-live="polite"
-          title="Recording status"
+          use:tip={"Recording status"}
         >
           <span class="titlebar__status-dot" aria-hidden="true"></span>
           <span class="titlebar__status-label">{captureStatusLabel}</span>
@@ -955,7 +956,7 @@
             class="titlebar__capture-error"
             role="alert"
             aria-live="assertive"
-            title={captureError}
+            use:tip={captureError}
           >
             <svg
               class="titlebar__capture-error-icon"
@@ -984,7 +985,7 @@
             onclick={showResume ? resumeCapture : pauseCapture}
             disabled={pauseDisabled}
             aria-busy={captureLoadingPause}
-            title={pauseButtonTitle}
+            use:tip={pauseButtonTitle}
             aria-label={pauseButtonTitle}
           >
             {#if captureLoadingPause}
@@ -998,7 +999,7 @@
             onclick={stopCapture}
             disabled={captureLoadingStop}
             aria-busy={captureLoadingStop}
-            title={`Stop recording (${shortcutDisplay("toggleRecording")})`}
+            use:tip={`Stop recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Stop recording"
           >
             {#if captureLoadingStop}
@@ -1015,7 +1016,7 @@
             onclick={startCapture}
             disabled={captureLoadingStart || captureLoadingSettings}
             aria-busy={captureLoadingStart || captureLoadingSettings}
-            title={captureLoadingSettings ? "Preparing recording controls…" : `Start recording (${shortcutDisplay("toggleRecording")})`}
+            use:tip={captureLoadingSettings ? "Preparing recording controls…" : `Start recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Start recording"
           >
             {#if captureLoadingStart || captureLoadingSettings}
@@ -1086,7 +1087,7 @@
             {@const state = liveStateFor(lane.key)}
             <span
               class="titlebar__source titlebar__source--{lane.key} titlebar__source--{state}"
-              title={liveTitleFor(lane, state)}
+              use:tip={liveTitleFor(lane, state)}
               aria-label={liveTitleFor(lane, state)}
               role="status"
             >
@@ -1111,7 +1112,7 @@
             <button
               type="button"
               class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
-              title={`${selectTitleFor(lane, state)} (${shortcutDisplay(sourceShortcutIdFor(lane.key))})`}
+              use:tip={`${selectTitleFor(lane, state)} (${shortcutDisplay(sourceShortcutIdFor(lane.key))})`}
               aria-label={selectTitleFor(lane, state)}
               aria-pressed={state === "selected"}
               disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
@@ -1140,7 +1141,7 @@
         {#if privacyVisualCaptureStatus}
           <span
             class="titlebar__privacy-warning titlebar__privacy-warning--{privacyVisualCaptureStatus.modifier}"
-            title={privacyVisualCaptureStatus.detail}
+            use:tip={privacyVisualCaptureStatus.detail}
             aria-label={privacyVisualCaptureStatus.detail}
             aria-live="polite"
             role="status"
@@ -1166,7 +1167,7 @@
               <button
                 type="button"
                 class="titlebar__privacy-warning-action"
-                title={privacyVisualCaptureStatus.detail}
+                use:tip={privacyVisualCaptureStatus.detail}
                 aria-label={privacyVisualCaptureStatus.detail}
                 aria-busy={restartingPrivacyCapture}
                 disabled={captureLoadingStart || captureLoadingStop || restartingPrivacyCapture}
@@ -1214,7 +1215,7 @@
       <button
         type="button"
         class="titlebar__search"
-        title={`Search · Recall (${shortcutDisplay("toggleQuickRecall")})`}
+        use:tip={`Search · Recall (${shortcutDisplay("toggleQuickRecall")})`}
         aria-label={`Search and recall (${shortcutDisplay("toggleQuickRecall")})`}
         onclick={() => void summonQuickRecall()}
       >
@@ -1265,7 +1266,7 @@
             aria-label={notificationsAriaLabel}
             aria-expanded={notificationsOpen}
             aria-controls="notification-popover"
-            title={hasNotificationIndicator ? "Notifications" : "No notifications"}
+            use:tip={hasNotificationIndicator ? "Notifications" : "No notifications"}
             onkeydown={onNotificationsButtonKeydown}
             onpointerdown={() => { notificationsOpenedByKeyboard = false; }}
             onclick={() => toggleNotifications(notificationsOpenedByKeyboard)}
@@ -1348,7 +1349,7 @@
                       <time
                         class="notification-item__time"
                         datetime={new Date(notification.createdAtUnixMs).toISOString()}
-                        title={formatNotificationTimestamp(notification.createdAtUnixMs)}
+                        use:tip={formatNotificationTimestamp(notification.createdAtUnixMs)}
                       >{formatNotificationAge(notification.createdAtUnixMs)}</time>
                       {#if notification.action?.type === "open_settings_tab"}
                         <button
@@ -1385,7 +1386,7 @@
             aria-label="Keyboard shortcuts"
             aria-haspopup="dialog"
             aria-expanded={shortcutsHelpOpen}
-            title={`Keyboard shortcuts (${shortcutDisplay("toggleShortcutsHelp")})`}
+            use:tip={`Keyboard shortcuts (${shortcutDisplay("toggleShortcutsHelp")})`}
             onclick={() => toggleShortcutsHelp()}
           >
             <svg
@@ -1413,7 +1414,7 @@
           class:active={isSettings}
           aria-label={isSettings ? "Close settings" : "Open settings"}
           aria-current={isSettings ? "page" : undefined}
-          title={isSettings ? "Close settings" : `Settings (${shortcutDisplay("openSettings")})`}
+          use:tip={isSettings ? "Close settings" : `Settings (${shortcutDisplay("openSettings")})`}
           onclick={onSettingsButtonClick}
         >
           <svg
@@ -1445,7 +1446,7 @@
             type="button"
             class="titlebar__settings"
             aria-label="Open debug"
-            title={`Debug (${shortcutDisplay("openDebug")})`}
+            use:tip={`Debug (${shortcutDisplay("openDebug")})`}
             onclick={() => void openDebugWindow()}
           >
             <svg
@@ -1491,7 +1492,7 @@
         type="button"
         class="surface-titlebar__close"
         aria-label="Close window"
-        title="Close"
+        use:tip={"Close"}
         onclick={() => void closeCurrentWindow()}
       >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
@@ -2058,6 +2059,47 @@
   :global(::-webkit-scrollbar-thumb:active) {
     background-color: var(--app-accent-strong);
     background-clip: padding-box;
+  }
+
+  /* Custom tooltip — portaled to <body> by the `tip` action
+     ($lib/components/tooltip.ts), styled here so it reads the same tokens as
+     the app instead of the OS's native `title` bubble. The accent left edge is
+     the terminal "prompt" signature. */
+  :global(.app-tooltip) {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 9999;
+    max-width: 260px;
+    padding: 5px 8px 6px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    letter-spacing: 0.01em;
+    color: var(--app-text-strong);
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border-strong);
+    border-left: 2px solid var(--app-accent);
+    border-radius: 5px;
+    box-shadow: var(--app-shadow-popover);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(2px);
+    transition:
+      opacity 90ms ease,
+      transform 90ms ease;
+  }
+  :global(.app-tooltip[data-show="true"]) {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(.app-tooltip) {
+      transition: none;
+      transform: none;
+    }
   }
 
   .app-shell {

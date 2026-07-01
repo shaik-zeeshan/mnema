@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import { formatTimestampCompact } from "$lib/format-time";
   import AudioWaveform from "$lib/components/AudioWaveform.svelte";
 
@@ -126,7 +127,7 @@
       {/if}
     </div>
     {#if windowTitle}
-      <span class="source-card__sub" title={windowTitle}>{windowTitle}</span>
+      <span class="source-card__sub" use:tip={windowTitle}>{windowTitle}</span>
     {/if}
     <span class="source-card__time">{formatTimestampCompact(startedAt)}</span>
   </div>
@@ -141,7 +142,7 @@
     type="button"
     class="source-card__open"
     class:source-card__open--busy={opening}
-    title={`Open ${url} in browser`}
+    use:tip={`Open ${url} in browser`}
     aria-label={`Open ${openHost} in browser`}
     disabled={opening}
     onclick={handleOpen}

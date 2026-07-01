@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // RailHistory — the chat search field + time-grouped conversation history that
   // sits in the persistent Insights rail (Insights-rail refactor, Slices 2/3).
   // It renders the shared `conversationStore`: a debounced search over the list,
@@ -122,7 +123,7 @@
                 ? "true"
                 : undefined}
             >
-              <span class="t" title={c.title || c.preview}>
+              <span class="t" use:tip={c.title || c.preview}>
                 {c.title || c.preview || "Untitled chat"}
               </span>
               <span class="when">{relativeTime(c.updatedAtMs)}</span>
@@ -135,7 +136,7 @@
                 type="button"
                 class="rail-action"
                 aria-label="Rename conversation"
-                title="Rename conversation"
+                use:tip={"Rename conversation"}
                 onclick={(e) => {
                   e.stopPropagation();
                   conversationStore.startRename(c);
@@ -147,7 +148,7 @@
                 type="button"
                 class="rail-action rail-action--delete"
                 aria-label="Delete conversation"
-                title="Delete conversation"
+                use:tip={"Delete conversation"}
                 onclick={(e) => {
                   e.stopPropagation();
                   void conversationStore.deleteConversation(c);

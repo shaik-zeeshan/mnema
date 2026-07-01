@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // ── Timeline Jumper ───────────────────────────────────────────────────────
   // Two-pane "jump to date & time" popover (calendar | hourly time list)
   // extracted out of the dashboard `+page.svelte`. Orchestrator only — the
@@ -463,7 +464,7 @@
     aria-haspopup="dialog"
     aria-expanded={open}
     aria-controls="timeline-jump-picker"
-    title="Jump to date and time (J)"
+    use:tip={"Jump to date and time (J)"}
   >
     <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
     <span class="timeline__jump-label">{triggerLabel}</span>
@@ -475,7 +476,7 @@
       class="btn btn--ghost btn--sm timeline__jump-latest"
       onclick={() => void onJumpToLatest()}
       disabled={timelineBusy || jumping}
-      title="Jump to latest frame (L)"
+      use:tip={"Jump to latest frame (L)"}
     >latest</button>
   {/if}
 
@@ -497,7 +498,7 @@
           class="btn btn--accent btn--sm timeline__picker-global-latest"
           onclick={() => void commitGlobalLatest()}
           disabled={timelineBusy || jumping}
-          title="Jump to latest frame"
+          use:tip={"Jump to latest frame"}
         >
           <span class="timeline__picker-glyph" aria-hidden="true">⟿</span>
           latest

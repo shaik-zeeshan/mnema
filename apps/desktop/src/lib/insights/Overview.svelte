@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Overview — the default Insights sub-surface (issues #104/#105/#108).
   //
   // Two tiers, tagged inline via .tier-badge (mirrors overview.html):
@@ -1171,7 +1172,7 @@
             class="range-today"
             type="button"
             onclick={resetRange}
-            title="Jump to the current period"
+            use:tip={"Jump to the current period"}
           >
             {rangeMode === "day"
               ? "Today"
@@ -1210,7 +1211,7 @@
           class:is-busy={digestRegenerating}
           onclick={regenerateDigest}
           disabled={digestRegenerating || (!digest && digestLoading)}
-          title="Write a fresh read for this range"
+          use:tip={"Write a fresh read for this range"}
         >
           <span class="re-read-ico" aria-hidden="true">↻</span>
           {digestRegenerating ? "reading…" : "re-read"}
@@ -1259,10 +1260,9 @@
               {#if trackedDelta}
                 <span
                   class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
-                  title="{Math.abs(trackedDelta.pct)}% {trackedDelta.dir ===
-                  'down'
-                    ? 'less'
-                    : 'more'} than the same span of last {rangeMode}"
+                  use:tip={`${Math.abs(trackedDelta.pct)}% ${
+                    trackedDelta.dir === "down" ? "less" : "more"
+                  } than the same span of last ${rangeMode}`}
                 >
                   <span class="lede-stat-delta-arrow" aria-hidden="true"
                     >{trackedDelta.dir === "up"
@@ -1362,10 +1362,9 @@
               {#if trackedDelta}
                 <span
                   class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
-                  title="{Math.abs(trackedDelta.pct)}% {trackedDelta.dir ===
-                  'down'
-                    ? 'less'
-                    : 'more'} than the same span of last {rangeMode}"
+                  use:tip={`${Math.abs(trackedDelta.pct)}% ${
+                    trackedDelta.dir === "down" ? "less" : "more"
+                  } than the same span of last ${rangeMode}`}
                 >
                   <span class="lede-stat-delta-arrow" aria-hidden="true"
                     >{trackedDelta.dir === "up"

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // SubjectDetail — the drill-in detail surface for a single Subject (#106).
   //
   // A Subject shows its INDIVIDUAL Conclusions — each scored on its OWN
@@ -562,7 +563,7 @@
                   class="rank-row"
                   class:is-selected={selectedId === c.id}
                   class:rank-row--faded={c.status === "faded"}
-                  title={c.statement}
+                  use:tip={c.statement}
                   onclick={() => selectConclusion(c.id)}
                 >
                   <span class="rank-statement">

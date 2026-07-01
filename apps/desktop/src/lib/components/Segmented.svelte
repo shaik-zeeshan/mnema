@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import { tick, type Snippet } from "svelte";
   import {
     focusableIndex as computeFocusableIndex,
@@ -126,7 +127,7 @@
       role="radio"
       aria-checked={value === option.value}
       aria-label={option.ariaLabel ?? option.label}
-      title={option.ariaLabel ?? option.label}
+      use:tip={option.ariaLabel ?? option.label}
       tabindex={index === focusableIndex ? 0 : -1}
       disabled={disabled || isOff(option.value)}
       onclick={() => selectByClick(index)}

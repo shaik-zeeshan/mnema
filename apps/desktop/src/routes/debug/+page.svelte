@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import type { Component } from "svelte";
   import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -1329,7 +1330,7 @@
       <span class="rec-dot" class:rec-dot--active={isCapturing}></span>
       <span class="session-label">{isCapturing ? "Recording" : session?.isRunning === false ? "Stopped" : "Idle"}</span>
       {#if reconcileStale}
-        <span class="session-stale" role="status" aria-live="polite" title="The backend stopped responding to status checks; this readout may be out of date.">status may be stale</span>
+        <span class="session-stale" role="status" aria-live="polite" use:tip={"The backend stopped responding to status checks; this readout may be out of date."}>status may be stale</span>
       {/if}
     </div>
     <div class="action-row">
@@ -1340,7 +1341,7 @@
         {loadingStop ? "Stopping…" : "Stop"}
       </button>
       {#if lifecycleError}
-        <span class="lifecycle-error" role="alert" aria-live="assertive" title={lifecycleError}>
+        <span class="lifecycle-error" role="alert" aria-live="assertive" use:tip={lifecycleError}>
           <span class="lifecycle-error__tag" aria-hidden="true">✕</span>
           <span class="lifecycle-error__text">{lifecycleError}</span>
         </span>
@@ -1552,7 +1553,7 @@
       {loadingStop ? "Stopping…" : "Stop Recording"}
     </button>
     {#if lifecycleError}
-      <span class="lifecycle-error" role="alert" aria-live="assertive" title={lifecycleError}>
+      <span class="lifecycle-error" role="alert" aria-live="assertive" use:tip={lifecycleError}>
         <span class="lifecycle-error__tag" aria-hidden="true">✕</span>
         <span class="lifecycle-error__text">{lifecycleError}</span>
       </span>
@@ -1571,7 +1572,7 @@
       onclick={refreshRuntimeSources}
       disabled={loadingRuntimeSources || !isCapturing}
       aria-label="Refresh runtime sources"
-      title={isCapturing ? "Refresh runtime sources" : "No active capture session — start recording to refresh"}
+      use:tip={isCapturing ? "Refresh runtime sources" : "No active capture session — start recording to refresh"}
     >
       <span class="refresh-glyph" class:refresh-glyph--spin={loadingRuntimeSources} aria-hidden="true">↻</span>
     </button>
@@ -1643,7 +1644,7 @@
           <!-- Output path -->
           <div class="rs-path">
             <span class="rs-path__label">out</span>
-            <span class="rs-path__val" title={src.outputPath ?? ""}>{shortenPath(src.outputPath)}</span>
+            <span class="rs-path__val" use:tip={src.outputPath ?? ""}>{shortenPath(src.outputPath)}</span>
           </div>
 
           <!-- Activity readouts: distinguish raw sample vs threshold-qualified -->
@@ -1701,7 +1702,7 @@
       onclick={refreshPrivacyFilter}
       disabled={loadingPrivacyFilter || !isCapturing}
       aria-label="Refresh privacy filter"
-      title={isCapturing ? "Refresh privacy filter" : "No active capture session — start recording to refresh"}
+      use:tip={isCapturing ? "Refresh privacy filter" : "No active capture session — start recording to refresh"}
     >
       <span class="refresh-glyph" class:refresh-glyph--spin={loadingPrivacyFilter} aria-hidden="true">↻</span>
     </button>
@@ -1912,7 +1913,7 @@
       onclick={refreshInactivity}
       disabled={loadingInactivity || !isCapturing}
       aria-label="Refresh inactivity policy"
-      title={isCapturing ? "Refresh inactivity policy" : "No active capture session — start recording to refresh"}
+      use:tip={isCapturing ? "Refresh inactivity policy" : "No active capture session — start recording to refresh"}
     >
       <span class="refresh-glyph" class:refresh-glyph--spin={loadingInactivity} aria-hidden="true">↻</span>
     </button>
@@ -2230,7 +2231,7 @@
         <table class="debug-table">
           <thead>
             <tr>
-              <th>time</th><th>session</th><th>workspace</th><th class="cell-num" title="frame id">frame</th><th>outcome</th><th>reason</th><th class="cell-num" title="queue pressure — OCR jobs queued or running at admission">queue</th><th class="cell-num" title="job id">job</th><th class="cell-num" title="related frame id (near-duplicate source)">related</th><th title="active admission signal badges">signals</th>
+              <th>time</th><th>session</th><th>workspace</th><th class="cell-num" use:tip={"frame id"}>frame</th><th>outcome</th><th>reason</th><th class="cell-num" use:tip={"queue pressure — OCR jobs queued or running at admission"}>queue</th><th class="cell-num" use:tip={"job id"}>job</th><th class="cell-num" use:tip={"related frame id (near-duplicate source)"}>related</th><th use:tip={"active admission signal badges"}>signals</th>
             </tr>
           </thead>
           <tbody>
@@ -2274,7 +2275,7 @@
         <table class="debug-table">
           <thead>
             <tr>
-              <th>time</th><th class="cell-num" title="job id">job</th><th class="cell-num" title="frame id">frame</th><th>provider</th><th>model</th><th>mode</th><th>status</th><th class="cell-num" title="run duration (ms)">run</th><th class="cell-num" title="queue wait before execution (ms)">wait</th><th class="cell-num" title="result text length (chars)">text</th><th class="cell-num" title="observation count extracted">obs</th><th>error</th>
+              <th>time</th><th class="cell-num" use:tip={"job id"}>job</th><th class="cell-num" use:tip={"frame id"}>frame</th><th>provider</th><th>model</th><th>mode</th><th>status</th><th class="cell-num" use:tip={"run duration (ms)"}>run</th><th class="cell-num" use:tip={"queue wait before execution (ms)"}>wait</th><th class="cell-num" use:tip={"result text length (chars)"}>text</th><th class="cell-num" use:tip={"observation count extracted"}>obs</th><th>error</th>
             </tr>
           </thead>
           <tbody>
@@ -2291,7 +2292,7 @@
                 <td class="cell-num">{formatOptionalMs(event.queueWaitMs)}</td>
                 <td class="cell-num">{event.resultTextLength ?? "—"}</td>
                 <td class="cell-num">{event.observationCount ?? "—"}</td>
-                <td title={event.lastError ?? ""}>{truncateDebugText(event.lastError)}</td>
+                <td use:tip={event.lastError ?? ""}>{truncateDebugText(event.lastError)}</td>
               </tr>
             {/each}
           </tbody>
@@ -2381,7 +2382,7 @@
         <span class={info.visibleSegmentExists ? "badge badge--ok badge--sm" : "badge badge--err badge--sm"}>
           {info.visibleSegmentExists ? "present" : "missing"}
         </span>
-        <span class="kv-val kv-val--mono" title={info.paths.visibleSegmentPath}>
+        <span class="kv-val kv-val--mono" use:tip={info.paths.visibleSegmentPath}>
           {shortenPath(info.paths.visibleSegmentPath)}
         </span>
       </li>
@@ -2391,13 +2392,13 @@
       </li>
       <li>
         <span class="kv-key kv-key--wide">workspace</span>
-        <span class="kv-val kv-val--mono" title={info.paths.workspaceDir}>
+        <span class="kv-val kv-val--mono" use:tip={info.paths.workspaceDir}>
           {shortenPath(info.paths.workspaceDir)}
         </span>
       </li>
       <li>
         <span class="kv-key kv-key--wide">frames dir</span>
-        <span class="kv-val kv-val--mono" title={info.paths.framesDir}>
+        <span class="kv-val kv-val--mono" use:tip={info.paths.framesDir}>
           {shortenPath(info.paths.framesDir)}
         </span>
       </li>

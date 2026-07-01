@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // InsightsRail — the persistent left rail of the Insights surface (Insights-
   // rail refactor, Slices 2/3). It replaces the old horizontal `.subnav` and is
   // always present across every sub-surface (Overview / Subjects / Context /
@@ -96,7 +97,7 @@
         class="rail-collapse"
         aria-label="Collapse sidebar"
         aria-expanded="true"
-        title="Collapse sidebar"
+        use:tip={"Collapse sidebar"}
         onclick={onToggleCollapse}
       >
         <IconCollapse aria-hidden="true" />

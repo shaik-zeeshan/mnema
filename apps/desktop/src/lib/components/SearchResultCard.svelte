@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import type { FrameSearchResultDto, AudioSearchResultDto } from "$lib/types/app-infra";
   import { parseSearchSnippet } from "$lib/search-snippet";
   import { formatTimestampCompact } from "$lib/format-time";
@@ -104,7 +105,7 @@
       <div class="search-card__line">
         <span class="search-card__app">{frame.appName ?? "Unknown app"}</span>
         {#if frame.windowTitle}
-          <span class="search-card__sub" title={frame.windowTitle}>{frame.windowTitle}</span>
+          <span class="search-card__sub" use:tip={frame.windowTitle}>{frame.windowTitle}</span>
         {/if}
       </div>
       <p class="search-card__snippet">
@@ -135,7 +136,7 @@
       class="search-card__open"
       class:search-card__open--busy={opening}
       tabindex="-1"
-      title={`Open ${frame.url} in browser`}
+      use:tip={`Open ${frame.url} in browser`}
       aria-label={`Open ${openHost} in browser`}
       disabled={opening}
       onclick={handleOpen}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Context — the user-AUTHORED Context sub-surface (issue #107).
   //
   // The user tells Mnema about themselves directly ("I'm a designer", "I care
@@ -320,7 +321,7 @@
         <div class="composer-head">
           <span class="section-title">Add context</span>
           <span class="spacer"></span>
-          <span class="tier-badge" title="Reasoning Engine derivation tier">
+          <span class="tier-badge" use:tip={"Reasoning Engine derivation tier"}>
             <span class="dot" aria-hidden="true"></span>{tierLabel(budgetTier)}
           </span>
           <span class="authored-pill"><span class="quill">✎</span>authored</span>
@@ -609,7 +610,7 @@
                   </div>
                   <div class="steer-to">
                     <span class="supports">supports</span>
-                    <span class="infer-chip" title="Inferred conclusion">
+                    <span class="infer-chip" use:tip={"Inferred conclusion"}>
                       ◆ {c.statement}
                     </span>
                     <span class="infer-conf">

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import type { AppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
 
   let {
@@ -243,7 +244,7 @@
               class="exclusion-chip__toggle"
               aria-pressed={app.enabled}
               aria-label={`${app.displayName} — ${app.enabled ? "exclusion active, activate to disable" : "exclusion disabled, activate to enable"}`}
-              title={`${app.displayName}\n${app.bundleId}\n${app.enabled ? "Excluded · click to disable" : "Disabled · click to enable"}`}
+              use:tip={`${app.displayName}\n${app.bundleId}\n${app.enabled ? "Excluded · click to disable" : "Disabled · click to enable"}`}
               disabled={controller.commandInFlight}
               onclick={() => controller.setPrivacyExcludedAppEnabled(app.id, !app.enabled)}
             >
@@ -260,7 +261,7 @@
               type="button"
               class="exclusion-chip__remove"
               aria-label={`Remove ${app.displayName} from exclusions`}
-              title="Remove exclusion"
+              use:tip={"Remove exclusion"}
               disabled={controller.commandInFlight}
               onclick={() => controller.removePrivacyApp(app.id)}
             >

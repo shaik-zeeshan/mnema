@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import IconRefresh from "~icons/lucide/refresh-cw";
+  import { tip } from "$lib/components/tooltip";
 
   interface Props {
     onclick: () => void;
@@ -46,7 +47,7 @@
   class="settings-icon-btn"
   class:settings-icon-btn--spin={spinning}
   type="button"
-  {title}
+  use:tip={title}
   aria-label={label ?? title}
   aria-busy={busy}
   disabled={disabled || busy}

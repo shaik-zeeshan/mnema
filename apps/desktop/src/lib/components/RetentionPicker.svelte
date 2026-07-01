@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tooltip";
   import { tick } from "svelte";
   import type { RetentionPolicy } from "$lib/types";
   import { retentionPresets } from "./retention";
@@ -91,7 +92,7 @@
       role="radio"
       aria-checked={active}
       aria-label={preset.label}
-      title={preset.label}
+      use:tip={preset.label}
       tabindex={active ||
       (!presets.some((p) => p.value === value) && index === 0)
         ? 0

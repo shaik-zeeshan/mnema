@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { onMount, onDestroy, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -3889,7 +3890,7 @@
             class:quick-recall__filter-trigger--active={pickerOpen}
             onclick={() => (pickerOpen ? closePicker() : openPicker())}
             aria-label="Filter results"
-            title="Filter results (⌘F)"
+            use:tip={"Filter results (⌘F)"}
             aria-expanded={pickerOpen}
             aria-controls={pickerOpen ? "quick-recall-picker" : undefined}
             aria-keyshortcuts="Control+F"
@@ -3989,7 +3990,7 @@
               disabled
               aria-label={askUnavailableHint ?? "Ask AI unavailable"}
               aria-describedby={ASK_UNAVAILABLE_HINT_ID}
-              title={askUnavailableHint ?? "Ask AI unavailable"}
+              use:tip={askUnavailableHint ?? "Ask AI unavailable"}
             >
               Ask AI
             </button>
@@ -4013,7 +4014,7 @@
                   class="quick-recall__chip-remove"
                   onclick={() => removeChip(chip)}
                   aria-label={`Remove ${chip.label} filter`}
-                  title={`Remove ${chip.label} filter`}
+                  use:tip={`Remove ${chip.label} filter`}
                 >
                   ×
                 </button>
@@ -4345,7 +4346,7 @@
                 class="quick-recall__stop"
                 onclick={() => void stopActiveAsk()}
                 aria-label="Stop generating"
-                title="Stop generating"
+                use:tip={"Stop generating"}
               >
                 <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
                 Stop
@@ -4393,7 +4394,7 @@
                  turn (the live one). Keyed by index — turns are append-only. -->
             {#each askTurns as turn, ti (ti)}
               <div class="quick-recall__turn">
-                <p class="quick-recall__turn-question" title={turn.question}>
+                <p class="quick-recall__turn-question" use:tip={turn.question}>
                   {turn.question}
                 </p>
 
@@ -4487,7 +4488,7 @@
                           class:quick-recall__copy--failed={turn.copyFailed}
                           onclick={() => void copyTurnAnswer(ti)}
                           aria-label={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
-                          title={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
+                          use:tip={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
                         >
                           {#if turn.copyFailed}
                             <svg
@@ -4750,7 +4751,7 @@
               type="button"
               class="quick-recall__handoff"
               onclick={() => void openInChat()}
-              title="Continue this thread in the Insights Chat workspace"
+              use:tip={"Continue this thread in the Insights Chat workspace"}
             >
               Continue in Chat
               <span class="quick-recall__handoff-arrow" aria-hidden="true">↗</span>

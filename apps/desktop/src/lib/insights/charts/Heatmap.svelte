@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Heatmap — a labelled grid of cells coloured by intensity, for focus or
   // activity heatmaps. Each row has a label and an array of cell intensities
   // (0..1). Two colour modes:
@@ -101,7 +102,7 @@
               class="cell"
               style={cellStyle(cell)}
               role="img"
-              title={cellTitle(row.label, cell)}
+              use:tip={cellTitle(row.label, cell)}
               aria-label={cellTitle(row.label, cell)}
             ></span>
           {/each}

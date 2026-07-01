@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // MiniBars — horizontal labelled bars for time-per-app.
   // Each item gets a labelled track whose fill width is proportional to the
   // largest value in the set. Fills are a single-hue ramp keyed to rank: the
@@ -56,7 +57,7 @@
 <div class="mini-bars">
   {#each items as item, i (item.label + i)}
     <div class="mini-bar" class:dominant={isDominant(item.value)}>
-      <span class="label" title={item.label}>
+      <span class="label" use:tip={item.label}>
         {#if item.iconSrc != null || item.fallback !== undefined}
           <span class="icon" aria-hidden="true">
             {#if item.iconSrc}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import {
@@ -275,7 +276,7 @@
                           type="button"
                           class="notice-item__source"
                           onclick={() => openExternalUrl(entry.sourceUrl ?? "")}
-                          title={entry.sourceUrl}
+                          use:tip={entry.sourceUrl}
                         >
                           {entry.sourceUrl}<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
                         </button>

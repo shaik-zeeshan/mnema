@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Insights workspace — the second top-level Surface of Main (alongside the
   // Timeline). It hosts four sub-surfaces (Overview / Subjects / Context / Chat)
   // switched via local state (NOT separate routes), plus a Subject drill-in.
@@ -329,7 +330,7 @@
         class="rail-expand-float"
         aria-label="Expand sidebar"
         aria-expanded="false"
-        title="Expand sidebar"
+        use:tip={"Expand sidebar"}
         onclick={toggleRailCollapsed}
       >
         <span aria-hidden="true">»</span>

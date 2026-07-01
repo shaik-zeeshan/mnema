@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Chat — the conversation pane of the Insights surface (issue #110, ADR 0031).
   // The history list / search / new-chat / rename / delete now live in the
   // persistent shell rail (<InsightsRail>); Chat is JUST the active-conversation
@@ -1151,7 +1152,7 @@
           <article class="turn">
             <!-- USER question: right-aligned bubble -->
             <div class="msg msg-user">
-              <div class="user-bubble" title={turn.question}>
+              <div class="user-bubble" use:tip={turn.question}>
                 {turn.question}
               </div>
             </div>
@@ -1482,7 +1483,7 @@
             disabled={!streaming && composerInput.trim().length === 0}
             onclick={() => (streaming ? void stopStreaming() : void send())}
             aria-label={streaming ? "Stop" : "Send"}
-            title={streaming ? "Stop generating" : "Send (Enter)"}
+            use:tip={streaming ? "Stop generating" : "Send (Enter)"}
           >
             {#if streaming}
               ■

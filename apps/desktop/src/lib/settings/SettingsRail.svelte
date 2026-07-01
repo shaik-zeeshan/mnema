@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Settings left rail — Codex-style (Slice 3).
   //
   // Renders the 5 navigation groups from `groups.ts` (the source of truth) as
@@ -203,7 +204,7 @@
           class="rail-search__clear"
           type="button"
           aria-label="Clear search"
-          title="Clear search"
+          use:tip={"Clear search"}
           onclick={clearSearchAndFocus}
         >
           <IconClear aria-hidden="true" />

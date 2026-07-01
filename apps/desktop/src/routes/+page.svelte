@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { tick } from "svelte";
   import { fly } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -6630,14 +6631,14 @@
     <div class="timeline__bar-group timeline__bar-group--secondary">
       {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
         {#if ocrProviderLabel}
-          <span class="timeline__ocr-provider-chip" title={ocrProviderLabel}>{ocrProviderLabel}</span>
+          <span class="timeline__ocr-provider-chip" use:tip={ocrProviderLabel}>{ocrProviderLabel}</span>
         {/if}
         <button
           type="button"
           class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
           onclick={reprocessOcrForActiveFrame}
           disabled={ocrRerunDisabled}
-          title={!ocrEnabled
+          use:tip={!ocrEnabled
             ? ocrRunDisabledTooltip
             : ocrStatus === "running"
             ? "OCR is queued or still processing"
@@ -6653,7 +6654,7 @@
         class:timeline__ocr-btn--success={ocrStatus === "success"}
         onclick={toggleOcrForActiveFrame}
         disabled={!timelineActive}
-        title={ocrToggleTitle}
+        use:tip={ocrToggleTitle}
         aria-label={ocrVisible
           ? "Hide OCR data for active frame"
           : "Show OCR data for active frame"}
@@ -6669,7 +6670,7 @@
         class="btn btn--ghost btn--sm"
         onclick={refreshTimelineAndDashboard}
         disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
-        title="Refresh dashboard timeline (R)"
+        use:tip={"Refresh dashboard timeline (R)"}
       >refresh</button>
     </div>
   </header>
@@ -6726,7 +6727,7 @@
             type="button"
             class="timeline__stage-status-close"
             aria-label="Dismiss message"
-            title="Dismiss"
+            use:tip={"Dismiss"}
             onclick={dismissFrameActionStatus}
           >
             <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
@@ -6785,7 +6786,7 @@
               type="button"
               class="btn btn--ghost btn--sm timeline__stage-action-trigger timeline__stage-play-moment"
               aria-label={`Play audio at this moment (${audioSourceLabel(activeFrameAudioMoment.segment.source)})`}
-              title="Play audio at this moment (P)"
+              use:tip={"Play audio at this moment (P)"}
               onclick={playActiveFrameMoment}
             ><span class="timeline__stage-action-glyph" aria-hidden="true"><IconHeadphones /></span></button>
           {/if}
@@ -6796,7 +6797,7 @@
             aria-haspopup="dialog"
             aria-expanded={stageActionsMenuOpen}
             aria-controls="timeline-stage-action-menu"
-            title="Frame actions (C copy, D download)"
+            use:tip={"Frame actions (C copy, D download)"}
             bind:this={stageActionsTriggerEl}
             onkeydown={onFrameActionsTriggerKeydown}
             onpointerdown={() => { stageActionsOpenedByKeyboard = false; }}
@@ -6817,7 +6818,7 @@
                 disabled={!activeExactPreviewReady || frameImageActionBusy !== null}
                 aria-label="Copy active frame image"
                 aria-busy={frameImageActionBusy === "copy"}
-                title="Copy image (C)"
+                use:tip={"Copy image (C)"}
               >{frameImageActionBusy === "copy" ? "copying…" : "copy"}</button>
               <button
                 type="button"
@@ -6826,7 +6827,7 @@
                 disabled={!activeExactPreviewReady || frameImageActionBusy !== null}
                 aria-label="Download active frame image"
                 aria-busy={frameImageActionBusy === "download"}
-                title="Download image (D)"
+                use:tip={"Download image (D)"}
               >{frameImageActionBusy === "download" ? "saving…" : "download"}</button>
               {#if ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0}
                 <button
@@ -6836,7 +6837,7 @@
                   disabled={ocrCopyAllBusy}
                   aria-busy={ocrCopyAllBusy}
                   aria-label="Copy all recognized text"
-                  title="Copy all recognized on-screen text"
+                  use:tip={"Copy all recognized on-screen text"}
                 >{ocrCopyAllBusy ? "copying text…" : "copy text"}</button>
               {/if}
               {#if currentFrameHost}
@@ -6845,7 +6846,7 @@
                   class="timeline__stage-action-menu-item timeline__stage-action-menu-item--open"
                   onclick={openCurrentFrameUrl}
                   disabled={openingCurrentFrameUrl}
-                  title={`Open ${currentFrameHost} in browser`}
+                  use:tip={`Open ${currentFrameHost} in browser`}
                   aria-label={`Open ${currentFrameHost} in browser`}
                 >
                   <svg class="timeline__stage-action-open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -6899,7 +6900,7 @@
                 role="listitem"
                 style={ocrBoxStyle(obs)}
                 aria-label={`${obs.text} (${(obs.confidence * 100).toFixed(0)}% confidence)`}
-                title={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
+                use:tip={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
               >
                 <span class="timeline__ocr-text">{obs.text}</span>
               </div>
@@ -7073,7 +7074,7 @@
               class:timeline-rail__app-group--single={group.variant === "single"}
               class:timeline-rail__app-group--range={group.variant === "range"}
               style="right: {group.rightPx}px; width: {group.widthPx}px; --timeline-app-icon-left: {group.iconLeftPx}px"
-              title={timelineAppGroupTitle(group)}
+              use:tip={timelineAppGroupTitle(group)}
               aria-hidden="true"
             >
               {#if group.showIcon}
@@ -7150,7 +7151,7 @@
                       class="timeline-rail__audio-bar timeline-rail__audio-bar--microphone"
                       class:timeline-rail__audio-bar--selected={seg.id === selectedAudioSegmentId}
                       style="right: {seg.rightPx}px; width: {seg.widthPx}px"
-                      title={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
+                      use:tip={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
                       aria-label={`Play ${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} from ${formatTimeOfDay(seg.startUnixMs)} to ${formatTimeOfDay(seg.endUnixMs)}`}
                       aria-pressed={seg.id === selectedAudioSegmentId}
                       onclick={(e) => onAudioSegmentBarClick(e, seg.id)}
@@ -7168,7 +7169,7 @@
                       class="timeline-rail__audio-bar timeline-rail__audio-bar--systemAudio"
                       class:timeline-rail__audio-bar--selected={seg.id === selectedAudioSegmentId}
                       style="right: {seg.rightPx}px; width: {seg.widthPx}px"
-                      title={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
+                      use:tip={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
                       aria-label={`Play ${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} from ${formatTimeOfDay(seg.startUnixMs)} to ${formatTimeOfDay(seg.endUnixMs)}`}
                       aria-pressed={seg.id === selectedAudioSegmentId}
                       onclick={(e) => onAudioSegmentBarClick(e, seg.id)}
@@ -7181,14 +7182,14 @@
             </div>
           {:else if audioSegmentsError}
             <div class="timeline-rail__audio-lane-error" role="alert">
-              <span class="timeline-rail__audio-lane-error-label" title={audioSegmentsError}>audio unavailable</span>
+              <span class="timeline-rail__audio-lane-error-label" use:tip={audioSegmentsError}>audio unavailable</span>
               <button
                 type="button"
                 class="btn btn--ghost btn--sm timeline-rail__audio-lane-retry"
                 onclick={(e) => { e.stopPropagation(); void refreshAudioSegments(); }}
                 onpointerdown={(e) => e.stopPropagation()}
                 disabled={audioSegmentsLoading}
-                title={`Retry loading audio · ${audioSegmentsError}`}
+                use:tip={`Retry loading audio · ${audioSegmentsError}`}
               >{audioSegmentsLoading ? "retrying…" : "retry"}</button>
             </div>
           {:else}
@@ -7219,13 +7220,13 @@
         <div class="timeline-rail__audio-lane-viewport">
           {#if audioSegmentsError}
             <div class="timeline-rail__audio-lane-error" role="alert">
-              <span class="timeline-rail__audio-lane-error-label" title={audioSegmentsError}>audio unavailable</span>
+              <span class="timeline-rail__audio-lane-error-label" use:tip={audioSegmentsError}>audio unavailable</span>
               <button
                 type="button"
                 class="btn btn--ghost btn--sm timeline-rail__audio-lane-retry"
                 onclick={() => void refreshAudioSegments()}
                 disabled={audioSegmentsLoading}
-                title={`Retry loading audio · ${audioSegmentsError}`}
+                use:tip={`Retry loading audio · ${audioSegmentsError}`}
               >{audioSegmentsLoading ? "retrying…" : "retry"}</button>
             </div>
           {/if}
@@ -7327,7 +7328,7 @@
       </span>
       <span
         class="audio-drawer__time"
-        title={`${formatUnixMs(selectedAudioSegment.startUnixMs)} – ${formatUnixMs(selectedAudioSegment.endUnixMs)}`}
+        use:tip={`${formatUnixMs(selectedAudioSegment.startUnixMs)} – ${formatUnixMs(selectedAudioSegment.endUnixMs)}`}
       >
         {formatTimeOfDay(selectedAudioSegment.startUnixMs)}
         <span class="audio-drawer__time-sep" aria-hidden="true">→</span>
@@ -7336,7 +7337,7 @@
           >· {formatDurationSeconds(selectedAudioSegment.durationSeconds)}</span
         >
       </span>
-      <span class="audio-drawer__file" title={selectedAudioSegment.filePath}
+      <span class="audio-drawer__file" use:tip={selectedAudioSegment.filePath}
         >{selectedAudioSegment.fileName}</span
       >
       <button
@@ -7454,7 +7455,7 @@
         <div class="audio-drawer__transcript-heading">
           <span class="audio-drawer__transcript-title">Transcript</span>
           {#if selectedAudioTranscriptModelLabel}
-            <span class="audio-drawer__transcript-model" title={selectedAudioTranscriptModelLabel}>
+            <span class="audio-drawer__transcript-model" use:tip={selectedAudioTranscriptModelLabel}>
               · {selectedAudioTranscriptModelLabel}
             </span>
           {/if}
@@ -7468,7 +7469,7 @@
             class="audio-drawer__transcript-action"
             onclick={reprocessSelectedAudioSegmentTranscript}
             disabled={selectedAudioTranscriptActionDisabled}
-            title={selectedAudioTranscriptActionTitle}
+            use:tip={selectedAudioTranscriptActionTitle}
           >
             {selectedAudioTranscriptRerunLoading
               ? "Starting…"
@@ -7643,7 +7644,7 @@
                     aria-haspopup="dialog"
                     aria-expanded={speakerActionsOpenIndex === index}
                     aria-controls={`speaker-actions-${group.clusterId}`}
-                    title="Edit speaker"
+                    use:tip={"Edit speaker"}
                     onclick={(event) => toggleSpeakerActions(index, event)}
                   >
                     {speakerPersistedName(group)}
@@ -7730,7 +7731,7 @@
                     type="button"
                     class="audio-drawer__speaker-text"
                     class:audio-drawer__speaker-text--active={selectedAudioSpeakerActiveGroupIndex === index}
-                    title={`Jump to ${formatTranscriptSegmentTitle(group)}`}
+                    use:tip={`Jump to ${formatTranscriptSegmentTitle(group)}`}
                     onclick={() => onSpeakerLineClick(group)}
                   >
                     {group.text}
@@ -7753,7 +7754,7 @@
                 class="audio-drawer__transcript-segment"
                 class:audio-drawer__transcript-segment--active={selectedAudioTranscriptActiveSegmentIndex === index}
                 data-transcript-segment-index={index}
-                title={`Jump to ${formatTranscriptSegmentTitle(segment)}`}
+                use:tip={`Jump to ${formatTranscriptSegmentTitle(segment)}`}
                 aria-label={`Jump to transcript segment at ${formatTranscriptSegmentTitle(segment)}`}
                 onclick={() => seekAudioToTimeMs(segment.startMs)}
               >

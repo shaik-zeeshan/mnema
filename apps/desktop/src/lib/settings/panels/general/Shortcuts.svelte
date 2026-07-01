@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
@@ -94,7 +95,7 @@
     <button
       class="settings-icon-btn"
       type="button"
-      title="Restore all defaults"
+      use:tip={"Restore all defaults"}
       aria-label="Restore all default shortcuts"
       onclick={restoreDefaultShortcuts}
       disabled={savingKeyboardBindings}
@@ -175,7 +176,7 @@
               <button
                 class="settings-icon-btn"
                 type="button"
-                title="Reset to default"
+                use:tip={"Reset to default"}
                 aria-label={`Reset ${action.label} to default`}
                 disabled={savingKeyboardBindings}
                 onclick={() => resetShortcut(action.id)}
@@ -185,7 +186,7 @@
               <button
                 class="settings-icon-btn"
                 type="button"
-                title="Clear shortcut"
+                use:tip={"Clear shortcut"}
                 aria-label={`Clear ${action.label}`}
                 disabled={savingKeyboardBindings || !binding}
                 onclick={() => clearShortcut(action.id)}

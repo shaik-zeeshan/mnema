@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
@@ -224,7 +225,7 @@
               class="btn btn--ghost btn--sm"
               type="button"
               disabled={c.aiProviderRemoving}
-              title={aiProviderKindDescription(kind)}
+              use:tip={aiProviderKindDescription(kind)}
               onclick={() => addAiProvider(kind)}
             >
               + {aiProviderKindLabel(kind)}

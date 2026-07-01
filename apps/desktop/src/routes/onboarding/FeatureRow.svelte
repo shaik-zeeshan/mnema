@@ -25,6 +25,7 @@
 </script>
 
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import type { IconName } from "$lib/settings/groups";
   import { SECTION_ICONS } from "$lib/settings/section-icons";
   import Switch from "$lib/components/Switch.svelte";
@@ -154,7 +155,7 @@
     {#if required}
       <span
         class="row-status row-status--req"
-        title={attention
+        use:tip={attention
           ? "Required — a permission still needs to be granted."
           : "Required — always on"}
       >
@@ -168,7 +169,7 @@
              so it stays legible while the user resolves it. -->
         <span
           class="row-attn row-attn--req"
-          title="A required permission still needs to be granted before recording can start."
+          use:tip={"A required permission still needs to be granted before recording can start."}
         >
           <span class="attn-dot"></span>Needs setup
         </span>
@@ -196,14 +197,14 @@
                  needs is unresolved. Distinct from the muted lock chip below via
                  warn color + an explicit title (the two "not ready" states read
                  alike at a glance otherwise). -->
-            <span class="row-attn" title="This feature is on but needs setup before it can run."
+            <span class="row-attn" use:tip={"This feature is on but needs setup before it can run."}
               ><span class="attn-dot"></span>Needs setup</span
             >
           {:else if !enabled && lockReason}
             <!-- Muted lock chip (gated/optional): the feature is OFF and can't be
                  turned on until a prerequisite is met — quieter than the warn
                  chip because nothing is actively broken yet. -->
-            <span class="row-lock" title="Locked: {lockReason}"
+            <span class="row-lock" use:tip={`Locked: ${lockReason}`}
               ><span class="lock-ico"><IconLock aria-hidden="true" /></span><span class="row-lock-text"
                 >{lockReason}</span
               ></span
