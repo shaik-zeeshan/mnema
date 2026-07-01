@@ -56,6 +56,14 @@ export function createJumperCache() {
       return core.earliestKey();
     },
     load(value: { year: number; month: number }) {
+      // Read `version` so the caller's $effect depends on cache mutations: an
+      // invalidate* that marks the visible month stale bumps `version`, which
+      // re-runs the picker's load effect and re-fetches (stale-while-revalidate).
+      // Without this read the effect only re-runs on open/placeholder changes,
+      // so a month invalidated mid-open (head poll / refresh) never re-loads.
+      // core.load() short-circuits on loaded-&-fresh / in-flight, so the extra
+      // re-runs from unrelated version bumps are cheap no-ops.
+      version;
       return core.load(value);
     },
     isDateDisabled(d: CalendarFields) {
