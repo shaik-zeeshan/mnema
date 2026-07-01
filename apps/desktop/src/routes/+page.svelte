@@ -7041,7 +7041,6 @@
        loading→loaded swap can change page/stage/rail height. -->
   <div
     class="timeline__rail-wrap"
-    class:timeline__rail-wrap--scrubbable={timelineFrames.length > 0}
     bind:this={timelineRailWrap}
   >
     {#if timelineFrames.length > 0}
@@ -7830,24 +7829,6 @@
   .timeline__rail-wrap {
     flex: 0 0 auto;
     position: relative;
-  }
-
-  /* Always-visible center position indicator: a thin accent line marking the
-     "you are here" point the rail scrubs frames under, so the rail reads as an
-     interactive time scrubber even before the user hovers it. Only shown once
-     frames exist (the empty placeholder rail has nothing to point at). The
-     36px height matches `.timeline-rail`. */
-  .timeline__rail-wrap--scrubbable::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 50%;
-    width: 1px;
-    height: 36px;
-    transform: translateX(-50%);
-    background: color-mix(in srgb, var(--app-accent) 55%, transparent);
-    pointer-events: none;
-    z-index: 1;
   }
 
   /* Header bar: two clearly-separated control groups (recording + jump on

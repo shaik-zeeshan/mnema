@@ -608,9 +608,8 @@
     gap: 6px;
     font-variant-numeric: tabular-nums;
     max-width: 240px;
-    text-transform: none;
-    letter-spacing: 0.01em;
-    font-weight: 400;
+    /* Typography inherits from `.btn` (uppercase, 700, 0.08em) so the readout
+       matches the LATEST/OCR/REFRESH buttons sharing the timeline bar row. */
     font-size: var(--text-xs);
   }
   .timeline__jump-trigger--open {
