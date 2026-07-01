@@ -1576,6 +1576,26 @@ mod tests {
     }
 
     #[test]
+    fn canonicalize_app_bundle_id_trim_only_is_windows_path_safe() {
+        // On Windows (ADR 0043) the canonical executable path is stored opaquely
+        // in `app_bundle_id`. Canonicalization is trim-only, so it must preserve
+        // backslashes, the drive letter, and internal casing/spaces — anything
+        // else would corrupt the path grouping key. (Case-insensitive `app:`
+        // matching is handled at query time by `LOWER(TRIM(...))`, not here.)
+        assert_eq!(
+            canonicalize_app_bundle_id(
+                "  C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe  "
+            ),
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+        );
+        // A macOS bundle id is likewise only trimmed, unchanged otherwise.
+        assert_eq!(
+            canonicalize_app_bundle_id("  com.google.Chrome "),
+            "com.google.Chrome"
+        );
+    }
+
+    #[test]
     fn load_recording_settings_from_path_returns_none_for_invalid_file() {
         let dir = TestDir::new("invalid");
         let path = dir.path().join("recording-settings.json");

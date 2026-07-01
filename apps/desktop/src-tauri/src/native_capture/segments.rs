@@ -7125,6 +7125,30 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 break;
             }
 
+            // Metadata-only active-window refresh (ADR 0043, issue #139). Runs on
+            // the existing ≤1s poll, only while a session is active (the loop
+            // breaks above once `is_running` is false). Done OFF the
+            // `NativeCaptureState` lock — before the re-lock below — so the Win32
+            // version-info file reads never happen under the capture mutex. The
+            // Metadata Settings gating (title/app recording) is honored inside
+            // `refresh_windows_metadata_snapshot`; it writes only `latest_snapshot`
+            // and computes NO privacy decision (Windows has no live filter).
+            {
+                let metadata_settings = app_handle
+                    .state::<crate::native_capture::RecordingSettingsState>()
+                    .lock()
+                    .expect("recording settings state poisoned")
+                    .settings
+                    .metadata
+                    .clone();
+                metadata::refresh_windows_metadata_snapshot(
+                    app_handle
+                        .state::<crate::native_capture::CaptureMetadataState>()
+                        .inner(),
+                    &metadata_settings,
+                );
+            }
+
             let capture_state = app_handle.state::<NativeCaptureState>();
             let mut runtime = match capture_state.lock() {
                 Ok(runtime) => runtime,
@@ -7807,6 +7831,18 @@ pub(super) fn start_capture_runtime(
             runtime.active_screen_session = None;
             runtime.active_microphone_session = None;
             runtime.active_system_audio_session = None;
+            // Initial metadata-only refresh (ADR 0043, issue #139) BEFORE the first
+            // segment starts, so the very first frames are attributed to the
+            // foreground app instead of waiting for the loop's first ≤1s tick. Uses
+            // the already-loaded `settings.metadata` (whole-snapshot gating applied
+            // inside); metadata-only, no privacy decision. The Win32 version-info
+            // reads run once here — the periodic refreshes are off-lock on the loop.
+            metadata::refresh_windows_metadata_snapshot(
+                app_handle
+                    .state::<crate::native_capture::CaptureMetadataState>()
+                    .inner(),
+                &settings.metadata,
+            );
             start_windows_active_segment(
                 Some(&app_handle),
                 runtime,

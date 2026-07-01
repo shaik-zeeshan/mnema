@@ -217,6 +217,36 @@ pub fn select_frontmost_pid_window<'a>(
     })
 }
 
+/// Derive a human-readable app display name from a Windows executable path, used
+/// as the fallback when the executable exposes no version-info `FileDescription`.
+/// Strips the directory and a trailing `.exe` (case-insensitively), e.g.
+/// `C:\Program Files\Google\Chrome\Application\chrome.exe` -> `chrome`.
+///
+/// The Windows metadata collector guarantees `app_name` is always populated when
+/// a snapshot is produced — a raw path must never surface as a UI label (the
+/// timeline only falls back to the raw identity when `app_name` is null). So this
+/// never returns the full path: it returns the file stem, or the trimmed input
+/// when there is no stem to take (e.g. an empty string). Kept pure (no Win32) so
+/// it is unit-testable in this dependency-light crate.
+pub fn app_display_name_from_exe_path(exe_path: &str) -> String {
+    let trimmed = exe_path.trim();
+    // Windows paths use `\`; tolerate `/` too. `rsplit` on both separators yields
+    // the final path component (or the whole string when there is no separator).
+    let file_name = trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed);
+    // Drop a trailing `.exe` case-insensitively. `rsplit_once('.')` is UTF-8-safe
+    // (splits on a char boundary), unlike byte-slicing the tail.
+    let stem = match file_name.rsplit_once('.') {
+        Some((stem, ext)) if ext.eq_ignore_ascii_case("exe") => stem,
+        _ => file_name,
+    }
+    .trim();
+    if stem.is_empty() {
+        trimmed.to_string()
+    } else {
+        stem.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetadataCollectionPlan {
     pub collect_active_window: bool,
@@ -533,6 +563,48 @@ impl PrivacyFilterKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_display_name_strips_directory_and_exe_extension() {
+        // The primary case: a fully-qualified Windows exe path collapses to the
+        // bare file stem, never `chrome.exe` and never the full path.
+        assert_eq!(
+            app_display_name_from_exe_path(
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+            ),
+            "chrome"
+        );
+        assert_eq!(app_display_name_from_exe_path("notepad.exe"), "notepad");
+    }
+
+    #[test]
+    fn app_display_name_is_case_insensitive_on_exe_and_tolerates_forward_slashes() {
+        assert_eq!(
+            app_display_name_from_exe_path(r"C:\Apps\Thing.EXE"),
+            "Thing"
+        );
+        assert_eq!(app_display_name_from_exe_path("/opt/app/tool.exe"), "tool");
+    }
+
+    #[test]
+    fn app_display_name_keeps_names_without_an_exe_extension() {
+        // No extension -> the whole final path component is the name.
+        assert_eq!(
+            app_display_name_from_exe_path(r"C:\Windows\System32\cmd"),
+            "cmd"
+        );
+        // A non-exe extension is left intact (only `.exe` is stripped).
+        assert_eq!(app_display_name_from_exe_path(r"C:\bin\my.tool"), "my.tool");
+    }
+
+    #[test]
+    fn app_display_name_handles_empty_or_whitespace_input() {
+        // An empty / failed path yields an empty string. The collector never
+        // produces a snapshot in that case (it returns `None`), so this only
+        // documents the pure fallback's honest behavior.
+        assert_eq!(app_display_name_from_exe_path(""), "");
+        assert_eq!(app_display_name_from_exe_path("   "), "");
+    }
 
     #[test]
     fn sanitizes_urls() {

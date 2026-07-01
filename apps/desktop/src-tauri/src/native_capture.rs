@@ -10,6 +10,9 @@ pub(crate) mod inactivity;
 mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
+#[cfg(target_os = "windows")]
+#[path = "native_capture_foreground_listener.rs"]
+pub(crate) mod foreground_listener;
 mod microphone;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
@@ -52,7 +55,7 @@ use settings::{
     initialize_recording_settings_state_from_disk, RecordingSettingsDomainPatch,
 };
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::path::Path;
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
@@ -60,7 +63,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::path::BaseDirectory;
 use tauri::{Emitter, Manager};
 
@@ -130,13 +133,13 @@ const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recover
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
 const SPEAKER_SETTINGS_TAB_ID: &str = "speakers";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const APP_ICON_CACHE_DIR: &str = "app-icons";
 // Point size we render cached app icons at. Displayed at 20–24 CSS px, so a
 // larger source keeps the icon crisp on Retina (2x → ~48 device px) by always
 // downscaling instead of upscaling a small bitmap. Baked into the cache
 // filename so bumping this size supersedes previously cached lower-res PNGs.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const APP_ICON_RENDER_POINT_SIZE: u32 = 128;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -342,7 +345,36 @@ pub async fn resolve_app_icons(
         Ok(icons)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // Each requested identifier is a canonical executable path (ADR 0043 stores
+        // it opaquely in `app_bundle_id`). Resolve each to a cached PNG extracted
+        // from the exe's Win32 icon, reusing the same app-owned icon cache + asset
+        // scope as macOS. Unresolvable identifiers stay `None`; the frontend renders
+        // its letter fallback.
+        let cache_dir = match ensure_app_icon_cache_dir(&app_handle) {
+            Ok(cache_dir) => Some(cache_dir),
+            Err(error) => {
+                debug_log::log_warn(format!(
+                    "failed to prepare Windows app icon cache directory: {error}"
+                ));
+                None
+            }
+        };
+
+        let icons = requested_bundle_ids
+            .into_iter()
+            .map(|identifier| AppIconResolution {
+                icon_path: cache_dir
+                    .as_deref()
+                    .and_then(|cache_dir| resolve_windows_app_icon(cache_dir, &identifier)),
+                bundle_id: identifier,
+            })
+            .collect();
+        Ok(icons)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = app_handle;
         Ok(requested_bundle_ids
@@ -631,7 +663,7 @@ fn macos_application_bundle_path_for_bundle_id(bundle_id: &str) -> Option<PathBu
     .flatten()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn ensure_app_icon_cache_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     let cache_dir = app_handle
         .path()
@@ -680,7 +712,7 @@ fn materialize_app_candidate_icons(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn app_icon_cache_path(cache_dir: &Path, bundle_id: &str) -> Option<PathBuf> {
     let file_stem = sanitize_app_icon_file_stem(bundle_id);
     if file_stem.is_empty() {
@@ -690,7 +722,7 @@ fn app_icon_cache_path(cache_dir: &Path, bundle_id: &str) -> Option<PathBuf> {
     Some(cache_dir.join(format!("{file_stem}@{APP_ICON_RENDER_POINT_SIZE}.png")))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sanitize_app_icon_file_stem(bundle_id: &str) -> String {
     bundle_id
         .trim()
@@ -786,6 +818,190 @@ fn write_macos_app_icon_png(bundle_path: &Path, output_path: &Path) -> Result<()
             output_path.display()
         )
     })
+}
+
+/// Resolve one Windows identifier (a canonical executable path, per ADR 0043) to a
+/// cached icon PNG. Mirrors the macOS `materialize_app_candidate_icons` cache-first
+/// behaviour: reuse a non-empty cached PNG when present, otherwise extract the
+/// exe's Win32 icon into the cache. Returns the cached path on success, `None` when
+/// no icon resolves (the frontend then renders its letter fallback).
+#[cfg(target_os = "windows")]
+fn resolve_windows_app_icon(cache_dir: &Path, identifier: &str) -> Option<String> {
+    let icon_path = app_icon_cache_path(cache_dir, identifier)?;
+    let cached_icon_available = icon_path
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+    if cached_icon_available
+        || write_windows_app_icon_png(Path::new(identifier), &icon_path).is_ok()
+    {
+        Some(icon_path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract the large (32×32) Win32 shell icon for `exe_path` and encode it to a PNG
+/// at `output_path`. Win32 executables only — packaged/UWP logo assets are out of
+/// scope for v1 (they resolve through the shell's generic exe icon at worst).
+///
+/// Returns `Err` (never panics) on any failure so the caller can fall back to the
+/// letter placeholder. Every GDI/USER handle acquired here is released before
+/// returning.
+#[cfg(target_os = "windows")]
+fn write_windows_app_icon_png(exe_path: &Path, output_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+    use windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    let wide_path: Vec<u16> = exe_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // SAFETY: `wide_path` is a NUL-terminated wide string. `SHGetFileInfoW` fills a
+    // zeroed `SHFILEINFOW` and, on success with `SHGFI_ICON`, hands back an `HICON`
+    // we own and unconditionally `DestroyIcon` below. Pixel extraction happens in
+    // `windows_icon_to_rgba`, which frees the bitmaps it derives from the icon.
+    let image = unsafe {
+        let mut file_info: SHFILEINFOW = std::mem::zeroed();
+        let result = SHGetFileInfoW(
+            wide_path.as_ptr(),
+            0,
+            &mut file_info,
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        if result == 0 || file_info.hIcon.is_null() {
+            return Err(format!(
+                "failed to load Windows icon for {}",
+                exe_path.display()
+            ));
+        }
+
+        let extracted = windows_icon_to_rgba(file_info.hIcon);
+        DestroyIcon(file_info.hIcon);
+        extracted?
+    };
+
+    image.save(output_path).map_err(|error| {
+        format!(
+            "failed to write Windows app icon {}: {error}",
+            output_path.display()
+        )
+    })
+}
+
+/// Convert an `HICON` into an [`image::RgbaImage`]. Reads the icon's color bitmap
+/// as a top-down 32bpp DIB (`GetDIBits`), converts the BGRA the GDI returns into
+/// the RGBA `image` expects, and forces opaque alpha when the icon comes back with
+/// an all-zero alpha channel (some icons carry no per-pixel alpha and would
+/// otherwise render fully transparent).
+///
+/// # Safety
+/// `hicon` must be a valid icon handle. This reads the icon's bitmaps and frees
+/// both (`hbmColor`/`hbmMask`) before returning; it does NOT destroy `hicon` (the
+/// caller owns that).
+#[cfg(target_os = "windows")]
+unsafe fn windows_icon_to_rgba(
+    hicon: windows_sys::Win32::UI::WindowsAndMessaging::HICON,
+) -> Result<image::RgbaImage, String> {
+    use windows_sys::Win32::Graphics::Gdi::DeleteObject;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
+
+    let mut icon_info: ICONINFO = std::mem::zeroed();
+    if GetIconInfo(hicon, &mut icon_info) == 0 {
+        return Err("failed to read Windows icon info".to_string());
+    }
+    let hbm_color = icon_info.hbmColor;
+    let hbm_mask = icon_info.hbmMask;
+
+    // Extract into a Result first, then free both bitmaps on every path.
+    let extracted = windows_color_bitmap_to_rgba(hbm_color);
+
+    if !hbm_color.is_null() {
+        DeleteObject(hbm_color);
+    }
+    if !hbm_mask.is_null() {
+        DeleteObject(hbm_mask);
+    }
+    extracted
+}
+
+/// Copy a 32bpp top-down DIB out of an icon's color `HBITMAP` and return it as an
+/// RGBA image. Splitting this out of [`windows_icon_to_rgba`] keeps bitmap-handle
+/// ownership in the caller: this borrows `hbm_color` and never frees it.
+///
+/// # Safety
+/// `hbm_color` must be a valid color bitmap handle from `GetIconInfo`.
+#[cfg(target_os = "windows")]
+unsafe fn windows_color_bitmap_to_rgba(
+    hbm_color: windows_sys::Win32::Graphics::Gdi::HBITMAP,
+) -> Result<image::RgbaImage, String> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS,
+    };
+
+    if hbm_color.is_null() {
+        return Err("Windows icon had no color bitmap".to_string());
+    }
+
+    let mut bitmap: BITMAP = std::mem::zeroed();
+    let measured = GetObjectW(
+        hbm_color,
+        std::mem::size_of::<BITMAP>() as i32,
+        (&mut bitmap as *mut BITMAP).cast(),
+    );
+    if measured == 0 || bitmap.bmWidth <= 0 || bitmap.bmHeight <= 0 {
+        return Err("failed to measure Windows icon bitmap".to_string());
+    }
+    let width = bitmap.bmWidth as u32;
+    let height = bitmap.bmHeight as u32;
+
+    // Negative height requests a top-down DIB so row 0 is the top scanline.
+    let mut bmi: BITMAPINFO = std::mem::zeroed();
+    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = bitmap.bmWidth;
+    bmi.bmiHeader.biHeight = -bitmap.bmHeight;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB as u32;
+
+    let mut buffer: Vec<u8> = vec![0u8; (width as usize) * (height as usize) * 4];
+
+    let hdc = GetDC(std::ptr::null_mut());
+    if hdc.is_null() {
+        return Err("failed to acquire device context for Windows icon".to_string());
+    }
+    let scanlines = GetDIBits(
+        hdc,
+        hbm_color,
+        0,
+        height,
+        buffer.as_mut_ptr().cast(),
+        &mut bmi,
+        DIB_RGB_COLORS,
+    );
+    ReleaseDC(std::ptr::null_mut(), hdc);
+
+    if scanlines == 0 {
+        return Err("failed to copy Windows icon pixels".to_string());
+    }
+
+    // GDI returns BGRA; the `image` crate wants RGBA. Some icons come back with an
+    // all-zero alpha channel — treat those as opaque so they are not rendered fully
+    // transparent.
+    let has_alpha = buffer.iter().skip(3).step_by(4).any(|&alpha| alpha != 0);
+    for pixel in buffer.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        if !has_alpha {
+            pixel[3] = 255;
+        }
+    }
+
+    image::RgbaImage::from_raw(width, height, buffer)
+        .ok_or_else(|| "failed to build Windows icon image buffer".to_string())
 }
 
 #[tauri::command]

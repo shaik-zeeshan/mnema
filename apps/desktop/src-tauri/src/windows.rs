@@ -1610,6 +1610,12 @@ fn complete_graceful_exit(app: &tauri::AppHandle) {
     let restart_after_update = exit_state.should_restart_after_graceful_exit();
     exit_state.mark_final_graceful_exit_ready();
 
+    // Release the Windows foreground-change listener (WinEvent hook + its thread)
+    // before the process exits or restarts, so neither leaks (ADR 0043, issue #141).
+    // Runs here (not on the listener thread) so its WM_QUIT signal + join complete.
+    #[cfg(target_os = "windows")]
+    crate::native_capture::foreground_listener::stop_windows_foreground_listener();
+
     if restart_after_update {
         crate::native_capture::debug_log::log_info(
             "completed graceful app exit; restarting to finish update",

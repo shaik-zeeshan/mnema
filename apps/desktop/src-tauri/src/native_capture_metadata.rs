@@ -4,6 +4,12 @@ use capture_metadata::{browser_url_applescript, browser_url_strategy, BrowserUrl
 use capture_metadata::{
     evaluate_privacy, metadata_collection_plan, MetadataContext, MetadataSettings, PrivacySettings,
 };
+// `MetadataSettings` above is gated to macOS/test; the Windows metadata-only
+// refresh (ADR 0043, issue #139) needs it too, without pulling the macOS
+// privacy-engine imports. `not(test)` avoids a double import in a Windows test
+// build (where the `any(test, ...)` import above is already active).
+#[cfg(all(target_os = "windows", not(test)))]
+use capture_metadata::MetadataSettings;
 #[cfg(target_os = "macos")]
 use capture_metadata::{
     browser_url_script_app_name, is_known_browser_bundle, sanitize_url,
@@ -231,7 +237,18 @@ pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
     );
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: install the foreground-change listener (ADR 0043, issue #141) so the
+/// active-window snapshot refreshes the instant focus changes — keeping per-frame
+/// app attribution correct across sub-second app switches. Mirrors the macOS seam:
+/// installed once at startup, its refresh no-ops while not recording, and the 1s
+/// segment-loop poll (#139) stays as the fallback. Teardown at app exit is wired
+/// through `foreground_listener::stop_windows_foreground_listener`.
+#[cfg(target_os = "windows")]
+pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
+    crate::native_capture::foreground_listener::start_windows_foreground_listener(app_handle);
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn start_metadata_notifier(_app_handle: tauri::AppHandle) {}
 
 #[cfg(target_os = "macos")]
@@ -593,6 +610,232 @@ fn run_osascript(script: &str) -> String {
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
             Err(_) => return String::new(),
         }
+    }
+}
+
+// ── Windows active-window metadata (ADR 0043, issue #139) ─────────────────────
+//
+// Windows v1 has no live content filter and no App Privacy Exclusion (ADR 0025),
+// so — unlike the macOS engine in `native_capture/privacy.rs` — this path is
+// METADATA-ONLY: it writes `latest_snapshot` and computes NO `PrivacyFilterDecision`.
+// It is driven by the Windows segment loop's ≤1s poll while a session is active
+// (`spawn_segment_loop`), plus one initial refresh at capture start.
+
+/// Collect the foreground app + window title and write it to `latest_snapshot`,
+/// mirroring macOS whole-snapshot gating: when `metadata.enabled` is false, no
+/// app/window identity is recorded (the snapshot is cleared). Metadata-only — it
+/// never touches `latest_decision` / `latest_applied_decision`.
+///
+/// The Win32 collection (including version-info file reads) is done before
+/// locking `CaptureMetadataState`, so the mutex is held only for the store.
+#[cfg(target_os = "windows")]
+pub fn refresh_windows_metadata_snapshot(
+    state: &CaptureMetadataState,
+    metadata: &MetadataSettings,
+) {
+    let snapshot = if metadata.enabled {
+        collect_windows_active_window_snapshot()
+    } else {
+        None
+    };
+    state
+        .lock()
+        .expect("capture metadata state poisoned")
+        .latest_snapshot = snapshot;
+}
+
+/// Snapshot the current foreground window's app identity + title via Win32.
+///
+/// Returns `None` when there is no foreground window, the owning PID is 0, or the
+/// executable path cannot be resolved (e.g. access-denied on an elevated/system
+/// process) — an honest absence of metadata. Mnema's own process is not
+/// special-cased: whatever is frontmost is recorded, matching macOS.
+///
+/// Per ADR 0043 the canonical executable path is stored opaquely in
+/// `app_bundle_id` (no schema rename in v1); `app_name` is ALWAYS populated (the
+/// version-info `FileDescription`, else the file stem) so a raw path never
+/// surfaces as a UI label.
+#[cfg(target_os = "windows")]
+fn collect_windows_active_window_snapshot() -> Option<FrameMetadataSnapshot> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    // SAFETY: standard Win32 foreground-window queries. `GetForegroundWindow`
+    // returns a borrowed HWND we never free; `GetWindowThreadProcessId` writes a
+    // PID into a stack local. The helpers below size every buffer from the API
+    // before filling it and close every handle they open.
+    let (exe_path, window_title) = unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return None;
+        }
+
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return None;
+        }
+
+        let exe_path = windows_process_image_path(pid)?;
+        let window_title = windows_window_title(hwnd);
+        (exe_path, window_title)
+    };
+
+    // `app_name` MUST always be populated (see ADR 0043): FileDescription when the
+    // exe exposes one, else the pure file-stem fallback.
+    let app_name = windows_file_description(&exe_path)
+        .filter(|description| !description.trim().is_empty())
+        .map(|description| description.trim().to_string())
+        .unwrap_or_else(|| capture_metadata::app_display_name_from_exe_path(&exe_path));
+
+    Some(FrameMetadataSnapshot {
+        // Store the canonical exe path opaquely in `app_bundle_id`. Trim only — do
+        // NOT lowercase (the `app:` index lowercases at query time), keeping the
+        // path-safe grouping key intact.
+        app_bundle_id: Some(exe_path.trim().to_string()),
+        app_name: Some(app_name),
+        window_title,
+        ..FrameMetadataSnapshot::default()
+    })
+}
+
+/// Resolve a process's canonical executable path via
+/// `QueryFullProcessImageNameW` (`PROCESS_NAME_WIN32`). `None` on any failure,
+/// including access-denied (`OpenProcess` returns null for elevated/system
+/// processes at our integrity level).
+///
+/// # Safety
+/// Opens and unconditionally closes a process handle for `pid`.
+#[cfg(target_os = "windows")]
+unsafe fn windows_process_image_path(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if handle.is_null() {
+        return None;
+    }
+
+    // MAX_PATH is only a floor — long paths exceed it — so start generous.
+    let mut buffer: Vec<u16> = vec![0u16; 1024];
+    let mut size: u32 = buffer.len() as u32;
+    let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut size);
+    CloseHandle(handle);
+
+    if ok == 0 || size == 0 {
+        return None;
+    }
+    let path = String::from_utf16_lossy(&buffer[..size as usize]);
+    let path = path.trim();
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// Read the foreground window's title via `GetWindowTextW`, sizing the buffer
+/// from `GetWindowTextLengthW`. `None` when the window has no (non-empty) title.
+///
+/// # Safety
+/// `hwnd` must be a valid window handle (as returned by `GetForegroundWindow`).
+#[cfg(target_os = "windows")]
+unsafe fn windows_window_title(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
+
+    let len = GetWindowTextLengthW(hwnd);
+    if len <= 0 {
+        return None;
+    }
+    // +1 for the NUL terminator `GetWindowTextW` writes.
+    let mut buffer: Vec<u16> = vec![0u16; len as usize + 1];
+    let copied = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+    if copied <= 0 {
+        return None;
+    }
+    let title = String::from_utf16_lossy(&buffer[..copied as usize]);
+    let title = title.trim();
+    (!title.is_empty()).then(|| title.to_string())
+}
+
+/// A NUL-terminated wide-string for the Win32 `*W` version APIs.
+#[cfg(target_os = "windows")]
+fn windows_wide_nul(value: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+/// Read the executable's version-info `FileDescription` string (the human-facing
+/// display name, e.g. `Google Chrome` for `chrome.exe`). `None` when the file has
+/// no version resource or no `FileDescription`; the caller then falls back to the
+/// file stem so `app_name` is always populated.
+///
+/// Reads the first `\VarFileInfo\Translation` lang/codepage, then queries
+/// `\StringFileInfo\<lang><codepage>\FileDescription`.
+#[cfg(target_os = "windows")]
+fn windows_file_description(exe_path: &str) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let wide_path = windows_wide_nul(exe_path);
+
+    // SAFETY: `data` is sized from `GetFileVersionInfoSizeW` and populated by
+    // `GetFileVersionInfoW` before any `VerQueryValueW` read. Each `VerQueryValueW`
+    // out-pointer/length pair is null- and length-checked before the pointed-to
+    // bytes are read, and every read stays within `data`'s lifetime.
+    unsafe {
+        let mut handle: u32 = 0;
+        let size = GetFileVersionInfoSizeW(wide_path.as_ptr(), &mut handle);
+        if size == 0 {
+            return None;
+        }
+        let mut data: Vec<u8> = vec![0u8; size as usize];
+        if GetFileVersionInfoW(wide_path.as_ptr(), 0, size, data.as_mut_ptr().cast()) == 0 {
+            return None;
+        }
+
+        // First translation entry: two WORDs (language, codepage).
+        let translation_key = windows_wide_nul("\\VarFileInfo\\Translation");
+        let mut translation_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut translation_len: u32 = 0;
+        if VerQueryValueW(
+            data.as_ptr().cast(),
+            translation_key.as_ptr(),
+            &mut translation_ptr,
+            &mut translation_len,
+        ) == 0
+            || translation_ptr.is_null()
+            || translation_len < 4
+        {
+            return None;
+        }
+        let language = *translation_ptr.cast::<u16>();
+        let codepage = *translation_ptr.cast::<u16>().add(1);
+
+        let sub_block = format!("\\StringFileInfo\\{language:04x}{codepage:04x}\\FileDescription");
+        let sub_block_key = windows_wide_nul(&sub_block);
+        let mut value_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut value_len: u32 = 0;
+        if VerQueryValueW(
+            data.as_ptr().cast(),
+            sub_block_key.as_ptr(),
+            &mut value_ptr,
+            &mut value_len,
+        ) == 0
+            || value_ptr.is_null()
+            || value_len == 0
+        {
+            return None;
+        }
+        // `value_len` is a character count (may include the trailing NUL); trim it.
+        let chars = std::slice::from_raw_parts(value_ptr.cast::<u16>(), value_len as usize);
+        let description = String::from_utf16_lossy(chars);
+        let description = description.trim_end_matches('\0').trim();
+        (!description.is_empty()).then(|| description.to_string())
     }
 }
 
