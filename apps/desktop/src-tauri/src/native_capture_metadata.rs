@@ -14,9 +14,20 @@ use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Manager;
 
+/// How many `(published_at_unix_ms, snapshot)` entries to retain. Frames stamp
+/// within ~1s of capture and snapshots publish at most a few times per second,
+/// so a handful of entries covers the capture→JPEG-write lag with room to spare.
+/// ponytail: fixed ring, not a general time-series store.
+const SNAPSHOT_HISTORY_CAP: usize = 8;
+
 #[derive(Debug, Clone, Default)]
 pub struct CaptureMetadataRuntime {
     latest_snapshot: Option<FrameMetadataSnapshot>,
+    /// Recent `(published_at_unix_ms, snapshot)` entries, oldest first. Used to
+    /// stamp each frame with the app that was frontmost at the frame's *capture*
+    /// instant rather than at JPEG-write-completion (which flips to the app the
+    /// user switched TO on boundary frames).
+    snapshot_history: std::collections::VecDeque<(u64, Option<FrameMetadataSnapshot>)>,
     latest_decision: PrivacyFilterDecision,
     latest_applied_decision: PrivacyFilterDecision,
     browser_url_probe_cache: BrowserUrlProbeCache,
@@ -25,6 +36,25 @@ pub struct CaptureMetadataRuntime {
 impl CaptureMetadataRuntime {
     pub fn latest_snapshot(&self) -> Option<FrameMetadataSnapshot> {
         self.latest_snapshot.clone()
+    }
+
+    fn publish_snapshot(&mut self, at_unix_ms: u64, snapshot: Option<FrameMetadataSnapshot>) {
+        self.latest_snapshot = snapshot.clone();
+        self.snapshot_history.push_back((at_unix_ms, snapshot));
+        while self.snapshot_history.len() > SNAPSHOT_HISTORY_CAP {
+            self.snapshot_history.pop_front();
+        }
+    }
+
+    /// The snapshot published at or before `at_unix_ms` (most recent such entry).
+    /// Returns `None` for frames captured before the first snapshot was published
+    /// (session start), matching the pre-history behavior.
+    fn snapshot_in_effect_at(&self, at_unix_ms: u64) -> Option<FrameMetadataSnapshot> {
+        self.snapshot_history
+            .iter()
+            .rev()
+            .find(|(published_at, _)| *published_at <= at_unix_ms)
+            .and_then(|(_, snapshot)| snapshot.clone())
     }
 }
 
@@ -58,19 +88,34 @@ pub enum BrowserUrlReadMode {
 }
 
 pub(super) type FrameMetadataSnapshotProvider =
-    Arc<dyn Fn() -> Option<FrameMetadataSnapshot> + Send + Sync + 'static>;
+    Arc<dyn Fn(u64) -> Option<FrameMetadataSnapshot> + Send + Sync + 'static>;
 
 pub(super) fn frame_metadata_snapshot_provider(
     app_handle: &tauri::AppHandle,
 ) -> FrameMetadataSnapshotProvider {
     let app_handle = app_handle.clone();
-    Arc::new(move || {
-        latest_frame_metadata_snapshot(
+    Arc::new(move |captured_at_unix_ms| {
+        frame_metadata_snapshot_in_effect_at(
             app_handle
                 .state::<crate::native_capture::CaptureMetadataState>()
                 .inner(),
+            captured_at_unix_ms,
         )
     })
+}
+
+/// The frame-metadata snapshot that was in effect at `captured_at_unix_ms` — the
+/// frame's *capture* instant, not JPEG-write-completion. Fixes the boundary-frame
+/// mislabel where the last frame before an app switch got stamped with the app
+/// switched TO.
+pub fn frame_metadata_snapshot_in_effect_at(
+    state: &CaptureMetadataState,
+    captured_at_unix_ms: u64,
+) -> Option<FrameMetadataSnapshot> {
+    state
+        .lock()
+        .expect("capture metadata state poisoned")
+        .snapshot_in_effect_at(captured_at_unix_ms)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -81,15 +126,6 @@ pub struct CapturePrivacyDebugInfo {
     pub latest_applied_decision: PrivacyFilterDecision,
     pub currently_excluded_bundle_ids: Vec<String>,
     pub privacy_filter_applied: bool,
-}
-
-pub fn latest_frame_metadata_snapshot(
-    state: &CaptureMetadataState,
-) -> Option<FrameMetadataSnapshot> {
-    state
-        .lock()
-        .expect("capture metadata state poisoned")
-        .latest_snapshot()
 }
 
 pub fn capture_privacy_debug_info(state: &CaptureMetadataState) -> CapturePrivacyDebugInfo {
@@ -124,6 +160,7 @@ pub fn latest_applied_privacy_decision(state: &CaptureMetadataState) -> PrivacyF
 pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     let mut runtime = state.lock().expect("capture metadata state poisoned");
     runtime.latest_snapshot = None;
+    runtime.snapshot_history.clear();
     runtime.latest_decision = PrivacyFilterDecision::default();
     runtime.latest_applied_decision = PrivacyFilterDecision::default();
     runtime.browser_url_probe_cache = BrowserUrlProbeCache::default();
@@ -154,7 +191,7 @@ pub fn refresh_metadata_state(
     if let Some(browser_url_probe_cache) = active.browser_url_probe_cache {
         runtime.browser_url_probe_cache = browser_url_probe_cache;
     }
-    runtime.latest_snapshot = snapshot;
+    runtime.publish_snapshot(crate::native_capture::runtime::now_unix_ms(), snapshot);
     runtime.latest_decision = decision.clone();
     decision
 }
@@ -640,6 +677,52 @@ mod tests {
         assert!(decision.metadata_redaction_reason.is_none());
         assert!(runtime.latest_snapshot.is_none());
         assert_eq!(runtime.latest_decision, decision);
+    }
+
+    fn snapshot_named(app: &str) -> FrameMetadataSnapshot {
+        FrameMetadataSnapshot {
+            app_name: Some(app.to_string()),
+            ..FrameMetadataSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn snapshot_in_effect_at_stamps_the_app_frontmost_at_capture_time() {
+        let mut runtime = CaptureMetadataRuntime::default();
+        runtime.publish_snapshot(1000, Some(snapshot_named("Hitch")));
+        runtime.publish_snapshot(2000, Some(snapshot_named("mnema")));
+
+        // Frame captured before the switch (t=1900) must keep Hitch, even though
+        // "mnema" is now the latest snapshot.
+        assert_eq!(
+            runtime.snapshot_in_effect_at(1900).unwrap().app_name.unwrap(),
+            "Hitch"
+        );
+        // Frame captured after the switch gets mnema.
+        assert_eq!(
+            runtime.snapshot_in_effect_at(2100).unwrap().app_name.unwrap(),
+            "mnema"
+        );
+        // Frame captured before any snapshot was published gets None (session start).
+        assert!(runtime.snapshot_in_effect_at(500).is_none());
+    }
+
+    #[test]
+    fn snapshot_history_is_bounded_and_reset_clears_it() {
+        let state = CaptureMetadataState::default();
+        {
+            let mut runtime = state.lock().expect("lock");
+            for t in 0..(SNAPSHOT_HISTORY_CAP as u64 + 5) {
+                runtime.publish_snapshot(t, Some(snapshot_named("app")));
+            }
+            assert_eq!(runtime.snapshot_history.len(), SNAPSHOT_HISTORY_CAP);
+        }
+
+        reset_recording_session_privacy_state(&state);
+
+        let runtime = state.lock().expect("lock");
+        assert!(runtime.snapshot_history.is_empty());
+        assert!(runtime.snapshot_in_effect_at(u64::MAX).is_none());
     }
 
     #[test]
