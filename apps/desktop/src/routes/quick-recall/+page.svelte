@@ -319,7 +319,11 @@
   let sourceHandoffPending = $state(false);
 
   // Hand off an Ask AI answer source to the main window, mirroring
-  // selectFrame/selectAudio (frame xor audio carried by the source kind).
+  // selectFrame/selectAudio (frame xor audio carried by the source kind). Quick
+  // Recall is a transient launcher popup, not a place the user is settled into,
+  // so a cited source always hops to the main Timeline window and dismisses the
+  // launcher — the in-place FrameDetailModal is for the main-window surfaces
+  // (Chat, Subjects), not here.
   async function selectSource(source: AskAiSource): Promise<void> {
     // Carry the Audio Search Result Anchor for audio sources (frame sources
     // leave these null), mirroring selectAudio so the dashboard lands on the
@@ -3656,6 +3660,11 @@
           // hidden, so re-probe model status on focus too — otherwise the hint
           // keeps showing keyword-only long after a model is installed.
           void loadSemanticSearchModelInstalled();
+          // The captured-app set grows as new apps are seen after launch, but the
+          // session cache pins the launch-time set — so apps first captured this
+          // session never show in `app:` completion. Invalidate on focus; the lazy
+          // loader (kicked by the `app:` derivation) repopulates on the next use.
+          searchableApps = null;
           // Re-summon hydration: if an ask thread is armed but its in-memory
           // transcript was cleared, reload it from the store so a finished (or
           // still-streaming) answer reappears. Background completion is

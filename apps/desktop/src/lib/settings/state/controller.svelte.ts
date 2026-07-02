@@ -101,6 +101,7 @@ export class SettingsController {
     loadDebugLogStatus: () => this.logs.loadDebugLogStatus(),
     refreshAiProviderKeyPresence: () => void this.aiRuntime.refreshAiProviderKeyPresence(),
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),
+    loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
     gates: () => ({ resolutionSupportPendingForNonOriginal: this.resolutionSupportPendingForNonOriginal }),
     // Re-seed the semantic-search picker once settings land — closes the init
     // race where the picker status resolved before recording settings, leaving
@@ -118,6 +119,7 @@ export class SettingsController {
     getProviders: () => this.rec.draftAiProviders,
     isCloudProviderKind: (kind) => this.isCloudAiProviderKind(kind),
     labelForProvider: (id) => this.aiProviderLabelById(id),
+    loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
   });
   userContext = createUserContextStore({
     onWiped: () => {

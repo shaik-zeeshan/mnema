@@ -40,6 +40,7 @@
   import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
+  import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
@@ -790,8 +791,38 @@
     }
   }
 
-  // Hand off an Answer Source to the main timeline window (frame xor audio).
-  async function selectSource(source: AskAiSource): Promise<void> {
+  // In-place frame peek (FrameDetailModal). A frame source — or an audio source
+  // that carries an aligned frame — opens the modal instead of hopping to the raw
+  // Timeline window; the old timeline hand-off survives only as the modal's
+  // demoted escape hatch (`onOpenInTimeline`) and as the fallback for audio with
+  // no frame to peek.
+  let frameModalOpen = $state(false);
+  let frameModalId = $state<number | null>(null);
+  let frameModalApp = $state<string | null>(null);
+  let frameModalTitle = $state<string | null>(null);
+  let frameModalCapturedAt = $state<string | null>(null);
+  let frameModalOpenInTimeline = $state<(() => void) | null>(null);
+
+  // Select an Answer Source: peek a frame in place when one is available, else
+  // keep the old raw-Timeline hand-off (audio with no aligned frame).
+  function selectSource(source: AskAiSource): void {
+    const frameId =
+      source.kind === "frame" ? source.frameId : (source.alignedFrameId ?? null);
+    if (frameId == null) {
+      void openSourceInTimeline(source);
+      return;
+    }
+    frameModalId = frameId;
+    frameModalApp = source.appName;
+    frameModalTitle = source.windowTitle;
+    frameModalCapturedAt = source.startedAt;
+    frameModalOpenInTimeline = () => void openSourceInTimeline(source);
+    frameModalOpen = true;
+  }
+
+  // Hand off an Answer Source to the main timeline window (frame xor audio) — the
+  // legacy behavior, now the modal's escape hatch + the audio-no-frame fallback.
+  async function openSourceInTimeline(source: AskAiSource): Promise<void> {
     try {
       await invoke("open_capture_result_in_main_window", {
         kind: source.kind,
@@ -895,8 +926,44 @@
   // re-hydrates if the turn already finalized); stale/duplicate is ignored.
   async function handleUpdateEvent(event: AskAiUpdateEvent): Promise<void> {
     if (event.conversationId !== activeConversationId) return;
-    const turn = turns.find((t) => t.turnIndex === event.turnIndex);
-    if (!turn) return; // send() appends the in-flight turn locally; nothing else expected.
+    let turn = turns.find((t) => t.turnIndex === event.turnIndex);
+    if (!turn) {
+      // No local turn for this index: a turn was started on this SAME open
+      // conversation from another window (e.g. Quick Recall). Hydrate the missing
+      // turn from the authoritative live snapshot — the exact reattach path
+      // `adoptLiveSnapshot` uses — insert it in order, then fall through so the
+      // version contract below applies this and subsequent ops. A null / mismatched
+      // snapshot means there is nothing to attach to, so we drop as before.
+      const conversationId = event.conversationId;
+      let snapshot: TurnSnapshot | null;
+      try {
+        snapshot = await invoke<TurnSnapshot | null>("ask_ai_snapshot", {
+          request: { conversationId },
+        });
+      } catch {
+        return;
+      }
+      if (activeConversationId !== conversationId) return;
+      if (snapshot === null || snapshot.view.turnIndex !== event.turnIndex) return;
+      // Re-check after the await: the listener fires handleUpdateEvent without
+      // awaiting, so a concurrent invocation for this same missing turnIndex may
+      // have hydrated it while we were suspended in ask_ai_snapshot — appending
+      // again would duplicate the turn. Only the first resolver hydrates; the
+      // rest fall through to the version contract below.
+      turn = turns.find((t) => t.turnIndex === event.turnIndex);
+      if (!turn) {
+        const hydrated = makeTurn(
+          snapshot.view.turnIndex,
+          snapshot.view.question,
+          normalizePhase(snapshot.view.phase),
+        );
+        turns = [...turns, hydrated].sort((a, b) => a.turnIndex - b.turnIndex);
+        turn = turns.find((t) => t.turnIndex === event.turnIndex);
+        if (!turn) return;
+        adoptView(turn, snapshot.view, snapshot.version);
+        reconcileComposer(turn);
+      }
+    }
 
     if (event.version === turn.version + 1) {
       applyUpdate(turn, event.update);
@@ -1510,6 +1577,18 @@
   {/if}
 {/if}
 </section>
+
+<!-- In-place frame peek for Answer Sources. Its "open full timeline →" escape
+     hatch replays the old raw-Timeline hand-off captured at open time. -->
+<FrameDetailModal
+  open={frameModalOpen}
+  frameId={frameModalId}
+  appName={frameModalApp}
+  windowTitle={frameModalTitle}
+  capturedAt={frameModalCapturedAt}
+  onClose={() => (frameModalOpen = false)}
+  onOpenInTimeline={frameModalOpenInTimeline ?? undefined}
+/>
 
 <style>
   /* The conversation pane filling the insights surface. Mirrors the terminal/

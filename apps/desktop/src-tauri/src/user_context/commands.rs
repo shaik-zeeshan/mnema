@@ -784,6 +784,7 @@ mod tests {
             evidence_fingerprint: "fp".to_string(),
             evidence_activity_count: 1,
             dismissed_at_ms,
+            source: "user".to_string(),
         }
     }
 

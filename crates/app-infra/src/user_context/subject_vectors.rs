@@ -152,7 +152,7 @@ impl SubjectVectorStore {
              FROM user_context_conclusions c \
              LEFT JOIN user_context_subject_vectors v \
                  ON v.subject = c.subject COLLATE NOCASE \
-             WHERE c.status != 'dismissed' \
+             WHERE c.status NOT IN ('dismissed', 'superseded') \
                AND (v.subject IS NULL \
                     OR v.embedding IS NULL \
                     OR v.embedded_model IS NULL \
@@ -388,6 +388,35 @@ mod tests {
                 .await
                 .expect("list limited");
             assert_eq!(limited, vec!["Alpha".to_string()]);
+        });
+    }
+
+    #[test]
+    fn list_subjects_needing_embedding_excludes_superseded_only_subjects() {
+        block_on(async {
+            let store = test_store().await;
+            seed_conclusion(&store, "Alpha").await;
+
+            // A subject whose ONLY conclusion is 'superseded' (ADR 0046 retirement)
+            // is off every recall surface, and the delete cascade drops its Subject
+            // Vector — so the backfill queue must not re-create one for it.
+            sqlx::query(
+                "INSERT INTO user_context_conclusions (subject, statement, status) \
+                 VALUES ('Retired', 'x', 'superseded')",
+            )
+            .execute(store.db.write())
+            .await
+            .expect("seed superseded");
+
+            let pending = store
+                .list_subjects_needing_embedding(MODEL, 10)
+                .await
+                .expect("list");
+            assert_eq!(
+                pending,
+                vec!["Alpha".to_string()],
+                "a superseded-only subject must not be queued for embedding"
+            );
         });
     }
 

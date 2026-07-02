@@ -911,6 +911,15 @@ pub(crate) async fn run_conclusion_distillation(
                     drops.resurface_blocked,
                 ));
             }
+            // ADR 0046: supersede activity is an OUTCOME, not a withholding — logged
+            // separately from the "withheld N drafts" line so retirements are visible.
+            let drops = outcome.gate_drops;
+            if drops.superseded + drops.supersede_degraded + drops.supersede_blocked > 0 {
+                crate::native_capture::debug_log::log_info(format!(
+                    "user context supersede: {} retired, {} degraded, {} blocked",
+                    drops.superseded, drops.supersede_degraded, drops.supersede_blocked,
+                ));
+            }
             Some(outcome)
         }
         Err(error) => {

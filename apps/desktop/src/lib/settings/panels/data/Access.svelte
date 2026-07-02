@@ -28,6 +28,24 @@
   const loadMnemaCliStatus = () => cliAccess.loadMnemaCliStatus();
   const installMnemaCli = () => cliAccess.installMnemaCli();
   const revokeAgentBrokerGrant = (id: string) => cliAccess.revokeAgentBrokerGrant(id);
+
+  // Grants have NO backend change event: they can be approved via the consent
+  // window, revoked elsewhere, or simply expire while this panel sits open. This
+  // panel only mounts while the Data group is the active surface, so a lazy poll
+  // + window-focus refetch keeps the list honest, and a ticking `now` keeps the
+  // expiry labels from freezing at mount. All torn down on unmount.
+  let now = $state(Date.now());
+  $effect(() => {
+    const tick = setInterval(() => (now = Date.now()), 15000);
+    const poll = setInterval(() => void loadBrokerGrants(), 30000);
+    const onFocus = () => void loadBrokerGrants();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(tick);
+      clearInterval(poll);
+      window.removeEventListener("focus", onFocus);
+    };
+  });
 </script>
 
 <SettingGroup
@@ -91,7 +109,7 @@
           {:else if brokerGrants.length > 0}
             <ul class="grant-list">
               {#each brokerGrants as grant (grant.id)}
-                {@const status = grantStatus(grant)}
+                {@const status = grantStatus(grant, now)}
                 <li class="grant-row" class:grant-row--inactive={status !== "active"}>
                   <span class="grant-row__status grant-row__status--{status}" aria-hidden="true"></span>
                   <div class="grant-row__meta">
@@ -99,7 +117,7 @@
                     <span class="grant-row__detail">
                       <span class="grant-row__scope">{formatGrantScope(grant.scope)}</span>
                       <span class="grant-row__sep" aria-hidden="true">·</span>
-                      <span use:tip={new Date(grant.expiresAtUnixMs).toLocaleString()}>{grantStatusLabel(grant)}</span>
+                      <span use:tip={new Date(grant.expiresAtUnixMs).toLocaleString()}>{grantStatusLabel(grant, now)}</span>
                     </span>
                   </div>
                   <button

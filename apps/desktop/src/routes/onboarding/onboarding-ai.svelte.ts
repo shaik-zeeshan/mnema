@@ -64,6 +64,10 @@ export function createOnboardingAiStore() {
     getProviders: () => draftAiProviders,
     isCloudProviderKind: (kind) => isCloudAiProviderKind(kind),
     labelForProvider: (id) => aiProviderLabelById(id),
+    // Onboarding has no Ask AI readiness pill (settings aren't persisted yet, so
+    // its status surface is deliberately omitted — see file header), so nothing
+    // to refresh after a key save/clear here.
+    loadAskAiAvailability: () => {},
   });
 
   // ── Provider list mutations (mirror the Settings controller) ──────────────
