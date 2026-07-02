@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "dev": "turbo run dev --filter=desktop",
-    "dev:sandbox": "./scripts/dev-app.sh",
+    "dev:sandbox": "bun scripts/dev-app.mjs",
     "build": "turbo run build --cache=local:r",
     "check": "turbo run check --cache=local:r",
     "tauri": "turbo run tauri --filter=desktop --",
