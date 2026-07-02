@@ -4169,7 +4169,10 @@
     }
   }
 
-  async function drainPendingBrokerOpenCaptureResults(): Promise<void> {
+  // Returns whether any payload was queued (regardless of whether its jump
+  // succeeded) so the cold-mount init can skip the latest-frames load that would
+  // otherwise clobber the handed-off frame (see `initializeTimeline`).
+  async function drainPendingBrokerOpenCaptureResults(): Promise<boolean> {
     let payloads: BrokerOpenCaptureResultPayload[];
     try {
       payloads = await invoke<BrokerOpenCaptureResultPayload[]>(
@@ -4177,7 +4180,7 @@
       );
     } catch {
       setFrameActionStatus("Couldn't open that capture — please try again.", { tone: "error" });
-      return;
+      return false;
     }
     for (const payload of payloads) {
       try {
@@ -4188,6 +4191,7 @@
         setFrameActionStatus("That capture is no longer available.", { tone: "error" });
       }
     }
+    return payloads.length > 0;
   }
 
   /**
@@ -5485,8 +5489,22 @@
   $effect(() => {
     if (timelineInitialized) return;
     timelineInitialized = true;
-    void loadTimelinePage(true);
+    void initializeTimeline();
   });
+
+  // A capture-result handoff (e.g. an insights "show this frame in the
+  // timeline") queues a payload in Rust *before* this cold window mounts. Drain
+  // it first and let the jump load the window around the handed-off frame; only
+  // fall back to the newest-first latest load when nothing was queued (or the
+  // jump left the rail empty). Draining here — rather than in the broker
+  // listener's on-mount `.then` — keeps the latest load from racing the jump and
+  // clobbering it (which landed the user on the newest frame instead).
+  async function initializeTimeline(): Promise<void> {
+    const handled = await drainPendingBrokerOpenCaptureResults();
+    if (!handled || timelineFrames.length === 0) {
+      await loadTimelinePage(true);
+    }
+  }
 
   // Track the rail's viewport width so the windowing window stays correct
   // across resizes. Only the slots near the viewport are rendered. Also acts
@@ -6369,14 +6387,15 @@
       else unlistenScrubPreviewCacheChanged = fn;
     });
 
+    // Live broker events (a warm timeline receiving a handoff) drain here. The
+    // cold-mount drain is owned by `initializeTimeline` so it can gate the
+    // initial latest load on it; draining again in this `.then` would re-race
+    // that load, so we only register the live listener.
     listen<BrokerOpenCaptureResultPayload>("broker_open_capture_result", () => {
       void drainPendingBrokerOpenCaptureResults();
     }).then((fn) => {
       if (destroyed) fn();
-      else {
-        unlistenBrokerOpenCaptureResult = fn;
-        void drainPendingBrokerOpenCaptureResults();
-      }
+      else unlistenBrokerOpenCaptureResult = fn;
     });
 
     document.addEventListener("visibilitychange", onVisibility);
