@@ -247,6 +247,42 @@ pub fn app_display_name_from_exe_path(exe_path: &str) -> String {
     }
 }
 
+/// The browser engine family Mnema recognizes for a Windows executable, used to
+/// pick the UI Automation read dialect (ADR 0044). This is a Windows-only parallel
+/// type to the macOS `BrowserUrlStrategy`; the platforms share no dispatch site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserEngine {
+    /// Chromium family (Chrome, Edge, Brave, Vivaldi, Opera, Arc, Helium-as-chrome.exe, …).
+    Chromium,
+    /// Gecko family (Firefox, Zen, LibreWolf, Waterfox, Floorp).
+    Gecko,
+}
+
+/// Resolve a Windows executable file stem to its browser engine family, or `None`
+/// when the stem is not a browser we recognize.
+///
+/// `stem` is the exe file stem — the final path component with a trailing `.exe`
+/// dropped, exactly what [`app_display_name_from_exe_path`] returns (slice 3 wires
+/// the two: extract the stem, then resolve it here). Matching is case-insensitive
+/// on the trimmed, ASCII-lowercased stem.
+///
+/// Recognition is engine-granular and brand-less by design (ADR 0044): we key on
+/// the engine family, not the product, so a Chromium fork shipped under a stock
+/// stem is one Chromium hit regardless of brand (e.g. Helium ships as `chrome.exe`
+/// and resolves to `Chromium`). An unlisted fork with its own stem silently
+/// resolves to `None` until that stem is added — the ADR 0044 consequence. Kept a
+/// plain `match` on the lowercased stem so it stays Win32-free and trivially
+/// unit-testable in this dependency-light crate.
+pub fn known_browser_engine_for_exe_stem(stem: &str) -> Option<BrowserEngine> {
+    match stem.trim().to_ascii_lowercase().as_str() {
+        "chrome" | "msedge" | "brave" | "vivaldi" | "opera" | "opera_gx" | "chromium" | "arc" => {
+            Some(BrowserEngine::Chromium)
+        }
+        "firefox" | "zen" | "librewolf" | "waterfox" | "floorp" => Some(BrowserEngine::Gecko),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MetadataCollectionPlan {
     pub collect_active_window: bool,
@@ -604,6 +640,74 @@ mod tests {
         // documents the pure fallback's honest behavior.
         assert_eq!(app_display_name_from_exe_path(""), "");
         assert_eq!(app_display_name_from_exe_path("   "), "");
+    }
+
+    #[test]
+    fn browser_engine_resolves_chromium_and_gecko_stems() {
+        use BrowserEngine::*;
+        for stem in ["chrome", "msedge", "brave", "vivaldi", "opera", "opera_gx", "chromium", "arc"]
+        {
+            assert_eq!(
+                known_browser_engine_for_exe_stem(stem),
+                Some(Chromium),
+                "{stem} should resolve to the Chromium engine"
+            );
+        }
+        for stem in ["firefox", "zen", "librewolf", "waterfox", "floorp"] {
+            assert_eq!(
+                known_browser_engine_for_exe_stem(stem),
+                Some(Gecko),
+                "{stem} should resolve to the Gecko engine"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_engine_lookup_is_case_insensitive() {
+        assert_eq!(
+            known_browser_engine_for_exe_stem("Chrome"),
+            Some(BrowserEngine::Chromium)
+        );
+        assert_eq!(
+            known_browser_engine_for_exe_stem("CHROME"),
+            Some(BrowserEngine::Chromium)
+        );
+        assert_eq!(
+            known_browser_engine_for_exe_stem("ZeN"),
+            Some(BrowserEngine::Gecko)
+        );
+    }
+
+    #[test]
+    fn browser_engine_is_none_for_unknown_and_electron_stems() {
+        // Electron apps and non-browser exes are not a recognized engine, and an
+        // empty stem (a failed path extraction) is likewise `None`.
+        for stem in ["slack", "code", "discord", "notepad", ""] {
+            assert_eq!(
+                known_browser_engine_for_exe_stem(stem),
+                None,
+                "{stem:?} should not resolve to a browser engine"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_engine_resolves_from_extracted_exe_stem() {
+        // Documents how slice 3 wires this: extract the stem via the pure path
+        // helper, then resolve the engine. A brand-less Chromium fork (Helium ships
+        // as chrome.exe) still lands as Chromium; Zen resolves as Gecko.
+        assert_eq!(
+            known_browser_engine_for_exe_stem(&app_display_name_from_exe_path(
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+            )),
+            Some(BrowserEngine::Chromium)
+        );
+        assert_eq!(
+            known_browser_engine_for_exe_stem(&app_display_name_from_exe_path(
+                r"C:\Users\me\AppData\Local\zen\zen.exe"
+            )),
+            Some(BrowserEngine::Gecko)
+        );
     }
 
     #[test]

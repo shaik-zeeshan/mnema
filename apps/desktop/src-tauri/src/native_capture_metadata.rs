@@ -13,7 +13,20 @@ use capture_metadata::MetadataSettings;
 #[cfg(target_os = "macos")]
 use capture_metadata::{
     browser_url_script_app_name, is_known_browser_bundle, sanitize_url,
-    select_frontmost_pid_window, MetadataCollectionPlan, NativeActiveWindowSnapshot, RawWindowInfo,
+    select_frontmost_pid_window, NativeActiveWindowSnapshot, RawWindowInfo,
+};
+// `MetadataCollectionPlan` is shared by the macOS collector and the pure Windows
+// browser-URL gating fn (`windows_browser_url_probe_engine`), so it needs one
+// combined gate rather than the macOS-only import — `any(test, ...)` keeps it in
+// scope for the host-agnostic unit tests. `BrowserEngine` +
+// `known_browser_engine_for_exe_stem` + `app_display_name_from_exe_path` back only
+// the Windows browser-URL path (and its tests), so they are gated to Windows/test
+// to avoid unused-import warnings on macOS/Linux.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+use capture_metadata::MetadataCollectionPlan;
+#[cfg(any(test, target_os = "windows"))]
+use capture_metadata::{
+    app_display_name_from_exe_path, known_browser_engine_for_exe_stem, BrowserEngine,
 };
 use capture_metadata::{BrowserUrlProbeCache, FrameMetadataSnapshot, PrivacyFilterDecision};
 #[cfg(target_os = "macos")]
@@ -634,7 +647,7 @@ pub fn refresh_windows_metadata_snapshot(
     metadata: &MetadataSettings,
 ) {
     let snapshot = if metadata.enabled {
-        collect_windows_active_window_snapshot()
+        collect_windows_active_window_snapshot(metadata)
     } else {
         None
     };
@@ -655,8 +668,25 @@ pub fn refresh_windows_metadata_snapshot(
 /// `app_bundle_id` (no schema rename in v1); `app_name` is ALWAYS populated (the
 /// version-info `FileDescription`, else the file stem) so a raw path never
 /// surfaces as a UI label.
+/// Decide whether the Windows metadata refresh should probe the foreground app for
+/// a browser URL, and with which engine. `None` ⇒ don't probe (metadata disabled,
+/// browser-URL mode Off, or the exe is not a recognized browser). Pure: no Win32,
+/// so the gating is unit-tested without a running browser (ADR 0044 testing note).
+#[cfg(any(test, target_os = "windows"))]
+fn windows_browser_url_probe_engine(
+    exe_path: &str,
+    plan: MetadataCollectionPlan,
+) -> Option<BrowserEngine> {
+    if !plan.collect_browser_url_for_metadata {
+        return None;
+    }
+    known_browser_engine_for_exe_stem(&app_display_name_from_exe_path(exe_path))
+}
+
 #[cfg(target_os = "windows")]
-fn collect_windows_active_window_snapshot() -> Option<FrameMetadataSnapshot> {
+fn collect_windows_active_window_snapshot(
+    metadata: &MetadataSettings,
+) -> Option<FrameMetadataSnapshot> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowThreadProcessId,
     };
@@ -664,8 +694,10 @@ fn collect_windows_active_window_snapshot() -> Option<FrameMetadataSnapshot> {
     // SAFETY: standard Win32 foreground-window queries. `GetForegroundWindow`
     // returns a borrowed HWND we never free; `GetWindowThreadProcessId` writes a
     // PID into a stack local. The helpers below size every buffer from the API
-    // before filling it and close every handle they open.
-    let (exe_path, window_title) = unsafe {
+    // before filling it and close every handle they open. We also surface the raw
+    // `HWND` (as `isize`) and PID so the browser-URL read below can target the
+    // exact foreground window.
+    let (exe_path, window_title, hwnd_isize, pid) = unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.is_null() {
             return None;
@@ -679,7 +711,7 @@ fn collect_windows_active_window_snapshot() -> Option<FrameMetadataSnapshot> {
 
         let exe_path = windows_process_image_path(pid)?;
         let window_title = windows_window_title(hwnd);
-        (exe_path, window_title)
+        (exe_path, window_title, hwnd as isize, pid)
     };
 
     // `app_name` MUST always be populated (see ADR 0043): FileDescription when the
@@ -689,6 +721,20 @@ fn collect_windows_active_window_snapshot() -> Option<FrameMetadataSnapshot> {
         .map(|description| description.trim().to_string())
         .unwrap_or_else(|| capture_metadata::app_display_name_from_exe_path(&exe_path));
 
+    // Active-tab browser URL (ADR 0044). The UI Automation read happens HERE,
+    // during collection — off every capture lock. `refresh_windows_metadata_snapshot`
+    // takes the `CaptureMetadataState` mutex only afterwards, to store the snapshot;
+    // the live read never runs under it. It is driven by the 1s segment-loop poll
+    // and the debounced foreground-change refresh (issue #141), so a slow read
+    // never stalls a lock-holding capture path.
+    let plan = capture_metadata::metadata_collection_plan(metadata);
+    let browser_url = windows_browser_url_probe_engine(&exe_path, plan).and_then(|engine| {
+        let raw = crate::native_capture::browser_url_uia::read_active_tab_url(
+            hwnd_isize, pid, engine,
+        )?;
+        capture_metadata::sanitize_url(&raw, metadata.browser_url_mode)
+    });
+
     Some(FrameMetadataSnapshot {
         // Store the canonical exe path opaquely in `app_bundle_id`. Trim only — do
         // NOT lowercase (the `app:` index lowercases at query time), keeping the
@@ -696,6 +742,7 @@ fn collect_windows_active_window_snapshot() -> Option<FrameMetadataSnapshot> {
         app_bundle_id: Some(exe_path.trim().to_string()),
         app_name: Some(app_name),
         window_title,
+        browser_url,
         ..FrameMetadataSnapshot::default()
     })
 }
@@ -955,6 +1002,62 @@ mod tests {
             ),
             None
         );
+    }
+
+    // ── Windows browser-URL probe gating (ADR 0044) ──────────────────────────
+    // These exercise the pure decision fn `windows_browser_url_probe_engine`
+    // through the real `metadata_collection_plan`, so they run host-agnostically
+    // (no Win32, no running browser) on macOS/Windows/Linux under `cfg(test)`.
+
+    const CHROME_EXE: &str = r"C:\Program Files\Google\Chrome\Application\chrome.exe";
+    const ZEN_EXE: &str = r"C:\Users\me\AppData\Local\zen\zen.exe";
+    const SLACK_EXE: &str = r"C:\Users\me\AppData\Local\slack\app-1.0\slack.exe";
+
+    #[test]
+    fn windows_browser_url_probe_none_when_metadata_disabled() {
+        let plan = capture_metadata::metadata_collection_plan(&MetadataSettings {
+            enabled: false,
+            browser_url_mode: BrowserUrlMode::Full,
+        });
+        assert_eq!(windows_browser_url_probe_engine(CHROME_EXE, plan), None);
+    }
+
+    #[test]
+    fn windows_browser_url_probe_none_when_mode_off() {
+        let plan = capture_metadata::metadata_collection_plan(&MetadataSettings {
+            enabled: true,
+            browser_url_mode: BrowserUrlMode::Off,
+        });
+        assert_eq!(windows_browser_url_probe_engine(CHROME_EXE, plan), None);
+    }
+
+    #[test]
+    fn windows_browser_url_probe_resolves_engine_when_enabled() {
+        for mode in [BrowserUrlMode::Sanitized, BrowserUrlMode::Full] {
+            let plan = capture_metadata::metadata_collection_plan(&MetadataSettings {
+                enabled: true,
+                browser_url_mode: mode,
+            });
+            assert_eq!(
+                windows_browser_url_probe_engine(CHROME_EXE, plan),
+                Some(BrowserEngine::Chromium),
+                "chrome.exe should resolve to Chromium (mode {mode:?})"
+            );
+            assert_eq!(
+                windows_browser_url_probe_engine(ZEN_EXE, plan),
+                Some(BrowserEngine::Gecko),
+                "zen.exe should resolve to Gecko (mode {mode:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_browser_url_probe_none_for_unrecognized_exe() {
+        let plan = capture_metadata::metadata_collection_plan(&MetadataSettings {
+            enabled: true,
+            browser_url_mode: BrowserUrlMode::Full,
+        });
+        assert_eq!(windows_browser_url_probe_engine(SLACK_EXE, plan), None);
     }
 
     // The strategy dispatch in `active_browser_url` routes a Chromium bundle to

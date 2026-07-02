@@ -2,6 +2,9 @@ mod activity;
 #[cfg(target_os = "macos")]
 #[path = "native_capture_browser_url_ax.rs"]
 pub(crate) mod browser_url_ax;
+#[cfg(target_os = "windows")]
+#[path = "native_capture_browser_url_uia.rs"]
+pub(crate) mod browser_url_uia;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
 pub(crate) mod disk_space;
@@ -25,6 +28,7 @@ pub(crate) mod settings;
 pub(crate) mod system_idle;
 #[cfg(test)]
 mod tests;
+pub(crate) mod windows_browser_url_smoke;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_inactivity_smoke;
 pub(crate) mod windows_smoke_invariants;
