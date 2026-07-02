@@ -14,19 +14,26 @@ use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Manager;
 
-/// How many `(published_at_unix_ms, snapshot)` entries to retain. Frames stamp
-/// within ~1s of capture and snapshots publish at most a few times per second,
-/// so a handful of entries covers the capture→JPEG-write lag with room to spare.
+/// How many `(published_at_unix_ms, snapshot)` entries to retain. The ring must
+/// span the capture→JPEG-write lag (~100-300ms nominally, up to ~1-2s under load):
+/// `snapshot_in_effect_at` is evaluated when the export callback fires, so the
+/// entry that was in effect at a frame's capture instant has to survive until
+/// then. Publishes come from the ~1 Hz poll plus focus changes — each focus change
+/// is ~2 publishes (a Cached pre-pass then a Live pass), coalesced by the
+/// single-collector guard in `privacy.rs`. 32 keeps the in-effect entry clear of
+/// eviction even under a burst of switches while the lag is stretched; an evicted
+/// entry only degrades to `None` (never a wrong label), and entries are <1KB and
+/// clear on session reset.
 /// ponytail: fixed ring, not a general time-series store.
-const SNAPSHOT_HISTORY_CAP: usize = 8;
+const SNAPSHOT_HISTORY_CAP: usize = 32;
 
 #[derive(Debug, Clone, Default)]
 pub struct CaptureMetadataRuntime {
-    latest_snapshot: Option<FrameMetadataSnapshot>,
     /// Recent `(published_at_unix_ms, snapshot)` entries, oldest first. Used to
     /// stamp each frame with the app that was frontmost at the frame's *capture*
     /// instant rather than at JPEG-write-completion (which flips to the app the
-    /// user switched TO on boundary frames).
+    /// user switched TO on boundary frames). The newest entry is the latest
+    /// snapshot — there is no separate `latest_snapshot` field to keep in lockstep.
     snapshot_history: std::collections::VecDeque<(u64, Option<FrameMetadataSnapshot>)>,
     latest_decision: PrivacyFilterDecision,
     latest_applied_decision: PrivacyFilterDecision,
@@ -35,11 +42,12 @@ pub struct CaptureMetadataRuntime {
 
 impl CaptureMetadataRuntime {
     pub fn latest_snapshot(&self) -> Option<FrameMetadataSnapshot> {
-        self.latest_snapshot.clone()
+        self.snapshot_history
+            .back()
+            .and_then(|(_, snapshot)| snapshot.clone())
     }
 
     fn publish_snapshot(&mut self, at_unix_ms: u64, snapshot: Option<FrameMetadataSnapshot>) {
-        self.latest_snapshot = snapshot.clone();
         self.snapshot_history.push_back((at_unix_ms, snapshot));
         while self.snapshot_history.len() > SNAPSHOT_HISTORY_CAP {
             self.snapshot_history.pop_front();
@@ -131,7 +139,7 @@ pub struct CapturePrivacyDebugInfo {
 pub fn capture_privacy_debug_info(state: &CaptureMetadataState) -> CapturePrivacyDebugInfo {
     let runtime = state.lock().expect("capture metadata state poisoned");
     CapturePrivacyDebugInfo {
-        latest_snapshot: runtime.latest_snapshot.clone(),
+        latest_snapshot: runtime.latest_snapshot(),
         latest_decision: runtime.latest_decision.clone(),
         latest_applied_decision: runtime.latest_applied_decision.clone(),
         currently_excluded_bundle_ids: runtime.latest_applied_decision.excluded_bundle_ids.clone(),
@@ -159,7 +167,6 @@ pub fn latest_applied_privacy_decision(state: &CaptureMetadataState) -> PrivacyF
 
 pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     let mut runtime = state.lock().expect("capture metadata state poisoned");
-    runtime.latest_snapshot = None;
     runtime.snapshot_history.clear();
     runtime.latest_decision = PrivacyFilterDecision::default();
     runtime.latest_applied_decision = PrivacyFilterDecision::default();
@@ -650,7 +657,7 @@ mod tests {
         assert_eq!(decision.excluded_bundle_ids, vec!["com.secret"]);
         assert!(decision.metadata_redaction_reason.is_none());
         assert_eq!(runtime.latest_decision, decision);
-        assert!(runtime.latest_snapshot.is_none());
+        assert!(runtime.latest_snapshot().is_none());
     }
 
     #[test]
@@ -675,7 +682,7 @@ mod tests {
 
         assert_eq!(decision.excluded_bundle_ids, vec!["com.example.Secret"]);
         assert!(decision.metadata_redaction_reason.is_none());
-        assert!(runtime.latest_snapshot.is_none());
+        assert!(runtime.latest_snapshot().is_none());
         assert_eq!(runtime.latest_decision, decision);
     }
 
@@ -730,13 +737,16 @@ mod tests {
         let state = CaptureMetadataState::default();
         {
             let mut runtime = state.lock().expect("capture metadata state should lock");
-            runtime.latest_snapshot = Some(FrameMetadataSnapshot {
-                app_bundle_id: Some("net.imput.helium".to_string()),
-                app_name: Some("Helium".to_string()),
-                window_title: Some("Private window".to_string()),
-                browser_url: Some("https://secret.example".to_string()),
-                ..FrameMetadataSnapshot::default()
-            });
+            runtime.publish_snapshot(
+                1000,
+                Some(FrameMetadataSnapshot {
+                    app_bundle_id: Some("net.imput.helium".to_string()),
+                    app_name: Some("Helium".to_string()),
+                    window_title: Some("Private window".to_string()),
+                    browser_url: Some("https://secret.example".to_string()),
+                    ..FrameMetadataSnapshot::default()
+                }),
+            );
             runtime.latest_decision = PrivacyFilterDecision {
                 excluded_bundle_ids: vec!["net.imput.helium".to_string()],
                 privacy_filter_applied: true,
@@ -752,7 +762,7 @@ mod tests {
         reset_recording_session_privacy_state(&state);
 
         let runtime = state.lock().expect("capture metadata state should lock");
-        assert!(runtime.latest_snapshot.is_none());
+        assert!(runtime.latest_snapshot().is_none());
         assert_eq!(runtime.latest_decision, PrivacyFilterDecision::default());
         assert_eq!(
             runtime.latest_applied_decision,
